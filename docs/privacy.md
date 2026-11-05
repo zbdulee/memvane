@@ -49,11 +49,9 @@ titles written by compile and verification, index publication, and bundle
 upgrade status. A hook failure records the exception class and code location,
 never the message.
 
-By default the log holds no prompt text and no document bodies. A prompt is
-recorded as its SHA-256 hash and character count, and extractor stderr the same
-way. Setting `MEMVANE_EVENT_LOG_PROMPTS=1` adds the first 1000 characters of the
-prompt, and the last 1000 characters of extractor stderr, as a `text` field; leave it unset
-outside local debugging. Fields whose names refer to secrets (token, password,
+The log holds no prompt text or document bodies. A prompt is recorded as its
+SHA-256 hash and character count, and extractor stderr the same way. Fields
+whose names refer to secrets (token, password,
 secret, credential, API key, authorization, cookie) are dropped from every line.
 
 ## Controls

@@ -91,9 +91,11 @@ def _laya_route_state(action: str, cwd: str) -> str:
                     [sys.executable, str(selector), "classify-hook", action,
                      payload.name, cwd],
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                    timeout=2.0, env=_env(), check=False,
+                    # Recall classification may wait up to 1.5s for an
+                    # upgrade fence, in addition to Python process startup.
+                    timeout=3.0, env=_env(), check=False,
                 )
-            allowed = {"legacy", "candidate", "preview", "blocked", "worktree", "upgrading"}
+            allowed = {"legacy", "candidate", "preview", "blocked", "worktree", "upgrading", "reader"}
         else:
             result = subprocess.run(
                 [sys.executable, str(selector), "classify", action, cwd],
@@ -160,11 +162,21 @@ def recall_context(
 ) -> Optional[Dict[str, str]]:
     """Hermes pre_llm_call hook: inject selected Laya recall context into this turn."""
     selected_route = False
+    route_state = None
     try:
         if _is_noop_env():
             return None
         prompt = user_message or kwargs.get("message") or ""
         route_state = _laya_route_state("recall", _cwd(cwd, **kwargs))
+        if route_state == 'reader':
+            selected_route = True
+            core = Path(__file__).resolve().parent.parent / 'core'
+            if str(core) not in sys.path:
+                sys.path.insert(0,str(core))
+            from laya_host_response import serve_endpoint_recall
+            selected_cwd = _cwd(cwd, **kwargs)
+            return _with_session_notice(selected_cwd, serve_endpoint_recall(
+                'hermes', {'prompt':prompt,'cwd':selected_cwd}, cwd=selected_cwd))
         if route_state == "upgrading":
             return None
         if route_state in ("candidate", "worktree", "preview"):
@@ -180,10 +192,24 @@ def recall_context(
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") != route_state:
+                import laya_fresh_wiki_origin as fresh
+                if fresh.upgrade_fenced(selected_cwd):
+                    from laya_index_host_route import select_route_settled
+                    hinted = select_route_settled(selected_cwd, action='recall')
+                    if hinted.get('state') == 'reader':
+                        from laya_host_response import serve_endpoint_recall
+                        route_state = 'reader'
+                        return _with_session_notice(selected_cwd, serve_endpoint_recall(
+                            'hermes', {'prompt': prompt, 'cwd': selected_cwd}, cwd=selected_cwd))
                 if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
                                            'selected_route_changed') is not None:
                     return None
                 return {"context": "[memvane] selected route changed; request refused"}
+            if os.environ.get('MEMVANE_BRIDGE_PREFLIGHT'):
+                from laya_bridge_readiness import registered_response
+                challenge = registered_response({'prompt': prompt}, 'hermes', decision, core.parent)
+                if challenge is not None:
+                    return {'context': json.dumps(challenge)}
             serve = serve_preview if route_state == "preview" else serve_selected
             return _with_session_notice(selected_cwd, serve(
                 "recall", "hermes", decision, {"prompt": prompt, "cwd": selected_cwd}))
@@ -199,7 +225,7 @@ def recall_context(
             try:
                 from laya_host_response import _upgrade_recall_notice, _refusal_code
                 selected_cwd = _cwd(cwd, **kwargs)
-                if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
+                if route_state != 'reader' and not getattr(exc, '_memvane_reader_attempted', False) and _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
                                            _refusal_code(exc)) is not None:
                     return None
             except Exception:

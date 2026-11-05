@@ -624,7 +624,51 @@ def _settle(intent):
 
 # --------------------------------------------------------------------- run
 
-def _locks(stack, project, state):
+def _ordered_intent(intent, home):
+    if intent is not None and (
+            intent['fromRoot'] != str(memvane_paths.legacy_state_base(home) / intent['installId']) or
+            intent['toRoot'] != str(memvane_paths.state_base(home) / intent['installId'])):
+        _fail('state_move_intent_invalid')
+
+
+def _sync_queue_paths(project, state, queue, home):
+    """Bind the sync owner to this directory across its one legal rename."""
+    intent = _load_intent(state, project)
+    _ordered_intent(intent, home)
+    source = Path(intent['fromRoot']) if intent is not None else state
+    target = Path(intent['toRoot']) if intent is not None else target_root(state, home)
+    queue = Path(queue)
+    if intent is not None:
+        old_queue = Path(json.loads(intent['oldRoute'])['queuePath'])
+        new_queue = Path(json.loads(intent['newRoute'])['queuePath'])
+        if (old_queue.parent != source or new_queue != target / old_queue.name
+                or queue not in (old_queue, new_queue)):
+            _fail('state_move_path_invalid')
+        queue = state / old_queue.name
+    elif queue.parent != state:
+        _fail('state_move_path_invalid')
+    _private_root(state)
+    node = (state.stat().st_dev, state.stat().st_ino)
+
+    def current_queue():
+        live = state
+        if state.is_symlink():
+            _fail('sync_owner_lock_unavailable')
+        if not os.path.lexists(state):
+            if state != source or not legacy_root(source, home):
+                _fail('sync_owner_lock_unavailable')
+            live = target
+        if live == target and source != target and os.path.lexists(source):
+            _fail('sync_owner_lock_unavailable')
+        _private_root(live)
+        if live.resolve(strict=True) != live or (live.stat().st_dev, live.stat().st_ino) != node:
+            _fail('sync_owner_lock_unavailable')
+        return live / queue.name
+
+    return current_queue(), current_queue
+
+
+def _locks(stack, project, state, *, home=None):
     """Every selected-writer exclusion the bundle upgrade takes, plus the build owner."""
     import laya_initial_build as build
     from laya_fresh_wiki_origin import MARKER
@@ -641,11 +685,21 @@ def _locks(stack, project, state):
     from laya_fresh_wiki_origin import ROUTE
     try:
         queue = json.loads(_read(project_dir.folder(project) / ROUTE, 8192))['queuePath']
-    except Exception:
+    except Exception as exc:
+        if intent_present(state) or legacy_root(state, home):
+            raise StateMoveBlocked('state_move_route_unavailable') from exc
         queue = None
+    if not isinstance(queue, str) and (intent_present(state) or legacy_root(state, home)):
+        _fail('state_move_route_unavailable')
     if isinstance(queue, str):
         stack.enter_context(laya_wiki_discovery._locked(
             state / laya_wiki_discovery.lock_path(queue).name, DISCOVERY_WAIT_SECONDS))
+        from laya_index_sync import _owner_lock
+        queue, recheck_queue = _sync_queue_paths(project, state, queue, home)
+        if not stack.enter_context(_owner_lock(queue, recheck_queue=recheck_queue)):
+            _fail('sync_owner_busy')
+    from laya_move_read_seal import _register_writer
+    _register_writer(stack, project, state, kind='state')
 
 
 def _provider_lane():
@@ -659,8 +713,12 @@ def move(project_root, state, *, home=None, step=None):
     project = Path(project_root)
     state = Path(state)
     with ExitStack() as stack:
-        _locks(stack, project, state)
+        _locks(stack, project, state, home=home)
         intent = _load_intent(state, project)
+        _ordered_intent(intent, home)
+        if intent is not None or legacy_root(state, home):
+            from laya_reader_lease import move_lifetime
+            stack.enter_context(move_lifetime(state, project, intent=intent))
         if intent is not None and str(state) == intent['fromRoot']:
             # Prepared but never moved: start over from the current selection.
             _abort(state, project)

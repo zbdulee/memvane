@@ -7,7 +7,7 @@ This is not the historical A-copy design that clones a whole QMD database.
 from __future__ import annotations
 
 from bisect import bisect_right
-from contextlib import closing
+from contextlib import closing, contextmanager
 
 import hashlib
 import json
@@ -16,6 +16,7 @@ import os
 import re
 from pathlib import Path
 import sqlite3
+import sys
 import time
 import uuid
 
@@ -26,6 +27,12 @@ class IndexContractError(ValueError):
 
 class InjectedFault(RuntimeError):
     pass
+
+
+def _query_only_uri(path):
+    """Open existing SQLite data for query_only, including macOS Python 3.9 WAL."""
+    mode = 'rw' if sys.platform == 'darwin' and sys.version_info[:2] == (3, 9) else 'ro'
+    return Path(path).as_uri() + '?mode=' + mode
 
 
 def _digest(scope, entries):
@@ -233,6 +240,179 @@ _NOT_EXCLUDED = '''
               WHERE x.scope=m.scope AND x.kind='path' AND x.value=m.path)
   AND NOT EXISTS (SELECT 1 FROM exclusions x
                   WHERE x.scope=m.scope AND x.kind='hash' AND x.value=m.hash)'''
+
+
+def _search_pinned_fts(db, scope, gen, ordinal, fts_queries, limit, *,
+                       path_prefixes=None, excluded_paths=None, deadline=None):
+    """Run the shared ranking SQL inside an already verified read snapshot.
+
+    The caller owns the transaction and must verify its generation and FTS
+    seal before using the result. This helper neither opens nor closes it.
+    """
+    if not db.in_transaction:
+        raise IndexContractError('reader_snapshot_unpinned')
+    if (not isinstance(fts_queries, tuple) or not 1 <= len(fts_queries) <= 8
+            or any(not isinstance(query, str) or not query for query in fts_queries)
+            or type(limit) is not int or not 1 <= limit <= 100):
+        raise IndexContractError('invalid_query')
+    prefix_sql, prefix_params = _path_predicate(path_prefixes)
+    shadow_sql, shadow_params = _shadow_predicate(excluded_paths)
+    table = _gen_fts(ordinal)
+    answer = []
+    for fts_query in fts_queries:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise IndexContractError('fts_deadline_exceeded')
+        results = db.execute(f"""
+          SELECT m.path,m.hash,c.body,bm25({table},1.5,4.0,1.0,0.0) AS rank
+          FROM {table}
+          JOIN membership m ON m.gen=? AND m.path={table}.path_key
+          JOIN content c ON c.hash=m.hash
+          WHERE {table} MATCH ? AND m.scope=? AND m.eligible=1 AND {_NOT_EXCLUDED}
+          {prefix_sql}{shadow_sql}
+          ORDER BY rank ASC,m.path COLLATE BINARY ASC LIMIT ?
+        """, (gen, fts_query, scope, *prefix_params, *shadow_params, limit)).fetchall()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise IndexContractError('fts_deadline_exceeded')
+        answer.append([{'generation': gen, 'scope': scope, 'path': path,
+                        'hash': hash_, 'body': body, 'score': rank}
+                       for path, hash_, body, rank in results])
+    return answer
+
+
+class SnapshotIndex:
+    """Internal in-memory search pin over a caller-owned read transaction.
+
+    The caller must establish the coherent multi-store snapshot and binding.
+    This object never owns, commits, rolls back, or closes the connection.
+    """
+
+    def __init__(self, db, *, scope, generation, incarnation, deadline, _observation=None):
+        if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+                or time.monotonic() >= deadline):
+            raise IndexContractError('reader_snapshot_deadline')
+        self.db, self.scope, self.generation = db, scope, generation
+        self._incarnation, self._deadline = incarnation, deadline
+        self._token = None
+        self._transaction_guard = None
+        self._vector_seals = {}
+        self._closed = False
+        self._check()
+        if not callable(getattr(db, '_hold_progress_deadline', None)):
+            raise IndexContractError('reader_snapshot_managed_required')
+        LayaIndexA._check_header(db)
+        if db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone() != (incarnation,):
+            raise IndexContractError('reader_incarnation_changed')
+        row = db.execute('SELECT h.gen,i.ord,s.source_manifest,g.rev_epoch '
+                         'FROM head h JOIN generations g ON g.scope=h.scope AND g.gen=h.gen '
+                         'JOIN candidate_seals s ON s.scope=h.scope AND s.gen=h.gen '
+                         'JOIN gen_index i ON i.gen=h.gen '
+                         "WHERE h.scope=? AND g.state='published' AND s.source_manifest=g.digest",
+                         (scope,)).fetchone()
+        if row is None or row[0] != generation:
+            raise IndexContractError('reader_generation_unpublished')
+        self._ordinal, self._manifest, self._epoch = row[1:]
+        if _observation is not None:
+            import laya_reader_open as readers
+            valid = any(item is _observation and item.connections[0] is db
+                        and saved.get('scopeId') == scope
+                        and saved.get('dbIncarnation') == incarnation
+                        and item.published[:2] == (generation, self._manifest)
+                        and item.generation_exclusion_epoch == self._epoch
+                        and item.vector_seal.get('generation') == generation
+                        and item.vector_seal.get('scope') == scope
+                        and item.vector_seal.get('rows_digest') == item.published[3]
+                        and endpoint.record['scope'] == scope
+                        for item, endpoint, saved in readers._observations.get())
+            if not valid or not getattr(db, '_snapshot_guards', None):
+                raise IndexContractError('reader_snapshot_unpinned')
+            self._vector_seals[generation] = dict(_observation.vector_seal)
+            return
+        db._hold_progress_deadline(deadline)
+        try:
+            if not _generation_fts_rows_match(db, generation, _gen_fts(self._ordinal), deadline=deadline):
+                raise IndexContractError('fts_generation_mismatch')
+        except sqlite3.OperationalError as exc:
+            if time.monotonic() >= deadline:
+                raise IndexContractError('fts_deadline_exceeded') from exc
+            raise
+        finally:
+            db._release_progress_deadline()
+
+    def _check(self, token=None, *, require_token=False):
+        if self._closed or (require_token and (self._token is None or token is not self._token)):
+            raise IndexContractError('reader_snapshot_closed')
+        if time.monotonic() >= self._deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        try:
+            if not self.db.in_transaction or self.db.execute('PRAGMA query_only').fetchone() != (1,):
+                raise IndexContractError('reader_snapshot_closed')
+        except sqlite3.ProgrammingError as exc:
+            raise IndexContractError('reader_snapshot_closed') from exc
+
+    def pin(self, scope=None):
+        self._check()
+        if scope is not None and scope != self.scope:
+            raise IndexContractError('reader_snapshot_scope_changed')
+        if self._token is not None:
+            raise IndexContractError('reader_snapshot_already_pinned')
+        if not callable(getattr(self.db, '_hold_snapshot_transaction', None)):
+            raise IndexContractError('reader_snapshot_managed_required')
+        self._transaction_guard = self.db._hold_snapshot_transaction()
+        self._token = object()
+        return self._token if scope is None else (self._token, self.generation)
+
+    def release(self, token):
+        if self._closed or self._token is None or token is not self._token:
+            raise IndexContractError('reader_snapshot_closed')
+        self.db._release_snapshot_transaction(self._transaction_guard)
+        self._closed = True
+
+    def incarnation(self):
+        self._check()
+        return self._incarnation
+
+    def view_seal(self, token):
+        self._check(token, require_token=True)
+        return {'scope': self.scope, 'gen': self.generation,
+                'source_manifest': self._manifest, 'rev_epoch': self._epoch}
+
+    def _check_header(self, db):
+        if db is not self.db:
+            raise IndexContractError('reader_snapshot_closed')
+        self._check()
+        LayaIndexA._check_header(db)
+
+    def _pinned(self, token):
+        self._check(token, require_token=True)
+        return self.scope, self.generation, self._ordinal
+
+    def list_exclusions(self, scope):
+        self._check()
+        if scope != self.scope:
+            raise IndexContractError('reader_snapshot_scope_changed')
+        return self.db.execute('SELECT scope,kind,value FROM exclusions WHERE scope=? '
+                               'ORDER BY kind,value', (scope,)).fetchall()
+
+    def search_many(self, token, fts_queries, limit, *, path_prefixes=None,
+                    deadline_seconds=None, excluded_paths=None):
+        self._check(token, require_token=True)
+        if (deadline_seconds is not None and
+                (type(deadline_seconds) not in (int, float) or not math.isfinite(deadline_seconds)
+                 or not 0 < deadline_seconds <= 30)):
+            raise IndexContractError('invalid_query')
+        deadline = self._deadline if deadline_seconds is None else min(
+            self._deadline, time.monotonic() + deadline_seconds)
+        self.db._hold_progress_deadline(deadline)
+        try:
+            return _search_pinned_fts(self.db, self.scope, self.generation, self._ordinal,
+                                      fts_queries, limit, path_prefixes=path_prefixes,
+                                      excluded_paths=excluded_paths, deadline=deadline)
+        except sqlite3.OperationalError as exc:
+            if time.monotonic() >= deadline:
+                raise IndexContractError('fts_deadline_exceeded') from exc
+            raise
+        finally:
+            self.db._release_progress_deadline()
 
 
 _SCHEMA_V6 = '''
@@ -613,47 +793,76 @@ class LayaIndexA:
             for suffix in ('-wal','-shm','-journal'):
                 Path(str(tmp) + suffix).unlink(missing_ok=True)
 
-    def __init__(self, path, *, create=False):
+    def __init__(self, path, *, create=False, coordination=None):
         path = Path(path)
         if not path.parent.is_dir() or path.is_symlink():
             raise IndexContractError('invalid_explicit_path')
         self.path = path
+        self._connection_owner = None
+        if coordination is not None:
+            # A component is bound to an already proved file. First creation
+            # has its separate installer/publication integration.
+            if create:
+                raise IndexContractError('coordinated_creation_unavailable')
+            from laya_reader_windows import open_owned
+            self._connection_owner = open_owned(coordination, path=path,
+                validate=self._validate_existing, initialize=self._initialize_connection,
+                deadline=time.monotonic() + 2)
+            return
         if create:
             self._create_new(path)
+        self.db = self._connect_existing()
+        try:
+            self._initialize_connection(self.db)
+        except BaseException:
+            self.db.close()
+            raise
+
+    def _connect_existing(self):
+        path = self.path
         if not path.is_file():
             raise IndexContractError('database_missing')
         uri = path.resolve(strict=True).as_uri()
         try:
             with closing(sqlite3.connect(uri + '?mode=ro', uri=True, timeout=2)) as check:
-                check.execute('BEGIN')
-                try:
-                    self._check_header(check)  # one snapshot; no DDL or WAL switch
-                    ro_incarnation = check.execute(
-                        "SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
-                    check.commit()
-                except BaseException:
-                    check.rollback()
-                    raise
+                self._validate_existing(check)
         except sqlite3.Error as exc:
             raise IndexContractError('database_unreadable') from exc
-        self.db = sqlite3.connect(uri + '?mode=rw', uri=True, timeout=2,
-                                  isolation_level=None)
+        return sqlite3.connect(uri + '?mode=rw', uri=True, timeout=2,
+                               isolation_level=None)
+
+    def _validate_existing(self, check):
+        check.execute('BEGIN')
         try:
-            self.db.execute('PRAGMA foreign_keys=ON')
-            if self._read_header_snapshot() != ro_incarnation:
-                raise IndexContractError('database_incarnation_mismatch')
-            mode = self.db.execute('PRAGMA journal_mode=WAL').fetchone()
-            if mode is None or str(mode[0]).lower() != 'wal':
-                raise IndexContractError('wal_unavailable')
-            self.db.execute('PRAGMA synchronous=FULL')
-            if self._read_header_snapshot() != ro_incarnation:
-                raise IndexContractError('database_incarnation_mismatch')
+            self._check_header(check)  # one snapshot; no DDL or WAL switch
+            self._opening_incarnation = check.execute(
+                "SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
+            check.commit()
         except BaseException:
-            self.db.close()
+            check.rollback()
             raise
 
-    def close(self):
-        self.db.close()
+    def _initialize_connection(self, db):
+        self.db = db
+        self.db.execute('PRAGMA foreign_keys=ON')
+        if self._read_header_snapshot() != self._opening_incarnation:
+            raise IndexContractError('database_incarnation_mismatch')
+        mode = self.db.execute('PRAGMA journal_mode=WAL').fetchone()
+        if mode is None or str(mode[0]).lower() != 'wal':
+            raise IndexContractError('wal_unavailable')
+        self.db.execute('PRAGMA synchronous=FULL')
+        if self._read_header_snapshot() != self._opening_incarnation:
+            raise IndexContractError('database_incarnation_mismatch')
+
+    def close(self, *, deadline=None):
+        if self._connection_owner is None:
+            self.db.close()
+            return
+        from laya_reader_windows import close_or_defer, ReaderCloseDeferred
+        if deadline is None:
+            deadline = time.monotonic() + 2
+        if not close_or_defer(self._connection_owner, deadline=deadline):
+            raise ReaderCloseDeferred('reader_connection_close_deferred')
 
     def incarnation(self):
         """Stable identity for a newly created A-int database, not its file path."""
@@ -705,6 +914,23 @@ class LayaIndexA:
         except sqlite3.Error:
             pass  # never replace the exception that is already propagating
 
+    @contextmanager
+    def _write_transaction(self, *, visible):
+        if self._connection_owner is None:
+            self._begin()
+            try:
+                yield self.db
+                self.db.commit()
+            except BaseException:
+                self._rollback()
+                raise
+        else:
+            from laya_reader_windows import write_transaction
+            with write_transaction(self._connection_owner, visible=visible,
+                                   deadline=time.monotonic() + 2) as transaction:
+                self._check_header(self.db)
+                yield transaction
+
     def ensure_content(self, hash_, body):
         """Store one immutable content row ahead of a stage; True if inserted.
 
@@ -718,22 +944,16 @@ class LayaIndexA:
             raise IndexContractError('invalid_content')
         if hashlib.sha256(body.encode('utf-8')).hexdigest() != hash_:
             raise IndexContractError('content_hash_mismatch')
-        self._begin()
-        try:
+        with self._write_transaction(visible=False):
             existing = self.db.execute('SELECT body FROM content WHERE hash=?',
                                        (hash_,)).fetchone()
             if existing is not None:
                 if existing[0] != body:
                     raise IndexContractError('hash_content_conflict')
-                self.db.commit()
                 return False
             self.db.execute('INSERT INTO content VALUES(?,?)', (hash_, body))
             self.db.execute('INSERT INTO content_fts(hash,body) VALUES(?,?)', (hash_, body))
-            self.db.commit()
             return True
-        except BaseException:
-            self._rollback()
-            raise
 
     def stage(self, gen, scope, documents, fault_after=None, *,
               base=None, source_manifest=None, claim_digest=None, claim_epoch=None):
@@ -761,8 +981,7 @@ class LayaIndexA:
         digest = _digest(scope, [(path, hash_, flag) for path, hash_, flag, _ in rows])
         if sealed and source_manifest != digest:
             raise IndexContractError('manifest_mismatch')
-        self._begin()
-        try:
+        with self._write_transaction(visible=False) as transaction:
             prior = self.db.execute('SELECT scope,state,digest,rev_epoch FROM generations WHERE gen=?',
                                     (gen,)).fetchone()
             if prior is not None:
@@ -778,7 +997,7 @@ class LayaIndexA:
                     current_epoch = self.db.execute(
                         'SELECT COUNT(*) FROM exclusions WHERE scope=?',
                         (scope,)).fetchone()[0]
-                    self.db.rollback()
+                    transaction.rollback()
                     return ('already_staged' if prior[3] == current_epoch
                             else 'index_stale')
                 raise IndexContractError('generation_conflict')
@@ -822,11 +1041,7 @@ class LayaIndexA:
                 if fault_after == n:
                     raise InjectedFault('stage_after_member')
             self.db.execute("UPDATE generations SET state='prepared' WHERE gen=?", (gen,))
-            self.db.commit()
             return 'prepared'
-        except BaseException:
-            self._rollback()
-            raise
 
     def stage_stream(self, gen, scope, documents, fault_after=None, *,
                      base, source_manifest, claim_digest, claim_epoch):
@@ -867,8 +1082,7 @@ class LayaIndexA:
                 digest.add(path, hash_, int(eligible))
                 yield path, hash_, int(eligible), body
 
-        self._begin()
-        try:
+        with self._write_transaction(visible=False) as transaction:
             prior = self.db.execute('SELECT scope,state,digest,rev_epoch FROM generations WHERE gen=?',
                                     (gen,)).fetchone()
             if prior is not None:
@@ -894,7 +1108,7 @@ class LayaIndexA:
                     raise IndexContractError('generation_conflict')
                 current_epoch = self.db.execute(
                     'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]
-                self.db.rollback()
+                transaction.rollback()
                 return 'already_staged' if prior[3] == current_epoch else 'index_stale'
             head = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
             if (head[0] if head else None) != base:
@@ -938,19 +1152,19 @@ class LayaIndexA:
             if digest.hexdigest() != source_manifest:
                 raise IndexContractError('manifest_mismatch')
             self.db.execute("UPDATE generations SET state='prepared' WHERE gen=?", (gen,))
-            self.db.commit()
             return 'prepared'
-        except BaseException:
-            self._rollback()
-            raise
 
     def publish(self, expected, gen, claim, fault_at=None, *,
                 source_manifest=None, claim_digest=None, claim_epoch=None,
-                require_vector=False):
+                require_vector=False, _revision_install_id=None):
         """CAS a bound base/source/claim + receipt; separate queue ACK is replayable."""
         proof = (source_manifest,claim_digest,claim_epoch)
         if type(require_vector) is not bool:
             raise IndexContractError('invalid_vector_requirement')
+        if (_revision_install_id is not None and
+                (self._connection_owner is not None or not isinstance(_revision_install_id,str)
+                 or re.fullmatch(r'[0-9a-f]{32}',_revision_install_id) is None)):
+            raise IndexContractError('invalid_publication_revision_identity')
         if not isinstance(claim, str) or not claim:
             raise IndexContractError('invalid_claim')
         if any(value is not None for value in proof) and (
@@ -958,69 +1172,186 @@ class LayaIndexA:
                 or not isinstance(claim_digest, str) or len(claim_digest) != 64
                 or type(claim_epoch) is not int or claim_epoch < 0):
             raise IndexContractError('invalid_claim_proof')
+        if self._connection_owner is not None:
+            return self._publish_coordinated(expected, gen, claim, proof, require_vector, fault_at)
         self._begin()
         try:
-            prior = self.db.execute('''SELECT scope,gen,source_manifest,claim_digest,claim_epoch
-                FROM receipts WHERE claim=?''', (claim,)).fetchone()
-            candidate = self.db.execute('SELECT scope,state,rev_epoch FROM generations WHERE gen=?',
-                                        (gen,)).fetchone()
-            seal = self.db.execute('''SELECT base_gen,source_manifest,claim_digest,claim_epoch
-                FROM candidate_seals WHERE gen=?''', (gen,)).fetchone()
-            vector_seal = self.db.execute('SELECT 1 FROM gen_vector_seals WHERE gen=?',
-                                          (gen,)).fetchone()
-            if require_vector and vector_seal is None:
-                raise IndexContractError('vector_generation_unsealed')
-            if vector_seal is not None:
-                # The verifier reads this exact write transaction. A forged or
-                # incomplete seal must never accompany a receipt or new head.
-                from laya_index_vector import verify_generation_seal
-                verify_generation_seal(self, gen)
-            if prior is not None:
-                self.db.rollback()
-                if candidate is not None and prior == (candidate[0], gen, *proof):
-                    return 'replayed'
-                raise IndexContractError('claim_conflict')
-            if candidate is None or candidate[1] != 'prepared':
-                self.db.rollback()
-                return 'not_prepared'
-            scope = candidate[0]
-            if seal is not None:
-                if any(value is None for value in proof):
-                    raise IndexContractError('claim_conflict')
-                if source_manifest != seal[1]:
-                    self.db.rollback()
-                    return 'index_stale'
-                if (claim_digest, claim_epoch) != seal[2:] or expected != seal[0]:
-                    raise IndexContractError('claim_conflict')
-            elif any(value is not None for value in proof):
-                raise IndexContractError('claim_conflict')
-            if candidate[2] != self.db.execute(
-                    'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]:
-                self.db.rollback()
-                return 'index_stale'
-            current = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
-            if (current[0] if current else None) != expected:
-                self.db.rollback()
-                return 'stale'
-            self.db.execute("UPDATE generations SET state='published' WHERE gen=?", (gen,))
-            self.db.execute('''INSERT INTO receipts
-                (claim,scope,gen,source_manifest,claim_digest,claim_epoch)
-                VALUES(?,?,?,?,?,?)''', (claim, scope, gen, *proof))
-            if fault_at == 'after_receipt':
-                raise InjectedFault('publish_after_receipt')
-            self.db.execute('INSERT INTO head VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET gen=excluded.gen',
-                            (scope, gen))
-            if fault_at == 'after_head':
-                raise InjectedFault('publish_after_head')
+            status, prepared = self._prepare_publication(expected, gen, claim, proof,
+                                                         require_vector, self.db)
+            if status is not None:
+                return status
+            self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
+            if _revision_install_id is not None:
+                import laya_publication_revision as revisions
+                prefix=revisions._PREFIX
+                baseline=self.db.execute('SELECT value FROM schema_meta WHERE key=?',
+                                         (prefix+'0'*20,)).fetchone()
+                if baseline is None:
+                    if self.db.execute('SELECT 1 FROM schema_meta WHERE key>=? AND key<? LIMIT 1',
+                                       (prefix,prefix+'\uffff')).fetchone() is not None:
+                        raise IndexContractError('base_baseline_missing')
+                else:
+                    try:
+                        value=json.loads(baseline[0])
+                        incarnation=self.db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
+                        expected_identity=revisions._identity('base',
+                            (_revision_install_id,prepared[1][0],incarnation))
+                        valid=(isinstance(value,dict) and value.get('component')=='base'
+                               and value.get('kind')=='baseline' and value.get('identity')==expected_identity)
+                    except (TypeError,ValueError):
+                        valid=False
+                    if not valid:
+                        raise IndexContractError('invalid_base_baseline')
+                    revisions.record_head(self.db,install_id=_revision_install_id,
+                        scope=prepared[1][0],before=expected,after=gen,claim=claim,proof=proof)
             self.db.commit()
             return 'published'
         except BaseException:
             self._rollback()
             raise
 
-    def pin(self, scope, fault_at=None):
-        self._begin()
+    def _publication_inputs(self, gen, claim):
+        prior = self.db.execute('''SELECT scope,gen,source_manifest,claim_digest,claim_epoch
+                FROM receipts WHERE claim=?''', (claim,)).fetchone()
+        candidate = self.db.execute('SELECT scope,state,rev_epoch FROM generations WHERE gen=?',
+                                        (gen,)).fetchone()
+        seal = self.db.execute('''SELECT base_gen,source_manifest,claim_digest,claim_epoch
+                FROM candidate_seals WHERE gen=?''', (gen,)).fetchone()
+        vector_seal = self.db.execute('''SELECT scope,profile_id,rows_digest,rows_count
+                FROM gen_vector_seals WHERE gen=?''', (gen,)).fetchone()
+        return prior, candidate, seal, vector_seal
+
+    def _prepare_publication(self, expected, gen, claim, proof, require_vector, transaction):
+        inputs = self._publication_inputs(gen, claim)
+        prior, candidate, seal, vector_seal = inputs
+        if require_vector and vector_seal is None:
+            raise IndexContractError('vector_generation_unsealed')
+        if vector_seal is not None:
+            # The full row proof remains in one real SQLite write snapshot,
+            # outside the managed publication cut.
+            from laya_index_vector import verify_generation_seal
+            verify_generation_seal(self, gen)
+        if prior is not None:
+            transaction.rollback()
+            if candidate is not None and prior == (candidate[0], gen, *proof):
+                return 'replayed', None
+            raise IndexContractError('claim_conflict')
+        if candidate is None or candidate[1] != 'prepared':
+            transaction.rollback()
+            return 'not_prepared', None
+        scope = candidate[0]
+        if seal is not None:
+            if any(value is None for value in proof):
+                raise IndexContractError('claim_conflict')
+            if proof[0] != seal[1]:
+                transaction.rollback()
+                return 'index_stale', None
+            if proof[1:] != seal[2:] or expected != seal[0]:
+                raise IndexContractError('claim_conflict')
+        elif any(value is not None for value in proof):
+            raise IndexContractError('claim_conflict')
+        if candidate[2] != self.db.execute(
+                'SELECT COUNT(*) FROM exclusions WHERE scope=?', (scope,)).fetchone()[0]:
+            transaction.rollback()
+            return 'index_stale', None
+        current = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
+        if (current[0] if current else None) != expected:
+            transaction.rollback()
+            return 'stale', None
+        return None, (*inputs, current)
+
+    def _write_publication(self, scope, gen, claim, proof, fault_at):
+        self.db.execute("UPDATE generations SET state='published' WHERE gen=?", (gen,))
+        self.db.execute('''INSERT INTO receipts
+                (claim,scope,gen,source_manifest,claim_digest,claim_epoch)
+                VALUES(?,?,?,?,?,?)''', (claim, scope, gen, *proof))
+        if fault_at == 'after_receipt':
+            raise InjectedFault('publish_after_receipt')
+        self.db.execute('INSERT INTO head VALUES(?,?) ON CONFLICT(scope) DO UPDATE SET gen=excluded.gen',
+                            (scope, gen))
+        if fault_at == 'after_head':
+            raise InjectedFault('publish_after_head')
+
+    def _publication_binding(self):
+        import laya_reader_windows as windows
         try:
+            return windows.connection_binding(self._connection_owner, self.db)
+        except windows.ReaderWindowBusy as exc:
+            raise windows.ReaderWindowBusy('reader_publish_changed') from exc
+
+    def _publication_stamp(self):
+        return (*self._publication_binding(),
+                self.db.execute('PRAGMA main.data_version').fetchone()[0],
+                self.db.total_changes,
+                self.db.execute('PRAGMA main.schema_version').fetchone()[0])
+
+    def _ensure_normal_baseline(self, scope):
+        if self._connection_owner is None:
+            return
+        import laya_reader_windows as windows
+        import laya_writer_scope as normal
+        _pid, writer, _scope, _node, _manifest = windows._component(self._connection_owner.component)
+        if type(writer) is not normal.NormalWriter:
+            return
+        record = normal._record(writer)
+        if not record.get('marked'):
+            raise windows.ReaderWindowBusy('normal_writer_intent_required')
+        if scope != writer.scope_id:
+            raise IndexContractError('invalid_scope')
+        proof = normal.admission_proof(writer)
+        from laya_publication_revision import ensure_base_baseline
+        ensure_base_baseline(self, scope=scope, profile_id=proof['vectorProfile']['profileId'],
+                             deadline=time.monotonic()+2)
+
+    def _publish_coordinated(self, expected, gen, claim, proof, require_vector, fault_at):
+        import laya_reader_windows as windows
+        try:
+            self._publication_binding()
+            _pid, writer, _scope, _node, _manifest = windows._component(self._connection_owner.component)
+            import laya_writer_scope as normal
+            if type(writer) is normal.NormalWriter:
+                self._ensure_normal_baseline(writer.scope_id)
+            with self._write_transaction(visible=False) as transaction:
+                status, prepared = self._prepare_publication(expected, gen, claim, proof,
+                                                             require_vector, transaction)
+                if status is not None:
+                    self._publication_binding()
+                    return status
+                stamp = self._publication_stamp()
+            # This stage admits only bounded key lookups and three DMLs. Full
+            # header/generation scans and exclusion aggregates stay above.
+            with windows.write_transaction(self._connection_owner, visible=True,
+                                           deadline=time.monotonic() + .2):
+                if self._publication_stamp() != stamp:
+                    raise windows.ReaderWindowBusy('reader_publish_changed')
+                if (self.db.execute('PRAGMA application_id').fetchone() != (self.APP_ID,)
+                        or self.db.execute('PRAGMA user_version').fetchone() != (self.SCHEMA_VERSION,)):
+                    raise IndexContractError('schema_version_unknown')
+                current_inputs = self._publication_inputs(gen, claim)
+                current_head = self.db.execute('SELECT gen FROM head WHERE scope=?',
+                                               (prepared[1][0],)).fetchone()
+                if (*current_inputs, current_head) != prepared or self._publication_stamp() != stamp:
+                    raise windows.ReaderWindowBusy('reader_publish_changed')
+                self._write_publication(prepared[1][0], gen, claim, proof, fault_at)
+                from laya_publication_revision import record_head
+                record_head(self.db, install_id=self._connection_owner.component.install_id,
+                            scope=prepared[1][0], before=expected,
+                            after=gen, claim=claim, proof=proof)
+            self._publication_binding()
+            return 'published'
+        except windows.ReaderWindowBusy as exc:
+            if str(exc) == 'reader_connection_changed':
+                raise windows.ReaderWindowBusy('reader_publish_changed') from exc
+            raise
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, 'sqlite_errorcode', None)
+            if ((type(code) is int and code & 0xff in (5, 6))
+                    or 'locked' in str(exc).lower() or 'busy' in str(exc).lower()):
+                raise windows.ReaderWindowBusy('reader_publish_busy') from exc
+            raise
+
+    def pin(self, scope, fault_at=None):
+        with self._write_transaction(visible=False) as transaction:
             row = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
             if row is None:
                 raise IndexContractError('no_published_generation')
@@ -1034,11 +1365,7 @@ class LayaIndexA:
             self.db.execute('INSERT INTO pins VALUES(?,?,?)', (token, scope, row[0]))
             if fault_at == 'after_insert':
                 raise InjectedFault('pin_after_insert')
-            self.db.commit()
             return token, row[0]
-        except BaseException:
-            self._rollback()
-            raise
 
     def exclude(self, scope, path=None, hash_=None):
         """Append-only serving block, including old pins. Never deletes bytes."""
@@ -1052,15 +1379,17 @@ class LayaIndexA:
                 raise IndexContractError('invalid_exclusion')
         elif not _valid_relative_path(value):
             raise IndexContractError('invalid_exclusion')
-        self._begin()
-        try:
+        self._ensure_normal_baseline(scope)
+        with self._write_transaction(visible=True):
             cur = self.db.execute('INSERT OR IGNORE INTO exclusions VALUES(?,?,?)',
                                   (scope, kind, value))
-            self.db.commit()
+            if cur.rowcount and self._connection_owner is not None:
+                row = self.db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
+                from laya_publication_revision import record_exclusion
+                record_exclusion(self.db, install_id=self._connection_owner.component.install_id,
+                                 scope=scope, head=row[0] if row else None,
+                                 kind=kind, value=value)
             return 'excluded' if cur.rowcount else 'already_excluded'
-        except BaseException:
-            self._rollback()
-            raise
 
     def list_exclusions(self, scope):
         if not isinstance(scope, str) or not scope:
@@ -1111,8 +1440,8 @@ class LayaIndexA:
                      or not math.isfinite(deadline_seconds)
                      or not 0 < deadline_seconds <= 30))):
             raise IndexContractError('invalid_query')
-        prefix_sql, prefix_params = _path_predicate(path_prefixes)
-        shadow_sql, shadow_params = _shadow_predicate(excluded_paths)
+        _path_predicate(path_prefixes)
+        _shadow_predicate(excluded_paths)
         deadline = (None if deadline_seconds is None else
                     time.monotonic() + deadline_seconds)
         if deadline is not None:
@@ -1126,26 +1455,9 @@ class LayaIndexA:
                 raise IndexContractError('generation_unindexed')
             if not self._generation_fts_matches(gen, deadline=deadline):
                 raise IndexContractError('fts_generation_mismatch')
-            table = _gen_fts(ordinal)
-            answer = []
-            for fts_query in fts_queries:
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise IndexContractError('fts_deadline_exceeded')
-                results = self.db.execute(f"""
-                  SELECT m.path,m.hash,c.body,bm25({table},1.5,4.0,1.0,0.0) AS rank
-                  FROM {table}
-                  JOIN membership m ON m.gen=? AND m.path={table}.path_key
-                  JOIN content c ON c.hash=m.hash
-                  WHERE {table} MATCH ? AND m.scope=? AND m.eligible=1 AND {_NOT_EXCLUDED}
-                  {prefix_sql}{shadow_sql}
-                  ORDER BY rank ASC,m.path COLLATE BINARY ASC LIMIT ?
-                """, (gen, fts_query, scope, *prefix_params,
-                      *shadow_params, limit)).fetchall()
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise IndexContractError('fts_deadline_exceeded')
-                answer.append([{'generation': gen, 'scope': scope, 'path': path,
-                                'hash': hash_, 'body': body, 'score': rank}
-                               for path, hash_, body, rank in results])
+            answer = _search_pinned_fts(self.db, scope, gen, ordinal, fts_queries, limit,
+                                        path_prefixes=path_prefixes,
+                                        excluded_paths=excluded_paths, deadline=deadline)
             self.db.commit()
             return answer
         except sqlite3.OperationalError as exc:
@@ -1231,13 +1543,8 @@ class LayaIndexA:
             raise
 
     def release(self, token):
-        self._begin()
-        try:
+        with self._write_transaction(visible=False) as transaction:
             self.db.execute('DELETE FROM pins WHERE token=?', (token,))
-            self.db.commit()
-        except BaseException:
-            self._rollback()
-            raise
 
     def receipt(self, claim):
         self.db.execute('BEGIN')

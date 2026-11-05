@@ -283,7 +283,7 @@ def notify(paths, *, cwd, host, origin):
     return {'owners': len(notified), 'failed': failed, 'overflow': overflow}
 
 
-def drain(decision, *, recheck):
+def drain(decision, *, recheck, owner=None):
     """Full-proof owner consumes current hints using existing compile policy."""
     import config
     import laya_index_host_route as routes
@@ -296,13 +296,19 @@ def drain(decision, *, recheck):
     inbox = _inbox_path(decision)
     if not os.path.lexists(inbox):
         return {'remaining': 0, 'processed': 0}
-    proof = journal.verify_selected_route_for_write(decision, 'compile')
+    def verify():
+        if owner is None:
+            return journal.verify_selected_route_for_write(decision, 'compile')
+        from laya_product_sync_worker import _owned_selected_proof
+        return _owned_selected_proof(decision, owner)
+
+    proof = verify()
     if proof.get('productRouteAllowed') is not True:
         raise ValueError('external_edit_owner_unproved')
 
     def checked():
         recheck()
-        if journal.verify_selected_route_for_write(decision, 'compile') != proof:
+        if verify() != proof:
             raise ValueError('external_edit_owner_changed')
 
     def readable_revision(path):
@@ -368,7 +374,10 @@ def drain(decision, *, recheck):
                 accepted.append(row)
         if queued:
             checked()
-            wiki_selected_laya.request_compile(project, (decision, proof))
+            if owner is None:
+                wiki_selected_laya.request_compile(project, (decision, proof))
+            else:
+                wiki_selected_laya.request_compile(project, (decision, proof), owner=owner)
         if deleted:
             import wiki_lifecycle_request
             checked()

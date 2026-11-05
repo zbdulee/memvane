@@ -293,7 +293,7 @@ class GenerationBindingStore:
     """
 
     def __init__(self, path: Any, *, scope: str, db_incarnation: str, roots: Any,
-                 create: bool = False):
+                 create: bool = False, coordination=None):
         path = Path(path)
         if not path.is_absolute() or not path.parent.is_dir() or path.is_symlink():
             raise IndexContractError('invalid_explicit_path')
@@ -308,10 +308,23 @@ class GenerationBindingStore:
                                         in self.roots.items()]).decode('ascii')
         self._node: Optional[Tuple[int, int]] = None
         self.store_id: Optional[str] = None
+        self._connection_owner = None
+        if coordination is not None:
+            if create:
+                raise IndexContractError('coordinated_creation_unavailable')
+            import time
+            from laya_reader_windows import open_owned
+            try:
+                self._connection_owner = open_owned(coordination, path=path,
+                    preopen=self._preopen_connection, validate=self._validate_connection,
+                    initialize=self._initialize_connection, deadline=time.monotonic() + 2)
+            except sqlite3.Error as exc:
+                _raise_stale('binding store unavailable', exc)
+            return
         if create:
             self._create()
         self._node = self._check_node()
-        self._check_file_header()  # before SQLite may roll a journal or open a WAL
+        self._check_file_node()
         try:
             self.db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2,
                                       isolation_level=None)
@@ -328,8 +341,29 @@ class GenerationBindingStore:
             self.db.close()
             raise
 
-    def close(self) -> None:
-        self.db.close()
+    def _preopen_connection(self):
+        self._node = self._check_node()
+        self._check_file_node()
+
+    def _validate_connection(self, db):
+        self.db = db
+        self.store_id = self._transaction(False, lambda store_id: store_id)
+
+    def _initialize_connection(self, db):
+        self.db = db
+        self._check_node()
+        try:
+            _configure(db)
+        except sqlite3.Error as exc:
+            _raise_stale('binding store unreadable', exc)
+        self.store_id = self._transaction(False, lambda store_id: store_id)
+
+    def close(self, *, deadline=None) -> None:
+        if self._connection_owner is None:
+            self.db.close()
+        else:
+            from laya_reader_windows import close_owned
+            close_owned(self._connection_owner, deadline=deadline)
 
     # -- file access ----------------------------------------------------------
 
@@ -395,7 +429,7 @@ class GenerationBindingStore:
             _raise_stale('binding store has multiple links')
         return node
 
-    def _check_file_header(self) -> None:
+    def _check_file_node(self) -> None:
         try:
             fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | _CLOEXEC)
         except OSError as exc:
@@ -404,13 +438,8 @@ class GenerationBindingStore:
             st = os.fstat(fd)
             if (st.st_dev, st.st_ino) != self._node:
                 _raise_stale('binding store replaced')
-            header = os.pread(fd, 100, 0)
         finally:
             os.close(fd)
-        if len(header) < 100 or header[:16] != b'SQLite format 3\x00':
-            _raise_stale('binding store unreadable')
-        if header[18:20] != b'\x01\x01':  # legacy rollback journal, not WAL
-            _raise_stale('binding store journal mode differs')
 
     def _check_store(self) -> str:
         _check_header(self.db)
@@ -435,6 +464,17 @@ class GenerationBindingStore:
 
     def _transaction(self, write: bool, fn: Callable[[str], Any]) -> Any:
         """``fn(store_id)`` in one transaction after node, schema and identity checks."""
+        if write and self._connection_owner is not None:
+            import time
+            from laya_reader_windows import delete_binding_transaction
+            self._check_node()
+            try:
+                with delete_binding_transaction(self._connection_owner,
+                        deadline=time.monotonic() + 2):
+                    result = fn(self._check_store())
+                return result
+            except sqlite3.Error as exc:
+                _raise_sqlite('binding store unreadable', exc)
         self._check_node()
         try:
             self.db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')
@@ -537,7 +577,11 @@ class GenerationBindingStore:
                 if self._decode(binding.generation, row) != binding:
                     raise IndexContractError('binding_conflict')
                 return 'exists'
-            self.db.execute(_INSERT_SQL, (*key, digest, record))
+            parameters = (*key, digest, record)
+            if self._connection_owner is not None:
+                self._connection_owner.transaction.insert_binding(parameters)
+            else:
+                self.db.execute(_INSERT_SQL, parameters)
             self._inject(fault_at, 'before_commit')
             return 'stored'
         status = self._transaction(True, insert)

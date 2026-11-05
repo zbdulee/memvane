@@ -55,9 +55,8 @@ carries its unwritten count as ``dropped`` on its next written line. A state
 root that fails the walk is reported by ``inspect`` (the logs skill) instead,
 so an empty log is always explained.
 
-Privacy. Prompt text and document bodies are never written by default: a
-prompt is ``{"sha256", "chars"}``. ``MEMVANE_EVENT_LOG_PROMPTS=1`` adds the
-first ``PROMPT_CHARS`` characters as ``prompt.text``. Keys that name secrets
+Privacy. Prompt text and document bodies are not written: a prompt is
+``{"sha256", "chars"}``. Keys that name secrets
 (token, password, secret, credential, api key, authorization, cookie) are
 dropped from every line.
 """
@@ -218,13 +217,11 @@ def code(value):
 
 
 def prompt_fields(prompt) -> dict | None:
-    """``{"sha256", "chars"}`` of a prompt; the text only with the debug flag."""
+    """Return only the digest and length of a prompt or diagnostic text."""
     if not isinstance(prompt, str):
         return None
     out = {'sha256': hashlib.sha256(prompt.encode('utf-8', 'surrogatepass')).hexdigest(),
            'chars': len(prompt)}
-    if os.environ.get(PROMPT_ENV) == '1':
-        out['text'] = prompt[:PROMPT_CHARS]
     return out
 
 

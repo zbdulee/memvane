@@ -872,9 +872,8 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
     except subprocess.TimeoutExpired:
         return None, "extractor_timeout", None
     if proc.stderr:
-        # Extractor stderr can quote source or model text: by default only its
-        # hash and size reach the install event log (the prompt debug flag adds
-        # the tail).
+        # Extractor stderr can quote source or model text. Only the digest and
+        # size of its bounded tail reach the install event log.
         import event_log
         tail = proc.stderr[-event_log.PROMPT_CHARS:]
         event_log.emit('compile.extractor', outcome='stderr', reason=None,

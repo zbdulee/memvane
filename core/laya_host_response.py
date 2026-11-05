@@ -5,7 +5,7 @@ prove the complete installed plugin before this module opens the runtime.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import contextvars
 import hashlib
 import json
@@ -404,13 +404,15 @@ def _refusal_code(exc: BaseException) -> str:
     """Fixed refusal code of a hook failure; never a path, body or secret."""
     from laya_index_a import IndexContractError
     from laya_install_journal import JournalEvidenceError
-    bounded_vector = (type(exc) is IndexContractError and str(exc) in
-                      ('vector_deadline_exceeded', 'vector_budget_exceeded'))
+    bounded_reader = (type(exc) is IndexContractError and str(exc) in (
+        'vector_deadline_exceeded', 'vector_budget_exceeded',
+        'reader_snapshot_deadline', 'reader_snapshot_unpinned',
+        'reader_selection_unproved', 'reader_sidecar_revision_unproved'))
     # A journal proof code names the refused evidence (never a path or
     # body); hiding it made a bundle update look like a query failure.
     journal = (isinstance(exc, JournalEvidenceError) and
                re.fullmatch(r'[a-z0-9_]{1,80}', str(exc)) is not None)
-    return (str(exc) if isinstance(exc, HostResponseError) or bounded_vector
+    return (str(exc) if isinstance(exc, HostResponseError) or bounded_reader
             or journal else "selected_proof_or_query_failed")
 
 
@@ -839,7 +841,8 @@ def _v2_body_evidence(built, present, mode, selected, lex_hits, ep_hits):
 def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
               patterns, min_score, skip_paths, candidates=None,
               source_filter=None, excluded_paths=None,
-              needed_eligible=MAX_ROWS, on_capped=None, diagnostics=None):
+              needed_eligible=MAX_ROWS, on_capped=None, diagnostics=None,
+              defer_vector_budget=False):
     """One collection-scoped QMD-style phase over the same sealed pin.
 
     Without ``candidates`` the legacy path checks one live scan of all roots.
@@ -964,13 +967,19 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
         lex_hits |= bool(rows)
         ep_hits |= position > 0 and bool(rows)
     vector_off = []
-    vector_rows = _pinned_vector(runtime, token, ' '.join(prompt.split()), profile,
-                                 provider, EXCLUSION_FETCH_LIMIT if source_filter else HYBRID_LIST_LIMIT,
-                                 collection_roots=roots, collection_names=names,
-                                 verified_source=source, sealed_view=sealed,
-                                 row_verifier=vector_check,
-                                 excluded_paths=excluded_paths,
-                                 unavailable=vector_off)
+    try:
+        vector_rows = _pinned_vector(runtime, token, ' '.join(prompt.split()), profile,
+                                     provider, EXCLUSION_FETCH_LIMIT if source_filter else HYBRID_LIST_LIMIT,
+                                     collection_roots=roots, collection_names=names,
+                                     verified_source=source, sealed_view=sealed,
+                                     row_verifier=vector_check,
+                                     excluded_paths=excluded_paths,
+                                     unavailable=vector_off)
+    except IndexContractError as exc:
+        if not defer_vector_budget or str(exc) not in ('vector_budget_exceeded','vector_deadline_exceeded'):
+            raise
+        vector_rows = []
+        vector_off.append(str(exc))
     candidate_seen.update(row['path'] for row in vector_rows)
     if source_filter is not None:
         eligible = [row for row in vector_rows if source_filter(row)]
@@ -988,6 +997,7 @@ def _v2_phase(runtime, token, prompt, profile, provider, roots, names,
                                    candidate_seen)
         lists.append(floor)
     if diagnostics is not None:
+        diagnostics['vectorUnavailable'] = tuple(vector_off)
         diagnostics['probeOnlyPaths'] = frozenset(probe_seen - candidate_seen)
         # Optional compile retrieval evidence. Vector rows still hold cosine
         # DISTANCE here; RRF below replaces score with rank and must not be
@@ -1160,7 +1170,8 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                       approved_profile: dict, approved_provider,
                       decision: dict, *, source_locations: dict | None = None,
                       excluded_paths=None, expected_generation=None,
-                      pinned_generation=None,
+                      pinned_generation=None, _snapshot_binding=None, _snapshot_token=None,
+                      _snapshot_vector_status=None,
                       ) -> tuple[list[dict], frozenset[str]]:
     """Return verified wiki cards on one pin; no model work in the hook.
 
@@ -1178,14 +1189,26 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
     # mode: both accepted values use the same wiki-only collection roots.
     if (not wiki or settings['recallStrategy'] not in ('hierarchical', 'wikiOnly')):
         _fail('selected_recall_settings_unsupported')
-    token, _generation = runtime.index.pin(runtime.scope)
+    owns_pin = _snapshot_token is None
+    if owns_pin:
+        token, _generation = runtime.index.pin(runtime.scope)
+    else:
+        if _snapshot_binding is None:
+            _fail('reader_snapshot_unpinned')
+        token = _snapshot_token
+        scope, _generation, _ordinal = runtime.index._pinned(token)
+        if scope != runtime.scope:
+            _fail('reader_snapshot_scope_changed')
     if pinned_generation is not None:
         pinned_generation.append(_generation)
     candidates = None
     try:
         if expected_generation is not None and _generation != expected_generation:
             _fail('incremental_base_changed')
-        if getattr(runtime, 'binding_store', None) is not None:
+        if _snapshot_binding is not None:
+            from laya_source_catalog import CandidateQuery
+            candidates = CandidateQuery(runtime.index, token, _snapshot_binding)
+        elif getattr(runtime, 'binding_store', None) is not None:
             from laya_index_capacity import open_pinned_candidate_query
             # Fails closed when the pinned generation has no stored binding.
             candidates = open_pinned_candidate_query(runtime.index, token,
@@ -1220,11 +1243,14 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
             wiki, tuple(settings['lexicalPatterns']), settings['minScore'],
             (), candidates, source_filter, excluded_paths,
             needed_eligible=settings.get('topN', MAX_ROWS),
-            on_capped=capped.append, diagnostics=diagnostics)
+            on_capped=capped.append, diagnostics=diagnostics,
+            defer_vector_budget=_snapshot_binding is not None)
+        if _snapshot_vector_status is not None:
+            _snapshot_vector_status.extend(diagnostics.get('vectorUnavailable', ()))
         # A DF probe row that no fused list returned was never a candidate.
         for path in diagnostics.get('probeOnlyPaths', ()):
             filtered.pop(path, None)
-        if capped:
+        if capped and _snapshot_binding is None:
             # Observable only: the short eligible lists are still served.
             _write_selection_log(decision['projectRoot'],
                                  'laya_exclusion_candidate_capped', [],
@@ -1243,13 +1269,14 @@ def query_selected_v2(runtime, prompt: str, route_profile: dict,
                 source_locations.update(located)
             return delivered
         delivered = deliver([], frozenset())
-        if filtered:
+        if filtered and _snapshot_binding is None:
             _report_filtered(decision['projectRoot'], filtered)
         return delivered
     finally:
         if candidates is not None:
             candidates.close()
-        runtime.index.release(token)
+        if owns_pin:
+            runtime.index.release(token)
 
 
 def _report_filtered(project_root, filtered: dict[str, str]) -> None:
@@ -1660,6 +1687,91 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
     return host_payload(host, context)
 
 
+def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None) -> dict:
+    """Serve a proved v6 endpoint during or immediately after a fence."""
+    if host not in ('claude','codex','hermes') or not isinstance(payload,dict):
+        _fail('invalid_hook_payload')
+    requested = payload.get('cwd',cwd)
+    prompt = payload.get('prompt')
+    if (not isinstance(requested,str) or not Path(requested).is_absolute() or
+            not isinstance(prompt,str) or not prompt.strip()):
+        _fail('invalid_query_prompt')
+    requested = Path(requested).resolve(strict=True)
+    import laya_fresh_wiki_origin as fresh
+    if drift_decision is None:
+        hint = fresh._fence_record(requested)
+        if hint is None or hint['phase'] not in ('upgrading', 'active'):
+            _fail('reader_selection_unproved')
+        project = Path(hint['projectRoot'])
+    else:
+        if not isinstance(drift_decision,dict) or drift_decision.get('state') != 'candidate':
+            _fail('reader_selection_unproved')
+        project = Path(drift_decision['projectRoot'])
+    if (project.resolve(strict=True) != project or
+            (requested != project and project not in requested.parents)):
+        _fail('reader_selection_unproved')
+    import hook_budget
+    import laya_reader_lease as lease
+    import laya_reader_open as opens
+    import laya_reader_dispatch as dispatch
+    import laya_journal_reader as reader
+    from laya_index_a import IndexContractError
+    from laya_local_embed_provider import ReviewedLocalQmdProvider
+    deadline = time.monotonic() + hook_budget.remaining()
+    root = Path(__file__).resolve().parents[1]
+    if drift_decision is None:
+        journal_path = reader._journal(Path(hint['journalPath']))
+        initial = lease._read_v5_bundle(journal_path)
+        initial_install = initial['selected']['installId']
+    with ExitStack() as stack:
+        for attempt in range(2):
+            try:
+                endpoint = stack.enter_context(lease.resolve_endpoint(project,action='recall',host_root=root))
+                break
+            except ValueError as exc:
+                if (attempt or str(exc) != 'reader_selection_changed'
+                        or time.monotonic() >= deadline):
+                    raise
+        _record,_att,proof = reader._recheck(endpoint)
+        decision = proof.get('readerDecision')
+        if (not isinstance(decision,dict) or
+                (drift_decision is not None and decision != drift_decision) or
+                (drift_decision is None and
+                 (proof.get('installId') != initial_install or
+                  proof.get('journalPath') != str(journal_path) or
+                  proof.get('projectRoot') != str(project)))):
+            _fail('reader_selection_unproved')
+        provider = None
+        manifest = proof.get('providerManifest')
+        if isinstance(manifest,dict):
+            try:
+                warm = ReviewedLocalQmdProvider(manifest)
+            except IndexContractError:
+                warm = None
+            if warm is not None:
+                def provider(text, profile):
+                    left = min(2.0, deadline-time.monotonic())
+                    if left <= 0:
+                        raise IndexContractError('provider_unavailable')
+                    vector = dispatch._provider_vector(warm,text,left)
+                    return {'profileId':profile['profileId'],
+                            'approvedProviderId':manifest['approvedProviderId'],
+                            'providerArtifactSha256':manifest['providerArtifactSha256'], 'vector':vector}
+        with opens.inspect_warm_snapshot(endpoint,deadline=deadline) as snapshot:
+            result=dispatch.query_endpoint(endpoint,checkout=project,prompt=prompt,query_vector=None,
+                deadline=deadline,snapshot=snapshot,decision=decision,provider=provider)
+            from context_learning.selection_port import published_candidate_rows
+            from laya_index_host_route import wiki_index_roots
+            rows=result.rows[:15]
+            published_candidate_rows(rows,tuple(sorted(wiki_index_roots(decision['collections']))),decision['scopeId'])
+            limit=min(decision['recallSettings']['topN'],3)
+            selected=rows[:limit]
+            context=render_context(decision,selected,limit=limit,ranking='hybrid_rrf',
+                title_only_paths=result.title_only,source_locations=result.source_locations,
+                allow_mixed_generation=True) if selected else ''
+            return host_payload(host,context)
+
+
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
     """Prove the installed route before opening A-int; unsupported actions fail.
 
@@ -1689,6 +1801,22 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
         try:
             return _serve_selected_once(action, host, decision, payload)
         except Exception as exc:
+            if getattr(exc, '_memvane_reader_attempted', False):
+                raise
+            cwd = payload.get('cwd', decision.get('projectRoot'))
+            import laya_fresh_wiki_origin as fresh
+            if isinstance(cwd, str) and fresh.upgrade_fenced(cwd):
+                from laya_index_host_route import select_route_settled
+                hinted = select_route_settled(cwd, action='recall')
+            else:
+                hinted = {}
+            if (hinted.get('state') == 'reader' and
+                    hinted.get('projectRoot') == _decision_project_root(decision)):
+                try:
+                    return serve_endpoint_recall(host,payload,cwd=cwd)
+                except Exception as reader_exc:
+                    reader_exc._memvane_reader_attempted = True
+                    raise
             retry = _recall_retry_decision(exc, decision, payload, started)
             if retry is None:
                 raise
@@ -1902,7 +2030,28 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if verify_selected_route(decision) != proof:
             _fail('selected_proof_changed')
         import wiki_compile_enqueue
-        outcome = wiki_compile_enqueue.enqueue_payload({**payload, 'engine': host})
+        from resource_deferred import ResourceDeferred
+        try:
+            if 'journalPath' in decision:
+                from laya_index_sync import sync_owner
+                from wiki_selected_laya import _owner_scope
+                with sync_owner(Path(decision['queuePath'])) as owner:
+                    if owner is None:
+                        raise ResourceDeferred('owner_busy')
+                    with _owner_scope((decision, proof), owner):
+                        outcome = wiki_compile_enqueue.enqueue_payload({**payload, 'engine': host})
+            else:
+                outcome = wiki_compile_enqueue.enqueue_payload({**payload, 'engine': host})
+        except ResourceDeferred as exc:
+            if str(exc) != 'owner_busy':
+                raise
+            # The existing discovery grant is a durable scan hint, not proof
+            # of a source or route. Its worker re-proves both before enqueue.
+            import laya_wiki_discovery
+            grant=laya_wiki_discovery.record_grant(decision,'sync',engine=host)
+            _accept_wiki_grant(decision,'sync',grant)
+            _trace_fields(queued=0, deferred='owner_busy')
+            return {}
         if (not isinstance(outcome, dict) or type(outcome.get('queued')) is not int
                 or outcome['queued'] < 0):
             _fail('selected_compile_enqueue_failed')
@@ -2131,6 +2280,17 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
     """
     from laya_install_journal import verify_selected_route_read_only
     if action == 'recall':
+        import laya_journal_reader as reader
+        journal_path = reader._journal(Path(decision['journalPath']))
+        with reader._readonly(journal_path, journal_path.parent) as db:
+            version = reader.journal._schema_version_read(db)
+        if version == 5:
+            try:
+                return serve_endpoint_recall(host,payload,cwd=payload.get('cwd',decision['projectRoot']),
+                                             drift_decision=decision)
+            except Exception as exc:
+                exc._memvane_reader_attempted = True
+                raise
         return _serve_recall(host, decision, payload, proof,
                              verify_selected_route_read_only, degraded=True)
     if action in ('update', 'update-queued'):
@@ -2184,15 +2344,45 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     """
     from laya_install_journal import verify_selected_route_read_only as recheck
     main = decision.get('mainRoute')
-    if not isinstance(main, dict) or main.get('state') != 'candidate':
+    if not isinstance(main, dict) or main.get('state') not in ('candidate','reader'):
         _fail('worktree_route_invalid')
-    proof = recheck(main)
-    if proof.get('readOnlyAllowed') is not True:
-        _fail('worktree_read_only_unapproved')
+    if main.get('state') == 'reader':
+        if action != 'recall':
+            _fail('worktree_route_invalid')
+        proof = None
+    else:
+        proof = recheck(main)
+        if proof.get('readOnlyAllowed') is not True:
+            _fail('worktree_read_only_unapproved')
     _trace_fields(degraded='worktree')
     if action == 'recall':
-        response = _serve_recall(host, main, payload, proof, recheck, degraded=True,
-                                 read_only_label='worktree')
+        version = 5 if main.get('state') == 'reader' else None
+        if version is None:
+            import laya_journal_reader as reader
+            journal_path = reader._journal(Path(main['journalPath']))
+            with reader._readonly(journal_path, journal_path.parent) as db:
+                version = reader.journal._schema_version_read(db)
+        if version == 5:
+            try:
+                main_payload = {**payload, 'cwd': main['projectRoot']}
+                response = serve_endpoint_recall(host,main_payload,cwd=main['projectRoot'],
+                    drift_decision=main if main.get('state') == 'candidate' else None)
+                cwd = payload.get('cwd', decision.get('worktreeProjectRoot'))
+                current = select_route(cwd, action='recall') if isinstance(cwd,str) else {}
+                fenced_after_pin = (main.get('state') == 'candidate' and
+                    current.get('state') == 'worktree' and
+                    all(current.get(key) == decision.get(key) for key in _WORKTREE_IDENTITY) and
+                    isinstance(current.get('mainRoute'),dict) and
+                    current['mainRoute'].get('state') == 'reader' and
+                    current['mainRoute'].get('projectRoot') == main.get('projectRoot'))
+                if current != decision and not fenced_after_pin:
+                    _fail('selected_route_changed')
+            except Exception as exc:
+                exc._memvane_reader_attempted = True
+                raise
+        else:
+            response = _serve_recall(host, main, payload, proof, recheck, degraded=True,
+                                     read_only_label='worktree')
         # Learning belongs to the main checkout's own sessions.
         _set_learning_capture(None)
         key = 'context' if host == 'hermes' else None
@@ -2473,6 +2663,9 @@ def _reselect(cwd, action):
     """
     decision = select_route(cwd, action=action)
     if decision.get('state') == 'blocked':
+        if action == 'recall':
+            from laya_index_host_route import select_route_settled
+            return select_route_settled(cwd, action=action)
         from laya_index_host_route import _settle_moves
         decision = _settle_moves(cwd, action, decision)
     return decision
@@ -2523,8 +2716,47 @@ def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
     return None
 
 
+def _serve_qa_stdin(action, host, fallback_cwd):
+    """Reserved preflight only: no settle, serving, learning or wake path."""
+    from laya_bridge_observer import qa_hook_reply, qa_session_start
+    payload, decision = {}, {}
+    try:
+        raw = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
+        if len(raw) > MAX_HOOK_BYTES:
+            raise ValueError('reader_hosts_pending')
+        payload = json.loads(raw.decode('utf8'))
+        if not isinstance(payload, dict):
+            raise ValueError('reader_hosts_pending')
+        cwd = payload.get('cwd', fallback_cwd)
+        if not isinstance(cwd, str) or not cwd:
+            raise ValueError('reader_hosts_pending')
+        decision = select_route(cwd, action=action)
+    except Exception:
+        payload, decision = {}, {}
+    root = Path(__file__).resolve().parents[1]
+    if action == 'recall':
+        try:
+            answer = qa_hook_reply(payload, host, decision, root)
+        except Exception:
+            answer = None
+        if not isinstance(answer, dict) or answer.get('decision') != 'block':
+            answer = {'decision': 'block', 'reason': 'MemVane bridge preflight'}
+        print(json.dumps(answer, ensure_ascii=True, allow_nan=False, separators=(',', ':')), flush=True)
+        return 0
+    if qa_session_start(payload, host, decision, root):
+        print('{}', flush=True)
+        return 0
+    print('[memvane] reader_hosts_pending; request refused', file=sys.stderr)
+    return 3
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if len(args) == 4 and args[0] == 'serve-qa-stdin':
+        _, action, host, fallback_cwd = args
+        if action not in ('recall', 'update-queued'):
+            return 2
+        return _serve_qa_stdin(action, host, fallback_cwd)
     if len(args) == 4 and args[0] == "serve-stdin":
         _, action, host, fallback_cwd = args
         payload_file = None
@@ -2540,6 +2772,7 @@ def main(argv: list[str] | None = None) -> int:
     except hook_budget.HookDeadlineExceeded:
         pass
     decision = payload = None
+    reader_attempt = False
     started = time.monotonic()
     try:
         if payload_file is None:
@@ -2550,15 +2783,33 @@ def main(argv: list[str] | None = None) -> int:
             selection = select_hook_route(action, payload_file, fallback_cwd)
             with open(payload_file, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
+        cwd = payload.get("cwd", fallback_cwd)
+        if action == 'recall' and selection.get('state') == 'reader':
+            reader_attempt = True
+            response = serve_endpoint_recall(host,payload,cwd=cwd)
+            print(json.dumps(response,ensure_ascii=True,allow_nan=False,separators=(',',':')),flush=True)
+            return 0
         if selection["state"] not in ("candidate", "preview", "worktree"):
             if action == "recall" and selection.get("reason") in _UPGRADE_NOTICES:
                 print(_UPGRADE_NOTICES[selection["reason"]], file=sys.stderr)
                 return 0
             _fail("selected_route_unavailable")
-        cwd = payload.get("cwd", fallback_cwd)
         decision = _reselect(cwd, action)
         if decision != selection and not _relocated(selection, decision):
+            if (action == 'recall' and decision.get('state') == 'reader' and
+                    decision.get('projectRoot') == _decision_project_root(selection)):
+                reader_attempt = True
+                response = serve_endpoint_recall(host,payload,cwd=cwd)
+                print(json.dumps(response,ensure_ascii=True,allow_nan=False,separators=(',',':')),flush=True)
+                return 0
             _fail("selected_route_changed")
+        if (action == 'recall' and host in ('claude', 'codex') and
+                os.environ.get('MEMVANE_BRIDGE_HOOK_ENTRY') == 'hooks/run-hook:recall:' + host):
+            from laya_bridge_readiness import registered_response
+            challenge = registered_response(payload, host, decision, Path(__file__).resolve().parents[1])
+            if challenge is not None:
+                print(json.dumps(host_payload(host, json.dumps(challenge))), flush=True)
+                return 0
         with learning_capture() as capture:
             response = (serve_preview(action, host, decision, payload)
                         if decision['state'] == 'preview' else
@@ -2575,7 +2826,8 @@ def main(argv: list[str] | None = None) -> int:
         # A recall that a bundle upgrade's fence or route switch interrupted
         # answers without context, never with an error.
         notice = (_upgrade_recall_notice(payload, fallback_cwd, code)
-                  if action == "recall" else None)
+                  if action == "recall" and not reader_attempt and
+                  not getattr(exc,'_memvane_reader_attempted',False) else None)
         upgrading = notice is not None
         # Hook stderr is intentionally terse. No source body, path, or secrets.
         print(notice if upgrading else f"[memvane] {code}; request refused",

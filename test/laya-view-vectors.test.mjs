@@ -11,13 +11,14 @@ test('candidate sealed vector coverage stays pinned and hybrid preserves lexical
   const runtime = join(home, 'runtime');
   mkdirSync(runtime, {mode: 0o700});
   try {
-    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-view-vectors-checks.py'], {
+    const selected = (process.env.MEMVANE_TEST_METHOD || '').split(',').filter(Boolean);
+    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-view-vectors-checks.py', ...selected.map(name => `VectorChecks.${name}`)], {
       encoding: 'utf8', timeout: 120000,
       env: {...process.env, HOME: home, TMPDIR: home, XDG_RUNTIME_DIR: runtime,
         QMD_CACHE_DIR: join(home, 'cache'), QMD_SETUP_GUARD_FIXTURE: '1', PYTHONDONTWRITEBYTECODE: '1'},
     });
     assert.equal(result.status, 0, result.stdout + result.stderr + (result.error?.message ?? ''));
-    assert.match(result.stderr, /Ran 19 tests in /);
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 20} tests? in `));
     assert.match(result.stderr, /\nOK\s*$/);
   } finally {
     removeTemp(home);

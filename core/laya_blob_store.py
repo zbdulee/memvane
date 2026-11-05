@@ -141,12 +141,13 @@ def _current_file_node(root, relative):
         os.close(fd)
 
 
-def _observation(project_root, repository, worktree):
+def _observation(project_root, repository, worktree, *, deadline=None):
     import config
     import laya_index_host_route as routes
     import project_dir
     try:
-        capture = checkout.capture_view(str(project_root), repository, worktree)
+        limit = None if deadline is None else min(deadline, time.monotonic()+checkout.CAPTURE_SECONDS)
+        capture = checkout.capture_view(str(project_root), repository, worktree, deadline=limit)
         root = Path(capture['projectRoot'])
         settings = project_dir.settings_path(root)
         if settings is None:
@@ -166,7 +167,9 @@ def _observation(project_root, repository, worktree):
             node = _node(os.fstat(fd))
         finally:
             os.close(fd)
-        if not checkout.capture_matches(capture, repository, worktree):
+        limit = None if deadline is None else min(deadline, time.monotonic()+checkout.CAPTURE_SECONDS)
+        if not checkout.capture_matches(capture, repository, worktree, deadline=limit,
+                                        _raise_timeout=deadline is not None):
             v.fail('checkout_changed')
         again, _, _ = _regular(settings.parent, settings.name, 1024 * 1024)
         if raw != again:
@@ -177,12 +180,16 @@ def _observation(project_root, repository, worktree):
                 'collections': roots, 'capture': capture}
     except BlobStoreError:
         raise
-    except (OSError, ValueError, KeyError, StopIteration, checkout.CheckoutUnavailable):
+    except checkout.CheckoutUnavailable as exc:
+        if deadline is not None and exc.reason == 'checkout_budget_exhausted' and time.monotonic() >= deadline:
+            raise
+        v.fail('wiki_binding_invalid')
+    except (OSError, ValueError, KeyError, StopIteration):
         v.fail('wiki_binding_invalid')
 
 
-def _worktree_row(project_root, repository, worktree):
-    observation = _observation(project_root, repository, worktree)
+def _worktree_row(project_root, repository, worktree, *, deadline=None):
+    observation = _observation(project_root, repository, worktree, deadline=deadline)
     evidence = {k: val for k, val in observation.items() if k != 'capture'}
     evidence['record'] = worktree
     row = {'worktree_id': worktree['worktreeId'],
@@ -314,45 +321,81 @@ class BlobStore:
 
     @classmethod
     def open(cls, path, *, repository, scope_id):
+        return cls._open(path, repository=repository, scope_id=scope_id, reader_only=False)
+
+    @classmethod
+    def _open(cls, path, *, repository, scope_id, reader_only, deadline=None):
         repository = v.repository(repository); v.identifier(scope_id, v.UUID)
         path = _database_path(path)
+        if reader_only and deadline is not None:
+            try:
+                deadline = checkout._deadline(deadline)
+            except checkout.CheckoutUnavailable as exc:
+                v.fail('fts_deadline_exceeded' if exc.reason == 'checkout_budget_exhausted'
+                       else 'fts_query_invalid')
         db = None
         try:
             identity = _db_file(path)
-            ro = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2, isolation_level=None, cached_statements=0)
+            remaining = 2 if deadline is None else deadline - time.monotonic()
+            if remaining <= 0:
+                v.fail('fts_deadline_exceeded')
+            ro = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=min(2,remaining), isolation_level=None, cached_statements=0)
             try:
+                if deadline is not None:
+                    ro.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                 ro.execute('PRAGMA query_only=ON')
                 ro.row_factory = sqlite3.Row
                 ro.execute('BEGIN')
                 initial_meta = _header(ro, repository, scope_id)
+                if reader_only:
+                    ro.rollback()
+                    db, ro = ro, None
             finally:
-                ro.close()
-            db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2, isolation_level=None, cached_statements=0)
+                if ro is not None:
+                    ro.close()
+            if not reader_only:
+                db = sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2, isolation_level=None, cached_statements=0)
             fts_guard = view_fts.ConnectionGuard(db)
             db.row_factory = sqlite3.Row
             db.execute('PRAGMA foreign_keys=ON')
             db.execute('PRAGMA recursive_triggers=ON')
-            db.execute('PRAGMA synchronous=FULL')
+            if not reader_only:
+                db.execute('PRAGMA synchronous=FULL')
             if _db_file(path) != identity:
                 v.fail('candidate_file_changed')
             final_meta = _header(db, repository, scope_id)
             if final_meta != initial_meta:
                 v.fail('candidate_binding_changed')
+            if reader_only and deadline is not None:
+                db.set_progress_handler(None, 0)
+                if time.monotonic() >= deadline:
+                    v.fail('fts_deadline_exceeded')
             obj = object.__new__(cls)
             obj._path, obj._identity, obj._repository, obj._scope = path, identity, repository, scope_id
             obj._db = db
+            obj._reader_only = reader_only
             obj._fts_guard = fts_guard
             obj._incarnation, obj._policy = initial_meta['incarnation'], initial_meta['settings_policy_digest']
             return obj
         except BlobStoreError:
             if db is not None: db.close()
             raise
-        except (OSError, sqlite3.Error, ValueError, TypeError):
+        except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
             if db is not None: db.close()
+            if reader_only and deadline is not None:
+                from laya_view_reader import _sqlite_interrupted
+                if _sqlite_interrupted(exc) and time.monotonic() >= deadline:
+                    v.fail('fts_deadline_exceeded')
             v.fail('candidate_open_failed')
+
+    def _require_write(self):
+        if self._reader_only:
+            v.fail('reader_write_forbidden')
 
     @contextmanager
     def _session(self, *, write=False):
+        if write:
+            self._require_write()
         try:
             if _db_file(self._path) != self._identity:
                 v.fail('candidate_file_changed')
@@ -369,6 +412,7 @@ class BlobStore:
             raise
 
     def register_worktree(self, project_root, worktree):
+        self._require_write()
         row, _ = _worktree_row(project_root, self._repository, worktree)
         with self._session(write=True) as db:
             if row['policy_digest'] != self._policy:
@@ -427,6 +471,7 @@ class BlobStore:
         return body
 
     def ingest_card(self, worktree_id, path):
+        self._require_write()
         v.identifier(worktree_id, v.UUID); v.relative(path)
         if not path.endswith('.md') or (len(path.split('/')) == 1 and path in ('SCHEMA.md', 'index.md', 'log.md')):
             v.fail('wiki_card_path_invalid')
@@ -483,6 +528,7 @@ class BlobStore:
             return {'body': body, 'path': path, 'title': v.markdown_title(body, blob_sha)}
 
     def register_recipe(self, spec):
+        self._require_write()
         spec = v.recipe(spec)
         key, canonical = v.digest('memvane-chunk-recipe-v1', spec), v.canonical(spec)
         with self._session(write=True) as db:
@@ -512,6 +558,7 @@ class BlobStore:
                 'canonical_spec': v.canonical(spec)}
 
     def register_profile(self, spec):
+        self._require_write()
         spec = v.profile(spec)
         key = v.digest('memvane-vector-profile-v1', spec)
         with self._session(write=True) as db:
@@ -548,6 +595,7 @@ class BlobStore:
         return rows
 
     def put_chunk_set(self, blob_sha, recipe_id, rows):
+        self._require_write()
         with self._session(write=True) as db:
             body = self._blob(blob_sha); self._recipe(recipe_id)
             rows = v.chunks(body, rows); key = v.chunk_digest(blob_sha, recipe_id, rows)
@@ -607,6 +655,7 @@ class BlobStore:
         return rows
 
     def put_embedding_set(self, blob_sha, recipe_id, profile_id, rows):
+        self._require_write()
         with self._session(write=True) as db:
             spec = self._profile(profile_id)
             inputs = self._inputs(blob_sha, recipe_id, profile_id)
@@ -644,6 +693,7 @@ class BlobStore:
         return spec
 
     def put_fingerprint(self, spec):
+        self._require_write()
         spec = v.fingerprint(spec, self._repository['gitObjectFormat'])
         key = v.digest('memvane-source-fingerprint-v1', spec)
         with self._session(write=True) as db:
@@ -720,6 +770,7 @@ class BlobStore:
             previous, key = current, current['receipt']['prior_trust']
 
     def put_attestation(self, spec):
+        self._require_write()
         spec = v.attestation(spec)
         key = v.digest('memvane-card-attestation-v1', spec)
         with self._session(write=True) as db:

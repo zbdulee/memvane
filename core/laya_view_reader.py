@@ -31,6 +31,21 @@ def _remaining(deadline):
         v.fail('fts_deadline_exceeded')
 
 
+def _sqlite_interrupted(exc):
+    if isinstance(exc, BlobStoreError):
+        if exc.reason != 'candidate_io_failed':
+            return False
+        # _session wraps SQLite failures while preserving their exception link.
+        exc = exc.__cause__ if exc.__cause__ is not None else exc.__context__
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    code = getattr(exc, 'sqlite_errorcode', None)
+    if code is not None:
+        return code == getattr(sqlite3, 'SQLITE_INTERRUPT', 9)
+    # Python 3.9 does not expose the numeric SQLite error code.
+    return exc.args == ('interrupted',)
+
+
 def _query(query, limit, prefixes, exclusions, seconds):
     if (not isinstance(query, str) or not query or type(limit) is not int
             or not 1 <= limit <= 100 or type(seconds) not in (int, float)):
@@ -62,8 +77,8 @@ class ReaderMixin:
             with self._session() as db:
                 yield db
                 _remaining(deadline)
-        except (BlobStoreError, sqlite3.Error):
-            if time.monotonic() >= deadline:
+        except (BlobStoreError, sqlite3.Error) as exc:
+            if _sqlite_interrupted(exc) and time.monotonic() >= deadline:
                 v.fail('fts_deadline_exceeded')
             raise
         finally:
@@ -111,14 +126,22 @@ class ReaderMixin:
                                         full_vectors=full_vectors)
         return dict(generation), dict(seal), entry['capture'], stage
 
-    def pin_view(self, handle):
+    def pin_view(self, handle, *, deadline=None):
         if self._closed:
             v.fail('view_store_closed')
+        now=time.monotonic()
+        if deadline is None:
+            deadline=now+30
+        elif type(deadline) not in (int,float) or not math.isfinite(deadline):
+            v.fail('fts_query_invalid')
+        else:
+            deadline=min(deadline,now+30)
+        _remaining(deadline)
         issued = self._check(handle)
-        self._observe(issued)
+        self._observe(issued,deadline=deadline)
+        _remaining(deadline)
         if len(self._pins) >= MAX_PINS:
             v.fail('view_pin_limit')
-        deadline = time.monotonic() + 30
         with self._reading(deadline) as db:
             head = self._head(db, handle)
             if head['gen_id'] is None:
@@ -131,7 +154,8 @@ class ReaderMixin:
             # later read re-verifies this seal before using it.
             vector = None if sealed is None else dict(
                 sealed, dimension=self._profile(sealed['profile_id'])['dimension'])
-        self._observe(issued)
+        self._observe(issued,deadline=deadline)
+        _remaining(deadline)
         pin = ViewPin(handle.view_id, head['gen_id'], head['epoch'], self._incarnation, uuid.uuid4().hex)
         # Retain an internal copy rather than a mutable caller-held handle object.
         copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
@@ -174,7 +198,7 @@ class ReaderMixin:
         record = self._pinned(pin)
         _remaining(deadline)
         entry = record['entry']
-        self._observe(entry)
+        self._observe(entry,deadline=deadline)
         _remaining(deadline)
         with self._reading(deadline) as db:
             generation, seal, original, _ = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
@@ -208,7 +232,7 @@ class ReaderMixin:
                 display_title=r['display_title'], score=r['score'], view_id=pin.view_id, gen_id=pin.gen_id,
                 evidence='commitment-only', owner_verified=False, snapshot_state=state) for r in rows]
             _remaining(deadline)
-        self._observe(entry)
+        self._observe(entry,deadline=deadline)
         _remaining(deadline)
         return answer
 

@@ -184,6 +184,13 @@ class Conversion(V3Selected):
         with self.assertRaises(sqlite3.OperationalError):
             with closing(sqlite3.connect(uri, uri=True)) as raw:
                 raw.execute('SELECT count(*) FROM selection').fetchone()
+        import laya_worker_journal
+        with mock.patch.object(laya_worker_journal, '_probe',
+                               side_effect=J.JournalEvidenceError('legacy_probe_unavailable')) as probe:
+            with self.assertRaises(J.JournalEvidenceError):
+                J.verify_selected_route_read_only(decision)
+            probe.assert_called_once()
+        self.assertTrue(side.exists(), 'an unverified recovery must not modify the source journal')
         self.assertEqual(J.verify_selected_route_read_only(decision), before)
         self.assertFalse(side.exists())
         self.assertEqual(J.journal_version(self.journal), 3)

@@ -7,7 +7,7 @@ description: Use when the user asks why MemVane recall was empty or degraded, wh
 
 Summarize the MemVane install event log for the current project.
 
-The log is `<install state root>/events.jsonl` (the selected route's install journal directory, owner-only `0700`), rotated past 4 MiB to `.1` and `.2`. One JSON line per hook action, recall, wiki card write, off-hook wake, index publish, resident service transition and bundle upgrade. Prompts appear only as `sha256` + length unless the owner set `MEMVANE_EVENT_LOG_PROMPTS=1`.
+The log is `<install state root>/events.jsonl` (the selected route's install journal directory, owner-only `0700`), rotated past 4 MiB to `.1` and `.2`. One JSON line per hook action, recall, wiki card write, off-hook wake, index publish, resident service transition and bundle upgrade. Prompts are recorded as `sha256` and length.
 
 ## Workflow
 
@@ -30,6 +30,8 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    ```
 
 3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` is `bundle_drift` (read-only after a plugin update) or `worktree`.
+
+Upgrade lines can include an opaque `operation` and `attempt`; matching start and final lines describe one execution. A bridge failure can include its fixed `stage` and `bridgeHost`.
 
 For `wiki.backfill`, `pending` and `dispatched` are unfinished source revisions;
 `settled` means the compile worker finished a terminal attempt (including no-card
@@ -55,4 +57,4 @@ budget.
 - Read-only: the script opens the state root without following symlinks and writes nothing.
 - A project without a selected route exits 1; point the user to the setup skill.
 - A `WARNING` header line means events could not be written (unsafe state root, foreign or symlinked `events.jsonl`, or a refused-write count); report it instead of reading silence as "nothing happened".
-- Never paste a `prompt.text` field back unless the user asks; it exists only when the owner enabled the debug flag.
+- Older log lines may contain `prompt.text`; do not reproduce it.

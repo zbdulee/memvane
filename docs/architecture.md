@@ -894,9 +894,8 @@ per-user directory.
   beside it, and the process carries its unwritten count as `dropped` on its
   next written line. A state root that fails the path walk is reported by the
   `logs` skill, so an empty log is always explained.
-- **Privacy.** Prompt text and document bodies are not written by default; a
-  prompt is `{sha256, chars}`. `MEMVANE_EVENT_LOG_PROMPTS=1` adds the first
-  1000 prompt characters (and the extractor stderr tail) as `text`. Keys naming
+- **Privacy.** Prompt text and document bodies are not written; a prompt is
+  `{sha256, chars}`, as is the bounded extractor stderr tail. Keys naming
   secrets (token, password, secret, credential, api key, authorization,
   cookie) are dropped. See [privacy.md](privacy.md#event-log).
 
@@ -912,7 +911,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `wake.sync`, `wake.compile` | off-hook dispatcher (`core/laya_runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
 | `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |
 | `resident.adopt`, `resident.drain`, `resident.forced_exit` | `core/laya_resident_service.py` | `adopted`; drain `started` / `stopped`; `exited` (`cold_load_hung`) |
-| `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; journal conversion status |
+| `bundle.upgrade`, `journal.v4` | `core/laya_bundle_upgrade.py` | `started` / `busy_wait` / final status, from→to plugin root name, `fromCommit`, `reason`; start and final share an opaque `operation` and `attempt`. A bridge refusal may include a fixed `stage` and `bridgeHost`; journal conversion status |
 | `state.move` | `core/laya_bundle_upgrade.py` | `state_move_complete` / `busy_wait` / `deferred` / `refused` / `failed`, `reason`, new `stateRoot` |
 | `learning.state`, `learning.prepare`, `learning.warm` | `core/laya_bundle_upgrade.py` | learning state `moved` / `deferred`; selector heal `started` / `selector_ready` / `selector_prepared` / `failed`, `reason`, `rebound`; selector warm-up `selector_warm` / `selector_warm_busy` / `selector_warm_current` / `failed`, `reason`, `ms` |
 | `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |

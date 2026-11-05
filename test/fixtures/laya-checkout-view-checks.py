@@ -11,6 +11,7 @@ for failure and budget cases.
 from __future__ import annotations
 
 import hashlib
+import ast
 import json
 import os
 from pathlib import Path
@@ -635,6 +636,31 @@ class IndexAndOperations(CheckoutCase):
 
 
 class GitEnvironmentAndBudget(CheckoutCase):
+    def test_repeated_observation_reuses_only_the_validated_branch(self):
+        original = view._git
+        checked = []
+        def count(args, *pos, **kwargs):
+            if args[0] == 'check-ref-format':
+                checked.append(args[1])
+            return original(args, *pos, **kwargs)
+        with mock.patch.object(view, '_git', side_effect=count):
+            result = view._stable(str(self.root), time.monotonic() + 20)
+        self.assertEqual(checked, [result['branchKey']])
+
+        checked, observations = [], []
+        def change_branch(args, *pos, **kwargs):
+            if args[0] == 'symbolic-ref':
+                observations.append(True)
+                if len(observations) == 3:
+                    return 0, 'refs/heads/invalid..branch'
+            if args[0] == 'check-ref-format':
+                checked.append(args[1])
+            return original(args, *pos, **kwargs)
+        with mock.patch.object(view, '_git', side_effect=change_branch):
+            with self.assertRaises(view.CheckoutUnavailable):
+                view._stable(str(self.root), time.monotonic() + 20)
+        self.assertIn('refs/heads/invalid..branch', checked)
+
     def test_old_git_is_refused_before_repository_queries(self):
         repository, worktree = self.bind(self.root)
         capture = self.cap(self.root, repository, worktree)
@@ -833,7 +859,28 @@ class NoActivation(CheckoutCase):
                  if path.stem not in candidate_modules
                  and any(name in path.read_text(encoding='utf-8', errors='replace')
                          for name in candidate_modules)]
-        self.assertEqual(users, [], 'live paths must not reach the inactive checkout/blob/view candidate APIs')
+        self.assertEqual(users, ['core/laya_reader_dispatch.py'],
+                         'only the named reader adapter may reach candidate APIs')
+        adapter=ast.parse((REPO/'core/laya_reader_dispatch.py').read_text(encoding='utf8'))
+        allowed={'laya_blob_values':{'profile'},'laya_view_vectors':{'query_values'},
+                 'laya_view_store':{'ViewStore'}}
+        forbidden_calls={'create','open','register_worktree','ingest_card','put_fingerprint',
+            'put_attestation','register_recipe','register_profile','put_chunk_set','put_embedding_set',
+            'fill_view','prepare_generation','publish_generation','claim_content','ensure_content','_session'}
+        for node in ast.walk(adapter):
+            if isinstance(node,ast.ImportFrom):
+                self.assertNotEqual(node.module,'importlib')
+            if isinstance(node,ast.ImportFrom) and node.module in candidate_modules:
+                self.assertIn(node.module,allowed)
+                self.assertLessEqual({item.name for item in node.names},allowed[node.module])
+            if isinstance(node,ast.Import):
+                self.assertFalse(any(item.name in candidate_modules for item in node.names))
+                self.assertFalse(any(item.name=='importlib' for item in node.names))
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute):
+                self.assertNotIn(node.func.attr,forbidden_calls,'adapter must not call candidate writers')
+            if isinstance(node,ast.Call) and isinstance(node.func,ast.Name):
+                self.assertNotIn(node.func.id,{'__import__','eval','exec','getattr','globals','locals','vars'},
+                                 'adapter must not dynamically reach candidate writers')
 
 
 if __name__ == '__main__':

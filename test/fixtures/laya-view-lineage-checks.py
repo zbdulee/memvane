@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import time
 import unittest
 from unittest import mock
 
@@ -41,7 +42,25 @@ class LineageChecks(helpers.helpers.GenerationCase):
         self.refused(store.search,pin,'wiki',1)
         fresh=store.capture_view(old.worktree_id)
         self.assertEqual(fresh.view_id,old.view_id)
-        rows=store.search(store.pin_view(fresh),'wiki',1)
+        if os.environ.get('MEMVANE_TEST_GIT_TIMING'):
+            import laya_checkout_view as checkout
+            timings=[]
+            original=checkout._git
+            def timed(args,*pos,**kw):
+                start=time.monotonic()
+                try:return original(args,*pos,**kw)
+                finally:timings.append((args[0],time.monotonic()-start))
+            pin=store.pin_view(fresh)
+            try:
+                with mock.patch.object(checkout,'_git',side_effect=timed):
+                    rows=store.search(pin,'wiki',1)
+            finally:
+                print(json.dumps({'case':'synthetic-search-git-timing',
+                    'count':len(timings),'seconds':sum(item[1] for item in timings),
+                    'byCommand':{name:sum(item[1] for item in timings if item[0]==name)
+                                 for name in sorted({item[0] for item in timings})}}),flush=True)
+        else:
+            rows=store.search(store.pin_view(fresh),'wiki',1)
         self.assertEqual((rows[0]['gen_id'],rows[0]['snapshot_state']),(gen,'stale_snapshot'))
         self.assertIs(rows[0]['owner_verified'],False)
 
@@ -50,7 +69,7 @@ class LineageChecks(helpers.helpers.GenerationCase):
         independent=self.output(root,'commit-tree',old.head_oid+'^{tree}','-m','independent synthetic lineage')
         self.git(root,'update-ref',old.branch_key,independent,old.head_oid)
         fresh=store.capture_view(old.worktree_id)
-        rows=store.search(store.pin_view(fresh),'wiki',1)
+        rows=store.search(store.pin_view(fresh),'wiki',1,deadline_seconds=10)
         self.assertEqual(fresh.view_id,old.view_id)
         self.assertEqual((rows[0]['gen_id'],rows[0]['snapshot_state']),(gen,'lineage_changed'))
         self.assertIs(rows[0]['owner_verified'],False)

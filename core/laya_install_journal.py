@@ -7,7 +7,8 @@ detect interruption, but are not a cross-file power-loss transaction.
 """
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -15,7 +16,9 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import subprocess
 import sys
+import threading
 
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
@@ -39,10 +42,12 @@ SCHEMA_V3 = 'laya-installer-journal-v3'
 SCHEMA = 'laya-installer-journal-v4'
 DEVELOPMENT_APPROVAL_SCHEMA = 'laya-development-vector-approval-v1'
 APP_ID = 0x4c594a31
+_INITIAL_INTENT = '.reader-initial-v5'
+_initial_preimage = ContextVar('journal_initial_preimage', default=None)
 VERSION = 4
 # Every journal format this code reads and CAS-writes. A v3 journal still
 # carries the retired global-QMD inventory column; it is never re-checked.
-READ_VERSIONS = (3, 4)
+READ_VERSIONS = (3, 4, 5)
 ID = re.compile(r'[0-9a-f]{32}\Z')
 GEN = re.compile(r'g-[0-9a-f]{32}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
@@ -67,7 +72,40 @@ _CREATE = '''CREATE TABLE selection(
   new_write_seen INTEGER NOT NULL,
   provider_attestation_sha TEXT, previous_provider_attestation_sha TEXT,
   provider_file_identity TEXT, previous_provider_file_identity TEXT)'''
-_FORMATS = {3: (SCHEMA_V3, _CREATE_V3), 4: (SCHEMA, _CREATE)}
+SCHEMA_V5 = 'laya-installer-journal-v5'
+_FORMATS = {3: (SCHEMA_V3, _CREATE_V3), 4: (SCHEMA, _CREATE), 5: (SCHEMA_V5, _CREATE)}
+# Kept here so sealed engine subbundles can still identify and read a journal
+# without importing full-plugin installer or host-observer modules.
+_READER_DDL = {
+    'read_endpoints': 'CREATE TABLE read_endpoints(endpoint_id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL, attestation BLOB NOT NULL)',
+    'reader_selection': 'CREATE TABLE reader_selection(id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL CHECK(epoch>=1), preferred_endpoint TEXT NOT NULL, previous_endpoint TEXT, transition_id TEXT NOT NULL)',
+    'reader_transitions': 'CREATE TABLE reader_transitions(transition_id TEXT PRIMARY KEY NOT NULL, epoch INTEGER UNIQUE NOT NULL, preferred_endpoint TEXT NOT NULL, previous_endpoint TEXT)',
+}
+for _table, _key in (('read_endpoints', 'endpoint_id'), ('reader_transitions', 'transition_id')):
+    for _op in ('UPDATE', 'DELETE', 'INSERT'):
+        _name = _table + '_' + _op.lower()
+        _when = (f' WHEN EXISTS(SELECT 1 FROM {_table} WHERE {_key}=NEW.{_key})'
+                 if _op == 'INSERT' else '')
+        _READER_DDL[_name] = (f'CREATE TRIGGER {_name} BEFORE {_op} ON {_table}{_when} '
+                              "BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END")
+_MOVE_READER_DDL = {
+    'move_read_seals': 'CREATE TABLE move_read_seals(move_id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL)',
+    'move_read_seals_update': "CREATE TRIGGER move_read_seals_update BEFORE UPDATE ON move_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'move_read_seals_delete': "CREATE TRIGGER move_read_seals_delete BEFORE DELETE ON move_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'move_read_seals_insert': "CREATE TRIGGER move_read_seals_insert BEFORE INSERT ON move_read_seals WHEN EXISTS(SELECT 1 FROM move_read_seals WHERE move_id=NEW.move_id) BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+}
+_UPGRADE_READER_DDL = {
+    'upgrade_read_seals': 'CREATE TABLE upgrade_read_seals(intent_sha256 TEXT PRIMARY KEY NOT NULL, endpoint_id TEXT NOT NULL, record TEXT NOT NULL)',
+    'upgrade_read_seals_update': "CREATE TRIGGER upgrade_read_seals_update BEFORE UPDATE ON upgrade_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'upgrade_read_seals_delete': "CREATE TRIGGER upgrade_read_seals_delete BEFORE DELETE ON upgrade_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'upgrade_read_seals_insert': "CREATE TRIGGER upgrade_read_seals_insert BEFORE INSERT ON upgrade_read_seals WHEN EXISTS(SELECT 1 FROM upgrade_read_seals WHERE intent_sha256=NEW.intent_sha256) BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+}
+_UPGRADE_SUCCESSOR_DDL = {
+    'upgrade_read_successors': 'CREATE TABLE upgrade_read_successors(epoch INTEGER PRIMARY KEY NOT NULL, intent_sha256 TEXT UNIQUE NOT NULL, endpoint_id TEXT NOT NULL, record TEXT NOT NULL)',
+    'upgrade_read_successors_update': "CREATE TRIGGER upgrade_read_successors_update BEFORE UPDATE ON upgrade_read_successors BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'upgrade_read_successors_delete': "CREATE TRIGGER upgrade_read_successors_delete BEFORE DELETE ON upgrade_read_successors BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+    'upgrade_read_successors_insert': "CREATE TRIGGER upgrade_read_successors_insert BEFORE INSERT ON upgrade_read_successors WHEN EXISTS(SELECT 1 FROM upgrade_read_successors WHERE epoch=NEW.epoch OR intent_sha256=NEW.intent_sha256) BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
+}
 # The withdrawn-selection state. A v3 file stores its old name; readers see
 # only ``restored_origin``.
 RESTORED = 'restored_origin'
@@ -464,7 +502,124 @@ def _schema_version_read(db):
             db.execute("SELECT sql FROM sqlite_master WHERE name='selection'").fetchone()
             != (expected[1],)):
         return None
+    if version == 5:
+        objects = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
+        base = {'selection': _CREATE, **_READER_DDL}
+        if objects not in (base, {**base, **_MOVE_READER_DDL},
+                           {**base, **_UPGRADE_READER_DDL},
+                           {**base, **_MOVE_READER_DDL, **_UPGRADE_READER_DDL},
+                           {**base, **_UPGRADE_READER_DDL, **_UPGRADE_SUCCESSOR_DDL},
+                           {**base, **_MOVE_READER_DDL, **_UPGRADE_READER_DDL,
+                            **_UPGRADE_SUCCESSOR_DDL}):
+            return None
     return version
+
+
+_reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
+_legacy_identity_reads = ContextVar('journal_legacy_identity_reads', default=False)
+_legacy_worker_recovery = ContextVar('journal_legacy_worker_recovery', default=None)
+_writer_identity_reads = ContextVar('journal_writer_identity_reads', default=None)
+_CURRENT_IDENTITY_BINDING = object()
+
+
+class _WriterIdentityReads:
+    """A revocable binding to an issued window, with no injected opener."""
+    def __init__(self, window):
+        self.window = window
+        self.pid, self.thread = os.getpid(), threading.current_thread()
+        self.entered = self.finished = False
+
+    def _creator(self):
+        if self.pid != os.getpid() or self.thread is not threading.current_thread():
+            _fail('writer_identity_owner_changed')
+
+    def check(self):
+        self._creator()
+        if not self.entered or self.finished or _writer_identity_reads.get() is not self:
+            _fail('writer_identity_scope_expired')
+        # These full-plugin dependencies are absent from the sealed engine
+        # subbundle. The default verifier never imports them.
+        import laya_writer_open_plan as plan
+        plan.validate_writer_proof_window(self.window)
+        record = plan._proof_window_record(self.window)
+        return plan._plan_record(record['plan'])[1]
+
+    def __enter__(self):
+        self._creator()
+        if self.entered or self.finished:
+            _fail('writer_identity_scope_reentered')
+        import laya_writer_open_plan as plan
+        plan.validate_writer_proof_window(self.window)
+        self.binding_token = _writer_identity_reads.set(self)
+        self.recovery_token = _reader_no_recovery.set(True)
+        self.entered = True
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self._creator()
+        if self.finished or not self.entered:
+            return False
+        if _writer_identity_reads.get() is not self:
+            _fail('writer_identity_scope_exit_order')
+        # A token from another copied Context cannot reset this binding.
+        # Revoke only after the creator's original Context resets both tokens.
+        _writer_identity_reads.reset(self.binding_token)
+        _reader_no_recovery.reset(self.recovery_token)
+        self.finished = True
+        return False
+
+
+def writer_identity_reads(window):
+    """Route journal content identity reads through an issued proof window."""
+    return _WriterIdentityReads(window)
+
+
+def _identity_connection(path, *, binding=_CURRENT_IDENTITY_BINDING):
+    if binding is _CURRENT_IDENTITY_BINDING:
+        binding = _writer_identity_reads.get()
+    if binding is None:
+        from laya_index_a import _query_only_uri
+        db = sqlite3.connect(_query_only_uri(path.resolve(strict=True)),
+                             uri=True, timeout=2)
+        try:
+            db.execute('PRAGMA query_only=ON')
+        except BaseException:
+            db.close()
+            raise
+        return closing(db)
+    snapshot = binding.check()
+    for role in ('base', 'queue'):
+        if str(path) == snapshot['components'][role]['path']:
+            from laya_writer_proof_reader import proof_reader
+            return proof_reader(binding.window, role)
+    _fail('writer_identity_path_changed')
+
+
+def _finish_identity_reads(binding, row):
+    if binding is not None:
+        snapshot = binding.check()
+        if _canon(row) != _canon(snapshot['bundle']):
+            _fail('writer_identity_journal_changed')
+
+
+@contextmanager
+def read_only_journals():
+    """Keep bridge classification and proof reads out of legacy recovery."""
+    token = _reader_no_recovery.set(True)
+    try:
+        yield
+    finally:
+        _reader_no_recovery.reset(token)
+
+
+@contextmanager
+def legacy_identity_reads():
+    """Require pre-v5 evidence in the actual fullproof journal snapshot."""
+    token = _legacy_identity_reads.set(True)
+    try:
+        yield
+    finally:
+        _legacy_identity_reads.reset(token)
 
 
 def _recover_interrupted_transaction(path):
@@ -477,30 +632,122 @@ def _recover_interrupted_transaction(path):
     and is left alone.
     """
     side = path.with_name(path.name + '-journal')
+    if os.path.lexists(path.parent / _INITIAL_INTENT):
+        return False
     if not side.exists() or side.is_symlink():
         return False
+    # Identify the recovered legacy schema with SQLite on the existing bounded
+    # private copy, before permitting recovery of the original journal.
+    from laya_worker_journal import _probe
+    recovered = _probe(path)
+    if recovered['row']['_version'] not in (3, 4):
+        return False
+    _probe(path, receipt=recovered['receipt'])
     with closing(sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2,
                                  isolation_level=None)) as db:
         db.execute('PRAGMA application_id').fetchone()
     return True
 
 
+def _check_rollback_file(path):
+    """Check rollback file ownership and identity before SQLite opens it."""
+    side = Path(str(path)+'-journal')
+    for attempt in range(2):
+        try:
+            fd = os.open(side, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise JournalEvidenceError('journal_unavailable') from exc
+        try:
+            info = os.fstat(fd)
+            if info.st_nlink == 0:
+                raise FileNotFoundError('journal_unlinked')
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+                _fail('unsafe_journal_file')
+            after = os.fstat(fd)
+            if after.st_nlink == 0:
+                raise FileNotFoundError('journal_unlinked')
+            named = side.lstat()
+            for current in (after, named):
+                if current.st_nlink == 0:
+                    raise FileNotFoundError('journal_unlinked')
+                if (not stat.S_ISREG(current.st_mode) or current.st_uid != os.getuid()
+                        or current.st_nlink != 1 or stat.S_IMODE(current.st_mode) & 0o077):
+                    _fail('unsafe_journal_file')
+            if (not os.path.samestat(info, named) or
+                    (info.st_size, info.st_mtime_ns, info.st_ctime_ns) !=
+                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns) or
+                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns) !=
+                    (named.st_size, named.st_mtime_ns, named.st_ctime_ns)):
+                _fail('journal_changed')
+            return
+        except FileNotFoundError:
+            # A successful legacy COMMIT removes its journal. Recheck the
+            # name once; sustained churn remains a typed proof failure.
+            if attempt:
+                _fail('journal_changed')
+        except OSError as exc:
+            raise JournalEvidenceError('journal_unavailable') from exc
+        finally:
+            os.close(fd)
+
+
 def _open(path, *, write):
+    if write and _reader_no_recovery.get():
+        _fail('reader_journal_read_only')
     path = _private_parent(path)
+    _check_rollback_file(path)
+    preimage = _initial_preimage.get()
+    if preimage is not None:
+        if write or path != preimage.logical_path:
+            _fail('initial_recovery_read_only')
+        return path, preimage.open_read()
     try:
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
                 info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
             _fail('unsafe_journal_file')
+        if write and os.path.lexists(str(path) + '-journal'):
+            try:
+                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as check:
+                    check.execute('PRAGMA query_only=ON')
+                    version = _schema_version(check)
+            except sqlite3.OperationalError:
+                if os.path.lexists(path.parent / _INITIAL_INTENT):
+                    _fail('journal_unavailable')
+                from laya_worker_journal import _probe
+                try:
+                    recovered = _probe(path)
+                    _probe(path, receipt=recovered['receipt'])
+                    version = recovered['row']['_version']
+                except (ValueError, OSError, KeyError, subprocess.SubprocessError):
+                    _fail('journal_unavailable')
+            if version not in (3, 4):
+                _fail('journal_unavailable')
         uri = path.as_uri() + ('?mode=rw' if write else '?mode=ro')
         db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
         try:
+            if not write:
+                db.execute('PRAGMA query_only=ON')
             version = _schema_version(db)
         except sqlite3.OperationalError:
             db.close()
-            if write or not _recover_interrupted_transaction(path):
+            if write:
+                raise
+            if _reader_no_recovery.get():
+                scope = _legacy_worker_recovery.get()
+                if scope is None:
+                    raise
+                from laya_worker_journal import recover_legacy
+                recovered = recover_legacy(scope, path)
+            else:
+                recovered = _recover_interrupted_transaction(path)
+            if not recovered:
                 raise
             db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
+            db.execute('PRAGMA query_only=ON')
             version = _schema_version(db)
         if version is None:
             db.close()
@@ -511,7 +758,7 @@ def _open(path, *, write):
 
 
 def journal_version(journal_path):
-    """Read-only journal format (3 or 4); refuses an unknown file."""
+    """Read the supported journal format and refuse an unknown file."""
     path, db = _open(journal_path, write=False)
     with closing(db):
         db.execute('BEGIN')
@@ -535,12 +782,12 @@ def _row(db):
     record = db.execute('SELECT * FROM selection WHERE id=1').fetchone()
     if record is None or db.execute('SELECT count(*) FROM selection').fetchone()[0] != 1:
         _fail('journal_selection_missing')
-    fields = (_FIELDS_V4 if version == 4 else
+    fields = (_FIELDS_V4 if version >= 4 else
               _FIELDS_V4[:14] + ('user_qmd_inventory',) + _FIELDS_V4[14:])
     if len(record) != len(fields):
         _fail('journal_schema_unknown')
     row = dict(zip(fields, record))
-    stored_restored = RESTORED if version == 4 else _V3_RESTORED
+    stored_restored = RESTORED if version >= 4 else _V3_RESTORED
     if (row['schema'] != _FORMATS[version][0] or type(row['epoch']) is not int or
             row['epoch'] < 1 or
             row['state'] not in ('candidate_ready', 'pending', 'active', 'restored_old',
@@ -679,30 +926,53 @@ def inspect_journal(journal_path):
                                            if row['provider_file_identity'] is not None else None)}
 
 
-def _cas(path, expected_epoch, mutate):
+def _mutate_row(db, path, row, expected_epoch, mutate, *, after=None):
+    if type(expected_epoch) is not int or row['epoch'] != expected_epoch:
+        _fail('stale_journal_cas')
+    values = mutate(path, row)
+    if values is None:
+        return False
+    if values.get('state') == RESTORED and row['_version'] == 3:
+        values = {**values, 'state': _V3_RESTORED}
+    fields = ','.join(f'{key}=?' for key in values)
+    args = (*values.values(), expected_epoch + 1, expected_epoch)
+    if db.execute(f'UPDATE selection SET {fields},epoch=? WHERE id=1 AND epoch=?', args).rowcount != 1:
+        _fail('stale_journal_cas')
+    if after is not None:
+        after(db, path, row, values)
+    return True
+
+
+def _cas(path, expected_epoch, mutate, *, after_v5=None):
+    path = _private_parent(path)
+
+    def v5():
+        from laya_journal_reader import mutate_image
+        mutate_image(path, lambda image: _mutate_row(
+            image, path, _row(image), expected_epoch, mutate, after=after_v5))
+        return inspect_journal(path)
+
+    if journal_version(path) == 5:
+        return v5()
     path, db = _open(path, write=True)
     try:
         db.execute('PRAGMA synchronous=FULL')
         db.execute('BEGIN IMMEDIATE')
         row = _row(db)
-        if type(expected_epoch) is not int or row['epoch'] != expected_epoch:
-            _fail('stale_journal_cas')
-        values = mutate(path, row)
-        if values is not None:
-            if values.get('state') == RESTORED and row['_version'] == 3:
-                values = {**values, 'state': _V3_RESTORED}
-            fields = ','.join(f'{key}=?' for key in values)
-            args = (*values.values(), expected_epoch + 1, expected_epoch)
-            changed = db.execute(f'UPDATE selection SET {fields},epoch=? WHERE id=1 AND epoch=?',
-                                 args)
-            if changed.rowcount != 1:
-                _fail('stale_journal_cas')
-        db.commit()
+        if row['_version'] == 5:
+            # Conversion committed after the first observation. Release the
+            # old writer transaction before acquiring the image writer lock.
+            db.rollback()
+        else:
+            _mutate_row(db, path, row, expected_epoch, mutate)
+            db.commit()
     except BaseException:
         db.rollback()
         raise
     finally:
         db.close()
+    if row['_version'] == 5:
+        return v5()
     return inspect_journal(path)
 
 
@@ -730,7 +1000,11 @@ def convert_to_v4(journal_path):
         db.execute('PRAGMA synchronous=FULL')
         db.execute('BEGIN IMMEDIATE')
         before = _row(db)
-        if before.pop('_version') == 4:
+        old_version = before.pop('_version')
+        if old_version == 5:
+            db.rollback()
+            return {'status': 'journal_v5_current', 'journalPath': str(path), 'epoch': before['epoch']}
+        if old_version == 4:
             db.commit()
             return {'status': 'journal_v4_current', 'journalPath': str(path),
                     'epoch': before['epoch']}
@@ -964,7 +1238,12 @@ def cas_activate(journal_path, expected_epoch, observed_route_raw):
                 'pending_route_sha': None,
                 'provider_attestation_sha': att_sha,
                 'provider_file_identity': (_canon(file_identity) if file_identity is not None else None)}
-    return _cas(journal_path, expected_epoch, activate)
+    def seal_successor(db, path, before, values):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_seals'").fetchone():
+            return
+        from laya_active_upgrade import _commit_reader_successor
+        _commit_reader_successor(db, path, before, values)
+    return _cas(journal_path, expected_epoch, activate, after_v5=seal_successor)
 
 
 RELOCATED_ROUTE_FIELDS = frozenset(('journalPath', 'dbPath', 'queuePath'))
@@ -1192,6 +1471,10 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
     ``read_only`` skips only the checks that read the bound plugin bundle or
     prove the executing bundle; it never authorizes a write.
     """
+    binding = _writer_identity_reads.get()
+    legacy_only = _legacy_identity_reads.get()
+    if binding is not None:
+        binding.check()
     if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
             any(type(decision.get(key)) is not str for key in
                 ('journalPath', 'pluginRoot', 'projectRoot', 'dbPath',
@@ -1216,6 +1499,8 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
         db.execute('BEGIN')
         try:
             row = _row(db)
+            if legacy_only and row['_version'] == 5:
+                _fail('writer_plan_v5_required')
             if (row['state'] not in ('active', 'restored_old') or
                     row['selected'] is None or row['selected_route_sha'] not in allowed or
                     _project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
@@ -1248,8 +1533,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                                     *((_executing_root(),) if read_only else ())}:
                     if canonical_path == plugin_root or plugin_root in canonical_path.parents:
                         _fail('index_path_overlaps_plugin')
-            with closing(sqlite3.connect(db_path.resolve(strict=True).as_uri() + '?mode=ro',
-                                         uri=True, timeout=2)) as index_db:
+            with _identity_connection(db_path, binding=binding) as index_db:
                 index_db.execute('BEGIN')
                 LayaIndexA._check_header(index_db)
                 incarnation = index_db.execute(
@@ -1257,8 +1541,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                 if incarnation != route['dbIncarnation']:
                     _fail('index_incarnation_mismatch')
                 index_db.commit()
-            with closing(sqlite3.connect(queue_path.resolve(strict=True).as_uri() + '?mode=ro',
-                                         uri=True, timeout=2)) as queue_db:
+            with _identity_connection(queue_path, binding=binding) as queue_db:
                 queue_db.execute('BEGIN')
                 if ClaimQueue._check_database(queue_db) != incarnation:
                     _fail('queue_incarnation_mismatch')
@@ -1273,7 +1556,9 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
             raise
     full = row['selected']['bundleKind'] == 'full_plugin'
     if read_only:
-        return _read_only_proof(path, row, route, proof, full)
+        result = _read_only_proof(path, row, route, proof, full)
+        _finish_identity_reads(binding, row)
+        return result
     # The UID queue may be held by another installed version. Its dispatcher
     # needs the sealed target identity before it can enter that version's code;
     # a host/query/worker still requires the executing-root proof below.
@@ -1297,6 +1582,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
         # and native closure bounded without reopening hundreds of MB.
         provider_manifest = attestation['providerManifest']
     approved = full and sealed_sha is not None and provider_manifest is not None
+    _finish_identity_reads(binding, row)
     return {'status': ('installer_active_full_plugin_verified' if approved else
                        'production_attestation_unapproved' if sealed_sha is not None else
                        'production_attestation_unbound' if full else
@@ -1480,6 +1766,14 @@ def verify_notification_target(decision):
 def verify_worker_attestation(decision):
     """Rehash model, worker and native closure once before an owned worker starts."""
     selected = verify_selected_route(decision)
+    manifest = _worker_attestation_manifest(selected)
+    if verify_selected_route(decision) != selected:
+        _fail('worker_selection_changed')
+    return manifest
+
+
+def _worker_attestation_manifest(selected):
+    """Check closure against a proof; caller must reprove before accepting it."""
     if selected.get('productRouteAllowed') is not True:
         _fail('worker_provider_unapproved')
     path, db = _open(selected['journalPath'], write=False)
@@ -1507,8 +1801,6 @@ def verify_worker_attestation(decision):
     except BundleEvidenceError as exc:
         raise JournalEvidenceError('worker_attestation_invalid') from exc
     _verify_runtime_files(record)
-    if verify_selected_route(decision) != selected:
-        _fail('worker_selection_changed')
     return manifest
 
 

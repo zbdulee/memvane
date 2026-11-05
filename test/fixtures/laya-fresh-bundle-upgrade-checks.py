@@ -319,8 +319,11 @@ class UpgradeCase(FreshBoundCase):
         self.addCleanup(REEXTRACTED.clear)
         # The upgrade backup snapshots the journal file; its CAS is synthetic.
         import sqlite3
+        import laya_install_journal as journal
         with sqlite3.connect(self.journal_path) as db:
-            db.execute('CREATE TABLE selection(id INTEGER PRIMARY KEY)')
+            db.execute('PRAGMA application_id=%d' % journal.APP_ID)
+            db.execute('PRAGMA user_version=4')
+            db.execute(journal._FORMATS[4][1])
         self.journal_path.chmod(0o600)
         self.write_attestation(self.old, manifest(self.old_root))
         self.review = {'proposalSha256': 'e' * 64,
@@ -339,6 +342,9 @@ class UpgradeCase(FreshBoundCase):
         enter(mock.patch.object(product, 'review_local_provider',
                                 side_effect=lambda **_kw: self.review))
         if module is active:
+            # This fixture's journal CAS and on-disk file are synthetic v4.
+            enter(mock.patch('laya_install_journal.journal_version', return_value=4))
+            enter(mock.patch.object(active, '_prepare_v4_bridge'))
             enter(mock.patch.object(active, 'review_local_provider',
                                     side_effect=lambda **_kw: self.review))
             enter(mock.patch.object(active, 'cas_stage_update', self.fj.stage))
@@ -468,6 +474,21 @@ class BoundUpgradeTests(UpgradeCase):
 
 
 class ActiveUpgradeTests(UpgradeCase):
+    def test_intent_resume_seals_reader_before_fencing(self):
+        self.bound()
+        self.activate()
+        calls = []
+        def seal(*_args):
+            calls.append(self.row()['phase'])
+            if len(calls) == 1:
+                raise Kill()
+        with mock.patch.object(active, '_seal_reader_intent', side_effect=seal):
+            with self.assertRaises(Kill):
+                self.run_upgrade(active)
+            self.assertEqual(self.row()['phase'], 'active')
+            self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')
+        self.assertEqual(calls, ['active', 'active'])
+
     def test_selected_build_moves_to_new_bundle_without_index_change(self):
         self.bound()
         self.activate()

@@ -48,7 +48,7 @@ python3 -B "$ROOT/core/setup_entry.py" plan-legacy-cleanup --include-user-qmd-da
 python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cleanup --include-user-qmd-data  # owner 1회 정리 실행
 ```
 
-일반 모의·회귀·통합 검사(`--kind test`, CI 포함)는 학습용 OS 압력·CPU/RSS·headroom·swap·load 제한을 적용하지 않는다. 전역 단독 실행, 파일 병렬도 1, 유한 timeout, 프로세스 수와 소유 식별·정리는 유지한다. 실제 모델을 로딩/학습하는 개발 검사는 `--kind model-test`로 명시해 기존 자원 제한을 유지한다. 명시적 calibration envelope도 항상 자원 검사를 유지한다. 제품 런타임의 학습 admission은 이 구분과 무관하게 그대로 적용된다.
+일반 모의·회귀·통합 검사(`--kind test`, CI 포함), 원격 리뷰(`--kind review`), 해시·스테이징(`--kind hash`)은 학습용 OS 압력·CPU/RSS·headroom·swap·load 제한을 적용하지 않는다. 전역 단독 실행, 파일 병렬도 1, 유한 timeout, 프로세스 수와 소유 식별·정리는 유지한다. 실제 모델을 로딩/학습하는 개발 검사(`--kind model-test`)와 백업(`--kind backup`)은 자원 제한을 유지한다. 명시적 calibration envelope도 항상 자원 검사를 유지한다. 제품 런타임의 학습 admission은 이 구분과 무관하게 그대로 적용된다.
 
 테스트/설치를 격리 검증할 때 쓰는 env 가드 (테스트 코드가 이걸로 부작용을 막는다):
 - `QMD_SETUP_GUARD_FIXTURE=1` — `npm test`가 켜는 테스트 전용 스위치(`QMD_SANDBOX`와 같은 자리에서 읽힌다). 켜져 있으면 runtime wake를 시작하지 않고, 실제 계정 홈의 Laya embed runtime·legacy cleanup 대상을 읽거나 쓰지 않는다. 운영 hook에서는 설정하지 말 것.
@@ -171,4 +171,4 @@ Claude·Codex는 marketplace plugin install이 제품 경로다. 제품용 `inst
 
 ## 운영상 함정 (디버깅 시 참고)
 
-- **빈 출력은 정상 동작일 수 있다.** 미온보딩 프로젝트(`legacy` route)·sandbox·결과 0건은 모두 의도적으로 무출력 종료한다. 빈 출력 ≠ 버그. 선택된 route의 모든 hook 호출은 설치 이벤트 로그 `<install state root>/events.jsonl`에 한 줄을 남긴다(`core/event_log.py`, `laya_host_response._event_scope`). recall 줄은 `outcome`(`served`/`empty`/`refused`), 최종 `reason`(`selected`/`no_results_after_filter`/`no_candidates`/refusal code), 경로상의 진단 `notes`(`laya_vector_*`·`laya_selector_*`·`laya_recall_proof_retry`·`laya_wiki_rows_filtered` 등), 실제 주입한 카드 `cards[{path, sha}]`, `selection_fallback`·`vector_fallback`·`degraded`를 담고, 프롬프트는 `{sha256, chars}`로만 남긴다(`MEMVANE_EVENT_LOG_PROMPTS=1`일 때만 앞 1000자). 설치 단위 파일이라 `install`·`session` 필드로 귀속된다. 쓰기는 best-effort라 hook을 실패시키지 않고 stdout(모델 컨텍스트)엔 나가지 않는다. 읽기는 `memvane:logs` 스킬(`skills/logs/scripts/logs.py`)로 한다.
+- **빈 출력은 정상 동작일 수 있다.** 미온보딩 프로젝트(`legacy` route)·sandbox·결과 0건은 모두 의도적으로 무출력 종료한다. 빈 출력 ≠ 버그. 선택된 route의 모든 hook 호출은 설치 이벤트 로그 `<install state root>/events.jsonl`에 한 줄을 남긴다(`core/event_log.py`, `laya_host_response._event_scope`). recall 줄은 `outcome`(`served`/`empty`/`refused`), 최종 `reason`(`selected`/`no_results_after_filter`/`no_candidates`/refusal code), 경로상의 진단 `notes`(`laya_vector_*`·`laya_selector_*`·`laya_recall_proof_retry`·`laya_wiki_rows_filtered` 등), 실제 주입한 카드 `cards[{path, sha}]`, `selection_fallback`·`vector_fallback`·`degraded`를 담고, 프롬프트는 `{sha256, chars}`로만 남긴다. 설치 단위 파일이라 `install`·`session` 필드로 귀속된다. 쓰기는 best-effort라 hook을 실패시키지 않고 stdout(모델 컨텍스트)엔 나가지 않는다. 읽기는 `memvane:logs` 스킬(`skills/logs/scripts/logs.py`)로 한다.

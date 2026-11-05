@@ -13,10 +13,11 @@ from __future__ import annotations
 import os
 import hashlib
 import json
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 import re
 import sqlite3
+import time
 import uuid
 
 from laya_index_a import IndexContractError
@@ -111,6 +112,7 @@ class ClaimQueue:
     def __init__(self, path, db):
         self.path = Path(path)
         self.db = db
+        self._connection_owner = None
 
     @staticmethod
     def _path(path):
@@ -156,11 +158,21 @@ class ClaimQueue:
             raise
 
     @classmethod
-    def open(cls, path):
+    def open(cls, path, *, coordination=None):
         path = cls._path(path)
         if not path.is_file():
             raise UnknownDatabase('queue_missing')
         uri = path.resolve(strict=True).as_uri()
+        if coordination is not None:
+            from laya_reader_windows import open_owned
+            result = cls(path, None)
+            try:
+                result._connection_owner = open_owned(coordination, path=path,
+                    validate=cls._validate_connection, initialize=result._initialize_connection,
+                    deadline=time.monotonic() + 2)
+                return result
+            except sqlite3.Error as exc:
+                raise UnknownDatabase('queue_unreadable') from exc
         try:
             # Classify a single read snapshot before requesting RW/WAL access.
             with closing(sqlite3.connect(uri + '?mode=ro', uri=True, timeout=2,
@@ -251,11 +263,78 @@ class ClaimQueue:
             self.db.rollback()
             raise
 
-    def close(self):
-        self.db.close()
+    @classmethod
+    def _validate_connection(cls, db):
+        db.execute('BEGIN')
+        try:
+            cls._check_database(db)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    def _initialize_connection(self, db):
+        self.db = db
+        self._validate_connection(db)
+        db.execute('PRAGMA foreign_keys=ON')
+        if str(db.execute('PRAGMA journal_mode=WAL').fetchone()[0]).lower() != 'wal':
+            raise UnknownDatabase('queue_wal_unavailable')
+        db.execute('PRAGMA synchronous=FULL')
+
+    def close(self, *, deadline=None):
+        if self._connection_owner is None:
+            self.db.close()
+        else:
+            from laya_reader_windows import close_owned
+            close_owned(self._connection_owner, deadline=deadline)
 
     def _begin(self):
         self.db.execute('BEGIN IMMEDIATE')
+
+    @contextmanager
+    def _write_transaction(self):
+        if self._connection_owner is None:
+            self._begin()
+            try:
+                yield self.db
+                self.db.commit()
+            except BaseException:
+                self.db.rollback()
+                raise
+        else:
+            from laya_reader_windows import write_transaction
+            with write_transaction(self._connection_owner, visible=False,
+                                   deadline=time.monotonic() + 2) as transaction:
+                yield transaction
+
+    def _ack_base_bound(self, index):
+        base_owner = getattr(index, '_connection_owner', None)
+        if self._connection_owner is None and base_owner is None:
+            return True  # unchanged common-engine proof/rollback contract
+        if self._connection_owner is None or base_owner is None:
+            return False
+        from laya_index_a import LayaIndexA
+        import laya_reader_windows as windows
+        if type(index) is not LayaIndexA or type(base_owner) is not windows._OwnedConnection:
+            return False
+        try:
+            queue_owner = self._connection_owner
+            if (queue_owner.component.role != 'queue' or base_owner.component.role != 'base'
+                    or queue_owner.component.install_id != base_owner.component.install_id):
+                return False
+            queue_binding = windows._component(queue_owner.component)
+            base_binding = windows._component(base_owner.component)
+            queue_record = windows._owner(queue_binding[1])[0].record
+            base_record = windows._owner(base_binding[1])[0].record
+            if (queue_binding[2] is not base_binding[2]
+                    or any(queue_record[key] != base_record[key]
+                           for key in ('scope', 'incarnation', 'project', 'state', 'db_path'))):
+                return False
+            windows.connection_binding(queue_owner, self.db)
+            windows.connection_binding(base_owner, index.db)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
 
     def _row(self, claim):
         row = self.db.execute('''SELECT claim,scope,gen,source_manifest,claim_digest,
@@ -292,8 +371,7 @@ class ClaimQueue:
                 or (base_gen is not None and
                     (not isinstance(base_gen, str) or not base_gen))):
             raise ValueError('invalid_claim_job')
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             epoch = self.db.execute(
                 'SELECT COALESCE(MAX(claim_epoch),0)+1 FROM jobs WHERE scope=?',
                 (scope,)).fetchone()[0]
@@ -306,47 +384,33 @@ class ClaimQueue:
             self.db.execute('''INSERT INTO jobs
                 (claim,scope,gen,source_manifest,claim_digest,claim_epoch,base_gen,state)
                 VALUES(?,?,?,?,?,?,?,'pending')''', values)
-            self.db.commit()
             return job
-        except BaseException:
-            self.db.rollback()
-            raise
 
     def enqueue(self, job):
         values = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(values[0])
             if current is not None:
                 if _identity(current) != values:
                     raise ClaimConflict('claim_identity_changed')
-                self.db.rollback()
+                transaction.rollback()
                 return current['state']
             self.db.execute('''INSERT INTO jobs
                 (claim,scope,gen,source_manifest,claim_digest,claim_epoch,base_gen,state)
                 VALUES(?,?,?,?,?,?,?,'pending')''', values)
-            self.db.commit()
             return 'pending'
-        except BaseException:
-            self.db.rollback()
-            raise
 
     def lease(self, claim, *, recover=False):
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             row = self._row(claim)
             if row is None or not (row['state'] == 'pending' or
                                    (row['state'] == 'leased' and recover is True)):
-                self.db.rollback()
+                transaction.rollback()
                 return None
             token = uuid.uuid4().hex
             self.db.execute("UPDATE jobs SET state='leased',lease_token=? WHERE claim=?",
                             (token, claim))
-            self.db.commit()
             return {**row, 'state': 'leased', 'lease_token': token}
-        except BaseException:
-            self.db.rollback()
-            raise
 
     @staticmethod
     def decide(index, job):
@@ -360,60 +424,80 @@ class ClaimQueue:
         return ACK if receipt == (scope, gen, manifest, digest, epoch) else DEFER
 
     def conditional_ack(self, job, token, index):
+        if self._connection_owner is None:
+            return self._conditional_ack(job, token, index)
+        from laya_reader_windows import ReaderWindowBusy
+        try:
+            return self._conditional_ack(job, token, index)
+        except ReaderWindowBusy as exc:
+            if str(exc) == 'reader_ack_base_changed':
+                owner = self._connection_owner
+                if (owner.transaction is None and owner.db is not None
+                        and not owner.db.in_transaction):
+                    return DEFER
+                # A normal verdict must not hide a failed rollback and its
+                # retained SQL/locks. The creator must observe and drain it.
+            raise
+
+    def _require_ack_base(self, index):
+        if not self._ack_base_bound(index):
+            from laya_reader_windows import ReaderWindowBusy
+            raise ReaderWindowBusy('reader_ack_base_changed')
+
+    def _conditional_ack(self, job, token, index):
+        if not self._ack_base_bound(index):
+            return DEFER
         verdict = self.decide(index, job)
+        if not self._ack_base_bound(index):
+            return DEFER
         if verdict != ACK:
             return verdict
         identity = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(identity[0])
             if (current is None or _identity(current) != identity
                     or current['lease_token'] != token
                     or current['state'] not in ('leased', 'acked')):
-                self.db.rollback()
+                transaction.rollback()
                 return LEASE_LOST
+            if not self._ack_base_bound(index):
+                transaction.rollback()
+                return DEFER
             if current['state'] == 'leased':
                 self.db.execute("UPDATE jobs SET state='acked',outcome='published' WHERE claim=?",
                                 (identity[0],))
-            self.db.commit()
-            return ACK
-        except BaseException:
-            self.db.rollback()
-            raise
+            if not self._ack_base_bound(index):
+                transaction.rollback()
+                return DEFER
+            if self._connection_owner is not None:
+                transaction.commit(validate=lambda: self._require_ack_base(index))
+        if not self._ack_base_bound(index):
+            return DEFER
+        return ACK
 
     def mark_replan(self, job, token, reason):
         if reason not in ('head_moved', 'index_stale'):
             raise ValueError('invalid_replan_reason')
         identity = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(identity[0])
             if (current is None or _identity(current) != identity
                     or current['lease_token'] != token or current['state'] != 'leased'):
-                self.db.rollback()
+                transaction.rollback()
                 return False
             self.db.execute("UPDATE jobs SET state='replan',outcome=? WHERE claim=?",
                             (reason, identity[0]))
-            self.db.commit()
             return True
-        except BaseException:
-            self.db.rollback()
-            raise
 
     def release_for_retry(self, job, token):
         """Only the current lease may return a claim to pending after refusal."""
         identity = _identity(job)
-        self._begin()
-        try:
+        with self._write_transaction() as transaction:
             current = self._row(identity[0])
             if (current is None or _identity(current) != identity
                     or current['lease_token'] != token or current['state'] != 'leased'):
-                self.db.rollback()
+                transaction.rollback()
                 return False
             self.db.execute("UPDATE jobs SET state='pending',lease_token=NULL WHERE claim=?",
                             (identity[0],))
-            self.db.commit()
             return True
-        except BaseException:
-            self.db.rollback()
-            raise

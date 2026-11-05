@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import sqlite3
 import stat
 import sys
 import unicodedata
@@ -691,13 +692,16 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
             return None
         main_decision = _select_route(str(main_project), action=action)
         if main_decision.get("state") == "blocked":
-            # The main checkout's state or project folder may be moving: the
-            # worktree waits the same window as the main checkout's own hooks.
-            main_decision = _settle_moves(str(main_project), action, main_decision)
-        if (main_decision.get("state") != "candidate"
-                or main_decision.get("projectRoot") != str(main_project)):
-            return None
+            # A v5 fence is a read hint before the legacy settle/wake path.
+            main_decision = (select_route_settled(str(main_project), action=action)
+                             if action == 'recall' else
+                             _settle_moves(str(main_project), action, main_decision))
         if _settings_identity(project) != _settings_identity(main_project):
+            return None
+        if main_decision.get('state') == 'blocked':
+            return _decision('blocked', 'linked_worktree_main_blocked')
+        if (main_decision.get("state") not in ('candidate','reader')
+                or main_decision.get("projectRoot") != str(main_project)):
             return None
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
         return None
@@ -781,6 +785,24 @@ def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
     decision = select_route(cwd, action=action)
     if decision.get("state") != "blocked":
         return decision
+    if action == 'recall':
+        try:
+            import laya_fresh_wiki_origin as fresh
+            import laya_journal_reader as reader
+            hint = fresh._fence_record(cwd)
+            if hint is not None and hint['phase'] == 'upgrading':
+                try:
+                    path = reader._journal(Path(hint['journalPath']))
+                    with reader._readonly(path, path.parent) as db:
+                        version = reader.journal._schema_version_read(db)
+                except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+                    return _decision('blocked', 'reader_journal_unproved')
+                if version == 5:
+                    return _decision('reader', 'fenced_reader_hint', projectRoot=hint['projectRoot'])
+                if version not in (3,4):
+                    return _decision('blocked', 'reader_journal_unproved')
+        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
+            return _decision('blocked', 'reader_journal_unproved')
     return _settle_moves(cwd, action, decision)
 
 

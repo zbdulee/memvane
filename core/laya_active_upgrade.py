@@ -296,9 +296,504 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
               'reviewSha256': review['proposalSha256'],
               'backup': str(backup), 'counts': counts,
               'journalBefore': _journal_snapshot(selected)}
+    if prior_intent is not None:
+        _seal_prestage_retarget(prior_intent, intent)
     build._write_json(_intent_path(state), intent, replace=prior_intent is not None,
                       max_bytes=LIMIT)
+    if prior_intent is None:
+        _seal_reader_intent(state, project, intent)
     return intent
+
+
+def _seal_reader_intent(state, project, intent):
+    """Commit the selected v5 reader and exact upgrade intent before fencing.
+
+    This records evidence only; it does not issue a reader or writer token.
+    """
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    path = state / 'install-journal.sqlite'
+    if journal.journal_version(path) != 5:
+        return
+    _backup_proof(intent)
+    if _load_intent(state, project) != intent or _read(_intent_path(state)) != _bytes(intent):
+        _fail('active_upgrade_intent_changed')
+    decision = journal.select_route(str(project), action='recall')
+    proof = journal.verify_selected_route_read_only(decision)
+    if (proof['readOnlyAllowed'] is not True or proof['productRouteAllowed'] is not False or
+            proof['journalPath'] != str(path) or proof['projectRoot'] != str(project)):
+        _fail('active_upgrade_reader_unproved')
+    digest = _sha(_bytes(intent))
+
+    def commit(db):
+        selected, endpoint = reader._selection(db)
+        row = journal._row(db)
+        if (_journal_snapshot(journal.inspect_journal(path)) != intent['journalBefore'] or
+                row['epoch'] != proof['selectionEpoch'] or
+                endpoint['scope'] != proof['scopeId'] or endpoint['install_id'] != proof['installId'] or
+                endpoint['project'] != str(project) or endpoint['state'] != str(state) or
+                endpoint['capability'] != 'v6-ro-v1' or
+                endpoint['incarnation'] != proof['dbIncarnation'] or
+                endpoint['profile'] != proof['vectorProfile']['profileId']):
+            _fail('active_upgrade_reader_changed')
+        previous_sha = _sha(intent['oldAttestation'].encode('utf8'))
+        if endpoint['attestation_sha256'] != previous_sha:
+            reader._successor_chain(db, selected.preferred_endpoint, endpoint, previous_sha,
+                                    intent['journalBefore']['selected'], max_epoch=row['epoch'])
+        record = {'schema': 'memvane-upgrade-reader-v1', 'intentSha256': digest,
+                  'endpointId': selected.preferred_endpoint, 'readerEpoch': selected.epoch,
+                  'readerTransition': selected.transition_id, 'journalBefore': intent['journalBefore'],
+                  'decision': decision}
+        encoded = journal_canon(record)
+        added_successor_table = db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_successors'").fetchone() is None
+        for sql in (*journal._UPGRADE_READER_DDL.values(), *journal._UPGRADE_SUCCESSOR_DDL.values()):
+            db.execute(sql.replace('CREATE TABLE ', 'CREATE TABLE IF NOT EXISTS ', 1)
+                       .replace('CREATE TRIGGER ', 'CREATE TRIGGER IF NOT EXISTS ', 1))
+        existing = db.execute('SELECT endpoint_id,record FROM upgrade_read_seals WHERE intent_sha256=?',
+                              (digest,)).fetchone()
+        if existing is not None:
+            if existing != (selected.preferred_endpoint, encoded):
+                _fail('active_upgrade_reader_changed')
+            return added_successor_table
+        db.execute('INSERT INTO upgrade_read_seals VALUES(?,?,?)',
+                   (digest, selected.preferred_endpoint, encoded))
+        return True
+
+    def recheck():
+        if (_load_intent(state, project) != intent or _read(_intent_path(state)) != _bytes(intent) or
+                _old_state(project, state, path)[0] != intent['oldLedger']):
+            _fail('active_upgrade_reader_changed')
+        _backup_proof(intent)
+
+    reader.mutate_image(path, commit, before_replace=recheck)
+
+
+def _reader_seal(db, digest, endpoint_id):
+    """Validate the immutable descriptor chain back to its v1 reader seal."""
+    import laya_journal_reader as reader
+    seen, child, first = set(), None, None
+    while True:
+        reader._need(type(digest) is str and reader.journal.SHA.fullmatch(digest) and
+                     digest not in seen, 'reader_upgrade_seal_unproved')
+        seen.add(digest)
+        row = db.execute('SELECT endpoint_id,record FROM upgrade_read_seals WHERE intent_sha256=?',
+                         (digest,)).fetchone()
+        reader._need(row is not None and row[0] == endpoint_id, 'reader_upgrade_seal_unproved')
+        seal = json.loads(row[1], object_pairs_hook=reader.journal._pairs,
+                          parse_constant=reader.journal._nonfinite)
+        if first is None:
+            first = seal
+        common = {'schema','intentSha256','endpointId','readerEpoch','readerTransition','journalBefore','decision'}
+        reader._need(type(seal) is dict and journal_canon(seal) == row[1] and
+                     seal.get('intentSha256') == digest and seal.get('endpointId') == endpoint_id,
+                     'reader_upgrade_seal_unproved')
+        if child is not None:
+            reader._need(all(seal.get(key) == child.get(key) for key in
+                         ('endpointId','readerEpoch','readerTransition','journalBefore','decision')),
+                         'reader_upgrade_seal_unproved')
+        if seal.get('schema') == 'memvane-upgrade-reader-v1':
+            reader._need(set(seal) == common, 'reader_upgrade_seal_unproved')
+            return first
+        schema = seal.get('schema')
+        extra = {'previousIntentSha256','targetIdentity','targetAttestationSha256','targetFileIdentitySha256'}
+        reader._need(schema in ('memvane-upgrade-reader-v2','memvane-upgrade-reader-retarget-v1') and
+                     set(seal) == common | extra | ({'recovery'} if schema == 'memvane-upgrade-reader-v2' else set()) and
+                     (schema != 'memvane-upgrade-reader-v2' or type(seal['recovery']) is dict) and
+                     type(seal['targetIdentity']) is dict and
+                     type(seal['targetAttestationSha256']) is str and
+                     reader.journal.SHA.fullmatch(seal['targetAttestationSha256']) and
+                     type(seal['targetFileIdentitySha256']) is str and
+                     reader.journal.SHA.fullmatch(seal['targetFileIdentitySha256']),
+                     'reader_upgrade_seal_unproved')
+        child, digest = seal, seal['previousIntentSha256']
+
+
+def _seal_prestage_retarget(previous, successor):
+    """Bind a newly reviewed pre-stage target before replacing its intent."""
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    state, project = Path(previous['stateRoot']), Path(previous['projectRoot'])
+    path = state / 'install-journal.sqlite'
+    if journal.journal_version(path) != 5:
+        return
+    fixed = ('projectRoot','stateRoot','oldRecord','oldLedger','oldRoute','oldAttestation',
+             'oldMarker','backup','counts','journalBefore')
+    reader._need(successor['schema'] == V1 and all(previous.get(k) == successor.get(k) for k in fixed),
+                 'reader_upgrade_intent_changed')
+    old_digest, new_digest = _sha(_bytes(previous)), _sha(_bytes(successor))
+    _backup_proof(successor)
+    row, selected, _route, _att, _marker = _old_state(project, state, path, prior_intent=previous)
+    reader._need(row == successor['oldLedger'] and _journal_snapshot(selected) == successor['journalBefore'] and
+                 _load_intent(state,project) == previous, 'reader_upgrade_prefix_unproved')
+
+    def commit(db):
+        selected_reader, _stored = reader._selection(db)
+        parent = _reader_seal(db, old_digest, selected_reader.preferred_endpoint)
+        record = {key:parent[key] for key in ('endpointId','readerEpoch','readerTransition','journalBefore','decision')}
+        record.update({'schema':'memvane-upgrade-reader-retarget-v1', 'intentSha256':new_digest,
+                       'previousIntentSha256':old_digest, 'targetIdentity':_target_identity(successor),
+                       'targetAttestationSha256':successor['newLedger']['attestationSha256'],
+                       'targetFileIdentitySha256':successor['newLedger']['providerFileIdentitySha256']})
+        encoded = journal_canon(record)
+        existing = db.execute('SELECT endpoint_id,record FROM upgrade_read_seals WHERE intent_sha256=?',
+                              (new_digest,)).fetchone()
+        if existing is not None:
+            reader._need(existing == (selected_reader.preferred_endpoint,encoded), 'reader_upgrade_seal_unproved')
+            return False
+        db.execute('INSERT INTO upgrade_read_seals VALUES(?,?,?)',
+                   (new_digest,selected_reader.preferred_endpoint,encoded))
+        return True
+
+    def recheck():
+        old, current, _route, _att, _marker = _old_state(project, state, path, prior_intent=previous)
+        reader._need(_load_intent(state,project) == previous and old == successor['oldLedger'] and
+                     _journal_snapshot(current) == successor['journalBefore'], 'reader_upgrade_prefix_unproved')
+        _backup_proof(successor)
+    reader.mutate_image(path, commit, before_replace=recheck)
+
+
+def _seal_recovery_descriptor(previous, successor):
+    """Persist a checked v2 descriptor before replacing the live intent."""
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    state, project = Path(previous['stateRoot']), Path(previous['projectRoot'])
+    path = state / 'install-journal.sqlite'
+    if journal.journal_version(path) != 5:
+        return
+    _validate_recovery(successor)
+    old_digest, new_digest = _sha(_bytes(previous)), _sha(_bytes(successor))
+    fixed = ('projectRoot','stateRoot','oldRecord','oldLedger','oldRoute','oldAttestation',
+             'oldMarker','backup','counts','journalBefore')
+    reader._need(all(previous.get(k) == successor.get(k) for k in fixed), 'reader_upgrade_intent_changed')
+    actual, current = _metadata(previous), _journal_snapshot(inspect_journal(path))
+    _recovery_state(previous, actual, current)
+    descriptor = successor['recovery']
+    reader._need(descriptor['before'] == actual and descriptor['journalBefore'] == current,
+                 'reader_upgrade_prefix_unproved')
+    _backup_proof(successor, verify_new=descriptor['mode'] == 'switch')
+
+    def commit(db):
+        selected, _stored = reader._selection(db)
+        parent = _reader_seal(db, old_digest, selected.preferred_endpoint)
+        if old_digest == new_digest:
+            # A crash after writing the normalize descriptor can replay that
+            # exact intent. Reuse its existing chain instead of constructing
+            # a self-referential seal with a different parent.
+            reader._need(parent.get('schema') == 'memvane-upgrade-reader-v2' and
+                         parent.get('recovery') == descriptor and
+                         parent.get('readerEpoch') == selected.epoch and
+                         parent.get('readerTransition') == selected.transition_id and
+                         parent.get('journalBefore') == successor['journalBefore'] and
+                         parent.get('targetIdentity') == _target_identity(successor) and
+                         parent.get('targetAttestationSha256') == successor['newLedger']['attestationSha256'] and
+                         parent.get('targetFileIdentitySha256') == successor['newLedger']['providerFileIdentitySha256'],
+                         'reader_upgrade_seal_unproved')
+            return False
+        record = {key:parent[key] for key in ('endpointId','readerEpoch','readerTransition','journalBefore','decision')}
+        record.update({'schema':'memvane-upgrade-reader-v2', 'intentSha256':new_digest,
+                  'previousIntentSha256':old_digest, 'recovery':descriptor,
+                  'targetIdentity':_target_identity(successor),
+                  'targetAttestationSha256':successor['newLedger']['attestationSha256'],
+                  'targetFileIdentitySha256':successor['newLedger']['providerFileIdentitySha256']})
+        encoded = journal_canon(record)
+        existing = db.execute('SELECT endpoint_id,record FROM upgrade_read_seals WHERE intent_sha256=?',
+                              (new_digest,)).fetchone()
+        if existing is not None:
+            reader._need(existing == (selected.preferred_endpoint,encoded), 'reader_upgrade_seal_unproved')
+            return False
+        db.execute('INSERT INTO upgrade_read_seals VALUES(?,?,?)',
+                   (new_digest,selected.preferred_endpoint,encoded))
+        return True
+
+    def recheck():
+        reader._need(_load_intent(state,project) == previous and _metadata(previous) == actual and
+                     _journal_snapshot(inspect_journal(path)) == current, 'reader_upgrade_prefix_unproved')
+        _backup_proof(successor, verify_new=descriptor['mode'] == 'switch')
+    reader.mutate_image(path, commit, before_replace=recheck)
+
+
+def _restore_key(intent):
+    return _sha(b'memvane-upgrade-restore-v1\0' + _bytes(intent))
+
+
+def _restore_progress(intent, record, actual, current):
+    """Accept only the sealed restore's ordered metadata and journal states."""
+    import laya_journal_reader as reader
+    reader._need(type(record) is dict and set(record) ==
+                 {'schema','intentSha256','endpointId','readerEpoch','readerTransition','before','journalBefore'} and
+                 record['schema'] == 'memvane-upgrade-restore-v1' and
+                 record['intentSha256'] == _sha(_bytes(intent)), 'reader_upgrade_seal_unproved')
+    before, journal_before = record['before'], record['journalBefore']
+    reader._need(type(before) is list and len(before) == 5 and
+                 type(journal_before) is dict and set(journal_before) == set(JOURNAL_KEYS),
+                 'reader_upgrade_seal_unproved')
+    row = _metadata_object(before[3])
+    reader._need(row.get('phase') in ('active','upgrading') and
+                 journal_before.get('state') in ('pending','active') and
+                 journal_before.get('newWriteSeen') is False and
+                 journal_before.get('previousRouteSha256') == _sha(intent['oldRoute'].encode()),
+                 'reader_upgrade_seal_unproved')
+    restored = {**journal_before, 'epoch': journal_before['epoch'] + 1,
+                'state':'restored_old', 'selected':journal_before['previous'],
+                'selectedRouteSha256':journal_before['previousRouteSha256'],
+                'pending':None, 'pendingRouteSha256':None, 'newWriteSeen':False,
+                'providerAttestationSha256':intent['oldLedger']['attestationSha256'],
+                'providerFileIdentitySha256':intent['oldLedger']['providerFileIdentitySha256']}
+    states = [(list(before), journal_before)]
+    work = list(before)
+    if row['phase'] == 'active':
+        new = intent['newLedger']
+        reader._need(row == {**new, 'epoch':new['epoch'] + 1, 'phase':'active'},
+                     'reader_upgrade_seal_unproved')
+        row = {**row, 'epoch':row['epoch'] + 1, 'phase':'upgrading'}
+        work[3] = _bytes(row).decode()
+        states.append((list(work), journal_before))
+    for index, value in ((2,intent['oldRoute']), (0,intent['oldAttestation']),
+                         (1,intent['oldRoute'])):
+        work = list(work); work[index] = value
+        states.append((work, journal_before))
+    states.append((list(work), restored))
+    work = list(work); work[4] = intent['oldMarker']
+    states.append((work, restored))
+    old = intent['oldLedger']
+    already_old = all(row[key] == old[key] for key in old if key not in ('epoch','phase'))
+    old_row = row if already_old else {**old, 'epoch':row['epoch'] + 1, 'phase':'upgrading'}
+    work = list(work); work[3] = _bytes(old_row).decode()
+    states.append((work, restored))
+    reader._need(any(actual == metadata and current == snapshot for metadata, snapshot in states),
+                 'reader_upgrade_restore_prefix_unproved')
+
+
+def _restore_record(db, intent, selected):
+    import laya_journal_reader as reader
+    row = db.execute('SELECT endpoint_id,record FROM upgrade_read_seals WHERE intent_sha256=?',
+                     (_restore_key(intent),)).fetchone()
+    if row is None:
+        return None
+    record = json.loads(row[1], object_pairs_hook=reader.journal._pairs,
+                        parse_constant=reader.journal._nonfinite)
+    reader._need(journal_canon(record) == row[1] and row[0] == selected.preferred_endpoint and
+                 record.get('endpointId') == selected.preferred_endpoint and
+                 record.get('readerEpoch') == selected.epoch and
+                 record.get('readerTransition') == selected.transition_id,
+                 'reader_upgrade_seal_unproved')
+    _reader_seal(db, _sha(_bytes(intent)), selected.preferred_endpoint)
+    return record
+
+
+def _seal_restore(intent):
+    """Commit restore intent to the existing immutable v5 reader journal."""
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    state, project = Path(intent['stateRoot']), Path(intent['projectRoot'])
+    path = state / 'install-journal.sqlite'
+    if journal.journal_version(path) != 5:
+        return
+    actual, current = _metadata(intent), _journal_snapshot(inspect_journal(path))
+    _backup_proof(intent, verify_new=False)
+    def commit(db):
+        selected, _stored = reader._selection(db)
+        existing = _restore_record(db, intent, selected)
+        if existing is not None:
+            _restore_progress(intent, existing, actual, current)
+            return False
+        # The live state must still be a proved forward prefix. A completed
+        # upgrade re-enters the fence with the same ledger fields at a later
+        # epoch; compare it with the sealed pre-activation ledger.
+        checked = list(actual)
+        row = _metadata_object(checked[3])
+        new = intent['newLedger']
+        if all(row.get(key) == value for key,value in new.items() if key not in ('epoch','phase')):
+            reader._need((row['phase'],row['epoch']) in
+                         (('upgrading',new['epoch']), ('active',new['epoch'] + 1),
+                          ('upgrading',new['epoch'] + 2)),
+                         'reader_upgrade_restore_prefix_unproved')
+            checked[3] = _bytes(new).decode()
+        _recovery_state(intent, checked, current)
+        _reader_seal(db, _sha(_bytes(intent)), selected.preferred_endpoint)
+        record = {'schema':'memvane-upgrade-restore-v1', 'intentSha256':_sha(_bytes(intent)),
+                  'endpointId':selected.preferred_endpoint, 'readerEpoch':selected.epoch,
+                  'readerTransition':selected.transition_id, 'before':actual, 'journalBefore':current}
+        _restore_progress(intent, record, actual, current)
+        db.execute('INSERT INTO upgrade_read_seals VALUES(?,?,?)',
+                   (_restore_key(intent),selected.preferred_endpoint,journal_canon(record)))
+        return True
+    def recheck():
+        reader._need(_load_intent(state,project) == intent and _metadata(intent) == actual and
+                     _journal_snapshot(inspect_journal(path)) == current,
+                     'reader_upgrade_restore_prefix_unproved')
+        _backup_proof(intent, verify_new=False)
+    reader.mutate_image(path, commit, before_replace=recheck)
+
+
+def _fenced_reader_evidence(state, project, root, endpoint_id, stored, attestation):
+    """Prove the initial fenced prefix against the pre-fence journal seal."""
+    import laya_index_host_route as host
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    from laya_ledger_common import refuse_qmd_origin
+    state, project, root = reader._state(state), Path(project), Path(root)
+    refuse_qmd_origin(state)
+    intent = _load_intent(state, project)
+    reader._need(intent is not None and intent['schema'] in (V1,V2), 'reader_upgrade_intent_unproved')
+    raw = _read(_intent_path(state))
+    reader._need(raw == _bytes(intent), 'reader_upgrade_intent_changed')
+    digest = _sha(raw)
+    path = state / 'install-journal.sqlite'
+    selected = inspect_journal(path)
+    if intent['schema'] == V2 or _journal_snapshot(selected) != intent['journalBefore']:
+        actual = _metadata(intent)
+        with reader._readonly(path, state) as db:
+            current, _stored = reader._selection(db)
+            restore = _restore_record(db, intent, current) if intent['schema'] == V1 else None
+        if restore is None:
+            _recovery_state(intent, actual, _journal_snapshot(selected))
+        else:
+            _restore_progress(intent, restore, actual, _journal_snapshot(selected))
+        old, att = intent['oldLedger'], intent['oldAttestation'].encode('utf8')
+        store_info = intent['journalBefore']
+    else:
+        old, selected, _route, att, _marker = _old_state(project, state, path, prior_intent=intent)
+        reader._need(_journal_snapshot(selected) == intent['journalBefore'],
+                     'reader_upgrade_prefix_unproved')
+        store_info = selected
+    reader._need(
+                 _sha(attestation) == stored['attestation_sha256'] and
+                 build.read(state) == intent['oldRecord'], 'reader_upgrade_prefix_unproved')
+    with reader._readonly(path, state) as db:
+        current, current_record = reader._selection(db)
+        reader._need(endpoint_id == current.preferred_endpoint and
+                     current_record == stored, 'reader_upgrade_seal_unproved')
+        if att != attestation:
+            reader._successor_chain(db, endpoint_id, stored, _sha(att),
+                                    intent['journalBefore']['selected'],
+                                    max_epoch=intent['journalBefore']['epoch'])
+        seal = _reader_seal(db, digest, endpoint_id)
+        reader._need(seal['intentSha256'] == digest and seal['endpointId'] == endpoint_id and
+                     seal['readerEpoch'] == current.epoch and
+                     seal['readerTransition'] == current.transition_id and
+                     seal['journalBefore'] == intent['journalBefore'], 'reader_upgrade_seal_unproved')
+        if intent['schema'] == V2:
+            reader._need(seal['schema'] == 'memvane-upgrade-reader-v2' and
+                         seal['recovery'] == intent['recovery'] and
+                         seal['targetIdentity'] == _target_identity(intent) and
+                         seal['targetAttestationSha256'] == intent['newLedger']['attestationSha256'] and
+                         seal['targetFileIdentitySha256'] == intent['newLedger']['providerFileIdentitySha256'],
+                         'reader_upgrade_seal_unproved')
+        elif seal['schema'] == 'memvane-upgrade-reader-retarget-v1':
+            reader._need(seal['targetIdentity'] == _target_identity(intent) and
+                         seal['targetAttestationSha256'] == intent['newLedger']['attestationSha256'] and
+                         seal['targetFileIdentitySha256'] == intent['newLedger']['providerFileIdentitySha256'],
+                         'reader_upgrade_seal_unproved')
+    route_path = project_dir.runtime_file(project, fresh.ROUTE)
+    observed = host._classify_record(project, route_path.parent, route_path, project)
+    decision = seal['decision']
+    expected = dict(decision)
+    current_route = json.loads(_read(route_path, 8192))
+    expected.update({key: current_route[key] for key in
+                     ('pluginRoot','bundleManifestSha256','ownershipManifestSha256')})
+    reader._need(observed == expected and decision.get('state') == 'candidate' and
+                 reader._sha(reader._raw(decision['recallSettings'])) == stored['settings'] and
+                 decision['collections'] == stored['roots'], 'reader_upgrade_route_changed')
+    target = intent['newProof']
+    target_host = str(root) == target['pluginRoot']
+    if not target_host:
+        try:
+            old_identity = intent['journalBefore']['selected']
+            owner = journal._inspect_identity(old_identity)
+            executing = journal._verified_executing_root(old_identity, owner)
+            reader._need(executing == str(root), 'reader_upgrade_host_unproved')
+        except (ValueError, OSError):
+            target_host = True
+    if target_host:
+        _verify_recovery_target(intent)
+        if str(root) == target['pluginRoot']:
+            journal._executing_from_candidate(root)
+            executing = str(root)
+        else:
+            owner = inspect_full_plugin_candidate(target['pluginRoot'])
+            executing = journal._verified_executing_root(target, owner)
+    reader._need(executing == str(root), 'reader_upgrade_host_unproved')
+    proof = {'readOnlyAllowed': True, 'productRouteAllowed': False,
+             'executingPluginRoot': executing, 'selectionEpoch': selected['epoch'],
+             'projectRoot': str(project), 'journalPath': str(path),
+             'installId': decision['installId'], 'scopeId': decision['scopeId'],
+             'dbIncarnation': decision['dbIncarnation'], 'vectorProfile': decision['vectorProfile'],
+             'readerDecision': decision}
+    if target_host:
+        proof['providerManifest'] = json.loads(intent['newAttestation'])['providerManifest']
+    current_record, current_att, proof = reader._evidence_stores(state, project, decision, proof,
+                                                                  old, store_info,
+                                                                  sealed_attestation=att)
+    current_record['attestation_sha256'] = stored['attestation_sha256']
+    if 'legacy_sidecar_baseline' in stored:
+        current_record['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
+    current_record['creation_epoch'] = stored['creation_epoch']
+    reader._need(current_record == stored and current_att == att and
+                 endpoint_id == reader._sha(b'memvane-reader-endpoint-v1\0' + reader._raw(stored)),
+                 'reader_upgrade_endpoint_changed')
+    return current_record, attestation, proof
+
+
+def _commit_reader_successor(db, path, before, values):
+    """Seal a v1 upgrade successor in the activation's SQLite transaction."""
+    import laya_journal_reader as reader
+    state, project = path.parent, Path(before['project_root'])
+    intent = _load_intent(state, project)
+    reader._need(intent is not None and intent['schema'] in (V1,V2) and
+                 _read(_intent_path(state)) == _bytes(intent), 'reader_successor_intent_unproved')
+    digest = _sha(_bytes(intent))
+    pending = inspect_journal(path)
+    _recovery_state(intent, _metadata(intent), _journal_snapshot(pending))
+    source = intent['journalBefore'] if intent['schema'] == V1 else intent['recovery']['journalBefore']
+    reader._need((intent['schema'] == V1 or intent['recovery']['mode'] == 'switch') and
+                 _metadata(intent) == _target_metadata(intent) and
+                 _journal_snapshot(pending) == _journal_successor(source, intent) and
+                 before['epoch'] == pending['epoch'] and before['selected'] == pending['selected'] and
+                 before['pending'] == pending['pending'], 'reader_successor_prefix_unproved')
+    _backup_proof(intent)
+    selected, stored = reader._selection(db)
+    seal = _reader_seal(db, digest, selected.preferred_endpoint)
+    reader._need(seal.get('intentSha256') == digest and seal.get('endpointId') == selected.preferred_endpoint and
+                 seal.get('journalBefore') == intent['journalBefore'] and
+                 seal.get('readerEpoch') == selected.epoch and
+                 seal.get('readerTransition') == selected.transition_id,
+                 'reader_successor_seal_unproved')
+    if intent['schema'] == V2:
+        reader._need(seal['schema'] == 'memvane-upgrade-reader-v2' and
+                     seal['recovery'] == intent['recovery'] and
+                     seal['targetIdentity'] == _target_identity(intent) and
+                     seal['targetAttestationSha256'] == intent['newLedger']['attestationSha256'] and
+                     seal['targetFileIdentitySha256'] == intent['newLedger']['providerFileIdentitySha256'],
+                     'reader_successor_seal_unproved')
+    elif seal['schema'] == 'memvane-upgrade-reader-retarget-v1':
+        reader._need(seal['targetIdentity'] == _target_identity(intent) and
+                     seal['targetAttestationSha256'] == intent['newLedger']['attestationSha256'] and
+                     seal['targetFileIdentitySha256'] == intent['newLedger']['providerFileIdentitySha256'],
+                     'reader_successor_seal_unproved')
+    from_sha = before['provider_attestation_sha']
+    to_sha = _sha(intent['newAttestation'].encode('utf8'))
+    target = _target_identity(intent)
+    reader._need(before['state'] == 'pending' and before['selected'] == source['selected'] and
+                 before['pending'] == target and from_sha == source['providerAttestationSha256'] and
+                 values['provider_attestation_sha'] == to_sha and
+                 values['selected_route_sha'] == intent['newLedger']['routeSha256'] and
+                 type(values['provider_file_identity']) is str and
+                 _sha(values['provider_file_identity'].encode('utf8')) ==
+                     intent['newLedger']['providerFileIdentitySha256'] and
+                 json.loads(values['selected']) == target and
+                 stored['install_id'] == target['installId'] and
+                 stored['profile'] == target['vectorProfile']['profileId'], 'reader_successor_changed')
+    if stored['attestation_sha256'] != from_sha:
+        reader._successor_chain(db, selected.preferred_endpoint, stored, from_sha,
+                                before['selected'], max_epoch=before['epoch'])
+    epoch = before['epoch'] + 1
+    successor = {'schema':'memvane-reader-successor-v1', 'intentSha256':digest,
+                 'endpointId':selected.preferred_endpoint, 'epoch':epoch,
+                 'fromAttestation':from_sha, 'toAttestation':to_sha,
+                 'fromIdentity':before['selected'], 'toIdentity':target}
+    db.execute('INSERT INTO upgrade_read_successors VALUES(?,?,?,?)',
+               (epoch, digest, selected.preferred_endpoint, journal_canon(successor)))
 
 
 def _backup_proof(intent, *, verify_new=True):
@@ -684,6 +1179,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
             'journalBefore': current}}
         _validate_recovery(normalized)
         _verify_recovery_scope(journal, original)
+        _seal_recovery_descriptor(intent, normalized)
         build._write_json(_intent_path(state), normalized, replace=True, max_bytes=LIMIT)
         _recovery_step('normalize-descriptor')
         if actual[2] != after[2]:
@@ -700,6 +1196,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
                               'after': _target_metadata(intent), 'journalBefore': current}
         _validate_recovery(intent)
         _verify_recovery_scope(journal, original)
+        _seal_recovery_descriptor(normalized, intent)
         build._write_json(_intent_path(state), intent, replace=True, max_bytes=LIMIT)
         _recovery_step('switch-descriptor')
     descriptor = intent['recovery']
@@ -937,6 +1434,9 @@ def _restore(intent):
                 ('sourceCommit', 'bundleManifestSha256',
                  'ownershipManifestSha256', 'vectorProfile'))):
         _fail('active_upgrade_previous_bundle_changed')
+    if row['phase'] not in ('active','upgrading') or row['routeSha256'] not in (old_sha, new_sha):
+        _fail('active_upgrade_restore_phase_changed')
+    _seal_restore(intent)
     if row['phase'] == 'active' and row['routeSha256'] == new_sha:
         row = ledger.change(state / ledger.name, row['epoch'], 'active',
                             'upgrading')
@@ -963,9 +1463,12 @@ def _restore(intent):
         row = ledger.load(state / ledger.name)
         if row['phase'] != 'upgrading' or row['routeSha256'] not in (old_sha, new_sha):
             _fail('active_upgrade_restore_phase_changed')
-        old_row = {**intent['oldLedger'], 'epoch': row['epoch'] + 1,
-                   'phase': 'upgrading'}
-        ledger.write(state / ledger.name, old_row)
+        old = intent['oldLedger']
+        already_old = all(row[key] == old[key] for key in old if key not in ('epoch','phase'))
+        old_row = row if already_old else {**old, 'epoch': row['epoch'] + 1,
+                                           'phase': 'upgrading'}
+        if not already_old:
+            ledger.write(state / ledger.name, old_row)
     if inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']:
         _fail('active_upgrade_restore_store_changed')
     row = ledger.change(state / ledger.name, old_row['epoch'], 'upgrading',
@@ -1106,9 +1609,46 @@ def finish_activated(*, project_root, state_root, requested_root=None):
         return _switch(intent)
 
 
+def _prepare_v4_bridge(project, state, marker, ledger, *, source_root, plugin_root,
+                       commit_id, accepted_provider_sha256, model_path, dimension,
+                       runtime_generation, readiness):
+    """Prepare under owner locks; convert outside them using the same intent."""
+    import laya_bridge_readiness as bridge
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    if readiness is None:
+        readiness = bridge.ensure_bridge_preflight(state, release_commit=commit_id)
+    refs, release, hosts, bound_state = bridge._issued(readiness, bridge.BridgeReadiness)
+    if (release != commit_id or bound_state != str(state) or not {'claude','codex'} <= hosts):
+        raise ValueError('reader_hosts_pending')
+    path = state / 'install-journal.sqlite'
+    with _install_lock(state), _operation_lock(marker), _locked_provider():
+        version = journal.journal_version(path)
+        if version == 5:
+            return
+        if version != 4 or ledger.load(state / ledger.name)['phase'] != 'active':
+            _fail('active_upgrade_bridge_state_changed')
+        from laya_journal_v4 import refuse_while_legacy_hermes
+        refuse_while_legacy_hermes()
+        intent = _load_intent(state, project)
+        if intent is None:
+            intent = _prepare(project, state, path, source_root, plugin_root, commit_id,
+                              accepted_provider_sha256, model_path, dimension, ledger,
+                              runtime_generation=runtime_generation)
+        else:
+            if (intent['schema'] != V1 or intent['newProof']['pluginRoot'] != str(plugin_root) or
+                    intent['newProof']['sourceCommit'] != commit_id or
+                    intent['reviewSha256'] != accepted_provider_sha256 or
+                    ledger.load(state / ledger.name) != intent['oldLedger']):
+                _fail('active_upgrade_intent_changed')
+            _backup_proof(intent)
+    installer = reader.seal_upgrade_reader(project, state, executing_root=Path(plugin_root))
+    reader.convert_reader_v5(state, project, installer=installer, readiness=readiness)
+
+
 def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             accepted_provider_sha256, model_path, dimension, restore=False,
-            runtime_generation=None):
+            runtime_generation=None, bridge_readiness=None):
     """Resume one exact sealed upgrade; a failed step leaves a blocked route."""
     project = Path(project_root).resolve(strict=True)
     state = _private_parent(state_root)
@@ -1118,8 +1658,26 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
     selected_ledger = _origin(state)
     _ledger_path, marker, _route = selected_ledger.paths(
         project, state / 'install-journal.sqlite')
+    if not restore:
+        import laya_install_journal as journal
+        version = journal.journal_version(state / 'install-journal.sqlite')
+        if version in (3,4) and selected_ledger.load(state / selected_ledger.name)['phase'] == 'active':
+            if version == 3:
+                from laya_journal_v4 import convert_install
+                converted = convert_install(state, project, root=Path(plugin_root))
+                if converted.get('status') not in ('journal_v4_converted','journal_v4_current','journal_v5_current'):
+                    raise ValueError('reader_hosts_pending')
+                version = journal.journal_version(state / 'install-journal.sqlite')
+            if version not in (4,5):
+                raise ValueError('reader_hosts_pending')
+            if version == 4:
+                _prepare_v4_bridge(project, state, marker, selected_ledger, source_root=source_root,
+                    plugin_root=plugin_root, commit_id=commit_id, accepted_provider_sha256=accepted_provider_sha256,
+                    model_path=model_path, dimension=dimension, runtime_generation=runtime_generation,
+                    readiness=bridge_readiness)
     with _install_lock(state), _operation_lock(marker), _locked_provider():
         intent = _load_intent(state, project)
+        prepared_here = False
         if intent is not None and _intent_ledger(intent).origin != selected_ledger.origin:
             _fail('active_upgrade_intent_invalid')
         ledger = selected_ledger
@@ -1203,9 +1761,14 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                               source_root, plugin_root, commit_id,
                               accepted_provider_sha256, model_path, dimension,
                               ledger, runtime_generation=runtime_generation)
+            prepared_here = True
         elif (intent['newProof']['pluginRoot'] != str(plugin_root) or
               intent['newProof']['sourceCommit'] != commit_id or
               intent['reviewSha256'] != accepted_provider_sha256):
             _fail('active_upgrade_intent_changed')
         _backup_proof(intent)
+        # A process may have stopped after writing the intent but before
+        # publishing its reader commitment. Resume that step before fencing.
+        if not prepared_here and ledger.load(state / ledger.name) == intent['oldLedger']:
+            _seal_reader_intent(state, project, intent)
         return _switch(intent)

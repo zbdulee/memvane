@@ -627,6 +627,8 @@ schema_capability, view_binding_policy, provider_attestation_digest, creation_ep
 커밋한다. selection은 `{epoch, preferred_endpoint, previous_endpoint, transition_id}`다.
 새 route schema의 `store_binding_id`가 그 journal과 repo/worktree resolver 계약을 묶는다.
 정확한 schema 번호는 구현에서 예약하며 구 reader가 해석 가능한 척 필드를 추가하지 않는다.
+구 host 전환은 실제 등록 hook의 v4 bridge preflight 통과로 확인한다. 전역 stale session이나
+이미 실행 중인 구 recall이 없다는 주장은 하지 않는다.
 
 - fence **전** 마지막 정상 endpoint와 read-only trust proof를 durable하게 봉인한다.
   upgrade ledger의 `upgrading`은 writer/model-start 권한을 막고 reader endpoint를 없애지 않는다.
@@ -686,6 +688,11 @@ card cap을 혼동하거나 삭제로 해소하지 않는다. cap 변경은 별�
 
 writer는 store별 하나이며 서로 다른 view도 짧은 SQLite write transaction을 공유한다.
 읽기는 WAL snapshot을 사용하고 긴 writer/model 작업과 겹쳐도 기존 세대를 유지한다.
+Cold 읽기는 SQLite `mode=ro`와 `query_only=ON`을 사용한다. Python 3.9에서는 기존 DB를
+`mode=rw`로 열고 즉시 `query_only=ON`을 적용할 수 있다. SQLite의 WAL/SHM 보조 파일
+초기화는 허용하며 논리 데이터·해시·세대·journal은 유지하고 없는 optional sidecar DB
+본체를 만들지 않는다. SQLite 헤더 파싱, 일괄 `immutable=1`, exclusive locking으로
+보조 파일 생성을 우회하지 않는다.
 resident service의 model load serialization·peer 검증·admission·backoff를 재사용한다.
 learning inference 공유는 DB content/provenance를 프로젝트 간 노출하는 권한이 아니다.
 학습 sample/export는 pinned view/gen에 귀속하고 source body를 memvane-db에 보관하지 않는다.
@@ -734,6 +741,20 @@ development guard·파일 병렬도 1·유한 timeout을 유지한다. `developm
 | 8. DB provenance compile/lifecycle | compile intent recovery, DB source refs, same-worktree+ancestor deletion | missing raw hold/retire 행렬, sparse/index-only deletion, rebase/merge, mixed-source refresh, fingerprint 없음 hold, 25%/3장 경계·cap 우회 방지, archive/unlink crash. 새 lifecycle fixture와 기존 wiki lifecycle/source-retire suite |
 | 9. frontmatter-free 카드 writer | 모든 consumer의 DB provenance 사용, 파일 재작성은 명시 요청만 | provenance 없이 trust 불가, source span/hash/skipPaths 위조, fingerprint-free compile→recall→dedup→learning, 구 host downgrade 거절. 기존 source-spans·compile·dedup suites |
 | 10. retention/GC·운영 확대 | 사용자 retention 결정 뒤 mark-copy, 새 seal, endpoint swap, old lease cleanup | 다른 view refs·active reader·job cache 보존, missing worktree hold, orphan 유예, compaction crash와 no-space, old/new parity. 1,800장/10 views 및 2,048 초과 synthetic budget report |
+
+PR 10은 기존 설치의 upgrade 백업과 QMD origin rollback DB도 조사한다. active·inactive
+intent와 복구 경로, 완료 기록, rollback 창의 참조를 먼저 대조한다. 활성 참조와 확인되지
+않은 항목은 보존하고, 나머지도 보존 기간을 결정하기 전에는 삭제하지 않는다. 정리 계획은
+항목별 근거·논리 크기와 실제 할당 크기·예상 확보량을 미리 보여주고 적용 직전에 잠금 아래
+참조와 파일 identity를 재검증한다. 실제 삭제는 별도 사용자 요청이 필요하다.
+
+운영 진단은 각 PR의 변경 경계에 맞춰 보강한다. PR 5는 bridge의 실패 단계·사유와 최종
+결과를 확인하고, PR 6/7은 migration·view 선택의 재시도 및 결과, PR 8은 compile·wiki
+측정과 최종 쓰기, PR 9/10은 provenance 거절과 retention 결과를 다룬다. 작업 간 연결은
+필요한 범위에서 불투명 ID와 시도 번호를 사용한다. 새 진단 필드는 고정 사유 코드와 숫자
+등으로 제한하며 문서 원문·프롬프트·인증 정보·임의 예외 메시지는 기록하지 않는다.
+공통 이벤트 기록기의 기존 텍스트 디버그 옵션과 stderr 경로도 이 기준에 맞춰 점검하고,
+진단 보강을 배포하기 전에 원문 노출 경로를 제거하거나 안전하게 제한한다.
 
 PR 5의 fence bridge는 PR 6/7 활성화에 선행한다. PR 8은 같은-worktree 지문을 신뢰할 수 있는
 경우부터 적용하고 unknown legacy provenance는 계속 보류한다. PR 9/10은 bridge rollout·

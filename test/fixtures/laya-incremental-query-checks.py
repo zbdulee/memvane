@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -74,6 +77,35 @@ class IncrementalReadChecks(unittest.TestCase):
         return {'profileId': self.profile_id, 'approvedProviderId': 'fixture',
                 'providerArtifactSha256': 'e' * 64, 'vector': [1.0, 0.0]}
 
+    def test_readonly_closes_connection_if_initialization_fails(self):
+        from laya_incremental_docs_query import _readonly
+        connect = sqlite3.connect
+        for statement in ('PRAGMA query_only=ON', 'BEGIN'):
+            with self.subTest(statement=statement):
+                connections = []
+                class FailingConnection(sqlite3.Connection):
+                    closed = False
+                    def execute(self, sql, *args):
+                        if sql == statement:
+                            raise sqlite3.OperationalError('fixture_initialization_failed')
+                        return super().execute(sql, *args)
+                    def close(self):
+                        self.closed = True
+                        return super().close()
+                def open_connection(*args, **kwargs):
+                    db = connect(*args, factory=FailingConnection, **kwargs)
+                    connections.append(db)
+                    return db
+                with mock.patch('laya_incremental_docs_query.sqlite3.connect', side_effect=open_connection):
+                    with self.assertRaisesRegex(sqlite3.OperationalError, 'fixture_initialization_failed'):
+                        _readonly(self.index_path)
+                self.assertEqual(len(connections), 1)
+                try:
+                    self.assertTrue(connections[0].closed)
+                finally:
+                    if not connections[0].closed:
+                        connections[0].close()
+
     def test_old_head_path_is_excluded_before_fts_and_vector_limit(self):
         old = '# Old\nneedle needle\n'
         other = '# Other\nneedle\n'
@@ -128,6 +160,47 @@ class IncrementalReadChecks(unittest.TestCase):
                 self.fixture_provider)
             self.assertEqual((shadow, base), (('wiki/a.md',), 'head'))
             self.assertEqual([row['path'] for row in rows], ['wiki/a.md'])
+            import laya_incremental_docs_query as incremental_query
+            with closing(incremental_query._readonly(self.index_path)) as base_db, \
+                 closing(incremental_query._readonly(self.state / incremental.FILE)) as side_db:
+                base_db.execute('SELECT count(*) FROM sqlite_master').fetchone()
+                side_db.execute('SELECT count(*) FROM sqlite_master').fetchone()
+                with mock.patch.object(incremental_query, '_readonly',
+                                       side_effect=AssertionError('unexpected database reopen')):
+                    pinned = incremental_query.query_incremental_snapshot(
+                        'unique', self.decision, {'vectorProfile': self.profile},
+                        self.fixture_provider, base=base_db, side=side_db,
+                        deadline=time.monotonic()+10)
+                    lexical = incremental_query.query_incremental_snapshot(
+                        'unique', self.decision, {'vectorProfile': self.profile},
+                        None, base=base_db, side=side_db, deadline=time.monotonic()+10)
+                    absent = incremental_query.query_incremental_snapshot(
+                        'unique', self.decision, {'vectorProfile': self.profile},
+                        None, base=base_db, side=None, deadline=time.monotonic()+10)
+                    with self.assertRaisesRegex(ValueError, 'reader_snapshot_unpinned'):
+                        incremental_query.query_incremental_snapshot(
+                            'unique', self.decision, {'vectorProfile': self.profile},
+                            None, base=base_db, side=base_db, deadline=time.monotonic()+10)
+                self.assertEqual(pinned, (rows, titles, _locations, shadow, base))
+                self.assertEqual([row['path'] for row in lexical[0]], ['wiki/a.md'])
+                self.assertEqual((lexical[3],lexical[4]), (('wiki/a.md',),'head'))
+                self.assertEqual(absent, ([], frozenset(), {}, (), None))
+                self.assertTrue(base_db.in_transaction and side_db.in_transaction)
+                self.assertEqual(base_db.execute('PRAGMA query_only').fetchone(), (1,))
+                self.assertEqual(side_db.execute('PRAGMA query_only').fetchone(), (1,))
+            with incremental._open(str(self.state)) as writer:
+                writer.execute('UPDATE docs_fts SET body=? WHERE path=?',
+                               ('forgeduniqueword', 'wiki/a.md'))
+            try:
+                with closing(incremental_query._readonly(self.index_path)) as base_db, \
+                     closing(incremental_query._readonly(self.state / incremental.FILE)) as side_db:
+                    with self.assertRaisesRegex(ValueError, 'reader_sidecar_document_changed'):
+                        incremental_query.query_incremental_snapshot(
+                            'forgeduniqueword', self.decision, {'vectorProfile': self.profile},
+                            None, base=base_db, side=side_db, deadline=time.monotonic()+10)
+            finally:
+                with incremental._open(str(self.state)) as writer:
+                    writer.execute('UPDATE docs_fts SET body=? WHERE path=?', (new, 'wiki/a.md'))
             # A single general term is a lone survivor, so the shared
             # selected/preview body gate permits only the verified title.
             self.assertEqual(titles, frozenset({'wiki/a.md'}))

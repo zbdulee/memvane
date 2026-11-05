@@ -52,6 +52,7 @@ def vector_profile():
 
 
 class SelectedProject(unittest.TestCase):
+    INSTALL_ID = '3' * 32
     RAW, WIKI = 'project', 'project-wiki'
     RAW_PATH, NAME = '.', 'project'
     # The install directory under HOME; a subclass may place it at a real
@@ -113,7 +114,7 @@ class SelectedProject(unittest.TestCase):
                       'dbIncarnation': self.incarnation, 'scopeId': '6' * 32,
                       'collections': self.collections(),
                       'pluginRoot': str(self.plugin), 'journalPath': str(self.journal),
-                      'installId': '3' * 32, 'generation': 'g-' + '4' * 32,
+                      'installId': self.INSTALL_ID, 'generation': 'g-' + '4' * 32,
                       'bundleManifestSha256': 'd' * 64,
                       'ownershipManifestSha256': 'e' * 64,
                       'vectorProfile': vector_profile()}
@@ -125,7 +126,7 @@ class SelectedProject(unittest.TestCase):
                        'ownershipManifestSha256': 'e' * 64,
                        'journalPath': str(self.journal), 'vectorProfile': vector_profile(),
                        'providerManifest': {'providerPath': str(self.plugin / 'p.py'),
-                                            **{key: value.format(state=self.state)
+                                            **{key: value.format(state=self.state) if isinstance(value,str) else value
                                                for key, value in self.PROVIDER_EXTRA.items()}},
                        'dependencyClosure': []}
         att_raw = journal_mod._canon(attestation).encode('utf-8')

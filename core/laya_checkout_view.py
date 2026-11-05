@@ -309,12 +309,13 @@ def _index(path, object_format, deadline):
     return row
 
 
-def _ref(root, object_format, deadline):
+def _ref(root, object_format, deadline, *, validated_branch=None):
     status, branch = _git(['symbolic-ref', '--quiet', 'HEAD'], root, deadline, ok=(0, 1))
     if status == 0:
         if not branch.startswith('refs/heads/') or '\n' in branch:
             _fail('invalid_checkout_ref')
-        _git(['check-ref-format', branch], root, deadline)
+        if branch != validated_branch:
+            _git(['check-ref-format', branch], root, deadline)
     else:
         branch = None
     status, head = _git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
@@ -358,7 +359,7 @@ def _operations(admin, common, deadline):
     return rows
 
 
-def _facts(project_root, deadline):
+def _facts(project_root, deadline, *, validated_branch=None):
     _remaining(deadline)
     project = _directory(project_root)
     root = Path(project['path'])
@@ -389,9 +390,9 @@ def _facts(project_root, deadline):
     except ValueError as exc:
         raise CheckoutUnavailable('invalid_git_checkout') from exc
     index = _index(git_dir / 'index', fields[3], deadline)
-    branch, head = _ref(root, fields[3], deadline)
+    branch, head = _ref(root, fields[3], deadline, validated_branch=validated_branch)
     operations = _operations(git_dir, common_dir, deadline)
-    if _ref(root, fields[3], deadline) != (branch, head):
+    if _ref(root, fields[3], deadline, validated_branch=branch) != (branch, head):
         _fail('checkout_changed')
     for item in (project, checkout, admin, common):
         if _directory(item['path']) != item:
@@ -404,7 +405,10 @@ def _facts(project_root, deadline):
 def _stable(root, deadline):
     for _ in range(CAPTURE_ATTEMPTS):
         try:
-            first, second = _facts(root, deadline), _facts(root, deadline)
+            first = _facts(root, deadline)
+            # Reuse only the branch name whose format the first complete
+            # observation proved. Both ref and HEAD are still read again.
+            second = _facts(root, deadline, validated_branch=first['branchKey'])
             if first == second:
                 return second
         except CheckoutUnavailable as exc:
@@ -537,7 +541,7 @@ def capture_view(project_root, repository, worktree, *, deadline=None):
     return {**value, 'checkoutDigest': _digest(value)}
 
 
-def capture_matches(capture, repository, worktree, *, deadline=None):
+def capture_matches(capture, repository, worktree, *, deadline=None, _raise_timeout=False):
     try:
         if (not _capture_shape(capture)
                 or _digest({key: value for key, value in capture.items()
@@ -545,5 +549,9 @@ def capture_matches(capture, repository, worktree, *, deadline=None):
             return False
         return capture_view(capture['projectRoot'], repository, worktree,
                             deadline=deadline) == capture
-    except (CheckoutUnavailable, OSError, ValueError, TypeError, RecursionError):
+    except CheckoutUnavailable as exc:
+        if _raise_timeout and exc.reason == 'checkout_budget_exhausted':
+            raise
+        return False
+    except (OSError, ValueError, TypeError, RecursionError):
         return False

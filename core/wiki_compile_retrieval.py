@@ -416,9 +416,50 @@ def query_provider(bound):
 
 
 @contextmanager
+def _selected_runtime(bound, roots, capacity):
+    """Hold the v5 sync owner and managed runtime throughout compile search."""
+    from laya_index_runtime import LayaIndexRuntime
+    decision,proof=bound
+    stores=({'catalog_path':capacity[0],'binding_store_path':capacity[1]} if capacity else {})
+    def legacy_runtime():
+        return LayaIndexRuntime(source_root=roots,scope=decision['scopeId'],
+            db_path=decision['dbPath'],queue_path=decision['queuePath'],
+            db_incarnation=decision['dbIncarnation'],wiki_only=True,**stores)
+    # Standalone synthetic adapters have no selected journal.
+    if 'journalPath' not in decision:
+        with legacy_runtime() as runtime:
+            yield runtime
+        return
+    import laya_install_journal as journal
+    from laya_index_sync import sync_owner
+    from resource_deferred import ResourceDeferred
+    with sync_owner(Path(decision['queuePath'])) as owner:
+        if owner is None:
+            raise ResourceDeferred('owner_busy')
+        with journal.read_only_journals():
+            version=journal.journal_version(decision['journalPath'])
+            if version!=5:
+                with journal.legacy_identity_reads():
+                    if journal.verify_selected_route_for_write(decision,'compile')!=proof:
+                        raise ValueError('selected_compile_proof_changed')
+        if version==5:
+            import project_dir
+            if project_dir.layout(decision['projectRoot'])=='split':
+                raise ValueError('project_dir_split')
+            from laya_product_sync_worker import _full_worker_runtime
+            from wiki_selected_laya import _owner_scope
+            with _owner_scope(bound,owner), \
+                    _full_worker_runtime(decision,owner,proof,roots,capacity=capacity) as (runtime,_writer):
+                yield runtime
+        else:
+            with legacy_runtime() as runtime:
+                yield runtime
+
+
+@contextmanager
 def selected_search(bound, text):
     """Open only the capacity path; never fall back to a whole-root scan."""
-    from laya_index_runtime import LayaIndexRuntime, capacity_store_paths
+    from laya_index_runtime import capacity_store_paths
     from laya_index_capacity import open_pinned_candidate_query
     from laya_index_host_route import wiki_index_roots
     from laya_source_catalog import load_exclusions
@@ -427,12 +468,7 @@ def selected_search(bound, text):
     capacity = capacity_store_paths(decision['dbPath'])
     roots = wiki_index_roots(decision['collections'])
     names = tuple(sorted(roots))
-    stores = ({'catalog_path': capacity[0], 'binding_store_path': capacity[1]}
-              if capacity is not None else {})
-    with LayaIndexRuntime(source_root=roots, scope=decision['scopeId'],
-                          db_path=decision['dbPath'], queue_path=decision['queuePath'],
-                          db_incarnation=decision['dbIncarnation'], wiki_only=True,
-                          **stores) as runtime:
+    with _selected_runtime(bound,roots,capacity) as runtime:
         token, _generation = runtime.index.pin(runtime.scope)
         candidates = None
         try:

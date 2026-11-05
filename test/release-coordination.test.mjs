@@ -30,7 +30,7 @@ test('release coordination retains existing lock ownership and gates fresh worke
     });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 10 tests\b/);
+    assert.match(result.stderr, /Ran 11 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     rmSync(home, { recursive: true, force: true });

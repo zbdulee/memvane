@@ -117,6 +117,8 @@ class ActiveUpgradeCase(unittest.TestCase):
                 mock.patch.object(upgrade, 'cas_activate', self._activate),
                 mock.patch.object(upgrade, 'cas_restore', self._restore),
                 mock.patch.object(upgrade, 'cas_recover', self._restore),
+                # This older unit fixture models a v4 journal in memory.
+                mock.patch('laya_install_journal.journal_version', return_value=4),
                 mock.patch.object(inactive, '_store_counts',
                                   lambda *_: self.intent['counts']),
                 mock.patch('laya_embed_resident.wait_for_release',

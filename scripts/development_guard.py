@@ -292,7 +292,7 @@ def run_job(args,root):
             calibration=load(args.calibration_envelope,command)
             calibration_policy={**calibration['policy'],'calibration':calibration}
         policy=Policy()
-        policy.resource_limits=args.kind!='test' or calibration is not None
+        policy.resource_limits=args.kind in ('model-test','backup') or calibration is not None
         active=root/'active.json'
         if active.exists() and not json.loads(active.read_text()).get('settled',False):
             raise GuardError('previous_job_unsettled_review_checkpoint')
@@ -395,7 +395,7 @@ def run_job(args,root):
 def main():
     global PROBE_DEADLINE
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind',choices=('test','model-test','backup','hash'),default='test')
+    parser.add_argument('--kind',choices=('test','model-test','review','backup','hash'),default='test')
     parser.add_argument('--sample-only',action='store_true')
     parser.add_argument('--sample-seconds',type=float,default=5)
     parser.add_argument('--max-seconds',type=float,default=900)

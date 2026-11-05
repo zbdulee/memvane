@@ -20,7 +20,7 @@ import struct
 import time
 import unicodedata
 
-from laya_index_a import (IndexContractError, _NOT_EXCLUDED, _path_predicate,
+from laya_index_a import (IndexContractError, SnapshotIndex, _NOT_EXCLUDED, _path_predicate,
                           _shadow_predicate)
 
 
@@ -347,6 +347,14 @@ def _database_identity(index):
 
 def _query_seal(index, gen, *, deadline=None):
     """``verify_generation_seal`` for a query, reused only inside ``seal_reuse``."""
+    if isinstance(index, SnapshotIndex):
+        index._check()
+        _check_deadline(deadline)
+        if gen not in index._vector_seals:
+            result = verify_generation_seal(index, gen, deadline=deadline)
+            index._check()
+            index._vector_seals[gen] = dict(result)
+        return dict(index._vector_seals[gen])
     cache = _SEAL_REUSE.get()
     if cache is None:
         return verify_generation_seal(index, gen, deadline=deadline)
@@ -368,19 +376,14 @@ class LayaVectorIndex:
     def register_profile(self, model_id, embedding_fingerprint, dimension):
         profile_id = profile_identity(model_id, embedding_fingerprint, dimension)
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             row = db.execute('SELECT 1 FROM vector_profiles WHERE profile_id=?',
                              (profile_id,)).fetchone()
             if row is None:
                 db.execute('INSERT INTO vector_profiles VALUES(?,?,?,?,?)',
                            (profile_id, model_id, embedding_fingerprint, dimension, 'cosine'))
             _profile(db, profile_id)
-            db.commit()
             return profile_id
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def insert_chunk(self, hash_, profile_id, seq, pos, vector, source_evidence_digest,
                      *, title):
@@ -393,8 +396,7 @@ class LayaVectorIndex:
                 or not title or len(title_bytes) > MAX_TITLE_BYTES):
             raise IndexContractError('invalid_vector_chunk')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             blob, _ = _blob(vector, profile['dimension'])
             provenance = _provenance(hash_, title, profile_id, seq, pos,
@@ -409,11 +411,7 @@ class LayaVectorIndex:
                 db.execute('INSERT INTO vector_chunks VALUES(?,?,?,?,?,?,?,?)',
                            (hash_, title, profile_id, seq, pos, blob,
                             source_evidence_digest, provenance))
-            db.commit()
             return provenance
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def seal_chunk_set(self, hash_, title, profile_id, expected_count):
         """Seal an imported complete set; used before private candidate publish."""
@@ -422,8 +420,7 @@ class LayaVectorIndex:
                 or not 1 <= expected_count <= MAX_CANDIDATES):
             raise IndexContractError('vector_chunk_set_invalid')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             rows = _read_chunk_set(db, hash_, title, profile_id,
                                    profile['dimension'], allow_unsealed=True)
@@ -439,11 +436,7 @@ class LayaVectorIndex:
                 db.execute('INSERT INTO vector_chunk_sets VALUES(?,?,?,?,?)',
                            (hash_, title, profile_id, expected_count, digest))
             _read_chunk_set(db, hash_, title, profile_id, profile['dimension'])
-            db.commit()
             return expected_count
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def cached_chunk_set(self, hash_, title, profile_id):
         """Read a proven complete set; absent returns None, partial fails closed."""
@@ -471,8 +464,7 @@ class LayaVectorIndex:
                 or not 1 <= len(rows) <= MAX_CANDIDATES):
             raise IndexContractError('vector_chunk_set_invalid')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             cached = _read_chunk_set(db, hash_, title, profile_id,
                                      profile['dimension'])
@@ -483,7 +475,6 @@ class LayaVectorIndex:
                            _blob(current['vector'], profile['dimension'])[0]
                         for row, current in zip(rows, cached))):
                     raise IndexContractError('vector_chunk_conflict')
-                db.commit()
                 return len(cached)
             evidence = source_evidence(hash_, title)
             last_pos = -1
@@ -505,25 +496,19 @@ class LayaVectorIndex:
                        (hash_, title, profile_id, len(rows),
                         _chunk_set_digest(hash_, title, profile_id, verified)))
             _read_chunk_set(db, hash_, title, profile_id, profile['dimension'])
-            db.commit()
             return len(rows)
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def seal_generation(self, gen, profile_id):
         if not isinstance(gen, str) or not gen or not _hex(profile_id):
             raise IndexContractError('invalid_vector_generation')
         db = self.index.db
-        self.index._begin()
-        try:
+        with self.index._write_transaction(visible=False) as transaction:
             profile = _profile(db, profile_id)
             prior = db.execute('SELECT 1 FROM gen_vector_seals WHERE gen=?', (gen,)).fetchone()
             if prior is not None:
                 result = verify_generation_seal(self.index, gen)
                 if result['profile_id'] != profile_id:
                     raise IndexContractError('vector_profile_mismatch')
-                db.commit()
                 return result
             generation = db.execute('SELECT scope,state FROM generations WHERE gen=?',
                                     (gen,)).fetchone()
@@ -575,26 +560,38 @@ class LayaVectorIndex:
             db.execute('INSERT INTO gen_vector_seals VALUES(?,?,?,?,?)',
                        (gen, scope, profile_id, digest, rows_count))
             result = verify_generation_seal(self.index, gen)
-            db.commit()
             return result
-        except BaseException:
-            self.index._rollback()
-            raise
 
     def profile_for_pin(self, token):
         db = self.index.db
-        db.execute('BEGIN')
+        snapshot = isinstance(self.index, SnapshotIndex)
+        if snapshot:
+            db._hold_progress_deadline(self.index._deadline)
+        else:
+            db.execute('BEGIN')
         try:
             self.index._check_header(db)
             scope, gen, _ = self.index._pinned(token)
-            profile = _query_seal(self.index, gen)
+            profile = _query_seal(self.index, gen,
+                                  deadline=self.index._deadline if snapshot else None)
             if profile['scope'] != scope:
                 raise IndexContractError('vector_seal_invalid')
-            db.commit()
+            if not snapshot:
+                db.commit()
             return profile
-        except BaseException:
-            self.index._rollback()
+        except sqlite3.OperationalError as exc:
+            if not snapshot:
+                self.index._rollback()
+            if snapshot and time.monotonic() >= self.index._deadline:
+                raise IndexContractError('vector_deadline_exceeded') from exc
             raise
+        except BaseException:
+            if not snapshot:
+                self.index._rollback()
+            raise
+        finally:
+            if snapshot:
+                db._release_progress_deadline()
 
     def search_exact(self, token, query_vector, *, model_id, embedding_fingerprint,
                      dimension, limit, max_candidates=None,
@@ -617,9 +614,14 @@ class LayaVectorIndex:
         qnorm = math.sqrt(_sum_squares(query))
         deadline = None if deadline_seconds is None else time.monotonic() + deadline_seconds
         db = self.index.db
+        snapshot = isinstance(self.index, SnapshotIndex)
+        if snapshot:
+            deadline = self.index._deadline if deadline is None else min(deadline, self.index._deadline)
         # The seal proof is never skipped; it shares the query deadline. The
         # handler also interrupts single long statements inside the proof.
-        if deadline is not None:
+        if snapshot:
+            db._hold_progress_deadline(deadline)
+        elif deadline is not None:
             db.set_progress_handler(
                 lambda: int(time.monotonic() >= deadline), 1000)
         try:
@@ -632,14 +634,18 @@ class LayaVectorIndex:
                 raise IndexContractError('vector_deadline_exceeded') from exc
             raise
         finally:
-            if deadline is not None:
+            if snapshot:
+                db._release_progress_deadline()
+            elif deadline is not None:
                 db.set_progress_handler(None, 0)
 
     def _search_exact_pinned(self, token, query, qnorm, profile_id, dimension,
                              limit, max_candidates, max_float_work, deadline,
                              prefix_sql, prefix_params):
         db = self.index.db
-        db.execute('BEGIN')
+        snapshot = isinstance(self.index, SnapshotIndex)
+        if not snapshot:
+            db.execute('BEGIN')
         try:
             self.index._check_header(db)
             scope, gen, _ = self.index._pinned(token)
@@ -692,10 +698,12 @@ class LayaVectorIndex:
                                'hash': hash_, 'body': body, 'score': distance,
                                'seq': seq, 'position': pos}
             finish_path()
-            db.commit()
+            if not snapshot:
+                db.commit()
             return top
         except BaseException:
-            self.index._rollback()
+            if not snapshot:
+                self.index._rollback()
             raise
 
 

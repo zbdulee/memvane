@@ -599,6 +599,8 @@ def _load_intent(state, project):
 def _abort(intent):
     """Drop an intent whose fence was never written: nothing selected changed."""
     state = Path(intent['stateRoot'])
+    from laya_move_reader_journal import refuse_incomplete_move
+    refuse_incomplete_move(state, move_id=_sha(_canonical(intent)))
     _drop_pointer(intent['projectRoot'])
     temp = Path(intent['store']['temp'])
     for suffix in ('', '-journal'):
@@ -717,7 +719,8 @@ def _publish(intent):
         result = index.publish(generation['base'], generation['gen'], generation['claim'],
                                source_manifest=generation['manifest'],
                                claim_digest=generation['claimDigest'],
-                               claim_epoch=generation['claimEpoch'], require_vector=True)
+                               claim_epoch=generation['claimEpoch'], require_vector=True,
+                               _revision_install_id=route['installId'])
     if result not in ('published', 'replayed'):
         _fail('project_dir_move_publish_' + str(result))
 
@@ -794,6 +797,8 @@ def _verify(intent):
 
 
 def _settle(intent):
+    from laya_move_reader_journal import refuse_incomplete_move
+    refuse_incomplete_move(Path(intent['stateRoot']), move_id=_sha(_canonical(intent)))
     state = Path(intent['stateRoot'])
     _drop_pointer(intent['projectRoot'])
     tag = _sha(_canonical(intent))[:20]
@@ -864,6 +869,8 @@ def _locks(stack, project, state, queue_path):
         stack.enter_context(cp.card_write_lock(project, folder=folder))
     stack.enter_context(wiki_mutation_lock.lock(project))
     verify_layout()
+    from laya_move_read_seal import _register_writer
+    _register_writer(stack, project, state, kind='project', recheck=verify_layout)
     return verify_layout
 
 
@@ -879,14 +886,29 @@ def move(project_root, state, *, step=None):
     project = Path(project_root)
     state = Path(state)
     intent = _load_intent(state, project) if intent_present(state) else None
+    # Before owner admission a pointer is only a pending hint: another mover
+    # may have published or settled the intent since the previous read.
+    pending_pointer = os.path.lexists(pointer_path(project))
     mode = intent['mode'] if intent is not None else needed(project)
-    if mode is None:
+    if mode is None and not pending_pointer:
         return {'status': 'project_dir_current'}
-    if mode == 'tidy':
+    if mode == 'tidy' and not pending_pointer:
         return {'status': 'project_dir_current', 'tidied': tidy(project)}
     with ExitStack() as stack:
         verify_layout = _locks(stack, project, state, _queue_path(project, intent))
         intent = _load_intent(state, project)
+        pointer = read_pointer(project)
+        if pointer is not None:
+            if pointer['stateRoot'] != str(state):
+                _fail('project_dir_move_pointer_changed')
+            if intent is None:
+                _fail('project_dir_move_intent_missing')
+        from laya_move_reader_journal import refuse_incomplete_move
+        # The install/operation/owner lanes precede reader admission; the
+        # existing journal CAS obtains its transition lock inside this EX.
+        from laya_reader_lease import move_lifetime
+        stack.enter_context(move_lifetime(state, project, intent=intent))
+        refuse_incomplete_move(state)
         if intent is not None and not _fenced(intent):
             # Prepared but never fenced: start over from the current selection.
             _abort(intent)

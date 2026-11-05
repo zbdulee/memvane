@@ -194,6 +194,7 @@ def _run_bound_leased(index, queue, catalog, store, job, token, *,
 
 
 def _process_leased(queue, claim, recover, run):
+    from laya_reader_windows import ReaderWindowBusy
     job = queue.lease(claim, recover=recover)
     if job is None:
         return 'unavailable'
@@ -201,6 +202,11 @@ def _process_leased(queue, claim, recover, run):
     result = None
     try:
         result = run(job, token)
+    except ReaderWindowBusy as exc:
+        if getattr(exc, 'rollback_pending', False) or str(exc) not in ('reader_write_deadline', 'reader_publish_busy',
+                            'reader_mutation_busy', 'reader_lifetime_busy'):
+            raise
+        result = 'deferred'
     except (IndexContractError, sqlite3.Error, OSError):
         result = 'deferred'
     finally:

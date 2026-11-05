@@ -24,13 +24,23 @@ The complete `npm test` suite has a finite1,800-second budget; focused checks
 keep the wrapper's900-second default. This accommodates the observed sequential
 CI duration without allowing unbounded execution.
 
-Ordinary mock, regression and integration tests (`--kind test`, including CI)
-do not use model-work OS pressure, CPU/RSS, relative headroom, swap or system-load
+The full suite runs all `laya-sync-first-proof-checks.py` cases through
+`laya-sync-first-proof.test.mjs`. Its six dedicated focused wrappers repeat a
+subset of those same cases, so `npm test` excludes only those wrapper test names.
+`npm run test:focused` continues to execute each wrapper when requested.
+
+Ordinary mock, regression and integration tests (`--kind test`, including CI),
+remote review (`--kind review`) and hash or staging work (`--kind hash`) do not
+use model-work OS pressure, CPU/RSS, relative headroom, swap or system-load
 admission limits. They retain one global lease, file concurrency1, finite wall
 time, a process-count limit, verified ownership and abnormal-child cleanup.
 Actual model-loading/training tests must use `--kind model-test`; an explicit
 calibration envelope also always retains resource limits. This development-test
 distinction does not change any installed runtime learning admission.
+
+Independent review uses `--kind review` with a read-only reviewer command. It
+shares the global lease, process monitoring, finite timeout, and cleanup rules.
+It must not overlap a test or another review. Backup retains resource limits.
 
 `--calibration-envelope` is accepted only with `--kind test` or `--kind model-test`
 and `--max-seconds` of at most 30 (otherwise `calibration_requires_short_test`).

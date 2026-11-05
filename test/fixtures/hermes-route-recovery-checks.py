@@ -49,7 +49,7 @@ class HermesRouteChecks(unittest.TestCase):
         self.assertEqual(route.select_route(str(case.project))['state'], 'preview')
         return case
 
-    def invoke(self, case, *, after_classify=None):
+    def invoke(self, case, *, after_classify=None, classifier_start_delay=0):
         hooks = {}
         class Context:
             def register_hook(self, name, callback):
@@ -60,7 +60,20 @@ class HermesRouteChecks(unittest.TestCase):
         selector = ROOT / 'core' / 'laya_index_host_route.py'
 
         def observed_run(argv, *args, **kwargs):
-            answer = REAL_RUN(argv, *args, **kwargs)
+            try:
+                actual_argv = argv
+                if classifier_start_delay and len(argv) > 1 and Path(argv[1]) == selector:
+                    actual_argv = [sys.executable, '-c',
+                                   'import os,sys,time; time.sleep(float(sys.argv[1])); '
+                                   'os.execv(sys.executable,[sys.executable,*sys.argv[2:]])',
+                                   str(classifier_start_delay), *argv[1:]]
+                answer = REAL_RUN(actual_argv, *args, **kwargs)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                if len(argv) > 1 and Path(argv[1]) == selector:
+                    print(json.dumps({'case': 'selector-exception',
+                                      'type': type(exc).__name__,
+                                      'timeout': getattr(exc, 'timeout', None)}), flush=True)
+                raise
             if len(argv) > 1 and Path(argv[1]) == selector:
                 calls.append({'argv': list(argv), 'stdout': answer.stdout.strip(),
                               'returncode': answer.returncode})
@@ -140,6 +153,12 @@ class HermesRouteChecks(unittest.TestCase):
         self.assertIn(answer, (None, {}, {'context': ''}))
         self.assertEqual(previews, [])
         self.assertEqual(fresh._load(ledger)['phase'], 'upgrading')
+        # The real classifier still gets its bounded fence wait when process
+        # scheduling consumes part of the adapter's subprocess budget.
+        answer, calls, previews = self.invoke(case, classifier_start_delay=.7)
+        self.assertEqual(calls[0]['stdout'], 'upgrading')
+        self.assertIn(answer, (None, {}, {'context': ''}))
+        self.assertEqual(previews, [])
 
     def test_damaged_pending_proof_is_a_refusal(self):
         case = self.fixture()

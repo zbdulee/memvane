@@ -7,6 +7,7 @@ failed or deferred attempt leaves the wake for the runtime dispatcher to retry.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -24,8 +25,8 @@ from laya_index_host_route import (select_route, selected_collection_roots,
                                    wiki_index_roots)
 from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexRuntime,
                                 _collection_roots, capacity_store_paths)
-from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step
-from laya_install_journal import (cas_mark_new_write, inspect_journal,
+from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step, sync_owner
+from laya_install_journal import (JournalEvidenceError, cas_mark_new_write, inspect_journal,
                                   preflight_product_candidate,
                                   verify_selected_route_for_write as verify_selected_route,
                                   verify_worker_attestation)
@@ -295,14 +296,172 @@ def _capacity_paths(decision):
     return capacity_store_paths(decision['dbPath'])
 
 
+def _writer_executing_root():
+    return Path(__file__).resolve().parent.parent
+
+
+def _selected_v5_proof(project, decision, owner):
+    import laya_install_journal as journal
+    import laya_writer_open_plan as plan_module
+    from laya_reader_windows import ReaderWindowBusy
+    try:
+        plan = plan_module.capture_writer_plan(project, executing_root=_writer_executing_root())
+    except journal.JournalEvidenceError as exc:
+        if str(exc) == 'writer_windows_not_prepared':
+            raise ResourceDeferred(str(exc)) from exc
+        raise
+    try:
+        with plan_module.writer_proof_windows(plan, queue_owner=owner,
+                                              deadline=time.monotonic()+2) as window:
+            with journal.writer_identity_reads(window):
+                return verify_selected_route(decision)
+    except ReaderWindowBusy as exc:
+        if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
+                        'reader_lifetime_busy'):
+            raise ResourceDeferred(str(exc)) from exc
+        raise
+
+
+def _owned_selected_proof(decision, owner):
+    """Reprove a selected worker route with the queue owner already held."""
+    import laya_install_journal as journal
+    with journal.read_only_journals():
+        if journal.journal_version(decision['journalPath']) == 5:
+            return _selected_v5_proof(Path(decision['projectRoot']), decision, owner)
+        with journal.legacy_identity_reads():
+            return verify_selected_route(decision)
+
+
+def _owned_worker_attestation(decision, owner, expected):
+    """Reprove v5 around closure hashing without holding physical windows."""
+    import laya_install_journal as journal
+    with journal.read_only_journals():
+        version = journal.journal_version(decision['journalPath'])
+        if version != 5:
+            with journal.legacy_identity_reads():
+                manifest = verify_worker_attestation(decision)
+                if verify_selected_route(decision) != expected:
+                    raise IndexContractError('worker_selection_changed')
+                return manifest
+        project = Path(decision['projectRoot'])
+        selected = _selected_v5_proof(project, decision, owner)
+        if selected != expected:
+            raise IndexContractError('worker_selection_changed')
+        manifest = journal._worker_attestation_manifest(selected)
+        if _selected_v5_proof(project, decision, owner) != selected:
+            raise IndexContractError('worker_selection_changed')
+        return manifest
+
+
+@contextmanager
+def _full_worker_runtime(decision, owner, proof, source_root, *, capacity=None):
+    """Keep the v5 writer and its pins until the runtime has closed."""
+    import laya_install_journal as journal
+    from contextlib import ExitStack
+    windows = readers = None
+    try:
+        with ExitStack() as stack:
+            writer = None
+            options = {}
+            roles = ('base', 'queue') if capacity is None else ('base', 'queue', 'catalog', 'binding')
+            if capacity is not None:
+                options.update(catalog_path=capacity[0], binding_store_path=capacity[1],
+                               wiki_only='collections' in decision)
+            with journal.read_only_journals():
+                if journal.journal_version(decision['journalPath']) == 5:
+                    import laya_reader_windows as windows
+                    import laya_writer_proof_reader as readers
+                    import laya_writer_open_plan as plans
+                    import laya_writer_scope as normal
+                    plan = plans.capture_writer_plan(Path(decision['projectRoot']),
+                                                      executing_root=_writer_executing_root())
+                    writer = stack.enter_context(normal.worker_writer_scope(
+                        plan, queue_owner=owner, operation_timeout=2))
+                    if normal.admission_proof(writer) != proof:
+                        raise IndexContractError('selected_proof_changed')
+                    options['connection_windows'] = {
+                        role: windows.component_for(writer, role) for role in roles}
+            runtime = stack.enter_context(LayaIndexRuntime(
+                source_root=source_root, scope=decision['scopeId'], db_path=decision['dbPath'],
+                queue_path=decision['queuePath'], db_incarnation=decision['dbIncarnation'], **options))
+            yield runtime, writer
+    finally:
+        if windows is not None:
+            try:
+                windows.drain_pending(deadline=time.monotonic()+2)
+            finally:
+                readers.drain_proof_readers(deadline=time.monotonic()+2)
+            if windows.local_pending_count() or readers.local_pending_proof_readers():
+                raise ResourceDeferred('writer_cleanup_unsettled')
+
+
+@contextmanager
+def _discovery_base_component(decision, owner, proof):
+    """Bind discovery's base opens to the selected worker owner and drain."""
+    import laya_install_journal as journal
+    import laya_reader_windows as windows
+    import laya_writer_proof_reader as readers
+    import laya_writer_open_plan as plans
+    import laya_writer_scope as normal
+    try:
+        with journal.read_only_journals():
+            plan=plans.capture_writer_plan(Path(decision['projectRoot']),
+                                           executing_root=_writer_executing_root())
+        with normal.worker_writer_scope(plan,queue_owner=owner,operation_timeout=2) as writer:
+            if normal.admission_proof(writer) != proof:
+                raise IndexContractError('selected_proof_changed')
+            yield windows.component_for(writer,'base')
+    finally:
+        try:
+            windows.drain_pending(deadline=time.monotonic()+2)
+        finally:
+            readers.drain_proof_readers(deadline=time.monotonic()+2)
+        if windows.local_pending_count() or readers.local_pending_proof_readers():
+            raise ResourceDeferred('writer_cleanup_unsettled')
+
+
 def _selected(project):
     project = Path(project)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')
-    decision = select_route(str(project), action='update')
-    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
-        raise IndexContractError('selected_route_unavailable')
-    proof = verify_selected_route(decision)
+    import laya_install_journal as journal
+    from laya_worker_journal import worker_journal_access
+    # Clean legacy installs need no new ledger, lock or recovery permission.
+    # A hot image falls through to the narrowly owned recovery admission.
+    with journal.read_only_journals():
+        decision = select_route(str(project), action='update')
+        if decision.get('state') == 'candidate' and decision.get('projectRoot') == str(project):
+            try:
+                if journal.journal_version(decision['journalPath']) != 5:
+                    with journal.legacy_identity_reads():
+                        proof = verify_selected_route(decision)
+                    if (proof.get('productRouteAllowed') is not True
+                            or not isinstance(proof.get('providerManifest'), dict)):
+                        raise IndexContractError('selected_provider_unavailable')
+                    return decision, proof
+            except journal.JournalEvidenceError as exc:
+                if str(exc) not in ('journal_unavailable', 'writer_plan_v5_required'):
+                    raise
+    # Classification/version reads must not recover a legacy hot image. The
+    # legacy proof also checks its actual transaction's version, closing the
+    # v4-observed/v5-published interval before any raw content connection.
+    with worker_journal_access(project) as access:
+        for attempt in range(2):
+            with journal.read_only_journals():
+                decision = select_route(str(project), action='update')
+                if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+                    raise IndexContractError('selected_route_unavailable')
+                if journal.journal_version(decision['journalPath']) == 5:
+                    proof = _selected_v5_proof(project, decision, access.owner)
+                else:
+                    try:
+                        with journal.legacy_identity_reads():
+                            proof = verify_selected_route(decision)
+                    except journal.JournalEvidenceError as exc:
+                        if str(exc) == 'writer_plan_v5_required' and attempt == 0:
+                            continue
+                        raise
+                break
     if proof.get('productRouteAllowed') is not True or not isinstance(proof.get('providerManifest'), dict):
         raise IndexContractError('selected_provider_unavailable')
     return decision, proof
@@ -373,6 +532,8 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     """
     try:
         decision, proof = _selected(project)
+    except ResourceDeferred as exc:
+        return _deferred(exc)
     except IndexContractError as exc:
         if str(exc) != 'selected_route_unavailable':
             raise
@@ -411,10 +572,28 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         # candidate has no changed documents. The bounded dispatcher only
         # starts the independent owner and retries after it becomes ready.
         from laya_embed_resident import ensure_running
-        if verify_selected_route(decision) != proof:
-            raise IndexContractError('selected_provider_proof_changed')
         try:
-            ensure_running(decision['projectRoot'], proof['providerManifest'])
+            import laya_install_journal as journal
+            with journal.read_only_journals():
+                if select_route(str(project), action='update') != decision:
+                    raise IndexContractError('selected_provider_proof_changed')
+            # This short owner admission requests adoption, never waits for
+            # the model. Release it before taking the provider lane below.
+            with sync_owner(Path(decision['queuePath'])) as prewarm_owner:
+                if prewarm_owner is None:
+                    return {'state': 'deferred', 'reason': 'owner_busy'}
+                with journal.read_only_journals():
+                    if journal.journal_version(decision['journalPath']) == 5:
+                        current = _selected_v5_proof(Path(decision['projectRoot']),
+                                                     decision, prewarm_owner)
+                    else:
+                        # Reject a concurrent v4-to-v5 transition before a
+                        # legacy proof can open v5 content without a window.
+                        with journal.legacy_identity_reads():
+                            current = verify_selected_route(decision)
+                if current != proof:
+                    raise IndexContractError('selected_provider_proof_changed')
+                ensure_running(decision['projectRoot'], proof['providerManifest'])
         except ResourceDeferred as exc:
             return _deferred(exc)
     controller = coordinator or Coordinator()
@@ -425,11 +604,14 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
         _observe_member_block(decision, result)
         return _after_sync(decision, proof, grants, result)
     try:
-        with controller.activity('provider', EMBED_POLICY, observed):
+        with controller.activity('provider', EMBED_POLICY, observed), \
+                sync_owner(Path(decision['queuePath'])) as owner:
+            if owner is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}
             # The hook's sealed stat receipt is a fast freshness fence. This
             # off-hook worker must rehash the full native closure before load.
-            validated_manifest = verify_worker_attestation(decision)
-            if validated_manifest != proof['providerManifest'] or verify_selected_route(decision) != proof:
+            validated_manifest = _owned_worker_attestation(decision, owner, proof)
+            if validated_manifest != proof['providerManifest']:
                 raise IndexContractError('selected_provider_proof_changed')
             def admit():
                 # The service verifies its exact model/runtime files first.
@@ -439,7 +621,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
 
             service = _selected_service(decision, validated_manifest, admit, start_service)
             try:
-                if verify_selected_route(decision) != proof:
+                if _owned_selected_proof(decision, owner) != proof:
                     raise IndexContractError('selected_proof_changed')
                 class AdmittedProvider:
                     manifest = provider.manifest
@@ -450,27 +632,35 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                             raise ResourceDeferred('laya_sync_yield_priority')
                         return _embed_with_budget(provider, body, path)
 
-                with LayaIndexRuntime(source_root=source_root,
-                                      scope=decision['scopeId'], db_path=decision['dbPath'],
-                                      queue_path=decision['queuePath'],
-                                      db_incarnation=decision['dbIncarnation']) as runtime:
+                with _full_worker_runtime(decision, owner, proof, source_root) as (runtime, writer):
                     def before_publish():
                         nonlocal proof
-                        if verify_selected_route(decision) != proof:
+                        if _owned_selected_proof(decision, owner) != proof:
                             raise IndexContractError('selected_proof_changed')
+                        if writer is not None:
+                            import laya_writer_scope as normal
+                            fresh = normal.mark_new_write(writer)
+                            if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1 or
+                                    fresh.get('productRouteAllowed') is not True):
+                                raise IndexContractError('new_write_proof_unconfirmed')
+                            proof = fresh
+                            from laya_publication_revision import ensure_base_baseline
+                            ensure_base_baseline(runtime.index, scope=decision['scopeId'],
+                                                 profile_id=profile['profileId'], deadline=time.monotonic()+2)
+                            return
                         marked = cas_mark_new_write(decision['journalPath'],
                                                     proof['selectionEpoch'])
                         if (marked.get('epoch') != proof['selectionEpoch'] + 1 or
                                 marked.get('newWriteSeen') is not True):
                             raise IndexContractError('new_write_intent_unconfirmed')
-                        fresh = verify_selected_route(decision)
+                        fresh = _owned_selected_proof(decision, owner)
                         if (fresh.get('selectionEpoch') != marked['epoch'] or
                                 fresh.get('productRouteAllowed') is not True):
                             raise IndexContractError('new_write_proof_unconfirmed')
                         proof = fresh
 
                     batch = prepare_candidate_batch_off_hook(runtime, AdmittedProvider())
-                    if verify_selected_route(decision) != proof:
+                    if _owned_selected_proof(decision, owner) != proof:
                         raise IndexContractError('selected_proof_changed')
                     try:
                         if qa is not None:
@@ -479,14 +669,14 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                         if _higher_priority_wake(controller):
                             raise ResourceDeferred('laya_sync_yield_priority')
                         result = sync_full(runtime, before_publish=before_publish,
-                                           vector_batch=batch, require_vector=True)
+                                           vector_batch=batch, require_vector=True, owner=owner)
                     except BaseException as exc:
                         if qa is not None:
                             qa.finish(error=exc)
                         raise
                     if qa is not None:
                         qa.finish(result)
-                if verify_selected_route(decision) != proof:
+                if _owned_selected_proof(decision, owner) != proof:
                     raise IndexContractError('selected_proof_changed')
             finally:
                 service.stop()
@@ -510,17 +700,39 @@ def _after_sync(decision, proof, grants, result):
     if result.get('state') not in ('indexed', 'unchanged'):
         return result
 
-    def recheck():
-        if verify_selected_route(decision) != proof:
-            raise IndexContractError('selected_proof_changed')
-    import laya_external_edits
-    external = laya_external_edits.drain(decision, recheck=recheck)
-    if isinstance(external, dict) and external.get('remaining', 0):
-        return {**result, 'state': 'pending', 'reason': 'external_edits_pending'}
-    if grants is None:
-        return result
-    import laya_wiki_discovery
-    outcome = laya_wiki_discovery.drain_after_sync(decision, grants, recheck=recheck)
+    import laya_install_journal as journal
+    from contextlib import nullcontext
+    with journal.read_only_journals():
+        v5 = journal.journal_version(decision['journalPath']) == 5
+    try:
+        with (sync_owner(Path(decision['queuePath'])) if v5 else nullcontext(None)) as owner:
+            if v5 and owner is None:
+                return {**result, 'state': 'deferred', 'reason': 'owner_busy'}
+
+            def recheck():
+                current = (_owned_selected_proof(decision, owner) if v5
+                           else verify_selected_route(decision))
+                if current != proof:
+                    raise IndexContractError('selected_proof_changed')
+            import laya_external_edits
+            if v5:
+                from wiki_selected_laya import _owner_scope
+            with (_owner_scope((decision,proof),owner) if v5 else nullcontext()):
+                external = (laya_external_edits.drain(decision, recheck=recheck, owner=owner)
+                            if v5 else laya_external_edits.drain(decision, recheck=recheck))
+                if isinstance(external, dict) and external.get('remaining', 0):
+                    return {**result, 'state': 'pending', 'reason': 'external_edits_pending'}
+                if grants is None:
+                    return result
+                import laya_wiki_discovery
+                if v5:
+                    with _discovery_base_component(decision,owner,proof) as component:
+                        outcome = laya_wiki_discovery.drain_after_sync(
+                            decision,grants,recheck=recheck,coordination=component)
+                else:
+                    outcome = laya_wiki_discovery.drain_after_sync(decision, grants, recheck=recheck)
+    except ResourceDeferred as exc:
+        return {**result, **_deferred(exc)}
     if outcome['state'] == 'retry':
         return {'state': 'deferred', 'reason': 'wiki_discovery_' + outcome['reason'],
                 'generation': result.get('generation')}
@@ -549,10 +761,12 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     so concurrent hook queries see at most one epoch change.
     """
     from contextlib import ExitStack
-    state = {'proof': proof, 'service': None, 'fenced': False}
+    from laya_reader_windows import ReaderWindowBusy
+    state = {'proof': proof, 'service': None, 'fenced': False, 'writer': None, 'runtime': None}
+    owner = None
 
     def proof_ok():
-        return verify_selected_route(decision) == state['proof']
+        return _owned_selected_proof(decision, owner) == state['proof']
 
     def before_publish():
         if not proof_ok():
@@ -560,11 +774,23 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
         if state['fenced']:
             return
         current = state['proof']
+        if state['writer'] is not None:
+            import laya_writer_scope as normal
+            fresh = normal.mark_new_write(state['writer'])
+            if (fresh.get('selectionEpoch') != current['selectionEpoch'] + 1 or
+                    fresh.get('productRouteAllowed') is not True):
+                raise IndexContractError('new_write_proof_unconfirmed')
+            state['proof'] = fresh
+            from laya_publication_revision import ensure_base_baseline
+            ensure_base_baseline(state['runtime'].index, scope=decision['scopeId'],
+                                 profile_id=fresh['vectorProfile']['profileId'], deadline=time.monotonic()+2)
+            state['fenced'] = True
+            return
         marked = cas_mark_new_write(decision['journalPath'], current['selectionEpoch'])
         if (marked.get('epoch') != current['selectionEpoch'] + 1 or
                 marked.get('newWriteSeen') is not True):
             raise IndexContractError('new_write_intent_unconfirmed')
-        fresh = verify_selected_route(decision)
+        fresh = _owned_selected_proof(decision, owner)
         if (fresh.get('selectionEpoch') != marked['epoch'] or
                 fresh.get('productRouteAllowed') is not True):
             raise IndexContractError('new_write_proof_unconfirmed')
@@ -574,13 +800,16 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     try:
         with ExitStack() as stack:
             stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+            owner = stack.enter_context(sync_owner(Path(decision['queuePath'])))
+            if owner is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}, state['proof']
 
             def ensure_service():
                 if state['service'] is not None:
                     return
                 # The full native closure is rehashed before any model load.
-                validated = verify_worker_attestation(decision)
-                if validated != state['proof']['providerManifest'] or not proof_ok():
+                validated = _owned_worker_attestation(decision, owner, state['proof'])
+                if validated != state['proof']['providerManifest']:
                     raise IndexContractError('selected_provider_proof_changed')
 
                 def admit():
@@ -602,12 +831,13 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                     ensure_service()
                     return _embed_with_budget(provider, body, path)
 
-            with LayaIndexRuntime(source_root=source_root, scope=decision['scopeId'],
-                                  db_path=decision['dbPath'], queue_path=decision['queuePath'],
-                                  db_incarnation=decision['dbIncarnation'],
-                                  catalog_path=capacity[0],
-                                  binding_store_path=capacity[1],
-                                  wiki_only='collections' in decision) as runtime:
+            with _full_worker_runtime(decision, owner, state['proof'], source_root,
+                                      capacity=capacity) as (runtime, writer), ExitStack() as sidecars:
+                state['writer'] = writer
+                state['runtime'] = runtime
+                # request_scan and first sidecar creation both mutate stores.
+                if writer is not None:
+                    before_publish()
                 publish_complete = None
                 preserve_previous = None
                 if 'collections' in decision:
@@ -626,8 +856,40 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                         'vectorProfileId': decision['vectorProfile']['profileId'],
                     }
 
-                    published = PublishedReader(incremental_identity)
-                    stack.callback(published.close)
+                    coordination = None
+                    if writer is not None:
+                        from laya_reader_windows import (component_for, _component,
+                                                         create_sidecar_owned, close_owned)
+                        coordination = component_for(writer, 'sidecar')
+                        if _component(coordination)[3] is None:
+                            created = create_sidecar_owned(coordination, deadline=time.monotonic()+2)
+                            sidecars.callback(lambda: close_owned(created, deadline=time.monotonic()+2))
+                            coordination = component_for(writer, 'sidecar')
+                        # Seal the preexisting sidecar before catalog progress,
+                        # even if this wake never publishes a document.
+                        from laya_incremental_docs import _sidecar_open, _sidecar_setup, _close
+                        try:
+                            baseline_db = _sidecar_open(incremental_identity, coordination)
+                        except JournalEvidenceError as exc:
+                            if str(exc) != 'normal_writer_sidecar_identity_changed':
+                                raise
+                            # A crash during first creation can leave a DELETE
+                            # sidecar. Its existing recovery validates that it
+                            # is empty before converting it to WAL.
+                            from laya_sidecar_create import resume_empty_sidecar_owned
+                            resumed = resume_empty_sidecar_owned(
+                                coordination, identity=incremental_identity, deadline=time.monotonic()+2)
+                            sidecars.callback(lambda: close_owned(resumed, deadline=time.monotonic()+2))
+                            baseline_db = _sidecar_open(incremental_identity, coordination)
+                        # Keep the managed writer alive for this wake. Closing
+                        # the last WAL connection here removes its auxiliaries
+                        # before PublishedReader's coordinated RO admission.
+                        sidecars.callback(_close, baseline_db)
+                        _sidecar_setup(baseline_db, incremental_identity, coordination)
+                        if not proof_ok():
+                            raise IndexContractError('selected_proof_changed')
+                    published = PublishedReader(incremental_identity, coordination=coordination)
+                    sidecars.callback(published.close)
 
                     def publish_complete(snapshot, path, sha, title, body, profile_id):
                         # Every wake rescans, so the pending fill offers each
@@ -647,30 +909,37 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                         before_publish()
                         publish_document(runtime, incremental_identity, snapshot, path,
                                          sha, title, body, profile_id,
-                                         require_verified=True)
+                                         require_verified=True, coordination=coordination)
 
                     def preserve_previous(index, binding, job):
                         if not proof_ok():
                             raise IndexContractError('selected_proof_changed')
                         preserve_previous_head(index, incremental_identity,
-                                               job['base_gen'], job['gen'])
+                                               job['base_gen'], job['gen'], coordination=coordination)
                         if not proof_ok():
                             raise IndexContractError('selected_proof_changed')
 
                 result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
                                         controller, lambda: not proof_ok(),
                                         diagnose=_member_diagnosis(decision, provider),
+                                        owner=owner,
                                         on_document_complete=publish_complete,
                                         before_head_publish=preserve_previous,
                                         retire_missing=(
                                             lambda: retire_missing_documents(
                                                 runtime, incremental_identity,
-                                                before_write=before_publish)
+                                                before_write=before_publish, coordination=coordination)
                                             if publish_complete is not None else None))
             if not proof_ok():
                 raise IndexContractError('selected_proof_changed')
     except ResourceDeferred as exc:
         return _deferred(exc), state['proof']
+    except ReaderWindowBusy as exc:
+        if getattr(exc, 'rollback_pending', False) or str(exc) not in (
+                'reader_write_deadline', 'reader_publish_busy',
+                'reader_mutation_busy', 'reader_lifetime_busy'):
+            raise
+        return {'state': 'deferred', 'reason': str(exc)}, state['proof']
     return _checked(result), state['proof']
 
 
@@ -730,7 +999,7 @@ def _member_diagnosis(decision, provider):
 
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
                    on_document_complete=None, before_head_publish=None,
-                   retire_missing=None, diagnose=None):
+                   retire_missing=None, diagnose=None, owner=None):
     """Bounded scan, per-document fill, and full-generation rounds for one wake.
 
     The wake is the change signal (edits, Bash and SessionStart request it),
@@ -756,7 +1025,7 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
             raise IndexContractError('selected_proof_changed')
         result = sync_step(runtime, before_publish=before_publish, require_vector=True,
                            vector_profile_id=profile_id,
-                           before_head_publish=before_head_publish)
+                           before_head_publish=before_head_publish, owner=owner)
         if result.get('reason') == 'scan_pending' and on_document_complete is not None:
             partial = pending_vector_fill_step(runtime, provider,
                                                should_yield=should_yield,

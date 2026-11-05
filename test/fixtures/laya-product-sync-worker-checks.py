@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Selected worker wiring only; no model, QMD, socket or host is started."""
-from contextlib import ExitStack, closing, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, closing, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
@@ -114,17 +114,22 @@ class WorkerChecks(unittest.TestCase):
             calls.append(('start',manifest))
             self.assertTrue(admit())
             return service
-        def complete(_runtime,*,before_publish,vector_batch,require_vector):
+        def complete(_runtime,*,before_publish,vector_batch,require_vector,owner=None):
             self.assertTrue(require_vector)
             self.assertEqual(vector_batch,batch)
             before_publish()
             return {'state':'indexed'}
         patches=[patch.object(worker,'_selected',return_value=(self.decision,self.proof)),
+            # This wiring fixture substitutes the entire runtime/sync boundary.
+            # Actual owner/kernel lifetime is covered by the real-store fixture.
+            patch.object(worker,'sync_owner',side_effect=lambda _queue:nullcontext(object())),
             patch.object(worker,'ReviewedLocalQmdProvider',return_value=provider),
             patch.object(worker,'resource_report',return_value={'ready':True}),
-            patch.object(worker,'verify_worker_attestation',return_value=self.proof['providerManifest']),
+            patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
+            patch('laya_install_journal.journal_version', return_value=4),
+            patch.object(worker,'_owned_worker_attestation',return_value=self.proof['providerManifest']),
             patch.object(worker,'verify_selected_route',side_effect=verify or
-                         [self.proof,self.proof,self.proof,self.proof,self.refreshed,self.refreshed]),
+                         [self.proof,self.proof,self.proof,self.refreshed,self.refreshed]),
             patch.object(worker,'LayaIndexRuntime',return_value=context),
             patch.object(worker,'prepare_candidate_batch_off_hook',return_value=batch),
             patch.object(worker,'cas_mark_new_write',return_value={'epoch':8,'newWriteSeen':True}),
@@ -143,9 +148,12 @@ class WorkerChecks(unittest.TestCase):
 
     def test_selected_wake_prewarms_before_a_no_change_scan(self):
         import laya_embed_resident
+        import laya_install_journal
         self.decision['projectRoot'] = str(self.project)
         controller, service, _calls, _start, patches = self.wiring()
         with self._patches(patches), \
+             patch.object(laya_install_journal, 'journal_version', return_value=4), \
+             patch.object(worker, 'select_route', return_value=self.decision), \
              patch.object(laya_embed_resident, 'ensure_running',
                           side_effect=ResourceDeferred('laya_service_preparing')) as warm:
             result = worker.run(self.project, coordinator=controller,
@@ -241,7 +249,7 @@ class WorkerChecks(unittest.TestCase):
     def test_qa_barrier_holds_exact_scope_once_and_records_completion_order(self):
         root,arm=self.arm()
         order=[]
-        def complete(_runtime,*,before_publish,vector_batch,require_vector):
+        def complete(_runtime,*,before_publish,vector_batch,require_vector,owner=None):
             order.append(vector_batch['source_manifest'])
             return {'state':'unchanged','generation':'g-main','claim':None}
         controller,_service,_calls,start,patches=self.wiring(sync=complete,batch=self.BATCH)
@@ -427,7 +435,9 @@ class V2WorkerChecks(unittest.TestCase):
         patches=[patch.object(worker,'_selected',side_effect=lambda _p:(decision,self.proof())),
             patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
             patch.object(worker,'resource_report',return_value={'ready':True}),
-            patch.object(worker,'verify_worker_attestation',return_value={'synthetic':True}),
+            patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
+            patch('laya_install_journal.journal_version', return_value=4),
+            patch.object(worker,'_owned_worker_attestation',return_value={'synthetic':True}),
             patch.object(worker,'verify_selected_route',side_effect=verify),
             patch.object(worker,'cas_mark_new_write',side_effect=cas),
             patch.object(worker,'prepare_candidate_batch_off_hook',side_effect=batch)]
@@ -525,7 +535,7 @@ class V2WorkerChecks(unittest.TestCase):
                 with patch.object(worker,'_selected',return_value=(decision,self.proof())),\
                         patch.object(worker,'ReviewedLocalQmdProvider',
                                      side_effect=AssertionError('provider')),\
-                        patch.object(worker,'verify_worker_attestation',
+                        patch.object(worker,'_owned_worker_attestation',
                                      side_effect=AssertionError('attestation')),\
                         patch.dict(os.environ,{},clear=False):
                     os.environ.pop(worker.QA_BARRIER_ENV,None)
@@ -622,6 +632,7 @@ class V2WorkerChecks(unittest.TestCase):
                 patch.object(seam,'_private_state',return_value=self.home),\
                 patch.object(live_select,'choose',side_effect=choose),\
                 patch.object(laya_install_journal,'verify_selected_route',side_effect=journal),\
+                patch.object(laya_install_journal,'journal_version',return_value=4),\
                 patch.object(laya_local_embed_provider,'ReviewedLocalQmdProvider',
                              side_effect=provider):
             yield real_queue(self.home)
@@ -801,7 +812,7 @@ class CapacityWorkerChecks(unittest.TestCase):
         seen={'steps':[],'fills':0,'runtime':None,'scans':0,'cas':0}
         answers=iter(steps);fill_answers=iter(fills)
         def step(runtime,*,before_publish,require_vector,vector_profile_id,
-                 before_head_publish=None):
+                 before_head_publish=None,owner=None):
             self.assertTrue(require_vector)
             self.assertEqual(seen['scans'],1)  # the wake asked for its scan first
             seen['steps'].append(vector_profile_id)
@@ -936,7 +947,9 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         patches=[patch.object(worker,'_selected',side_effect=lambda _p:(decision,self.proof())),
             patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
             patch.object(worker,'resource_report',return_value={'ready':True}),
-            patch.object(worker,'verify_worker_attestation',return_value={'synthetic':True}),
+            patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
+            patch('laya_install_journal.journal_version', return_value=4),
+            patch.object(worker,'_owned_worker_attestation',return_value={'synthetic':True}),
             patch.object(worker,'verify_selected_route',side_effect=lambda _d:self.proof()),
             patch.object(worker,'cas_mark_new_write',side_effect=cas),
             patch.object(worker,'prepare_candidate_batch_off_hook',
