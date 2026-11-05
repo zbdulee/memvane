@@ -1631,6 +1631,14 @@ def _prepare_v4_bridge(project, state, marker, ledger, *, source_root, plugin_ro
         from laya_journal_v4 import refuse_while_legacy_hermes
         refuse_while_legacy_hermes()
         intent = _load_intent(state, project)
+        if intent is not None and (intent['newProof']['pluginRoot'] != str(plugin_root) or
+                                   intent['newProof']['sourceCommit'] != commit_id or
+                                   intent['reviewSha256'] != accepted_provider_sha256):
+            # A previous completed upgrade is a receipt, not the intent for
+            # this bridge. The existing proof refuses unsettled transitions.
+            _backup_proof(intent, verify_new=False)
+            _archive_finished_intent(state, project, intent)
+            intent = None
         if intent is None:
             intent = _prepare(project, state, path, source_root, plugin_root, commit_id,
                               accepted_provider_sha256, model_path, dimension, ledger,

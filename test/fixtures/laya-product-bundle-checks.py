@@ -24,6 +24,7 @@ import laya_install_journal as journal
 import laya_product_install as product_install
 import laya_product_bundle as bundle
 import laya_active_upgrade as active_upgrade
+prepare_v4_bridge = active_upgrade._prepare_v4_bridge
 import laya_fresh_wiki_origin as fresh_wiki
 import laya_inactive_upgrade as inactive_upgrade
 from laya_local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
@@ -829,6 +830,21 @@ print(json.dumps(result))'''
                 active_upgrade._backup_proof(prepared)
                 self.assertTrue(Path(prepared['backup']).is_dir())
             intent = prepared
+            import laya_bridge_readiness as bridge
+            import laya_journal_v4 as v4
+            ledger = active_upgrade._origin(self.install)
+            _, operation_marker, _ = ledger.paths(self.project, self.journal_path)
+            original_intent = active_upgrade._intent_path(self.install).read_bytes()
+            with mock.patch.object(bridge, '_issued', return_value=(None, 'c' * 40,
+                    frozenset(('claude', 'codex')), str(self.install))), \
+                 mock.patch.object(v4, 'refuse_while_legacy_hermes'), \
+                 mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
+                with self.assertRaisesRegex(product_install.InstallBlocked, 'active_upgrade_prior_unsettled'):
+                    prepare_v4_bridge(self.project, self.install, operation_marker, ledger,
+                        source_root=self.source, plugin_root=Path(second['pluginRoot']),
+                        commit_id='c' * 40, accepted_provider_sha256='c' * 64,
+                        model_path=self.model, dimension=3, runtime_generation=None, readiness=object())
+            self.assertEqual(active_upgrade._intent_path(self.install).read_bytes(), original_intent)
             with mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
                 atomic = inactive_upgrade._atomic_expected
                 def interrupted(path, before, after):
@@ -862,6 +878,23 @@ print(json.dumps(result))'''
             self.assertEqual(selected_in_bundle.returncode, 0,
                              selected_in_bundle.stderr)
             self.assertTrue(json.loads(selected_in_bundle.stdout)['productRouteAllowed'])
+            # A settled v4 receipt from the previous release must not block
+            # the next release before its reader baseline can be prepared.
+            receipt_path = active_upgrade.finished_intent_receipt(self.install, self.project, intent)
+            self.assertEqual(journal.journal_version(self.journal_path), 4)
+            with mock.patch.object(bridge, '_issued', return_value=(None, 'c' * 40,
+                    frozenset(('claude', 'codex')), str(self.install))), \
+                 mock.patch.object(v4, 'refuse_while_legacy_hermes'), \
+                 mock.patch.object(active_upgrade, '_locked_provider', nullcontext), \
+                 mock.patch.object(active_upgrade, '_prepare', side_effect=RuntimeError('next_prepare')):
+                with self.assertRaisesRegex(RuntimeError, 'next_prepare'):
+                    prepare_v4_bridge(self.project, self.install, operation_marker, ledger,
+                        source_root=self.source, plugin_root=Path(second['pluginRoot']),
+                        commit_id='c' * 40, accepted_provider_sha256='c' * 64,
+                        model_path=self.model, dimension=3, runtime_generation=None, readiness=object())
+            self.assertTrue(receipt_path.is_file())
+            self.assertFalse(active_upgrade._intent_path(self.install).exists())
+            receipt_path.rename(active_upgrade._intent_path(self.install))
             with mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
                 self.assertEqual(active_upgrade.upgrade(
                     project_root=str(self.project), state_root=str(self.install),
