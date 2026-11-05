@@ -893,7 +893,9 @@ def upgrade_install(project_root, state, root, home=None):
                    runtime_generation=runtime_generation)
     if kind == 'active':
         import laya_active_upgrade
-        result = laya_active_upgrade.upgrade(**options)
+        from laya_inactive_upgrade import backup_proof_scope
+        with backup_proof_scope():
+            result = laya_active_upgrade.upgrade(**options)
         from laya_product_install import _request_build_wake
         result['syncWake'] = _request_build_wake(str(project_root))
     elif kind == 'bound':

@@ -1184,7 +1184,11 @@ print(json.dumps(result))'''
         root, first, _raw = self.selected_on_host_root()
         commit2 = self.commit_v2()
         self.reextract(root)  # commit2 bytes; commit1 metadata survives
-        result = self.bundle_upgrade(root, commit2)
+        with mock.patch.object(inactive_upgrade, 'backup_proof_scope', wraps=inactive_upgrade.backup_proof_scope) as scope, \
+             mock.patch.object(inactive_upgrade, '_verify_backup_full', wraps=inactive_upgrade._verify_backup_full) as full:
+            result = self.bundle_upgrade(root, commit2)
+        scope.assert_called_once_with()
+        self.assertEqual(full.call_count, 1)
         self.assertEqual(result['status'], 'active_upgrade_complete', result)
         proof = bundle.inspect_full_plugin_candidate(root)
         self.assertNotEqual(proof['bundleManifestSha256'], first['bundleManifestSha256'])
