@@ -26,7 +26,18 @@ def verify_rollback_writer(self,case,reader,lease,upgrade,target,target2,new,nex
          mock.patch.object(reader.journal,'_inspect_identity',return_value=target), \
          mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(new)), \
          mock.patch.object(reader.journal,'_provider_file_identity',return_value=[[str(new/'p.py'),1,2,3,4,5]]):
-        self.assertEqual(upgrade._restore(intent2)['status'],'active_upgrade_restored_laya')
+        write=upgrade.inactive._atomic_expected
+        observed=[]
+        def restore_write(*args,**kwargs):
+            result=write(*args,**kwargs)
+            with lease.resolve_endpoint(case.project,action='recall',host_root=new) as endpoint:
+                self.assertEqual(endpoint.endpoint_id,expected)
+            observed.append('metadata')
+            return result
+        with mock.patch.object(upgrade.inactive,'_atomic_expected',side_effect=restore_write):
+            self.assertEqual(upgrade._restore(intent2)['status'],'active_upgrade_restored_laya')
+        self.assertGreaterEqual(len(observed),3)
+        observed.clear()
         writer=importlib.import_module('laya_writer_open_plan')
         plan=writer.capture_writer_plan(case.project,executing_root=new)
         writer.validate_writer_plan(plan)
@@ -60,9 +71,20 @@ def verify_rollback_writer(self,case,reader,lease,upgrade,target,target2,new,nex
              mock.patch.object(reader.journal,'inspect_full_plugin_candidate',side_effect=restored_lookup):
             intent3=upgrade._prepare(case.project,case.state,case.journal,case.home,next_root,
                 target2['sourceCommit'],review2['proposalSha256'],'/synthetic/model',3)
+            activate=upgrade.cas_activate
+            def observe_activate(*args,**kwargs):
+                result=activate(*args,**kwargs)
+                with lease.resolve_endpoint(case.project,action='recall',host_root=new) as endpoint:
+                    self.assertEqual(endpoint.endpoint_id,expected)
+                observed.append('activated')
+                return result
             with mock.patch.object(reader.journal,'_bind_attestation',return_value=(
-                    hashlib.sha256(intent3['newAttestation'].encode()).hexdigest(),fid2)):
+                    hashlib.sha256(intent3['newAttestation'].encode()).hexdigest(),fid2)), \
+                 mock.patch.object(upgrade.inactive,'_atomic_expected',side_effect=restore_write), \
+                 mock.patch.object(upgrade,'cas_activate',side_effect=observe_activate):
                 self.assertEqual(upgrade._switch(intent3)['status'],'active_upgrade_complete')
+            self.assertGreaterEqual(observed.count('metadata'),2)
+            self.assertIn('activated',observed)
             with mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(next_root)), \
                  mock.patch.object(reader.journal,'_provider_file_identity',return_value=fid2):
                 plan=writer.capture_writer_plan(case.project,executing_root=next_root)

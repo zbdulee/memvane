@@ -663,7 +663,7 @@ def _bootstrap_endpoint(state, project, root, options):
     return endpoint, proof
 
 
-def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, max_epoch):
+def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, max_epoch, fenced=False):
     """Validate immutable, activation-committed provider successors for one endpoint."""
     _need(db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_successors'").fetchone(),
           'reader_successor_missing')
@@ -696,6 +696,8 @@ def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, ma
 
     rows = db.execute('SELECT epoch,intent_sha256,record FROM upgrade_read_successors '
                       'WHERE endpoint_id=? ORDER BY epoch', (endpoint_id,)).fetchall()
+    if fenced:
+        rows = [row for row in rows if row[0] <= max_epoch]
     for epoch, intent_sha, packed in rows:
         item = json.loads(packed, object_pairs_hook=journal._pairs, parse_constant=journal._nonfinite)
         if (type(item) is dict and previous_item is not None
@@ -751,7 +753,7 @@ def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, ma
         activating = (row['state'] == 'active' and row['epoch'] == max_epoch + 1
                       and row['previous'] == target_identity
                       and row['previous_provider_attestation_sha'] == target_sha)
-        _need((selected_restored or activating) and row['epoch'] > last_epoch
+        _need((selected_restored or activating or fenced) and row['epoch'] > last_epoch
               and item['fromAttestation'] == target_sha
               and item['fromIdentity'] == target_identity
               and restored_predecessor(item, max_epoch),
