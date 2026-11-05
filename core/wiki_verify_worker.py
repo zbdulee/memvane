@@ -1248,6 +1248,14 @@ def _cleanup_job_key(job: dict) -> str:
     """Bind a cleanup receipt to one exact verify job, including its timestamp."""
     original = {key: value for key, value in job.items()
                 if key not in ('_pendingCleanup', '_requeue_count')}
+    # Both folder spellings name the same logical card across project moves.
+    for key in ('targetPath', 'pendingPath'):
+        value = original.get(key)
+        if isinstance(value, str):
+            for prefix in ('.auto-context/', '.memvane/'):
+                if value.startswith(prefix):
+                    original[key] = '.memvane/' + value[len(prefix):]
+                    break
     return hashlib.sha256(json.dumps(original, ensure_ascii=True, sort_keys=True,
                                      separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
@@ -1289,8 +1297,9 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
                 info = path.lstat()
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
                     continue
+                has_marker = '_pendingCleanup' in job
                 marker = job.get('_pendingCleanup')
-                if marker is not None:
+                if has_marker:
                     if not _valid_cleanup_marker(job):
                         continue
                     fingerprint = tuple(marker['fingerprint'])
@@ -1302,7 +1311,7 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
                     fingerprint = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
                 if path in conflicts:
                     continue
-                if marker is None:
+                if not has_marker:
                     found.setdefault(path, fingerprint)
                     jobs.setdefault(path, job)
                 else:
@@ -1529,9 +1538,9 @@ def run(
                     if isinstance(pending, str):
                         remaining_paths.add(root / pending)
             for path, fingerprint in pending_snapshots.items():
-                if path in remaining_paths:
-                    continue  # A deferred verify job is not terminal.
                 job = pending_jobs[path]
+                if path in remaining_paths and not _valid_cleanup_marker(job):
+                    continue  # A deferred verify job is not terminal.
                 marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
                 retry.append(json.dumps({**job, '_pendingCleanup': marker},
                                         ensure_ascii=False, sort_keys=True))

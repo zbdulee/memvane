@@ -106,6 +106,36 @@ class PendingRecovery(unittest.TestCase):
         self.assertEqual(call.call_count,1)
         self.assertTrue(self.pending.exists())
 
+    def test_existing_receipt_survives_budget_deferred_recovered_job(self):
+        st=self.pending.stat();saved=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
+        retry={**self.job,'_pendingCleanup':{'fingerprint':saved,'jobKey':verify._cleanup_job_key(self.job)}}
+        recovered={**self.job,'_requeue_count':1}
+        other=self.target.with_name('other.md');other.write_text('live')
+        first={**self.job,'targetPath':str(other.relative_to(self.root)),'pendingPath':str(other.with_name('.other.md.pending-'+'b'*16).relative_to(self.root)),'sourceHash':'b'*16}
+        (self.root/first['pendingPath']).write_text('candidate')
+        self.queue.write_text(json.dumps(first)+'\n'+json.dumps(retry)+'\n'+json.dumps(recovered)+'\n')
+        with mock.patch.object(verify.wcw,'budget_of',return_value={'verifyPerRun':1}), \
+             mock.patch.object(verify,'process_verify_job',return_value=(True,False)):
+            verify.run(self.root,self.cfg,self.compile)
+        rows=[json.loads(line) for line in self.queue.read_text().splitlines() if line]
+        self.assertTrue(any(r.get('pendingPath')==retry['pendingPath'] and '_pendingCleanup' in r for r in rows))
+        self.assertTrue(self.pending.exists())
+
+    def test_cleanup_job_key_survives_project_folder_move(self):
+        st=self.pending.stat();saved=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
+        retry={**self.job,'_pendingCleanup':{'fingerprint':saved,'jobKey':verify._cleanup_job_key(self.job)}}
+        (self.root/'.auto-context').rename(self.root/'.memvane')
+        rebased=verify.rebased_job(self.root,retry)
+        self.assertNotEqual(rebased['pendingPath'],retry['pendingPath'])
+        self.assertTrue(verify._valid_cleanup_marker(rebased))
+
+    def test_null_cleanup_marker_never_deletes_candidate(self):
+        invalid={**self.job,'_pendingCleanup':None}
+        self.queue.write_text(json.dumps(invalid)+'\n')
+        with mock.patch.object(verify,'process_verify_job',side_effect=AssertionError('invalid must not verify')):
+            verify.run(self.root,self.cfg,self.compile)
+        self.assertTrue(self.pending.exists())
+
     def test_two_cleanup_claims_do_not_both_ack_a_shared_candidate(self):
         row=json.dumps(self.job);a=self.claim('a',row+'\n');b=self.claim('b',row+'\n')
         snapshots,_=verify._pending_snapshots(self.root,self.cfg,[(row,self.job)])
