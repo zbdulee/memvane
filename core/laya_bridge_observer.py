@@ -17,7 +17,7 @@ import uuid
 import laya_bridge_readiness as B
 from laya_bridge_process import (peer_identity as _peer_identity,
     process_identity as _process_identity, descendant_chain, descendants, same_process)
-from laya_product_bundle import inspect_full_plugin_candidate
+from laya_product_bundle import BundleEvidenceError, inspect_full_plugin_candidate
 
 _MAX = 16384
 _TIMEOUT = 8
@@ -100,7 +100,7 @@ def _host_spec(challenge, host):
             or os.environ.get('QMD_SANDBOX')):
         _refuse()
     from laya_journal_v4 import host_copies
-    from laya_bundle_upgrade import host_layout, installed_commit
+    from laya_bundle_upgrade import host_layout, installed_commit, select_source
     import laya_install_journal as J
     directory, _nonce = B._issued(challenge, B.BridgeChallenge)
     registry = B._load_challenge(directory)
@@ -116,11 +116,25 @@ def _host_spec(challenge, host):
         root = Path(name)
         try:
             kind, _source = host_layout(root)
-        except ValueError:
+        except BundleEvidenceError:
             continue
         if kind != host or installed_commit(root) != challenge.release_commit:
             continue
-        proof = inspect_full_plugin_candidate(str(root))
+        try:
+            proof = inspect_full_plugin_candidate(str(root))
+        except ValueError:
+            if loaded is not None:
+                raise
+            # A freshly installed cache has not yet been adopted by a worker.
+            # Re-prove its exact committed bytes and let the existing adopter
+            # recover interrupted seal metadata before observing the host.
+            from laya_product_bundle import adopt_host_loaded_plugin
+            source, commit = select_source(root)
+            if commit != challenge.release_commit:
+                _refuse()
+            adopt_host_loaded_plugin(source, root, commit_id=commit,
+                                     vector_profile=selected['selected']['vectorProfile'])
+            proof = inspect_full_plugin_candidate(str(root))
         if proof['sourceCommit'] == challenge.release_commit and proof['pluginRoot'] == str(root):
             matches.append((root, proof))
     if len(matches) != 1:

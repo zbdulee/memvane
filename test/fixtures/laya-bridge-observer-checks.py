@@ -141,6 +141,60 @@ class ObserverChecks(unittest.TestCase):
             self.assertTrue(callable(getattr(module, name, None)), name)
         return module
 
+    def test_unsealed_installed_host_is_adopted_before_registered_preflight(self):
+        observer=self.observer()
+        bridge,challenge=self.challenge('claude')
+        upgrade=importlib.import_module('laya_bundle_upgrade')
+        journal=importlib.import_module('laya_install_journal')
+        bundle=importlib.import_module('laya_product_bundle')
+        v4=importlib.import_module('laya_journal_v4')
+        root=self.case.home/'new-host'
+        root.mkdir()
+        selected=journal.inspect_journal(self.case.journal)['selected']
+        proof={'pluginRoot':str(root),'sourceCommit':'c'*40,'bundleManifestSha256':'d'*64}
+        sealed=[]
+        def inspect(_root):
+            if not sealed:raise bundle.BundleEvidenceError('unsafe_bundle_metadata')
+            return proof
+        def adopt(source,installed,*,commit_id,vector_profile):
+            self.assertEqual((Path(source),Path(installed),commit_id,vector_profile),
+                             (self.case.home,root,'c'*40,selected['vectorProfile']))
+            sealed.append(True)
+            (root/'.laya-product').mkdir()
+            return proof
+        with mock.patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'','QMD_SANDBOX':''}), \
+             mock.patch.object(v4,'host_copies',return_value=[str(root)]), \
+             mock.patch.object(upgrade,'host_layout',return_value=('claude',self.case.home)), \
+             mock.patch.object(upgrade,'installed_commit',return_value='c'*40), \
+             mock.patch.object(upgrade,'select_source',return_value=(self.case.home,'c'*40)), \
+             mock.patch.object(bundle,'adopt_host_loaded_plugin',side_effect=adopt) as adopt_call, \
+             mock.patch.object(observer,'inspect_full_plugin_candidate',side_effect=inspect), \
+             mock.patch.object(observer.shutil,'which',return_value='/bin/bash'):
+            result=observer._host_spec(challenge,'claude')
+            with mock.patch.object(observer,'inspect_full_plugin_candidate',
+                                   side_effect=bundle.BundleEvidenceError('unsafe_bundle_metadata')), \
+                 mock.patch.object(bundle,'adopt_host_loaded_plugin',
+                                   side_effect=bundle.BundleEvidenceError('unsafe_bundle_metadata')):
+                with self.assertRaisesRegex(ValueError,'unsafe_bundle_metadata'):
+                    observer._host_spec(challenge,'claude')
+            self.assertEqual(adopt_call.call_count,1)
+            (root/'.laya-product').rmdir()
+            with mock.patch.object(upgrade,'select_source',return_value=(self.case.home,'e'*40)), \
+                 mock.patch.object(observer,'inspect_full_plugin_candidate',
+                                   side_effect=bundle.BundleEvidenceError('unsafe_bundle_metadata')):
+                with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                    observer._host_spec(challenge,'claude')
+            self.assertEqual(adopt_call.call_count,1)
+            with mock.patch.object(bridge,'_loaded_config',return_value={'sentinel':'fixture'}), \
+                 mock.patch.object(journal,'journal_version',return_value=5), \
+                 mock.patch.object(observer,'inspect_full_plugin_candidate',
+                                   side_effect=bundle.BundleEvidenceError('unsafe_bundle_metadata')):
+                with self.assertRaisesRegex(ValueError,'unsafe_bundle_metadata'):
+                    observer._host_spec(challenge,'claude')
+            self.assertEqual(adopt_call.call_count,1)
+        self.assertEqual(result.plugin_root,root)
+        self.assertEqual(sealed,[True])
+
     def challenge(self, host_name='claude', *, loaded=False):
         import laya_bridge_readiness as bridge
         if loaded:

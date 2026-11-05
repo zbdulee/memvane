@@ -11,7 +11,8 @@ test('bridge observer owns synthetic launch while kernel peer and transport stay
   const runtime = join(home, 'runtime');
   mkdirSync(runtime, { mode: 0o700 });
   try {
-    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-bridge-observer-checks.py'], {
+    const selected = process.env.MEMVANE_TEST_METHOD;
+    const result = spawnSync('python3', ['-B', 'test/fixtures/laya-bridge-observer-checks.py', ...(selected ? [selected] : [])], {
       encoding: 'utf8', timeout: 180000,
       env: { ...process.env, HOME: home, TMPDIR: home, XDG_RUNTIME_DIR: runtime,
         MEMVANE_TEST_RUNTIME_ROOT: runtime, QMD_SETUP_GUARD_FIXTURE: '1', QMD_SANDBOX: '1',
@@ -20,7 +21,7 @@ test('bridge observer owns synthetic launch while kernel peer and transport stay
     if (result.stdout) process.stdout.write(result.stdout);
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 17 tests\b/);
+    assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 18 tests\b/);
     assert.match(result.stderr, /\nOK\b/);
   } finally {
     removeTemp(home);
