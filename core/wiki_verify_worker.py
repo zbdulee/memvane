@@ -1250,7 +1250,7 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
     wiki = root / config.get('wikiPath', project_dir.wiki_rel(root))
     if not wiki.is_absolute() or wiki.resolve() != wiki or not wiki.is_relative_to(root):
         return {}, {}
-    found, jobs = {}, {}
+    found, jobs, saved, conflicts = {}, {}, {}, set()
     with cp.card_write_lock(root):
         for _, raw_job in rows:
             if not isinstance(raw_job, dict):
@@ -1278,12 +1278,25 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
                         continue
                     fingerprint = tuple(marker['fingerprint'])
                 else:
+                    # Reclaimed pre-crash jobs have no proof of the bytes
+                    # observed before the crash; keep them for the user.
+                    if job.get('_requeue_count'):
+                        continue
                     fingerprint = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                if path in conflicts:
+                    continue
                 if marker is None:
-                    found[path], jobs[path] = fingerprint, job
-                else:
                     found.setdefault(path, fingerprint)
                     jobs.setdefault(path, job)
+                else:
+                    # Conflicting receipts cannot prove which bytes are safe.
+                    if path in saved and saved[path] != fingerprint:
+                        conflicts.add(path)
+                        found.pop(path, None)
+                        jobs.pop(path, None)
+                        continue
+                    saved[path] = fingerprint
+                    found[path], jobs[path] = fingerprint, job
             except (FileNotFoundError, ValueError):
                 continue
     return found, jobs
@@ -1327,8 +1340,12 @@ def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict, ro
                         pending = job.get('pendingPath')
                         if isinstance(pending, str):
                             referenced.add(root / pending)
+                deferred = False
                 for path, old in snapshots.items():
-                    if path in referenced or path.parent.resolve() != path.parent:
+                    if path in referenced:
+                        deferred = True
+                        continue
+                    if path.parent.resolve() != path.parent:
                         continue
                     try:
                         info = path.lstat()
@@ -1339,7 +1356,7 @@ def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict, ro
                         pass
                     except OSError:
                         return False
-                return True
+                return not deferred
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -1405,7 +1422,14 @@ def run(
         return result
     rows = wcw.read_queue(claimed)
     if not rows:
-        claimed.unlink(missing_ok=True)
+        # read_queue also returns [] on read failure; re-read under the same
+        # card/queue locks before ACK, preserving late legacy-FD appends.
+        try:
+            empty_checked = _cleanup_pending(root, queue, claimed, {}, rows)
+        except (OSError, UnicodeError):
+            empty_checked = None
+        if empty_checked is True:
+            claimed.unlink(missing_ok=True)
         queue.touch(exist_ok=True)
         return result
 
@@ -1415,6 +1439,12 @@ def run(
     except (OSError, ValueError, RuntimeError):
         pending_snapshots, pending_jobs, snapshots_valid = {}, {}, False
     malformed = [raw for raw, job in rows if job is None]
+    cleanup_paths = set()
+    for _, job in rows:
+        if isinstance(job, dict) and isinstance(job.get('_pendingCleanup'), dict):
+            pending = rebased_job(root, job).get('pendingPath')
+            if isinstance(pending, str):
+                cleanup_paths.add(root / pending)
     # Cleanup-only rows retain the original file fingerprint and never invoke
     # a verifier. Normal jobs continue to use target-based deduplication.
     kept = _dedup_by_target([(raw, job) for raw, job in rows
@@ -1443,6 +1473,13 @@ def run(
     processed_count = 0
     try:
         for idx, (raw_line, job) in enumerate(to_process):
+            rebased = rebased_job(root, job)
+            pending = rebased.get('pendingPath')
+            if (job.get('_requeue_count') and isinstance(pending, str)
+                    and root / pending in cleanup_paths):
+                # A crash recovered the already-settled verification alongside
+                # its cleanup receipt. Never pay for or mutate it again.
+                continue
             try:
                 wiki_selected_laya.recheck(selected_route)
                 processed, preserve = process_verify_job(root, config, compile_cfg, vcfg, job, log_path, snapshots=pending_snapshots)
