@@ -96,7 +96,7 @@ class HostSpec:
     session_id: str
 
 
-def _codex_mcp_options(executable):
+def _codex_mcp_options(executable, cwd=None):
     """Disable configured MCP servers only for the synthetic host challenge."""
     deadline = time.monotonic() + 45
     def listing(names):
@@ -107,7 +107,7 @@ def _codex_mcp_options(executable):
         for name in names:
             command.extend(('-c', 'mcp_servers.' + name + '.enabled=false'))
         try:
-            result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            result = subprocess.run(command, cwd=str(cwd or Path.cwd()), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, timeout=min(8, remaining), check=False)
         except (OSError, subprocess.TimeoutExpired):
             _refuse()
@@ -125,10 +125,20 @@ def _codex_mcp_options(executable):
     rows = listing(())
     if rows is None:
         _refuse()
-    names = [row['name'] for row in rows if row.get('enabled') is True
-             and isinstance(row.get('name'),str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}',row['name'])]
+    names = [row.get('name') for row in rows if row.get('enabled') is True]
+    if any(not isinstance(name,str) or not re.fullmatch(r'[A-Za-z0-9_:@/-]{1,80}',name) for name in names):
+        _refuse()
     if len(names) > 64 or len(names) != len(set(names)):
         _refuse()
+    def valid(group):
+        if not group:
+            return []
+        if listing(group) is not None:
+            return group
+        if len(group) == 1:
+            return []
+        middle = len(group)//2
+        return valid(group[:middle]) + valid(group[middle:])
     try:
         import tomllib
         home = Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex')
@@ -141,24 +151,16 @@ def _codex_mcp_options(executable):
         if not isinstance(configured,dict):
             _refuse()
         selected = [name for name in names if name in configured]
-        verified = listing(selected)
-        if verified is None or any(row.get('enabled') is True and row.get('name') in selected for row in verified):
-            _refuse()
+        # A trusted project can add servers not present in the user TOML.
+        selected += valid([name for name in names if name not in configured])
     except (ImportError, OSError, UnicodeError, ValueError):
         # Python 3.9 has no tomllib. Ask Codex itself which overrides are
         # valid; plugin-provided servers are not user mcp_servers entries.
-        def valid(group):
-            if not group:
-                return []
-            if listing(group) is not None:
-                return group
-            if len(group) == 1:
-                return []
-            middle = len(group)//2
-            return valid(group[:middle]) + valid(group[middle:])
         selected = valid(names)
-        if listing(selected) is None:
-            _refuse()
+    verified = listing(selected)
+    if (verified is None or not set(selected) <=
+            {row.get('name') for row in verified if row.get('enabled') is False}):
+        _refuse()
     return tuple(item for name in selected for item in ('-c','mcp_servers.'+name+'.enabled=false'))
 
 
@@ -222,7 +224,7 @@ def _host_spec(challenge, host):
                 '--mcp-config', '{"mcpServers":{}}', '--', prompt)
     else:
         argv = (str(exe), 'exec', '--json', '--ephemeral', '--sandbox', 'read-only', '--color', 'never',
-                *_codex_mcp_options(exe), prompt)
+                *_codex_mcp_options(exe, Path(selected['projectRoot'])), prompt)
     return HostSpec(argv, Path(selected['projectRoot']), exe, root, challenge.release_commit,
                     proof['bundleManifestSha256'], session)
 

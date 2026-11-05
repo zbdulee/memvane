@@ -149,21 +149,55 @@ class ObserverChecks(unittest.TestCase):
         codex_home=self.case.home/'codex-config';codex_home.mkdir()
         (codex_home/'config.toml').write_text('[mcp_servers.one]\ncommand="synthetic"\n')
         calls=[]
-        def listing(argv,**_kwargs):
+        def listing(argv,**kwargs):
+            self.assertEqual(kwargs.get('cwd'),str(self.case.project))
             flags=[value for value in argv if value.startswith('mcp_servers.')]
             calls.append(flags)
             if any('plugin-only.' in flag for flag in flags):
                 return SimpleNamespace(returncode=1,stdout=b'')
-            rows=[{'name':'one','enabled':not flags},
+            rows=[{'name':'one','enabled':not any('one.' in flag for flag in flags)},
+                  {'name':'projectonly','enabled':not any('projectonly.' in flag for flag in flags)},
                   {'name':'plugin-only','enabled':True}]
             return SimpleNamespace(returncode=0,stdout=json.dumps(rows).encode())
         with mock.patch.dict(os.environ,{'CODEX_HOME':str(codex_home)}), \
              mock.patch.object(observer.subprocess,'run',side_effect=listing):
-            expected=('-c','mcp_servers.one.enabled=false')
-            self.assertEqual(observer._codex_mcp_options('/synthetic/codex'),expected)
+            expected=('-c','mcp_servers.one.enabled=false','-c','mcp_servers.projectonly.enabled=false')
+            self.assertEqual(observer._codex_mcp_options('/synthetic/codex',self.case.project),expected)
+            if importlib.util.find_spec('tomllib') is not None:
+                self.assertEqual(len(calls),5,'valid TOML path and project-only discovery must both run')
             with mock.patch.dict(sys.modules,{'tomllib':None}):
-                self.assertEqual(observer._codex_mcp_options('/synthetic/codex'),expected)
+                self.assertEqual(observer._codex_mcp_options('/synthetic/codex',self.case.project),expected)
         self.assertTrue(any(any('plugin-only.' in flag for flag in flags) for flags in calls))
+
+    def test_codex_preflight_refuses_unencodable_enabled_mcp_name(self):
+        observer=self.observer()
+        rows=[{'name':'team.server','enabled':True}]
+        with mock.patch.object(observer.subprocess,'run',return_value=SimpleNamespace(
+                returncode=0,stdout=json.dumps(rows).encode())):
+            with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                observer._codex_mcp_options('/synthetic/codex')
+
+    def test_codex_preflight_refuses_override_that_does_not_disable_server(self):
+        observer=self.observer()
+        rows=[{'name':'one','enabled':True}]
+        with mock.patch.dict(os.environ,{'CODEX_HOME':str(self.case.home)}), \
+             mock.patch.object(observer.subprocess,'run',return_value=SimpleNamespace(
+                 returncode=0,stdout=json.dumps(rows).encode())):
+            with self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                observer._codex_mcp_options('/synthetic/codex',self.case.project)
+
+    def test_codex_preflight_supports_native_non_dot_mcp_names(self):
+        observer=self.observer()
+        names=['team/server','team:server','team@server']
+        def listing(argv,**_kwargs):
+            flags=[value for value in argv if value.startswith('mcp_servers.')]
+            rows=[{'name':name,'enabled':not any(flag=='mcp_servers.'+name+'.enabled=false' for flag in flags)}
+                  for name in names]
+            return SimpleNamespace(returncode=0,stdout=json.dumps(rows).encode())
+        with mock.patch.dict(os.environ,{'CODEX_HOME':str(self.case.home)}), \
+             mock.patch.object(observer.subprocess,'run',side_effect=listing):
+            expected=tuple(item for name in names for item in ('-c','mcp_servers.'+name+'.enabled=false'))
+            self.assertEqual(observer._codex_mcp_options('/synthetic/codex',self.case.project),expected)
 
     def test_unsealed_installed_host_is_adopted_before_registered_preflight(self):
         observer=self.observer()
