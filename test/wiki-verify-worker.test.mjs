@@ -231,6 +231,94 @@ test('a pending file changed during verification is preserved', () => {
     assert.equal(JSON.parse(runVerifyWorker(project)).processed,1);
     assert.match(readFileSync(join(project,pending),'utf8'),/user edit/);
     assert.equal(readFileSync(join(project,CARD_REL),'utf8'),old);
+    const next='d'.repeat(16), nextPending='.auto-context/wiki/concepts/.test-card.md.pending-'+next;
+    const queue=join(project,'.auto-context/compile/verify-queue.jsonl');
+    const job={ts:'2026-07-05T00:00:00Z',targetPath:CARD_REL,sourceHash:next,pendingPath:nextPending,
+      expectedTargetHash:createHash('sha256').update(old).digest('hex'),sources:[],engine:'claude'};
+    writeFileSync(join(project,nextPending),cardText('generated').replaceAll(HASH,next));
+    writeFileSync(queue,JSON.stringify(job)+'\n');
+    runVerifyWorker(project);
+    assert.match(readFileSync(join(project,pending),'utf8'),/user edit/);
+  } finally { removeTemp(project); }
+});
+
+test('an append to an already claimed queue remains queued and preserves its pending file', () => {
+  const old=cardText('verified'), a='a'.repeat(16), b='b'.repeat(16);
+  const pending=(hash)=>'.auto-context/wiki/concepts/.test-card.md.pending-'+hash;
+  const project=setupProject({cardStatus:'verified',jobOverrides:{sourceHash:a,pendingPath:pending(a),
+    expectedTargetHash:createHash('sha256').update(old).digest('hex')}});
+  try {
+    const queue=join(project,'.auto-context/compile/verify-queue.jsonl');
+    const first=JSON.parse(readFileSync(queue,'utf8'));
+    const second={...first,ts:'2026-07-05T00:00:00Z',sourceHash:b,pendingPath:pending(b)};
+    writeFileSync(join(project,pending(a)),cardText('generated').replaceAll(HASH,a));
+    const script=[
+      'import json,sys', 'from pathlib import Path', 'from unittest import mock',
+      'sys.path.insert(0,"core")', 'import wiki_verify_worker as v,config',
+      'root=Path(sys.argv[1]).resolve(); job=json.loads(sys.argv[2]); content=sys.argv[3]',
+      'cfg=config.find_project_config(str(root))["config"]; orig=v.wcw.read_queue; fired=[False]',
+      'def read(path):',
+      ' rows=orig(path)',
+      ' if ".claimed." in path.name and not fired[0]:',
+      '  fired[0]=True; (root/job["pendingPath"]).write_text(content)',
+      '  with path.open("a") as f: f.write(json.dumps(job)+"\\n")',
+      ' return rows',
+      'with mock.patch.object(v.wcw,"read_queue",side_effect=read): v.run(root,cfg,cfg["compile"])',
+    ].join('\n');
+    execFileSync('python3',['-B','-c',script,project,JSON.stringify(second),cardText('generated').replaceAll(HASH,b)],
+      {cwd:process.cwd(),encoding:'utf8',env:{...process.env,QMD_DIRTY_QUEUE:join(project,'dirty-queue')}});
+    assert.equal(existsSync(join(project,pending(b))),true);
+    const all=[queue,...readdirSync(join(project,'.auto-context/compile')).filter(n=>n.startsWith('verify-queue.jsonl.claimed.')).map(n=>join(project,'.auto-context/compile',n))];
+    assert.ok(all.some(p=>readFileSync(p,'utf8').includes(pending(b))), 'the late append stays durable');
+  } finally { removeTemp(project); }
+});
+
+test('blocked cleanup retries without calling the verifier again', () => {
+  const hash='e'.repeat(16), old=cardText('verified'), tracker=trackerFile('cleanup-retry');
+  const pending='.auto-context/wiki/concepts/.test-card.md.pending-'+hash;
+  const project=setupProject({cardStatus:'verified',verify:{onFail:'none',crossEngine:'off'},
+    extractor:{timeout:30,backends:{claude:mockEngine('claude',tracker,'fail')}},
+    jobOverrides:{sourceHash:hash,pendingPath:pending,expectedTargetHash:createHash('sha256').update(old).digest('hex')}});
+  try {
+    const queue=join(project,'.auto-context/compile/verify-queue.jsonl');
+    writeFileSync(join(project,pending),cardText('generated').replaceAll(HASH,hash));
+    writeFileSync(queue,readFileSync(queue,'utf8')+'{malformed\n');
+    assert.equal(JSON.parse(runVerifyWorker(project)).processed,1);
+    assert.equal(existsSync(join(project,pending)),true);
+    assert.equal(calls(tracker).length,1);
+    const repaired=readFileSync(queue,'utf8').split('\n').filter(x=>x && x!=='{malformed').join('\n')+'\n';
+    writeFileSync(queue,repaired);
+    runVerifyWorker(project);
+    assert.equal(existsSync(join(project,pending)),false);
+    assert.equal(calls(tracker).length,1);
+  } finally { removeTemp(project); }
+});
+
+test('a transient unlink error retries cleanup without another verifier call', () => {
+  const hash='f'.repeat(16), old=cardText('verified'), tracker=trackerFile('cleanup-unlink');
+  const pending='.auto-context/wiki/concepts/.test-card.md.pending-'+hash;
+  const project=setupProject({cardStatus:'verified',verify:{onFail:'none',crossEngine:'off'},
+    extractor:{timeout:30,backends:{claude:mockEngine('claude',tracker,'fail')}},
+    jobOverrides:{sourceHash:hash,pendingPath:pending,expectedTargetHash:createHash('sha256').update(old).digest('hex')}});
+  try {
+    writeFileSync(join(project,pending),cardText('generated').replaceAll(HASH,hash));
+    const script=[
+      'import sys', 'from pathlib import Path', 'from unittest import mock',
+      'sys.path.insert(0,"core")', 'import wiki_verify_worker as v,config',
+      'root=Path(sys.argv[1]).resolve(); target=root/sys.argv[2]',
+      'cfg=config.find_project_config(str(root))["config"]; orig=Path.unlink',
+      'def unlink(self,*args,**kwargs):',
+      ' if self == target: raise PermissionError("synthetic unlink failure")',
+      ' return orig(self,*args,**kwargs)',
+      'with mock.patch.object(Path,"unlink",unlink): v.run(root,cfg,cfg["compile"])',
+    ].join('\n');
+    execFileSync('python3',['-B','-c',script,project,pending],{cwd:process.cwd(),encoding:'utf8',
+      env:{...process.env,QMD_DIRTY_QUEUE:join(project,'dirty-queue')}});
+    assert.equal(existsSync(join(project,pending)),true);
+    assert.equal(calls(tracker).length,1);
+    runVerifyWorker(project);
+    assert.equal(existsSync(join(project,pending)),false);
+    assert.equal(calls(tracker).length,1);
   } finally { removeTemp(project); }
 });
 

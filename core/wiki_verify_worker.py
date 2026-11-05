@@ -1244,13 +1244,13 @@ def _dedup_by_target(rows: list, root: Path | None = None) -> list:
     return [(latest[key][0], latest[key][1]) for key in order]
 
 
-def _pending_snapshots(root: Path, config: dict, rows: list) -> dict:
-    """Snapshot reserved pending files beside targets while card writers are excluded."""
+def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict]:
+    """Snapshot only explicitly queued pending files while card writers are excluded."""
     root = root.resolve()
     wiki = root / config.get('wikiPath', project_dir.wiki_rel(root))
     if not wiki.is_absolute() or wiki.resolve() != wiki or not wiki.is_relative_to(root):
-        return {}
-    found = {}
+        return {}, {}
+    found, jobs = {}, {}
     with cp.card_write_lock(root):
         for _, raw_job in rows:
             if not isinstance(raw_job, dict):
@@ -1263,47 +1263,66 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> dict:
             if target.resolve() != target or not target.is_relative_to(wiki):
                 continue
             try:
-                if pending_replacement(root, wiki, job, target) is None:
+                staged = pending_replacement(root, wiki, job, target)
+                if staged is None:
                     continue
-            except ValueError:
-                continue
-            prefix = '.' + target.name + '.pending-'
-            try:
-                for path in target.parent.iterdir():
-                    if not path.name.startswith(prefix) or not re.fullmatch(r'[0-9a-f]{16}', path.name[len(prefix):]):
+                path = staged[0]
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+                    continue
+                marker = job.get('_pendingCleanup')
+                if marker is not None:
+                    if (type(marker) is not dict or set(marker) != {'fingerprint'}
+                            or type(marker['fingerprint']) is not list or len(marker['fingerprint']) != 5
+                            or any(type(value) is not int or value < 0 for value in marker['fingerprint'])):
                         continue
-                    info = path.lstat()
-                    if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1:
-                        found[path] = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
-            except OSError:
+                    fingerprint = tuple(marker['fingerprint'])
+                else:
+                    fingerprint = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                if marker is None:
+                    found[path], jobs[path] = fingerprint, job
+                else:
+                    found.setdefault(path, fingerprint)
+                    jobs.setdefault(path, job)
+            except (FileNotFoundError, ValueError):
                 continue
-    return found
+    return found, jobs
 
 
-def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict) -> None:
-    """Remove unchanged candidates only when no live queue or claim references them."""
-    if not snapshots:
-        return
+def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict, rows: list) -> bool | None:
+    """True: checked; False: retry cleanup; None: retain an uncertain claim."""
     with cp.card_write_lock(root):
         with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
             try:
+                # Older compilers can have an append FD open across rename.
+                # Their card lock has drained before this read. Preserve every
+                # late line before dropping the claim.
+                initial = [raw for raw, _ in rows]
+                actual = [line for line in claimed.read_text(encoding='utf-8').splitlines() if line.strip()]
+                if actual[:len(initial)] != initial:
+                    return None
+                late = actual[len(initial):]
+                if late:
+                    with queue.open('a', encoding='utf-8') as handle:
+                        for line in late:
+                            handle.write(line + '\n')
                 paths = [queue] + [p for p in queue.parent.iterdir()
                     if p.name.startswith(queue.name + '.claimed.') and p != claimed]
                 referenced = set()
                 for path in paths:
                     info = path.lstat()
                     if not stat.S_ISREG(info.st_mode) or path.is_symlink():
-                        return
+                        return False
                     for line in path.read_text(encoding='utf-8').splitlines():
                         if not line.strip():
                             continue
                         try:
                             job = json.loads(line)
                         except (ValueError, UnicodeError):
-                            return
+                            return False
                         if not isinstance(job, dict):
-                            return
+                            return False
                         job = rebased_job(root, job)
                         pending = job.get('pendingPath')
                         if isinstance(pending, str):
@@ -1318,6 +1337,9 @@ def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict) ->
                             path.unlink()
                     except FileNotFoundError:
                         pass
+                    except OSError:
+                        return False
+                return True
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
@@ -1388,11 +1410,15 @@ def run(
         return result
 
     try:
-        pending_snapshots = _pending_snapshots(root, config, rows)
+        pending_snapshots, pending_jobs = _pending_snapshots(root, config, rows)
+        snapshots_valid = True
     except (OSError, ValueError, RuntimeError):
-        pending_snapshots = {}
+        pending_snapshots, pending_jobs, snapshots_valid = {}, {}, False
     malformed = [raw for raw, job in rows if job is None]
-    kept = _dedup_by_target(rows, root)
+    # Cleanup-only rows retain the original file fingerprint and never invoke
+    # a verifier. Normal jobs continue to use target-based deduplication.
+    kept = _dedup_by_target([(raw, job) for raw, job in rows
+                              if not isinstance(job, dict) or '_pendingCleanup' not in job], root)
     max_per_run = max(1, min(
         int(wcw.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), qmd_config.MAX_VERIFY_PER_RUN
     ))
@@ -1431,10 +1457,21 @@ def run(
     finally:
         wcw.requeue_lines(queue, remaining)
         try:
-            _cleanup_pending(root, queue, claimed, pending_snapshots)
+            cleaned = (_cleanup_pending(root, queue, claimed, pending_snapshots, rows)
+                       if snapshots_valid else None)
         except (OSError, UnicodeError):
-            pass  # Keep card bytes if a queue or lock cannot be read safely.
-        claimed.unlink(missing_ok=True)
+            cleaned = None
+        if cleaned is False:
+            retry = []
+            for path, fingerprint in pending_snapshots.items():
+                job = pending_jobs[path]
+                retry.append(json.dumps({**job, '_pendingCleanup': {'fingerprint': list(fingerprint)}},
+                                        ensure_ascii=False, sort_keys=True))
+            wcw.requeue_lines(queue, retry)
+        # An unreadable or changed claim may contain late work: leave it intact
+        # for normal claimed-queue recovery rather than losing those rows.
+        if cleaned is not None:
+            claimed.unlink(missing_ok=True)
         queue.touch(exist_ok=True)
     result["processed"] = processed_count
     result["remaining"] = len(remaining)
