@@ -1868,7 +1868,8 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
             # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
             # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
             authoritative = authoritative_sources(candidate)
-            append_jsonl(verify_queue_path, {
+            from wiki_compile_enqueue import _append_jsonl
+            _append_jsonl(verify_queue_path, [{
                 "ts": now_iso(),
                 "targetPath": record["targetPath"],
                 **({'pendingPath': pending_path.relative_to(root).as_posix(),
@@ -1880,7 +1881,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                 "sourceHash": h,
                 "engine": candidate.get("engine") if isinstance(candidate.get("engine"), str) else "",
                 "trigger": record["trigger"],
-            })
+            }])
 
     result = {
         "action": action,
