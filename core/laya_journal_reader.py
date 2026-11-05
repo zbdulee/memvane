@@ -212,6 +212,12 @@ def _catalog_snapshot(db, decision, bound, roots, *, deadline=None):
               'reader_catalog_changed')
     scan = db.execute('SELECT seq,phase,raw_digest,files,bytes FROM scans WHERE scan_id=?',
                           (bound.catalog_scan_id,)).fetchone()
+    if scan is None:
+        # Older catalog writers retain only the current completed scan. A
+        # content-identical replacement still proves the bound raw snapshot;
+        # verify its rows and counts below instead of trusting its metadata.
+        scan = db.execute('SELECT s.seq,s.phase,s.raw_digest,s.files,s.bytes '
+                          'FROM current c JOIN scans s ON s.seq=c.seq WHERE c.id=1').fetchone()
     _need(scan is not None and scan[1:3] == ('complete', bound.catalog_raw_digest),
           'reader_catalog_scan_changed')
     digest=hashlib.sha256();files=size=0

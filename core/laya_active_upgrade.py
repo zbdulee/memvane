@@ -167,13 +167,14 @@ def _load_intent(state, project):
     return value
 
 
-def _old_state(project, state, journal, ledger=None, *, prior_intent=None):
+def _old_state(project, state, journal, ledger=None, *, prior_intent=None, unfenced_v4=False):
     ledger = ledger or _Ledger('fresh')
     auto = project_dir.folder(project)
     row = ledger.load(state / ledger.name)
     if prior_intent is not None:
         old = prior_intent['oldLedger']
-        if row != {**old, 'epoch': old['epoch'] + 1, 'phase': 'upgrading'}:
+        expected = old if unfenced_v4 else {**old, 'epoch': old['epoch'] + 1, 'phase': 'upgrading'}
+        if row != expected:
             _fail('active_upgrade_fence_changed')
         row = old
     if row['phase'] != 'active' or row['journalPath'] != str(journal):
@@ -212,11 +213,18 @@ def _old_state(project, state, journal, ledger=None, *, prior_intent=None):
 
 def _prepare(project, state, journal, source_root, plugin_root, commit_id,
              accepted_provider_sha256, model_path, dimension, ledger=None,
-             *, prior_intent=None, runtime_generation=None):
+             *, prior_intent=None, runtime_generation=None, unfenced_v4=False):
     ledger = ledger or _Ledger('fresh')
+    if unfenced_v4:
+        import laya_install_journal as install_journal
+        if prior_intent is None or install_journal.journal_version(journal) != 4:
+            _fail('active_upgrade_bridge_state_changed')
     row, selected, old_route, old_att, old_marker = _old_state(project, state,
                                                                journal, ledger,
-                                                               prior_intent=prior_intent)
+                                                               prior_intent=prior_intent,
+                                                               unfenced_v4=unfenced_v4)
+    if unfenced_v4 and _journal_snapshot(selected) != prior_intent['journalBefore']:
+        _fail('active_upgrade_journal_changed')
     record = build.read(state)
     if (record is None or record['identity']['projectRoot'] != str(project) or
             record['identity']['stateRoot'] != str(state) or
@@ -297,6 +305,13 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
               'backup': str(backup), 'counts': counts,
               'journalBefore': _journal_snapshot(selected)}
     if prior_intent is not None:
+        if unfenced_v4:
+            current_row, current, _route, _att, _marker = _old_state(
+                project, state, journal, ledger, prior_intent=prior_intent, unfenced_v4=True)
+            if (current_row != row or _journal_snapshot(current) != prior_intent['journalBefore'] or
+                    _load_intent(state, project) != prior_intent):
+                _fail('active_upgrade_intent_changed')
+            _backup_proof(prior_intent, verify_new=False)
         _seal_prestage_retarget(prior_intent, intent)
     build._write_json(_intent_path(state), intent, replace=prior_intent is not None,
                       max_bytes=LIMIT)
@@ -1637,8 +1652,14 @@ def _prepare_v4_bridge(project, state, marker, ledger, *, source_root, plugin_ro
             # A previous completed upgrade is a receipt, not the intent for
             # this bridge. The existing proof refuses unsettled transitions.
             _backup_proof(intent, verify_new=False)
-            _archive_finished_intent(state, project, intent)
-            intent = None
+            if intent['schema'] == V1 and ledger.load(state / ledger.name) == intent['oldLedger']:
+                intent = _prepare(project, state, path, source_root, plugin_root, commit_id,
+                                  accepted_provider_sha256, model_path, dimension, ledger,
+                                  prior_intent=intent, runtime_generation=runtime_generation,
+                                  unfenced_v4=True)
+            else:
+                _archive_finished_intent(state, project, intent)
+                intent = None
         if intent is None:
             intent = _prepare(project, state, path, source_root, plugin_root, commit_id,
                               accepted_provider_sha256, model_path, dimension, ledger,

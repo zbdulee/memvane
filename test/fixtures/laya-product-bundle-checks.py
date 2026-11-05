@@ -838,12 +838,34 @@ print(json.dumps(result))'''
             with mock.patch.object(bridge, '_issued', return_value=(None, 'c' * 40,
                     frozenset(('claude', 'codex')), str(self.install))), \
                  mock.patch.object(v4, 'refuse_while_legacy_hermes'), \
-                 mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
-                with self.assertRaisesRegex(product_install.InstallBlocked, 'active_upgrade_prior_unsettled'):
+                 mock.patch.object(active_upgrade, '_locked_provider', nullcontext), \
+                 mock.patch.object(active_upgrade, '_prepare', side_effect=RuntimeError('retarget_prepare')) as prepare:
+                with self.assertRaisesRegex(RuntimeError, 'retarget_prepare'):
                     prepare_v4_bridge(self.project, self.install, operation_marker, ledger,
                         source_root=self.source, plugin_root=Path(second['pluginRoot']),
                         commit_id='c' * 40, accepted_provider_sha256='c' * 64,
                         model_path=self.model, dimension=3, runtime_generation=None, readiness=object())
+                self.assertEqual(prepare.call_args.kwargs['prior_intent'], intent)
+                self.assertTrue(prepare.call_args.kwargs['unfenced_v4'])
+            self.assertEqual(active_upgrade._intent_path(self.install).read_bytes(), original_intent)
+            replacement_review = {**reviewed, 'proposalSha256': 'c' * 64}
+            with mock.patch.object(active_upgrade.build, 'read', return_value=synthetic_build), \
+                 mock.patch.object(active_upgrade, 'review_local_provider', return_value=replacement_review), \
+                 mock.patch.object(active_upgrade, 'adopt_host_loaded_plugin', return_value=second):
+                retargeted = active_upgrade._prepare(
+                    self.project, self.install, self.journal_path, self.source, second['pluginRoot'],
+                    second['sourceCommit'], 'c' * 64, self.model, 3, ledger,
+                    prior_intent=intent, unfenced_v4=True)
+            for key in ('backup', 'counts', 'journalBefore', 'oldLedger', 'oldRoute', 'oldAttestation'):
+                self.assertEqual(retargeted[key], intent[key])
+            self.assertEqual(retargeted['reviewSha256'], 'c' * 64)
+            self.assertEqual(active_upgrade._load_intent(self.install, self.project), retargeted)
+            active_upgrade._intent_path(self.install).write_bytes(original_intent)
+            with mock.patch.object(active_upgrade, '_journal_snapshot', return_value={'changed': True}):
+                with self.assertRaisesRegex(product_install.InstallBlocked, 'active_upgrade_journal_changed'):
+                    active_upgrade._prepare(self.project, self.install, self.journal_path, self.source,
+                        second['pluginRoot'], second['sourceCommit'], 'c' * 64, self.model, 3, ledger,
+                        prior_intent=intent, unfenced_v4=True)
             self.assertEqual(active_upgrade._intent_path(self.install).read_bytes(), original_intent)
             with mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
                 atomic = inactive_upgrade._atomic_expected

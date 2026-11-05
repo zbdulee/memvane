@@ -1,6 +1,8 @@
-# MemVane 0.43.41 PR5 bridge 운영 검증
+# MemVane 0.43.42 PR5 bridge 운영 검증
 
-v4 journal에서 v5 reader bridge를 준비할 때 이전 번들의 완료된 upgrade intent가 있으면 기존 복구 증명으로 완료 여부와 선택 route를 확인한 뒤 receipt로 보존하고 새 intent를 준비한다. 완료되지 않은 intent는 보존하고 전환을 거절한다. 백업과 선택된 DB는 삭제하지 않는다.
+v4 reader bridge는 게시 generation이 봉인한 catalog scan이 이전 catalog 정리로 사라진 경우, 같은 raw digest를 가진 현재 완료 scan의 모든 행과 파일 수·바이트 수를 다시 검증해 검색 증명에 사용한다. 값이 다르거나 완료 snapshot이 없으면 거절한다.
+
+이전 번들의 완료 intent는 검증 후 receipt로 보존한다. 전환 전 v4의 미완료 intent는 기존 ledger·journal·backup·선택 metadata가 그대로임을 증명하고 새 대상의 번들과 provider를 다시 검증할 때만 교체한다. 중단된 전환의 기존 backup은 재사용하며 삭제하지 않는다.
 
 동일 커밋의 세 shard와 독립 재리뷰 결과, 실제 양 호스트 설치·bridge 전환·운영 검증은 `PROGRESS-CODEX.md`와 해당 검사 로그에 기록한다. 합성 검사와 실제 호스트 영수증은 별도다.
 
