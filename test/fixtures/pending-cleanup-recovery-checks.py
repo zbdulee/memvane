@@ -41,7 +41,7 @@ class PendingRecovery(unittest.TestCase):
     def test_recovered_old_job_cannot_override_saved_fingerprint(self):
         st=self.pending.stat();saved=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
         self.pending.write_text('candidate with user edits')
-        retry={**self.job,'_pendingCleanup':{'fingerprint':saved}}
+        retry={**self.job,'_pendingCleanup':{'fingerprint':saved,'jobKey':verify._cleanup_job_key(self.job)}}
         recovered={**self.job,'_requeue_count':1}
         rows=[(json.dumps(retry),retry),(json.dumps(recovered),recovered)]
         snapshots,_=verify._pending_snapshots(self.root,self.cfg,rows)
@@ -49,7 +49,7 @@ class PendingRecovery(unittest.TestCase):
     def test_recovered_job_does_not_reverify_an_edited_cleanup_candidate(self):
         st=self.pending.stat();saved=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
         self.pending.write_text('candidate with user edits')
-        retry={**self.job,'_pendingCleanup':{'fingerprint':saved}}
+        retry={**self.job,'_pendingCleanup':{'fingerprint':saved,'jobKey':verify._cleanup_job_key(self.job)}}
         recovered={**self.job,'_requeue_count':1}
         self.queue.write_text(json.dumps(retry)+'\n'+json.dumps(recovered)+'\n')
         with mock.patch.object(verify,'process_verify_job',side_effect=AssertionError('must not reverify')):
@@ -58,9 +58,9 @@ class PendingRecovery(unittest.TestCase):
 
     def test_conflicting_cleanup_fingerprints_do_not_authorize_deletion(self):
         st=self.pending.stat();saved=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
-        earlier={**self.job,'_pendingCleanup':{'fingerprint':saved}}
+        earlier={**self.job,'_pendingCleanup':{'fingerprint':saved,'jobKey':verify._cleanup_job_key(self.job)}}
         self.pending.write_text('candidate with user edits')
-        st=self.pending.stat();later={**self.job,'_pendingCleanup':{'fingerprint':[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]}}
+        st=self.pending.stat();later={**self.job,'_pendingCleanup':{'fingerprint':[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns],'jobKey':verify._cleanup_job_key(self.job)}}
         rows=[(json.dumps(earlier),earlier),(json.dumps(later),later)]
         snapshots,_=verify._pending_snapshots(self.root,self.cfg,rows)
         self.assertNotIn(self.pending,snapshots)
@@ -69,6 +69,42 @@ class PendingRecovery(unittest.TestCase):
         with mock.patch.object(verify,'process_verify_job',side_effect=AssertionError('must not reverify')):
             verify.run(self.root,self.cfg,self.compile)
         self.assertEqual(self.pending.read_text(),'candidate with user edits')
+
+    def test_unprocessed_deferred_job_never_gets_a_cleanup_receipt(self):
+        other=self.target.with_name('other.md');other.write_text('live')
+        next_pending=other.with_name('.other.md.pending-'+'b'*16);next_pending.write_text('candidate')
+        later={**self.job,'targetPath':str(other.relative_to(self.root)),
+               'pendingPath':str(next_pending.relative_to(self.root)),'sourceHash':'b'*16}
+        self.queue.write_text(json.dumps(self.job)+'\n'+json.dumps(later)+'\n{malformed\n')
+        with mock.patch.object(verify.wcw,'budget_of',return_value={'verifyPerRun':1}), \
+             mock.patch.object(verify,'process_verify_job',return_value=(True,False)):
+            verify.run(self.root,self.cfg,self.compile)
+        rows=[]
+        for line in self.queue.read_text().splitlines():
+            try: rows.append(json.loads(line))
+            except ValueError: pass
+        self.assertTrue(any(r.get('pendingPath') == later['pendingPath'] and '_pendingCleanup' not in r for r in rows))
+        self.assertFalse(any(r.get('pendingPath') == later['pendingPath'] and '_pendingCleanup' in r for r in rows))
+        self.assertTrue(next_pending.exists())
+
+    def test_malformed_cleanup_marker_cannot_suppress_recovered_job(self):
+        bad={**self.job,'_pendingCleanup':{}}
+        recovered={**self.job,'_requeue_count':1}
+        self.queue.write_text(json.dumps(bad)+'\n'+json.dumps(recovered)+'\n')
+        with mock.patch.object(verify,'process_verify_job',return_value=(False,True)) as call:
+            verify.run(self.root,self.cfg,self.compile)
+        self.assertEqual(call.call_count,1)
+        self.assertTrue(self.pending.exists())
+
+    def test_cleanup_receipt_cannot_suppress_a_different_recovered_job(self):
+        st=self.pending.stat();saved=[st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns]
+        retry={**self.job,'_pendingCleanup':{'fingerprint':saved,'jobKey':verify._cleanup_job_key(self.job)}}
+        other={**self.job,'ts':'2026-01-02T00:00:00Z','_requeue_count':1}
+        self.queue.write_text(json.dumps(retry)+'\n'+json.dumps(other)+'\n')
+        with mock.patch.object(verify,'process_verify_job',return_value=(False,True)) as call:
+            verify.run(self.root,self.cfg,self.compile)
+        self.assertEqual(call.call_count,1)
+        self.assertTrue(self.pending.exists())
 
     def test_two_cleanup_claims_do_not_both_ack_a_shared_candidate(self):
         row=json.dumps(self.job);a=self.claim('a',row+'\n');b=self.claim('b',row+'\n')

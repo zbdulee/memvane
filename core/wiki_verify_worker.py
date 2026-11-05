@@ -1244,6 +1244,25 @@ def _dedup_by_target(rows: list, root: Path | None = None) -> list:
     return [(latest[key][0], latest[key][1]) for key in order]
 
 
+def _cleanup_job_key(job: dict) -> str:
+    """Bind a cleanup receipt to one exact verify job, including its timestamp."""
+    original = {key: value for key, value in job.items()
+                if key not in ('_pendingCleanup', '_requeue_count')}
+    return hashlib.sha256(json.dumps(original, ensure_ascii=True, sort_keys=True,
+                                     separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def _valid_cleanup_marker(job: dict) -> bool:
+    marker = job.get('_pendingCleanup')
+    try:
+        return (type(marker) is dict and set(marker) == {'fingerprint', 'jobKey'}
+                and type(marker['fingerprint']) is list and len(marker['fingerprint']) == 5
+                and all(type(value) is int and value >= 0 for value in marker['fingerprint'])
+                and marker['jobKey'] == _cleanup_job_key(job))
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
 def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict]:
     """Snapshot only explicitly queued pending files while card writers are excluded."""
     root = root.resolve()
@@ -1272,9 +1291,7 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
                     continue
                 marker = job.get('_pendingCleanup')
                 if marker is not None:
-                    if (type(marker) is not dict or set(marker) != {'fingerprint'}
-                            or type(marker['fingerprint']) is not list or len(marker['fingerprint']) != 5
-                            or any(type(value) is not int or value < 0 for value in marker['fingerprint'])):
+                    if not _valid_cleanup_marker(job):
                         continue
                     fingerprint = tuple(marker['fingerprint'])
                 else:
@@ -1441,10 +1458,11 @@ def run(
     malformed = [raw for raw, job in rows if job is None]
     cleanup_paths = set()
     for _, job in rows:
-        if isinstance(job, dict) and isinstance(job.get('_pendingCleanup'), dict):
-            pending = rebased_job(root, job).get('pendingPath')
-            if isinstance(pending, str):
-                cleanup_paths.add(root / pending)
+        if isinstance(job, dict):
+            rebased = rebased_job(root, job)
+            pending = rebased.get('pendingPath')
+            if isinstance(pending, str) and _valid_cleanup_marker(rebased):
+                cleanup_paths.add((root / pending, _cleanup_job_key(rebased)))
     # Cleanup-only rows retain the original file fingerprint and never invoke
     # a verifier. Normal jobs continue to use target-based deduplication.
     kept = _dedup_by_target([(raw, job) for raw, job in rows
@@ -1476,7 +1494,7 @@ def run(
             rebased = rebased_job(root, job)
             pending = rebased.get('pendingPath')
             if (job.get('_requeue_count') and isinstance(pending, str)
-                    and root / pending in cleanup_paths):
+                    and (root / pending, _cleanup_job_key(rebased)) in cleanup_paths):
                 # A crash recovered the already-settled verification alongside
                 # its cleanup receipt. Never pay for or mutate it again.
                 continue
@@ -1500,9 +1518,22 @@ def run(
             cleaned = None
         if cleaned is False:
             retry = []
+            remaining_paths = set()
+            for raw in remaining:
+                try:
+                    deferred = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(deferred, dict):
+                    pending = rebased_job(root, deferred).get('pendingPath')
+                    if isinstance(pending, str):
+                        remaining_paths.add(root / pending)
             for path, fingerprint in pending_snapshots.items():
+                if path in remaining_paths:
+                    continue  # A deferred verify job is not terminal.
                 job = pending_jobs[path]
-                retry.append(json.dumps({**job, '_pendingCleanup': {'fingerprint': list(fingerprint)}},
+                marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
+                retry.append(json.dumps({**job, '_pendingCleanup': marker},
                                         ensure_ascii=False, sort_keys=True))
             wcw.requeue_lines(queue, retry)
         # An unreadable or changed claim may contain late work: leave it intact

@@ -7,5 +7,5 @@ test('pending cleanup preserves claimed work and retry identity', () => {
     {encoding:'utf8',timeout:60000,env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}});
   if(result.stdout)process.stdout.write(result.stdout);
   assert.ifError(result.error);assert.equal(result.status,0,result.stdout+result.stderr);
-  assert.match(result.stderr,/Ran 6 tests/);assert.match(result.stderr,/\nOK\b/);
+  assert.match(result.stderr,/Ran 9 tests/);assert.match(result.stderr,/\nOK\b/);
 });
