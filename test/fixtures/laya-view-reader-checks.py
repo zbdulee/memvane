@@ -356,5 +356,108 @@ class ReaderChecks(helpers.GenerationCase):
         self.assertEqual(len(store.search(pin,'hello',1)),1)
         self.assertEqual(store.search(pin,'hello',1,path_prefixes=['한글']),[])
 
+    # Read-trust contract (U9). These hold under today's whole-generation
+    # re-derivation and must keep holding if the query path is narrowed to
+    # head CAS + seal/slot binding + served-row blob hashes (decision K3).
+    def tamper(self,path,trigger,sql,args=()):
+        db=sqlite3.connect(path)
+        try:
+            ddl=db.execute('SELECT sql FROM sqlite_master WHERE name=?',(trigger,)).fetchone()[0]
+            db.execute('DROP TRIGGER '+trigger);db.execute(sql,args);db.execute(ddl);db.commit()
+        finally:db.close()
+
+    def published_pair(self,name):
+        root=self.project(name);store,repository,h=self.seeded(root)
+        m=self.snapshot(store,h,root=root,body=b'# Alpha\nhello served snapshot\n')
+        p=root/'.memvane/wiki/cards/quiet.md';p.write_bytes(b'# Quiet\nunrelated unserved card\n')
+        blob=store.ingest_card(h.worktree_id,'cards/quiet.md')
+        m['members'].append(dict(m['members'][0],path='cards/quiet.md',blob_sha=blob,display_title='Quiet',
+            trust_digest=store.put_attestation(dict(store.attestation(m['members'][0]['trust_digest']),blob_sha=blob))))
+        gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
+        return store,repository,h,gen,{x['path']:x['blob_sha'] for x in m['members']}
+
+    def never_served(self,store,pin,text):
+        try:rows=store.search(pin,'hello',10)
+        except self.Error as exc:return exc.reason
+        self.assertNotIn(text,[r['body'] for r in rows])
+        return None
+
+    def test_19_tampered_served_blob_bytes_are_excluded_or_refused(self):
+        store,_,h,_,blobs=self.published_pair('served-blob');pin=store.pin_view(h)
+        self.assertEqual([r['path'] for r in store.search(pin,'hello',10)],['cards/a.md'])
+        self.tamper(store._path,'wiki_blobs_update','UPDATE wiki_blobs SET body=? WHERE blob_sha=?',
+                    ('# Alpha\nhello FORGED snapshot\n',blobs['cards/a.md']))
+        # Narrowed scope (K3): the served-row blob hash check.
+        reason=self.never_served(store,pin,'# Alpha\nhello FORGED snapshot\n')
+        self.assertIn(reason,(None,'blob_conflict'))
+        self.assertEqual(self.refused(store.verify_views).reason,'blob_conflict')
+
+    def test_20_unserved_blob_tamper_is_caught_by_verify_views(self):
+        store,_,h,_,blobs=self.published_pair('unserved-blob');pin=store.pin_view(h)
+        self.assertIs(store.verify_views(),True)
+        self.tamper(store._path,'wiki_blobs_update','UPDATE wiki_blobs SET body=? WHERE blob_sha=?',
+                    ('# Quiet\nunrelated FORGED!! card\n',blobs['cards/quiet.md']))
+        # The query may refuse (whole re-derivation) or serve only the intact
+        # row (narrowed scope); it never serves the tampered bytes.
+        self.never_served(store,pin,'# Quiet\nunrelated FORGED!! card\n')
+        self.assertEqual(self.refused(store.verify_views).reason,'blob_conflict')
+
+    def test_21_seal_slot_and_binding_digest_mismatch_refuse(self):
+        # Narrowed scope (K3) keeps each refusal: seal-binding fails _head's seal
+        # JOIN; seal-fts-storage changes the recomputed binding over seal roots;
+        # slot-manifest needs the parsed stage's manifest_digest vs the slot row.
+        cases=[('seal-binding','generation_seals_update',
+                'UPDATE generation_seals SET binding_digest=? WHERE gen_id=?'),
+               ('slot-manifest','generation_slots_update',
+                'UPDATE generation_slots SET manifest_digest=? WHERE ordinal=(SELECT ordinal FROM generations WHERE gen_id=?)'),
+               ('seal-fts-storage','generation_seals_update',
+                'UPDATE generation_seals SET fts_storage_digest=? WHERE gen_id=?')]
+        for name,trigger,sql in cases:
+            with self.subTest(case=name):
+                store,_,h,gen,_=self.published_pair(name);pin=store.pin_view(h)
+                self.tamper(store._path,trigger,sql,('f'*64,gen))
+                self.refused(store.search,pin,'hello',1)
+                self.refused(store.pin_view,h)
+                self.refused(store.verify_views)
+
+    def test_22_head_pointing_at_another_view_generation_is_refused(self):
+        store,main,linked,a,b=self.pair('foreign-head')
+        ga,ea=self.prepared(store,a,self.snapshot(store,a,root=main));store.publish_generation(a,ga,expected_head=ea)
+        gb,eb=self.prepared(store,b,self.snapshot(store,b,root=linked));store.publish_generation(b,gb,expected_head=eb)
+        # Narrowed scope (K3): head CAS check of generations.view_id.
+        self.tamper(store._path,'view_head_update','UPDATE view_heads SET gen_id=? WHERE view_id=?',(ga,b.view_id))
+        self.assertEqual(self.refused(store.pin_view,b).reason,'view_head_invalid')
+        self.refused(store.verify_views)
+
+    def test_23_head_epoch_regression_within_one_reader_is_refused(self):
+        # KNOWN GAP: _head accepts any published, sealed generation of the
+        # view with epoch >= 1, and a reader keeps no observed-epoch floor, so
+        # a same-UID rollback of view_heads to an older valid head is served
+        # today. The contract is refusal; cross-process detection needs a
+        # durable epoch floor, which a fresh hook process does not have.
+        self.skipTest('U10/U11: journal endpoint record가 head epoch floor를 결속하면 해제')
+        store,_,h,first=self.published()
+        m=self.snapshot(store,h,scan_id='2'*32,body=b'# Beta\nhello replacement snapshot\n')
+        gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
+        pin=store.pin_view(h);self.assertEqual((pin.gen_id,pin.epoch),(gen,2));store.release(pin)
+        self.tamper(store._path,'view_head_update','UPDATE view_heads SET gen_id=?,epoch=1 WHERE view_id=?',
+                    (first,h.view_id))
+        self.refused(store.pin_view,h)
+
+    def test_24_other_incarnation_and_replaced_database_file_refuse(self):
+        # Narrowed scope (K3): the _session boundary (_header incarnation, _db_file identity).
+        store,_,h,_,_=self.published_pair('incarnation');pin=store.pin_view(h)
+        self.tamper(store._path,'store_meta_update','UPDATE store_meta SET incarnation=?',('0'*32,))
+        self.assertEqual(self.refused(store.search,pin,'hello',1).reason,'candidate_binding_changed')
+        self.assertEqual(self.refused(store.pin_view,h).reason,'candidate_binding_changed')
+        store,_,h,_,_=self.published_pair('replaced');pin=store.pin_view(h)
+        copy_path=store._path.with_name(store._path.name+'.copy')
+        source=sqlite3.connect(store._path);target=sqlite3.connect(copy_path)
+        try:source.backup(target)
+        finally:target.close();source.close()
+        copy_path.chmod(0o600);os.replace(copy_path,store._path)
+        self.assertEqual(self.refused(store.search,pin,'hello',1).reason,'candidate_file_changed')
+        self.assertEqual(self.refused(store.pin_view,h).reason,'candidate_file_changed')
+
 
 if __name__=='__main__':unittest.main()
