@@ -1400,10 +1400,11 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
     fields = {"size": measured["size"], "budget": measured["budget"],
               "method": measured["method"]}
     if measured["reason"] in ("measure_failed", "tokenizer_unavailable"):
-        record["cardBudget"] = {**fields, "reason": measured["reason"]}
+        failure = budget.failure_fields(measured)
+        record["cardBudget"] = {**fields, "reason": measured["reason"], **failure}
         budget.emit(root, "measure_failed" if measured["reason"] == "measure_failed"
                     else "unmeasured", bound=selected, path=rel, title=record["title"],
-                    reason=measured["reason"], runtimes=len(tokenizer), **fields)
+                    reason=measured["reason"], runtimes=len(tokenizer), **fields, **failure)
         return False
     if measured["fits"]:
         return False

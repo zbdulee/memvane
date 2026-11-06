@@ -29,6 +29,13 @@ exist. A candidate whose runtime fails (import error, corrupt file, timeout)
 yields to the next; when every candidate fails the result is
 ``measure_failed`` and the card is written without a size check (best effort).
 
+Each failed candidate is one attempt with a fixed reason code from
+``MEASURE_REASONS`` (and the exit status for ``runtime_exit``). A failed
+measurement carries an opaque ``measureId``, the first ``MAX_ATTEMPTS_LOGGED``
+attempts, ``attemptsTotal`` and the last code as ``failure``; the caller logs
+them (``failure_fields``). No runtime path, stderr, exception text or card text
+leaves this module in a diagnostic.
+
 Only a machine with no selector tokenizer at all writes cards unmeasured
 (``method: unavailable``, ``fits`` true), and the caller logs it: no local
 selector exists there to protect, a provable tokenizer-free bound (UTF-8 bytes
@@ -68,6 +75,21 @@ METHOD_FAILED = 'measure_failed'
 METHOD_DERIVE_LIMIT = 'derive_limit'
 MAX_SELECTOR_STATES = 64
 EXACT_TIMEOUT_SECONDS = 20
+MAX_ATTEMPTS_LOGGED = 8
+
+# Why one selector runtime could not count (one code per failed attempt).
+REASON_SPAWN_FAILED = 'runtime_spawn_failed'      # the interpreter did not start
+REASON_TIMEOUT = 'runtime_timeout'                # no answer within EXACT_TIMEOUT_SECONDS
+REASON_RUNTIME_ERROR = 'runtime_error'            # any other subprocess failure
+REASON_EXIT = 'runtime_exit'                      # non-zero exit (negative: signal)
+REASON_INPUT_UNENCODABLE = 'input_unencodable'    # the body could not be sent
+REASON_OUTPUT_UNDECODABLE = 'output_undecodable'  # stdout was not text
+REASON_OUTPUT_NOT_JSON = 'output_not_json'
+REASON_OUTPUT_SHAPE = 'output_shape_invalid'      # not a list of non-negative integers
+REASON_COUNT_MISMATCH = 'count_mismatch'          # one count per text expected
+MEASURE_REASONS = (REASON_SPAWN_FAILED, REASON_TIMEOUT, REASON_RUNTIME_ERROR, REASON_EXIT,
+                   REASON_INPUT_UNENCODABLE, REASON_OUTPUT_UNDECODABLE,
+                   REASON_OUTPUT_NOT_JSON, REASON_OUTPUT_SHAPE, REASON_COUNT_MISMATCH)
 
 _CLASS_RE = re.compile(
     r'[0-9]|[A-Za-z]+|\n|[ \t]+|[\x00-\x7f]|[가-힣]|[\u0080-￿]|[\U00010000-\U0010ffff]')
@@ -194,10 +216,15 @@ def selector_tokenizer(config: dict, project_root) -> tuple[str, str] | None:
     return found[0] if found else None
 
 
-def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int] | None:
-    """Selector token counts of ``texts`` through the selector runtime, or None."""
+def count_exact_detailed(texts: list[str], tokenizer: tuple[str, str] | None
+                         ) -> tuple[list[int] | None, dict | None]:
+    """``(counts, None)``, or ``(None, failure)`` with a fixed ``reason`` code.
+
+    ``failure`` is ``{"reason": code}`` plus ``"exit"`` for ``runtime_exit``.
+    Nothing from the runtime's output or the exception goes into it.
+    """
     if tokenizer is None or not texts:
-        return None
+        return None, None
     python, tokenizer_json = tokenizer
     try:
         proc = subprocess.run(
@@ -205,13 +232,35 @@ def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int
             input=json.dumps(texts, ensure_ascii=False), text=True, capture_output=True,
             timeout=EXACT_TIMEOUT_SECONDS, shell=False,
             env={'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'LANG': 'C.UTF-8'})
-        counts = json.loads(proc.stdout) if proc.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    if (not isinstance(counts, list) or len(counts) != len(texts)
-            or not all(type(item) is int and item >= 0 for item in counts)):
-        return None
-    return counts
+    except subprocess.TimeoutExpired:
+        return None, {'reason': REASON_TIMEOUT}
+    except subprocess.SubprocessError:
+        return None, {'reason': REASON_RUNTIME_ERROR}
+    except OSError:
+        return None, {'reason': REASON_SPAWN_FAILED}
+    except UnicodeEncodeError:
+        return None, {'reason': REASON_INPUT_UNENCODABLE}
+    except UnicodeDecodeError:
+        return None, {'reason': REASON_OUTPUT_UNDECODABLE}
+    except ValueError:  # an argument Popen refuses (embedded NUL)
+        return None, {'reason': REASON_SPAWN_FAILED}
+    if proc.returncode != 0:
+        return None, {'reason': REASON_EXIT, 'exit': proc.returncode}
+    try:
+        counts = json.loads(proc.stdout)
+    except ValueError:
+        return None, {'reason': REASON_OUTPUT_NOT_JSON}
+    if not isinstance(counts, list) or not all(type(item) is int and item >= 0
+                                               for item in counts):
+        return None, {'reason': REASON_OUTPUT_SHAPE}
+    if len(counts) != len(texts):
+        return None, {'reason': REASON_COUNT_MISMATCH}
+    return counts, None
+
+
+def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int] | None:
+    """Selector token counts of ``texts`` through the selector runtime, or None."""
+    return count_exact_detailed(texts, tokenizer)[0]
 
 
 def _candidates(tokenizers) -> list[tuple[str, str]]:
@@ -222,6 +271,35 @@ def _candidates(tokenizers) -> list[tuple[str, str]]:
     return list(tokenizers)
 
 
+def measure_bodies_detailed(bodies: list[str], tokenizers=None
+                            ) -> tuple[list[int] | None, str, dict]:
+    """``measure_bodies`` plus the failed attempts before the answer.
+
+    Returns ``(counts, method, diagnostic)``. ``diagnostic`` is empty when no
+    candidate failed, else ``attempts`` (the first ``MAX_ATTEMPTS_LOGGED``
+    failures as ``{"attempt": n, "reason": code[, "exit": status]}``, ``n`` the
+    candidate's 1-based position), ``attemptsTotal`` and ``failure`` (the last
+    failure's code, logged or not).
+    """
+    candidates = _candidates(tokenizers)
+    attempts: list[dict] = []
+    total = 0
+    last = None
+    for position, tokenizer in enumerate(candidates, 1):
+        counts, failure = count_exact_detailed(bodies, tokenizer)
+        if counts is None and failure is not None:
+            total += 1
+            last = failure['reason']
+            if len(attempts) < MAX_ATTEMPTS_LOGGED:
+                attempts.append({'attempt': position, **failure})
+        diagnostic = ({'attempts': attempts, 'attemptsTotal': total, 'failure': last}
+                      if total else {})
+        if counts is not None:
+            return counts, METHOD_TOKENIZER, diagnostic
+    diagnostic = {'attempts': attempts, 'attemptsTotal': total, 'failure': last} if total else {}
+    return None, (METHOD_FAILED if candidates else METHOD_UNAVAILABLE), diagnostic
+
+
 def measure_bodies(bodies: list[str], tokenizers=None) -> tuple[list[int] | None, str]:
     """Exact counts from the first selector runtime that answers.
 
@@ -229,12 +307,8 @@ def measure_bodies(bodies: list[str], tokenizers=None) -> tuple[list[int] | None
     Returns ``(None, 'unavailable')`` with no candidate and
     ``(None, 'measure_failed')`` when every candidate failed.
     """
-    candidates = _candidates(tokenizers)
-    for tokenizer in candidates:
-        counts = count_exact(bodies, tokenizer)
-        if counts is not None:
-            return counts, METHOD_TOKENIZER
-    return None, (METHOD_FAILED if candidates else METHOD_UNAVAILABLE)
+    counts, method, _ = measure_bodies_detailed(bodies, tokenizers)
+    return counts, method
 
 
 def measure_card(card_text: str, tokenizer=None) -> dict:
@@ -244,7 +318,9 @@ def measure_card(card_text: str, tokenizer=None) -> dict:
     for a body ``derive`` refuses as oversized), ``selector_input_invalid`` (no
     frontmatter or an empty body; not a card the selector reads),
     ``measure_failed`` (every selector runtime failed) or, with ``fits`` true,
-    ``tokenizer_unavailable`` (no selector tokenizer on the machine).
+    ``tokenizer_unavailable`` (no selector tokenizer on the machine). When a
+    runtime failed, the result also carries ``measureId``, ``attempts``,
+    ``attemptsTotal`` and ``failure`` (the last attempt's code).
     """
     body = derived_body(card_text)
     if body is None:
@@ -256,14 +332,28 @@ def measure_card(card_text: str, tokenizer=None) -> dict:
                     'method': METHOD_DERIVE_LIMIT, 'reason': 'over_budget'}
         return {'fits': False, 'size': None, 'budget': BODY_BUDGET,
                 'method': METHOD_UNAVAILABLE, 'reason': 'selector_input_invalid'}
-    counts, method = measure_bodies([body], tokenizer)
+    counts, method, diagnostic = measure_bodies_detailed([body], tokenizer)
+    if diagnostic:
+        diagnostic = {'measureId': os.urandom(8).hex(), **diagnostic}
     if counts is None:
         unavailable = method == METHOD_UNAVAILABLE
         return {'fits': unavailable, 'size': None, 'budget': BODY_BUDGET, 'method': method,
-                'reason': 'tokenizer_unavailable' if unavailable else 'measure_failed'}
+                'reason': 'tokenizer_unavailable' if unavailable else 'measure_failed',
+                **diagnostic}
     fits = counts[0] <= BODY_BUDGET
     return {'fits': fits, 'size': counts[0], 'budget': BODY_BUDGET, 'method': method,
-            'reason': None if fits else 'over_budget'}
+            'reason': None if fits else 'over_budget', **diagnostic}
+
+
+def failure_fields(measured: dict) -> dict:
+    """The diagnostic fields of a ``measure_card`` result, for an event or ledger row.
+
+    Only the opaque ``measureId``, attempt numbers, reason codes and exit
+    statuses; empty when no runtime failed.
+    """
+    if not isinstance(measured, dict) or 'measureId' not in measured:
+        return {}
+    return {key: measured[key] for key in ('measureId', 'attempts', 'attemptsTotal', 'failure')}
 
 
 
