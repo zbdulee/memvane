@@ -370,8 +370,8 @@ class VectorChecks(VectorCase):
         self.fill(store, h, manifest, r, p)
         base = store.head(h)
         observe, calls = store._observe, []
-        def mutate_after_validation(entry):
-            saved = observe(entry)
+        def mutate_after_validation(entry, **kwargs):
+            saved = observe(entry, **kwargs)
             calls.append(True)
             if len(calls) == 2:
                 self.damage('vectors', 'UPDATE vectors SET embedding=?', (struct.pack('<ff', 0.5, 1),))

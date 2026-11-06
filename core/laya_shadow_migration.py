@@ -51,7 +51,7 @@ def _wiki_card_path(path, prefixes):
 
 
 def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_ineligible=False,
-                      _all_inventory=False):
+                      _all_inventory=False, _page_limit=None):
     """Capture one metadata page; this observation does not authorize a write."""
     if not any(item is snapshot and bound is endpoint and saved == decision
                for item, bound, saved in readers._observations.get()):
@@ -64,7 +64,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
             or time.monotonic() >= deadline):
         raise IndexContractError('reader_snapshot_deadline')
     if (type(include_ineligible) is not bool or type(_all_inventory) is not bool
-            or (_all_inventory and (not include_ineligible or after is not None))):
+            or (_all_inventory and (not include_ineligible or after is not None))
+            or (_page_limit is not None and (type(_page_limit) is not int or _page_limit < 1))):
         raise IndexContractError('migration_inventory_invalid')
     deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
     with readers._validation_deadline(snapshot.connections, deadline):
@@ -139,7 +140,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
         paths = [path for path in sorted(members)
                  if (after is None or path > after) and (include_ineligible or
                  (path not in excluded_paths and members[path][0] not in excluded_hashes))]
-        page = paths if _all_inventory else paths[:MAX_BATCH]
+        page = paths if _all_inventory else paths[:MAX_BATCH if _page_limit is None
+                                                    else min(_page_limit, MAX_BATCH)]
         def output(path):
             digest, source, eligible = members[path]
             result = {'path': path, 'hash': digest, 'source': source}
@@ -151,7 +153,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
                         if len(paths) > len(page) else None}
 
 
-def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expected_observation=None):
+def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expected_observation=None,
+                       _page_limit=None):
     """Read proved wiki bytes only; returned rows alone do not authorize import."""
     from laya_blob_values import MAX_BODY
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -165,7 +168,7 @@ def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expect
         raise IndexContractError('migration_cursor_invalid')
     try:
         page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
-                                 after=after, deadline=deadline)
+                                 after=after, deadline=deadline, _page_limit=_page_limit)
     except IndexContractError as exc:
         if _expected_observation is None or str(exc) != 'migration_snapshot_changed':
             raise
@@ -983,6 +986,201 @@ def compare_incremental_lexical_prompts(snapshot, *, endpoint, decision, store, 
     return {'observation': selected['observation'], 'prompt_count': len(prompts)}
 
 
+# Recall parity corpus: every member contributes at most this many prompts,
+# one snapshot compares at most _PARITY_MEMBERS members, so a page holds at
+# most _PARITY_PROMPTS old and candidate recalls.
+_PARITY_MEMBERS = 4
+_PARITY_PROMPTS_PER_MEMBER = 4
+_PARITY_PROMPTS = _PARITY_MEMBERS * _PARITY_PROMPTS_PER_MEMBER
+_PARITY_PROMPT_BYTES = 512
+_HEADING = re.compile(r'^#{1,6}[ \t]+(.+?)[ \t#]*$', re.MULTILINE)
+
+
+def recall_corpus_prompts(path, body, title):
+    """Derive one member's deterministic recall prompts.
+
+    Order: indexed title, frontmatter title, file name stem, first heading,
+    first CJK run, then the remaining headings and CJK runs. Prompts are
+    whitespace-normalized, case-insensitively unique, and cut at a word
+    boundary to ``_PARITY_PROMPT_BYTES``.
+    """
+    from laya_index_a import _QMD_CJK_RUN
+    import yaml_scalars
+    text = body.replace('\r\n', '\n').replace('\r', '\n')
+    front, content = None, text
+    if text.startswith('---\n'):
+        end = text.find('\n---\n', 4)
+        if end >= 0:
+            front, content = text[4:end], text[end + 5:]
+    named = None
+    if front is not None:
+        match = re.search(r'^title:[ \t]*(.+)$', front, re.MULTILINE)
+        if match:
+            named = yaml_scalars.load(match.group(1).strip())
+    stem = path.rsplit('/', 1)[-1]
+    stem = re.sub(r'[-_.]+', ' ', stem[:-3] if stem.endswith('.md') else stem)
+    headings = [match.group(1) for match in _HEADING.finditer(content)]
+    runs = [match.group(0) for match in _QMD_CJK_RUN.finditer(content) if len(match.group(0)) >= 2]
+    ordered = [title, named, stem, *headings[:1], *runs[:1], *headings[1:], *runs[1:]]
+    prompts, seen = [], set()
+    for value in ordered:
+        if type(value) is not str:
+            continue
+        words, size = [], 0
+        for word in value.split():
+            size += len(word.encode('utf8')) + (1 if words else 0)
+            if size > _PARITY_PROMPT_BYTES:
+                break
+            words.append(word)
+        prompt = ' '.join(words)
+        if not prompt or prompt.casefold() in seen:
+            continue
+        seen.add(prompt.casefold())
+        prompts.append(prompt)
+        if len(prompts) == _PARITY_PROMPTS_PER_MEMBER:
+            break
+    return tuple(prompts)
+
+
+def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin, prompts, deadline):
+    """Compare the old combined lexical recall with the candidate's on one pin.
+
+    The old answer is ``query_v6_snapshot``: ``query_incremental_snapshot``
+    plus ``query_selected_v2`` and the hook's merge rule on the pinned v6
+    snapshot. The candidate answer is the same reader with its base and
+    sidecar FTS lookups served by the candidate's legacy-origin tables. Each
+    candidate row must carry the old trust and source locators. Observational
+    evidence only: no receipt or authority.
+    """
+    from laya_index_source_port import auxiliary_wiki_row
+    from laya_v6_reader import query_v6_snapshot
+    from laya_view_fts import table as fts_table
+    import laya_blob_values as values
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    if (type(prompts) is not tuple or not 1 <= len(prompts) <= _PARITY_PROMPTS
+            or any(type(prompt) is not str or not prompt.strip() or len(prompt.encode('utf8')) > 4096
+                   for prompt in prompts)):
+        raise IndexContractError('migration_lexical_queries_invalid')
+    selected = capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                 after=None, deadline=deadline)
+    record = store._pinned(pin)
+    handle = record['entry']['handle']
+    if store._scope != endpoint.record['scope']:
+        raise IndexContractError('migration_endpoint_changed')
+    with store._reading(deadline) as db:
+        generation, seal, _, stage = store._read_generation(db, pin.gen_id, handle, deadline)
+        root = db.execute('SELECT project_root FROM worktrees WHERE worktree_id=?',
+                          (handle.worktree_id,)).fetchone()
+        legacy = stage.get('legacy')
+        if (generation['state'] != 'published'
+                or values.digest('memvane-read-pin-seal-v1', seal) != record['seal']
+                or root is None or root[0] != endpoint.record['project'] or legacy is None
+                or legacy['observation'] != selected['observation']):
+            raise IndexContractError('migration_snapshot_changed')
+        paired = 'sidecar_corpus' in legacy
+        side_table = fts_table(generation['ordinal'], sidecar=True)
+        full_paths, sources = legacy['fts_paths'], legacy['fts_sources']
+        side_json = json.dumps(list(legacy['active_fts']['sidecar']), ensure_ascii=False,
+                               separators=(',', ':'))
+    if paired and sidecar_fts_commitment(snapshot, endpoint=endpoint, decision=decision,
+                                         deadline=deadline) != legacy['sidecar_commitment']:
+        raise IndexContractError('migration_sidecar_changed')
+    roots = wiki_index_roots(decision['collections'])
+    labels = {'base': snapshot.published[0], 'sidecar': 'preview-' + decision['installId']}
+
+    def seconds(limit=None):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise IndexContractError('reader_snapshot_deadline')
+        return min(left, 30 if limit is None else limit)
+
+    def search(query, limit, deadline_seconds, **origin):
+        # A candidate lookup past the old reader's probe/lexical deadline
+        # would make the old reader degrade differently: unproved, not equal.
+        try:
+            return store.search(pin, query, limit, deadline_seconds=seconds(deadline_seconds), **origin)
+        except values.BlobStoreError as exc:
+            if exc.reason == 'fts_deadline_exceeded':
+                raise IndexContractError('migration_recall_probe_unproved') from exc
+            raise
+
+    def served(rows, origin, excluded=frozenset()):
+        # A candidate row the old reader would not have served at this rank
+        # (other origin, shadowed, untrusted, other locators) changes the
+        # ranked window, so it is a parity mismatch, never a filtered row.
+        answer = []
+        for row in rows:
+            full = full_paths.get(row['path'])
+            if full is None or (paired and sources[row['path']] != origin) or full in excluded:
+                raise IndexContractError('migration_recall_parity_mismatch')
+            shaped = {'scope': decision['scopeId'], 'generation': labels[origin], 'path': full,
+                      'hash': row['blob_sha'], 'body': row['body'], 'score': row['score']}
+            evidence = legacy_card_evidence(shaped, decision)
+            if (evidence is None or auxiliary_wiki_row(full, row['body'], roots)
+                    or evidence['locators'] != row.get('source_locations')):
+                raise IndexContractError('migration_recall_parity_mismatch')
+            answer.append(shaped)
+        return answer
+
+    # End of the DF probes of the current candidate recall: every sidecar
+    # probe and the first base batch (the selected reader's probe batch).
+    probes = {'base': False, 'end': None}
+
+    def base_search(queries, limit, *, path_prefixes=None, excluded_paths=None, deadline_seconds=None):
+        excluded = frozenset(excluded_paths or ())
+        origin = {'_legacy_origin': 'base'} if paired else {}
+        batches = [served(search(query, limit, deadline_seconds, **origin), 'base', excluded)
+                   for query in queries]
+        if not probes['base']:
+            probes['base'], probes['end'] = True, time.monotonic()
+        return batches
+
+    def side_probe(atom):
+        if not paired:
+            raise IndexContractError('migration_lexical_sidecar_unproved')
+        with store._reading(deadline) as db:
+            _, current, _, _ = store._read_generation(db, pin.gen_id, handle, deadline)
+            if values.digest('memvane-read-pin-seal-v1', current) != record['seal']:
+                raise IndexContractError('migration_snapshot_changed')
+            match = db.execute(f'SELECT path_key FROM {side_table} WHERE {side_table} MATCH ? '
+                               'AND path_key IN (SELECT value FROM json_each(?)) LIMIT 1',
+                               (atom, side_json)).fetchone()
+        probes['end'] = time.monotonic()
+        return None if match is None else match[0]
+
+    def side_search(fts):
+        if not paired:
+            raise IndexContractError('migration_lexical_sidecar_unproved')
+        from laya_incremental_docs_query import MAX_FTS
+        return [row['path'] for row in served(search(fts, MAX_FTS, None, _legacy_origin='sidecar'),
+                                              'sidecar')]
+
+    lexical = {'base': base_search, 'sidecar': {'probe': side_probe, 'search': side_search}}
+    for prompt in prompts:
+        # Both DF probe phases stop 1 s after they start, then silently use
+        # the positional fallback. Old: the whole recall finished inside 1 s.
+        # Candidate: its last probe answered inside 0.9 s of the recall start.
+        started = time.monotonic()
+        old = query_v6_snapshot(snapshot, endpoint=endpoint, prompt=prompt, decision=decision,
+                                provider=None, deadline=deadline)
+        if time.monotonic() - started >= 1.0:
+            raise IndexContractError('migration_recall_probe_unproved')
+        probes['base'], probes['end'] = False, None
+        started = time.monotonic()
+        new = query_v6_snapshot(snapshot, endpoint=endpoint, prompt=prompt, decision=decision,
+                                provider=None, deadline=deadline, _lexical=lexical)
+        if probes['end'] is not None and probes['end'] - started >= 0.9:
+            raise IndexContractError('migration_recall_probe_unproved')
+        if old.semantic_status != 'lexical_only' or new.semantic_status != 'lexical_only':
+            raise IndexContractError('migration_recall_probe_unproved')
+        if ((old.data_generation, old.rows, old.title_only, old.source_locations)
+                != (new.data_generation, new.rows, new.title_only, new.source_locations)):
+            raise IndexContractError('migration_recall_parity_mismatch')
+    return {'observation': selected['observation'], 'prompt_count': len(prompts)}
+
+
 _INTENT = 'shadow-migration-intent.json'
 _INTENT_KEYS = frozenset(('schema', 'migration_id', 'project', 'state', 'state_node',
                           'install_id', 'endpoint_id', 'observation', 'candidate',
@@ -1026,6 +1224,9 @@ _MIGRATION_REASONS = frozenset((
     'reader_component_changed', 'reader_lifetime_busy', 'reader_selection_changed',
     'reader_selection_unproved', 'reader_snapshot_changed', 'reader_store_changed',
     'reader_sidecar_revision_unproved', 'fts_deadline_exceeded'))
+_MIGRATION_REASONS |= frozenset(('migration_vector_invalid', 'migration_vector_spec_invalid',
+                                 'migration_vector_queries_invalid', 'migration_vectors_incomplete',
+                                 'migration_semantic_parity_mismatch'))
 
 
 def _migration_event(state, trace, outcome, *, reason=None, ms=None):
@@ -1089,6 +1290,90 @@ def _source_revision(snapshot):
     kind = 'absent' if sidecar is None else ('sealed' if sidecar['baseline'] else 'legacy')
     return {'generation': snapshot.published[0], 'base_revision': snapshot.base_revision,
             'sidecar_kind': kind, 'sidecar_revision': None if sidecar is None else sidecar['revision']}
+
+
+def _cut_identity(base, side, decision):
+    """O(1) commitment to every old v6 change the publication cut orders.
+
+    Base: published membership, content, candidate seals, vector rows/seals
+    and generation state are sealed by triggers once published, and the
+    exclusions/schema_meta rowid tables are append-only, so equal head and
+    max(rowid) values mean the same published image and receipt chain.
+    Sidecar: every coordinated docs/docs_fts mutation appends a
+    publication_revisions row in the same visible (EX cut) transaction, and
+    a legacy sidecar is sealed (revision 0) before its first coordinated row.
+    Writes outside the cut (staged generations, content, pins, cached cursor)
+    cannot touch the published image; baseline inserts only move this value.
+    """
+    scope = decision['scopeId']
+    head = base.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
+    incarnation = base.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
+    identity = {
+        'format': [base.execute('PRAGMA application_id').fetchone()[0],
+                   base.execute('PRAGMA user_version').fetchone()[0]],
+        'incarnation': None if incarnation is None else incarnation[0],
+        'head': None if head is None else head[0],
+        'exclusions': base.execute('SELECT max(rowid) FROM exclusions').fetchone()[0],
+        'schema_meta': base.execute('SELECT max(rowid) FROM schema_meta').fetchone()[0],
+        'sidecar': None,
+    }
+    if side is not None:
+        sealed = side.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                              "AND name='publication_revisions'").fetchone()
+        identity['sidecar'] = {
+            'format': side.execute('PRAGMA user_version').fetchone()[0],
+            'meta': [list(row) for row in side.execute('SELECT * FROM meta')],
+            'revision': (side.execute('SELECT max(revision) FROM publication_revisions').fetchone()[0]
+                         if sealed else 'unsealed'),
+        }
+    return identity
+
+
+def publication_cut_identity(snapshot, *, endpoint, decision, deadline):
+    """Cut identity of an already proved pinned snapshot; grants nothing."""
+    if not any(item is snapshot and bound is endpoint and saved == decision
+               for item, bound, saved in readers._observations.get()):
+        raise IndexContractError('reader_snapshot_unpinned')
+    readers._bound(endpoint)
+    base, _, _, side = snapshot.connections
+    with readers._validation_deadline(snapshot.connections, deadline):
+        return _cut_identity(base, side, decision)
+
+
+def current_cut_identity(endpoint, *, decision, deadline):
+    """Read the cut identity from fresh read-only handles.
+
+    The caller holds the publication cut, so sidecar creation and every
+    compared change are excluded while this reads; it opens no full snapshot.
+    """
+    import os
+    from contextlib import ExitStack
+    from pathlib import Path
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    readers._bound(endpoint)
+    record = endpoint.record
+    with journal.journal.read_only_journals():
+        current = (journal._recheck(endpoint)[2]['readerDecision'] if endpoint in journal._upgrade_readers
+                   else journal.journal.select_route(record['project'], action='recall'))
+    if current != decision:
+        raise IndexContractError('reader_selection_changed')
+    with ExitStack() as stack:
+        owners = []
+        for role in ('base', 'sidecar'):
+            if role == 'sidecar' and not os.path.lexists(Path(record['sidecar_path'])):
+                owners.append(None)
+                continue
+            owner = readers.open_warm_component(endpoint, role, deadline=deadline)
+            stack.callback(owner.close)
+            owners.append(owner)
+        connections = tuple(owner.db for owner in owners if owner is not None)
+        for db in connections:
+            db.execute('BEGIN')
+            stack.callback(lambda db=db: db.rollback() if db.in_transaction else None)
+        with readers._validation_deadline(connections, deadline):
+            return _cut_identity(owners[0].db, None if owners[1] is None else owners[1].db, decision)
 
 
 def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
@@ -1159,7 +1444,7 @@ def _migration_intent(path, *, project, state, node, store):
     intent = ledger._read_json(path)
     if (not isinstance(intent, dict) or not _INTENT_KEYS <= set(intent)
             or set(intent) - _INTENT_KEYS - {'verification', 'corpora', 'restart_required', 'published',
-                                            'prepared', 'revision_check'}
+                                            'prepared', 'revision_check', 'vectors'}
             or intent['schema'] != 'memvane-shadow-migration-v1'
             or intent['project'] != str(project) or intent['state'] != str(state)
             or intent['state_node'] != journal._node(state)
@@ -1235,6 +1520,8 @@ def _migration_intent(path, *, project, state, node, store):
             raise IndexContractError('migration_intent_invalid')
     if intent['migration_state'] not in _SHADOW_STATES or intent['migration_state'] != _shadow_state(intent):
         raise IndexContractError('migration_intent_invalid')
+    if intent.get('vectors') is not None:
+        _check_vector_record(intent['vectors'])
     return intent
 
 
@@ -1921,11 +2208,94 @@ def compare_shadow_queries(store, generation, *, project, executing_root, querie
         return result
 
 
-def advance_shadow(store, *, project, executing_root, deadline):
+def compare_recall_corpus(store, generation, *, project, executing_root, after, deadline):
+    """Compare one page of the member-derived recall corpus, without a receipt.
+
+    A page is at most ``_PARITY_MEMBERS`` members of the recorded effective
+    inventory and at most ``_PARITY_PROMPTS`` prompts, compared inside one
+    pinned v6 snapshot held for at most ``_STEP_SECONDS``. Pass the returned
+    ``next`` cursor until it is None. The digest commits to the compared
+    members and prompt hashes; prompts themselves are never recorded.
+    """
+    from contextlib import ExitStack
+    from pathlib import Path
+    import laya_blob_values as values
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import laya_view_values as view_values
+    import project_dir
+    from laya_product_install import _install_lock
+
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    if not isinstance(generation, str) or not view_values.GEN_ID.fullmatch(generation):
+        values.fail('generation_id_invalid')
+    project, state, decision, node = _migration_state(project, store)
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    path = state / _INTENT
+    with _migration_trace(state, 'compare_corpus') as trace, ExitStack() as lifetime:
+        with _install_lock(state), ledger._operation_lock(marker):
+            if _migration_state(project, store) != (project, state, decision, node):
+                raise IndexContractError('migration_route_changed')
+            intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+            trace['migration'] = intent['migration_id']
+            _migration_event(state, trace, 'attempt')
+            _completed_shadow_commitments(intent)
+            receipt = intent.get('published')
+            if receipt is None or receipt['generation'] != generation:
+                raise IndexContractError('migration_publication_unrecorded')
+            if after is not None and (type(after) is not dict
+                                      or after.get('observation') != intent['observation']):
+                raise IndexContractError('migration_cursor_invalid')
+            endpoint = lifetime.enter_context(leases.resolve_endpoint(
+                project, action='recall', host_root=Path(executing_root)))
+            if (endpoint.endpoint_id != intent['endpoint_id']
+                    or endpoint.record['install_id'] != intent['install_id']):
+                raise IndexContractError('migration_endpoint_changed')
+        handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+        pin = store.pin_view(handle, deadline=deadline)
+        try:
+            if (pin.gen_id != generation or pin.view_id != receipt['view_id']
+                    or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
+                raise IndexContractError('migration_snapshot_changed')
+            step_deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
+            with readers.inspect_warm_snapshot(endpoint, deadline=step_deadline) as snapshot:
+                page = capture_wiki_bytes(snapshot, endpoint=endpoint, decision=decision, after=after,
+                    deadline=step_deadline, _expected_observation=intent['observation'],
+                    _page_limit=_PARITY_MEMBERS)
+                if _source_revision(snapshot) != intent['source_revision']:
+                    raise IndexContractError('migration_source_revision_unproved')
+                prompts, seen, committed = [], set(), []
+                for member in page['members']:
+                    own = recall_corpus_prompts(member['path'], member['body'], member['title'])
+                    committed.append([member['path'], member['hash'],
+                        [hashlib.sha256(prompt.encode('utf8')).hexdigest() for prompt in own]])
+                    for prompt in own:
+                        if prompt not in seen:
+                            seen.add(prompt)
+                            prompts.append(prompt)
+                if prompts:
+                    compare_combined_lexical_prompts(snapshot, endpoint=endpoint, decision=decision,
+                        store=store, pin=pin, prompts=tuple(prompts), deadline=step_deadline)
+        finally:
+            store.release(pin)
+        trace['outcome'] = 'compared'
+        digest = hashlib.sha256(('memvane-recall-corpus-page-v1:' + json.dumps(
+            [intent['observation'], generation, committed], ensure_ascii=True,
+            separators=(',', ':'))).encode('ascii')).hexdigest()
+        return {'observation': intent['observation'], 'members': len(committed),
+                'prompts': len(prompts), 'digest': digest, 'next': page['next']}
+
+
+def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None):
     """Run at most one bounded step of the private shadow state machine per call.
 
     copy -> verification -> base/sidecar corpus -> prepare -> publish -> caught_up.
-    Each call performs one of them; the selected reader never changes.
+    Each call performs one of them; the selected reader never changes. With a
+    ``vector_spec`` the caught-up head also pages compatible legacy vectors
+    (advance_vectors); without one, or with nothing compatible, the lexical
+    shadow is complete on its own.
     """
     import laya_blob_values as values
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -1981,6 +2351,10 @@ def advance_shadow(store, *, project, executing_root, deadline):
             stage, run = 'base_corpus', lambda: advance_corpus(store, sidecar=False, **args)
         elif corpora['sidecar'] is None or not corpora['sidecar']['complete']:
             stage, run = 'sidecar_corpus', lambda: advance_corpus(store, sidecar=True, **args)
+        elif published is not None and vector_spec is not None and _vectors_pending(intent, vector_spec):
+            def run():
+                return advance_vectors(store, vector_spec=vector_spec, **args)
+            stage = 'vectors'
         elif published is not None:
             # Read-only replay: re-proves the recorded private head against the
             # unchanged source under the step deadline, without the cut.
@@ -2012,3 +2386,438 @@ def advance_shadow(store, *, project, executing_root, deadline):
         # the next step re-proves the source before resetting any cursor.
         return step('restart_pending', _mark_shadow_restart(
             store, project, intent, min(wall_deadline, time.monotonic() + _STEP_SECONDS), reason))
+
+
+# Compatible legacy vectors (design 8.2-5, decision K5). The migrated
+# generation stays lexical-only: a legacy proof refuses a vector_spec in
+# ViewStore.prepare_generation, and a vector generation is zero-or-complete,
+# so a partially compatible corpus cannot be sealed as one. Compatible v6
+# vectors are copied into the shared content tables (chunk_sets and
+# embedding_sets) only; every other eligible member is marked
+# ``budget-deferred`` for the independent new-recipe backfill. Nothing here
+# loads a provider, embeds text or changes the selected reader.
+_VECTOR_DEFERRED = ('profile_incompatible', 'vector_rows_absent', 'chunk_positions_differ',
+                    'multi_chunk_unreconstructable', 'input_differs')
+_VECTOR_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'recipe_id', 'profile_id',
+                  'cursor', 'complete', 'total', 'copied', 'deferred', 'digest')
+_VECTOR_PARITY_ABS = 1e-6
+
+
+def _check_vector_record(record):
+    """Shape only; _bound_vectors decides whether a record still applies."""
+    import laya_blob_values as values
+    import laya_view_values as view_values
+    values.exact(record, _VECTOR_RECORD)
+    values.identifier(record['migration_id'], values.UUID)
+    if not isinstance(record['generation'], str) or not view_values.GEN_ID.fullmatch(record['generation']):
+        raise IndexContractError('migration_intent_invalid')
+    for key in ('candidate_incarnation', 'recipe_id', 'profile_id', 'digest'):
+        values.identifier(record[key], values.UUID if key == 'candidate_incarnation' else values.SHA)
+    if type(record['complete']) is not bool or (record['cursor'] is not None and (
+            type(record['cursor']) is not str or not _valid_relative_path(record['cursor']))):
+        raise IndexContractError('migration_intent_invalid')
+    if record['complete'] != (record['cursor'] is None):
+        raise IndexContractError('migration_intent_invalid')
+    values.exact(record['deferred'], _VECTOR_DEFERRED)
+    total = values.integer(record['total'], 0, MAX_DOCS)
+    counted = values.integer(record['copied'], 0, MAX_DOCS) + sum(
+        values.integer(record['deferred'][key], 0, MAX_DOCS) for key in _VECTOR_DEFERRED)
+    if counted > total or (record['complete'] and counted != total):
+        raise IndexContractError('migration_intent_invalid')
+    return record
+
+
+def _vector_spec(vector_spec):
+    import laya_view_vectors as view_vectors
+    try:
+        spec = view_vectors.spec(vector_spec)
+    except Exception as exc:
+        raise IndexContractError('migration_vector_spec_invalid') from exc
+    if spec is None:
+        raise IndexContractError('migration_vector_spec_invalid')
+    return spec
+
+
+def _bound_vectors(intent, spec):
+    """The vector record bound to the current private head and spec, else None.
+
+    A restart replaces ``published``, so an older record stops applying without
+    any restart path having to clear it.
+    """
+    record, receipt = intent.get('vectors'), intent.get('published')
+    if (record is None or receipt is None or record['migration_id'] != intent['migration_id']
+            or record['generation'] != receipt['generation']
+            or record['candidate_incarnation'] != receipt['candidate_incarnation']
+            or record['recipe_id'] != spec['recipe_id'] or record['profile_id'] != spec['profile_id']):
+        return None
+    return record
+
+
+def _vectors_pending(intent, vector_spec):
+    record = _bound_vectors(intent, _vector_spec(vector_spec))
+    return record is None or not record['complete']
+
+
+def _legacy_vector_set(base, *, scope, generation, paths, blob, seal, deadline):
+    """The sealed v6 chunk set bound to one effective member, re-proved row by row."""
+    import struct
+    import laya_index_vector as legacy
+    found = []
+    for path in paths:
+        found.extend(base.execute(
+            'SELECT r.title,r.profile_id,COUNT(*) FROM gen_vector_rows r JOIN membership m '
+            'ON m.gen=r.gen AND m.scope=r.scope AND m.path=r.path AND m.hash=r.hash '
+            'WHERE r.gen=? AND r.scope=? AND r.path=? AND r.hash=? AND m.eligible=1 '
+            'GROUP BY r.title,r.profile_id', (generation, scope, path, blob)).fetchall())
+    if not found:
+        return None
+    if len(found) != 1 or found[0][1] != seal['profile_id']:
+        raise IndexContractError('migration_vector_invalid')
+    title, profile_id, count = found[0]
+    dimension = seal['dimension']
+    rows = legacy._read_chunk_set(base, blob, title, profile_id, dimension, deadline=deadline)
+    if rows is None or len(rows) != count:
+        raise IndexContractError('migration_vector_invalid')
+    evidence, result = legacy.source_evidence(blob, title), []
+    for row in rows:
+        vector = row.get('vector')
+        if not isinstance(vector, (list, tuple)) or len(vector) != dimension:
+            raise IndexContractError('migration_vector_invalid')
+        try:
+            raw = struct.pack('<' + 'f' * dimension, *vector)
+        except (struct.error, TypeError, OverflowError) as exc:
+            raise IndexContractError('migration_vector_invalid') from exc
+        # Copied bytes must be the sealed bytes: re-derive the v6 row digest.
+        if legacy._provenance(blob, title, profile_id, row['seq'], row['pos'], evidence, raw) != row['provenance']:
+            raise IndexContractError('migration_vector_invalid')
+        result.append({'seq': row['seq'], 'pos': row['pos'], 'embedding': raw})
+    return title, result
+
+
+def _classify_vectors(store, base, *, scope, generation, members, names, seal, profile, spec,
+                      deadline, write):
+    """Classify one page of candidate members; copy exact-input sets when ``write``.
+
+    Input equality is proved per row against ``BlobStore.vector_input_sha``.
+    Without a candidate chunk set the only reconstructable v6 input is one
+    chunk at position 0: the QMD chunker returns the whole content as that
+    chunk (``chunkDocument``/``chunkDocumentByTokens``), and the equal
+    embedding fingerprint commits that chunk recipe. Anything else waits for
+    the new-recipe backfill.
+    """
+    import laya_blob_values as values
+    from laya_blob_values import BlobStoreError
+    recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
+    compatible = all(profile[key] == seal[key] for key in ('model_id', 'embedding_fingerprint', 'dimension'))
+    page = []
+    for path, blob in members:
+        if time.monotonic() >= deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        def defer(reason, page=page, path=path, blob=blob):
+            page.append({'path': path, 'blob_sha': blob, 'status': 'budget-deferred', 'reason': reason,
+                         'embedding_digest': None})
+        if not compatible:
+            defer('profile_incompatible')
+            continue
+        legacy = _legacy_vector_set(base, scope=scope, generation=generation,
+                                    paths=[name + '/' + path for name in names], blob=blob,
+                                    seal=seal, deadline=deadline)
+        if legacy is None:
+            defer('vector_rows_absent')
+            continue
+        title, old = legacy
+        try:
+            chunks = store.chunks(blob, recipe_id)
+        except BlobStoreError as exc:
+            if exc.reason != 'chunk_set_missing':
+                raise
+            chunks = None
+        if chunks is not None:
+            if [row['position'] for row in chunks] != [row['pos'] for row in old]:
+                defer('chunk_positions_differ')
+                continue
+            texts = [row['text'] for row in chunks]
+        elif len(old) != 1 or old[0]['pos'] != 0:
+            defer('multi_chunk_unreconstructable')
+            continue
+        else:
+            body = store.document(blob)['body']
+            if values.markdown_title(body, blob) != title:
+                # Checked before any write: a derived chunk set is stored only
+                # together with the copied set it explains.
+                defer('input_differs')
+                continue
+            texts = [body]
+        expected = [values.hash_bytes(('title: ' + title + ' | text: ' + text).encode('utf8')) for text in texts]
+        if chunks is None:
+            if not write:
+                defer('input_differs')
+                continue
+            store.put_chunk_set(blob, recipe_id, [{'seq': 0, 'position': 0, 'text': texts[0],
+                                                   'text_sha': values.hash_bytes(texts[0].encode('utf8'))}])
+        actual = [store.vector_input_sha(blob, recipe_id, profile_id, seq) for seq in range(len(expected))]
+        if actual != expected:
+            if chunks is None:
+                raise IndexContractError('migration_vector_invalid')
+            defer('input_differs')
+            continue
+        rows = [{'seq': row['seq'], 'input_sha': sha, 'embedding': row['embedding']}
+                for row, sha in zip(old, expected)]
+        if write:
+            digest = store.put_embedding_set(blob, recipe_id, profile_id, rows)
+        else:
+            try:
+                saved = store.vectors(blob, recipe_id, profile_id)
+            except BlobStoreError as exc:
+                if exc.reason != 'embedding_set_missing':
+                    raise
+                defer('input_differs')
+                continue
+            if saved != rows:
+                raise IndexContractError('migration_vector_invalid')
+            digest = values.embedding_digest(blob, recipe_id, profile_id, rows)
+        page.append({'path': path, 'blob_sha': blob, 'status': 'copied', 'reason': None,
+                     'embedding_digest': digest})
+    return page
+
+
+@contextmanager
+def _vector_session(store, project, executing_root, *, deadline):
+    """Locked intent/endpoint proof, pinned private head and pinned v6 image.
+
+    The installer and operation locks are held for the whole bounded step,
+    like advance_migration, so the recorded intent cannot move underneath.
+    """
+    from pathlib import Path
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import project_dir
+    from laya_product_install import _install_lock
+    project, state, decision, node = _migration_state(project, store)
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    with _install_lock(state), ledger._operation_lock(marker):
+        if _migration_state(project, store) != (project, state, decision, node):
+            raise IndexContractError('migration_route_changed')
+        path = state / _INTENT
+        intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+        _completed_shadow_commitments(intent)
+        receipt = intent.get('published')
+        if receipt is None:
+            raise IndexContractError('migration_publication_unrecorded')
+        with leases.resolve_endpoint(project, action='recall', host_root=Path(executing_root)) as endpoint:
+            if (endpoint.endpoint_id != intent['endpoint_id']
+                    or endpoint.record['install_id'] != intent['install_id']):
+                raise IndexContractError('migration_endpoint_changed')
+            handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+            pin = store.pin_view(handle, deadline=deadline)
+            try:
+                if (pin.gen_id != receipt['generation'] or pin.view_id != receipt['view_id']
+                        or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
+                    raise IndexContractError('migration_snapshot_changed')
+                with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as snapshot:
+                    page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                             after=None, deadline=deadline)
+                    if page['observation'] != intent['observation']:
+                        raise IndexContractError('migration_snapshot_changed')
+                    if _source_revision(snapshot) != intent['source_revision']:
+                        raise IndexContractError('migration_source_revision_unproved')
+                    seal = snapshot.vector_seal
+                    if (seal is None or seal.get('generation') != snapshot.published[0]
+                            or seal.get('scope') != decision['scopeId']):
+                        raise IndexContractError('migration_vector_invalid')
+                    yield dict(state=state, path=path, intent=intent, decision=decision, endpoint=endpoint,
+                               snapshot=snapshot, pin=pin, seal=dict(seal),
+                               names=tuple(wiki_index_roots(decision['collections'])))
+            finally:
+                store.release(pin)
+
+
+def _candidate_members(store, generation, after, limit):
+    with store._session() as db:
+        if after is None:
+            rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
+                              'ORDER BY path LIMIT ?', (generation, limit)).fetchall()
+        else:
+            rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
+                              'AND path>? ORDER BY path LIMIT ?', (generation, after, limit)).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+
+def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
+    """Copy one page of exact-input legacy vectors and mark the rest budget-deferred.
+
+    Grants no parity and never changes the selected reader or the private head.
+    """
+    import laya_blob_values as values
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
+    spec = _vector_spec(vector_spec)
+    profile = store._profile(spec['profile_id'])
+    store._recipe(spec['recipe_id'])
+    _, state, _, _ = _migration_state(project, store)
+    with _migration_trace(state, 'vectors') as trace, \
+            _vector_session(store, project, executing_root, deadline=deadline) as proof:
+        intent, receipt = proof['intent'], proof['intent']['published']
+        trace['migration'] = intent['migration_id']
+        _migration_event(state, trace, 'attempt')
+        record = _bound_vectors(intent, spec)
+        if record is not None and record['complete']:
+            trace['outcome'] = 'vectors_complete'
+            return intent
+        if record is None:
+            with store._session() as db:
+                total = db.execute('SELECT COUNT(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
+                                   (receipt['generation'],)).fetchone()[0]
+            record = {'migration_id': intent['migration_id'], 'generation': receipt['generation'],
+                      'candidate_incarnation': receipt['candidate_incarnation'],
+                      'recipe_id': spec['recipe_id'], 'profile_id': spec['profile_id'],
+                      'cursor': None, 'complete': False, 'total': values.integer(total, 0, MAX_DOCS),
+                      'copied': 0, 'deferred': {key: 0 for key in _VECTOR_DEFERRED},
+                      'digest': values.digest('memvane-shadow-vectors-v1', {
+                          'migration_id': intent['migration_id'], 'generation': receipt['generation'],
+                          'recipe_id': spec['recipe_id'], 'profile_id': spec['profile_id']})}
+        members = _candidate_members(store, receipt['generation'], record['cursor'], MAX_BATCH)
+        snapshot = proof['snapshot']
+        prior_busy = store._db.execute('PRAGMA busy_timeout').fetchone()[0]
+        remaining = max(0, int((deadline - time.monotonic()) * 1000))
+        if remaining == 0:
+            raise IndexContractError('reader_snapshot_deadline')
+        store._db.execute('PRAGMA busy_timeout=' + str(remaining))
+        try:
+            with readers._validation_deadline(snapshot.connections, deadline):
+                page = _classify_vectors(store, snapshot.connections[0], scope=proof['decision']['scopeId'],
+                    generation=snapshot.published[0], members=members, names=proof['names'],
+                    seal=proof['seal'], profile=profile, spec=spec, deadline=deadline, write=True)
+        finally:
+            store._db.execute('PRAGMA busy_timeout=' + str(prior_busy))
+        deferred = dict(record['deferred'])
+        for row in page:
+            if row['status'] != 'copied':
+                deferred[row['reason']] += 1
+        cursor = members[-1][0] if len(members) == MAX_BATCH else None
+        updated_record = _check_vector_record({**record, 'cursor': cursor, 'complete': cursor is None,
+            'copied': record['copied'] + sum(row['status'] == 'copied' for row in page), 'deferred': deferred,
+            'digest': values.digest('memvane-shadow-vectors-page-v1', {'previous': record['digest'],
+                                                                      'page': page, 'next': cursor})})
+        updated = {**intent, 'vectors': updated_record}
+        import laya_ledger_common as ledger
+        if time.monotonic() >= deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        if ledger._read_json(proof['path']) != intent:
+            raise IndexContractError('migration_intent_changed')
+        trace['stage'] = 'intent'
+        ledger._write(proof['path'], updated, replace=True)
+        trace['outcome'] = 'vectors_complete' if updated_record['complete'] else 'progress'
+        return updated
+
+
+def compare_vector_queries(store, generation, *, project, executing_root, vector_spec, query_vectors,
+                           limit, deadline):
+    """Compare old/new exact semantic top-k on the copied subset; issues no receipt.
+
+    The old lane is the actual pinned v6 exact search with every member
+    outside the subset excluded; the new lane scores the candidate's validated
+    embedding sets with the view store's own exact scoring.
+    """
+    import laya_blob_values as values
+    import laya_index_vector as legacy
+    import laya_view_values as view_values
+    import laya_view_vectors as view_vectors
+    from laya_index_a import SnapshotIndex
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
+    if not isinstance(generation, str) or not view_values.GEN_ID.fullmatch(generation):
+        values.fail('generation_id_invalid')
+    if (type(query_vectors) is not tuple or not 1 <= len(query_vectors) <= 32
+            or type(limit) is not int or not 1 <= limit <= view_vectors.MAX_LIMIT):
+        raise IndexContractError('migration_vector_queries_invalid')
+    spec = _vector_spec(vector_spec)
+    profile = store._profile(spec['profile_id'])
+    store._recipe(spec['recipe_id'])
+    dimension = profile['dimension']
+    queries = []
+    for value in query_vectors:
+        query = view_vectors.query_values(value)
+        if len(query) != dimension:
+            values.fail('vector_query_invalid')
+        queries.append((list(value), query))
+    _, state, _, _ = _migration_state(project, store)
+    with _migration_trace(state, 'vector_compare') as trace, \
+            _vector_session(store, project, executing_root, deadline=deadline) as proof:
+        intent, snapshot = proof['intent'], proof['snapshot']
+        trace['migration'] = intent['migration_id']
+        _migration_event(state, trace, 'attempt')
+        record = _bound_vectors(intent, spec)
+        if record is None or not record['complete'] or record['generation'] != generation:
+            raise IndexContractError('migration_vectors_incomplete')
+        decision, seal, base = proof['decision'], proof['seal'], snapshot.connections[0]
+        if any(profile[key] != seal[key] for key in ('model_id', 'embedding_fingerprint', 'dimension')):
+            trace['outcome'] = 'compared'
+            return {'subset': 0, 'total': record['total'], 'compared': 0, 'semantic_status': 'no_compatible_vectors'}
+        with readers._validation_deadline(snapshot.connections, deadline):
+            members, after = [], None
+            while True:
+                chunk = _candidate_members(store, generation, after, MAX_BATCH)
+                members.extend(chunk)
+                if len(chunk) < MAX_BATCH:
+                    break
+                after = chunk[-1][0]
+            page = _classify_vectors(store, base, scope=decision['scopeId'], generation=snapshot.published[0],
+                members=members, names=proof['names'], seal=seal, profile=profile, spec=spec,
+                deadline=deadline, write=False)
+            subset = {row['path']: row['blob_sha'] for row in page if row['status'] == 'copied'}
+            if len(subset) != record['copied']:
+                raise IndexContractError('migration_vector_invalid')
+            if not subset:
+                trace['outcome'] = 'compared'
+                return {'subset': 0, 'total': record['total'], 'compared': 0,
+                        'semantic_status': 'no_compatible_vectors'}
+            prefixes = tuple(name + '/' for name in proof['names'])
+            kept = {name + '/' + path for path in subset for name in proof['names']}
+            excluded = tuple(sorted(row[0] for row in base.execute(
+                'SELECT m.path FROM membership m WHERE m.gen=? AND m.scope=? AND m.eligible=1 '
+                'AND EXISTS (SELECT 1 FROM json_each(?) p WHERE substr(m.path,1,length(p.value))=p.value)',
+                (snapshot.published[0], decision['scopeId'], json.dumps(prefixes))) if row[0] not in kept))
+            with store._session() as db:
+                work = sum(db.execute('SELECT chunk_count FROM embedding_sets WHERE blob_sha=? '
+                                      'AND recipe_id=? AND profile_id=?',
+                                      (blob, spec['recipe_id'], spec['profile_id'])).fetchone()[0]
+                           for blob in set(subset.values())) * dimension
+            if work > view_vectors.DEFAULT_WORK:
+                trace['outcome'] = 'compared'
+                return {'subset': len(subset), 'total': record['total'], 'compared': 0,
+                        'semantic_status': view_vectors.DEFERRED[view_vectors.WORK_EXCEEDED]}
+        # The v6 exact search owns the snapshot progress handler itself.
+        index = SnapshotIndex(base, scope=decision['scopeId'], generation=snapshot.published[0],
+                              incarnation=decision['dbIncarnation'], deadline=deadline, _observation=snapshot)
+        token = index.pin()
+        try:
+            for raw, query in queries:
+                if time.monotonic() >= deadline:
+                    raise IndexContractError('reader_snapshot_deadline')
+                old = legacy.LayaVectorIndex(index).search_exact(token, raw,
+                    model_id=seal['model_id'], embedding_fingerprint=seal['embedding_fingerprint'],
+                    dimension=dimension, limit=limit, max_float_work=view_vectors.DEFAULT_WORK,
+                    path_prefixes=prefixes, excluded_paths=excluded or None)
+                top, new_sets = [], {}
+                for path, blob in sorted(subset.items()):
+                    if blob not in new_sets:
+                        new_sets[blob] = view_vectors._set_score(
+                            query, store.vectors(blob, spec['recipe_id'], spec['profile_id']),
+                            dimension, deadline)
+                    view_vectors._keep(top, new_sets[blob], {'path': path}, limit)
+                new = [(ref['path'], -negative) for negative, _, _, ref in top]
+                mapped = [(row['path'].split('/', 1)[1], 1.0 - row['score']) for row in old]
+                if ([path for path, _ in mapped] != [path for path, _ in new]
+                        or any(abs(left - right) > _VECTOR_PARITY_ABS
+                               for (_, left), (_, right) in zip(mapped, new))):
+                    raise IndexContractError('migration_semantic_parity_mismatch')
+        finally:
+            index.release(token)
+        trace['outcome'] = 'compared'
+        return {'subset': len(subset), 'total': record['total'], 'compared': len(queries),
+                'semantic_status': 'complete'}

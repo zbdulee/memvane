@@ -26,6 +26,30 @@ _upgrade_readers = weakref.WeakSet()
 _bootstrap_endpoints = weakref.WeakSet()
 _bootstrap_installers = weakref.WeakSet()
 
+# Installation identity: every endpoint of one install shares these fields.
+INSTALL_IDENTITY = ('scope', 'install_id', 'project', 'project_node', 'state', 'state_node',
+                    'attestation_sha256', 'profile', 'settings', 'roots')
+# v6 endpoints keep their existing stricter comparison with one another.
+_V6_STABLE = INSTALL_IDENTITY + ('incarnation', 'checkout_policy')
+SCHEMA3_CAPABILITY = 'schema3-ro-v1'
+SCHEMA3_POLICY = 'selected-main-schema3-v1'
+# Store identity of a persisted schema3 endpoint. No generation is pinned: each
+# query resolves the view head and checks it against head_floor.
+_SCHEMA3_STORE = ('store_format', 'capability', 'checkout_policy', 'incarnation', 'db_path', 'db_node',
+                  'repository_digest', 'worktree_id', 'worktree_binding', 'settings_policy_digest',
+                  'vector_profile', 'vector_recipe', 'head_floor', 'parity', 'creation_epoch')
+_SCHEMA3_KEYS = frozenset(INSTALL_IDENTITY + _SCHEMA3_STORE)
+_FLOOR_KEYS = frozenset(('view_id', 'epoch', 'ordinal'))
+PARITY_KEYS = ('migration_id', 'generation', 'digest')
+_RECEIPT_KEYS = frozenset(PARITY_KEYS + ('candidate', 'candidate_incarnation'))
+
+
+def stable_fields(first, second):
+    """Fields two endpoints of one install must share."""
+    if 'schema3' in (first.get('store_format'), second.get('store_format')):
+        return INSTALL_IDENTITY
+    return _V6_STABLE
+
 
 @dataclass(frozen=True, eq=False, init=False)
 class VerifiedEndpoint:
@@ -508,6 +532,13 @@ def _capacity(state, decision, catalog, binding, published):
 
 def _evidence(state, project, executing_root, *, target=None, catalog=None, binding=None, side=None,
               allow_drift=False):
+    state, project, decision, proof, ledger, info = _selected_proof(state, project, executing_root,
+                                                                    allow_drift=allow_drift)
+    return _evidence_stores(state, project, decision, proof, ledger, info,
+                            target=target, catalog=catalog, binding=binding, side=side)
+
+
+def _selected_proof(state, project, executing_root, *, allow_drift):
     import laya_fresh_wiki_origin as fresh
     from laya_ledger_common import refuse_qmd_origin
     state = _state(state)
@@ -531,14 +562,11 @@ def _evidence(state, project, executing_root, *, target=None, catalog=None, bind
         proof = {**proof, 'readerDecision': decision}
     ledger = fresh._load(state / fresh.LEDGER)
     info = journal.inspect_journal(state / _JOURNAL)
-    return _evidence_stores(state, project, decision, proof, ledger, info,
-                            target=target, catalog=catalog, binding=binding, side=side)
+    return state, project, decision, proof, ledger, info
 
 
-def _evidence_stores(state, project, decision, proof, ledger, info, *,
-                     target=None, catalog=None, binding=None, side=None, sealed_attestation=None):
-    """Check the same store bindings after the caller proves the selection."""
-    import laya_incremental_docs as incremental
+def _install_checks(state, project, decision, proof, ledger, info):
+    """Selection, ledger and build identity; no index store is opened."""
     import laya_initial_build as build
     _need(ledger['phase'] == 'active' and info['pending'] is None
           and info['state'] in ('active', 'restored_old')
@@ -556,6 +584,22 @@ def _evidence_stores(state, project, decision, proof, ledger, info, *,
                         ('vectorProfileId', proof['vectorProfile']['profileId']),
                         ('catalogDb', ledger['catalogDb']), ('bindingStore', ledger['bindingStore'])):
         _need(identity[k] == expected, 'reader_build_changed')
+    return identity
+
+
+def _attestation(state, ledger, sealed_attestation=None):
+    raw = (_read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
+           if sealed_attestation is None else sealed_attestation)
+    _need(type(raw) is bytes, 'reader_attestation_changed')
+    _need(_sha(raw) == ledger['attestationSha256'], 'reader_attestation_changed')
+    return raw
+
+
+def _evidence_stores(state, project, decision, proof, ledger, info, *,
+                     target=None, catalog=None, binding=None, side=None, sealed_attestation=None):
+    """Check the same store bindings after the caller proves the selection."""
+    import laya_incremental_docs as incremental
+    identity = _install_checks(state, project, decision, proof, ledger, info)
     live = Path(decision['dbPath'])
     target = live if target is None else Path(target)
     catalog = Path(catalog or ledger['catalogDb'])
@@ -577,10 +621,7 @@ def _evidence_stores(state, project, decision, proof, ledger, info, *,
             _need(db.execute('PRAGMA user_version').fetchone() == (1,)
                   and db.execute('SELECT * FROM meta').fetchall() == [incremental._expected_meta(identity)],
                   'reader_sidecar_changed')
-    raw = (_read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
-           if sealed_attestation is None else sealed_attestation)
-    _need(type(raw) is bytes, 'reader_attestation_changed')
-    _need(_sha(raw) == ledger['attestationSha256'], 'reader_attestation_changed')
+    raw = _attestation(state, ledger, sealed_attestation)
     record = dict(install_id=proof['installId'], project=str(project), project_node=_node(project),
                   state=str(state), state_node=_node(state), scope=proof['scopeId'], store_format='v6',
                   capability='v6-ro-v1', db_path=str(target), db_node=_file(target, state),
@@ -602,7 +643,11 @@ def _issue_endpoint(state, project, root, options, record, raw, proof):
     path=Path(state)/_JOURNAL
     if journal.journal_version(path)==5:
         with _readonly(path,Path(state)) as db:
-            _,selected=_selection(db)
+            current,selected=_selection(db)
+            if selected.get('store_format') == 'schema3' and current.previous_endpoint is not None:
+                # A rollback target keeps the v6 sidecar commitment of the
+                # endpoint that was selected before the schema3 switch.
+                selected=_stored_endpoint(db,current.previous_endpoint)
             if 'legacy_sidecar_baseline' in selected:
                 record['legacy_sidecar_baseline']=selected['legacy_sidecar_baseline']
     elif os.path.lexists(record['sidecar_path']):
@@ -617,6 +662,213 @@ def _issue_endpoint(state, project, root, options, record, raw, proof):
     object.__setattr__(token, 'record', _freeze(record))
     _issued[token] = (Path(state), Path(project), Path(root), dict(options), packed, raw)
     return token, proof
+
+
+def _plain(value):
+    return dict(value) if isinstance(value, (dict, MappingProxyType)) else value
+
+
+def _repository_digest(text):
+    return _sha(b'memvane-schema3-repository-v1\0' + text.encode('utf8'))
+
+
+def _schema3_shape(record):
+    """Exact persisted schema3 record shape; no store is opened."""
+    try:
+        from laya_blob_values import SHA, UUID
+        from laya_view_values import GEN_ID
+        floor, parity, node = record['head_floor'], record['parity'], record['db_node']
+        return (set(record) == _SCHEMA3_KEYS and record['capability'] == SCHEMA3_CAPABILITY
+                and record['checkout_policy'] == SCHEMA3_POLICY
+                and all(type(record[k]) is str and SHA.fullmatch(record[k]) for k in
+                        ('repository_digest', 'worktree_binding', 'settings_policy_digest'))
+                and all(type(record[k]) is str and UUID.fullmatch(record[k]) for k in
+                        ('incarnation', 'worktree_id'))
+                and type(record['db_path']) is str and Path(record['db_path']).is_absolute()
+                and Path(record['db_path']).parent == Path(record['state'])
+                and isinstance(node, (list, tuple)) and len(node) == 2
+                and all(type(n) is int for n in node)
+                and ((record['vector_profile'] is None and record['vector_recipe'] is None) or
+                     (type(record['vector_profile']) is str and type(record['vector_recipe']) is str))
+                and isinstance(floor, (dict, MappingProxyType)) and set(floor) == _FLOOR_KEYS
+                and type(floor['view_id']) is str and SHA.fullmatch(floor['view_id'])
+                and type(floor['epoch']) is int and floor['epoch'] >= 1
+                and type(floor['ordinal']) is int and floor['ordinal'] >= 1
+                and isinstance(parity, (dict, MappingProxyType)) and set(parity) == set(PARITY_KEYS)
+                and type(parity['migration_id']) is str and journal.ID.fullmatch(parity['migration_id'])
+                and type(parity['generation']) is str and GEN_ID.fullmatch(parity['generation'])
+                and type(parity['digest']) is str and SHA.fullmatch(parity['digest'])
+                and type(record['creation_epoch']) is int and record['creation_epoch'] >= 1)
+    except (KeyError, TypeError):
+        return False
+
+
+def _schema3_store(state, project, proof, decision, db_path, worktree_id):
+    """Current store identity of one private schema3 store and its main worktree."""
+    path = Path(db_path)
+    _need(path.is_absolute() and str(path) != decision['dbPath'], 'reader_store_path_invalid')
+    node = _file(path, state)
+    with _readonly(path, state) as db:
+        meta = db.execute('SELECT incarnation,scope_id,repository_json,settings_policy_digest '
+                          'FROM store_meta WHERE singleton=1').fetchone()
+        tree = db.execute('SELECT project_root,binding_digest FROM worktrees WHERE worktree_id=?',
+                          (worktree_id,)).fetchone()
+    _need(meta is not None and tree is not None and meta[1] == proof['scopeId']
+          and isinstance(meta[2], str) and tree[0] == str(project), 'reader_store_changed')
+    return dict(db_path=str(path), db_node=node, incarnation=meta[0],
+                repository_digest=_repository_digest(meta[2]), worktree_id=worktree_id,
+                worktree_binding=tree[1], settings_policy_digest=meta[3])
+
+
+def _schema3_evidence(state, project, root, stored, *, allow_drift):
+    """Reprove installation identity and the schema3 store; no v6 store is opened.
+
+    CAS-time facts (head_floor, parity, vector profile) are copied from the
+    stored record; the floor is checked against the live head at query/CAS.
+    """
+    state, project, decision, proof, ledger, info = _selected_proof(state, project, root,
+                                                                    allow_drift=allow_drift)
+    _install_checks(state, project, decision, proof, ledger, info)
+    raw = _attestation(state, ledger)
+    store = _schema3_store(state, project, proof, decision, stored['db_path'], stored['worktree_id'])
+    record = dict(install_id=proof['installId'], project=str(project), project_node=_node(project),
+                  state=str(state), state_node=_node(state), scope=proof['scopeId'],
+                  profile=proof['vectorProfile']['profileId'], attestation_sha256=_sha(raw),
+                  settings=_sha(_raw(decision['recallSettings'])), roots=decision['collections'],
+                  store_format='schema3', capability=SCHEMA3_CAPABILITY, checkout_policy=SCHEMA3_POLICY,
+                  vector_profile=stored['vector_profile'], vector_recipe=stored['vector_recipe'],
+                  head_floor=_plain(stored['head_floor']), parity=_plain(stored['parity']), **store)
+    return record, raw, proof
+
+
+@contextmanager
+def _schema3_pin(record, *, deadline):
+    """Pin the current main-view head of a schema3 endpoint and check its floor.
+
+    Floor limits: head_floor is fixed at CAS time; ViewStore._head refuses a
+    head behind the view's highest published ordinal. A same-UID forger who
+    removes the head trigger and also unpublishes every later generation above
+    the floor is not detected (the accepted same-UID consistent forgery limit).
+    """
+    from laya_view_store import ViewStore
+    state, path = Path(record['state']), Path(record['db_path'])
+    with _readonly(path, state) as db:
+        row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+    _need(row is not None and isinstance(row[0], str)
+          and _repository_digest(row[0]) == record['repository_digest'], 'reader_store_changed')
+    store = ViewStore.open_reader(path, repository=json.loads(row[0]), scope_id=record['scope'],
+                                 deadline=deadline)
+    try:
+        _need(store._incarnation == record['incarnation']
+              and store._policy == record['settings_policy_digest']
+              and _file(path, state) == list(record['db_node']), 'reader_store_changed')
+        handle = store.capture_view(record['worktree_id'], deadline=deadline)
+        _need(store._handles[handle.token]['capture']['projectRoot'] == record['project'],
+              'reader_checkout_changed')
+        pin = store.pin_view(handle, deadline=deadline)
+        try:
+            _need(pin.incarnation == record['incarnation'], 'reader_store_changed')
+            floor = record.get('head_floor')
+            if floor is not None and pin.view_id == floor['view_id']:
+                _need(pin.epoch >= floor['epoch'], 'reader_head_regressed')
+            vector = store._pinned(pin)['vector']
+            if 'vector_profile' in record:
+                _need((None if vector is None else vector['profile_id']) == record['vector_profile'] and
+                      (None if vector is None else vector['recipe_id']) == record['vector_recipe'],
+                      'reader_endpoint_changed')
+            yield store, handle, pin
+        finally:
+            store.release(pin)
+    finally:
+        store.close()
+
+
+def _generation_ordinal(store, gen_id, view_id):
+    with store._session() as db:
+        row = db.execute("SELECT ordinal FROM generations WHERE gen_id=? AND view_id=? AND state='published'",
+                         (gen_id, view_id)).fetchone()
+    _need(row is not None, 'reader_parity_unproved')
+    return row[0]
+
+
+def _parity_receipt(state, record):
+    """Require the U5 ``shadow_verified`` receipt for this exact candidate.
+
+    Interface (U5): ``laya_shadow_migration.shadow_parity_receipt(state,
+    *, candidate, candidate_incarnation)`` returns ``{migration_id,
+    generation, digest, candidate, candidate_incarnation}`` or raises. Until
+    it exists every schema3 CAS is refused (fail-closed).
+    """
+    import laya_shadow_migration as migration
+    resolve = getattr(migration, 'shadow_parity_receipt', None)
+    _need(callable(resolve), 'reader_parity_unproved')
+    receipt = resolve(Path(state), candidate=Path(record['db_path']),
+                      candidate_incarnation=record['incarnation'])
+    _need(isinstance(receipt, dict) and set(receipt) == _RECEIPT_KEYS
+          and receipt['candidate'] == record['db_path']
+          and receipt['candidate_incarnation'] == record['incarnation']
+          and {k: receipt[k] for k in PARITY_KEYS} == dict(record['parity']), 'reader_parity_unproved')
+
+
+def _schema3_parity_floor(record, *, deadline):
+    """Live head is at or above the floor, which is at or above the parity generation."""
+    with _schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+        floor = record['head_floor']
+        _need(pin.view_id == floor['view_id'], 'reader_head_regressed')
+        _need(_generation_ordinal(store, pin.gen_id, pin.view_id) >= floor['ordinal'],
+              'reader_head_regressed')
+        _need(_generation_ordinal(store, record['parity']['generation'], floor['view_id'])
+              <= floor['ordinal'], 'reader_parity_unproved')
+
+
+def _loaded_bridge(loaded_bridge, proof, expected_epoch, expected_endpoint):
+    """Loaded v6 reader observed by both hosts at the CAS base, inside its TTL."""
+    import laya_bridge_readiness as bridge
+    _need(isinstance(loaded_bridge, tuple) and len(loaded_bridge) == 2, 'reader_bridge_unproved')
+    receipts, commit = loaded_bridge
+    _need(isinstance(receipts, (list, tuple)) and all(isinstance(p, Path) for p in receipts)
+          and commit == proof.get('sourceCommit'), 'reader_bridge_unproved')
+    seen = bridge.check_loaded_bridge(list(receipts), release_commit=commit,
+                                      expected_hosts=frozenset(('claude', 'codex')))
+    _need(seen.get('endpoint_id') == expected_endpoint and seen.get('reader_epoch') == expected_epoch
+          and seen.get('store_format') == 'v6', 'reader_bridge_unproved')
+
+
+def seal_schema3_endpoint(installer: InstallerSeal, *, store_path: Path, parity: dict,
+                          deadline=None) -> VerifiedEndpoint:
+    """Issue a schema3 CAS target from the installer's proof and a published store head."""
+    import time
+    endpoint = _installer(installer)
+    old, _old_raw, _proof = _recheck(endpoint)
+    _need(old.get('store_format') == 'v6', 'reader_installer_unproved')
+    state, project, root = _issued[endpoint][:3]
+    deadline = time.monotonic() + 10 if deadline is None else deadline
+    path = Path(store_path)
+    _file(path, state)
+    with _readonly(path, state) as db:
+        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                          (str(project),)).fetchall()
+    _need(len(rows) == 1, 'reader_store_changed')
+    draft = dict(db_path=str(path), worktree_id=rows[0][0], head_floor=None,
+                 parity=_plain(parity),
+                 vector_profile=None, vector_recipe=None)
+    record, raw, proof = _schema3_evidence(state, project, root, draft, allow_drift=False)
+    with _schema3_pin({k: v for k, v in record.items() if k not in ('head_floor', 'vector_profile')},
+                      deadline=deadline) as (store, _handle, pin):
+        vector = store._pinned(pin)['vector']
+        record['head_floor'] = dict(view_id=pin.view_id, epoch=pin.epoch,
+                                    ordinal=_generation_ordinal(store, pin.gen_id, pin.view_id))
+        record['vector_profile'] = None if vector is None else vector['profile_id']
+        record['vector_recipe'] = None if vector is None else vector['recipe_id']
+    record['creation_epoch'] = proof['selectionEpoch']
+    _need(_schema3_shape(record), 'reader_endpoint_invalid')
+    _schema3_parity_floor(record, deadline=deadline)
+    token = object.__new__(VerifiedEndpoint)
+    packed = _raw(record)
+    object.__setattr__(token, 'endpoint_id', _sha(b'memvane-reader-endpoint-v1\0' + packed))
+    object.__setattr__(token, 'record', _freeze(record))
+    _issued[token] = (Path(state), Path(project), Path(root), {}, packed, raw)
+    return token
 
 
 def _bootstrap_evidence(state, project, root, *, target=None, catalog=None, binding=None, side=None):
@@ -798,10 +1050,14 @@ def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
         return resolve_retained(state, project, root, endpoint_id, stored, attestation)
     _need(isinstance(stored, dict) and type(stored.get('creation_epoch')) is int
           and stored['creation_epoch'] >= 1, 'reader_endpoint_invalid')
-    options = dict(target=stored.get('db_path'), catalog=stored.get('catalog_path'),
-                   binding=stored.get('binding_path'), side=stored.get('sidecar_path'),
-                   allow_drift=True)
-    current, raw, proof = _evidence(state, project, root, **options)
+    if stored.get('store_format') == 'schema3':
+        options = {}
+        current, raw, proof = _schema3_evidence(state, project, root, stored, allow_drift=True)
+    else:
+        options = dict(target=stored.get('db_path'), catalog=stored.get('catalog_path'),
+                       binding=stored.get('binding_path'), side=stored.get('sidecar_path'),
+                       allow_drift=True)
+        current, raw, proof = _evidence(state, project, root, **options)
     packed = _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof)
     token = object.__new__(VerifiedEndpoint)
     object.__setattr__(token, 'endpoint_id', endpoint_id)
@@ -864,8 +1120,12 @@ def _recheck(endpoint):
               'reader_endpoint_changed')
         return record, raw, proof
     state, project, root, options, packed, raw = _issued[endpoint]
-    record, attestation, proof = _evidence(state, project, root, **options)
     saved=json.loads(packed)
+    if saved.get('store_format') == 'schema3':
+        record, attestation, proof = _schema3_evidence(state, project, root, saved,
+                                                       allow_drift=endpoint in _read_only)
+    else:
+        record, attestation, proof = _evidence(state, project, root, **options)
     _need(_match_persisted(state, endpoint.endpoint_id, saved, raw, record, attestation, proof) == packed,
           'reader_endpoint_changed')
     return saved, raw, proof
@@ -954,7 +1214,9 @@ def _stored_endpoint(db, endpoint_id):
     record = json.loads(packed)
     _need(isinstance(record, dict) and _raw(record) == packed and
           _sha(b'memvane-reader-endpoint-v1\0' + packed) == endpoint_id
-          and record.get('store_format') == 'v6' and record.get('capability') in ('v6-ro-v1','v6-retained-ro-v1')
+          and ((record.get('store_format') == 'v6'
+                and record.get('capability') in ('v6-ro-v1','v6-retained-ro-v1')) or
+               (record.get('store_format') == 'schema3' and _schema3_shape(record)))
           and record.get('attestation_sha256') == _sha(row[1]), 'reader_endpoint_invalid')
     if record.get('capability') == 'v6-retained-ro-v1':
         from laya_move_reader_journal import validate_endpoint
@@ -978,7 +1240,9 @@ def _selection(db):
     record = _stored_endpoint(db, selected.preferred_endpoint)
     if selected.previous_endpoint is not None:
         previous = _stored_endpoint(db, selected.previous_endpoint)
-        _need(record['install_id'] == previous['install_id'], 'reader_install_changed')
+        fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
+                  else ('install_id',))
+        _need(all(record[k] == previous[k] for k in fields), 'reader_install_changed')
     from laya_move_reader_journal import validate_selection
     validate_selection(db, selected, record)
     return selected, record
@@ -1204,11 +1468,16 @@ def mutate_image(journal_path, operation, *, before_replace=None):
 
 
 def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
-               target: VerifiedEndpoint, transition_id: str) -> ReaderSelection:
+               target: VerifiedEndpoint, transition_id: str, loaded_bridge=None,
+               deadline=None) -> ReaderSelection:
+    """Select one issued endpoint. v6->schema3 needs parity, floor and a loaded bridge.
+
+    ``loaded_bridge`` is ``(receipt_paths, release_commit)`` for
+    ``laya_bridge_readiness.check_loaded_bridge``; it must observe the CAS
+    base endpoint/epoch and is rechecked (TTL) just before the image replace.
+    """
+    import time
     path = _journal(journal)
-    _need(not (type(target) is VerifiedEndpoint and
-               getattr(target,'record',{}).get('store_format') == 'schema3'),
-          'reader_format_not_selectable')
     _need(type(target) is not VerifiedEndpoint or target not in _read_only,
           'reader_endpoint_read_only')
     _need(type(target) is VerifiedEndpoint and target in _issued and
@@ -1217,21 +1486,35 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
           and re.fullmatch(r'[0-9a-f]{64}', expected_endpoint) and type(transition_id) is str
           and re.fullmatch(r'[0-9a-f]{32}', transition_id),
           'reader_transition_invalid')
+    deadline = time.monotonic() + 10 if deadline is None else deadline
     outcome = []
+    admitted = []
 
     def select(db):
         current, old = _selection(db)
         _need(old.get('capability') != 'v6-retained-ro-v1', 'reader_move_pin_active')
         record, raw, proof = _recheck(target)
-        _need(all(record[k] == old[k] for k in ('scope', 'install_id', 'project', 'state',
-              'incarnation', 'project_node', 'state_node', 'attestation_sha256', 'profile',
-              'checkout_policy', 'settings', 'roots')), 'reader_install_changed')
-        if (current.epoch == expected_epoch + 1 and current.previous_endpoint == expected_endpoint
-                and current.transition_id == transition_id and current.preferred_endpoint == target.endpoint_id):
+        replay = (current.epoch == expected_epoch + 1 and current.previous_endpoint == expected_endpoint
+                  and current.transition_id == transition_id
+                  and current.preferred_endpoint == target.endpoint_id)
+        base = _stored_endpoint(db, expected_endpoint) if replay else old
+        formats = (base['store_format'], record['store_format'])
+        _need(formats in (('v6', 'v6'), ('v6', 'schema3'), ('schema3', 'v6')),
+              'reader_format_not_selectable')
+        _need(all(record[k] == base[k] for k in stable_fields(base, record)), 'reader_install_changed')
+        if replay:
             outcome.append(current)
             return False
         _need(current.epoch == expected_epoch and current.preferred_endpoint == expected_endpoint
               and target.endpoint_id != expected_endpoint, 'stale_reader_cas')
+        if formats == ('v6', 'schema3'):
+            _need(base['capability'] == 'v6-ro-v1', 'reader_format_not_selectable')
+            _parity_receipt(path.parent, record)
+            _schema3_parity_floor(record, deadline=deadline)
+            _loaded_bridge(loaded_bridge, proof, expected_epoch, expected_endpoint)
+            admitted.append(proof)
+        elif formats == ('schema3', 'v6'):
+            _need(record['capability'] == 'v6-ro-v1', 'reader_format_not_selectable')
         _need(not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
                              (transition_id,)).fetchone(), 'reader_transition_reused')
         _insert_endpoint(db, target, record, raw)
@@ -1242,6 +1525,10 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
                    (next_epoch, target.endpoint_id, expected_endpoint, transition_id))
         outcome.append(_selection(db)[0])
         return True
-    mutate_image(path, select)
+    def before_replace():
+        if admitted:
+            _loaded_bridge(loaded_bridge, admitted[0], expected_epoch, expected_endpoint)
+
+    mutate_image(path, select, before_replace=before_replace)
     return outcome[0]
 

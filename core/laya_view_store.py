@@ -28,6 +28,8 @@ from laya_view_reader import ReaderMixin
 from laya_view_vectors import VectorMixin
 
 SETTINGS_LIMIT = 1024 * 1024
+# Publication cut budget; only an O(1) source identity and the commit run under it.
+_CUT_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -199,11 +201,16 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         row = db.execute('SELECT gen_id,epoch FROM view_heads WHERE view_id=?', (handle.view_id,)).fetchone()
         if row is None:
             return dict(view_id=handle.view_id, gen_id=None, epoch=0, incarnation=self._incarnation)
+        # Head CAS is linear and slot ordinals grow at prepare time, so a valid
+        # head is the view's highest published ordinal. This refuses a head
+        # moved back past the view_head_update trigger. A same-UID forger who
+        # also drops later generations' published state is not detected here.
         sealed = db.execute(
-            "SELECT 1 FROM generations g JOIN generation_seals s ON s.gen_id=g.gen_id "
+            "SELECT g.ordinal=(SELECT max(t.ordinal) FROM generations t WHERE t.view_id=g.view_id "
+            "AND t.state='published') FROM generations g JOIN generation_seals s ON s.gen_id=g.gen_id "
             "AND s.binding_digest=g.binding_digest WHERE g.gen_id=? AND g.view_id=? AND g.state='published'",
             (row['gen_id'], handle.view_id)).fetchone()
-        if sealed is None or type(row['epoch']) is not int or row['epoch'] < 1:
+        if sealed is None or sealed[0] != 1 or type(row['epoch']) is not int or row['epoch'] < 1:
             v.fail('view_head_invalid')
         return dict(view_id=handle.view_id, gen_id=row['gen_id'], epoch=row['epoch'],
                     incarnation=self._incarnation)
@@ -618,50 +625,86 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         import laya_reader_open as readers
         import laya_shadow_migration as migration
         import hashlib
-        # Publication obtains its own fresh snapshot under the publication cut.
-        # Legacy callers may still supply their earlier snapshot, which does
-        # not replace that final proof.
+        from contextlib import contextmanager
+        # Legacy callers may still supply their earlier snapshot; it does not
+        # replace the fresh proof below.
         v.exact(legacy_snapshot, (('snapshot',) if 'snapshot' in legacy_snapshot else ()) +
                 ('endpoint', 'decision', 'provenance_scan') +
                 (('source_revision',) if 'source_revision' in legacy_snapshot else ()))
-        endpoint = legacy_snapshot['endpoint']
-        deadline = min(deadline, time.monotonic() + 1.0) if deadline is not None else time.monotonic() + 1.0
-        # The old writer also takes the exclusive publication cut. Hold the
-        # existing shared cut from fresh snapshot proof through candidate CAS.
-        with readers.reader_publish_cut(endpoint, deadline=deadline):
-            with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as fresh:
-                observed = migration.capture_effective(fresh, endpoint=endpoint,
-                    decision=legacy_snapshot['decision'], after=None, deadline=deadline)
-                if ('source_revision' in legacy_snapshot and
-                        migration._source_revision(fresh) != legacy_snapshot['source_revision']):
-                    v.fail('migration_source_revision_unproved')
-                corpus_observation = hashlib.sha256(('memvane-base-fts-corpus-v1:' +
-                    observed['observation']).encode('ascii')).hexdigest()
-                side_observation = hashlib.sha256(('memvane-sidecar-fts-corpus-v1:' +
-                    observed['observation']).encode('ascii')).hexdigest()
-                if (observed['observation'] != staged['legacy']['observation'] or
-                        corpus_observation != staged['legacy']['corpus_observation'] or
-                        ('sidecar_corpus' in staged['legacy'] and
-                         side_observation != staged['legacy']['sidecar_observation']) or
-                        legacy_snapshot['provenance_scan'] != staged['legacy']['scan']):
+        endpoint, decision = legacy_snapshot['endpoint'], legacy_snapshot['decision']
+        if deadline is None:
+            deadline = time.monotonic() + migration._STEP_SECONDS
+        # Scale-proportional proof runs on its own pinned snapshot before the
+        # publication cut. The old writer takes that cut exclusively, so only
+        # an O(1) identity of this proved image is rechecked under it.
+        with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as fresh:
+            observed = migration.capture_effective(fresh, endpoint=endpoint,
+                decision=decision, after=None, deadline=deadline)
+            if ('source_revision' in legacy_snapshot and
+                    migration._source_revision(fresh) != legacy_snapshot['source_revision']):
+                v.fail('migration_source_revision_unproved')
+            corpus_observation = hashlib.sha256(('memvane-base-fts-corpus-v1:' +
+                observed['observation']).encode('ascii')).hexdigest()
+            side_observation = hashlib.sha256(('memvane-sidecar-fts-corpus-v1:' +
+                observed['observation']).encode('ascii')).hexdigest()
+            if (observed['observation'] != staged['legacy']['observation'] or
+                    corpus_observation != staged['legacy']['corpus_observation'] or
+                    ('sidecar_corpus' in staged['legacy'] and
+                     side_observation != staged['legacy']['sidecar_observation']) or
+                    legacy_snapshot['provenance_scan'] != staged['legacy']['scan']):
+                v.fail('migration_snapshot_changed')
+            if 'sidecar_corpus' in staged['legacy'] and migration.sidecar_fts_commitment(
+                    fresh, endpoint=endpoint, decision=decision, deadline=deadline
+                    ) != staged['legacy']['sidecar_commitment']:
+                v.fail('migration_sidecar_changed')
+            pinned = migration.publication_cut_identity(fresh, endpoint=endpoint, decision=decision,
+                                                        deadline=deadline)
+
+        @contextmanager
+        def publication_cut():
+            cut_deadline = min(deadline, time.monotonic() + _CUT_SECONDS)
+            with readers.reader_publish_cut(endpoint, deadline=cut_deadline):
+                if migration.current_cut_identity(endpoint, decision=decision,
+                                                  deadline=cut_deadline) != pinned:
                     v.fail('migration_snapshot_changed')
-                if 'sidecar_corpus' in staged['legacy'] and migration.sidecar_fts_commitment(
-                        fresh, endpoint=endpoint, decision=legacy_snapshot['decision'], deadline=deadline
-                        ) != staged['legacy']['sidecar_commitment']:
-                    v.fail('migration_sidecar_changed')
-                remaining = max(0, int((deadline - time.monotonic()) * 1000))
-                if not remaining:
-                    v.fail('reader_snapshot_deadline')
-                previous_timeout = self._db.execute('PRAGMA busy_timeout').fetchone()[0]
-                self._db.execute('PRAGMA busy_timeout=' + str(remaining))
-                try:
-                    return self._publish_generation_checked(handle, gen_id, entry, base, saved,
-                                                            expected_stage=staged, deadline=deadline)
-                finally:
-                    self._db.execute('PRAGMA busy_timeout=' + str(previous_timeout))
+                yield cut_deadline
+
+        # The private candidate is not ordered by the cut; a busy candidate
+        # still fails within the publication budget instead of the step.
+        remaining = max(0, int(min(deadline - time.monotonic(), _CUT_SECONDS) * 1000))
+        if not remaining:
+            v.fail('reader_snapshot_deadline')
+        previous_timeout = self._db.execute('PRAGMA busy_timeout').fetchone()[0]
+        self._db.execute('PRAGMA busy_timeout=' + str(remaining))
+        try:
+            return self._publish_generation_checked(handle, gen_id, entry, base, saved,
+                                                    expected_stage=staged, deadline=deadline,
+                                                    publication_cut=publication_cut)
+        finally:
+            self._db.execute('PRAGMA busy_timeout=' + str(previous_timeout))
 
     def _publish_generation_checked(self, handle, gen_id, entry, base, saved, *,
-                                    expected_stage=None, deadline=None):
+                                    expected_stage=None, deadline=None, publication_cut=None):
+        def capture():
+            try:
+                _current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
+            except checkout.CheckoutUnavailable as exc:
+                if publication_cut is None or exc.reason != 'checkout_budget_exhausted':
+                    raise
+                # A spent step budget is transient; the prepared candidate stays.
+                v.fail('fts_deadline_exceeded')
+
+        def finish(db, result):
+            if deadline is not None and time.monotonic() >= deadline:
+                v.fail('reader_snapshot_deadline')
+            if publication_cut is not None:
+                # Only the identity recheck and the commit run under the cut.
+                with publication_cut() as cut_deadline:
+                    if time.monotonic() >= cut_deadline:
+                        v.fail('reader_snapshot_deadline')
+                    db.commit()
+            return result
+
         with self._session(write=True) as db:
             generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
             if generation is None or generation['view_id'] != handle.view_id:
@@ -675,10 +718,8 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             current = self._head(db, handle)
             if generation['state'] == 'published':
                 if current['gen_id'] == gen_id and current['epoch'] == base['epoch'] + 1:
-                    _current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
-                    if deadline is not None and time.monotonic() >= deadline:
-                        v.fail('reader_snapshot_deadline')
-                    return current  # exact replay of this publication only
+                    capture()
+                    return finish(db, current)  # exact replay of this publication only
                 v.fail('view_head_conflict')
             if generation['state'] != 'prepared' or current != base:
                 v.fail('view_head_conflict')
@@ -691,8 +732,6 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             elif db.execute('UPDATE view_heads SET gen_id=?,epoch=epoch+1 WHERE view_id=? AND gen_id=? AND epoch=?',
                             (gen_id, handle.view_id, base['gen_id'], base['epoch'])).rowcount != 1:
                 v.fail('view_head_conflict')
-            _current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
+            capture()
             _live(db, saved, stage['files'])
-            if deadline is not None and time.monotonic() >= deadline:
-                v.fail('reader_snapshot_deadline')
-            return self._head(db, handle)
+            return finish(db, self._head(db, handle))
