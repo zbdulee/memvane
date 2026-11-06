@@ -7,6 +7,7 @@ records in this file do not grant operational trust or deletion authority.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import errno
 import json
 import os
 from pathlib import Path
@@ -408,6 +409,12 @@ class BlobStore:
         except BaseException as exc:
             self._db.rollback()
             if isinstance(exc, (sqlite3.Error, OSError)):
+                sqlite_code = getattr(exc, 'sqlite_errorcode', None)
+                if ((isinstance(exc, OSError) and exc.errno == errno.ENOSPC)
+                        or (type(sqlite_code) is int and sqlite_code & 0xff == getattr(sqlite3, 'SQLITE_FULL', 13))
+                        or (isinstance(exc, sqlite3.OperationalError)
+                            and str(exc) == 'database or disk is full')):
+                    v.fail('candidate_storage_full')
                 v.fail('candidate_busy' if 'locked' in str(exc) or 'busy' in str(exc) else 'candidate_io_failed')
             raise
 
@@ -425,44 +432,69 @@ class BlobStore:
                 _insert(db, 'worktrees', {**row, 'registered_ns': time.time_ns()})
         return row['worktree_id']
 
-    def _blob(self, blob_sha):
+    def _blob(self, blob_sha, *, cache=None):
         v.identifier(blob_sha)
-        row = self._db.execute('SELECT blob_sha,byte_length FROM wiki_blobs WHERE blob_sha=?', (blob_sha,)).fetchone()
+        row = self._db.execute('SELECT w.blob_sha,w.byte_length,substr(CAST(w.body AS BLOB),1,?) AS body_bytes,'
+                               'a.worktree_id,a.proof_digest,a.proof_json FROM wiki_blobs w '
+                               'LEFT JOIN blob_admissions a ON a.blob_sha=w.blob_sha WHERE w.blob_sha=?',
+                               (v.MAX_BODY + 1, blob_sha)).fetchone()
         if row is None:
             v.fail('blob_missing')
         v.integer(row['byte_length'], 0, v.MAX_BODY)
-        raw = self._db.execute('SELECT substr(CAST(body AS BLOB),1,?) FROM wiki_blobs WHERE blob_sha=?',
-                               (v.MAX_BODY + 1, blob_sha)).fetchone()[0]
+        raw = row['body_bytes']
         try:
             body = raw.decode('utf8')
         except (AttributeError, UnicodeError):
             v.fail('blob_invalid')
         if len(raw) != row['byte_length'] or v.hash_bytes(raw) != blob_sha or len(raw) > v.MAX_BODY:
             v.fail('blob_conflict')
-        admission = self._db.execute('SELECT * FROM blob_admissions WHERE blob_sha=?', (blob_sha,)).fetchone()
-        if admission is None:
+        if row['proof_json'] is None:
             v.fail('blob_admission_missing')
+        admission = row
         proof = v.parse_canonical(admission['proof_json'])
-        v.exact(proof, ('blob_sha', 'worktree_id', 'path', 'file', 'binding_digest', 'settings_sha',
-                        'wiki_root', 'wiki_identity', 'repository_digest', 'capture'))
-        saved = self._db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (admission['worktree_id'],)).fetchone()
-        if saved is None:
-            v.fail('blob_admission_invalid')
-        worktree = _worktree_record(saved, self._repository, self._policy)
+        worktree_id = admission['worktree_id']
+        if cache is not None and worktree_id in cache['worktrees']:
+            saved, worktree = cache['worktrees'][worktree_id]
+        else:
+            saved = self._db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
+            if saved is None:
+                v.fail('blob_admission_invalid')
+            worktree = _worktree_record(saved, self._repository, self._policy)
+            if cache is not None:
+                cache['worktrees'][worktree_id] = (saved, worktree)
+        legacy = isinstance(proof, dict) and proof.get('schema') == 'memvane-v6-wiki-admission-v1'
+        if legacy:
+            v.exact(proof, ('schema', 'blob_sha', 'worktree_id', 'path', 'binding_digest',
+                            'settings_sha', 'wiki_root', 'wiki_identity', 'repository_digest',
+                            'capture', 'endpoint_id', 'observation'))
+        else:
+            v.exact(proof, ('blob_sha', 'worktree_id', 'path', 'file', 'binding_digest', 'settings_sha',
+                            'wiki_root', 'wiki_identity', 'repository_digest', 'capture'))
         capture = proof['capture']
+        capture_key = (worktree_id, v.canonical(capture)) if cache is not None else None
+        capture_valid = cache is not None and capture_key in cache['captures']
+        if not capture_valid:
+            capture_valid = (checkout._capture_shape(capture)
+                and capture['repoId'] == self._repository['repoId']
+                and capture['worktreeId'] == saved['worktree_id']
+                and capture['checkoutDigest'] == checkout._digest({k: val for k, val in capture.items() if k != 'checkoutDigest'})
+                and all(capture['evidence'][k] == worktree[k] for k in ('project', 'checkout', 'gitDir')))
+            if capture_valid and cache is not None:
+                cache['captures'].add(capture_key)
         if (proof.get('blob_sha') != blob_sha or proof['worktree_id'] != saved['worktree_id']
                 or proof['binding_digest'] != saved['binding_digest']
                 or proof['settings_sha'] != saved['settings_sha'] or proof['wiki_root'] != saved['wiki_root']
                 or proof['wiki_identity'] != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
                 or proof['repository_digest'] != worktree['repositoryDigest']
-                or not checkout._capture_shape(capture)
-                or capture['repoId'] != self._repository['repoId']
-                or capture['worktreeId'] != saved['worktree_id']
-                or capture['checkoutDigest'] != checkout._digest({k: val for k, val in capture.items() if k != 'checkoutDigest'})
-                or any(capture['evidence'][k] != worktree[k] for k in ('project', 'checkout', 'gitDir'))
-                or v.digest('memvane-wiki-admission-v1', proof) != admission['proof_digest']):
+                or not capture_valid
+                or v.digest('memvane-v6-wiki-admission-v1' if legacy else 'memvane-wiki-admission-v1', proof)
+                   != admission['proof_digest']):
             v.fail('blob_admission_invalid')
         v.relative(proof['path'])
+        if legacy:
+            v.identifier(proof['endpoint_id'])
+            v.identifier(proof['observation'])
+            return body
         v.exact(proof['file'], ('dev', 'ino', 'size', 'mtime_ns', 'ctime_ns'))
         for number in proof['file'].values():
             v.integer(number)
@@ -678,7 +710,9 @@ class BlobStore:
         with self._session():
             return self._vectors(blob_sha, recipe_id, profile_id)
 
-    def _fingerprint(self, key):
+    def _fingerprint(self, key, *, cache=None):
+        if cache is not None and key in cache['fingerprints']:
+            return cache['fingerprints'][key]
         v.identifier(key)
         row = self._db.execute('SELECT * FROM source_fingerprints WHERE fingerprint_id=?', (key,)).fetchone()
         if row is None:
@@ -686,39 +720,56 @@ class BlobStore:
         spec = v.fingerprint({k: row[k] for k in v.FINGERPRINT_FIELDS}, self._repository['gitObjectFormat'])
         if v.digest('memvane-source-fingerprint-v1', spec) != key:
             v.fail('source_fingerprint_invalid')
-        worktree = self._db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (spec['worktree_id'],)).fetchone()
+        if cache is None or spec['worktree_id'] not in cache['worktrees']:
+            worktree = self._db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (spec['worktree_id'],)).fetchone()
+            if worktree is None:
+                v.fail('source_worktree_missing')
+            record = _worktree_record(worktree, self._repository, self._policy)
+            if cache is not None:
+                cache['worktrees'][spec['worktree_id']] = (worktree, record)
+        if cache is not None:
+            cache['fingerprints'][key] = spec
+        return spec
+
+    def _put_fingerprint(self, db, spec, *, verify_only=False):
+        spec = v.fingerprint(spec, self._repository['gitObjectFormat'])
+        key = v.digest('memvane-source-fingerprint-v1', spec)
+        worktree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (spec['worktree_id'],)).fetchone()
         if worktree is None:
             v.fail('source_worktree_missing')
         _worktree_record(worktree, self._repository, self._policy)
-        return spec
+        old = db.execute('SELECT fingerprint_id FROM source_fingerprints WHERE fingerprint_id=?', (key,)).fetchone()
+        if old:
+            if self._fingerprint(key) != spec:
+                v.fail('source_fingerprint_conflict')
+        elif verify_only:
+            v.fail('migration_staged_missing')
+        else:
+            _insert(db, 'source_fingerprints', dict(fingerprint_id=key, **spec))
+        return key
 
     def put_fingerprint(self, spec):
         self._require_write()
-        spec = v.fingerprint(spec, self._repository['gitObjectFormat'])
-        key = v.digest('memvane-source-fingerprint-v1', spec)
         with self._session(write=True) as db:
-            worktree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (spec['worktree_id'],)).fetchone()
-            if worktree is None:
-                v.fail('source_worktree_missing')
-            _worktree_record(worktree, self._repository, self._policy)
-            old = db.execute('SELECT fingerprint_id FROM source_fingerprints WHERE fingerprint_id=?', (key,)).fetchone()
-            if old:
-                if self._fingerprint(key) != spec:
-                    v.fail('source_fingerprint_conflict')
-            else:
-                _insert(db, 'source_fingerprints', dict(fingerprint_id=key, **spec))
-        return key
+            return self._put_fingerprint(db, spec)
 
     def fingerprint(self, fingerprint_id):
         with self._session():
             return self._fingerprint(fingerprint_id)
 
-    def _source_claims(self, spec):
+    def _source_claims(self, spec, *, cache=None):
         fingerprints = []
         for source in spec['sources']:
-            fp = self._fingerprint(source['fingerprint_id'])
-            if any(span['end'] > fp['byte_length'] for span in source['spans']):
-                v.fail('source_span_outside_fingerprint')
+            fp = self._fingerprint(source['fingerprint_id'], cache=cache)
+            for span in source['spans']:
+                if span.get('kind') == 'legacy-lines-v1':
+                    if (spec['verification_kind'] != 'legacy_verified'
+                            or fp['binding_state'] != 'legacy_unbound' or fp['head_oid'] is not None
+                            or fp['tracked_state'] != 'unknown' or span['path'] != fp['path']
+                            or span['sourceSha256'] != fp['source_sha']):
+                        v.fail('legacy_span_binding_invalid')
+                elif span['end'] > fp['byte_length']:
+                    v.fail('source_span_outside_fingerprint')
             if spec['verification_kind'] == 'compiled' and fp['binding_state'] != 'observed':
                 v.fail('unbound_source_not_compiled')
             if spec['verification_kind'] == 'rebound' and (
@@ -727,17 +778,18 @@ class BlobStore:
             fingerprints.append(fp)
         return fingerprints
 
-    def _match_rebound(self, new, old):
+    def _match_rebound(self, new, old, *, cache=None):
         if (any(new[k] != old[k] for k in ('blob_sha', 'engine_identity', 'policy_digest'))
                 or len(new['sources']) != len(old['sources']) or not old['sources']):
             v.fail('source_rebind_mismatch')
         for fresh, prior in zip(new['sources'], old['sources']):
-            a, b = self._fingerprint(fresh['fingerprint_id']), self._fingerprint(prior['fingerprint_id'])
+            a = self._fingerprint(fresh['fingerprint_id'], cache=cache)
+            b = self._fingerprint(prior['fingerprint_id'], cache=cache)
             if (b['binding_state'] != 'observed' or fresh['spans'] != prior['spans']
                     or any(a[k] != b[k] for k in ('path', 'source_sha', 'byte_length'))):
                 v.fail('source_rebind_mismatch')
 
-    def _attestation_one(self, key):
+    def _attestation_one(self, key, *, cache=None):
         v.identifier(key)
         row = self._db.execute('SELECT * FROM card_attestations WHERE trust_digest=?', (key,)).fetchone()
         if row is None:
@@ -751,45 +803,54 @@ class BlobStore:
         if (v.digest('memvane-card-attestation-v1', spec) != key
                 or row['provenance_digest'] != v.digest('memvane-card-provenance-v1', sources)):
             v.fail('card_attestation_invalid')
-        self._blob(spec['blob_sha']); self._source_claims(spec)
+        if cache is None or spec['blob_sha'] not in cache['blobs']:
+            self._blob(spec['blob_sha'], cache=cache)
+            if cache is not None:
+                cache['blobs'].add(spec['blob_sha'])
+        self._source_claims(spec, cache=cache)
         return spec
 
-    def _attestation(self, key):
+    def _attestation(self, key, *, cache=None):
         seen, result, previous = set(), None, None
         while True:
             if key in seen:
                 v.fail('card_attestation_cycle')
             seen.add(key)
-            current = self._attestation_one(key)
+            current = self._attestation_one(key, cache=cache)
             if result is None:
                 result = current
             if previous is not None:
-                self._match_rebound(previous, current)
+                self._match_rebound(previous, current, cache=cache)
             if current['verification_kind'] != 'rebound':
                 return result
             previous, key = current, current['receipt']['prior_trust']
 
-    def put_attestation(self, spec):
-        self._require_write()
+    def _put_attestation(self, db, spec, *, verify_only=False):
         spec = v.attestation(spec)
         key = v.digest('memvane-card-attestation-v1', spec)
-        with self._session(write=True) as db:
-            self._blob(spec['blob_sha']); self._source_claims(spec)
-            if spec['verification_kind'] == 'rebound':
-                self._match_rebound(spec, self._attestation(spec['receipt']['prior_trust']))
-            old = db.execute('SELECT trust_digest FROM card_attestations WHERE trust_digest=?', (key,)).fetchone()
-            if old:
-                if self._attestation(key) != spec:
-                    v.fail('card_attestation_conflict')
-            else:
-                _insert(db, 'card_attestations', dict(trust_digest=key,
-                    **{k: spec[k] for k in ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest')},
-                    provenance_digest=v.digest('memvane-card-provenance-v1', spec['sources']),
-                    receipt_json=v.canonical(spec['receipt']), source_count=len(spec['sources']), created_ns=time.time_ns()))
-                for ordinal, source in enumerate(spec['sources']):
-                    _insert(db, 'attestation_sources', dict(trust_digest=key, ordinal=ordinal,
-                        fingerprint_id=source['fingerprint_id'], spans_json=v.canonical(source['spans'])))
+        self._blob(spec['blob_sha']); self._source_claims(spec)
+        if spec['verification_kind'] == 'rebound':
+            self._match_rebound(spec, self._attestation(spec['receipt']['prior_trust']))
+        old = db.execute('SELECT trust_digest FROM card_attestations WHERE trust_digest=?', (key,)).fetchone()
+        if old:
+            if self._attestation(key) != spec:
+                v.fail('card_attestation_conflict')
+        elif verify_only:
+            v.fail('migration_staged_missing')
+        else:
+            _insert(db, 'card_attestations', dict(trust_digest=key,
+                **{k: spec[k] for k in ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest')},
+                provenance_digest=v.digest('memvane-card-provenance-v1', spec['sources']),
+                receipt_json=v.canonical(spec['receipt']), source_count=len(spec['sources']), created_ns=time.time_ns()))
+            for ordinal, source in enumerate(spec['sources']):
+                _insert(db, 'attestation_sources', dict(trust_digest=key, ordinal=ordinal,
+                    fingerprint_id=source['fingerprint_id'], spans_json=v.canonical(source['spans'])))
         return key
+
+    def put_attestation(self, spec):
+        self._require_write()
+        with self._session(write=True) as db:
+            return self._put_attestation(db, spec)
 
     def attestation(self, trust_digest):
         with self._session():

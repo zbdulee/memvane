@@ -937,7 +937,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     except ReaderWindowBusy as exc:
         if getattr(exc, 'rollback_pending', False) or str(exc) not in (
                 'reader_write_deadline', 'reader_publish_busy',
-                'reader_mutation_busy', 'reader_lifetime_busy'):
+                'reader_mutation_busy', 'reader_lifetime_busy', 'reader_physical_busy'):
             raise
         return {'state': 'deferred', 'reason': str(exc)}, state['proof']
     return _checked(result), state['proof']

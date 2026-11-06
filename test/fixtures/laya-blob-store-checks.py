@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -36,6 +37,36 @@ API = {'create', 'open', 'register_worktree', 'ingest_card', 'document', 'counts
        'register_recipe', 'register_profile', 'put_chunk_set', 'chunks', 'vector_input_sha', 'embedding_inputs',
        'put_embedding_set', 'vectors', 'put_fingerprint', 'fingerprint', 'put_attestation',
        'attestation', 'verify'}
+
+
+def corrupt_fts_block(path, ordinal, *, remove=False):
+    """Mutate one real FTS shadow block in a disposable test database."""
+    if type(ordinal) is not int or ordinal < 1 or type(remove) is not bool:
+        raise ValueError('invalid synthetic FTS mutation')
+    name='wiki_fts_'+str(ordinal)+'_data'
+    with sqlite3.connect(path) as db:
+        row=db.execute('SELECT id,block FROM '+name+' ORDER BY id DESC LIMIT 1').fetchone()
+        if row is None or not row[1]:
+            raise AssertionError('synthetic FTS block missing')
+        changed=row[1][:-1]+bytes([row[1][-1]^1])
+        action = ('DELETE FROM '+name+' WHERE id=?' if remove else
+                  'UPDATE '+name+' SET block=? WHERE id=?')
+        args = (row[0],) if remove else (changed,row[0])
+        try:
+            db.execute(action,args)
+        except sqlite3.OperationalError as exc:
+            if 'may not be modified' not in str(exc):
+                raise
+            db.rollback()
+            cli=shutil.which('sqlite3')
+            if cli is None:
+                raise
+            sql = ('DELETE FROM '+name+' WHERE id='+str(row[0]) if remove else
+                   'UPDATE '+name+" SET block=X'"+changed.hex()+"' WHERE id="+str(row[0]))
+            subprocess.run([cli,'-batch',str(path),sql],check=True,capture_output=True,timeout=10)
+        actual=db.execute('SELECT block FROM '+name+' WHERE id=?',(row[0],)).fetchone()
+        if (remove and actual is not None) or (not remove and (actual is None or actual[0]!=changed)):
+            raise AssertionError('synthetic FTS mutation did not persist')
 CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'XDG_'))}
 GIT_ENV = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0',

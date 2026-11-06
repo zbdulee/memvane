@@ -21,14 +21,15 @@ MAX_ROWS=20000
 MAX_FTS_BYTES=128*1024*1024
 
 
-def table(ordinal):
+def table(ordinal, *, sidecar=False):
     if type(ordinal) is not int or not 1 <= ordinal <= 2**63-1:
         v.fail('invalid_fts_ordinal')
-    return PREFIX+str(ordinal)
+    if type(sidecar) is not bool:v.fail('invalid_fts_ordinal')
+    return PREFIX+('side_' if sidecar else '')+str(ordinal)
 
 
-def _ddl(ordinal):
-    return (f'CREATE VIRTUAL TABLE {table(ordinal)} USING '
+def _ddl(ordinal, *, sidecar=False):
+    return (f'CREATE VIRTUAL TABLE {table(ordinal,sidecar=sidecar)} USING '
             "fts5(filepath,title,body,path_key UNINDEXED,tokenize='porter unicode61')")
 
 
@@ -77,7 +78,9 @@ class ConnectionGuard:
         if self._active is None or threading.get_ident()!=self._thread:
             return sqlite3.SQLITE_DENY
         base=table(self._active)
-        return (sqlite3.SQLITE_OK if all(x==base or x.startswith(base+'_') for x in targets)
+        side=table(self._active,sidecar=True)
+        return (sqlite3.SQLITE_OK if all(x==base or x.startswith(base+'_') or
+                                          x==side or x.startswith(side+'_') for x in targets)
                 else sqlite3.SQLITE_DENY)
 
     @contextmanager
@@ -103,15 +106,15 @@ class ConnectionGuard:
             self._db.set_authorizer(self._authorize)
 
 
-def create(db,ordinal):
-    table(ordinal)
+def create(db,ordinal,*,sidecar=False):
+    table(ordinal,sidecar=sidecar)
     rows=_execute(db,
         "SELECT COALESCE(g.state,'building') FROM generation_slots s LEFT JOIN generations g ON g.ordinal=s.ordinal WHERE s.ordinal=?",(ordinal,))
     if len(rows)!=1 or rows[0][0]!='building':v.fail('fts_generation_not_building')
-    _execute(db,_ddl(ordinal))
+    _execute(db,_ddl(ordinal,sidecar=sidecar))
 
 
-def _entries(rows):
+def _entries(rows, *, insertion_order=False):
     if not isinstance(rows,list) or len(rows)>MAX_ROWS:v.fail('fts_rows_invalid')
     seen=set();result=[];size=0
     for row in rows:
@@ -124,12 +127,12 @@ def _entries(rows):
         except UnicodeError:v.fail('fts_rows_invalid')
         if size>MAX_FTS_BYTES:v.fail('fts_rows_too_large')
         result.append(tuple(row[k] for k in _FIELDS))
-    return sorted(result,key=lambda r:r[3])
+    return result if insertion_order else sorted(result,key=lambda r:r[3])
 
 
-def populate(db,ordinal,rows):
-    for row in _entries(rows):
-        _execute(db,f'INSERT INTO {table(ordinal)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
+def populate(db,ordinal,rows,*,sidecar=False):
+    for row in _entries(rows,insertion_order=sidecar):
+        _execute(db,f'INSERT INTO {table(ordinal,sidecar=sidecar)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
 
 
 def _schema(db):
@@ -138,10 +141,10 @@ def _schema(db):
 
 
 @lru_cache(maxsize=64)
-def _expected_schema(ordinal):
+def _expected_schema(ordinal,sidecar=False):
     db=sqlite3.connect(':memory:',cached_statements=0)
     try:
-        _execute(db,_ddl(ordinal))
+        _execute(db,_ddl(ordinal,sidecar=sidecar))
         return tuple(_schema(db))
     finally:db.close()
 
@@ -149,25 +152,34 @@ def _expected_schema(ordinal):
 def schema_rows(db):
     actual=[r for r in _schema(db) if r[1].startswith(PREFIX) or r[2].startswith(PREFIX)]
     expected=[]
-    ordinals=[r[0] for r in _execute(db,'SELECT ordinal FROM generation_slots ORDER BY ordinal')]
+    try:
+        slots=_execute(db,"SELECT ordinal,json_type(stage_json,'$.legacy.sidecar_corpus') "
+                          'FROM generation_slots ORDER BY ordinal')
+    except sqlite3.Error:
+        v.fail('fts_generation_ownership_invalid')
+    ordinals=[r[0] for r in slots]
     if len(set(ordinals))!=len(ordinals):v.fail('fts_generation_ownership_invalid')
-    for ordinal in ordinals:expected.extend(_expected_schema(ordinal))
+    for ordinal,sidecar_type in slots:
+        expected.extend(_expected_schema(ordinal))
+        if sidecar_type is not None:
+            expected.extend(_expected_schema(ordinal,True))
     if sorted(actual)!=sorted(expected):v.fail('fts_schema_mismatch')
     return actual
 
 
-def _one_schema(db,ordinal):
-    base=table(ordinal)
+def _one_schema(db,ordinal,*,sidecar=False):
+    base=table(ordinal,sidecar=sidecar)
     actual=[r for r in _schema(db) if r[1]==base or r[1].startswith(base+'_') or r[2]==base or r[2].startswith(base+'_')]
-    expected=list(_expected_schema(ordinal))
+    expected=list(_expected_schema(ordinal,sidecar))
     if sorted(actual)!=sorted(expected):v.fail('fts_schema_mismatch')
     return expected
 
 
-def assert_rows(db,ordinal,expected_rows,deadline=None):
-    _deadline(deadline);_one_schema(db,ordinal)
-    expected=_entries(expected_rows)
-    cursor=db.execute(f'SELECT filepath,title,body,path_key FROM {table(ordinal)} ORDER BY path_key COLLATE BINARY')
+def assert_rows(db,ordinal,expected_rows,deadline=None,*,sidecar=False):
+    _deadline(deadline);_one_schema(db,ordinal,sidecar=sidecar)
+    expected=_entries(expected_rows,insertion_order=sidecar)
+    order = 'rowid' if sidecar else 'path_key COLLATE BINARY'
+    cursor=db.execute(f'SELECT filepath,title,body,path_key FROM {table(ordinal,sidecar=sidecar)} ORDER BY {order}')
     try:
         for row in expected:
             _deadline(deadline)
@@ -176,6 +188,7 @@ def assert_rows(db,ordinal,expected_rows,deadline=None):
         if cursor.fetchone() is not None:v.fail('fts_rows_mismatch')
     finally:cursor.close()
     _deadline(deadline)
+    return expected
 
 
 def _typed(value):
@@ -187,16 +200,16 @@ def _typed(value):
     v.fail('fts_storage_value_invalid')
 
 
-def storage_digest(db,ordinal,deadline=None):
+def storage_digest(db,ordinal,deadline=None,*,sidecar=False):
     """Read opaque shadow rows before any MATCH; perform no shadow writes."""
-    metadata=_one_schema(db,ordinal)
+    metadata=_one_schema(db,ordinal,sidecar=sidecar)
     h=hashlib.sha256(b'memvane-fts-physical-v1\0')
     def add(value):
         raw=v.canonical(value).encode('utf8');h.update(len(raw).to_bytes(8,'big'));h.update(raw)
     add(metadata)
     total=0
     for kind,name,_,_ in sorted(metadata):
-        if kind!='table' or name==table(ordinal):continue
+        if kind!='table' or name==table(ordinal,sidecar=sidecar):continue
         _deadline(deadline)
         columns=[r[1] for r in _execute(db,f'PRAGMA table_info({name})')]
         if not columns or any(not re.fullmatch('[A-Za-z0-9_]+',col) for col in columns):
@@ -216,16 +229,35 @@ def storage_digest(db,ordinal,deadline=None):
 
 
 
-def verify_index(db,ordinal):
+def verify_index(db,ordinal,*,sidecar=False):
     """Validate FTS postings against internal content before sealing a build."""
-    name=table(ordinal)
+    name=table(ordinal,sidecar=sidecar)
     try:
         _execute(db,f"INSERT INTO {name}({name}) VALUES('integrity-check')")
     except sqlite3.Error:
         v.fail('fts_integrity_failed')
 
 
-def proof(db,ordinal,rows,deadline=None):
-    physical=storage_digest(db,ordinal,deadline)
-    assert_rows(db,ordinal,rows,deadline)
-    return v.digest('memvane-generation-fts-v1',{'rows':_entries(rows),'storage':physical})
+def proof(db,ordinal,rows,deadline=None,*,return_storage=False,expected_storage=None,sidecar=False):
+    physical=storage_digest(db,ordinal,deadline,sidecar=sidecar)
+    if expected_storage is not None and physical!=expected_storage:
+        v.fail('fts_storage_mismatch')
+    entries=assert_rows(db,ordinal,rows,deadline,sidecar=sidecar)
+    lexical=v.digest('memvane-generation-fts-v1',{'rows':entries,'storage':physical})
+    return (lexical,physical) if return_storage else lexical
+
+
+def proof_pair(db,ordinal,base_rows,sidecar_rows,deadline=None,*,expected_storage=None):
+    """Bind both corpora before reading either virtual FTS table."""
+    base_storage=storage_digest(db,ordinal,deadline)
+    side_storage=storage_digest(db,ordinal,deadline,sidecar=True)
+    combined=v.digest('memvane-generation-fts-pair-storage-v1',
+                      {'base':base_storage,'sidecar':side_storage})
+    if expected_storage is not None and combined!=expected_storage:
+        v.fail('fts_storage_mismatch')
+    base_entries=assert_rows(db,ordinal,base_rows,deadline)
+    side_entries=assert_rows(db,ordinal,sidecar_rows,deadline,sidecar=True)
+    base_lexical=v.digest('memvane-generation-fts-v1',{'rows':base_entries,'storage':base_storage})
+    side_lexical=v.digest('memvane-generation-fts-v1',{'rows':side_entries,'storage':side_storage})
+    lexical=v.digest('memvane-generation-fts-pair-v1',{'base':base_lexical,'sidecar':side_lexical})
+    return lexical,combined

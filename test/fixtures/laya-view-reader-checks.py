@@ -254,11 +254,7 @@ class ReaderChecks(helpers.GenerationCase):
     def test_11_physical_tamper_is_rejected_before_match_compilation(self):
         store,_,h,gen=self.published();pin=store.pin_view(h)
         ordinal=store._db.execute('SELECT ordinal FROM generations WHERE gen_id=?',(gen,)).fetchone()[0]
-        name='wiki_fts_'+str(ordinal)
-        with sqlite3.connect(self.db) as db:
-            row=db.execute('SELECT id,block FROM '+name+'_data ORDER BY id DESC LIMIT 1').fetchone()
-            self.assertTrue(row[1]);raw=row[1]
-            db.execute('UPDATE '+name+'_data SET block=? WHERE id=?',(raw[:-1]+bytes([raw[-1]^1]),row[0]))
+        helpers.helpers.corrupt_fts_block(self.db,ordinal)
         matched=[];original=store._fts_guard._authorize
         def auth(action,a,b,d,t):
             if action==sqlite3.SQLITE_FUNCTION and str(b).lower()=='match':matched.append(True)

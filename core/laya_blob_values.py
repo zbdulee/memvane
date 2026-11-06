@@ -260,7 +260,11 @@ def fingerprint(spec, object_format):
         if head is not None and (not isinstance(head, str) or re.fullmatch('[0-9a-f]{' + str(length) + '}', head) is None):
             fail('source_head_invalid')
         if branch.startswith('detached:'):
-            if head is None or branch != 'detached:' + head:
+            detached_oid = branch[len('detached:'):]
+            unbound = (head is None and spec['binding_state'] == 'legacy_unbound'
+                       and spec['tracked_state'] == 'unknown')
+            if (re.fullmatch('[0-9a-f]{' + str(length) + '}', detached_oid) is None
+                    or (not unbound and branch != 'detached:' + str(head))):
                 fail('source_branch_invalid')
         elif branch.startswith('refs/heads/'):
             tail = branch[len('refs/heads/'):]
@@ -291,7 +295,7 @@ def attestation(spec):
     sources = spec['sources']
     if not isinstance(sources, list) or len(sources) > 64 or (kind == 'rebound' and not sources):
         fail('attestation_sources_invalid')
-    seen = set()
+    seen, legacy_count = set(), 0
     for source in sources:
         exact(source, ('fingerprint_id', 'spans'))
         identifier(source['fingerprint_id'])
@@ -301,11 +305,30 @@ def attestation(spec):
         spans = source['spans']
         if not isinstance(spans, list) or len(spans) > 256:
             fail('source_spans_invalid')
-        end = 0
+        end, mode, line_keys = 0, None, set()
         for span in spans:
+            if isinstance(span, dict) and span.get('kind') == 'legacy-lines-v1':
+                if kind != 'legacy_verified' or mode == 'bytes':
+                    fail('source_spans_invalid')
+                import yaml_scalars
+                legacy_count += 1
+                if legacy_count > yaml_scalars.MAX_SOURCE_SPANS:
+                    fail('source_spans_invalid')
+                original = {key: value for key, value in span.items() if key != 'kind'}
+                if (yaml_scalars.normalize_source_span(original) != original
+                        or len(spans) > yaml_scalars.MAX_SOURCE_SPANS):
+                    fail('source_spans_invalid')
+                line_key = (original['path'], original['startLine'], original['endLine'])
+                if line_key in line_keys:
+                    fail('source_spans_invalid')
+                line_keys.add(line_key)
+                mode = 'lines'
+                continue
+            if mode == 'lines':
+                fail('source_spans_invalid')
             exact(span, ('start', 'end'))
             start, stop = integer(span['start']), integer(span['end'])
             if start < end or stop <= start:
                 fail('source_spans_invalid')
-            end = stop
+            end, mode = stop, 'bytes'
     return json.loads(canonical(spec))

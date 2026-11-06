@@ -852,7 +852,7 @@ class NoActivation(CheckoutCase):
                              'laya_blob_lease', 'laya_blob_fill', 'laya_fill_schema',
                              'laya_view_schema', 'laya_view_fts',
                              'laya_view_values', 'laya_view_store', 'laya_view_reader',
-                             'laya_view_fill', 'laya_view_vectors'}
+                             'laya_view_fill', 'laya_view_vectors', 'laya_shadow_migration'}
         users = [str(path.relative_to(REPO))
                  for path in [*(REPO / 'core').rglob('*.py'), REPO / 'hooks/run-hook',
                               *(REPO / 'hermes_adapter').rglob('*.py')]

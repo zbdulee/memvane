@@ -183,6 +183,35 @@ def hash_body(body):
 
 
 class LayaIndexASlice(unittest.TestCase):
+    def test_ascii_fts_fast_path_keeps_cjk_and_deadline_semantics(self):
+        pattern=laya_index_module._QMD_CJK_RUN
+        with mock.patch.object(laya_index_module,'_QMD_CJK_RUN',wraps=pattern) as checked:
+            self.assertEqual(_qmd_fts_text('ASCII path and text'), 'ASCII path and text')
+            self.assertEqual(checked.sub.call_count,0)
+            self.assertEqual(_qmd_fts_text('A한B'), 'A 한 B')
+            self.assertEqual(checked.sub.call_count,1)
+        with self.assertRaisesRegex(IndexContractError,'fts_deadline_exceeded'):
+            _qmd_fts_text('ASCII',deadline=time.monotonic()-1)
+
+    def test_shared_body_fts_proof_checks_every_row_with_one_normalization(self):
+        db=sqlite3.connect(':memory:')
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE membership(gen TEXT,path TEXT,hash TEXT,eligible INTEGER)')
+        db.execute('CREATE TABLE content(hash TEXT,body TEXT)')
+        db.execute('CREATE TABLE synthetic_fts(path_key TEXT,filepath TEXT,title TEXT,body TEXT)')
+        body='합성 본문'
+        db.execute('INSERT INTO content VALUES (?,?)',('same',body))
+        for path in ('a.md','b.md'):
+            db.execute('INSERT INTO membership VALUES (?,?,?,?)',('g',path,'same',1))
+            db.execute('INSERT INTO synthetic_fts VALUES (?,?,?,?)',
+                       (path,_qmd_fts_text(path),_qmd_fts_text(laya_index_module._qmd_title(body,path)),
+                        _qmd_fts_text(body)))
+        with mock.patch.object(laya_index_module,'_qmd_fts_text',wraps=_qmd_fts_text) as normalized:
+            self.assertTrue(laya_index_module._generation_fts_rows_match(db,'g','synthetic_fts'))
+            self.assertEqual(sum(call.args == (body,) for call in normalized.call_args_list),1)
+        db.execute("UPDATE synthetic_fts SET body='changed' WHERE path_key='b.md'")
+        self.assertFalse(laya_index_module._generation_fts_rows_match(db,'g','synthetic_fts'))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='laya-index-a-')
         self.root = Path(self.temp.name)

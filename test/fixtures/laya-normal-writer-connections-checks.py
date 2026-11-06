@@ -111,6 +111,18 @@ class NormalWriterConnectionChecks(unittest.TestCase):
         def busy(_job,_token):raise self.W.ReaderWindowBusy('reader_write_deadline')
         self.assertEqual(flow._process_leased(queue,'claim',False,busy),'deferred')
         self.assertTrue(queue.released)
+        def physical_busy(_job,_token):raise self.W.ReaderWindowBusy('reader_physical_busy')
+        queue.released=False
+        self.assertEqual(flow._process_leased(queue,'claim',False,physical_busy),'deferred')
+        self.assertTrue(queue.released)
+        def physical_pending(_job,_token):
+            error=self.W.ReaderWindowBusy('reader_physical_busy')
+            error.rollback_pending=True
+            raise error
+        queue.released=False
+        with self.assertRaisesRegex(self.W.ReaderWindowBusy,'reader_physical_busy'):
+            flow._process_leased(queue,'claim',False,physical_pending)
+        self.assertTrue(queue.released)
         def changed(_job,_token):raise self.W.ReaderWindowBusy('reader_publish_changed')
         queue.released=False
         with self.assertRaisesRegex(self.W.ReaderWindowBusy,'reader_publish_changed'):

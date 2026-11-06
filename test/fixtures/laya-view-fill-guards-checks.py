@@ -226,8 +226,8 @@ class FillGuardChecks(helpers.FillCase):
             active[blob] -= 1
             if not active[blob]:
                 del active[blob]
-        def observed(blob):
-            body = TrackedBody(original(blob))
+        def observed(blob, **kwargs):
+            body = TrackedBody(original(blob, **kwargs))
             active[blob] = active.get(blob, 0) + 1
             peak[0] = max(peak[0], len(active))
             weakref.finalize(body, released, blob)

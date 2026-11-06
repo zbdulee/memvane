@@ -116,6 +116,44 @@ class ProvenanceChecks(unittest.TestCase):
         self.assertEqual(self.store.fingerprint(fp)['binding_state'], 'legacy_unbound')
         with self.assertRaises(self.Error): self.store.put_attestation(self.evidence(fp))
 
+    def test_legacy_line_spans_keep_their_original_evidence_level(self):
+        values = sys.modules['laya_blob_values']
+        detached = self.fp(branch_key='detached:' + '1' * 40,
+                           binding_state='legacy_unbound', tracked_state='unknown')
+        self.assertEqual(values.fingerprint(detached, 'sha1'), detached)
+        for changes in ({'binding_state': 'observed'}, {'tracked_state': 'tracked'},
+                        {'branch_key': 'detached:not-an-oid'}):
+            with self.subTest(detached=changes), self.assertRaises(self.Error):
+                values.fingerprint(dict(detached, **changes), 'sha1')
+        fingerprint = self.store.put_fingerprint(self.fp(binding_state='legacy_unbound'))
+        span = {'kind': 'legacy-lines-v1', 'path': 'notes/source.md',
+                'sourceSha256': 'a' * 64, 'startLine': 3, 'endLine': 5,
+                'spanSha256': 'd' * 64}
+        row = self.evidence(fingerprint, verification_kind='legacy_verified')
+        row['sources'][0]['spans'] = [span]
+        trust = self.store.put_attestation(row)
+        self.assertEqual(self.store.attestation(trust), row)
+        self.assertTrue(self.store.verify())
+        for bad_span in ({**span, 'path': 'notes/other.md'},
+                         {**span, 'sourceSha256': 'f' * 64},
+                         {**span, 'spanSha256': 'invalid'},
+                         {**span, 'endLine': 2}):
+            bad = self.evidence(fingerprint, verification_kind='legacy_verified')
+            bad['sources'][0]['spans'] = [bad_span]
+            with self.subTest(span=bad_span), self.assertRaises(self.Error):
+                self.store.put_attestation(bad)
+        second = self.store.put_fingerprint(self.fp(binding_state='legacy_unbound', path='notes/other.md'))
+        too_many = self.evidence(fingerprint, verification_kind='legacy_verified')
+        too_many['sources'][0]['spans'] = [{**span, 'startLine': i, 'endLine': i} for i in range(1, 10)]
+        too_many['sources'].append({'fingerprint_id': second, 'spans': [
+            {**span, 'path': 'notes/other.md', 'startLine': i, 'endLine': i} for i in range(1, 10)]})
+        with self.assertRaises(self.Error):
+            self.store.put_attestation(too_many)
+        compiled = self.evidence(fingerprint)
+        compiled['sources'][0]['spans'] = [span]
+        with self.assertRaises(self.Error):
+            self.store.put_attestation(compiled)
+
     def test_10_original_source_body_is_not_read_or_stored(self):
         raw = b'SOURCE_CANARY_NEVER_STORED_3736c9b1'
         source = self.project / 'notes/source.md'; source.parent.mkdir()
@@ -157,12 +195,15 @@ class ProvenanceChecks(unittest.TestCase):
 
     def test_14_sql_source_link_failure_rolls_back_parent(self):
         fp = self.store.put_fingerprint(self.fp())
-        def deny(action, name, *_):
-            return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_INSERT and name == 'attestation_sources' else sqlite3.SQLITE_OK
+        original = self.store._fts_guard._authorize
+        def deny(action, name, *args):
+            if action == sqlite3.SQLITE_INSERT and name == 'attestation_sources':
+                return sqlite3.SQLITE_DENY
+            return original(action, name, *args)
         self.store._db.set_authorizer(deny)
         try:
             with self.assertRaises(self.Error): self.store.put_attestation(self.evidence(fp))
-        finally: self.store._db.set_authorizer(None)
+        finally: self.store._db.set_authorizer(original)
         self.assertEqual(self.store.counts()['card_attestations'], 0)
         self.assertEqual(self.store.counts()['attestation_sources'], 0)
 

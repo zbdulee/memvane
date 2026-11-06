@@ -169,7 +169,13 @@ def _published_snapshot(db, decision, *, deadline=None, allow_exclusion_advance=
 
 def _published(state, path, decision):
     with _readonly(path, state) as db:
-        return _published_snapshot(db, decision)
+        published = _published_snapshot(db, decision, allow_exclusion_advance=True)
+        epoch = db.execute('SELECT rev_epoch FROM generations WHERE scope=? AND gen=?',
+                           (decision['scopeId'], published[0])).fetchone()
+        if epoch is not None and epoch[0] < len(published[4]):
+            _need(_base_revision_snapshot(db, decision, published) is not None,
+                  'reader_base_revision_unproved')
+        return published
 
 
 def _binding_snapshot(db, binding, decision, published):
@@ -444,13 +450,15 @@ def _legacy_sidecar_commitment(db, identity, *, deadline=None, _writer_transacti
     return {'rows':count,'digest':digest.hexdigest()}
 
 
-def _sidecar_document_snapshot(side, base, decision, path, *, deadline, require_vectors=True):
+def _sidecar_document_snapshot(side, base, decision, path, *, deadline, require_vectors=True,
+                               _for_fts_corpus=False):
     """Check one pinned row; the caller must separately validate the snapshot."""
     import time
     from laya_index_a import LayaIndexA, _valid_relative_path
     from laya_index_host_route import wiki_index_roots
     from laya_index_vector import _read_chunk_set
-    _need(type(require_vectors) is bool, 'reader_snapshot_input_invalid')
+    _need(type(require_vectors) is bool and type(_for_fts_corpus) is bool
+          and (not _for_fts_corpus or not require_vectors), 'reader_snapshot_input_invalid')
     _need(side.in_transaction and base.in_transaction
           and side.execute('PRAGMA query_only').fetchone() == (1,)
           and base.execute('PRAGMA query_only').fetchone() == (1,),
@@ -478,10 +486,11 @@ def _sidecar_document_snapshot(side, base, decision, path, *, deadline, require_
           and type(count) is int and count > 0
           and side.execute('SELECT path,title,body FROM docs_fts WHERE rowid=?',(rowid,)).fetchone()
           == (path,title,body), 'reader_sidecar_document_changed')
-    _need(base.execute('SELECT 1 FROM exclusions WHERE scope=? AND '
-                       '((kind=\'path\' AND value=?) OR (kind=\'hash\' AND value=?)) LIMIT 1',
-                       (decision['scopeId'],path,digest)).fetchone() is None,
-          'reader_sidecar_document_excluded')
+    if not _for_fts_corpus:
+        _need(base.execute('SELECT 1 FROM exclusions WHERE scope=? AND '
+                           '((kind=\'path\' AND value=?) OR (kind=\'hash\' AND value=?)) LIMIT 1',
+                           (decision['scopeId'],path,digest)).fetchone() is None,
+              'reader_sidecar_document_excluded')
     chunks=None
     if require_vectors:
         chunks=_read_chunk_set(base,digest,title,profile_id,profile['dimension'],deadline=deadline)

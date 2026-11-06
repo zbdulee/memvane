@@ -193,7 +193,10 @@ class ReaderMixin:
             return 'lineage_unverified'
         return 'stale_snapshot' if code == 0 else 'lineage_changed'
 
-    def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None, deadline_seconds=2):
+    def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
+               deadline_seconds=2, _legacy_origin=None):
+        if _legacy_origin is not None and _legacy_origin not in ('base', 'sidecar'):
+            v.fail('migration_lexical_origin_invalid')
         deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)
         record = self._pinned(pin)
         _remaining(deadline)
@@ -201,36 +204,84 @@ class ReaderMixin:
         self._observe(entry,deadline=deadline)
         _remaining(deadline)
         with self._reading(deadline) as db:
-            generation, seal, original, _ = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
+            generation, seal, original, stage = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
             if generation['state'] != 'published' or v.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
                 v.fail('view_pin_changed')
-            name = fts.table(generation['ordinal'])
-            conditions, args = [], [pin.gen_id, fts_query, pin.view_id]
+            paired = 'sidecar_corpus' in stage.get('legacy', {})
+            if paired and _legacy_origin is None:
+                v.fail('migration_lexical_sidecar_unproved')
+            if not paired and _legacy_origin is not None:
+                v.fail('migration_lexical_origin_invalid')
+            name = fts.table(generation['ordinal'],sidecar=_legacy_origin == 'sidecar')
+            mapping = None
+            if 'legacy' in stage:
+                origin = _legacy_origin if paired else 'base'
+                mapping = {path: full for path, full in stage['legacy']['fts_paths'].items()
+                           if not paired or stage['legacy']['fts_sources'][path] == origin}
+                args = [v.canonical(stage['legacy']['active_fts'][origin]), fts_query]
+                path_expr = f"substr({name}.path_key,instr({name}.path_key,'/')+1)"
+            else:
+                join = f'JOIN wiki_members m ON m.gen_id=? AND m.path={name}.path_key'
+                args = [pin.gen_id, fts_query, pin.view_id]
+                order_path = 'm.path'
+                path_expr = 'm.path'
+            conditions = []
             if path_prefixes is not None:
                 if not path_prefixes:
                     conditions.append('0')
                 else:
-                    conditions.append('('+' OR '.join('(m.path=? OR substr(m.path,1,?)=?)' for _ in path_prefixes)+')')
+                    conditions.append('('+' OR '.join(f'({path_expr}=? OR substr({path_expr},1,?)=?)'
+                                                      for _ in path_prefixes)+')')
                     for path in path_prefixes:
                         args.extend((path, len(path)+1, path+'/'))
             if excluded_paths:
-                conditions.append('m.path NOT IN ('+','.join('?' for _ in excluded_paths)+')')
+                conditions.append(path_expr+' NOT IN ('+','.join('?' for _ in excluded_paths)+')')
                 args.extend(excluded_paths)
             extra = ''.join(' AND '+clause for clause in conditions)
             args.append(limit)
             try:
-                rows = db.execute(f'''SELECT m.path,m.blob_sha,m.display_title,bm25({name},1.5,4.0,1.0,0.0) AS score
-                    FROM {name} JOIN wiki_members m ON m.gen_id=? AND m.path={name}.path_key
-                    JOIN generations g ON g.gen_id=m.gen_id
-                    WHERE {name} MATCH ? AND g.view_id=? AND m.eligible=1 {extra}
-                    ORDER BY score ASC,m.path COLLATE BINARY ASC LIMIT ?''', args).fetchall()
+                if 'legacy' in stage:
+                    args.extend((v.canonical(mapping), pin.gen_id, pin.view_id))
+                    rows = db.execute(f'''SELECT m.path,m.blob_sha,m.display_title,r.score FROM (
+                        SELECT {name}.path_key AS full_path,bm25({name},1.5,4.0,1.0,0.0) AS score
+                        FROM {name} JOIN json_each(?) a ON a.key={name}.path_key
+                        WHERE {name} MATCH ? {extra}
+                        ORDER BY score ASC,{name}.path_key COLLATE BINARY ASC LIMIT ? OFFSET 0
+                        ) r JOIN json_each(?) p ON p.value=r.full_path
+                        JOIN wiki_members m ON m.gen_id=? AND m.path=p.key
+                        JOIN generations g ON g.gen_id=m.gen_id
+                        WHERE g.view_id=? AND m.eligible=1
+                        ORDER BY r.score ASC,r.full_path COLLATE BINARY ASC''', args).fetchall()
+                else:
+                    rows = db.execute(f'''SELECT m.path,m.blob_sha,m.display_title,bm25({name},1.5,4.0,1.0,0.0) AS score
+                        FROM {name} {join}
+                        JOIN generations g ON g.gen_id=m.gen_id
+                        WHERE {name} MATCH ? AND g.view_id=? AND m.eligible=1 {extra}
+                        ORDER BY score ASC,{order_path} COLLATE BINARY ASC LIMIT ?''', args).fetchall()
             except sqlite3.Error:
                 _remaining(deadline)
                 v.fail('fts_query_invalid')
             state = self._snapshot_state(entry['capture'], original, deadline)
+            locations = {}
+            if 'legacy' in stage and rows:
+                import source_spans
+                paths = [row['path'] for row in rows]
+                sql = ('SELECT wiki_path,spans_json FROM card_sources WHERE gen_id=? AND wiki_path IN (' +
+                       ','.join('?' for _ in paths) + ') ORDER BY wiki_path,ordinal')
+                for source in db.execute(sql, (pin.gen_id, *paths)):
+                    for span in v.parse_canonical(source['spans_json']):
+                        if span.get('kind') != 'legacy-lines-v1':
+                            v.fail('legacy_card_trust_invalid')
+                        locations.setdefault(source['wiki_path'], []).append(span)
+                for path, spans in locations.items():
+                    spans.sort(key=lambda span: (span['path'], span['startLine'], span['endLine']))
+                    locations[path] = [source_spans.locator(span) for span in spans]
             answer = [dict(path=r['path'], blob_sha=r['blob_sha'], body=self._blob(r['blob_sha']),
                 display_title=r['display_title'], score=r['score'], view_id=pin.view_id, gen_id=pin.gen_id,
                 evidence='commitment-only', owner_verified=False, snapshot_state=state) for r in rows]
+            if 'legacy' in stage:
+                for row in answer:
+                    row['source_locations'] = locations.get(row['path'], [])
             _remaining(deadline)
         self._observe(entry,deadline=deadline)
         _remaining(deadline)
@@ -249,7 +300,7 @@ class ReaderMixin:
             orphans = db.execute('SELECT s.* FROM generation_slots s LEFT JOIN generations g ON g.ordinal=s.ordinal WHERE g.gen_id IS NULL').fetchall()
             for slot in orphans:
                 stage = v.parse_canonical(slot['stage_json'])
-                v.exact(stage, vals.STAGE_FIELDS)
+                v.exact(stage, vals.STAGE_FIELDS if 'legacy' not in stage else (*vals.STAGE_FIELDS, 'legacy'))
                 fields = stage['view']
                 v.exact(fields, vals.VIEW_FIELDS)
                 handle = self._handle_type(**fields, incarnation=self._incarnation, token='unsealed')
@@ -262,6 +313,14 @@ class ReaderMixin:
                 _worktree_record(saved, self._repository, self._policy)
                 if stage['vector_spec'] is not None:
                     self._recipe(stage['vector_spec']['recipe_id']); self._profile(stage['vector_spec']['profile_id'])
-                plan = self._derive(handle, stage['manifest'], stage['skip_paths'])
-                fts.proof(db, slot['ordinal'], vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}), deadline)
+                plan = self._derive(handle, stage['manifest'], stage['skip_paths'],
+                                    legacy_paths=stage.get('legacy', {}).get('paths', ()), deadline=deadline)
+                rows = (self._legacy_fts_rows(stage['legacy'], verified_bodies=plan['verified_bodies'], deadline=deadline) if 'legacy' in stage else
+                        vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}, deadline=deadline))
+                if 'sidecar_corpus' in stage.get('legacy', {}):
+                    side_rows = self._legacy_fts_rows(stage['legacy'], verified_bodies=plan['verified_bodies'],
+                                                      deadline=deadline, sidecar=True)
+                    fts.proof_pair(db, slot['ordinal'], rows, side_rows, deadline)
+                else:
+                    fts.proof(db, slot['ordinal'], rows, deadline)
         return True

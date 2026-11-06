@@ -142,7 +142,7 @@ def _qmd_fts_text(text, *, deadline=None):
     """
     if text and deadline is not None and time.monotonic() >= deadline:
         raise IndexContractError('fts_deadline_exceeded')
-    out = _QMD_CJK_RUN.sub(_space_cjk_run, text)
+    out = text if isinstance(text, str) and text.isascii() else _QMD_CJK_RUN.sub(_space_cjk_run, text)
     if len(text) > 4096 and deadline is not None and time.monotonic() >= deadline:
         raise IndexContractError('fts_deadline_exceeded')
     return out
@@ -150,12 +150,16 @@ def _qmd_fts_text(text, *, deadline=None):
 
 def _generation_fts_rows_match(db, gen, table, *, deadline=None):
     expected = []
+    previous_body, previous_normalized = object(), None
     for path, body in db.execute(
             'SELECT m.path,c.body FROM membership m JOIN content c ON c.hash=m.hash '
             'WHERE m.gen=? AND m.eligible=1', (gen,)):
+        if body != previous_body:
+            previous_body = body
+            previous_normalized = _qmd_fts_text(body, deadline=deadline)
         expected.append((path, _qmd_fts_text(path, deadline=deadline),
                          _qmd_fts_text(_qmd_title(body, path), deadline=deadline),
-                         _qmd_fts_text(body, deadline=deadline)))
+                         previous_normalized))
     actual = db.execute(
         f'SELECT path_key,filepath,title,body FROM {table}').fetchall()
     if deadline is not None and time.monotonic() >= deadline:
