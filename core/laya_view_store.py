@@ -201,11 +201,16 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         row = db.execute('SELECT gen_id,epoch FROM view_heads WHERE view_id=?', (handle.view_id,)).fetchone()
         if row is None:
             return dict(view_id=handle.view_id, gen_id=None, epoch=0, incarnation=self._incarnation)
+        # Head CAS is linear and slot ordinals grow at prepare time, so a valid
+        # head is the view's highest published ordinal. This refuses a head
+        # moved back past the view_head_update trigger. A same-UID forger who
+        # also drops later generations' published state is not detected here.
         sealed = db.execute(
-            "SELECT 1 FROM generations g JOIN generation_seals s ON s.gen_id=g.gen_id "
+            "SELECT g.ordinal=(SELECT max(t.ordinal) FROM generations t WHERE t.view_id=g.view_id "
+            "AND t.state='published') FROM generations g JOIN generation_seals s ON s.gen_id=g.gen_id "
             "AND s.binding_digest=g.binding_digest WHERE g.gen_id=? AND g.view_id=? AND g.state='published'",
             (row['gen_id'], handle.view_id)).fetchone()
-        if sealed is None or type(row['epoch']) is not int or row['epoch'] < 1:
+        if sealed is None or sealed[0] != 1 or type(row['epoch']) is not int or row['epoch'] < 1:
             v.fail('view_head_invalid')
         return dict(view_id=handle.view_id, gen_id=row['gen_id'], epoch=row['epoch'],
                     incarnation=self._incarnation)
