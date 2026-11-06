@@ -68,7 +68,7 @@ def _wiki_card_path(path, prefixes):
 
 
 def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_ineligible=False,
-                      _all_inventory=False):
+                      _all_inventory=False, _page_limit=None):
     """Capture one metadata page; this observation does not authorize a write."""
     if not any(item is snapshot and bound is endpoint and saved == decision
                for item, bound, saved in readers._observations.get()):
@@ -81,7 +81,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
             or time.monotonic() >= deadline):
         raise IndexContractError('reader_snapshot_deadline')
     if (type(include_ineligible) is not bool or type(_all_inventory) is not bool
-            or (_all_inventory and (not include_ineligible or after is not None))):
+            or (_all_inventory and (not include_ineligible or after is not None))
+            or (_page_limit is not None and (type(_page_limit) is not int or _page_limit < 1))):
         raise IndexContractError('migration_inventory_invalid')
     deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
     with readers._validation_deadline(snapshot.connections, deadline):
@@ -156,7 +157,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
         paths = [path for path in sorted(members)
                  if (after is None or path > after) and (include_ineligible or
                  (path not in excluded_paths and members[path][0] not in excluded_hashes))]
-        page = paths if _all_inventory else paths[:MAX_BATCH]
+        page = paths if _all_inventory else paths[:MAX_BATCH if _page_limit is None
+                                                    else min(_page_limit, MAX_BATCH)]
         def output(path):
             digest, source, eligible = members[path]
             result = {'path': path, 'hash': digest, 'source': source}
@@ -168,7 +170,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
                         if len(paths) > len(page) else None}
 
 
-def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expected_observation=None):
+def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expected_observation=None,
+                       _page_limit=None):
     """Read proved wiki bytes only; returned rows alone do not authorize import."""
     from laya_blob_values import MAX_BODY
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -182,7 +185,7 @@ def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expect
         raise IndexContractError('migration_cursor_invalid')
     try:
         page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
-                                 after=after, deadline=deadline)
+                                 after=after, deadline=deadline, _page_limit=_page_limit)
     except IndexContractError as exc:
         if _expected_observation is None or str(exc) != 'migration_snapshot_changed':
             raise
@@ -1017,6 +1020,201 @@ def compare_incremental_lexical_prompts(snapshot, *, endpoint, decision, store, 
         titles = frozenset() if body_ok else frozenset(row['path'] for row in rows)
         old_locations = {path: list(spans) for path, spans in old_locations.items()}
         if rows != old or titles != old_titles or locations != old_locations:
+            raise IndexContractError('migration_recall_parity_mismatch')
+    return {'observation': selected['observation'], 'prompt_count': len(prompts)}
+
+
+# Recall parity corpus: every member contributes at most this many prompts,
+# one snapshot compares at most _PARITY_MEMBERS members, so a page holds at
+# most _PARITY_PROMPTS old and candidate recalls.
+_PARITY_MEMBERS = 4
+_PARITY_PROMPTS_PER_MEMBER = 4
+_PARITY_PROMPTS = _PARITY_MEMBERS * _PARITY_PROMPTS_PER_MEMBER
+_PARITY_PROMPT_BYTES = 512
+_HEADING = re.compile(r'^#{1,6}[ \t]+(.+?)[ \t#]*$', re.MULTILINE)
+
+
+def recall_corpus_prompts(path, body, title):
+    """Derive one member's deterministic recall prompts.
+
+    Order: indexed title, frontmatter title, file name stem, first heading,
+    first CJK run, then the remaining headings and CJK runs. Prompts are
+    whitespace-normalized, case-insensitively unique, and cut at a word
+    boundary to ``_PARITY_PROMPT_BYTES``.
+    """
+    from laya_index_a import _QMD_CJK_RUN
+    import yaml_scalars
+    text = body.replace('\r\n', '\n').replace('\r', '\n')
+    front, content = None, text
+    if text.startswith('---\n'):
+        end = text.find('\n---\n', 4)
+        if end >= 0:
+            front, content = text[4:end], text[end + 5:]
+    named = None
+    if front is not None:
+        match = re.search(r'^title:[ \t]*(.+)$', front, re.MULTILINE)
+        if match:
+            named = yaml_scalars.load(match.group(1).strip())
+    stem = path.rsplit('/', 1)[-1]
+    stem = re.sub(r'[-_.]+', ' ', stem[:-3] if stem.endswith('.md') else stem)
+    headings = [match.group(1) for match in _HEADING.finditer(content)]
+    runs = [match.group(0) for match in _QMD_CJK_RUN.finditer(content) if len(match.group(0)) >= 2]
+    ordered = [title, named, stem, *headings[:1], *runs[:1], *headings[1:], *runs[1:]]
+    prompts, seen = [], set()
+    for value in ordered:
+        if type(value) is not str:
+            continue
+        words, size = [], 0
+        for word in value.split():
+            size += len(word.encode('utf8')) + (1 if words else 0)
+            if size > _PARITY_PROMPT_BYTES:
+                break
+            words.append(word)
+        prompt = ' '.join(words)
+        if not prompt or prompt.casefold() in seen:
+            continue
+        seen.add(prompt.casefold())
+        prompts.append(prompt)
+        if len(prompts) == _PARITY_PROMPTS_PER_MEMBER:
+            break
+    return tuple(prompts)
+
+
+def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin, prompts, deadline):
+    """Compare the old combined lexical recall with the candidate's on one pin.
+
+    The old answer is ``query_v6_snapshot``: ``query_incremental_snapshot``
+    plus ``query_selected_v2`` and the hook's merge rule on the pinned v6
+    snapshot. The candidate answer is the same reader with its base and
+    sidecar FTS lookups served by the candidate's legacy-origin tables. Each
+    candidate row must carry the old trust and source locators. Observational
+    evidence only: no receipt or authority.
+    """
+    from laya_index_source_port import auxiliary_wiki_row
+    from laya_v6_reader import query_v6_snapshot
+    from laya_view_fts import table as fts_table
+    import laya_blob_values as values
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    if (type(prompts) is not tuple or not 1 <= len(prompts) <= _PARITY_PROMPTS
+            or any(type(prompt) is not str or not prompt.strip() or len(prompt.encode('utf8')) > 4096
+                   for prompt in prompts)):
+        raise IndexContractError('migration_lexical_queries_invalid')
+    selected = capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                 after=None, deadline=deadline)
+    record = store._pinned(pin)
+    handle = record['entry']['handle']
+    if store._scope != endpoint.record['scope']:
+        raise IndexContractError('migration_endpoint_changed')
+    with store._reading(deadline) as db:
+        generation, seal, _, stage = store._read_generation(db, pin.gen_id, handle, deadline)
+        root = db.execute('SELECT project_root FROM worktrees WHERE worktree_id=?',
+                          (handle.worktree_id,)).fetchone()
+        legacy = stage.get('legacy')
+        if (generation['state'] != 'published'
+                or values.digest('memvane-read-pin-seal-v1', seal) != record['seal']
+                or root is None or root[0] != endpoint.record['project'] or legacy is None
+                or legacy['observation'] != selected['observation']):
+            raise IndexContractError('migration_snapshot_changed')
+        paired = 'sidecar_corpus' in legacy
+        side_table = fts_table(generation['ordinal'], sidecar=True)
+        full_paths, sources = legacy['fts_paths'], legacy['fts_sources']
+        side_json = json.dumps(list(legacy['active_fts']['sidecar']), ensure_ascii=False,
+                               separators=(',', ':'))
+    if paired and sidecar_fts_commitment(snapshot, endpoint=endpoint, decision=decision,
+                                         deadline=deadline) != legacy['sidecar_commitment']:
+        raise IndexContractError('migration_sidecar_changed')
+    roots = wiki_index_roots(decision['collections'])
+    labels = {'base': snapshot.published[0], 'sidecar': 'preview-' + decision['installId']}
+
+    def seconds(limit=None):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise IndexContractError('reader_snapshot_deadline')
+        return min(left, 30 if limit is None else limit)
+
+    def search(query, limit, deadline_seconds, **origin):
+        # A candidate lookup past the old reader's probe/lexical deadline
+        # would make the old reader degrade differently: unproved, not equal.
+        try:
+            return store.search(pin, query, limit, deadline_seconds=seconds(deadline_seconds), **origin)
+        except values.BlobStoreError as exc:
+            if exc.reason == 'fts_deadline_exceeded':
+                raise IndexContractError('migration_recall_probe_unproved') from exc
+            raise
+
+    def served(rows, origin, excluded=frozenset()):
+        # A candidate row the old reader would not have served at this rank
+        # (other origin, shadowed, untrusted, other locators) changes the
+        # ranked window, so it is a parity mismatch, never a filtered row.
+        answer = []
+        for row in rows:
+            full = full_paths.get(row['path'])
+            if full is None or (paired and sources[row['path']] != origin) or full in excluded:
+                raise IndexContractError('migration_recall_parity_mismatch')
+            shaped = {'scope': decision['scopeId'], 'generation': labels[origin], 'path': full,
+                      'hash': row['blob_sha'], 'body': row['body'], 'score': row['score']}
+            evidence = legacy_card_evidence(shaped, decision)
+            if (evidence is None or auxiliary_wiki_row(full, row['body'], roots)
+                    or evidence['locators'] != row.get('source_locations')):
+                raise IndexContractError('migration_recall_parity_mismatch')
+            answer.append(shaped)
+        return answer
+
+    # End of the DF probes of the current candidate recall: every sidecar
+    # probe and the first base batch (the selected reader's probe batch).
+    probes = {'base': False, 'end': None}
+
+    def base_search(queries, limit, *, path_prefixes=None, excluded_paths=None, deadline_seconds=None):
+        excluded = frozenset(excluded_paths or ())
+        origin = {'_legacy_origin': 'base'} if paired else {}
+        batches = [served(search(query, limit, deadline_seconds, **origin), 'base', excluded)
+                   for query in queries]
+        if not probes['base']:
+            probes['base'], probes['end'] = True, time.monotonic()
+        return batches
+
+    def side_probe(atom):
+        if not paired:
+            raise IndexContractError('migration_lexical_sidecar_unproved')
+        with store._reading(deadline) as db:
+            _, current, _, _ = store._read_generation(db, pin.gen_id, handle, deadline)
+            if values.digest('memvane-read-pin-seal-v1', current) != record['seal']:
+                raise IndexContractError('migration_snapshot_changed')
+            match = db.execute(f'SELECT path_key FROM {side_table} WHERE {side_table} MATCH ? '
+                               'AND path_key IN (SELECT value FROM json_each(?)) LIMIT 1',
+                               (atom, side_json)).fetchone()
+        probes['end'] = time.monotonic()
+        return None if match is None else match[0]
+
+    def side_search(fts):
+        if not paired:
+            raise IndexContractError('migration_lexical_sidecar_unproved')
+        from laya_incremental_docs_query import MAX_FTS
+        return [row['path'] for row in served(search(fts, MAX_FTS, None, _legacy_origin='sidecar'),
+                                              'sidecar')]
+
+    lexical = {'base': base_search, 'sidecar': {'probe': side_probe, 'search': side_search}}
+    for prompt in prompts:
+        # Both DF probe phases stop 1 s after they start, then silently use
+        # the positional fallback. Old: the whole recall finished inside 1 s.
+        # Candidate: its last probe answered inside 0.9 s of the recall start.
+        started = time.monotonic()
+        old = query_v6_snapshot(snapshot, endpoint=endpoint, prompt=prompt, decision=decision,
+                                provider=None, deadline=deadline)
+        if time.monotonic() - started >= 1.0:
+            raise IndexContractError('migration_recall_probe_unproved')
+        probes['base'], probes['end'] = False, None
+        started = time.monotonic()
+        new = query_v6_snapshot(snapshot, endpoint=endpoint, prompt=prompt, decision=decision,
+                                provider=None, deadline=deadline, _lexical=lexical)
+        if probes['end'] is not None and probes['end'] - started >= 0.9:
+            raise IndexContractError('migration_recall_probe_unproved')
+        if old.semantic_status != 'lexical_only' or new.semantic_status != 'lexical_only':
+            raise IndexContractError('migration_recall_probe_unproved')
+        if ((old.data_generation, old.rows, old.title_only, old.source_locations)
+                != (new.data_generation, new.rows, new.title_only, new.source_locations)):
             raise IndexContractError('migration_recall_parity_mismatch')
     return {'observation': selected['observation'], 'prompt_count': len(prompts)}
 
@@ -1957,6 +2155,86 @@ def compare_shadow_queries(store, generation, *, project, executing_root, querie
                         raise IndexContractError('migration_source_revision_unproved')
         trace['outcome'] = 'compared'
         return result
+
+
+def compare_recall_corpus(store, generation, *, project, executing_root, after, deadline):
+    """Compare one page of the member-derived recall corpus, without a receipt.
+
+    A page is at most ``_PARITY_MEMBERS`` members of the recorded effective
+    inventory and at most ``_PARITY_PROMPTS`` prompts, compared inside one
+    pinned v6 snapshot held for at most ``_STEP_SECONDS``. Pass the returned
+    ``next`` cursor until it is None. The digest commits to the compared
+    members and prompt hashes; prompts themselves are never recorded.
+    """
+    from contextlib import ExitStack
+    from pathlib import Path
+    import laya_blob_values as values
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import laya_view_values as view_values
+    import project_dir
+    from laya_product_install import _install_lock
+
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    if not isinstance(generation, str) or not view_values.GEN_ID.fullmatch(generation):
+        values.fail('generation_id_invalid')
+    project, state, decision, node = _migration_state(project, store)
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    path = state / _INTENT
+    with _migration_trace(state, 'compare_corpus') as trace, ExitStack() as lifetime:
+        with _install_lock(state), ledger._operation_lock(marker):
+            if _migration_state(project, store) != (project, state, decision, node):
+                raise IndexContractError('migration_route_changed')
+            intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+            trace['migration'] = intent['migration_id']
+            _migration_event(state, trace, 'attempt')
+            _completed_shadow_commitments(intent)
+            receipt = intent.get('published')
+            if receipt is None or receipt['generation'] != generation:
+                raise IndexContractError('migration_publication_unrecorded')
+            if after is not None and (type(after) is not dict
+                                      or after.get('observation') != intent['observation']):
+                raise IndexContractError('migration_cursor_invalid')
+            endpoint = lifetime.enter_context(leases.resolve_endpoint(
+                project, action='recall', host_root=Path(executing_root)))
+            if (endpoint.endpoint_id != intent['endpoint_id']
+                    or endpoint.record['install_id'] != intent['install_id']):
+                raise IndexContractError('migration_endpoint_changed')
+        handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+        pin = store.pin_view(handle, deadline=deadline)
+        try:
+            if (pin.gen_id != generation or pin.view_id != receipt['view_id']
+                    or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
+                raise IndexContractError('migration_snapshot_changed')
+            step_deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
+            with readers.inspect_warm_snapshot(endpoint, deadline=step_deadline) as snapshot:
+                page = capture_wiki_bytes(snapshot, endpoint=endpoint, decision=decision, after=after,
+                    deadline=step_deadline, _expected_observation=intent['observation'],
+                    _page_limit=_PARITY_MEMBERS)
+                if _source_revision(snapshot) != intent['source_revision']:
+                    raise IndexContractError('migration_source_revision_unproved')
+                prompts, seen, committed = [], set(), []
+                for member in page['members']:
+                    own = recall_corpus_prompts(member['path'], member['body'], member['title'])
+                    committed.append([member['path'], member['hash'],
+                        [hashlib.sha256(prompt.encode('utf8')).hexdigest() for prompt in own]])
+                    for prompt in own:
+                        if prompt not in seen:
+                            seen.add(prompt)
+                            prompts.append(prompt)
+                if prompts:
+                    compare_combined_lexical_prompts(snapshot, endpoint=endpoint, decision=decision,
+                        store=store, pin=pin, prompts=tuple(prompts), deadline=step_deadline)
+        finally:
+            store.release(pin)
+        trace['outcome'] = 'compared'
+        digest = hashlib.sha256(('memvane-recall-corpus-page-v1:' + json.dumps(
+            [intent['observation'], generation, committed], ensure_ascii=True,
+            separators=(',', ':'))).encode('ascii')).hexdigest()
+        return {'observation': intent['observation'], 'members': len(committed),
+                'prompts': len(prompts), 'digest': digest, 'next': page['next']}
 
 
 def advance_shadow(store, *, project, executing_root, deadline):

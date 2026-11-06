@@ -457,7 +457,8 @@ class MigrationSnapshotChecks(unittest.TestCase):
                     view.prepare_generation(handle, manifest, expected_head=base, legacy_snapshot=wrong_side)
                 self.assertEqual(view._db.execute('SELECT COUNT(*) FROM generation_slots').fetchone()[0], 0)
                 gen = view.prepare_generation(handle, manifest, expected_head=base, legacy_snapshot=bounded_proof)
-                with opens.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 10) as snapshot:
+                # This test-held reader stays open across the whole-corpus pages below.
+                with opens.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 180) as snapshot:
                     proof = {'snapshot': snapshot, 'endpoint': endpoint, 'decision': decision,
                              'provenance_scan': intent['provenance_scan']}
                     with mock.patch.object(migration, 'sidecar_fts_commitment',
@@ -526,6 +527,95 @@ class MigrationSnapshotChecks(unittest.TestCase):
                             deadline=time.monotonic() + 30)
                         self.assertEqual((integrated['query_count'], integrated['prompt_count']), (1, 1))
                         self.assertEqual(integrated['observation'], intent['observation'])
+                        # One path is in both the v6 base and the sidecar. The
+                        # hook ranks the sidecar card against the base cards; a
+                        # candidate whose base ranking differs changes only that
+                        # merged order, which the sidecar-only comparison cannot see.
+                        v6_reader = importlib.import_module('laya_v6_reader')
+                        merged = v6_reader.query_v6_snapshot(snapshot, endpoint=endpoint, prompt='Summary',
+                            decision=decision, provider=None, deadline=time.monotonic() + 10)
+                        origins = [row['generation'].startswith('preview-') for row in merged.rows]
+                        self.assertEqual((origins.count(True), origins.count(False)), (1, 2))
+                        self.assertIn(seed.changed_path, [row['path'] for row in merged.rows])
+                        original_search = view.search
+                        def reordered_base(pin_, fts_query, limit, **options):
+                            rows = original_search(pin_, fts_query, limit, **options)
+                            return rows[::-1] if options.get('_legacy_origin') == 'base' else rows
+                        combined_prompts = ('Summary', 'heron', 'migration', 'overlaptoken', 'untrustedprobe')
+                        self.assertEqual(migration.compare_combined_lexical_prompts(snapshot, endpoint=endpoint,
+                            decision=decision, store=view, pin=pin, prompts=combined_prompts,
+                            deadline=time.monotonic() + 30)['prompt_count'], len(combined_prompts))
+                        with mock.patch.object(view, 'search', side_effect=reordered_base):
+                            self.assertEqual(migration.compare_incremental_lexical_prompts(snapshot,
+                                endpoint=endpoint, decision=decision, store=view, pin=pin,
+                                prompts=('Summary',), deadline=time.monotonic() + 30)['prompt_count'], 1)
+                            with self.assertRaisesRegex(Exception, 'migration_recall_parity_mismatch'):
+                                migration.compare_combined_lexical_prompts(snapshot, endpoint=endpoint,
+                                    decision=decision, store=view, pin=pin, prompts=('Summary',),
+                                    deadline=time.monotonic() + 30)
+                        # Candidate trust and locators are part of parity, not re-derived.
+                        real_evidence = migration.legacy_card_evidence
+                        for evidence in (lambda row, chosen: None,
+                                         lambda row, chosen: {**real_evidence(row, chosen),
+                                                              'locators': ['other.md#L1-L1']}):
+                            with mock.patch.object(migration, 'legacy_card_evidence', side_effect=evidence):
+                                with self.assertRaisesRegex(Exception, 'migration_recall_parity_mismatch'):
+                                    migration.compare_combined_lexical_prompts(snapshot, endpoint=endpoint,
+                                        decision=decision, store=view, pin=pin, prompts=('heron',),
+                                        deadline=time.monotonic() + 30)
+                        # The whole member-derived corpus, one v6 snapshot per page.
+                        inventory, page_cursor = [], None
+                        while True:
+                            listed = migration.capture_effective(snapshot, endpoint=endpoint,
+                                decision=decision, after=page_cursor, deadline=time.monotonic() + 10)
+                            inventory.extend(row['path'] for row in listed['members'])
+                            page_cursor = listed['next']
+                            if page_cursor is None:
+                                break
+                        corpus = {'pages': 0, 'members': 0, 'prompts': 0, 'max_page_ms': 0.0}
+                        corpus_started, cursor, digests = time.monotonic(), None, set()
+                        with mock.patch.object(opens, 'inspect_warm_snapshot',
+                                               wraps=opens.inspect_warm_snapshot) as corpus_snapshots:
+                            while True:
+                                page_started = time.monotonic()
+                                page = migration.compare_recall_corpus(view, gen, project=case.project,
+                                    executing_root=case.plugin, after=cursor, deadline=time.monotonic() + 30)
+                                corpus['max_page_ms'] = max(corpus['max_page_ms'],
+                                                            (time.monotonic() - page_started) * 1000)
+                                self.assertLessEqual(page['members'], migration._PARITY_MEMBERS)
+                                self.assertLessEqual(page['prompts'], migration._PARITY_PROMPTS)
+                                self.assertEqual(page['observation'], intent['observation'])
+                                digests.add(page['digest'])
+                                for key in ('members', 'prompts'):
+                                    corpus[key] += page[key]
+                                corpus['pages'] += 1
+                                cursor = page['next']
+                                if cursor is None:
+                                    break
+                        self.assertEqual(corpus_snapshots.call_count, corpus['pages'])
+                        self.assertEqual(corpus['members'], len(inventory))
+                        self.assertEqual(len(digests), corpus['pages'])
+                        self.assertGreater(corpus['prompts'], corpus['members'])
+                        print('recall_corpus_pages %d members %d prompts %d total_ms %.1f max_page_ms %.1f' % (
+                            corpus['pages'], corpus['members'], corpus['prompts'],
+                            (time.monotonic() - corpus_started) * 1000, corpus['max_page_ms']), flush=True)
+                        with self.assertRaisesRegex(Exception, 'migration_cursor_invalid'):
+                            migration.compare_recall_corpus(view, gen, project=case.project,
+                                executing_root=case.plugin, after={'after': inventory[0], 'observation': '0' * 64},
+                                deadline=time.monotonic() + 30)
+                        corpus_events = [json.loads(line) for line in
+                                         (case.state / 'events.jsonl').read_text().splitlines()]
+                        self.assertEqual(len([event for event in corpus_events if event.get('event') == 'migration.shadow'
+                                              and event.get('stage') == 'compare_corpus'
+                                              and event.get('outcome') == 'compared']), corpus['pages'])
+                        corpus_text = (case.state / 'events.jsonl').read_text()
+                        for derived in ('Otter ledger', 'Kestrel plan', 'untrusted 042', 'Summary'):
+                            self.assertIn(derived, migration.recall_corpus_prompts(*{
+                                'Otter ledger': (case.WIKI + '/concepts/otter-ledger.md', '', 'Otter ledger'),
+                                'Kestrel plan': (case.WIKI + '/decisions/kestrel-plan.md', '', 'Kestrel plan'),
+                                'untrusted 042': (seed.noise_paths[42], '', 'Noise'),
+                                'Summary': (case.WIKI + '/x.md', '## Summary\n', 'X')}[derived]))
+                            self.assertNotIn(derived, corpus_text)
                         with mock.patch.object(migration, 'compare_incremental_lexical_prompts',
                                 side_effect=migration.IndexContractError('migration_recall_parity_mismatch')):
                             with self.assertRaisesRegex(Exception, 'migration_recall_parity_mismatch'):
