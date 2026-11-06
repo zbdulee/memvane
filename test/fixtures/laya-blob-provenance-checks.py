@@ -1,4 +1,5 @@
 """Metadata-only provenance contracts, isolated from operational source data."""
+import contextlib
 import copy
 import hashlib
 import importlib.util
@@ -295,6 +296,183 @@ class ProvenanceChecks(unittest.TestCase):
         self.assertEqual(self.store.attestation(trust)['sources'], [])
         row['verification_kind'] = 'rebound'; row['receipt']['prior_trust'] = trust
         with self.assertRaises(self.Error): self.store.put_attestation(row)
+
+
+    # P8-0 reservation: schema3 manifest before delete_receipts existed.
+    PRE_RESERVATION_MANIFEST = 'e2bf4c70442a8987189f22e7d0708c1ba6682880114d969a51a5300b43b79510'
+
+    def fixed_specs(self):
+        receipt = lambda prior=None: dict(schema='memvane-card-evidence-v1', verdict='verified',
+                                          result_digest='c' * 64, prior_trust=prior)
+        base = dict(blob_sha='1' * 64, engine_identity='synthetic:codex', policy_digest='b' * 64)
+        legacy = dict(kind='legacy-lines-v1', path='notes/source.md', sourceSha256='a' * 64,
+                      startLine=3, endLine=5, spanSha256='d' * 64)
+        return {
+            'compiled': dict(base, verification_kind='compiled', receipt=receipt(), sources=[
+                dict(fingerprint_id='2' * 64, spans=[dict(start=0, end=4), dict(start=4, end=9)])]),
+            'compiled_empty': dict(base, verification_kind='compiled', receipt=receipt(), sources=[]),
+            'rebound': dict(base, verification_kind='rebound', receipt=receipt('3' * 64), sources=[
+                dict(fingerprint_id='4' * 64, spans=[dict(start=0, end=4)])]),
+            'legacy': dict(base, verification_kind='legacy_verified', engine_identity='memvane:v6-reader',
+                           receipt=receipt(), sources=[dict(fingerprint_id='5' * 64, spans=[legacy])]),
+        }
+
+    def line_span(self, **changes):
+        value = dict(kind='lines-v1', path='notes/source.md', sourceSha256='a' * 64,
+                     startLine=3, endLine=5, spanSha256='d' * 64)
+        return dict(value, **changes)
+
+    def compile_receipt(self, **changes):
+        value = dict(schema='memvane-card-evidence-v2', verdict='verified', result_digest='c' * 64,
+                     prior_trust=None, verdict_digest='e' * 64, verified_mode='cross-engine',
+                     verify_engine='claude')
+        return dict(value, **changes)
+
+    def test_21_delete_receipts_table_is_reserved_append_only(self):
+        import laya_blob_schema as schema
+        self.assertIn('delete_receipts', schema.TABLES)
+        self.assertEqual(self.store.counts()['delete_receipts'], 0)
+        row = dict(receipt_id='1' * 64, view_id='2' * 64, base_gen='g-x', path='notes/source.md',
+                   fingerprint_id='3' * 64, observed_head=None, proof_json='{"schema":"x"}',
+                   decision='hold', reason='head_unknown', created_ns=1)
+        insert = ('INSERT INTO delete_receipts(' + ','.join(row) + ') VALUES('
+                  + ','.join('?' for _ in row) + ')')
+        with contextlib.closing(sqlite3.connect(self.path)) as db:
+            names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE tbl_name='delete_receipts'")}
+            self.assertTrue({'delete_receipts_duplicate', 'delete_receipts_update', 'delete_receipts_delete',
+                             'delete_by_view'} <= names, names)
+            db.execute(insert, tuple(row.values()))  # foreign keys are off on this raw connection
+            db.commit()
+            for bad in (dict(decision='delete'), dict(proof_json='not json'), dict(receipt_id='BAD'),
+                        dict(observed_head=b'\x01')):
+                with self.subTest(bad=bad), self.assertRaises(sqlite3.IntegrityError):
+                    db.execute(insert, tuple({**row, 'receipt_id': '4' * 64, **bad}.values()))
+                db.rollback()
+            for sql, args in (('UPDATE delete_receipts SET decision=?', ('retire',)),
+                              ('DELETE FROM delete_receipts', ()),
+                              ('INSERT OR REPLACE INTO delete_receipts SELECT * FROM delete_receipts', ()),
+                              (insert, tuple(row.values()))):
+                with self.subTest(sql=sql), self.assertRaisesRegex(sqlite3.Error, 'immutable_row'):
+                    db.execute(sql, args)
+                db.rollback()
+            self.assertEqual(db.execute('SELECT count(*) FROM delete_receipts').fetchone()[0], 1)
+
+    def test_22_store_created_with_reserved_manifest_reopens(self):
+        import laya_blob_schema as schema
+        self.assertNotEqual(schema.expected_manifest(), self.PRE_RESERVATION_MANIFEST)
+        self.store.close()
+        store = self.Store.open(str(self.path), repository=self.repository, scope_id=self.scope)
+        self.addCleanup(store.close)
+        meta = store._db.execute('SELECT schema_version,schema_digest FROM store_meta').fetchone()
+        self.assertEqual(tuple(meta), (3, schema.expected_manifest()))
+        self.assertTrue(store.verify())
+
+    def test_23_pre_reservation_schema3_store_is_refused_readonly(self):
+        import laya_blob_schema as schema
+        old_ddl = [ddl for ddl in schema.statements() if 'delete_receipts' not in ddl]
+        meta = dict(self.store._db.execute('SELECT * FROM store_meta').fetchone())
+        trees = [dict(r) for r in self.store._db.execute('SELECT * FROM worktrees')]
+        path = self.state / 'pre-reservation.sqlite'
+        with contextlib.closing(sqlite3.connect(path)) as db:
+            for ddl in old_ddl:
+                db.execute(ddl)
+            self.assertEqual(schema.manifest(db), self.PRE_RESERVATION_MANIFEST)
+            db.execute(f'PRAGMA application_id={schema.APP_ID}')
+            db.execute(f'PRAGMA user_version={schema.SCHEMA_VERSION}')
+            meta['schema_digest'] = self.PRE_RESERVATION_MANIFEST
+            for table, rows in (('store_meta', [meta]), ('worktrees', trees)):
+                for row in rows:
+                    db.execute('INSERT INTO ' + table + '(' + ','.join(row) + ') VALUES('
+                               + ','.join('?' for _ in row) + ')', tuple(row.values()))
+            db.commit()
+        path.chmod(0o600)
+        before = path.read_bytes()
+        with self.assertRaises(self.Error) as caught:
+            self.Store.open(str(path), repository=self.repository, scope_id=self.scope).close()
+        self.assertEqual(caught.exception.reason, 'candidate_schema_mismatch')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(Path(str(path) + '-wal').exists())
+
+    def test_24_existing_kind_trust_digests_are_unchanged(self):
+        values = sys.modules['laya_blob_values']
+        expected = {
+            'compiled': ('ed0147ec42b3bd9f48837b59a62c000bdb50f075f26d50279fa59047bd80cc95',
+                         '8f4cbb2e5ff758af53181379e3833e9699acee2f3057b5f939fcba08e48fdacf'),
+            'compiled_empty': ('4c3994b5cb5e4e15bfa6787d4a7b6d5f28ae04281ac0fbc26a289d62265412f8',
+                               '2509ee7e915d832fe8ecb8bea5381911b80c175438f0ea41a0a48ec3b8440496'),
+            'rebound': ('b70dcb04bc2ea50de79e2bd6b4871f4eccfd3864ab9a2eb72c1042dd9cd3aa0c',
+                        '0a275717ade509beef5e8830a2d0e4d12b98df8a56d8ed25acba57640b589bbf'),
+            'legacy': ('f571075c6e9a331bc93ec8b35f7dc3127bf9ab7f329b587cb86cfc0c614589f8',
+                       '46619e34b46b91ac609956db5a5e5d44e3a59a41b61435f8deaf4b91fc9b7d2a'),
+        }
+        for name, spec in self.fixed_specs().items():
+            with self.subTest(name=name):
+                normalized = values.attestation(copy.deepcopy(spec))
+                self.assertEqual(normalized, spec)
+                self.assertEqual((values.digest('memvane-card-attestation-v1', normalized),
+                                  values.digest('memvane-card-provenance-v1', normalized['sources'])),
+                                 expected[name])
+
+    def test_25_compiled_line_span_kind_is_reserved_for_compiled_chain(self):
+        values = sys.modules['laya_blob_values']
+        specs = self.fixed_specs()
+        accepted = []
+        for kind, receipt_prior in (('compiled', None), ('rebound', '3' * 64)):
+            spec = copy.deepcopy(specs['compiled'])
+            spec['verification_kind'] = kind; spec['receipt']['prior_trust'] = receipt_prior
+            spec['sources'][0]['spans'] = [self.line_span(), self.line_span(startLine=7, endLine=7)]
+            accepted.append(spec)
+        for spec in accepted:
+            with self.subTest(kind=spec['verification_kind']):
+                self.assertEqual(values.attestation(copy.deepcopy(spec)), spec)
+        # the legacy kind still only belongs to legacy imports
+        legacy_in_compiled = copy.deepcopy(accepted[0])
+        legacy_in_compiled['sources'][0]['spans'] = [self.line_span(kind='legacy-lines-v1')]
+        new_in_legacy = copy.deepcopy(specs['legacy'])
+        new_in_legacy['sources'][0]['spans'] = [self.line_span()]
+        bad = [new_in_legacy, legacy_in_compiled]
+        for spans in ([self.line_span(), dict(start=0, end=4)], [dict(start=0, end=4), self.line_span()],
+                      [self.line_span(), self.line_span()], [self.line_span(excerpt='RAW')],
+                      [self.line_span(endLine=2)], [self.line_span(startLine=0)],
+                      [self.line_span(spanSha256='bad')], [self.line_span(path='../x.md')],
+                      [{k: v for k, v in self.line_span().items() if k != 'sourceSha256'}],
+                      [self.line_span(startLine=i, endLine=i) for i in range(1, 18)]):
+            spec = copy.deepcopy(accepted[0]); spec['sources'][0]['spans'] = spans
+            bad.append(spec)
+        too_many = copy.deepcopy(accepted[0])
+        too_many['sources'] = [dict(fingerprint_id=c * 64, spans=[self.line_span(startLine=i, endLine=i)
+                                    for i in range(1, 10)]) for c in '67']
+        bad.append(too_many)
+        for spec in bad:
+            with self.subTest(spec=spec['sources'][:1]), self.assertRaises(self.Error):
+                values.attestation(spec)
+
+    def test_26_compile_receipt_fields_are_versioned_and_closed(self):
+        values = sys.modules['laya_blob_values']
+        specs = self.fixed_specs()
+        for name in ('compiled', 'rebound'):
+            spec = copy.deepcopy(specs[name])
+            spec['receipt'] = self.compile_receipt(prior_trust=spec['receipt']['prior_trust'])
+            with self.subTest(name=name):
+                self.assertEqual(values.attestation(copy.deepcopy(spec)), spec)
+        for mode in ('self', 'unknown'):
+            spec = copy.deepcopy(specs['compiled']); spec['receipt'] = self.compile_receipt(verified_mode=mode)
+            self.assertEqual(values.attestation(copy.deepcopy(spec))['receipt']['verified_mode'], mode)
+        bad = []
+        legacy = copy.deepcopy(specs['legacy']); legacy['receipt'] = self.compile_receipt(); bad.append(legacy)
+        v1_extra = copy.deepcopy(specs['compiled']); v1_extra['receipt']['verdict_digest'] = 'e' * 64
+        bad.append(v1_extra)
+        for changes in (dict(verified_mode='assumed'), dict(verified_mode=''), dict(verdict_digest='bad'),
+                        dict(verify_engine=''), dict(verify_engine='a\nb'), dict(verdict='pass'),
+                        dict(schema='memvane-card-evidence-v3'), dict(body='RAW'), dict(transcript='RAW'),
+                        dict(prior_trust='3' * 64)):
+            spec = copy.deepcopy(specs['compiled']); spec['receipt'] = self.compile_receipt(**changes)
+            bad.append(spec)
+        missing = copy.deepcopy(specs['compiled']); missing['receipt'] = self.compile_receipt()
+        del missing['receipt']['verdict_digest']; bad.append(missing)
+        for spec in bad:
+            with self.subTest(receipt=spec['receipt']), self.assertRaises(self.Error):
+                values.attestation(spec)
 
 
 if __name__ == '__main__':
