@@ -224,7 +224,9 @@ class GenerationChecks(GenerationCase):
         self.refused(store.publish_generation,h,a,expected_head=base)
         with sqlite3.connect(self.db) as db:
             db.execute('UPDATE view_heads SET gen_id=?,epoch=? WHERE view_id=?',(first,second['epoch']+1,h.view_id))
-        self.assertEqual(store.head(h)['gen_id'],first)
+        # Trigger-legal ABA back to an older published generation is not the
+        # view's highest published ordinal, so the head itself is refused.
+        self.assertEqual(self.refused(store.head,h).reason,'view_head_invalid')
         self.refused(store.publish_generation,h,a,expected_head=base)
 
     def pair(self,name):

@@ -430,19 +430,16 @@ class ReaderChecks(helpers.GenerationCase):
         self.refused(store.verify_views)
 
     def test_23_head_epoch_regression_within_one_reader_is_refused(self):
-        # KNOWN GAP: _head accepts any published, sealed generation of the
-        # view with epoch >= 1, and a reader keeps no observed-epoch floor, so
-        # a same-UID rollback of view_heads to an older valid head is served
-        # today. The contract is refusal; cross-process detection needs a
-        # durable epoch floor, which a fresh hook process does not have.
-        self.skipTest('U10/U11: journal endpoint record가 head epoch floor를 결속하면 해제')
+        # _head requires the view's highest published ordinal, so a same-UID
+        # rollback of view_heads behind the update trigger is refused in-store.
+        # The journal endpoint record adds a cross-process epoch floor.
         store,_,h,first=self.published()
         m=self.snapshot(store,h,scan_id='2'*32,body=b'# Beta\nhello replacement snapshot\n')
         gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
         pin=store.pin_view(h);self.assertEqual((pin.gen_id,pin.epoch),(gen,2));store.release(pin)
         self.tamper(store._path,'view_head_update','UPDATE view_heads SET gen_id=?,epoch=1 WHERE view_id=?',
                     (first,h.view_id))
-        self.refused(store.pin_view,h)
+        self.assertEqual(self.refused(store.pin_view,h).reason,'view_head_invalid')
 
     def test_24_other_incarnation_and_replaced_database_file_refuse(self):
         # Narrowed scope (K3): the _session boundary (_header incarnation, _db_file identity).

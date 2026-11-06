@@ -60,17 +60,27 @@ def _approved_profile_matches(candidate, proof):
             and isinstance(candidate.get('model_sha'),str))
 
 
+def _persisted_schema3(endpoint):
+    return (type(endpoint) is journal.VerifiedEndpoint and endpoint in journal._issued
+            and endpoint in journal._read_only and endpoint.record.get('store_format')=='schema3')
+
+
 def _vector_proof(authority,snapshot,decision,provider,deadline):
     import laya_reader_open as readers
     import laya_reader_lease as leases
     from laya_local_embed_provider import ReviewedLocalQmdProvider
+    # A persisted schema3 authority has no v6 snapshot; its authority is the
+    # journal-selected endpoint's current installer proof alone.
+    schema3=_persisted_schema3(authority)
     if (type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic()>=deadline
             or type(authority) is not journal.VerifiedEndpoint or authority not in journal._issued
             or type(provider) is not ReviewedLocalQmdProvider
-            or not any(item is snapshot and bound is authority and saved == decision
-                       for item,bound,saved in readers._observations.get())):
+            or (schema3 and snapshot is not None)
+            or (not schema3 and not any(item is snapshot and bound is authority and saved == decision
+                                        for item,bound,saved in readers._observations.get()))):
         raise ValueError('reader_vector_caller_unproved')
-    readers._bound(authority)
+    if not schema3:
+        readers._bound(authority)
     selected=leases._reader_selections.get(authority)
     if selected is None or selected.preferred_endpoint!=authority.endpoint_id:
         raise ValueError('reader_vector_caller_unproved')
@@ -196,8 +206,11 @@ def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
     from laya_view_store import ViewStore
     if type(endpoint) is not journal.VerifiedEndpoint:
         raise ValueError('reader_endpoint_not_issued')
+    if endpoint in journal._issued and endpoint.record.get('store_format')=='schema3':
+        return _query_persisted_schema3(endpoint,checkout=checkout,prompt=prompt,query_vector=query_vector,
+            deadline=deadline,snapshot=snapshot,decision=decision,provider=provider,authority=authority)
     if endpoint in journal._issued:
-        if (snapshot is None or decision is None or query_vector is not None
+        if (endpoint.record.get('store_format')!='v6' or snapshot is None or decision is None or query_vector is not None
                 or Path(checkout)!=Path(endpoint.record['project'])):
             raise ValueError('reader_endpoint_invalid')
         from laya_v6_reader import query_v6_snapshot
@@ -260,3 +273,47 @@ def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
             store.release(pin)
     finally:
         store.close()
+
+
+def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
+                             provider,authority):
+    """Read the journal-selected schema3 endpoint at its current view head."""
+    import laya_reader_lease as leases
+    selected=leases._reader_selections.get(endpoint)
+    if (not _persisted_schema3(endpoint) or selected is None
+            or selected.preferred_endpoint!=endpoint.endpoint_id):
+        raise ValueError('reader_endpoint_not_issued')
+    if (snapshot is not None or type(deadline) not in (int,float) or not math.isfinite(deadline)
+            or Path(checkout)!=Path(endpoint.record['project']) or time.monotonic()>=deadline):
+        raise ValueError('reader_endpoint_invalid')
+    record,_raw,_proof=journal._recheck(endpoint)
+    valid=None
+    if query_vector is not None:
+        from laya_view_vectors import query_values
+        query_values(query_vector)
+        valid=[entry for entry in _approved_vectors.get()
+               if entry[0] is authority and authority is endpoint and entry[1] is None
+               and entry[2]==decision and entry[3] is provider and entry[4]==prompt
+               and entry[5]==tuple(query_vector) and entry[8][0] and time.monotonic()<entry[6]]
+        if not valid:
+            raise ValueError('reader_vector_caller_unproved')
+        deadline=min(deadline,valid[-1][6])
+    with journal._schema3_pin(record,deadline=deadline) as (store,_handle,pin):
+        vector=store._pinned(pin)['vector']
+        if query_vector is not None:
+            proof=_vector_proof(authority,None,decision,provider,deadline)
+            if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)
+                    or proof!=valid[-1][7]):
+                raise ValueError('reader_vector_caller_unproved')
+        left=min(30,deadline-time.monotonic())
+        if left<=0:raise ValueError('reader_snapshot_deadline')
+        result=store.search_hybrid(pin,prompt,query_vector,10,deadline_seconds=left)
+        if time.monotonic()>=deadline:
+            raise ValueError('reader_snapshot_deadline')
+        if query_vector is not None and _vector_proof(authority,None,decision,provider,deadline)!=proof:
+            raise ValueError('reader_vector_caller_unproved')
+        rows=list(result['lexical'])
+        paths={row['path'] for row in rows}
+        rows.extend(row for row in result['semantic'] if row['path'] not in paths)
+        return ReaderResult('schema3',endpoint.endpoint_id,selected.epoch,pin.gen_id,
+                            rows[:10],result['semantic_status'],frozenset(),{})
