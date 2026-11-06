@@ -405,6 +405,51 @@ class CompileChecks(unittest.TestCase):
                        str(python), self.p.tokenizer[1], 'tokenizer.json', 'Traceback'):
             self.assertEqual(raw.count(needle), 0, needle)
 
+    def test_a_fallback_runtime_keeps_the_failed_attempt_on_every_outcome(self):
+        import wiki_compile as wc
+        state = self.p.state_root()
+        bound = ({'journalPath': str(state / 'install-journal.sqlite'), 'installId': 'i1'}, {})
+
+        def refuse(name, body, **extra):
+            record = {'title': name, 'targetPath': 'x', 'canonicalKey': name.lower()}
+            with patch('sys.stdout'):
+                refused = wc.budget_refused(self.p.root, {}, bound, self.p.wiki,
+                                            self.p.wiki / 'concepts' / f'{name.lower()}.md',
+                                            record, self.p.base / 'c.jsonl', card_text(body),
+                                            **extra)
+            return refused, record
+
+        self.assertFalse(refuse('Quiet', f'\n{SHORT_SUMMARY}\n')[0])
+        self.assertEqual(self.p.events(state), [], 'no failure, no event for a card that fits')
+        python = Path(self.p.tokenizer[0])
+        python.write_text(f'#!/bin/sh\necho "{STDERR_MARKER} $0" >&2\nexit 5\n')
+        install_selector(self.p.home, name='b' * 64)
+        fits, _ = refuse('Fits', f'\n{BODY_MARKER} {SHORT_SUMMARY}\n')
+        split, split_record = refuse('Split', f'\n{BODY_MARKER} {LONG_SUMMARY}\n')
+        written, written_record = refuse('Written', f'\n{BODY_MARKER} {LONG_SUMMARY}\n',
+                                         final_reason='split_part_over_budget')
+        self.assertEqual((fits, split, written), (False, True, False))
+        events = self.p.events(state)
+        self.assertEqual([(e['outcome'], e['reason'], e['method'], e['failure'])
+                          for e in events],
+                         [('measured_after_failure', 'runtime_fallback', 'tokenizer',
+                           'runtime_exit'),
+                          ('over_budget', 'over_budget', 'tokenizer', 'runtime_exit'),
+                          ('over_budget_written', 'split_part_over_budget', 'tokenizer',
+                           'runtime_exit')])
+        for event in events:
+            self.assertEqual([(a['attempt'], a['reason'], a['exit']) for a in event['attempts']],
+                             [(1, 'runtime_exit', 5)])
+            self.assertEqual(event['attemptsTotal'], 1)
+            self.assertRegex(event['measureId'], r'^[0-9a-f]{16}$')
+        self.assertLessEqual(events[0]['size'], 700)
+        self.assertEqual(len({e['measureId'] for e in events}), 3, 'one id per measurement')
+        self.assertEqual(split_record['cardBudget']['measureId'], events[1]['measureId'])
+        self.assertEqual(written_record['cardBudget']['measureId'], events[2]['measureId'])
+        raw = (state / 'events.jsonl').read_text()
+        for needle in (STDERR_MARKER, BODY_MARKER, str(self.p.home), 'tokenizer.json'):
+            self.assertEqual(raw.count(needle), 0, needle)
+
     def test_the_final_pass_writes_an_over_budget_card_and_logs_it(self):
         import wiki_compile as wc
         claimed = self.p.compile(candidate(summary=LONG_SUMMARY, budgetFinal=True,
