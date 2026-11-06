@@ -32,7 +32,8 @@ migration.MAX_BATCH = payload['batch_limit']
 helper = fixture.JournalReaderChecks('runTest')
 case = SimpleNamespace(plugin=Path(payload['plugin']), proof=payload['proof'])
 store_type = (views.ViewStore if payload.get('mode') in ('prepare-kill', 'publish-kill', 'shadow-slot-kill',
-                                                         'shadow-intent-kill', 'shadow-publish-kill')
+                                                         'shadow-intent-kill', 'shadow-publish-kill',
+                                                         'catchup-kill')
               else blobs.BlobStore)
 store = store_type.open(Path(payload['candidate']), repository=payload['repository'],
                         scope_id=payload['scope'])
@@ -49,6 +50,16 @@ with helper.full_authority(case, reader, bridge, lease, mover):
             migration.advance_shadow(store, project=Path(payload['project']), executing_root=case.plugin,
                                      deadline=time.monotonic() + 30)
         raise RuntimeError('restart crash checkpoint not reached')
+    elif payload.get('mode') == 'catchup-kill':
+        # One catch-up step dies with its delta already staged, immediately
+        # before the only intent write; it prints what it would have written.
+        def kill_before_catchup_receipt(path, value, *args, **kwargs):
+            print('catchup-before-intent ' + json.dumps(value, sort_keys=True), flush=True)
+            os.kill(os.getpid(), signal.SIGKILL)
+        with mock.patch.object(ledger, '_write', side_effect=kill_before_catchup_receipt):
+            migration.advance_shadow(store, project=Path(payload['project']), executing_root=case.plugin,
+                                     deadline=time.monotonic() + 30)
+        raise RuntimeError('catch-up crash checkpoint not reached')
     elif payload.get('mode') == 'shadow-slot-kill':
         # One advance_shadow step dies inside its candidate build, after the
         # slot commit and before the generation seal.
