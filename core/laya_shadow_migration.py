@@ -1094,6 +1094,90 @@ def _source_revision(snapshot):
             'sidecar_kind': kind, 'sidecar_revision': None if sidecar is None else sidecar['revision']}
 
 
+def _cut_identity(base, side, decision):
+    """O(1) commitment to every old v6 change the publication cut orders.
+
+    Base: published membership, content, candidate seals, vector rows/seals
+    and generation state are sealed by triggers once published, and the
+    exclusions/schema_meta rowid tables are append-only, so equal head and
+    max(rowid) values mean the same published image and receipt chain.
+    Sidecar: every coordinated docs/docs_fts mutation appends a
+    publication_revisions row in the same visible (EX cut) transaction, and
+    a legacy sidecar is sealed (revision 0) before its first coordinated row.
+    Writes outside the cut (staged generations, content, pins, cached cursor)
+    cannot touch the published image; baseline inserts only move this value.
+    """
+    scope = decision['scopeId']
+    head = base.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
+    incarnation = base.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
+    identity = {
+        'format': [base.execute('PRAGMA application_id').fetchone()[0],
+                   base.execute('PRAGMA user_version').fetchone()[0]],
+        'incarnation': None if incarnation is None else incarnation[0],
+        'head': None if head is None else head[0],
+        'exclusions': base.execute('SELECT max(rowid) FROM exclusions').fetchone()[0],
+        'schema_meta': base.execute('SELECT max(rowid) FROM schema_meta').fetchone()[0],
+        'sidecar': None,
+    }
+    if side is not None:
+        sealed = side.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                              "AND name='publication_revisions'").fetchone()
+        identity['sidecar'] = {
+            'format': side.execute('PRAGMA user_version').fetchone()[0],
+            'meta': [list(row) for row in side.execute('SELECT * FROM meta')],
+            'revision': (side.execute('SELECT max(revision) FROM publication_revisions').fetchone()[0]
+                         if sealed else 'unsealed'),
+        }
+    return identity
+
+
+def publication_cut_identity(snapshot, *, endpoint, decision, deadline):
+    """Cut identity of an already proved pinned snapshot; grants nothing."""
+    if not any(item is snapshot and bound is endpoint and saved == decision
+               for item, bound, saved in readers._observations.get()):
+        raise IndexContractError('reader_snapshot_unpinned')
+    readers._bound(endpoint)
+    base, _, _, side = snapshot.connections
+    with readers._validation_deadline(snapshot.connections, deadline):
+        return _cut_identity(base, side, decision)
+
+
+def current_cut_identity(endpoint, *, decision, deadline):
+    """Read the cut identity from fresh read-only handles.
+
+    The caller holds the publication cut, so sidecar creation and every
+    compared change are excluded while this reads; it opens no full snapshot.
+    """
+    import os
+    from contextlib import ExitStack
+    from pathlib import Path
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    readers._bound(endpoint)
+    record = endpoint.record
+    with journal.journal.read_only_journals():
+        current = (journal._recheck(endpoint)[2]['readerDecision'] if endpoint in journal._upgrade_readers
+                   else journal.journal.select_route(record['project'], action='recall'))
+    if current != decision:
+        raise IndexContractError('reader_selection_changed')
+    with ExitStack() as stack:
+        owners = []
+        for role in ('base', 'sidecar'):
+            if role == 'sidecar' and not os.path.lexists(Path(record['sidecar_path'])):
+                owners.append(None)
+                continue
+            owner = readers.open_warm_component(endpoint, role, deadline=deadline)
+            stack.callback(owner.close)
+            owners.append(owner)
+        connections = tuple(owner.db for owner in owners if owner is not None)
+        for db in connections:
+            db.execute('BEGIN')
+            stack.callback(lambda db=db: db.rollback() if db.in_transaction else None)
+        with readers._validation_deadline(connections, deadline):
+            return _cut_identity(owners[0].db, None if owners[1] is None else owners[1].db, decision)
+
+
 def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
     """Classify receipt continuity only; every change still triggers full recopy."""
     import laya_publication_revision as revisions
