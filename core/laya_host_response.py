@@ -803,6 +803,21 @@ def query_selected_hybrid(runtime, prompt: str, route_profile: dict,
         runtime.index.release(token)
 
 
+def merge_incremental_rows(incremental_rows: list[dict], rows: list[dict]) -> list[dict]:
+    """Rank completed sidecar rows against the pinned base rows of one recall.
+
+    Each complete snapshot has its own RRF rank. Compare their bounded
+    position scores; on a tie prefer the newer completed document. This is a
+    deterministic incremental ranking, not a claim of a corpus-wide BM25
+    re-rank while the old generation is still active. The hook, the v6
+    snapshot reader and the migration parity oracle share this one rule.
+    """
+    ranked = ([(row, 0) for row in incremental_rows] +
+              [(row, 1) for row in rows])
+    return [row for row, _origin in sorted(
+        ranked, key=lambda item: (-item[0]['score'], item[1], item[0]['path']))]
+
+
 def _ep_numbers(prompt: str) -> tuple[int, ...]:
     matches = re.finditer(r"\bEP\s*0*(\d{1,3})\b|\b0*(\d{1,3})\s*화",
                           prompt, re.IGNORECASE)
@@ -2621,14 +2636,7 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
     if incremental_rows:
         locations.update(incremental_locations)
         title_only = title_only | incremental_title_only
-        # Each complete snapshot has its own RRF rank. Compare their bounded
-        # position scores; on a tie prefer the newer completed document.
-        # This is a deterministic incremental ranking, not a claim of a
-        # corpus-wide BM25 re-rank while the old generation is still active.
-        ranked = ([(row, 0) for row in incremental_rows] +
-                  [(row, 1) for row in rows])
-        rows = [row for row, _origin in sorted(
-            ranked, key=lambda item: (-item[0]['score'], item[1], item[0]['path']))]
+        rows = merge_incremental_rows(incremental_rows, rows)
     chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
     _trace_fields(selection=reason, candidates=len(rows),
                   generation=pinned_generation[0] if pinned_generation else None)

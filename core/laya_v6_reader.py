@@ -24,8 +24,14 @@ class ReaderResult:
     source_locations: dict
 
 
-def query_v6_snapshot(snapshot, *, endpoint, prompt, decision, provider, deadline):
-    """Search one observed common pin; caller must still prove serving authority."""
+def query_v6_snapshot(snapshot, *, endpoint, prompt, decision, provider, deadline, _lexical=None):
+    """Search one observed common pin; caller must still prove serving authority.
+
+    ``_lexical`` (migration parity only) answers the FTS lookups with another
+    store: ``base(queries, limit, *, path_prefixes, excluded_paths,
+    deadline_seconds)`` and ``sidecar={'probe', 'search'}``. Term selection,
+    row proof, trust, fusion and the merge stay this reader's own code.
+    """
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline):
         raise IndexContractError('reader_snapshot_deadline')
@@ -46,7 +52,8 @@ def query_v6_snapshot(snapshot, *, endpoint, prompt, decision, provider, deadlin
         observed=snapshot.sidecar.get('legacyCommitment')
         if baseline is None or dict(baseline)!=observed:
             raise IndexContractError('reader_sidecar_revision_unproved')
-    from laya_host_response import _PROVIDER_RESULT_KEYS, _VectorUnavailable, query_selected_v2
+    from laya_host_response import (_PROVIDER_RESULT_KEYS, _VectorUnavailable,
+                                    merge_incremental_rows, query_selected_v2)
     from laya_incremental_docs_query import query_incremental_snapshot
 
     vector_unavailable = [provider is None]
@@ -86,6 +93,14 @@ def query_v6_snapshot(snapshot, *, endpoint, prompt, decision, provider, deadlin
     with ExitStack() as stack:
         token = index.pin()
         stack.callback(index.release, token)
+        if _lexical is not None:
+            def search_many(pinned, fts_queries, limit, *, path_prefixes=None,
+                            deadline_seconds=None, excluded_paths=None):
+                index._check(pinned, require_token=True)
+                return _lexical['base'](fts_queries, limit, path_prefixes=path_prefixes,
+                                        excluded_paths=excluded_paths,
+                                        deadline_seconds=deadline_seconds)
+            index.search_many = search_many
         for db in (binding_db, catalog_db, side):
             if db is not None:
                 guard = db._hold_snapshot_transaction()
@@ -94,7 +109,8 @@ def query_v6_snapshot(snapshot, *, endpoint, prompt, decision, provider, deadlin
         incremental, incremental_titles, incremental_locations, shadow, incremental_generation = (
             query_incremental_snapshot(prompt, decision, {'vectorProfile': decision['vectorProfile']},
                                        checked_provider, base=base, side=side, deadline=deadline,
-                                       _semantic_status=side_vector_status))
+                                       _semantic_status=side_vector_status,
+                                       _lexical=None if _lexical is None else _lexical['sidecar']))
         if side_vector_status:
             vector_unavailable[0] = True
         if incremental_generation is not None and incremental_generation != generation:
@@ -112,9 +128,7 @@ def query_v6_snapshot(snapshot, *, endpoint, prompt, decision, provider, deadlin
     if incremental:
         locations.update(incremental_locations)
         titles = titles | incremental_titles
-        ranked = ([(row, 0) for row in incremental] + [(row, 1) for row in rows])
-        rows = [row for row, _origin in sorted(
-            ranked, key=lambda item: (-item[0]['score'], item[1], item[0]['path']))]
+        rows = merge_incremental_rows(incremental, rows)
     if time.monotonic() >= deadline:
         raise IndexContractError('reader_snapshot_deadline')
     return ReaderResult('v6', endpoint.endpoint_id, selection.epoch, generation, rows,

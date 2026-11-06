@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 
 test('migration captures proved selected wiki membership', () => {
   const result = spawnSync('python3', ['-B', 'test/fixtures/laya-shadow-migration-checks.py'], {
-    encoding: 'utf8', timeout: 120000,
+    encoding: 'utf8', timeout: 300000,
     env: {...process.env, QMD_SANDBOX: '1', QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
@@ -14,5 +14,8 @@ test('migration captures proved selected wiki membership', () => {
   const perf = result.stdout.match(/synthetic_hot_import_p95_ms ([0-9.]+) git_calls (\d+)/);
   assert.ok(perf, 'hot import timing observation missing');
   console.log(`synthetic hot import p95 ms: ${perf[1]}, Git calls: ${perf[2]}`);
+  const corpus = result.stdout.match(/recall_corpus_pages (\d+) members (\d+) prompts (\d+) total_ms ([0-9.]+) max_page_ms ([0-9.]+)/);
+  assert.ok(corpus, 'recall corpus observation missing');
+  console.log(`recall corpus pages ${corpus[1]}, members ${corpus[2]}, prompts ${corpus[3]}, total ms ${corpus[4]}, max page ms ${corpus[5]}`);
   assert.match(result.stderr, /\nOK\b/);
 });

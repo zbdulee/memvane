@@ -1107,6 +1107,109 @@ class CatchupChecks(unittest.TestCase):
             self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
             self.assertTrue(store.verify_views())
 
+    def test_writer_between_publish_proof_and_cut_restarts(self):
+        # The scale-proportional publish proof runs before the cut; a writer
+        # commit landing after it must still be refused by the O(1) recheck.
+        normal_spec = importlib.util.spec_from_file_location(
+            'shadow_cut_identity_seed', HERE / 'laya-normal-writer-connections-checks.py')
+        normal_module = importlib.util.module_from_spec(normal_spec)
+        normal_spec.loader.exec_module(normal_module)
+        normal = normal_module.NormalWriterConnectionChecks('runTest')
+        normal.setUp()
+        self.addCleanup(normal.doCleanups)
+        seed, case = normal.seed, normal.case
+        subprocess.run(['git', '-c', 'init.defaultBranch=main', 'init', '-q', str(case.project)],
+                       check=True, capture_output=True, timeout=10)
+        subprocess.run(['git', '-C', str(case.project), '-c', 'commit.gpgsign=false',
+                        '-c', 'core.hooksPath=' + os.devnull, '-c', 'user.name=Fixture',
+                        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+                        '-qm', 'fixture'], check=True, capture_output=True, timeout=10)
+        checkout = importlib.import_module('laya_checkout_view')
+        blobs = importlib.import_module('laya_blob_store')
+        views = importlib.import_module('laya_view_store')
+        migration = importlib.import_module('laya_shadow_migration')
+        readers = importlib.import_module('laya_reader_open')
+        repository = checkout.register_repository(str(case.project))
+        worktree = checkout.register_worktree(str(case.project), repository)
+        candidate = case.state / 'cut-identity-shadow.sqlite'
+        blobs.BlobStore.create(candidate, project_root=str(case.project), repository=repository,
+                               worktree=worktree, scope_id=case.route['scopeId']).close()
+        store = views.ViewStore.open(candidate, repository=repository, scope_id=case.route['scopeId'])
+        self.addCleanup(store.close)
+        time.sleep(1.1)
+
+        def step():
+            return migration.advance_shadow(store, project=case.project,
+                                            executing_root=case.plugin, deadline=time.monotonic() + 60)
+
+        def exclude_with_fresh_writer(path):
+            normal.plan = normal.P.capture_writer_plan(case.project, executing_root=case.plugin)
+            with ExitStack() as owners:
+                writer, _ = normal.admission(owners)
+                with normal.runtime(writer) as runtime:
+                    normal.N.mark_new_write(writer)
+                    return runtime.index.exclude(writer.scope_id, path=path)
+
+        with seed.authority(), mock.patch.object(migration, 'MAX_BATCH', 1):
+            started = migration.begin_migration(store, worktree_id=worktree['worktreeId'],
+                project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
+            for _ in range(40):
+                result = step()
+                corpora = result['intent'].get('corpora')
+                if corpora and corpora['sidecar'] and corpora['sidecar']['complete']:
+                    break
+            prepared = step()
+            self.assertEqual(prepared['stage'], 'prepare')
+            stale = prepared['intent']['prepared']['generation']
+            handle = store.capture_view(worktree['worktreeId'])
+            empty = store.head(handle)
+            self.assertIsNone(empty['gen_id'])
+
+            original_cut = readers.reader_publish_cut
+            original_verify = store._verify_generation
+            verified, injected, cuts = [], [], []
+            def verify_then_record(*args, **kwargs):
+                result = original_verify(*args, **kwargs)
+                verified.append(True)
+                return result
+            @contextmanager
+            def writer_before_cut(*args, **kwargs):
+                # Only the publication cut after the full candidate proof.
+                if verified and not injected:
+                    injected.append(exclude_with_fresh_writer(case.WIKI + '/concepts/otter-ledger.md'))
+                cuts.append(len(verified))
+                with original_cut(*args, **kwargs):
+                    yield
+            with mock.patch.object(readers, 'reader_publish_cut', writer_before_cut), \
+                 mock.patch.object(store, '_verify_generation', side_effect=verify_then_record), \
+                 mock.patch.object(migration, 'capture_effective', wraps=migration.capture_effective) as captured, \
+                 mock.patch.object(migration, 'current_cut_identity',
+                                   wraps=migration.current_cut_identity) as rechecked:
+                pending = step()
+            self.assertEqual(injected, ['excluded'])
+            self.assertEqual(cuts, [1])
+            self.assertEqual(len(verified), 1)
+            # One fresh pinned proof outside the cut; no membership scan under it.
+            self.assertEqual(captured.call_count, 1)
+            self.assertEqual(rechecked.call_count, 1)
+            self.assertEqual(pending['stage'], 'restart_pending')
+            self.assertTrue(pending['intent']['restart_required'])
+            self.assertIsNone(pending['intent']['prepared'])
+            self.assertIsNone(pending['intent']['published'])
+            self.assertEqual(store.head(handle), empty)
+            state = store._db.execute('SELECT state FROM generations WHERE gen_id=?', (stale,)).fetchone()[0]
+            self.assertEqual(state, 'prepared')
+            events = [json.loads(line) for line in (case.state / 'events.jsonl').read_text().splitlines()]
+            self.assertEqual([event for event in events if event.get('event') == 'migration.shadow'
+                              and event.get('outcome') == 'restart_pending'][-1]['reason'],
+                             'migration_snapshot_changed')
+            restarted = step()
+            self.assertEqual(restarted['stage'], 'restart')
+            self.assertEqual(restarted['intent']['phase'], 'copying')
+            self.assertNotEqual(restarted['intent']['observation'], started['observation'])
+            self.assertEqual(store.head(handle), empty)
+            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+
     def test_sidecar_publication_restarts_copy_without_switching_reader(self):
         fixture = sidecar_seed.SidecarWriteChecks('runTest')
         fixture.setUp()
@@ -1160,9 +1263,38 @@ class CatchupChecks(unittest.TestCase):
                     base = view.head(handle)
                     generation = view.prepare_generation(handle, manifest, expected_head=base,
                                                          legacy_snapshot=proof)
-            with fixture.opened() as (runtime, snapshot, row, component):
-                published = fixture.publish(runtime, snapshot, row, component)
-                self.assertEqual(published['status'], 'published')
+            # The sidecar row lands after the full publish proof and before the
+            # cut; only the O(1) cut identity can see it, and it must refuse.
+            original_cut = readers.reader_publish_cut
+            original_verify = view._verify_generation
+            verified, injected, cuts = [], [], []
+            def verify_then_record(*args, **kwargs):
+                result = original_verify(*args, **kwargs)
+                verified.append(True)
+                return result
+            @contextmanager
+            def sidecar_before_cut(*args, **kwargs):
+                if verified and not injected:
+                    with fixture.opened() as (runtime, catalog, row, component):
+                        injected.append(fixture.publish(runtime, catalog, row, component)['status'])
+                cuts.append(len(verified))
+                with original_cut(*args, **kwargs):
+                    yield
+            with seed.lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin) as endpoint:
+                decision = seed.reader.journal.select_route(str(case.project), action='recall')
+                with mock.patch.object(readers, 'reader_publish_cut', sidecar_before_cut), \
+                     mock.patch.object(view, '_verify_generation', side_effect=verify_then_record), \
+                     mock.patch.object(migration, 'current_cut_identity',
+                                       wraps=migration.current_cut_identity) as rechecked:
+                    with self.assertRaisesRegex(Exception, 'migration_snapshot_changed'):
+                        view.publish_generation(handle, generation, expected_head=base, legacy_snapshot={
+                            'endpoint': endpoint, 'decision': decision,
+                            'provenance_scan': copied['provenance_scan']}, deadline=time.monotonic() + 30)
+            self.assertEqual(injected, ['published'])
+            self.assertEqual((cuts, len(verified), rechecked.call_count), ([1], 1, 1))
+            self.assertIsNone(view.head(handle)['gen_id'])
+            self.assertEqual(view._db.execute('SELECT state FROM generations WHERE gen_id=?',
+                                              (generation,)).fetchone()[0], 'prepared')
             side_path = fixture.fixture.sidecar
             with sqlite3.connect(side_path) as db:
                 rowid, original_body = db.execute('SELECT rowid,body FROM docs ORDER BY path LIMIT 1').fetchone()
