@@ -277,25 +277,54 @@ def fingerprint(spec, object_format):
     return json.loads(canonical(spec))
 
 
-def attestation(spec):
-    exact(spec, ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest', 'receipt', 'sources'))
-    identifier(spec['blob_sha']); text(spec['engine_identity']); identifier(spec['policy_digest'])
-    kind = spec['verification_kind']
-    if kind not in ('compiled', 'rebound', 'legacy_verified'):
-        fail('verification_kind_invalid')
-    receipt = spec['receipt']
-    exact(receipt, ('schema', 'verdict', 'result_digest', 'prior_trust'))
-    if receipt['schema'] != 'memvane-card-evidence-v1' or receipt['verdict'] != 'verified':
+ATTESTATION_KINDS = ('compiled', 'rebound', 'legacy_verified')
+LEGACY_LINE_SPAN = 'legacy-lines-v1'
+# Reserved compiled line-span kind: the yaml_scalars span shape bound to the
+# fingerprint's path/source SHA, never an excerpt. A rebound copies its prior's
+# spans verbatim, so the compiled chain (compiled + rebound) shares one set.
+LINE_SPAN = 'lines-v1'
+LINE_SPAN_KINDS = frozenset(('compiled', 'rebound'))
+RECEIPT_V1 = 'memvane-card-evidence-v1'
+RECEIPT_V1_FIELDS = frozenset(('schema', 'verdict', 'result_digest', 'prior_trust'))
+# Reserved compile receipt: v1 plus the verifier verdict digest, verifiedMode and
+# verifier engine. Later extensions are a new schema value, never extra v2 keys.
+RECEIPT_V2 = 'memvane-card-evidence-v2'
+RECEIPT_V2_FIELDS = RECEIPT_V1_FIELDS | {'verdict_digest', 'verified_mode', 'verify_engine'}
+
+
+def _receipt(receipt, kind):
+    schema = receipt.get('schema') if isinstance(receipt, dict) else None
+    if schema == RECEIPT_V2 and kind in LINE_SPAN_KINDS:
+        exact(receipt, RECEIPT_V2_FIELDS)
+        import config
+        identifier(receipt['verdict_digest']); text(receipt['verify_engine'])
+        if receipt['verified_mode'] not in config.VERIFIED_MODES:
+            fail('receipt_invalid')
+    elif schema == RECEIPT_V1:
+        exact(receipt, RECEIPT_V1_FIELDS)
+    else:
+        exact(receipt, RECEIPT_V1_FIELDS)
+        fail('receipt_invalid')
+    if receipt['verdict'] != 'verified':
         fail('receipt_invalid')
     identifier(receipt['result_digest'])
     if kind == 'rebound':
         identifier(receipt['prior_trust'])
     elif receipt['prior_trust'] is not None:
         fail('receipt_prior_invalid')
+
+
+def attestation(spec):
+    exact(spec, ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest', 'receipt', 'sources'))
+    identifier(spec['blob_sha']); text(spec['engine_identity']); identifier(spec['policy_digest'])
+    kind = spec['verification_kind']
+    if kind not in ATTESTATION_KINDS:
+        fail('verification_kind_invalid')
+    _receipt(spec['receipt'], kind)
     sources = spec['sources']
     if not isinstance(sources, list) or len(sources) > 64 or (kind == 'rebound' and not sources):
         fail('attestation_sources_invalid')
-    seen, legacy_count = set(), 0
+    seen, line_count = set(), 0
     for source in sources:
         exact(source, ('fingerprint_id', 'spans'))
         identifier(source['fingerprint_id'])
@@ -307,12 +336,14 @@ def attestation(spec):
             fail('source_spans_invalid')
         end, mode, line_keys = 0, None, set()
         for span in spans:
-            if isinstance(span, dict) and span.get('kind') == 'legacy-lines-v1':
-                if kind != 'legacy_verified' or mode == 'bytes':
+            line_kind = span.get('kind') if isinstance(span, dict) else None
+            if line_kind in (LEGACY_LINE_SPAN, LINE_SPAN):
+                allowed = ('legacy_verified',) if line_kind == LEGACY_LINE_SPAN else LINE_SPAN_KINDS
+                if kind not in allowed or mode not in (None, line_kind):
                     fail('source_spans_invalid')
                 import yaml_scalars
-                legacy_count += 1
-                if legacy_count > yaml_scalars.MAX_SOURCE_SPANS:
+                line_count += 1
+                if line_count > yaml_scalars.MAX_SOURCE_SPANS:
                     fail('source_spans_invalid')
                 original = {key: value for key, value in span.items() if key != 'kind'}
                 if (yaml_scalars.normalize_source_span(original) != original
@@ -322,9 +353,9 @@ def attestation(spec):
                 if line_key in line_keys:
                     fail('source_spans_invalid')
                 line_keys.add(line_key)
-                mode = 'lines'
+                mode = line_kind
                 continue
-            if mode == 'lines':
+            if mode is not None and mode != 'bytes':
                 fail('source_spans_invalid')
             exact(span, ('start', 'end'))
             start, stop = integer(span['start']), integer(span['end'])

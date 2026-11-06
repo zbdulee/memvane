@@ -861,6 +861,13 @@ class BlobStore:
                             or fp['tracked_state'] != 'unknown' or span['path'] != fp['path']
                             or span['sourceSha256'] != fp['source_sha']):
                         v.fail('legacy_span_binding_invalid')
+                elif span.get('kind') == v.LINE_SPAN:
+                    # Line numbers are bound to the observed fingerprint's path and
+                    # SHA; the source bytes are not read, so byte_length is not a bound.
+                    if (spec['verification_kind'] not in v.LINE_SPAN_KINDS
+                            or fp['binding_state'] != 'observed' or span['path'] != fp['path']
+                            or span['sourceSha256'] != fp['source_sha']):
+                        v.fail('line_span_binding_invalid')
                 elif span['end'] > fp['byte_length']:
                     v.fail('source_span_outside_fingerprint')
             if spec['verification_kind'] == 'compiled' and fp['binding_state'] != 'observed':
