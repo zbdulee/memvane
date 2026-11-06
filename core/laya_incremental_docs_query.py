@@ -110,8 +110,14 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
 
 
 def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provider,
-                               *, base, side, deadline: float, _semantic_status=None):
-    """Query caller-owned pinned readers; the caller proves their shared view."""
+                               *, base, side, deadline: float, _semantic_status=None,
+                               _lexical=None):
+    """Query caller-owned pinned readers; the caller proves their shared view.
+
+    ``_lexical`` (migration parity only) answers the sidecar FTS probe and
+    search with another store's ``probe(atom)``/``search(fts)``; every other
+    step, including row proof and trust, still reads these pinned readers.
+    """
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or deadline <= time.monotonic()):
         _fail('preview_query_deadline_exceeded')
@@ -124,7 +130,8 @@ def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provide
         return [], frozenset(), {}, (), None
     result = _query_incremental(prompt, decision, proof, provider,
                                 pinned_base=base, pinned_side=side, deadline=deadline,
-                                semantic_status=[] if _semantic_status is None else _semantic_status)
+                                semantic_status=[] if _semantic_status is None else _semantic_status,
+                                lexical=_lexical)
     from laya_journal_reader import _sidecar_document_snapshot
     for row in result[0]:
         # Semantic scoring validates each active chunk set before use. Row
@@ -137,7 +144,7 @@ def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provide
 
 
 def _query_incremental(prompt, decision, proof, provider, *, pinned_base=None,
-                       pinned_side=None, deadline=None, semantic_status=None):
+                       pinned_side=None, deadline=None, semantic_status=None, lexical=None):
     from laya_host_response import (_PROVIDER_RESULT_KEYS,
                                     _v2_body_evidence,
                                     _verified_wiki_row, _fuse_verified_lists,
@@ -270,6 +277,8 @@ def _query_incremental(prompt, decision, proof, provider, *, pinned_base=None,
                     'ORDER BY bm25(docs_fts,1.5,4.0,1.0),d.path COLLATE BINARY LIMIT ?',
                     (fts, paths_json, MAX_FTS)).fetchall()
                 return [item[0] for item in matches]
+            if lexical is not None:
+                probe, search = lexical['probe'], lexical['search']
             (built, present, selected, mode, probe_matches, probe_complete, lexical_paths) = _lexical_plan(
                 prompt, decision['recallSettings']['lexicalPatterns'], probe=probe, search=search,
                 deadline=deadline)
