@@ -20,6 +20,21 @@ MAX_BATCH = 100
 MAX_BATCH_BYTES = 8 * 1024 * 1024
 # Provisional cooperative limit for the inactive shadow path; release still
 # requires measured writer/reader impact and recovery proof.
+#
+# Step budget map (the structure is fixed here; the numbers wait for the
+# measured writer/reader impact):
+# - _STEP_SECONDS bounds every interval that holds something a NormalWriter,
+#   reader or installer operation can wait on: each advance_shadow stage that
+#   runs under the installer and operation locks (copy, verification, corpus,
+#   publish around the private head CAS, the caught-up recheck, intent
+#   writes), and each pinned v6 page snapshot with its physical reader lock
+#   (the candidate build's per-page rechecks clamp their own snapshot too).
+# - The publication cut is nested inside that step: ViewStore.publish_generation
+#   clamps its shared cut and the fresh snapshot under it to 1.0 s on its own.
+# - The candidate build (prepare_shadow_generation) holds neither lock nor one
+#   snapshot across the build, so it runs on the caller's wall deadline,
+#   capped per source pass by ViewStore.prepare_generation. Its final source
+#   recheck reacquires both locks under a fresh _STEP_SECONDS deadline.
 _STEP_SECONDS = 3.0
 
 
@@ -1010,7 +1025,26 @@ _INTENT = 'shadow-migration-intent.json'
 _INTENT_KEYS = frozenset(('schema', 'migration_id', 'project', 'state', 'state_node',
                           'install_id', 'endpoint_id', 'observation', 'candidate',
                           'candidate_node', 'candidate_incarnation', 'worktree_id',
-                          'phase', 'cursor', 'provenance_scan', 'source_revision'))
+                          'phase', 'cursor', 'provenance_scan', 'source_revision',
+                          'migration_state'))
+# Design 8.2 names stored as ``migration_state``; derived only by _shadow_state.
+#   copying   - phase copying, or copied with verification, corpora, candidate
+#               build or private publish still pending (restart included)
+#   caught_up - complete commitments and a recorded private candidate head
+# Later states (shadow_verified, reader_ready, switched) belong to later
+# steps. deferred/retry are restart_required plus a reason code, not states.
+_SHADOW_STATES = ('copying', 'caught_up')
+# Source changes proved by a later step; the copy restarts from a fresh scan.
+_SHADOW_RESTART_REASONS = frozenset(('migration_snapshot_changed', 'migration_source_revision_unproved'))
+
+
+def _shadow_state(intent):
+    return 'caught_up' if intent.get('published') is not None else 'copying'
+
+
+def _stamp(intent):
+    return {**intent, 'migration_state': _shadow_state(intent)}
+
 
 _MIGRATION_REASONS = frozenset((
     'candidate_busy', 'candidate_file_changed', 'candidate_io_failed', 'candidate_storage_full', 'migration_body_limit',
@@ -1163,7 +1197,7 @@ def _migration_intent(path, *, project, state, node, store):
     intent = ledger._read_json(path)
     if (not isinstance(intent, dict) or not _INTENT_KEYS <= set(intent)
             or set(intent) - _INTENT_KEYS - {'verification', 'corpora', 'restart_required', 'published',
-                                            'revision_check'}
+                                            'prepared', 'revision_check'}
             or intent['schema'] != 'memvane-shadow-migration-v1'
             or intent['project'] != str(project) or intent['state'] != str(state)
             or intent['state_node'] != journal._node(state)
@@ -1224,6 +1258,21 @@ def _migration_intent(path, *, project, state, node, store):
             raise IndexContractError('migration_intent_invalid')
         values.identifier(published['view_id'])
         values.integer(published['epoch'], 1)
+    prepared = intent.get('prepared')
+    if prepared is not None:
+        import laya_view_values as view_values
+        values.exact(prepared, ('migration_id', 'generation', 'observation', 'scan_id',
+                                'candidate_incarnation'))
+        if (intent['phase'] != 'copied' or not isinstance(prepared['generation'], str)
+                or not view_values.GEN_ID.fullmatch(prepared['generation'])
+                or prepared['migration_id'] != intent['migration_id']
+                or prepared['observation'] != intent['observation']
+                or prepared['scan_id'] != intent['provenance_scan']['id']
+                or prepared['candidate_incarnation'] != store._incarnation
+                or (published is not None and published['generation'] != prepared['generation'])):
+            raise IndexContractError('migration_intent_invalid')
+    if intent['migration_state'] not in _SHADOW_STATES or intent['migration_state'] != _shadow_state(intent):
+        raise IndexContractError('migration_intent_invalid')
     return intent
 
 
@@ -1337,6 +1386,7 @@ def begin_migration(store, *, worktree_id, project, executing_root, deadline):
                     'worktree_id': worktree_id, 'phase': 'copying', 'cursor': None,
                     'verification': None, 'corpora': None, 'restart_required': False,
                     'provenance_scan': {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}}
+                intent = _stamp(intent)
                 trace['migration'] = intent['migration_id']
                 _migration_event(state, trace, 'attempt')
                 trace['stage'] = 'snapshot_postcheck'
@@ -1382,11 +1432,12 @@ def advance_migration(store, *, project, executing_root, deadline):
                                             previous=intent['source_revision'], deadline=deadline)
                     if check['base'] == 'gap':
                         trace['reason'] = 'revision_gap'
-                    return {**intent, 'observation': observation, 'cursor': None, 'phase': 'copying',
+                    return _stamp({**intent, 'observation': observation, 'cursor': None, 'phase': 'copying',
                             'source_revision': _source_revision(snapshot),
                             'revision_check': check,
                             'verification': None, 'corpora': None, 'restart_required': False, 'published': None,
-                            'provenance_scan': {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}}
+                            'prepared': None,
+                            'provenance_scan': {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}})
                 if intent['phase'] == 'copied':
                     observed = capture_effective(snapshot, endpoint=endpoint, decision=decision,
                                                  after=None, deadline=deadline)
@@ -1400,8 +1451,9 @@ def advance_migration(store, *, project, executing_root, deadline):
                             _verification_progress(progress, intent, check_limits=False)
                         if progress is not None and (progress['batch_limit'] != MAX_BATCH
                                                      or progress['byte_limit'] != MAX_BATCH_BYTES):
-                            updated, outcome = {**intent, 'verification': None, 'corpora': None,
-                                                'restart_required': False, 'published': None}, 'restarted'
+                            updated, outcome = _stamp({**intent, 'verification': None, 'corpora': None,
+                                                       'restart_required': False, 'published': None,
+                                                       'prepared': None}), 'restarted'
                         elif intent.get('restart_required', False):
                             updated, outcome = {**intent, 'restart_required': False}, 'copied'
                         else:
@@ -1576,7 +1628,7 @@ def advance_corpus(store, *, project, executing_root, sidecar, deadline):
         return updated
 
 
-def _mark_shadow_restart(store, project, expected, deadline):
+def _mark_shadow_restart(store, project, expected, deadline, reason=None):
     """Persist a non-authoritative retry request after a source mismatch."""
     import laya_fresh_wiki_origin as fresh
     import laya_ledger_common as ledger
@@ -1595,9 +1647,38 @@ def _mark_shadow_restart(store, project, expected, deadline):
             raise IndexContractError('migration_intent_changed')
         if time.monotonic() >= deadline:
             raise IndexContractError('reader_snapshot_deadline')
-        updated = {**current, 'restart_required': True, 'published': None}
+        updated = _stamp({**current, 'restart_required': True, 'published': None, 'prepared': None})
         ledger._write(path, updated, replace=True)
-        trace['outcome'] = 'restart_pending'
+        trace.update(outcome='restart_pending', reason=reason)
+        return updated
+
+
+def _record_prepared(store, project, expected, generation, deadline):
+    """Point the intent at a proved private candidate; this grants no parity."""
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import project_dir
+    from laya_product_install import _install_lock
+    project, state, decision, node = _migration_state(project, store)
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    with _migration_trace(state, 'prepared') as trace, _install_lock(state), ledger._operation_lock(marker):
+        if _migration_state(project, store) != (project, state, decision, node):
+            raise IndexContractError('migration_route_changed')
+        path = state / _INTENT
+        current = _migration_intent(path, project=project, state=state, node=node, store=store)
+        trace['migration'] = current['migration_id']
+        _migration_event(state, trace, 'attempt')
+        if current != expected or current.get('prepared') is not None or current.get('published') is not None:
+            raise IndexContractError('migration_intent_changed')
+        _completed_shadow_commitments(current)
+        updated = _stamp({**current, 'prepared': {
+            'migration_id': current['migration_id'], 'generation': generation,
+            'observation': current['observation'], 'scan_id': current['provenance_scan']['id'],
+            'candidate_incarnation': store._incarnation}})
+        if time.monotonic() >= deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        ledger._write(path, updated, replace=True)
+        trace['outcome'] = 'prepared'
         return updated
 
 
@@ -1728,6 +1809,8 @@ def publish_shadow_generation(store, generation, *, project, executing_root, dea
         verification, corpora = _completed_shadow_commitments(intent)
         if intent.get('published') is not None and intent['published']['generation'] != generation:
             raise IndexContractError('migration_intent_changed')
+        if intent.get('prepared') is not None and intent['prepared']['generation'] != generation:
+            raise IndexContractError('migration_intent_changed')
         with leases.resolve_endpoint(project, action='recall', host_root=Path(executing_root)) as endpoint:
             if (endpoint.endpoint_id != intent['endpoint_id']
                     or endpoint.record['install_id'] != intent['install_id']):
@@ -1784,7 +1867,7 @@ def publish_shadow_generation(store, generation, *, project, executing_root, dea
                 if (time.monotonic() >= deadline or ledger._read_json(state / _INTENT) != intent
                         or store.head(handle) != published):
                     raise IndexContractError('migration_intent_changed')
-                ledger._write(state / _INTENT, {**intent, 'published': receipt}, replace=True)
+                ledger._write(state / _INTENT, _stamp({**intent, 'published': receipt}), replace=True)
         trace['outcome'] = 'published'
         return published
 
@@ -1877,27 +1960,40 @@ def compare_shadow_queries(store, generation, *, project, executing_root, querie
 
 
 def advance_shadow(store, *, project, executing_root, deadline):
-    """Run at most one bounded copy, verification or corpus page per call."""
+    """Run at most one bounded step of the private shadow state machine per call.
+
+    copy -> verification -> base/sidecar corpus -> prepare -> publish -> caught_up.
+    Each call performs one of them; the selected reader never changes.
+    """
     import laya_blob_values as values
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline):
         raise IndexContractError('reader_snapshot_deadline')
+    wall_deadline = deadline
     deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
     project, state, _, node = _migration_state(project, store)
     # This read only chooses the next operation. That operation reacquires
     # both existing locks and validates the current intent and endpoint.
-    intent = _migration_intent(state / _INTENT, project=project, state=state, node=node, store=store)
+    path = state / _INTENT
+    intent = _migration_intent(path, project=project, state=state, node=node, store=store)
     args = dict(project=project, executing_root=executing_root, deadline=deadline)
+
+    def step(stage, current):
+        return {'stage': stage, 'migration_state': current['migration_state'], 'intent': current}
+
+    def reread():
+        return _migration_intent(path, project=project, state=state, node=node, store=store)
+
     if intent['phase'] == 'copying':
-        return {'stage': 'copy', 'intent': advance_migration(store, **args)}
+        return step('copy', advance_migration(store, **args))
     if intent.get('restart_required', False):
-        return {'stage': 'restart', 'intent': advance_migration(store, **args)}
+        return step('restart', advance_migration(store, **args))
     verification = intent.get('verification')
     if verification is not None:
         _verification_progress(verification, intent, check_limits=False)
         if (verification['batch_limit'] != MAX_BATCH or
                 verification['byte_limit'] != MAX_BATCH_BYTES):
-            return {'stage': 'restart', 'intent': advance_migration(store, **args)}
+            return step('restart', advance_migration(store, **args))
     corpora = intent.get('corpora')
     if verification is None or not verification['complete']:
         if corpora is not None:
@@ -1918,19 +2014,39 @@ def advance_shadow(store, *, project, executing_root, deadline):
             if corpora['sidecar'] is not None and (corpora['base'] is None or
                                                   not corpora['base']['complete']):
                 raise IndexContractError('migration_intent_invalid')
+        prepared, published = intent.get('prepared'), intent.get('published')
         if corpora is None or corpora['base'] is None or not corpora['base']['complete']:
             stage, run = 'base_corpus', lambda: advance_corpus(store, sidecar=False, **args)
         elif corpora['sidecar'] is None or not corpora['sidecar']['complete']:
             stage, run = 'sidecar_corpus', lambda: advance_corpus(store, sidecar=True, **args)
+        elif published is not None:
+            # Read-only replay: re-proves the recorded private head against the
+            # unchanged source under the step deadline, without the cut.
+            def run():
+                publish_shadow_generation(store, published['generation'], **args)
+                return reread()
+            stage = 'caught_up'
+        elif prepared is None:
+            # The lock-free build runs on the caller's wall deadline; only the
+            # intent pointer is written under both locks afterwards.
+            def run():
+                generation = prepare_shadow_generation(store, project=project,
+                    executing_root=executing_root, deadline=wall_deadline)
+                return _record_prepared(store, project, intent, generation,
+                                        min(wall_deadline, time.monotonic() + _STEP_SECONDS))
+            stage = 'prepare'
         else:
-            # This is a progress state only; no candidate or parity is certified.
-            stage, run = 'prepare_pending', lambda: advance_corpus(store, sidecar=True, **args)
+            def run():
+                publish_shadow_generation(store, prepared['generation'], **args)
+                return reread()
+            stage = 'publish'
     try:
-        return {'stage': stage, 'intent': run()}
-    except IndexContractError as exc:
-        if str(exc) != 'migration_snapshot_changed':
+        return step(stage, run())
+    except (IndexContractError, values.BlobStoreError) as exc:
+        reason = str(exc)
+        if reason not in _SHADOW_RESTART_REASONS:
             raise
         # A second full proof may not fit this step. Persist only a request;
         # the next step re-proves the source before resetting any cursor.
-        return {'stage': 'restart_pending',
-                'intent': _mark_shadow_restart(store, project, intent, deadline)}
+        return step('restart_pending', _mark_shadow_restart(
+            store, project, intent, min(wall_deadline, time.monotonic() + _STEP_SECONDS), reason))

@@ -473,7 +473,9 @@ class CatchupChecks(unittest.TestCase):
                         self.assertEqual(wrote, ['excluded'])
                         self.assertEqual(view.head(handle), head)
                         self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
-                        with self.assertRaisesRegex(Exception, 'migration_snapshot_changed'):
+                        # The writer commit advances the base revision, which the
+                        # publication cut checks before the membership observation.
+                        with self.assertRaisesRegex(Exception, 'migration_source_revision_unproved'):
                             migration.publish_shadow_generation(view, generation, project=case.project,
                                 executing_root=case.plugin, deadline=time.monotonic() + 30)
                         self.assertEqual(view.head(handle), head)
@@ -708,9 +710,12 @@ class CatchupChecks(unittest.TestCase):
         from laya_index_claim_queue import ClaimQueue
         repository = checkout.register_repository(str(case.project))
         worktree = checkout.register_worktree(str(case.project), repository)
-        store = blobs.BlobStore.create(case.state / 'normal-writer-shadow.sqlite',
+        blobs.BlobStore.create(case.state / 'normal-writer-shadow.sqlite',
             project_root=str(case.project), repository=repository, worktree=worktree,
-            scope_id=case.route['scopeId'])
+            scope_id=case.route['scopeId']).close()
+        # advance_shadow builds the private candidate, which needs the view API.
+        store = importlib.import_module('laya_view_store').ViewStore.open(
+            case.state / 'normal-writer-shadow.sqlite', repository=repository, scope_id=case.route['scopeId'])
         self.addCleanup(store.close)
         time.sleep(1.1)
         with closing(LayaIndexA(case.db)), closing(ClaimQueue.open(normal.queue)), seed.authority(), \
@@ -765,8 +770,9 @@ class CatchupChecks(unittest.TestCase):
                 step = migration.advance_shadow(store, project=case.project,
                     executing_root=case.plugin, deadline=time.monotonic() + 30)
                 stages.append(step['stage'])
-                if step['stage'] == 'prepare_pending': break
-            self.assertEqual(step['stage'], 'prepare_pending')
+                corpora = step['intent'].get('corpora')
+                if corpora and corpora['sidecar'] and corpora['sidecar']['complete']: break
+            self.assertEqual(step['stage'], 'sidecar_corpus')
             self.assertTrue({'verification', 'base_corpus', 'sidecar_corpus'} <= set(stages))
             self.assertTrue(step['intent']['verification']['complete'])
             self.assertTrue(step['intent']['corpora']['base']['complete'])
@@ -933,6 +939,160 @@ class CatchupChecks(unittest.TestCase):
             with self.assertRaisesRegex(Exception, 'reader_base_revision_unproved'):
                 with seed.lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin):
                     pass
+
+    def test_advance_shadow_reaches_caught_up_and_resumes(self):
+        normal_spec = importlib.util.spec_from_file_location(
+            'shadow_state_machine_seed', HERE / 'laya-normal-writer-connections-checks.py')
+        normal_module = importlib.util.module_from_spec(normal_spec)
+        normal_spec.loader.exec_module(normal_module)
+        normal = normal_module.NormalWriterConnectionChecks('runTest')
+        normal.setUp()
+        self.addCleanup(normal.doCleanups)
+        seed, case = normal.seed, normal.case
+        subprocess.run(['git', '-c', 'init.defaultBranch=main', 'init', '-q', str(case.project)],
+                       check=True, capture_output=True, timeout=10)
+        subprocess.run(['git', '-C', str(case.project), '-c', 'commit.gpgsign=false',
+                        '-c', 'core.hooksPath=' + os.devnull, '-c', 'user.name=Fixture',
+                        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+                        '-qm', 'fixture'], check=True, capture_output=True, timeout=10)
+        checkout = importlib.import_module('laya_checkout_view')
+        blobs = importlib.import_module('laya_blob_store')
+        views = importlib.import_module('laya_view_store')
+        migration = importlib.import_module('laya_shadow_migration')
+        readers = importlib.import_module('laya_reader_open')
+        repository = checkout.register_repository(str(case.project))
+        worktree = checkout.register_worktree(str(case.project), repository)
+        candidate = case.state / 'state-machine-shadow.sqlite'
+        blobs.BlobStore.create(candidate, project_root=str(case.project), repository=repository,
+                               worktree=worktree, scope_id=case.route['scopeId']).close()
+        store = views.ViewStore.open(candidate, repository=repository, scope_id=case.route['scopeId'])
+        self.addCleanup(store.close)
+        time.sleep(1.1)
+        intent_path = case.state / 'shadow-migration-intent.json'
+        payload = case.home / 'synthetic-shadow-state-machine.json'
+
+        def step():
+            return migration.advance_shadow(store, project=case.project,
+                                            executing_root=case.plugin, deadline=time.monotonic() + 60)
+
+        def slots():
+            return store._db.execute('SELECT COUNT(*) FROM generation_slots').fetchone()[0]
+
+        def corpora_complete(intent):
+            corpora = intent.get('corpora')
+            return bool(corpora and corpora['sidecar'] and corpora['sidecar']['complete'])
+
+        def copy_until_prepare():
+            stages = []
+            for _ in range(40):
+                result = step()
+                stages.append(result['stage'])
+                if corpora_complete(result['intent']):
+                    break
+            self.assertTrue(corpora_complete(result['intent']), stages)
+            self.assertTrue({'copy', 'verification', 'base_corpus', 'sidecar_corpus'} <= set(stages), stages)
+            self.assertIsNone(result['intent'].get('prepared'))
+            self.assertIsNone(result['intent'].get('published'))
+            return result['intent']
+
+        def crash(mode, marker):
+            payload.write_text(json.dumps({'home': str(case.home),
+                'runtime': os.environ['MEMVANE_TEST_RUNTIME_ROOT'], 'plugin': str(case.plugin),
+                'proof': case.proof, 'candidate': str(candidate), 'repository': repository,
+                'worktree': worktree, 'scope': case.route['scopeId'], 'project': str(case.project),
+                'batch_limit': 1, 'mode': mode}), encoding='utf8')
+            before = intent_path.read_bytes()
+            killed = subprocess.run([sys.executable, '-B', str(HERE / 'laya-shadow-crash-child.py'),
+                                     str(payload)], capture_output=True, text=True, timeout=90)
+            self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+            self.assertIn(marker, killed.stdout)
+            self.assertEqual(intent_path.read_bytes(), before)
+            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+
+        def exclude_with_fresh_writer(path):
+            normal.plan = normal.P.capture_writer_plan(case.project, executing_root=case.plugin)
+            with ExitStack() as owners:
+                writer, _ = normal.admission(owners)
+                with normal.runtime(writer) as runtime:
+                    normal.N.mark_new_write(writer)
+                    return runtime.index.exclude(writer.scope_id, path=path)
+
+        with seed.authority(), mock.patch.object(migration, 'MAX_BATCH', 1):
+            started = migration.begin_migration(store, worktree_id=worktree['worktreeId'],
+                project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
+            first = copy_until_prepare()
+            handle = store.capture_view(worktree['worktreeId'])
+            empty = store.head(handle)
+            self.assertIsNone(empty['gen_id'])
+            self.assertEqual(slots(), 0)
+
+            # Crash inside the candidate build, then right after it and
+            # before the intent records it. Each resume reuses one slot.
+            crash('shadow-slot-kill', 'shadow-slot-before-seal')
+            self.assertEqual((slots(), store.head(handle)), (1, empty))
+            crash('shadow-intent-kill', 'shadow-step-before-intent')
+            self.assertEqual((slots(), store.head(handle)), (1, empty))
+            prepared = step()
+            self.assertEqual(prepared['stage'], 'prepare')
+            self.assertEqual(prepared['migration_state'], 'copying')
+            self.assertEqual(started['migration_state'], 'copying')
+            stale = prepared['intent']['prepared']['generation']
+            self.assertEqual(prepared['intent']['prepared']['observation'], first['observation'])
+            self.assertIsNone(prepared['intent'].get('published'))
+            self.assertEqual((slots(), store.head(handle)), (1, empty))
+
+            # A NormalWriter change between steps restarts the copy; the
+            # prepared candidate for the old source is never published.
+            self.assertEqual(exclude_with_fresh_writer(case.WIKI + '/concepts/otter-ledger.md'), 'excluded')
+            pending = step()
+            self.assertEqual(pending['stage'], 'restart_pending')
+            self.assertTrue(pending['intent']['restart_required'])
+            self.assertIsNone(pending['intent']['prepared'])
+            self.assertIsNone(pending['intent']['published'])
+            self.assertEqual(pending['intent']['migration_state'], 'copying')
+            self.assertEqual(store.head(handle), empty)
+            events = [json.loads(line) for line in (case.state / 'events.jsonl').read_text().splitlines()]
+            self.assertIn([event for event in events if event.get('event') == 'migration.shadow'
+                           and event.get('outcome') == 'restart_pending'][-1]['reason'],
+                          ('migration_snapshot_changed', 'migration_source_revision_unproved'))
+            restarted = step()
+            self.assertEqual(restarted['stage'], 'restart')
+            self.assertEqual(restarted['intent']['phase'], 'copying')
+            self.assertNotEqual(restarted['intent']['observation'], first['observation'])
+            second = copy_until_prepare()
+            prepared = step()
+            self.assertEqual(prepared['stage'], 'prepare')
+            generation = prepared['intent']['prepared']['generation']
+            self.assertNotEqual(generation, stale)
+            # A new source scan owns a new slot; the stale slot stays private.
+            self.assertEqual((slots(), store.head(handle)), (2, empty))
+
+            # Crash right after the private head CAS and again right before
+            # its receipt; resume proves the same head without a second CAS.
+            crash('shadow-publish-kill', 'shadow-head-before-receipt')
+            head = store.head(handle)
+            self.assertEqual((head['gen_id'], head['epoch']), (generation, 1))
+            crash('shadow-intent-kill', 'shadow-step-before-intent')
+            self.assertEqual(store.head(handle), head)
+            published = step()
+            self.assertEqual(published['stage'], 'publish')
+            self.assertEqual(published['migration_state'], 'caught_up')
+            receipt = published['intent']['published']
+            self.assertEqual((receipt['generation'], receipt['view_id'], receipt['epoch']),
+                             (generation, head['view_id'], 1))
+            self.assertEqual(receipt['observation'], second['observation'])
+            self.assertEqual(published['intent']['prepared']['generation'], generation)
+            self.assertEqual((slots(), store.head(handle)), (2, head))
+            caught = intent_path.read_bytes()
+            with mock.patch.object(readers, 'reader_publish_cut',
+                                   side_effect=AssertionError('caught-up step acquired publication cut')):
+                again = step()
+            self.assertEqual(again['stage'], 'caught_up')
+            self.assertEqual(again['migration_state'], 'caught_up')
+            self.assertEqual(intent_path.read_bytes(), caught)
+            self.assertEqual((slots(), store.head(handle)), (2, head))
+            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+            self.assertTrue(store.verify_views())
 
     def test_sidecar_publication_restarts_copy_without_switching_reader(self):
         fixture = sidecar_seed.SidecarWriteChecks('runTest')

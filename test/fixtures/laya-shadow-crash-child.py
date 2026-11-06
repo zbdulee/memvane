@@ -31,7 +31,9 @@ migration.MAX_BATCH = payload['batch_limit']
 
 helper = fixture.JournalReaderChecks('runTest')
 case = SimpleNamespace(plugin=Path(payload['plugin']), proof=payload['proof'])
-store_type = views.ViewStore if payload.get('mode') in ('prepare-kill', 'publish-kill') else blobs.BlobStore
+store_type = (views.ViewStore if payload.get('mode') in ('prepare-kill', 'publish-kill', 'shadow-slot-kill',
+                                                         'shadow-intent-kill', 'shadow-publish-kill')
+              else blobs.BlobStore)
 store = store_type.open(Path(payload['candidate']), repository=payload['repository'],
                         scope_id=payload['scope'])
 checkout.capture_view(payload['project'], payload['repository'], payload['worktree'])
@@ -47,6 +49,37 @@ with helper.full_authority(case, reader, bridge, lease, mover):
             migration.advance_shadow(store, project=Path(payload['project']), executing_root=case.plugin,
                                      deadline=time.monotonic() + 30)
         raise RuntimeError('restart crash checkpoint not reached')
+    elif payload.get('mode') == 'shadow-slot-kill':
+        # One advance_shadow step dies inside its candidate build, after the
+        # slot commit and before the generation seal.
+        def kill_inside_prepare(*args, **kwargs):
+            print('shadow-slot-before-seal', flush=True)
+            os.kill(os.getpid(), signal.SIGKILL)
+        with mock.patch.object(store, '_roots', side_effect=kill_inside_prepare):
+            migration.advance_shadow(store, project=Path(payload['project']), executing_root=case.plugin,
+                                     deadline=time.monotonic() + 60)
+        raise RuntimeError('shadow prepare crash checkpoint not reached')
+    elif payload.get('mode') == 'shadow-intent-kill':
+        # One advance_shadow step dies after its candidate work committed
+        # and immediately before its only intent write.
+        def kill_before_intent(*args, **kwargs):
+            print('shadow-step-before-intent', flush=True)
+            os.kill(os.getpid(), signal.SIGKILL)
+        with mock.patch.object(ledger, '_write', side_effect=kill_before_intent):
+            migration.advance_shadow(store, project=Path(payload['project']), executing_root=case.plugin,
+                                     deadline=time.monotonic() + 60)
+        raise RuntimeError('shadow intent crash checkpoint not reached')
+    elif payload.get('mode') == 'shadow-publish-kill':
+        # One advance_shadow step dies right after the private head CAS.
+        original_publish = store.publish_generation
+        def kill_after_publish(*args, **kwargs):
+            original_publish(*args, **kwargs)
+            print('shadow-head-before-receipt', flush=True)
+            os.kill(os.getpid(), signal.SIGKILL)
+        with mock.patch.object(store, 'publish_generation', side_effect=kill_after_publish):
+            migration.advance_shadow(store, project=Path(payload['project']), executing_root=case.plugin,
+                                     deadline=time.monotonic() + 60)
+        raise RuntimeError('shadow publish crash checkpoint not reached')
     elif payload.get('mode') == 'corpus-kill':
         def kill_before_corpus_cursor(*args, **kwargs):
             print('corpus-committed-before-intent', flush=True)
