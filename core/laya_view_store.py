@@ -223,6 +223,10 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             v.fail('card_trust_mismatch')
         if legacy and spec['verification_kind'] != 'legacy_verified':
             v.fail('legacy_card_trust_invalid')
+        # A writer-ingested legacy_verified card keeps the v6 reader rule: its
+        # unbound sources are not compared with the current scan (no HEAD or
+        # raw reread is claimed); anything but fully unbound sources is ineligible.
+        unbound = not legacy and spec['verification_kind'] == 'legacy_verified'
         ok, refs = bool(spec['sources']), []
         for ordinal, source in enumerate(spec['sources']):
             old = self._fingerprint(source['fingerprint_id'], cache=cache)
@@ -233,6 +237,11 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
                 if (old['binding_state'] != 'legacy_unbound' or old['head_oid'] is not None
                         or old['tracked_state'] != 'unknown'):
                     v.fail('legacy_card_trust_invalid')
+                continue
+            if unbound:
+                if (old['binding_state'] != 'legacy_unbound' or old['head_oid'] is not None
+                        or old['tracked_state'] != 'unknown'):
+                    ok = False
                 continue
             now = current.get(old['path'])
             if (now is None or now[0]['presence'] != 'present'

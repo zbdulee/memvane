@@ -232,16 +232,26 @@ class MigrationSnapshotChecks(unittest.TestCase):
             decision = seed.reader.journal.select_route(str(case.project), action='recall')
             with seed.lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin) as endpoint:
                 with opens.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 10) as snapshot:
+                    scan = {'id': '2' * 32, 'observed_ns': time.time_ns()}
                     result = migration.import_wiki_batch(store, worktree_id=worktree['worktreeId'],
                         snapshot=snapshot, endpoint=endpoint, decision=decision, after=None,
-                        deadline=time.monotonic() + 10,
-                        provenance_scan={'id': '2' * 32, 'observed_ns': time.time_ns()})
+                        deadline=time.monotonic() + 10, provenance_scan=scan)
                     matched = [row for row in result['trusted'] if row['path'] == seed.duplicate_path]
                     self.assertEqual(len(matched), 1)
                     evidence = store.attestation(matched[0]['trust_digest'])
                     self.assertEqual(len(evidence['sources']), 2)
                     self.assertEqual(sum(len(source['spans']) for source in evidence['sources']), 10)
                     self.assertTrue(store.verify())
+                # The writer ingest judges the same published bytes with the same rule.
+                wiki_root = store._db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
+                                              (worktree['worktreeId'],)).fetchone()[0]
+                relative = seed.duplicate_path.split('/', 1)[1]
+                Path(wiki_root, relative).write_bytes(store.document(matched[0]['hash'])['body'].encode('utf8'))
+                attestations = store.counts()['card_attestations']
+                self.assertEqual(store.ingest_attested_card(worktree['worktreeId'], relative,
+                                                            decision=decision, provenance_scan=scan),
+                                 {'blob_sha': matched[0]['hash'], 'trust_digest': matched[0]['trust_digest']})
+                self.assertEqual(store.counts()['card_attestations'], attestations)
 
     def test_legacy_evidence_matches_selected_reader_without_opening_raw_source(self):
         seed = seed_module.MoveSealChecks('runTest')
