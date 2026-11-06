@@ -618,5 +618,32 @@ class ProvenanceChecks(unittest.TestCase):
                 values.attestation(spec)
 
 
+    def test_32_store_binds_compiled_line_spans_to_observed_fingerprint(self):
+        fp = self.store.put_fingerprint(self.fp())
+        row = self.evidence(fp, receipt=self.compile_receipt())
+        row['sources'][0]['spans'] = [self.line_span(), self.line_span(startLine=7, endLine=60)]
+        trust = self.store.put_attestation(row)  # line numbers are not bounded by byte_length
+        self.assertEqual(self.store.attestation(trust), row)
+        self.assertTrue(self.store.verify())
+        unbound = self.store.put_fingerprint(self.fp(binding_state='legacy_unbound', observed_ns=2))
+        cases = [(fp, dict(path='notes/other.md')), (fp, dict(sourceSha256='f' * 64)), (unbound, {})]
+        for fingerprint, changes in cases:
+            with self.subTest(changes=changes, unbound=fingerprint == unbound):
+                bad = self.evidence(fingerprint)
+                bad['sources'][0]['spans'] = [self.line_span(**changes)]
+                with self.assertRaises(self.Error) as caught:
+                    self.store.put_attestation(bad)
+                self.assertIn(caught.exception.reason, ('line_span_binding_invalid', 'unbound_source_not_compiled'))
+        self.assertEqual(self.store.counts()['card_attestations'], 1)
+        store, blob, _, original, second = self.rebound_setup()
+        compiled = self.evidence(original['sources'][0]['fingerprint_id'], blob_sha=blob)
+        compiled['sources'][0]['spans'] = [self.line_span()]
+        prior = store.put_attestation(compiled)
+        rebound = self.rebound_evidence(store.put_fingerprint(second), blob, prior)
+        rebound['sources'][0]['spans'] = [self.line_span()]
+        self.assertEqual(store.attestation(store.put_attestation(rebound)), rebound)
+        self.assertTrue(store.verify())
+
+
 if __name__ == '__main__':
     unittest.main()

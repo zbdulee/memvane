@@ -15,7 +15,7 @@ test('candidate provenance remains immutable per attestation without raw bodies'
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 32 tests/);
+    assert.match(result.stderr, /Ran 33 tests/);
   } finally {
     removeTemp(home);
   }
