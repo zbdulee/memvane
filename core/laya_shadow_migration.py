@@ -37,6 +37,9 @@ MAX_BATCH_BYTES = 8 * 1024 * 1024
 #   capped per source pass by ViewStore.prepare_generation. Its final source
 #   recheck reacquires both locks under a fresh _STEP_SECONDS deadline.
 _STEP_SECONDS = 3.0
+# Writer-receipt catch-up (design 8.2-6) replays at most this many changed
+# paths per step; more changes take the full path/SHA recapture instead.
+MAX_CATCHUP_PATHS = 100
 
 
 class _MigrationObservationChanged(IndexContractError):
@@ -51,7 +54,7 @@ def _wiki_card_path(path, prefixes):
 
 
 def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_ineligible=False,
-                      _all_inventory=False, _page_limit=None):
+                      _all_inventory=False, _only=None, _page_limit=None):
     """Capture one metadata page; this observation does not authorize a write."""
     if not any(item is snapshot and bound is endpoint and saved == decision
                for item, bound, saved in readers._observations.get()):
@@ -65,6 +68,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
         raise IndexContractError('reader_snapshot_deadline')
     if (type(include_ineligible) is not bool or type(_all_inventory) is not bool
             or (_all_inventory and (not include_ineligible or after is not None))
+            or (_only is not None and (type(_only) is not frozenset or _all_inventory or include_ineligible
+                                       or not all(type(path) is str for path in _only)))
             or (_page_limit is not None and (type(_page_limit) is not int or _page_limit < 1))):
         raise IndexContractError('migration_inventory_invalid')
     deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
@@ -138,7 +143,8 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
                 if include_ineligible or (path not in excluded_paths and digest not in excluded_hashes):
                     members[path] = (digest, 'sidecar', 1)
         paths = [path for path in sorted(members)
-                 if (after is None or path > after) and (include_ineligible or
+                 if (after is None or path > after) and (_only is None or path in _only)
+                 and (include_ineligible or
                  (path not in excluded_paths and members[path][0] not in excluded_hashes))]
         page = paths if _all_inventory else paths[:MAX_BATCH if _page_limit is None
                                                     else min(_page_limit, MAX_BATCH)]
@@ -154,7 +160,7 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
 
 
 def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expected_observation=None,
-                       _page_limit=None):
+                       _only=None, _page_limit=None):
     """Read proved wiki bytes only; returned rows alone do not authorize import."""
     from laya_blob_values import MAX_BODY
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -168,7 +174,8 @@ def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expect
         raise IndexContractError('migration_cursor_invalid')
     try:
         page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
-                                 after=after, deadline=deadline, _page_limit=_page_limit)
+                                 after=after, deadline=deadline, _only=_only,
+                                 _page_limit=_page_limit)
     except IndexContractError as exc:
         if _expected_observation is None or str(exc) != 'migration_snapshot_changed':
             raise
@@ -376,7 +383,7 @@ def capture_base_fts_corpus(snapshot, *, endpoint, decision, after, deadline):
 
 def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after, deadline,
                       provenance_scan=None, verify_only=False, base_fts_corpus=False,
-                      sidecar_fts_corpus=False, _expected_observation=None):
+                      sidecar_fts_corpus=False, _expected_observation=None, _only=None):
     """Stage snapshot wiki bodies and optional unbound evidence; publish nothing."""
     import laya_blob_store as blobs
     import laya_blob_values as values
@@ -390,7 +397,8 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
     if (type(verify_only) is not bool or type(base_fts_corpus) is not bool
             or type(sidecar_fts_corpus) is not bool or (base_fts_corpus and sidecar_fts_corpus)
             or ((base_fts_corpus or sidecar_fts_corpus) and provenance_scan is not None)
-            or (verify_only and provenance_scan is None and not (base_fts_corpus or sidecar_fts_corpus))):
+            or (verify_only and provenance_scan is None and not (base_fts_corpus or sidecar_fts_corpus))
+            or (_only is not None and (base_fts_corpus or sidecar_fts_corpus))):
         values.fail('migration_verify_invalid')
     if not verify_only:
         store._require_write()
@@ -426,6 +434,8 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
         is_corpus = base_fts_corpus or sidecar_fts_corpus
         extra = ({} if _expected_observation is None or is_corpus else
                  {'_expected_observation': _expected_observation})
+        if _only is not None:
+            extra['_only'] = _only
         page = capture(snapshot, endpoint=endpoint, decision=decision, after=after, deadline=deadline, **extra)
         if _expected_observation is not None and is_corpus:
             values.identifier(_expected_observation)
@@ -668,8 +678,7 @@ def stage_fts_corpus_bounded(store, *, worktree_id, endpoint, decision, observat
                                           cursor_observation=corpus_observation)
         if not expected['complete']:
             raise IndexContractError('migration_commitment_mismatch')
-        progress = _initial_corpus(identity, commitment['verification_digest'],
-                                   'sidecar' if sidecar else 'base', corpus_observation)
+        progress = _initial_corpus(identity, 'sidecar' if sidecar else 'base', corpus_observation)
     cursor, corpus = None, []
     while True:
         page = stage_corpus_page(store, worktree_id=worktree_id, endpoint=endpoint,
@@ -1196,6 +1205,8 @@ _INTENT_KEYS = frozenset(('schema', 'migration_id', 'project', 'state', 'state_n
 _SHADOW_STATES = ('copying', 'caught_up')
 # Source changes proved by a later step; the copy restarts from a fresh scan.
 _SHADOW_RESTART_REASONS = frozenset(('migration_snapshot_changed', 'migration_source_revision_unproved'))
+# Writer races on the reader store itself; the next step re-proves the source.
+_SHADOW_RETRY_REASONS = frozenset(('reader_store_changed',))
 
 
 def _shadow_state(intent):
@@ -1376,8 +1387,8 @@ def current_cut_identity(endpoint, *, decision, deadline):
             return _cut_identity(owners[0].db, None if owners[1] is None else owners[1].db, decision)
 
 
-def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
-    """Classify receipt continuity only; every change still triggers full recopy."""
+def _revision_evidence(snapshot, *, endpoint, decision, previous, deadline):
+    """Classify receipt continuity and return the validated base receipts after it."""
     import laya_publication_revision as revisions
     if not any(item is snapshot and bound is endpoint and saved == decision
                for item, bound, saved in readers._observations.get()):
@@ -1385,7 +1396,7 @@ def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
     readers._bound(endpoint)
     current = _source_revision(snapshot)
     old_rev, new_rev = previous['base_revision'], current['base_revision']
-    base = 'unavailable'
+    base, receipts = 'unavailable', None
     if old_rev is not None and new_rev is not None:
         if new_rev < old_rev:
             base = 'gap'
@@ -1401,7 +1412,7 @@ def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
             base = 'gap'
             if len(rows) == new_rev - old_rev + 1:
                 prior_head = previous['generation']
-                valid = True
+                valid, items = True, []
                 for offset, (key, raw) in enumerate(rows):
                     if time.monotonic() >= deadline:
                         raise IndexContractError('reader_snapshot_deadline')
@@ -1422,12 +1433,14 @@ def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
                                      and item['exclusionCount'] >= 0 and isinstance(digest, str)
                                      and re.fullmatch(r'[0-9a-f]{64}', digest) is not None)
                             prior_head = item['after']
+                            items.append(item)
                     except (KeyError, TypeError, ValueError):
                         valid = False
                     if not valid:
                         break
                 if valid and prior_head == current['generation']:
                     base = 'unchanged' if new_rev == old_rev else 'continuous'
+                    receipts = items
     old_side, new_side = previous['sidecar_revision'], current['sidecar_revision']
     sidecar = 'unavailable'
     if previous['sidecar_kind'] == current['sidecar_kind'] == 'sealed':
@@ -1435,7 +1448,178 @@ def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
                    'unchanged' if new_side == old_side else 'advanced')
     elif previous['sidecar_kind'] == current['sidecar_kind'] == 'absent':
         sidecar = 'unchanged'
-    return {'base': base, 'sidecar': sidecar}
+    return {'base': base, 'sidecar': sidecar}, receipts
+
+
+def _revision_check(snapshot, *, endpoint, decision, previous, deadline):
+    """Classify receipt continuity only; this check alone authorizes no reuse."""
+    return _revision_evidence(snapshot, endpoint=endpoint, decision=decision,
+                              previous=previous, deadline=deadline)[0]
+
+
+class _ReceiptUnresolved(Exception):
+    """The writer receipts do not name every changed path; recapture fully."""
+
+
+def _revision_changes(snapshot, *, decision, previous, check, receipts, deadline):
+    """Name the paths behind continuous writer receipts, or ``None``.
+
+    Every path is proved against the writer's own ``changeDigest``:
+    exclusions against the append-only exclusion rows, sidecar transitions
+    against the row digests, and a base head transition by the membership
+    difference of its two immutable generations. Extra paths only cost
+    replay; an unexplained receipt falls back to the full recapture.
+    """
+    import laya_publication_revision as revisions
+    if (check['base'] not in ('unchanged', 'continuous') or receipts is None
+            or check['sidecar'] not in ('unchanged', 'advanced')):
+        return None
+    base, _, _, side = snapshot.connections
+    scope = decision['scopeId']
+    prefixes = tuple(name + '/' for name in wiki_index_roots(decision['collections']))
+    effective, base_paths, side_paths = set(), set(), set()
+
+    def tick():
+        if time.monotonic() >= deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        if len(effective | base_paths | side_paths) > MAX_CATCHUP_PATHS:
+            raise _ReceiptUnresolved()
+
+    def digest_of(value):
+        raw = json.dumps(value, ensure_ascii=True, separators=(',', ':'), allow_nan=False)
+        return hashlib.sha256(raw.encode('ascii')).hexdigest()
+
+    def hex_or_none(value):
+        return value is None or (isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value) is not None)
+
+    try:
+        with readers._validation_deadline(snapshot.connections, deadline):
+            if check['sidecar'] == 'advanced':
+                old_rev = previous['sidecar_revision']
+                new_rev = snapshot.sidecar['revision']
+                if side is None or new_rev - old_rev > MAX_CATCHUP_PATHS:
+                    return None
+                rows = side.execute('SELECT revision,value FROM publication_revisions '
+                                    'WHERE revision>? AND revision<=? ORDER BY revision',
+                                    (old_rev, new_rev)).fetchall()
+                if [row[0] for row in rows] != list(range(old_rev + 1, new_rev + 1)):
+                    return None
+                items = []
+                for _, raw in rows:
+                    item = json.loads(raw)
+                    if (not isinstance(item, dict) or item.get('component') != 'sidecar'
+                            or not hex_or_none(item.get('before')) or not hex_or_none(item.get('after'))
+                            or item.get('before') == item.get('after')
+                            or not isinstance(item.get('changeDigest'), str)):
+                        return None
+                    items.append(item)
+                known = {}
+                for row in side.execute('SELECT path,hash,title,body,profile_id,chunk_count,scan_id FROM docs'):
+                    if time.monotonic() >= deadline:
+                        raise IndexContractError('reader_snapshot_deadline')
+                    known[revisions._sidecar_row_digest(tuple(row))] = row[0]
+                for item in reversed(items):
+                    path = known.get(item['after']) if item['after'] is not None else None
+                    if path is None:
+                        # A deleted row names its path only through the digest.
+                        candidates = sorted(side_paths) + [row[0] for row in base.execute(
+                            'SELECT path FROM membership WHERE gen=? AND scope=? ORDER BY path',
+                            (snapshot.published[0], scope))]
+                        path = next((candidate for candidate in candidates if digest_of(
+                            ['sidecar', candidate, item['before'], item['after']]) == item['changeDigest']), None)
+                    if path is None or digest_of(['sidecar', path, item['before'],
+                                                  item['after']]) != item['changeDigest']:
+                        return None
+                    side_paths.add(path)
+                    if item['before'] is not None:
+                        known[item['before']] = path
+                    tick()
+            exclusion_digests = {}
+            for item in receipts:
+                tick()
+                if item['before'] != item['after']:
+                    if item['before'] is None:
+                        return None
+                    gens = base.execute('SELECT COUNT(*) FROM generations WHERE scope=? AND gen IN (?,?)',
+                                        (scope, item['before'], item['after'])).fetchone()[0]
+                    if gens != 2:
+                        return None
+                    diff = base.execute(
+                        'SELECT path FROM (SELECT path,hash,eligible FROM membership WHERE gen=? AND scope=? '
+                        'EXCEPT SELECT path,hash,eligible FROM membership WHERE gen=? AND scope=?) '
+                        'UNION SELECT path FROM (SELECT path,hash,eligible FROM membership WHERE gen=? AND scope=? '
+                        'EXCEPT SELECT path,hash,eligible FROM membership WHERE gen=? AND scope=?) LIMIT ?',
+                        (item['before'], scope, item['after'], scope, item['after'], scope,
+                         item['before'], scope, MAX_CATCHUP_PATHS + 1)).fetchall()
+                    for (path,) in diff:
+                        # Raw members are outside the wiki-only corpus proof.
+                        if type(path) is not str or not path.startswith(prefixes):
+                            return None
+                        base_paths.add(path)
+                    continue
+                head = item['after']
+                if head not in exclusion_digests:
+                    table = {}
+                    for kind, value in base.execute('SELECT kind,value FROM exclusions WHERE scope=?', (scope,)):
+                        if time.monotonic() >= deadline:
+                            raise IndexContractError('reader_snapshot_deadline')
+                        table[digest_of(['exclusion', scope, head, kind, value])] = (kind, value)
+                    exclusion_digests[head] = table
+                found = exclusion_digests[head].get(item['changeDigest'])
+                if found is None:
+                    return None
+                kind, value = found
+                if kind == 'path':
+                    hidden = ({value} if value in side_paths or base.execute(
+                        'SELECT 1 FROM membership WHERE gen=? AND scope=? AND path=?',
+                        (head, scope, value)).fetchone() or (side is not None and side.execute(
+                        'SELECT 1 FROM docs WHERE path=?', (value,)).fetchone()) else set())
+                else:
+                    hidden = {row[0] for row in base.execute(
+                        'SELECT path FROM membership WHERE hash=? AND gen=? AND scope=? LIMIT ?',
+                        (value, head, scope, MAX_CATCHUP_PATHS + 1))}
+                    if side is not None:
+                        hidden |= {row[0] for row in side.execute(
+                            'SELECT path FROM docs WHERE hash=? LIMIT ?', (value, MAX_CATCHUP_PATHS + 1))}
+                effective |= hidden
+            effective |= base_paths | side_paths
+            tick()
+    except _ReceiptUnresolved:
+        return None
+    except (json.JSONDecodeError, TypeError, KeyError):
+        # Deadline and reader errors are ValueErrors too; only malformed
+        # receipt values fall back here.
+        return None
+    effective = {path for path in effective if _wiki_card_path(path, prefixes)}
+    return {'effective': sorted(effective), 'base': sorted(base_paths), 'sidecar': sorted(side_paths)}
+
+
+def _static_digest(endpoint, decision):
+    import laya_blob_values as values
+    return values.digest('memvane-shadow-static-v1', {'endpoint': endpoint.endpoint_id,
+                                                      'settings': endpoint.record['settings'],
+                                                      'decision': decision})
+
+
+def _scan_slot_exists(store, scan_id):
+    """A derived candidate build owns its scan id; a new source needs a new scan."""
+    with store._session() as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_slots'").fetchone() is None:
+            return False
+        return db.execute('SELECT 1 FROM generation_slots WHERE build_id=?', (scan_id,)).fetchone() is not None
+
+
+def _check_source_revision(source):
+    import laya_blob_values as values
+    values.exact(source, ('generation', 'base_revision', 'sidecar_kind', 'sidecar_revision'))
+    if (not isinstance(source['generation'], str) or not source['generation']
+            or source['sidecar_kind'] not in ('absent', 'legacy', 'sealed')
+            or (source['sidecar_kind'] == 'sealed') != (source['sidecar_revision'] is not None)):
+        raise IndexContractError('migration_intent_invalid')
+    if source['base_revision'] is not None:
+        values.integer(source['base_revision'])
+    if source['sidecar_revision'] is not None:
+        values.integer(source['sidecar_revision'])
 
 
 def _migration_intent(path, *, project, state, node, store):
@@ -1444,7 +1628,8 @@ def _migration_intent(path, *, project, state, node, store):
     intent = ledger._read_json(path)
     if (not isinstance(intent, dict) or not _INTENT_KEYS <= set(intent)
             or set(intent) - _INTENT_KEYS - {'verification', 'corpora', 'restart_required', 'published',
-                                            'prepared', 'revision_check', 'vectors'}
+                                            'prepared', 'revision_check', 'catch_up', 'static',
+                                            'vectors'}
             or intent['schema'] != 'memvane-shadow-migration-v1'
             or intent['project'] != str(project) or intent['state'] != str(state)
             or intent['state_node'] != journal._node(state)
@@ -1457,15 +1642,18 @@ def _migration_intent(path, *, project, state, node, store):
     values.identifier(intent['endpoint_id'])
     values.identifier(intent['observation'])
     source = intent['source_revision']
-    values.exact(source, ('generation', 'base_revision', 'sidecar_kind', 'sidecar_revision'))
-    if (not isinstance(source['generation'], str) or not source['generation']
-            or source['sidecar_kind'] not in ('absent', 'legacy', 'sealed')
-            or (source['sidecar_kind'] == 'sealed') != (source['sidecar_revision'] is not None)):
-        raise IndexContractError('migration_intent_invalid')
-    if source['base_revision'] is not None:
-        values.integer(source['base_revision'])
-    if source['sidecar_revision'] is not None:
-        values.integer(source['sidecar_revision'])
+    _check_source_revision(source)
+    if intent.get('static') is not None:
+        values.identifier(intent['static'])
+    catch_up = intent.get('catch_up')
+    if catch_up is not None:
+        values.exact(catch_up, ('migration_id', 'from', 'to', 'catch_ups', 'paths', 'digest'))
+        _check_source_revision(catch_up['from'])
+        values.integer(catch_up['catch_ups'], 1)
+        values.integer(catch_up['paths'], 0)
+        values.identifier(catch_up['digest'])
+        if catch_up['migration_id'] != intent['migration_id'] or catch_up['to'] != source:
+            raise IndexContractError('migration_intent_invalid')
     revision_check = intent.get('revision_check')
     if revision_check is not None:
         values.exact(revision_check, ('base', 'sidecar'))
@@ -1525,10 +1713,28 @@ def _migration_intent(path, *, project, state, node, store):
     return intent
 
 
+# Page commitments are hash chains over page contents and the next path only;
+# the source observation is bound beside them (progress observation and
+# cursor), never inside the chain. ``marks`` keeps [next path, digest, rows]
+# after every non-final page, so a receipt catch-up can keep the unchanged
+# prefix and a fresh pass over the same source reproduces the same chain.
+_PROGRESS_KEYS = ('observation', 'scan_id', 'batch_limit', 'byte_limit',
+                  'cursor', 'digest', 'pages', 'rows', 'complete', 'marks')
+
+
+def _progress_current(progress):
+    """True for a progress this bundle can resume; others are recomputed."""
+    return (isinstance(progress, dict) and set(progress) == set(_PROGRESS_KEYS)
+            and progress['batch_limit'] == MAX_BATCH and progress['byte_limit'] == MAX_BATCH_BYTES)
+
+
 def _verification_progress(progress, intent, *, check_limits=True, cursor_observation=None):
     import laya_blob_values as values
-    values.exact(progress, ('observation', 'scan_id', 'batch_limit', 'byte_limit',
-                            'cursor', 'digest', 'pages', 'rows', 'complete'))
+    if not check_limits and isinstance(progress, dict) and 'marks' not in progress:
+        # Written before page marks existed; the caller restarts it.
+        values.exact(progress, _PROGRESS_KEYS[:-1])
+        return progress
+    values.exact(progress, _PROGRESS_KEYS)
     values.identifier(progress['digest'])
     values.integer(progress['pages'], 1, MAX_DOCS + 1)
     values.integer(progress['rows'], 0, MAX_DOCS)
@@ -1547,6 +1753,20 @@ def _verification_progress(progress, intent, *, check_limits=True, cursor_observ
                 or cursor['observation'] != (intent['observation'] if cursor_observation is None
                                                else cursor_observation)))):
         raise IndexContractError('migration_intent_invalid')
+    marks = progress['marks']
+    if type(marks) is not list or len(marks) != progress['pages'] - int(progress['complete']):
+        raise IndexContractError('migration_intent_invalid')
+    previous_path, previous_rows = None, 0
+    for mark in marks:
+        if (type(mark) is not list or len(mark) != 3 or type(mark[0]) is not str
+                or not _valid_relative_path(mark[0])
+                or (previous_path is not None and mark[0] <= previous_path)
+                or type(mark[2]) is not int or not previous_rows <= mark[2] <= progress['rows']):
+            raise IndexContractError('migration_intent_invalid')
+        values.identifier(mark[1])
+        previous_path, previous_rows = mark[0], mark[2]
+    if cursor is not None and marks[-1] != [cursor['after'], progress['digest'], progress['rows']]:
+        raise IndexContractError('migration_intent_invalid')
     return progress
 
 
@@ -1554,44 +1774,70 @@ def _initial_verification(intent):
     import laya_blob_values as values
     return {'observation': intent['observation'], 'scan_id': intent['provenance_scan']['id'],
         'batch_limit': MAX_BATCH, 'byte_limit': MAX_BATCH_BYTES,
-        'cursor': None, 'digest': values.digest('memvane-shadow-verification-v1', {
-            'migration': intent['migration_id'], 'observation': intent['observation'],
-            'scan': intent['provenance_scan'], 'batch_limit': MAX_BATCH,
-            'byte_limit': MAX_BATCH_BYTES}), 'pages': 0, 'rows': 0, 'complete': False}
+        'cursor': None, 'digest': values.digest('memvane-shadow-verification-v2', {
+            'migration': intent['migration_id'], 'scan': intent['provenance_scan'],
+            'batch_limit': MAX_BATCH, 'byte_limit': MAX_BATCH_BYTES}),
+        'pages': 0, 'rows': 0, 'complete': False, 'marks': []}
+
+
+def _fold_page(progress, domain, content, next_cursor, rows):
+    import laya_blob_values as values
+    if rows > MAX_DOCS or progress['pages'] >= MAX_DOCS + 1:
+        raise IndexContractError('migration_membership_limit')
+    after = None if next_cursor is None else next_cursor['after']
+    digest = values.digest(domain, {'previous': progress['digest'], **content, 'next': after})
+    return {**progress, 'cursor': next_cursor, 'pages': progress['pages'] + 1,
+        'rows': rows, 'complete': next_cursor is None, 'digest': digest,
+        'marks': progress['marks'] + ([] if after is None else [[after, digest, rows]])}
 
 
 def _fold_verification(progress, page):
-    import laya_blob_values as values
-    rows = progress['rows'] + len(page['inventory'])
-    if rows > MAX_DOCS or progress['pages'] >= MAX_DOCS + 1:
-        raise IndexContractError('migration_membership_limit')
-    return {**progress, 'cursor': page['next'], 'pages': progress['pages'] + 1,
-        'rows': rows, 'complete': page['next'] is None,
-        'digest': values.digest('memvane-shadow-verification-page-v1', {
-            'previous': progress['digest'], 'inventory': page['inventory'],
-            'trusted': page['trusted'], 'next': page['next']})}
+    return _fold_page(progress, 'memvane-shadow-verification-page-v2',
+                      {'inventory': page['inventory'], 'trusted': page['trusted']},
+                      page['next'], progress['rows'] + len(page['inventory']))
 
 
-def _initial_corpus(intent, verification_digest, key, corpus_observation):
+def _initial_corpus(intent, key, corpus_observation):
     import laya_blob_values as values
     return {'observation': intent['observation'], 'scan_id': intent['provenance_scan']['id'],
         'batch_limit': MAX_BATCH, 'byte_limit': MAX_BATCH_BYTES,
-        'cursor': None, 'pages': 0, 'rows': 0, 'complete': False,
-        'digest': values.digest('memvane-shadow-corpus-v1', {
-            'migration': intent['migration_id'], 'verification': verification_digest,
-            'corpus': key, 'observation': corpus_observation,
+        'cursor': None, 'pages': 0, 'rows': 0, 'complete': False, 'marks': [],
+        'digest': values.digest('memvane-shadow-corpus-v2', {
+            'migration': intent['migration_id'], 'corpus': key,
             'batch_limit': MAX_BATCH, 'byte_limit': MAX_BATCH_BYTES})}
 
 
 def _fold_corpus(progress, page):
-    import laya_blob_values as values
-    rows = progress['rows'] + len(page['corpus'])
-    if rows > MAX_DOCS or progress['pages'] >= MAX_DOCS + 1:
-        raise IndexContractError('migration_membership_limit')
-    return {**progress, 'cursor': page['next'], 'pages': progress['pages'] + 1,
-        'rows': rows, 'complete': page['next'] is None,
-        'digest': values.digest('memvane-shadow-corpus-page-v1', {
-            'previous': progress['digest'], 'corpus': page['corpus'], 'next': page['next']})}
+    return _fold_page(progress, 'memvane-shadow-corpus-page-v2', {'corpus': page['corpus']},
+                      page['next'], progress['rows'] + len(page['corpus']))
+
+
+def _corpus_observation(key, observation):
+    prefix = 'memvane-sidecar-fts-corpus-v1:' if key == 'sidecar' else 'memvane-base-fts-corpus-v1:'
+    return hashlib.sha256((prefix + observation).encode('ascii')).hexdigest()
+
+
+def _replay_progress(progress, first, observation, cursor_observation):
+    """Rebind a page chain to a new observation, keeping pages before ``first``.
+
+    A kept page must end before ``first`` and so must the page after it: a
+    page boundary also depends on the next path (count and byte limits), so the
+    last page ending before ``first`` is replayed too. ``None`` restarts it.
+    """
+    if progress is None:
+        return None
+    if first is None:
+        cursor = progress['cursor']
+        return {**progress, 'observation': observation,
+                'cursor': None if cursor is None else {'after': cursor['after'],
+                                                       'observation': cursor_observation}}
+    kept = [mark for mark in progress['marks'] if mark[0] < first][:-1]
+    if not kept:
+        return None
+    after, digest, rows = kept[-1]
+    return {**progress, 'observation': observation, 'digest': digest, 'rows': rows,
+            'pages': len(kept), 'complete': False, 'marks': kept,
+            'cursor': {'after': after, 'observation': cursor_observation}}
 
 
 def begin_migration(store, *, worktree_id, project, executing_root, deadline):
@@ -1634,6 +1880,7 @@ def begin_migration(store, *, worktree_id, project, executing_root, deadline):
                     'candidate_node': node, 'candidate_incarnation': store._incarnation,
                     'worktree_id': worktree_id, 'phase': 'copying', 'cursor': None,
                     'verification': None, 'corpora': None, 'restart_required': False,
+                    'static': _static_digest(endpoint, decision),
                     'provenance_scan': {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}}
                 intent = _stamp(intent)
                 trace['migration'] = intent['migration_id']
@@ -1676,30 +1923,84 @@ def advance_migration(store, *, project, executing_root, deadline):
             trace['stage'] = 'snapshot'
             with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as snapshot:
                 def restart(observation):
+                    """Catch up from continuous writer receipts, else recapture fully.
+
+                    The catch-up keeps the scan and every page commitment before
+                    the first changed path, stages the changed paths the copy
+                    already passed, and binds the replayed revision range in
+                    ``catch_up``. That receipt is not parity: the candidate
+                    build still re-proves every page against the live source.
+                    """
                     import uuid
-                    check = _revision_check(snapshot, endpoint=endpoint, decision=decision,
-                                            previous=intent['source_revision'], deadline=deadline)
-                    if check['base'] == 'gap':
-                        trace['reason'] = 'revision_gap'
-                    return _stamp({**intent, 'observation': observation, 'cursor': None, 'phase': 'copying',
-                            'source_revision': _source_revision(snapshot),
-                            'revision_check': check,
-                            'verification': None, 'corpora': None, 'restart_required': False, 'published': None,
-                            'prepared': None,
-                            'provenance_scan': {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}})
+                    import laya_blob_values as values
+                    check, receipts = _revision_evidence(snapshot, endpoint=endpoint, decision=decision,
+                                                         previous=intent['source_revision'], deadline=deadline)
+                    current = _source_revision(snapshot)
+                    static = _static_digest(endpoint, decision)
+                    corpora = intent.get('corpora')
+                    progresses = [intent.get('verification')] + ([] if corpora is None else
+                                                                  [corpora['base'], corpora['sidecar']])
+                    changes = None
+                    if (intent.get('static') == static
+                            and all(item is None or _progress_current(item) for item in progresses)
+                            and not _scan_slot_exists(store, intent['provenance_scan']['id'])):
+                        changes = _revision_changes(snapshot, decision=decision,
+                            previous=intent['source_revision'], check=check, receipts=receipts,
+                            deadline=deadline)
+                    if changes is None:
+                        if check['base'] == 'gap':
+                            trace['reason'] = 'revision_gap'
+                        return _stamp({**intent, 'observation': observation, 'cursor': None, 'phase': 'copying',
+                                'source_revision': current, 'revision_check': check, 'static': static,
+                                'verification': None, 'corpora': None, 'restart_required': False,
+                                'published': None, 'prepared': None, 'catch_up': None,
+                                'provenance_scan': {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}}), 'restarted'
+                    trace['stage'] = 'catch_up'
+                    cursor = intent['cursor']
+                    # Paths after the copy cursor are copied by the remaining pages.
+                    targets = [path for path in changes['effective'] if intent['phase'] == 'copied'
+                               or (cursor is not None and path <= cursor['after'])]
+                    after, only = None, frozenset(targets)
+                    while targets:
+                        batch = import_wiki_batch(store, worktree_id=intent['worktree_id'], snapshot=snapshot,
+                            endpoint=endpoint, decision=decision, after=after, deadline=deadline,
+                            provenance_scan=intent['provenance_scan'], _expected_observation=observation,
+                            _only=only)
+                        after = batch['next']
+                        if after is None:
+                            break
+                    if corpora is not None:
+                        corpora = {**corpora, **{key: _replay_progress(corpora[key], (changes[key] or [None])[0],
+                                                                       observation, _corpus_observation(key, observation))
+                                                 for key in ('base', 'sidecar')}}
+                    verification = _replay_progress(intent.get('verification'), (changes['effective'] or [None])[0],
+                                                    observation, observation)
+                    previous = intent.get('catch_up')
+                    touched = set(changes['effective']) | set(changes['base']) | set(changes['sidecar'])
+                    receipt = {'migration_id': intent['migration_id'],
+                               'from': intent['source_revision'] if previous is None else previous['from'],
+                               'to': current, 'catch_ups': 1 if previous is None else previous['catch_ups'] + 1,
+                               'paths': len(touched) + (0 if previous is None else previous['paths']),
+                               'digest': values.digest('memvane-shadow-catch-up-v1', {
+                                   'previous': None if previous is None else previous['digest'],
+                                   'from': intent['source_revision'], 'to': current, 'changes': changes})}
+                    return _stamp({**intent, 'observation': observation, 'source_revision': current,
+                            'revision_check': check, 'restart_required': False,
+                            'cursor': None if cursor is None else {'after': cursor['after'], 'observation': observation},
+                            'verification': verification, 'corpora': corpora, 'published': None, 'prepared': None,
+                            'catch_up': receipt}), 'catch_up'
                 if intent['phase'] == 'copied':
                     observed = capture_effective(snapshot, endpoint=endpoint, decision=decision,
                                                  after=None, deadline=deadline)
                     if observed['observation'] != intent['observation']:
-                        updated, outcome = restart(observed['observation']), 'restarted'
+                        updated, outcome = restart(observed['observation'])
                     elif _source_revision(snapshot) != intent['source_revision']:
                         raise IndexContractError('migration_source_revision_unproved')
                     else:
                         progress = intent.get('verification')
                         if progress is not None:
                             _verification_progress(progress, intent, check_limits=False)
-                        if progress is not None and (progress['batch_limit'] != MAX_BATCH
-                                                     or progress['byte_limit'] != MAX_BATCH_BYTES):
+                        if progress is not None and not _progress_current(progress):
                             updated, outcome = _stamp({**intent, 'verification': None, 'corpora': None,
                                                        'restart_required': False, 'published': None,
                                                        'prepared': None}), 'restarted'
@@ -1716,8 +2017,8 @@ def advance_migration(store, *, project, executing_root, deadline):
                             _expected_observation=intent['observation'])
                     except _MigrationObservationChanged as changed:
                         # The bounded, pinned capture proved a different source;
-                        # replay all paths and never publish the stale cursor.
-                        updated, outcome = restart(changed.observation), 'restarted'
+                        # catch up or replay all paths, never publish the stale cursor.
+                        updated, outcome = restart(changed.observation)
                     else:
                         updated = {**intent, 'cursor': batch['next'],
                                    'phase': 'copied' if batch['next'] is None else 'copying'}
@@ -1785,7 +2086,12 @@ def advance_verification(store, *, project, executing_root, deadline):
                 page = verify_migration_page(store, worktree_id=intent['worktree_id'], endpoint=endpoint,
                     decision=decision, provenance_scan=intent['provenance_scan'],
                     observation=intent['observation'], cursor=progress['cursor'], deadline=deadline)
-                updated = {**intent, 'verification': _fold_verification(progress, page)}
+                folded = _fold_verification(progress, page)
+                updated = {**intent, 'verification': folded}
+                if folded['complete'] and intent.get('corpora') is not None:
+                    # Corpus chains do not depend on the verification chain; a
+                    # catch-up kept them, so the completed mapping rebinds them.
+                    updated['corpora'] = {**intent['corpora'], 'verification_digest': folded['digest']}
         if time.monotonic() >= deadline:
             raise IndexContractError('reader_snapshot_deadline')
         if updated != intent:
@@ -1843,7 +2149,7 @@ def advance_corpus(store, *, project, executing_root, sidecar, deadline):
         corpus_observation = hashlib.sha256((prefix + intent['observation']).encode('ascii')).hexdigest()
         progress = corpora[key]
         if progress is None:
-            progress = _initial_corpus(intent, verification['digest'], key, corpus_observation)
+            progress = _initial_corpus(intent, key, corpus_observation)
         else:
             _verification_progress(progress, intent, cursor_observation=corpus_observation)
         trace['stage'] = 'endpoint'
@@ -2316,36 +2622,40 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
     def reread():
         return _migration_intent(path, project=project, state=state, node=node, store=store)
 
+    def retryable(stage, run):
+        # A NormalWriter admission that changes the reader store while this
+        # step resolves its endpoint proves no source change, and the intent
+        # was not written; report a bounded retry rather than an error.
+        try:
+            return step(stage, run())
+        except ValueError as exc:
+            if str(exc) in _SHADOW_RETRY_REASONS:
+                return step('retry', reread())
+            raise
+
     if intent['phase'] == 'copying':
-        return step('copy', advance_migration(store, **args))
+        return retryable('copy', lambda: advance_migration(store, **args))
     if intent.get('restart_required', False):
-        return step('restart', advance_migration(store, **args))
+        return retryable('restart', lambda: advance_migration(store, **args))
     verification = intent.get('verification')
     if verification is not None:
         _verification_progress(verification, intent, check_limits=False)
-        if (verification['batch_limit'] != MAX_BATCH or
-                verification['byte_limit'] != MAX_BATCH_BYTES):
-            return step('restart', advance_migration(store, **args))
+        if not _progress_current(verification):
+            return retryable('restart', lambda: advance_migration(store, **args))
     corpora = intent.get('corpora')
+    if corpora is not None:
+        # A receipt catch-up may keep corpus chains while the mapping chain
+        # replays; the completed mapping rebinds them (advance_verification).
+        values.exact(corpora, ('verification_digest', 'base', 'sidecar'))
+        for key in ('base', 'sidecar'):
+            if corpora[key] is not None:
+                _verification_progress(corpora[key], intent,
+                                       cursor_observation=_corpus_observation(key, intent['observation']))
     if verification is None or not verification['complete']:
-        if corpora is not None:
-            raise IndexContractError('migration_intent_invalid')
         stage, run = 'verification', lambda: advance_verification(store, **args)
     else:
-        if corpora is not None:
-            values.exact(corpora, ('verification_digest', 'base', 'sidecar'))
-            if corpora['verification_digest'] != verification['digest']:
-                raise IndexContractError('migration_intent_invalid')
-            for key in ('base', 'sidecar'):
-                progress = corpora[key]
-                if progress is not None:
-                    prefix = ('memvane-sidecar-fts-corpus-v1:' if key == 'sidecar'
-                              else 'memvane-base-fts-corpus-v1:')
-                    observed = hashlib.sha256((prefix + intent['observation']).encode('ascii')).hexdigest()
-                    _verification_progress(progress, intent, cursor_observation=observed)
-            if corpora['sidecar'] is not None and (corpora['base'] is None or
-                                                  not corpora['base']['complete']):
-                raise IndexContractError('migration_intent_invalid')
+        if corpora is not None and corpora['verification_digest'] != verification['digest']:
+            raise IndexContractError('migration_intent_invalid')
         prepared, published = intent.get('prepared'), intent.get('published')
         if corpora is None or corpora['base'] is None or not corpora['base']['complete']:
             stage, run = 'base_corpus', lambda: advance_corpus(store, sidecar=False, **args)
@@ -2377,7 +2687,7 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
                 return reread()
             stage = 'publish'
     try:
-        return step(stage, run())
+        return retryable(stage, run)
     except (IndexContractError, values.BlobStoreError) as exc:
         reason = str(exc)
         if reason not in _SHADOW_RESTART_REASONS:

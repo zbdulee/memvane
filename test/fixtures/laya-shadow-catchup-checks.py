@@ -184,9 +184,15 @@ class CatchupChecks(unittest.TestCase):
             else:
                 self.assertEqual(copied['observation'], started['observation'])
                 self.assertEqual(copied['phase'], 'copying')
+            before_restart = json.loads((case.state / 'shadow-migration-intent.json').read_text())
             restarted = migration.advance_migration(store, project=case.project,
                 executing_root=case.plugin, deadline=time.monotonic() + 30)
             self.assertEqual(restarted['phase'], 'copying')
+            # No base receipt existed when this copy began, so the first writer
+            # commit cannot be named by receipts: full recopy with a new scan.
+            self.assertIsNone(before_restart['source_revision']['base_revision'])
+            self.assertEqual(restarted['revision_check']['base'], 'unavailable')
+            self.assertIsNone(restarted['catch_up'])
             self.assertIsNone(restarted['cursor'])
             self.assertNotEqual(restarted['observation'], started['observation'])
             self.assertNotEqual(restarted['provenance_scan']['id'], started['provenance_scan']['id'])
@@ -753,7 +759,10 @@ class CatchupChecks(unittest.TestCase):
                     self.assertEqual(runtime.index.exclude(writer.scope_id, path=excluded), 'excluded')
             changed = migration.advance_shadow(store, project=case.project,
                 executing_root=case.plugin, deadline=time.monotonic() + 30)['intent']
+            # The first NormalWriter commit creates the base baseline, so no
+            # receipt names it yet: this one is still a full recopy.
             self.assertIsNone(changed['cursor'])
+            self.assertIsNone(changed['catch_up'])
             self.assertNotEqual(changed['observation'], started['observation'])
             events = [json.loads(line) for line in (case.state / 'events.jsonl').read_text().splitlines()]
             restarted = [event for event in events if event.get('event') == 'migration.shadow'
@@ -929,7 +938,11 @@ class CatchupChecks(unittest.TestCase):
                 restarted = migration.advance_shadow(store, project=case.project,
                     executing_root=case.plugin, deadline=time.monotonic() + 30)
             self.assertEqual(restarted['stage'], 'restart')
+            # This fixture's sidecar is an unsealed legacy image without
+            # receipts, so even a continuous base receipt cannot be replayed.
+            self.assertEqual(restarted['intent']['revision_check'], {'base': 'continuous', 'sidecar': 'unavailable'})
             self.assertEqual(restarted['intent']['phase'], 'copying')
+            self.assertIsNone(restarted['intent']['catch_up'])
             self.assertIsNone(restarted['intent']['verification'])
             self.assertIsNone(restarted['intent']['corpora'])
             self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
@@ -1308,10 +1321,18 @@ class CatchupChecks(unittest.TestCase):
                     self.assertIsNone(view.head(handle)['gen_id'])
             changed = migration.advance_migration(store, project=case.project,
                 executing_root=case.plugin, deadline=time.monotonic() + 30)
-            self.assertEqual(changed['phase'], 'copying')
-            self.assertIsNone(changed['cursor'])
             self.assertNotEqual(changed['observation'], started['observation'])
-            self.assertNotEqual(changed['provenance_scan']['id'], started['provenance_scan']['id'])
+            if changed['revision_check']['base'] in ('continuous', 'unchanged'):
+                # Receipts name the published sidecar row: catch up in place.
+                self.assertEqual(changed['phase'], 'copied')
+                self.assertEqual(changed['revision_check']['sidecar'], 'advanced')
+                self.assertEqual(changed['provenance_scan'], started['provenance_scan'])
+                self.assertIsNotNone(changed['catch_up'])
+            else:
+                self.assertEqual(changed['phase'], 'copying')
+                self.assertIsNone(changed['cursor'])
+                self.assertIsNone(changed['catch_up'])
+                self.assertNotEqual(changed['provenance_scan']['id'], started['provenance_scan']['id'])
             for _ in range(5):
                 changed = migration.advance_migration(store, project=case.project,
                     executing_root=case.plugin, deadline=time.monotonic() + 30)
@@ -1384,6 +1405,279 @@ class CatchupChecks(unittest.TestCase):
                             migration.compare_lexical_queries(snapshot, endpoint=endpoint, decision=decision,
                                 store=view, pin=None, queries=('heron',), deadline=time.monotonic() + 10)
 
+    def test_writer_receipts_catch_up_only_changed_paths(self):
+        normal_spec = importlib.util.spec_from_file_location(
+            'shadow_receipt_seed', HERE / 'laya-normal-writer-connections-checks.py')
+        normal_module = importlib.util.module_from_spec(normal_spec)
+        normal_spec.loader.exec_module(normal_module)
+        normal = normal_module.NormalWriterConnectionChecks('runTest')
+        seed_module = normal_module
+        for _ in range(6):
+            seed_module = seed_module.existing
+        def remove_completed_rows(seed):
+            # Two completed rows leave the sidecar: the first publication seals
+            # it before the migration starts, the second is the receipt change.
+            with sqlite3.connect(seed.sidecar) as db:
+                seed.overlap_sidecar_rows = db.execute(
+                    'SELECT path,hash,title,body,profile_id FROM docs ORDER BY path LIMIT 2').fetchall()
+                for row in seed.overlap_sidecar_rows:
+                    db.execute('DELETE FROM docs_fts WHERE path=?', (row[0],))
+                    db.execute('DELETE FROM docs WHERE path=?', (row[0],))
+        with mock.patch.object(seed_module.MoveSealChecks, 'before_conversion',
+                               new=remove_completed_rows, create=True):
+            normal.setUp()
+        self.addCleanup(normal.doCleanups)
+        seed, case = normal.seed, normal.case
+        subprocess.run(['git', '-c', 'init.defaultBranch=main', 'init', '-q', str(case.project)],
+                       check=True, capture_output=True, timeout=10)
+        subprocess.run(['git', '-C', str(case.project), '-c', 'commit.gpgsign=false',
+                        '-c', 'core.hooksPath=' + os.devnull, '-c', 'user.name=Fixture',
+                        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+                        '-qm', 'fixture'], check=True, capture_output=True, timeout=10)
+        checkout = importlib.import_module('laya_checkout_view')
+        blobs = importlib.import_module('laya_blob_store')
+        views = importlib.import_module('laya_view_store')
+        migration = importlib.import_module('laya_shadow_migration')
+        readers = importlib.import_module('laya_reader_open')
+        incremental = importlib.import_module('laya_incremental_docs')
+        import laya_ledger_common as ledger
+        repository = checkout.register_repository(str(case.project))
+        worktree = checkout.register_worktree(str(case.project), repository)
+        candidate = case.state / 'receipt-shadow.sqlite'
+        blobs.BlobStore.create(candidate, project_root=str(case.project), repository=repository,
+                               worktree=worktree, scope_id=case.route['scopeId']).close()
+        store = views.ViewStore.open(candidate, repository=repository, scope_id=case.route['scopeId'])
+        self.addCleanup(store.close)
+        time.sleep(1.1)
+        intent_path = case.state / 'shadow-migration-intent.json'
+        self.assertEqual(len(seed.overlap_sidecar_rows), 2)
+        sealing, overlap = seed.overlap_sidecar_rows
+
+        def step():
+            return migration.advance_shadow(store, project=case.project,
+                                            executing_root=case.plugin, deadline=time.monotonic() + 60)
+
+        def exclude_with_fresh_writer(path):
+            normal.plan = normal.P.capture_writer_plan(case.project, executing_root=case.plugin)
+            with ExitStack() as owners:
+                writer, _ = normal.admission(owners)
+                with normal.runtime(writer) as runtime:
+                    normal.N.mark_new_write(writer)
+                    return runtime.index.exclude(writer.scope_id, path=path)
+
+        def publish_sidecar_row(row):
+            normal.plan = normal.P.capture_writer_plan(case.project, executing_root=case.plugin)
+            with ExitStack() as owners:
+                writer, _ = normal.admission(owners)
+                runtime = owners.enter_context(importlib.import_module('laya_index_runtime').LayaIndexRuntime(
+                    source_root={case.WIKI: str(case.auto / 'wiki')}, scope=case.route['scopeId'],
+                    db_path=str(case.db), queue_path=str(normal.queue),
+                    db_incarnation=case.route['dbIncarnation'], catalog_path=str(case.catalog),
+                    binding_store_path=str(case.store), wiki_only=True,
+                    connection_windows={role: normal.component(writer, role)
+                                        for role in ('base', 'queue', 'catalog', 'binding')}))
+                component = normal.component(writer, 'sidecar')
+                identity = importlib.import_module('laya_initial_build').read(case.state)['identity']
+                catalog = runtime.catalog.require_complete()
+                normal.N.mark_new_write(writer)
+                return incremental.publish_document(runtime, identity, catalog, *row,
+                    require_verified=False, coordination=component)['status']
+
+        def source_now():
+            with seed.lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin) as endpoint:
+                decision = seed.reader.journal.select_route(str(case.project), action='recall')
+                with readers.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 10) as snapshot:
+                    live = importlib.import_module('laya_v6_reader').query_v6_snapshot(
+                        snapshot, endpoint=endpoint, prompt='heron', decision=decision,
+                        provider=None, deadline=time.monotonic() + 10)
+                    return migration._source_revision(snapshot), [row['path'] for row in live.rows]
+
+        def run_until(predicate, limit=40):
+            stages = []
+            for _ in range(limit):
+                result = step()
+                stages.append(result['stage'])
+                if predicate(result):
+                    return result, stages
+            self.fail(stages)
+
+        def corpora_complete(result):
+            corpora = result['intent'].get('corpora')
+            return bool(result['intent'].get('verification') and result['intent']['verification']['complete']
+                        and corpora and corpora['base'] and corpora['base']['complete']
+                        and corpora['sidecar'] and corpora['sidecar']['complete'])
+
+        noise = iter(range(100))
+        with seed.authority(), mock.patch.object(migration, 'MAX_BATCH', 1):
+            # Both stores carry writer receipts before the copy starts.
+            self.assertEqual(publish_sidecar_row(sealing), 'published')
+            self.assertEqual(exclude_with_fresh_writer(
+                case.WIKI + '/bench/u2-noise-%02d.md' % next(noise)), 'excluded')
+            started = migration.begin_migration(store, worktree_id=worktree['worktreeId'],
+                project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
+            self.assertEqual(started['source_revision']['sidecar_kind'], 'sealed')
+            self.assertIsNotNone(started['source_revision']['base_revision'])
+            # Copy past the sidecar path that the writer is about to publish.
+            copied, _ = run_until(lambda result: result['intent']['cursor'] is not None
+                                  and result['intent']['cursor']['after'] >= overlap[0])
+            cursor = copied['intent']['cursor']['after']
+            # Two continuous NormalWriter revisions: one sidecar row and one
+            # irrelevant base exclusion inside the wiki prefix.
+            self.assertEqual(publish_sidecar_row(overlap), 'published')
+            self.assertEqual(exclude_with_fresh_writer(
+                case.WIKI + '/bench/u2-noise-%02d.md' % next(noise)), 'excluded')
+            current, live_paths = source_now()
+            self.assertEqual(current['base_revision'], started['source_revision']['base_revision'] + 1)
+            self.assertEqual(current['sidecar_revision'], started['source_revision']['sidecar_revision'] + 1)
+
+            # Condition 3: the old publications succeeded, the candidate write
+            # fails. Old search stays selected; nothing records a success.
+            before = intent_path.read_bytes()
+            original_session = store._session
+            def busy_session(*args, **kwargs):
+                if kwargs.get('write'):
+                    raise sqlite3.OperationalError('database is locked')
+                return original_session(*args, **kwargs)
+            with mock.patch.object(store, '_session', side_effect=busy_session):
+                with self.assertRaisesRegex(Exception, 'database is locked|candidate_busy'):
+                    step()
+            self.assertEqual(intent_path.read_bytes(), before)
+            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+            self.assertEqual(source_now(), (current, live_paths))
+
+            # Condition 1: the receipt catch-up keeps the copy cursor and scan,
+            # stages only the changed path and binds both revisions.
+            caught = step()
+            self.assertEqual(caught['stage'], 'copy')
+            intent = caught['intent']
+            self.assertEqual(intent['phase'], 'copying')
+            self.assertEqual(intent['cursor']['after'], cursor)
+            self.assertEqual(intent['cursor']['observation'], intent['observation'])
+            self.assertNotEqual(intent['observation'], copied['intent']['observation'])
+            self.assertEqual(intent['provenance_scan'], started['provenance_scan'])
+            self.assertEqual(intent['source_revision'], current)
+            self.assertEqual(intent['revision_check'], {'base': 'continuous', 'sidecar': 'advanced'})
+            receipt = intent['catch_up']
+            self.assertEqual((receipt['migration_id'], receipt['from'], receipt['to'], receipt['catch_ups']),
+                             (started['migration_id'], started['source_revision'], current, 1))
+            self.assertEqual(receipt['paths'], 1)
+            with store._session() as db:
+                self.assertIsNotNone(db.execute('SELECT 1 FROM wiki_blobs WHERE blob_sha=?',
+                                                (overlap[1],)).fetchone())
+
+            # Verification and both corpora complete under the new observation.
+            done, stages = run_until(corpora_complete)
+            self.assertNotIn('restart', stages)
+            verification = done['intent']['verification']
+            corpora = done['intent']['corpora']
+            members = verification['rows']
+            self.assertGreaterEqual(members, 3)
+            self.assertEqual(verification['pages'], members)
+
+            # Two more revisions after verification: exclude the last effective
+            # member and one irrelevant path. Only the final pages re-verify.
+            with seed.lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin) as endpoint:
+                decision = seed.reader.journal.select_route(str(case.project), action='recall')
+                with readers.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 10) as snapshot:
+                    effective = [row['path'] for row in migration.capture_effective(
+                        snapshot, endpoint=endpoint, decision=decision, after=None,
+                        deadline=time.monotonic() + 10, _all_inventory=True,
+                        include_ineligible=True)['members'] if row['eligible'] == 1 and not row['excluded']]
+            self.assertEqual(len(effective), members)
+            last = effective[-1]
+            self.assertEqual(exclude_with_fresh_writer(last), 'excluded')
+            self.assertEqual(exclude_with_fresh_writer(
+                case.WIKI + '/bench/u2-noise-%02d.md' % next(noise)), 'excluded')
+            pending = step()
+            self.assertEqual(pending['stage'], 'restart_pending')
+            pending_bytes = intent_path.read_bytes()
+
+            # Condition 4: a SIGKILL right before the receipt write; the rerun
+            # writes exactly the intent the killed step had computed.
+            payload = case.home / 'synthetic-shadow-receipt.json'
+            payload.write_text(json.dumps({'home': str(case.home),
+                'runtime': os.environ['MEMVANE_TEST_RUNTIME_ROOT'], 'plugin': str(case.plugin),
+                'proof': case.proof, 'candidate': str(candidate), 'repository': repository,
+                'worktree': worktree, 'scope': case.route['scopeId'], 'project': str(case.project),
+                'batch_limit': 1, 'mode': 'catchup-kill'}), encoding='utf8')
+            killed = subprocess.run([sys.executable, '-B', str(HERE / 'laya-shadow-crash-child.py'),
+                                     str(payload)], capture_output=True, text=True, timeout=90)
+            self.assertEqual(killed.returncode, -9, killed.stdout + killed.stderr)
+            marker = [line for line in killed.stdout.splitlines() if line.startswith('catchup-before-intent ')]
+            self.assertEqual(len(marker), 1, killed.stdout)
+            self.assertEqual(intent_path.read_bytes(), pending_bytes)
+            restarted = step()
+            self.assertEqual(restarted['stage'], 'restart')
+            self.assertEqual(restarted['intent'], json.loads(marker[0].split(' ', 1)[1]))
+            intent = restarted['intent']
+            self.assertEqual(intent['phase'], 'copied')
+            self.assertEqual(intent['provenance_scan'], started['provenance_scan'])
+            self.assertEqual(intent['catch_up']['from'], started['source_revision'])
+            self.assertEqual(intent['catch_up']['catch_ups'], 2)
+            # Exclusions never change the FTS corpora; their commitments stay.
+            for key in ('base', 'sidecar'):
+                self.assertTrue(intent['corpora'][key]['complete'])
+                self.assertEqual(intent['corpora'][key]['digest'], corpora[key]['digest'])
+            kept = intent['verification']
+            self.assertFalse(kept['complete'])
+            self.assertEqual(kept['pages'], members - 2)
+            self.assertEqual(kept['marks'], verification['marks'][:members - 2])
+            done, stages = run_until(corpora_complete)
+            self.assertEqual(stages.count('verification'), 1)
+            self.assertEqual(done['intent']['verification']['rows'], members - 1)
+
+            # A writer admission racing endpoint resolution is a bounded retry.
+            raced = importlib.import_module('laya_install_journal').JournalEvidenceError('reader_store_changed')
+            before = intent_path.read_bytes()
+            with mock.patch.object(migration.leases, 'resolve_endpoint', side_effect=raced):
+                retried = step()
+            self.assertEqual(retried['stage'], 'retry')
+            self.assertEqual(intent_path.read_bytes(), before)
+
+            # Condition 2: a missing intermediate receipt still forces the full
+            # recopy, before any candidate slot exists for the kept scan.
+            gap_path = next(path for path in effective[:-1] if path != overlap[0])
+            prior = done['intent']['source_revision']['base_revision']
+            self.assertEqual(exclude_with_fresh_writer(gap_path), 'excluded')
+            self.assertEqual(exclude_with_fresh_writer(
+                case.WIKI + '/bench/u2-noise-%02d.md' % next(noise)), 'excluded')
+            key = 'reader-revision:base:' + f'{prior + 1:020d}'
+            with sqlite3.connect(case.db) as db:
+                trigger = db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='schema_meta_delete_seal'").fetchone()[0]
+                db.execute('DROP TRIGGER schema_meta_delete_seal')
+                self.assertEqual(db.execute('DELETE FROM schema_meta WHERE key=?', (key,)).rowcount, 1)
+                db.execute(trigger)
+            self.assertEqual(store._db.execute('SELECT COUNT(*) FROM generation_slots').fetchone()[0], 0)
+            pending = step()
+            self.assertEqual(pending['stage'], 'restart_pending')
+            full = step()
+            self.assertEqual(full['stage'], 'restart')
+            self.assertEqual(full['intent']['revision_check']['base'], 'gap')
+            self.assertEqual(full['intent']['phase'], 'copying')
+            self.assertIsNone(full['intent']['cursor'])
+            self.assertIsNone(full['intent']['verification'])
+            self.assertIsNone(full['intent']['catch_up'])
+            self.assertNotEqual(full['intent']['provenance_scan'], started['provenance_scan'])
+
+            # The candidate build recomputes every commitment from the live
+            # source; the private head records the receipt it was proved at.
+            caught_up, stages = run_until(lambda result: result['migration_state'] == 'caught_up', limit=80)
+            self.assertEqual(stages[-2:], ['prepare', 'publish'])
+            again = step()
+            self.assertEqual(again['stage'], 'caught_up')
+            receipt = again['intent']['published']
+            current, live_paths = source_now()
+            self.assertEqual(receipt['source_revision'], current)
+            self.assertEqual(receipt['migration_id'], started['migration_id'])
+            with store._session() as db:
+                paths = [row[0] for row in db.execute('SELECT path FROM wiki_members WHERE gen_id=?',
+                                                      (receipt['generation'],))]
+            self.assertNotIn(last.split('/', 1)[1], paths)
+            self.assertNotIn(gap_path.split('/', 1)[1], paths)
+            self.assertIn(overlap[0].split('/', 1)[1], paths)
+            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+            self.assertTrue(store.verify_views())
 
 if __name__ == '__main__':
     unittest.main()
