@@ -33,7 +33,7 @@ APP_ID, FORMAT = 0x4D564231, b'memvane-git-blob-candidate-v3'
 SETTINGS = {'name': 'blobfixture'}
 CARD = b'# Shared Title\n\nA wiki card body.\n'
 BEE = b'# Bee\nsecond card\n'
-API = {'create', 'open', 'register_worktree', 'ingest_card', 'document', 'counts', 'close',
+API = {'create', 'open', 'register_worktree', 'ingest_card', 'ingest_attested_card', 'document', 'counts', 'close',
        'register_recipe', 'register_profile', 'put_chunk_set', 'chunks', 'vector_input_sha', 'embedding_inputs',
        'put_embedding_set', 'vectors', 'put_fingerprint', 'fingerprint', 'put_attestation',
        'attestation', 'verify'}
