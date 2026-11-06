@@ -13,6 +13,7 @@ import laya_reader_lease as leases
 import laya_reader_open as readers
 from laya_index_a import IndexContractError, _valid_relative_path
 from laya_index_host_route import wiki_index_roots
+from laya_blob_store import legacy_card_evidence
 from laya_incremental_docs_query import MAX_DOCS, _exclusions
 from source_text import is_wiki_meta_page
 
@@ -42,24 +43,6 @@ class _MigrationObservationChanged(IndexContractError):
     def __init__(self, observation):
         super().__init__('migration_snapshot_changed')
         self.observation = observation
-
-
-def legacy_card_evidence(row, decision):
-    """Describe the existing reader's trust evidence, without granting authority."""
-    import laya_host_response
-    import source_spans
-    import wiki_card
-
-    locators = laya_host_response._verified_wiki_locations(
-        row, decision, frozenset(), tuple(decision['recallSettings']['skipPaths']),
-        current_source=False)
-    if locators is None:
-        return None
-    body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
-    block = body[4:body.index('\n---\n', 4)]
-    revisions = wiki_card.frontmatter_source_revisions(block)
-    _, spans = source_spans.read_card_spans(block)
-    return {'revisions': revisions, 'spans': spans, 'locators': list(locators)}
 
 
 def _wiki_card_path(path, prefixes):
@@ -487,30 +470,9 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
                 if provenance_scan is not None:
                     evidence = legacy_card_evidence(member, decision)
                     if evidence is not None:
-                        sources, seen_fingerprints, assigned_spans = [], set(), set()
-                        for revision in evidence['revisions']:
-                            fingerprint = store._put_fingerprint(db, dict(
-                                worktree_id=worktree_id, branch_key=observed['capture']['branchKey'],
-                                path=revision['path'], source_sha=revision['sha256'],
-                                byte_length=revision['size'], head_oid=None, tracked_state='unknown',
-                                binding_state='legacy_unbound', scan_id=provenance_scan['id'],
-                                observed_ns=provenance_scan['observed_ns']), verify_only=verify_only)
-                            if fingerprint not in seen_fingerprints:
-                                pair = (revision['path'], revision['sha256'])
-                                spans = ([{'kind': 'legacy-lines-v1', **span} for span in evidence['spans']
-                                          if (span['path'], span['sourceSha256']) == pair]
-                                         if pair not in assigned_spans else [])
-                                sources.append({'fingerprint_id': fingerprint, 'spans': spans})
-                                seen_fingerprints.add(fingerprint)
-                                assigned_spans.add(pair)
-                        receipt = values.digest('memvane-v6-legacy-evidence-v1', {
-                            'endpoint': endpoint.endpoint_id, 'observation': page['observation'],
-                            'path': member['path'], 'hash': digest, 'evidence': evidence})
-                        trust = store._put_attestation(db, dict(blob_sha=digest,
-                            verification_kind='legacy_verified', engine_identity='memvane:v6-reader',
-                            policy_digest=store._policy, receipt=dict(schema='memvane-card-evidence-v1',
-                                verdict='verified', result_digest=receipt, prior_trust=None), sources=sources),
-                                verify_only=verify_only)
+                        trust = store._put_legacy_attestation(db, blob_sha=digest, worktree_id=worktree_id,
+                            branch_key=observed['capture']['branchKey'], evidence=evidence,
+                            provenance_scan=provenance_scan, verify_only=verify_only)
                         trusted.append({'path': member['path'], 'hash': digest, 'trust_digest': trust,
                                         'title': member['title'], 'source': member['source']})
             import os

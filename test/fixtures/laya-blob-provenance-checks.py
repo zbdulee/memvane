@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -295,6 +296,148 @@ class ProvenanceChecks(unittest.TestCase):
         self.assertEqual(self.store.attestation(trust)['sources'], [])
         row['verification_kind'] = 'rebound'; row['receipt']['prior_trust'] = trust
         with self.assertRaises(self.Error): self.store.put_attestation(row)
+
+    # Writer ingest of the existing frontmatter trust contract (K2 (a)).
+    SCAN = {'id': '3' * 32, 'observed_ns': 5}
+
+    def legacy_decision(self, skip=()):
+        return {'projectRoot': str(self.project), 'scopeId': self.scope,
+                'collections': [{'name': 'fixture', 'role': 'raw', 'sourceRoot': str(self.project)},
+                                {'name': 'fixture-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)}],
+                'collectionRoots': {'fixture': str(self.project), 'fixture-wiki': str(self.wiki)},
+                'recallSettings': {'skipPaths': list(skip)}}
+
+    def legacy_card(self, name, *, status='verified', title='"Legacy card"', before='',
+                    body_hash=True, edit=None):
+        import yaml_scalars
+        raw = b'Synthetic source for legacy evidence.\n'
+        source = self.project / 'notes' / 'source.md'
+        source.parent.mkdir(exist_ok=True); source.write_bytes(raw)
+        revision = dict(kind='file', path='notes/source.md', collection='fixture',
+                        sha256=hashlib.sha256(raw).hexdigest(), size=len(raw),
+                        mtimeNs=source.stat().st_mtime_ns)
+        line = yaml_scalars.dump_source_revisions([revision])[0]
+        rest = '# Legacy card\nlegacyprobe verified body\n'
+        front = (f'title: {title}\n{before}status: {status}\ncreatedBy: memvane\n'
+                 f'sourceRevisions:\n  - {line}\n')
+        text = '---\n' + front + '---\n' + rest
+        if body_hash:
+            text = text.replace('createdBy: memvane\n', 'createdBy: memvane\nverifiedBodyHash: '
+                                + yaml_scalars.card_body_hash(text) + '\n', 1)
+        if edit is not None:
+            text = edit(text)
+        (self.wiki / name).write_text(text, encoding='utf8')
+        return text
+
+    def ingest_legacy(self, name, **kwargs):
+        decision = kwargs.pop('decision', None) or self.legacy_decision()
+        return self.store.ingest_attested_card(self.worktree['worktreeId'], name,
+                                               decision=decision, provenance_scan=self.SCAN, **kwargs)
+
+    def test_21_verified_frontmatter_ingest_creates_unbound_legacy_attestation(self):
+        self.legacy_card('verified.md')
+        result = self.ingest_legacy('verified.md')
+        self.assertEqual(set(result), {'blob_sha', 'trust_digest'})
+        self.assertEqual(result['blob_sha'], hashlib.sha256((self.wiki / 'verified.md').read_bytes()).hexdigest())
+        spec = self.store.attestation(result['trust_digest'])
+        self.assertEqual(spec['blob_sha'], result['blob_sha'])
+        self.assertEqual(spec['verification_kind'], 'legacy_verified')
+        self.assertEqual(spec['policy_digest'], self.store._policy)
+        self.assertEqual(len(spec['sources']), 1)
+        fp = self.store.fingerprint(spec['sources'][0]['fingerprint_id'])
+        self.assertEqual((fp['binding_state'], fp['head_oid'], fp['tracked_state'], fp['branch_key']),
+                         ('legacy_unbound', None, 'unknown', 'non-git'))
+        self.assertEqual((fp['scan_id'], fp['observed_ns'], fp['path']), (self.SCAN['id'], 5, 'notes/source.md'))
+        # Replay of the same bytes and scan is the same attestation, not a second row.
+        self.assertEqual(self.ingest_legacy('verified.md'), result)
+        self.assertEqual(self.store.counts()['card_attestations'], 1)
+        # An absent body digest is "not bound" under the reader contract.
+        self.legacy_card('unbound.md', body_hash=False)
+        self.assertIsNotNone(self.ingest_legacy('unbound.md')['trust_digest'])
+        self.assertTrue(self.store.verify())
+
+    def test_22_untrusted_or_forged_frontmatter_ingests_without_attestation(self):
+        cases = {
+            'generated.md': dict(status='generated'),
+            'first-wins.md': dict(status='verified', before='status: generated\n'),
+            'quoted-newline.md': dict(status='generated', title='"x\\nstatus: verified"'),
+            'body-edit.md': dict(edit=lambda text: text.replace('verified body', 'edited body')),
+            'bad-hash.md': dict(edit=lambda text: re.sub(r'verifiedBodyHash: [0-9a-f]{64}',
+                                                         'verifiedBodyHash: ' + 'f' * 64, text, count=1)),
+            'foreign.md': dict(edit=lambda text: text.replace('createdBy: memvane', 'createdBy: someone', 1)),
+            'no-revisions.md': dict(edit=lambda text: text[:text.index('sourceRevisions:')]
+                                    + text[text.index('\n---\n') + 1:]),
+        }
+        for name, options in cases.items():
+            with self.subTest(name=name):
+                text = self.legacy_card(name, **options)
+                result = self.ingest_legacy(name)
+                self.assertIsNone(result['trust_digest'])
+                self.assertEqual(self.store.document(result['blob_sha'])['body'], text)
+        self.legacy_card('skipped.md')
+        self.assertIsNone(self.ingest_legacy('skipped.md', decision=self.legacy_decision(skip=['notes/']))['trust_digest'])
+        self.assertEqual(self.store.counts()['card_attestations'], 0)
+        self.assertEqual(self.store.counts()['source_fingerprints'], 0)
+
+    def test_23_attested_ingest_refuses_foreign_decision_or_scan(self):
+        self.legacy_card('verified.md')
+        foreign = self.root / 'other'
+        for decision in (dict(self.legacy_decision(), projectRoot=str(foreign)),
+                         dict(self.legacy_decision(), scopeId='0' * 32),
+                         dict(self.legacy_decision(), collections=[
+                             {'name': 'fixture', 'role': 'raw', 'sourceRoot': str(self.project)},
+                             {'name': 'fixture-wiki', 'role': 'wiki', 'sourceRoot': str(foreign)}])):
+            with self.subTest(decision=decision), self.assertRaises(self.Error):
+                self.ingest_legacy('verified.md', decision=decision)
+        for scan in ({'id': 'bad', 'observed_ns': 1}, {'id': '3' * 32}, {'id': '3' * 32, 'observed_ns': True}):
+            with self.subTest(scan=scan), self.assertRaises(self.Error):
+                self.store.ingest_attested_card(self.worktree['worktreeId'], 'verified.md',
+                                                decision=self.legacy_decision(), provenance_scan=scan)
+        self.assertEqual(self.store.counts()['card_attestations'], 0)
+
+    def normal_generation(self, members):
+        views = importlib.import_module('laya_view_store')
+        view = views.ViewStore.open(self.path, repository=self.repository, scope_id=self.scope)
+        self.addCleanup(view.close)
+        handle = view.capture_view(self.worktree['worktreeId'])
+        manifest = dict(scan_id=self.SCAN['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
+                        complete=True, sources=[], members=members)
+        head = view.head(handle)
+        gen = view.prepare_generation(handle, manifest, expected_head=head)
+        view.publish_generation(handle, gen, expected_head=head)
+        eligible = dict(view._db.execute('SELECT path,eligible FROM wiki_members WHERE gen_id=?', (gen,)))
+        return view, handle, eligible
+
+    def test_24_writer_legacy_trust_is_searchable_in_normal_generation(self):
+        self.legacy_card('verified.md'); self.legacy_card('generated.md', status='generated')
+        good, bad = self.ingest_legacy('verified.md'), self.ingest_legacy('generated.md')
+        view, handle, eligible = self.normal_generation([
+            dict(path='verified.md', blob_sha=good['blob_sha'], display_title='Verified',
+                 trust_digest=good['trust_digest']),
+            dict(path='generated.md', blob_sha=bad['blob_sha'], display_title='Generated',
+                 trust_digest=bad['trust_digest'])])
+        self.assertEqual(eligible, {'verified.md': 1, 'generated.md': 0})
+        pin = view.pin_view(handle)
+        try:
+            self.assertEqual([row['path'] for row in view.search(pin, 'legacyprobe', 10)], ['verified.md'])
+        finally:
+            view.release(pin)
+
+    def test_25_normal_generation_keeps_unbound_compiled_and_observed_legacy_ineligible(self):
+        unbound = self.store.put_fingerprint(self.fp(binding_state='legacy_unbound'))
+        observed = self.store.put_fingerprint(self.fp(observed_ns=2))
+        legacy = self.store.put_attestation(self.evidence(unbound, verification_kind='legacy_verified',
+                                                          policy_digest=self.store._policy))
+        mixed = self.store.put_attestation(self.evidence(observed, verification_kind='legacy_verified',
+                                                         policy_digest=self.store._policy))
+        (self.wiki / 'copy.md').write_bytes((self.wiki / 'card.md').read_bytes())
+        (self.wiki / 'second.md').write_text('# Second\nother card\n', encoding='utf8')
+        second = self.store.ingest_card(self.worktree['worktreeId'], 'second.md')
+        _, _, eligible = self.normal_generation([
+            dict(path='card.md', blob_sha=self.blob, display_title='Legacy', trust_digest=legacy),
+            dict(path='copy.md', blob_sha=self.blob, display_title='Observed', trust_digest=mixed),
+            dict(path='second.md', blob_sha=second, display_title='None', trust_digest=None)])
+        self.assertEqual(eligible, {'card.md': 1, 'copy.md': 0, 'second.md': 0})
 
 
 if __name__ == '__main__':

@@ -24,6 +24,38 @@ import laya_view_fts as view_fts
 
 NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
+# Legacy frontmatter trust: the v6 reader's card rule, carried as an unbound
+# attestation. Migration import and the normal writer ingest share it, so the
+# same bytes, worktree, branch and scan give the same trust digest. The rule
+# reads only card bytes; no current HEAD or raw file is claimed as its proof.
+LEGACY_ENGINE_IDENTITY = 'memvane:v6-reader'
+LEGACY_RESULT_SCHEMA = 'memvane-legacy-card-evidence-v1'
+
+
+def legacy_card_evidence(row, decision):
+    """Describe the existing reader's trust evidence, without granting authority."""
+    import laya_host_response
+    import source_spans
+    import wiki_card
+
+    locators = laya_host_response._verified_wiki_locations(
+        row, decision, frozenset(), tuple(decision['recallSettings']['skipPaths']),
+        current_source=False)
+    if locators is None:
+        return None
+    body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
+    block = body[4:body.index('\n---\n', 4)]
+    revisions = wiki_card.frontmatter_source_revisions(block)
+    _, spans = source_spans.read_card_spans(block)
+    return {'revisions': revisions, 'spans': spans, 'locators': list(locators)}
+
+
+def legacy_scan(provenance_scan):
+    v.exact(provenance_scan, ('id', 'observed_ns'))
+    v.identifier(provenance_scan['id'], v.UUID)
+    v.integer(provenance_scan['observed_ns'])
+    return provenance_scan
+
 
 def _database_path(value):
     try:
@@ -503,6 +535,46 @@ class BlobStore:
         return body
 
     def ingest_card(self, worktree_id, path):
+        return self._ingest(worktree_id, path)[0]
+
+    def ingest_attested_card(self, worktree_id, path, *, decision, provenance_scan):
+        """Admit a card plus, when its frontmatter passes the reader rule, its unbound attestation.
+
+        ``decision`` is the caller's selected-route decision for this store's
+        project and wiki root; a card that fails the rule is admitted untrusted.
+        """
+        legacy_scan(provenance_scan)
+        sha, trust = self._ingest(worktree_id, path, attest=(decision, provenance_scan))
+        return {'blob_sha': sha, 'trust_digest': trust}
+
+    def _put_legacy_attestation(self, db, *, blob_sha, worktree_id, branch_key, evidence,
+                                provenance_scan, verify_only=False):
+        sources, seen_fingerprints, assigned_spans = [], set(), set()
+        for revision in evidence['revisions']:
+            fingerprint = self._put_fingerprint(db, dict(
+                worktree_id=worktree_id, branch_key=branch_key,
+                path=revision['path'], source_sha=revision['sha256'],
+                byte_length=revision['size'], head_oid=None, tracked_state='unknown',
+                binding_state='legacy_unbound', scan_id=provenance_scan['id'],
+                observed_ns=provenance_scan['observed_ns']), verify_only=verify_only)
+            if fingerprint not in seen_fingerprints:
+                pair = (revision['path'], revision['sha256'])
+                spans = ([{'kind': 'legacy-lines-v1', **span} for span in evidence['spans']
+                          if (span['path'], span['sourceSha256']) == pair]
+                         if pair not in assigned_spans else [])
+                sources.append({'fingerprint_id': fingerprint, 'spans': spans})
+                seen_fingerprints.add(fingerprint)
+                assigned_spans.add(pair)
+        # Card bytes and the rule's output only: the attestation is keyed by
+        # blob, and the reader endpoint is already recorded by the admission.
+        receipt = v.digest(LEGACY_RESULT_SCHEMA, {'hash': blob_sha, 'evidence': evidence})
+        return self._put_attestation(db, dict(blob_sha=blob_sha,
+            verification_kind='legacy_verified', engine_identity=LEGACY_ENGINE_IDENTITY,
+            policy_digest=self._policy, receipt=dict(schema='memvane-card-evidence-v1',
+                verdict='verified', result_digest=receipt, prior_trust=None), sources=sources),
+            verify_only=verify_only)
+
+    def _ingest(self, worktree_id, path, *, attest=None):
         self._require_write()
         v.identifier(worktree_id, v.UUID); v.relative(path)
         if not path.endswith('.md') or (len(path.split('/')) == 1 and path in ('SCHEMA.md', 'index.md', 'log.md')):
@@ -512,6 +584,16 @@ class BlobStore:
             if saved is None:
                 v.fail('worktree_missing')
             saved = dict(saved)
+        if attest is not None:
+            decision = attest[0]
+            collections = decision.get('collections') if type(decision) is dict else None
+            if (type(decision) is not dict or decision.get('projectRoot') != saved['project_root']
+                    or decision.get('scopeId') != self._scope or type(collections) is not list
+                    or not any(type(item) is dict and item.get('role') == 'wiki'
+                               and type(item.get('sourceRoot')) is str
+                               and str(Path(item['sourceRoot'])) == saved['wiki_root']
+                               for item in collections)):
+                v.fail('attestation_decision_mismatch')
         worktree = v.parse_canonical(saved['record_json'])
         row, before = _worktree_row(saved['project_root'], self._repository, worktree)
         if any(saved[k] != val for k, val in row.items()):
@@ -530,6 +612,13 @@ class BlobStore:
                          binding_digest=row['binding_digest'], settings_sha=row['settings_sha'],
                          wiki_root=saved['wiki_root'], wiki_identity=rootnode,
                          repository_digest=worktree['repositoryDigest'], capture=observation['capture'])
+            evidence = None
+            if attest is not None:
+                try:
+                    evidence = legacy_card_evidence({'path': path, 'body': body}, attest[0])
+                except (KeyError, TypeError, AttributeError):
+                    v.fail('attestation_decision_mismatch')
+            trust = None
             with self._session(write=True) as db:
                 old = db.execute('SELECT blob_sha FROM wiki_blobs WHERE blob_sha=?', (sha,)).fetchone()
                 if old:
@@ -541,13 +630,17 @@ class BlobStore:
                     _insert(db, 'blob_admissions', dict(blob_sha=sha, worktree_id=worktree_id,
                             proof_digest=v.digest('memvane-wiki-admission-v1', proof),
                             proof_json=v.canonical(proof), created_ns=now))
+                if evidence is not None:
+                    trust = self._put_legacy_attestation(db, blob_sha=sha, worktree_id=worktree_id,
+                        branch_key=observation['capture']['branchKey'], evidence=evidence,
+                        provenance_scan=attest[1])
                 if _current_file_node(saved['wiki_root'], path) != node:
                     v.fail('wiki_card_changed')
                 settings = Path(saved['settings_path'])
                 final_settings, _, _ = _regular(settings.parent, settings.name, 1024 * 1024)
                 if v.hash_bytes(final_settings) != saved['settings_sha']:
                     v.fail('wiki_settings_changed')
-            return sha
+            return sha, trust
         except BlobStoreError:
             raise
         except (OSError, UnicodeError, checkout.CheckoutUnavailable):
