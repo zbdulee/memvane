@@ -477,5 +477,43 @@ class ReaderChecks(helpers.GenerationCase):
             self.assertEqual(len(store.search(other,'hello',1)),1)
             self.assertEqual(verified.call_count,3)
 
+    def test_26_compiled_line_spans_locate_like_legacy(self):
+        store,_,h=self.seeded()
+        m=self.snapshot(store,h,body=b'# Alpha\nhello compiled snapshot\n')
+        fp=store.fingerprint(m['sources'][0]['fingerprint_id'])
+        span=lambda start,end:dict(kind='lines-v1',path=fp['path'],sourceSha256=fp['source_sha'],
+                                   startLine=start,endLine=end,spanSha256='d'*64)
+        member=m['members'][0]
+        member['trust_digest']=store.put_attestation(dict(blob_sha=member['blob_sha'],
+            verification_kind='compiled',engine_identity='synthetic:codex',policy_digest=h.policy_digest,
+            receipt=dict(schema='memvane-card-evidence-v2',verdict='verified',result_digest='e'*64,
+                         prior_trust=None,verdict_digest='f'*64,verified_mode='cross-engine',
+                         verify_engine='claude'),
+            sources=[dict(fingerprint_id=m['sources'][0]['fingerprint_id'],spans=[span(7,7),span(3,5)])]))
+        gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
+        pin=store.pin_view(h)
+        self.assertEqual([row['path'] for row in store.search(pin,'hello',10)],['cards/a.md'])
+        # Same locator format and order as legacy-lines-v1 spans.
+        self.assertEqual(store.card_locations(pin,['cards/a.md','cards/absent.md']),
+                         {'cards/a.md':['notes/src.md#L3-L5','notes/src.md#L7-L7']})
+
+    def test_27_span_kinds_without_a_line_locator_still_refuse(self):
+        store,_,h,_=self.published();pin=store.pin_view(h)
+        # The default compiled card carries byte spans: no line locator exists.
+        self.assertEqual(self.refused(store.card_locations,pin,['cards/a.md']).reason,
+                         'legacy_card_trust_invalid')
+        reader=sys.modules['laya_view_reader']
+        db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE card_sources(gen_id,wiki_path,ordinal,spans_json)')
+        for ordinal,kind in enumerate(('lines-v2',None,'')):
+            value=dict(kind=kind,path='notes/src.md',sourceSha256='a'*64,startLine=1,endLine=1,spanSha256='d'*64)
+            db.execute('DELETE FROM card_sources')
+            db.execute('INSERT INTO card_sources VALUES(?,?,?,?)',('g','cards/a.md',ordinal,
+                       sys.modules['laya_blob_values'].canonical([value])))
+            with self.subTest(kind=kind):
+                self.assertEqual(self.refused(reader._card_locations,db,'g',['cards/a.md']).reason,
+                                 'legacy_card_trust_invalid')
+
 
 if __name__=='__main__':unittest.main()
