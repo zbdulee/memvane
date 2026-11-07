@@ -1702,8 +1702,17 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
     return host_payload(host, context)
 
 
-def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None) -> dict:
-    """Serve a proved v6 endpoint during or immediately after a fence."""
+def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None,
+                          main_proof=None) -> dict:
+    """Serve the journal-preferred reader endpoint.
+
+    A v6 endpoint answers during or immediately after a fence. A schema3
+    endpoint answers there and also for the main checkout's selected route:
+    ``main_proof`` is then that route's full proof (non-degraded: a cold
+    provider may be woken), never a drift or fence read.
+    """
+    if main_proof is not None and drift_decision is None:
+        _fail('reader_selection_unproved')
     if host not in ('claude','codex','hermes') or not isinstance(payload,dict):
         _fail('invalid_hook_payload')
     requested = payload.get('cwd',cwd)
@@ -1756,6 +1765,13 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=
                   proof.get('journalPath') != str(journal_path) or
                   proof.get('projectRoot') != str(project)))):
             _fail('reader_selection_unproved')
+        if endpoint.record.get('store_format') == 'schema3':
+            return _serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
+                                         decision=decision, project=project, prompt=prompt,
+                                         deadline=deadline, main_proof=main_proof)
+        if main_proof is not None:
+            # The selection moved back to v6 after this recall read it.
+            raise ValueError('reader_selection_changed')
         provider = None
         manifest = proof.get('providerManifest')
         if isinstance(manifest,dict):
@@ -1785,6 +1801,93 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=
                 title_only_paths=result.title_only,source_locations=result.source_locations,
                 allow_mixed_generation=True) if selected else ''
             return host_payload(host,context)
+
+
+def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, prompt,
+                          deadline, main_proof):
+    """Recall from a journal-selected schema3 view; no v6 store or source file is opened.
+
+    Settings, admission, provider and vector-fallback rules are the v6
+    recall's. The query vector, when the sealed view has vectors and a warm
+    provider answers, is bound to this endpoint by ``approved_query_vector``.
+    """
+    import config
+    import laya_journal_reader as reader
+    import laya_reader_dispatch as dispatch
+    from laya_index_a import IndexContractError
+    from laya_local_embed_provider import ReviewedLocalQmdProvider
+    degraded = main_proof is None
+    _recall_epoch(proof)
+    _trace_fields(store_format='schema3', reader_endpoint=endpoint.endpoint_id)
+    if degraded:
+        _trace_fields(degraded='reader_endpoint')
+    settings = config.load_project_config(decision['projectRoot'])
+    selected_settings = decision['recallSettings']
+    if any(settings.get(key) != value for key, value in selected_settings.items()):
+        _fail('selected_recall_settings_changed')
+    top_n = selected_settings.get('topN')
+    patterns = selected_settings.get('lexicalPatterns')
+    if (type(top_n) is not int or not 1 <= top_n <= MAX_ROWS
+            or patterns not in ([], ['ep'])):
+        _fail('selected_recall_settings_unsupported')
+    manifest = proof.get('providerManifest')
+    if not isinstance(manifest, dict):
+        _fail('vector_provider_missing')
+    vector_off: list[str] = []
+    try:
+        provider = ReviewedLocalQmdProvider(manifest)
+    except IndexContractError as exc:
+        provider = None
+        vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
+            r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
+    from laya_embed_resident import admit_query
+    try:
+        admit_query()
+    except Exception:
+        vector_off.append('resource_deferred')
+    # A view sealed without vectors (a lexical-first publish whose fill is
+    # still deferred) serves its lexical lists; the provider is not asked.
+    unsealed = endpoint.record.get('vector_profile') is None
+    with ExitStack() as stack:
+        vector = None
+        if provider is not None and not vector_off and not unsealed:
+            vector = stack.enter_context(dispatch.approved_query_vector(
+                authority=endpoint, snapshot=None, decision=decision, provider=provider,
+                prompt=prompt, deadline=deadline))
+            if vector is None:
+                vector_off.append('provider_unavailable')
+        result = dispatch.query_endpoint(endpoint, checkout=project, prompt=prompt,
+                                         query_vector=vector, deadline=deadline, snapshot=None,
+                                         decision=decision, provider=provider, authority=endpoint)
+    _trace_fields(semantic=result.semantic_status)
+    vector_fallback = None
+    if provider is None:
+        vector_fallback = 'selected_' + vector_off[0]
+    elif vector_off and degraded:
+        vector_fallback = 'selected_reader_endpoint_' + vector_off[0]
+    elif vector_off:
+        code = _wake_provider(decision, main_proof)
+        vector_fallback = ('selected_provider_resource_deferred'
+                           if vector_off[0] == 'resource_deferred' else code)
+    elif unsealed:
+        vector_fallback = 'selected_view_vectors_pending'
+    if vector_fallback is not None:
+        _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
+        print(f'[memvane] {vector_fallback}; serving lexical results', file=sys.stderr)
+
+    def still_current(chosen):
+        # Same install proof (epoch may only advance) and the same view head:
+        # the served rows stay bound to the generation they were read from.
+        record, _raw, current = reader._recheck(endpoint)
+        if not _proof_still_current(current, proof):
+            return False
+        with reader._schema3_pin(record, deadline=deadline) as (_store, _handle, pin):
+            return pin.gen_id == result.data_generation
+    return _serve_verified_rows(
+        host, decision, payload, settings, prompt, list(result.rows), top_n=top_n,
+        title_only=result.title_only, locations=dict(result.source_locations),
+        generation=result.data_generation, still_current=still_current,
+        vector_fallback=vector_fallback, allow_mixed_generation=False)
 
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -1907,6 +2010,9 @@ def _retry_time_left(started: float) -> float:
 # not a refusal of the route itself.
 _RETRYABLE_RECALL_CODES = frozenset(('selected_proof_changed', 'incremental_base_changed'))
 _RETRYABLE_JOURNAL_CODES = frozenset(('host_route_unverified', 'host_decision_changed'))
+# A reader CAS (selection) or store replacement seen by a schema3 recall. The
+# journal reader raises JournalEvidenceError, the reader lease ValueError.
+_RETRYABLE_READER_CODES = frozenset(('reader_selection_changed', 'reader_store_changed'))
 # Fields a re-selected decision must share with the first one. Bundle,
 # generation and plugin root move with an upgrade; these never do.
 _RECALL_IDENTITY = ('state', 'projectRoot', 'installId', 'scopeId', 'journalPath',
@@ -1954,6 +2060,8 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     moved = _install_moved(decision) or _project_dir_moved(decision)
     if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
             (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES) or
+            (type(exc) in (JournalEvidenceError, ValueError) and
+             str(exc) in _RETRYABLE_READER_CODES) or
             moved):
         return None
     needed = time.monotonic() - started + _RETRY_MARGIN_SECONDS
@@ -2170,7 +2278,41 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                     else {"status": "queued"})
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
+    if _selected_store_format(decision) == 'schema3':
+        try:
+            return serve_endpoint_recall(host, payload,
+                                         cwd=payload.get('cwd', decision['projectRoot']),
+                                         drift_decision=decision, main_proof=proof)
+        except Exception as exc:
+            # A reader CAS or a store replacement under this recall may be
+            # retried once from a fresh route; any other reader refusal must
+            # not be retried again through the fence-hint reader.
+            if _retry_code(exc) not in _RETRYABLE_READER_CODES:
+                exc._memvane_reader_attempted = True
+            raise
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _selected_store_format(decision: dict) -> str:
+    """Store format of the journal-preferred reader endpoint of a v5 journal.
+
+    A journal below v5 has no reader selection and keeps the v6 recall.
+    """
+    if not isinstance(decision.get('journalPath'), str):
+        return 'v6'
+    if not os.path.lexists(decision['journalPath']):
+        # The full route proof just read this journal. A journal gone since
+        # then is a concurrent move: the v6 path's own recheck refuses or
+        # retries it, exactly as before reader selection existed.
+        return 'v6'
+    from laya_install_journal import journal_version
+    if journal_version(decision['journalPath']) != 5:
+        return 'v6'
+    import laya_journal_reader as reader
+    path = reader._journal(Path(decision['journalPath']))
+    with reader._readonly(path, path.parent) as db:
+        _selected, record = reader._selection(db)
+    return record['store_format']
 
 
 def _state_move_notice(decision: dict, *, request_move: bool = True):
@@ -2637,9 +2779,26 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
         locations.update(incremental_locations)
         title_only = title_only | incremental_title_only
         rows = merge_incremental_rows(incremental_rows, rows)
+    generation = pinned_generation[0] if pinned_generation else None
+    return _serve_verified_rows(
+        host, decision, payload, settings, prompt, rows, top_n=top_n,
+        title_only=title_only, locations=locations, generation=generation,
+        still_current=lambda chosen: (_proof_still_current(recheck(decision), proof) and
+                                      _selection_view_unchanged(decision, chosen, generation)),
+        vector_fallback=vector_fallback, allow_mixed_generation=bool(incremental_rows))
+
+
+def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top_n,
+                         title_only, locations, generation, still_current,
+                         vector_fallback, allow_mixed_generation):
+    """Selector, trace, learning capture, recheck and render of verified rows.
+
+    Shared by the v6 recall and the journal-selected schema3 endpoint, so
+    both leave the same context and event fields. ``still_current(chosen)``
+    is the store's own proof/view recheck after selection.
+    """
     chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
-    _trace_fields(selection=reason, candidates=len(rows),
-                  generation=pinned_generation[0] if pinned_generation else None)
+    _trace_fields(selection=reason, candidates=len(rows), generation=generation)
     answer_limit = min(top_n, 3)
     chosen = chosen[:answer_limit]
     # Capture sees the verified pool and what was served: the selector's
@@ -2649,8 +2808,7 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
         return host_payload(host, '')
-    if not _proof_still_current(recheck(decision), proof) or not _selection_view_unchanged(
-            decision, chosen, pinned_generation[0] if pinned_generation else None):
+    if not still_current(chosen):
         _fail('selected_proof_changed')
     chosen_paths = {row['path'] for row in chosen}
     context = render_context(decision, chosen, limit=answer_limit,
@@ -2658,7 +2816,7 @@ def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
                              title_only_paths=title_only.intersection(chosen_paths),
                              source_locations={path: spans for path, spans in locations.items()
                                                if path in chosen_paths},
-                             allow_mixed_generation=bool(incremental_rows))
+                             allow_mixed_generation=allow_mixed_generation)
     _log_selection(decision, chosen, fallback, vector_fallback)
     return host_payload(host, context)
 

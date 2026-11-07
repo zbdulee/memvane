@@ -208,8 +208,12 @@ class Schema3EndpointChecks(unittest.TestCase):
                 yield endpoint
 
     def query(self, endpoint, prompt='heron'):
+        # U11: rows leave in the recall row shape, bound to the reader's own decision.
+        decision = (self.reader._recheck(endpoint)[2]['readerDecision']
+                    if endpoint in self.reader._read_only else None)
         return self.dispatch.query_endpoint(endpoint, checkout=self.case.project, prompt=prompt,
-                                            query_vector=None, deadline=time.monotonic() + 20)
+                                            query_vector=None, deadline=time.monotonic() + 20,
+                                            decision=decision)
 
     def tamper(self, trigger, sql, args=()):
         db = sqlite3.connect(self.store_path)
@@ -253,7 +257,7 @@ class Schema3EndpointChecks(unittest.TestCase):
         self.assertEqual(result.endpoint_id, target.endpoint_id)
         self.assertEqual(result.reader_epoch, selected.epoch)
         self.assertEqual(result.data_generation, self.gens[-1])
-        self.assertIn('concepts/heron-route.md', [row['path'] for row in result.rows])
+        self.assertIn(self.case.WIKI + '/concepts/heron-route.md', [row['path'] for row in result.rows])
         # The sealed (non-persisted) target is a CAS token, never a query reader.
         with self.assertRaisesRegex(ValueError, 'reader_endpoint_not_issued'):
             self.query(target)
