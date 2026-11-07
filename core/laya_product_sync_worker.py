@@ -730,8 +730,11 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
 
 
 # One schema3 pass: wall budget and card ingests (each a Git capture). A
-# large change set to a published view publishes its progress and stays
-# ``pending``; a cold view (no published generation) only prepares it.
+# large change set stays ``pending`` over several passes. New cards publish
+# as they are ingested; while a published card's new bytes wait for a later
+# pass, the pass only prepares its progress (the head keeps serving the old
+# bytes) and the next pass carries those prepared members instead of
+# ingesting them again. A cold view (no published generation) only prepares.
 SCHEMA3_PASS_SECONDS = 45
 SCHEMA3_MAX_INGEST = 64
 # Ingest stops this long before the pass deadline so prepare/publish of the
@@ -1092,6 +1095,18 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 "SELECT gen_id FROM generations WHERE view_id=? AND state='prepared' "
                 'ORDER BY ordinal DESC LIMIT 1', (handle.view_id,)).fetchone() or ()), None))
             old = {} if base is None else {m['path']: m for m in store._stored(db, base)[0]}
+            # Progress of an unfinished change set: the newest generation
+            # prepared over this head. Its members passed prepare's byte check;
+            # one whose bytes are still current is carried, not re-ingested.
+            carry = {}
+            if not cold:
+                staged = db.execute(
+                    "SELECT g.gen_id,s.stage_json FROM generations g JOIN generation_slots s "
+                    "ON s.ordinal=g.ordinal WHERE g.view_id=? AND g.state='prepared' "
+                    'ORDER BY g.ordinal DESC LIMIT 1', (handle.view_id,)).fetchone()
+                over = staged and v.parse_canonical(staged[1]).get('base')
+                if over and (over.get('gen_id'), over.get('epoch')) == (head['gen_id'], head['epoch']):
+                    carry = {m['path']: m for m in store._stored(db, staged[0])[0]}
         if row is None or (binding is not None and row['binding_digest'] != binding):
             v.fail('wiki_binding_changed')
         root = row['wiki_root']
@@ -1134,20 +1149,23 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         # First store write of this pass: the journal fence comes first.
         _mark_schema3_write(writer, proof, marks)
         scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
-        members, pending, ingested = {}, 0, 0
+        members, pending, ingested, held = {}, 0, 0, 0
+        keys = ('path', 'blob_sha', 'display_title', 'trust_digest')
         for path in paths:
             sha, raw = current[path]
             if path not in changed:
-                members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
-                                                            'trust_digest')}
+                members[path] = {k: old[path][k] for k in keys}
+                continue
+            if path in carry and carry[path]['blob_sha'] == sha:
+                members[path] = {k: carry[path][k] for k in keys}
                 continue
             if (pending or ingested >= SCHEMA3_MAX_INGEST
                     or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
-                # Left for the next wake; the published head keeps its old bytes.
+                # Left for the next wake. No generation may name its old blob
+                # (prepare checks current bytes); while it is in the head, this
+                # pass publishes nothing and the head keeps serving it.
                 pending += 1
-                if path in old:
-                    members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
-                                                                'trust_digest')}
+                held += path in old
                 continue
             admitted = store.ingest_attested_card(worktree_id, path, decision=decision,
                                                   provenance_scan=scan)
@@ -1162,8 +1180,9 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         sources = _schema3_put_sources(store, handle, scan, observed)
         manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
                         complete=True, sources=sources, members=[members[p] for p in sorted(members)])
+        staging = pending and (cold or held)
         vector = {'state': 'pending', 'reason': 'schema3_view_preparing'}
-        if not (cold and pending):
+        if not staging:
             vector = _schema3_vectors(store, writer, proof, marks, handle, manifest, None,
                                       vectors, deadline)
         spec = vectors['spec'] if vector['state'] == 'complete' else None
@@ -1174,6 +1193,12 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             # No partial first generation: recall answers view_preparing until complete.
             return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
                     'generation': None, 'prepared': generation, 'ingested': ingested,
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped}
+        if staging:
+            # Published cards wait for new bytes: the head stays, the prepared
+            # progress is the next pass's carry.
+            return {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
+                    'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
                     'removed': len(removed), 'pending': pending, 'skipped': skipped}
         store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
     except v.BlobStoreError as exc:

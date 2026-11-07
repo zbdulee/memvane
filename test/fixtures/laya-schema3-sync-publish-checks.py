@@ -474,6 +474,47 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(sorted(self.members(second['generation'])), sorted(first_calls + second_calls))
         emit('schema3-sync-ingest-cap', firstPass=first_calls, secondPass=second_calls)
 
+    def test_09_modified_cards_over_ingest_cap_converge_without_partial_publish(self):
+        """Every published card changes and the change set exceeds one pass's ingest cap."""
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        self.card('concepts/wren-path.md', 'wrenprobe')
+        full, _calls = self.run_pass()
+        self.assertEqual(full['state'], 'indexed', full)
+        before = self.members(full['generation'])
+        cards = sorted(before)
+        self.assertGreaterEqual(len(cards), 5)
+        start = self.head()
+        for index, path in enumerate(cards):
+            with open(self.wiki / path, 'a', encoding='utf8') as handle:
+                handle.write(f'\nedited line {index} heronprobe\n')
+        passes, everything = [], []
+        with mock.patch.object(self.worker, 'SCHEMA3_MAX_INGEST', 2):
+            for _ in range(len(cards) + 2):
+                result, calls = self.run_pass()
+                passes.append(dict(state=result['state'], reason=result.get('reason'),
+                                   ingested=result.get('ingested'), pending=result.get('pending'),
+                                   calls=len(calls)))
+                everything.extend(calls)
+                if result['state'] != 'pending':
+                    break
+                # Recall keeps the last published generation while the batch accumulates.
+                self.assertEqual(self.head(), start, passes)
+                self.assertIn('concepts/kestrel-perch.md', self.paths(self.recall('kestrelprobe')))
+        emit('schema3-sync-modified-over-cap', cards=len(cards), passes=passes)
+        self.assertEqual(result['state'], 'indexed', passes)
+        self.assertEqual(len(passes), -(-len(cards) // 2), passes)
+        self.assertEqual(sorted(everything), cards, passes)
+        self.assertEqual(self.head(), (result['generation'], start[1] + 1))
+        after = self.members(result['generation'])
+        self.assertEqual(sorted(after), cards)
+        for path in cards:
+            current = hashlib.sha256((self.wiki / path).read_bytes()).hexdigest()
+            self.assertEqual(after[path][0], current, path)
+            self.assertNotEqual(after[path][0], before[path][0], path)
+        hit = self.recall('heronprobe')
+        self.assertEqual(hit.data_generation, result['generation'])
+
     def test_06_removed_card_leaves_generation_and_mass_removal_is_held(self):
         self.select_schema3()
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
