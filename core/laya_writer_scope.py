@@ -3,6 +3,12 @@
 Admission proves one warm content image under EX. A later component opener
 must revalidate its actual header under EX; this token is no immutable image
 or all-writer cohort proof. Selected v5 sync workers use this scope.
+
+A schema3 plan (``snapshot['endpoint']['store_format'] == 'schema3'``) issues
+the same admission, lock windows and ``mark_new_write`` fence, but no v6
+component: ``component_for`` and every v6 connection check refuse it with
+``writer_selection_unavailable``, so a v6-only writer path stops before any
+v6 open. ``writer_store`` returns the store the writer was admitted for.
 """
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -70,10 +76,18 @@ def validate_normal_writer(writer, *, deadline=None):
     context.check_deadline(deadline)
 
 
+def _require_v6(snapshot):
+    R._need(snapshot['endpoint']['store_format'] == 'v6', 'writer_selection_unavailable')
+
+
 class _Endpoint:
     def __init__(self, writer, snapshot):
         self.writer = writer
         self.record = dict(snapshot['endpoint'])
+        if self.record['store_format'] == 'schema3':
+            # db_path/db_node already name the schema3 store; there is no
+            # v6 role to point at (component_for refuses schema3 writers).
+            return
         # Preferred reader B can differ from the canonical writer A.
         for role, key in (('base', 'db'), ('catalog', 'catalog'),
                           ('binding', 'binding'), ('sidecar', 'sidecar')):
@@ -84,8 +98,20 @@ class _Endpoint:
 
 def _owner(writer):
     validate_normal_writer(writer)
-    context = _record(writer)['context']
+    record = _record(writer)
+    _require_v6(record['snapshot'])
+    context = record['context']
     return context.endpoint, context
+
+
+def writer_store(writer):
+    """Validate the live writer; return its schema3 store, or None for v6.
+
+    Same keys as ``laya_writer_open_plan.plan_store``.
+    """
+    validate_normal_writer(writer)
+    store = _record(writer)['snapshot'].get('store')
+    return None if store is None else json.loads(R._raw(store))
 
 
 def _connection_check(writer, role, path):
@@ -94,6 +120,7 @@ def _connection_check(writer, role, path):
     R._need(role in ('base', 'queue', 'catalog', 'binding', 'sidecar'),
             'normal_writer_component_unsupported')
     snapshot = record['snapshot']
+    _require_v6(snapshot)
     row = snapshot['components'][role]
     R._need(Path(path) == Path(row['path']), 'normal_writer_component_changed')
     from laya_writer_proof_reader import _files
