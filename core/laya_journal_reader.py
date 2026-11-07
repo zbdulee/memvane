@@ -1440,21 +1440,27 @@ def _adopted_vector_spec(record, proof, *, deadline):
     return expected
 
 
+# Install identity a rollback target may carry newer than the stale schema3 record.
+_ROLLBACK_NEWER = frozenset(('settings', 'attestation_sha256'))
+
+
 def rollback_pair(old, new):
     """``new`` is the v6 reader a rollback selected over a stale schema3 ``old``.
 
-    Rollback direction only (schema3 -> steady v6). The v6 endpoint is
-    re-issued with the current recall settings while an unreadable schema3
-    store could not be re-sealed (``resettle_selection``), so only
-    ``settings`` (the recallSettings digest) may differ; every other install
-    identity field is identical. The caller proves the v6 store is the one
-    the switch left (``laya_shadow_migration.rollback_reader``).
+    Rollback direction only (schema3 -> steady v6), shape only. The v6
+    endpoint is re-issued from the current install, so it may carry newer
+    ``settings`` (an unreadable schema3 store could not be re-sealed by
+    ``resettle_selection``) and a newer ``attestation_sha256`` (a bundle
+    upgrade left the schema3 record on its sealed predecessor, read through
+    the successor chain). Every other install identity field is identical.
+    ``cas_reader`` proves an attestation step on that chain, and the caller
+    proves the v6 store is the one the switch left
+    (``laya_shadow_migration.rollback_reader``).
     """
     try:
         return (old.get('store_format') == 'schema3' and set(old) == _SCHEMA3_KEYS
                 and new.get('store_format') == 'v6' and new.get('capability') == 'v6-ro-v1'
-                and old['settings'] != new['settings']
-                and all(old[k] == new[k] for k in INSTALL_IDENTITY if k != 'settings'))
+                and all(old[k] == new[k] for k in INSTALL_IDENTITY if k not in _ROLLBACK_NEWER))
     except (AttributeError, KeyError, TypeError):
         return False
 
@@ -1802,6 +1808,17 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
             admitted.append(proof)
         elif formats == ('schema3', 'v6'):
             _need(record['capability'] == 'v6-ro-v1', 'reader_format_not_selectable')
+            if record['attestation_sha256'] != base['attestation_sha256']:
+                # The schema3 base reads through its sealed bundle successors
+                # (``_match_persisted``); the target must sit at the chain's
+                # end, which the live journal selects.
+                from laya_install_journal import _row  # ``journal`` is the path argument here
+                row = _row(db)
+                _need(row['state'] in ('active', 'restored_old') and row['pending'] is None and
+                      row['provider_attestation_sha'] == record['attestation_sha256'],
+                      'reader_successor_unproved')
+                _successor_chain(db, expected_endpoint, base, record['attestation_sha256'],
+                                 row['selected'], max_epoch=row['epoch'])
         _need(not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
                              (transition_id,)).fetchone(), 'reader_transition_reused')
         _insert_endpoint(db, target, record, raw)
