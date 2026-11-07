@@ -115,7 +115,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
                 pass
         return Service()
 
-    def run_vector_pass(self, coordinator=None):
+    def run_vector_pass(self, coordinator=None, *, authority=None):
         """One sync pass with the stub provider; returns (result, ingests, provider calls)."""
         original = self.views.ViewStore.ingest_attested_card
         calls, before = [], len(self.provider_calls)
@@ -123,7 +123,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         def counted(store, *args, **kwargs):
             calls.append(args[1] if len(args) > 1 else kwargs.get('path'))
             return original(store, *args, **kwargs)
-        with self.seed.authority(), \
+        with (authority or self.seed.authority()), \
                 mock.patch.object(self.views.ViewStore, 'ingest_attested_card', new=counted):
             result = self.worker.run(self.case.project, coordinator=coordinator or Coordinator(),
                                      report={'ready': True}, start_service=self.service)
@@ -166,10 +166,10 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
                                                     deadline=time.monotonic() + 20) as approved_vector:
             yield provider, approved_vector
 
-    def hybrid_recall(self, prompt, vector):
-        with self.seed.authority(), self.J.read_only_journals():
+    def hybrid_recall(self, prompt, vector, *, authority=None, host_root=None):
+        with (authority or self.seed.authority()), self.J.read_only_journals():
             with self.lease.resolve_endpoint(self.case.project, action='recall',
-                                             host_root=self.case.plugin) as endpoint:
+                                             host_root=host_root or self.case.plugin) as endpoint:
                 proof = self.R._recheck(endpoint)[2]
                 decision = dict(proof['readerDecision'], vectorProfile=proof['vectorProfile'])
                 with self.query_vector(endpoint, decision, prompt, vector) as (provider, approved):
@@ -599,6 +599,59 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertTrue(resumed and all(b <= self.worker.SCHEMA3_RESUME_SECONDS for b in resumed), budgets)
         emit('schema3-vector-deadline-resume', pieces=pieces, firstDocuments=kinds(first_calls, 'document'),
              secondDocuments=kinds(second_calls, 'document'), secondChunks=kinds(second_calls, 'chunks'))
+
+    # -- R4: the first vector head after a bundle upgrade -----------------------
+    @contextmanager
+    def upgraded_bundle(self, new):
+        """The upgraded bundle ``new`` executing (U14b upgrade authority over this install)."""
+        from types import SimpleNamespace
+        spec = importlib.util.spec_from_file_location('vectors_lifecycle_checks',
+                                                      ROOT / 'test/fixtures/laya-schema3-lifecycle-checks.py')
+        lifecycle = importlib.util.module_from_spec(spec); spec.loader.exec_module(lifecycle)
+        owner = SimpleNamespace(case=self.case, reader=self.R, seed=self.seed)
+        with lifecycle.Lifecycle.upgrade_authority(owner, new) as (upgrade, target, review, att), \
+                mock.patch.object(self.J, '_verified_executing_root', return_value=str(new)), \
+                mock.patch.object(self.J, '_provider_file_identity',
+                                  return_value=[[str(new / 'p.py'), 1, 2, 3, 4, 5]]), \
+                mock.patch.object(self.worker, '_writer_executing_root', return_value=new):
+            yield upgrade, target, review
+
+    def test_11_first_vector_head_after_a_bundle_upgrade_reseals_and_recall_is_hybrid(self):
+        case = self.case
+        self.select_schema3()
+        self.assertIsNone(self.selected_record()['vector_profile'])
+        new = case.home / 'r4-vector-plugin'
+        new.mkdir()
+        with self.upgraded_bundle(new) as (upgrade, target, review):
+            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                      target['sourceCommit'], review['proposalSha256'], '/synthetic/model', 3)
+            self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+        # The upgrade leaves the record on its sealed predecessor attestation.
+        stored = self.selected_record()
+        live = self.J.inspect_journal(case.journal)['providerAttestationSha256']
+        self.assertNotEqual(stored['attestation_sha256'], live)
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        with self.upgraded_bundle(new):
+            result, _ingests, _calls = self.run_vector_pass(authority=ExitStack())
+        emit('r4-upgrade-then-first-vector-head', state=result['state'],
+             vector=(result.get('vector') or {}).get('state'), resettle=result.get('readerResettle'))
+        self.assertEqual((result['state'], result['vector']['state'], result.get('readerResettle')),
+                         ('indexed', 'published', 'resealed'), result)
+        record = self.selected_record()
+        self.assertEqual((record['vector_profile'], record['vector_recipe'], record['attestation_sha256']),
+                         (self.spec['profile_id'], self.spec['recipe_id'], live))
+        self.assertEqual({k for k in record if record[k] != stored[k]},
+                         {'vector_profile', 'vector_recipe', 'attestation_sha256'})
+        # Hybrid recall from the upgraded bundle finds the card by vector.
+        gen = self.head()
+        target_path = 'concepts/kestrel-perch.md'
+        with self.upgraded_bundle(new):
+            hit = self.hybrid_recall('zzqqxv nomatch', self.card_vector(gen[0], target_path),
+                                     authority=ExitStack(), host_root=new)
+        self.assertEqual((hit.store_format, hit.data_generation, hit.semantic_status),
+                         ('schema3', gen[0], 'complete'))
+        self.assertEqual(self.paths(hit)[0], target_path)
+
 
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
