@@ -36,6 +36,11 @@ MAX_BATCH_BYTES = 8 * 1024 * 1024
 #   snapshot across the build, so it runs on the caller's wall deadline,
 #   capped per source pass by ViewStore.prepare_generation. Its final source
 #   recheck reacquires both locks under a fresh _STEP_SECONDS deadline.
+# - Recall parity pages (compare_recall_corpus) hold no writer lock; each page
+#   is one pinned v6 snapshot under _STEP_SECONDS. Only the parity seal
+#   quiesces writers: it holds the installer, operation and sync owner locks
+#   (convert_reader_v5 order, without the provider lane) for at most
+#   _STEP_SECONDS, never waits for them, and reports the held time.
 _STEP_SECONDS = 3.0
 # Writer-receipt catch-up (design 8.2-6) replays at most this many changed
 # paths per step; more changes take the full path/SHA recapture instead.
@@ -1090,7 +1095,8 @@ def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin
             raise IndexContractError('migration_snapshot_changed')
         paired = 'sidecar_corpus' in legacy
         side_table = fts_table(generation['ordinal'], sidecar=True)
-        full_paths, sources = legacy['fts_paths'], legacy['fts_sources']
+        # An unpaired (no sidecar) generation records no per-path FTS origin.
+        full_paths, sources = legacy['fts_paths'], legacy.get('fts_sources')
         side_json = json.dumps(list(legacy['active_fts']['sidecar']), ensure_ascii=False,
                                separators=(',', ':'))
     if paired and sidecar_fts_commitment(snapshot, endpoint=endpoint, decision=decision,
@@ -1200,9 +1206,11 @@ _INTENT_KEYS = frozenset(('schema', 'migration_id', 'project', 'state', 'state_n
 #   copying   - phase copying, or copied with verification, corpora, candidate
 #               build or private publish still pending (restart included)
 #   caught_up - complete commitments and a recorded private candidate head
-# Later states (shadow_verified, reader_ready, switched) belong to later
-# steps. deferred/retry are restart_required plus a reason code, not states.
-_SHADOW_STATES = ('copying', 'caught_up')
+#   shadow_verified - caught_up plus a sealed recall parity record bound to
+#               that head, its source observation and revision (U5 receipt)
+# Later states (reader_ready, switched) belong to later steps. deferred/retry
+# are restart_required plus a reason code, not states.
+_SHADOW_STATES = ('copying', 'caught_up', 'shadow_verified')
 # Source changes proved by a later step; the copy restarts from a fresh scan.
 _SHADOW_RESTART_REASONS = frozenset(('migration_snapshot_changed', 'migration_source_revision_unproved'))
 # Writer races on the reader store itself; the next step re-proves the source.
@@ -1210,7 +1218,10 @@ _SHADOW_RETRY_REASONS = frozenset(('reader_store_changed',))
 
 
 def _shadow_state(intent):
-    return 'caught_up' if intent.get('published') is not None else 'copying'
+    if intent.get('published') is None:
+        return 'copying'
+    parity = _bound_parity(intent)
+    return 'shadow_verified' if parity is not None and parity['seal'] is not None else 'caught_up'
 
 
 def _stamp(intent):
@@ -1235,6 +1246,7 @@ _MIGRATION_REASONS = frozenset((
     'reader_component_changed', 'reader_lifetime_busy', 'reader_selection_changed',
     'reader_selection_unproved', 'reader_snapshot_changed', 'reader_store_changed',
     'reader_sidecar_revision_unproved', 'fts_deadline_exceeded'))
+_MIGRATION_REASONS |= frozenset(('sync_owner_busy', 'migration_parity_incomplete'))
 _MIGRATION_REASONS |= frozenset(('migration_vector_invalid', 'migration_vector_spec_invalid',
                                  'migration_vector_queries_invalid', 'migration_vectors_incomplete',
                                  'migration_semantic_parity_mismatch'))
@@ -1629,7 +1641,7 @@ def _migration_intent(path, *, project, state, node, store):
     if (not isinstance(intent, dict) or not _INTENT_KEYS <= set(intent)
             or set(intent) - _INTENT_KEYS - {'verification', 'corpora', 'restart_required', 'published',
                                             'prepared', 'revision_check', 'catch_up', 'static',
-                                            'vectors'}
+                                            'vectors', 'parity'}
             or intent['schema'] != 'memvane-shadow-migration-v1'
             or intent['project'] != str(project) or intent['state'] != str(state)
             or intent['state_node'] != journal._node(state)
@@ -1706,10 +1718,12 @@ def _migration_intent(path, *, project, state, node, store):
                 or prepared['candidate_incarnation'] != store._incarnation
                 or (published is not None and published['generation'] != prepared['generation'])):
             raise IndexContractError('migration_intent_invalid')
-    if intent['migration_state'] not in _SHADOW_STATES or intent['migration_state'] != _shadow_state(intent):
-        raise IndexContractError('migration_intent_invalid')
     if intent.get('vectors') is not None:
         _check_vector_record(intent['vectors'])
+    if intent.get('parity') is not None:
+        _check_parity_record(intent['parity'])
+    if intent['migration_state'] not in _SHADOW_STATES or intent['migration_state'] != _shadow_state(intent):
+        raise IndexContractError('migration_intent_invalid')
     return intent
 
 
@@ -2597,11 +2611,14 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
 def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None):
     """Run at most one bounded step of the private shadow state machine per call.
 
-    copy -> verification -> base/sidecar corpus -> prepare -> publish -> caught_up.
+    copy -> verification -> base/sidecar corpus -> prepare -> publish ->
+    caught_up -> recall parity pages -> parity seal -> shadow_verified.
     Each call performs one of them; the selected reader never changes. With a
-    ``vector_spec`` the caught-up head also pages compatible legacy vectors
+    ``vector_spec`` the caught-up head first pages compatible legacy vectors
     (advance_vectors); without one, or with nothing compatible, the lexical
-    shadow is complete on its own.
+    shadow is complete on its own. The seal step reports ``quiesce_ms``; a busy
+    writer or an exceeded quiesce bound returns stage ``retry`` with ``reason``
+    and leaves the intent unchanged.
     """
     import laya_blob_values as values
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -2615,6 +2632,7 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
     path = state / _INTENT
     intent = _migration_intent(path, project=project, state=state, node=node, store=store)
     args = dict(project=project, executing_root=executing_root, deadline=deadline)
+    extra = {}
 
     def step(stage, current):
         return {'stage': stage, 'migration_state': current['migration_state'], 'intent': current}
@@ -2665,13 +2683,22 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
             def run():
                 return advance_vectors(store, vector_spec=vector_spec, **args)
             stage = 'vectors'
+        elif published is not None and intent['migration_state'] == 'caught_up':
+            parity = _bound_parity(intent)
+            if parity is None or not parity['compared']:
+                stage, run = 'parity', lambda: _advance_parity(store, **args)
+            else:
+                def run():
+                    updated, extra['quiesce_ms'] = _seal_parity(store, **args)
+                    return updated
+                stage = 'parity_seal'
         elif published is not None:
             # Read-only replay: re-proves the recorded private head against the
             # unchanged source under the step deadline, without the cut.
             def run():
                 publish_shadow_generation(store, published['generation'], **args)
                 return reread()
-            stage = 'caught_up'
+            stage = 'shadow_verified'
         elif prepared is None:
             # The lock-free build runs on the caller's wall deadline; only the
             # intent pointer is written under both locks afterwards.
@@ -2687,15 +2714,255 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
                 return reread()
             stage = 'publish'
     try:
-        return retryable(stage, run)
-    except (IndexContractError, values.BlobStoreError) as exc:
+        return {**retryable(stage, run), **extra}
+    except ValueError as exc:
         reason = str(exc)
-        if reason not in _SHADOW_RESTART_REASONS:
+        if stage == 'parity_seal' and reason in _PARITY_SEAL_RETRY_REASONS:
+            # The seal released the writer again; nothing was written.
+            return {**step('retry', reread()), 'reason': reason}
+        if (not isinstance(exc, (IndexContractError, values.BlobStoreError))
+                or reason not in _SHADOW_RESTART_REASONS):
             raise
         # A second full proof may not fit this step. Persist only a request;
         # the next step re-proves the source before resetting any cursor.
         return step('restart_pending', _mark_shadow_restart(
             store, project, intent, min(wall_deadline, time.monotonic() + _STEP_SECONDS), reason))
+
+
+# Recall parity (U5). Pages run lock-free: each compare_recall_corpus page is
+# one pinned v6 snapshot bound to the intent observation, so a writer commit
+# inside a page cannot change its result and a commit between pages fails the
+# next page (or the seal) as migration_snapshot_changed. A change restarts the
+# whole parity instead of only affected pages: it replaces the private head
+# (catch-up builds a new generation), and combined recall ranks every prompt
+# against the whole corpus, so one changed member can move any prompt. The
+# discarded work is counted (``attempt``, ``discarded_pages``). The record is
+# bound like ``vectors``: a restart replaces ``published`` and the record stops
+# applying without any restart path clearing it.
+_PARITY_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'observation',
+                  'source_revision', 'vectors', 'cursor', 'pages', 'members', 'prompts',
+                  'digest', 'compared', 'seal', 'attempt', 'discarded_pages')
+# Seal outcomes that leave the intent unchanged and only ask for a later step.
+_PARITY_SEAL_RETRY_REASONS = frozenset(('sync_owner_busy', 'reader_snapshot_deadline'))
+
+
+def _check_parity_record(record):
+    """Shape only; _bound_parity decides whether a record still applies."""
+    import laya_blob_values as values
+    import laya_view_values as view_values
+    values.exact(record, _PARITY_RECORD)
+    values.identifier(record['migration_id'], values.UUID)
+    values.identifier(record['candidate_incarnation'], values.UUID)
+    if not isinstance(record['generation'], str) or not view_values.GEN_ID.fullmatch(record['generation']):
+        raise IndexContractError('migration_intent_invalid')
+    values.identifier(record['observation'])
+    _check_source_revision(record['source_revision'])
+    values.identifier(record['digest'])
+    for key in ('vectors', 'seal'):
+        if record[key] is not None:
+            values.identifier(record[key])
+    pages = values.integer(record['pages'], 0, MAX_DOCS + 1)
+    values.integer(record['members'], 0, MAX_DOCS)
+    values.integer(record['prompts'], 0, pages * _PARITY_PROMPTS)
+    values.integer(record['attempt'], 1)
+    values.integer(record['discarded_pages'], 0)
+    cursor = record['cursor']
+    if (type(record['compared']) is not bool
+            or record['compared'] != (pages > 0 and cursor is None)
+            or (record['seal'] is not None and not record['compared'])
+            or (cursor is not None and (type(cursor) is not dict or set(cursor) != {'after', 'observation'}
+                                        or not _valid_relative_path(cursor['after'])
+                                        or cursor['observation'] != record['observation']))):
+        raise IndexContractError('migration_intent_invalid')
+    return record
+
+
+def _complete_vectors(intent):
+    """Digest of a complete vector record bound to the private head, else None."""
+    record, receipt = intent.get('vectors'), intent.get('published')
+    if (record is None or receipt is None or not record['complete']
+            or record['migration_id'] != intent['migration_id']
+            or record['generation'] != receipt['generation']
+            or record['candidate_incarnation'] != receipt['candidate_incarnation']):
+        return None
+    return record['digest']
+
+
+def _bound_parity(intent):
+    """The parity record bound to the current head, source and vectors, else None."""
+    record, receipt = intent.get('parity'), intent.get('published')
+    if (record is None or receipt is None or record['migration_id'] != intent['migration_id']
+            or record['generation'] != receipt['generation']
+            or record['candidate_incarnation'] != receipt['candidate_incarnation']
+            or record['observation'] != intent['observation']
+            or record['source_revision'] != intent['source_revision']
+            or record['vectors'] != _complete_vectors(intent)):
+        return None
+    return record
+
+
+def _initial_parity(intent):
+    import laya_blob_values as values
+    previous, receipt = intent.get('parity'), intent['published']
+    again = previous is not None and previous['migration_id'] == intent['migration_id']
+    vectors = _complete_vectors(intent)
+    return {'migration_id': intent['migration_id'], 'generation': receipt['generation'],
+            'candidate_incarnation': receipt['candidate_incarnation'],
+            'observation': intent['observation'], 'source_revision': intent['source_revision'],
+            'vectors': vectors, 'cursor': None, 'pages': 0, 'members': 0, 'prompts': 0,
+            'compared': False, 'seal': None,
+            'digest': values.digest('memvane-shadow-recall-parity-v1', {
+                'migration': intent['migration_id'], 'published': receipt, 'vectors': vectors}),
+            'attempt': previous['attempt'] + 1 if again else 1,
+            'discarded_pages': previous['discarded_pages'] + previous['pages'] if again else 0}
+
+
+def _fold_parity(record, page):
+    import laya_blob_values as values
+    if page['observation'] != record['observation']:
+        raise IndexContractError('migration_snapshot_changed')
+    if record['pages'] >= MAX_DOCS + 1:
+        raise IndexContractError('migration_membership_limit')
+    nxt = page['next']
+    digest = values.digest('memvane-shadow-recall-parity-page-v1', {
+        'previous': record['digest'], 'page': page['digest'],
+        'next': None if nxt is None else nxt['after']})
+    return {**record, 'cursor': nxt, 'pages': record['pages'] + 1,
+            'members': record['members'] + page['members'], 'prompts': record['prompts'] + page['prompts'],
+            'digest': digest, 'compared': nxt is None}
+
+
+def _advance_parity(store, *, project, executing_root, deadline):
+    """Compare one recall corpus page and fold its digest into the intent."""
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import project_dir
+    from laya_product_install import _install_lock
+    project, state, decision, node = _migration_state(project, store)
+    path = state / _INTENT
+    # This read only picks the cursor; compare_recall_corpus re-proves the
+    # head under both locks and the write below rechecks the intent.
+    intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+    if intent['migration_state'] != 'caught_up':
+        raise IndexContractError('migration_publication_unrecorded')
+    record = _bound_parity(intent) or _initial_parity(intent)
+    if record['compared']:
+        raise IndexContractError('migration_intent_changed')
+    page = compare_recall_corpus(store, record['generation'], project=project,
+        executing_root=executing_root, after=record['cursor'], deadline=deadline)
+    updated = _stamp({**intent, 'parity': _fold_parity(record, page)})
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    with _migration_trace(state, 'parity') as trace, _install_lock(state), ledger._operation_lock(marker):
+        if _migration_state(project, store) != (project, state, decision, node):
+            raise IndexContractError('migration_route_changed')
+        current = _migration_intent(path, project=project, state=state, node=node, store=store)
+        trace['migration'] = current['migration_id']
+        _migration_event(state, trace, 'attempt')
+        if current != intent:
+            raise IndexContractError('migration_intent_changed')
+        if time.monotonic() >= deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        ledger._write(path, updated, replace=True)
+        trace['outcome'] = 'parity_page'
+    return updated
+
+
+def _parity_seal_digest(intent, record):
+    import laya_blob_values as values
+    catch_up = intent.get('catch_up')
+    return values.digest('memvane-shadow-parity-receipt-v1', {
+        'migration': intent['migration_id'], 'published': intent['published'],
+        'catch_up': None if catch_up is None else catch_up['digest'], 'vectors': record['vectors'],
+        'recall': {key: record[key] for key in ('digest', 'pages', 'members', 'prompts')}})
+
+
+def _seal_parity(store, *, project, executing_root, deadline):
+    """Final catch-up proof under a bounded writer quiesce, then seal the receipt.
+
+    Holds the installer, operation and sync owner locks (none of them waits)
+    while it re-proves the source observation and revision the parity pages
+    compared and the private head, so no writer commit can fall between that
+    proof and the sealed intent. Returns (intent, held milliseconds).
+    """
+    from contextlib import ExitStack
+    from pathlib import Path
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import project_dir
+    from laya_index_sync import _owner_lock
+    from laya_product_install import _install_lock
+    project, state, decision, node = _migration_state(project, store)
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    path = state / _INTENT
+    with _migration_trace(state, 'parity_seal') as trace, ExitStack() as locks:
+        locks.enter_context(_install_lock(state))
+        locks.enter_context(ledger._operation_lock(marker))
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+            raise IndexContractError('sync_owner_busy')
+        held = time.monotonic()
+        quiesce = min(deadline, held + _STEP_SECONDS)
+        if _migration_state(project, store) != (project, state, decision, node):
+            raise IndexContractError('migration_route_changed')
+        intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+        trace['migration'] = intent['migration_id']
+        _migration_event(state, trace, 'attempt')
+        _completed_shadow_commitments(intent)
+        record, receipt = _bound_parity(intent), intent.get('published')
+        if record is None or not record['compared'] or record['seal'] is not None:
+            raise IndexContractError('migration_parity_incomplete')
+        with leases.resolve_endpoint(project, action='recall', host_root=Path(executing_root)) as endpoint:
+            if (endpoint.endpoint_id != intent['endpoint_id']
+                    or endpoint.record['install_id'] != intent['install_id']):
+                raise IndexContractError('migration_endpoint_changed')
+            head = store.head(store.capture_view(intent['worktree_id'], deadline=quiesce))
+            if (head['gen_id'] != receipt['generation'] or head['view_id'] != receipt['view_id']
+                    or head['epoch'] != receipt['epoch']
+                    or head['incarnation'] != receipt['candidate_incarnation']):
+                raise IndexContractError('migration_snapshot_changed')
+            with readers.inspect_warm_snapshot(endpoint, deadline=quiesce) as snapshot:
+                page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                         after=None, deadline=quiesce)
+                if page['observation'] != intent['observation']:
+                    raise IndexContractError('migration_snapshot_changed')
+                if _source_revision(snapshot) != intent['source_revision']:
+                    raise IndexContractError('migration_source_revision_unproved')
+        updated = _stamp({**intent, 'parity': {**record, 'seal': _parity_seal_digest(intent, record)}})
+        if time.monotonic() >= quiesce or ledger._read_json(path) != intent:
+            raise IndexContractError('reader_snapshot_deadline')
+        ledger._write(path, updated, replace=True)
+        trace['outcome'] = 'shadow_verified'
+        return updated, round((time.monotonic() - held) * 1000, 3)
+
+
+def shadow_parity_receipt(state, *, candidate, candidate_incarnation):
+    """The sealed U5 parity receipt for exactly this candidate, else None.
+
+    Returns only values sealed in the shadow intent; it re-proves nothing
+    against the live source (the reader CAS and switch own those checks).
+    Absent, unsealed, stale, foreign or unreadable intents return None, which
+    the journal CAS refuses as ``reader_parity_unproved``.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+    import laya_ledger_common as ledger
+    from laya_blob_store import _db_file
+    try:
+        state, candidate = Path(state), Path(candidate)
+        intent = ledger._read_json(state / _INTENT)
+        if not isinstance(intent, dict) or not isinstance(intent.get('published'), dict):
+            return None
+        store = SimpleNamespace(_path=candidate, _incarnation=candidate_incarnation,
+                                _policy=intent['published'].get('policy_digest'))
+        intent = _migration_intent(state / _INTENT, project=intent.get('project'), state=state,
+                                   node=_db_file(candidate), store=store)
+        record = _bound_parity(intent)
+        if intent['migration_state'] != 'shadow_verified' or record is None or record['seal'] is None:
+            return None
+        return {'migration_id': intent['migration_id'], 'generation': record['generation'],
+                'digest': record['seal'], 'candidate': str(candidate),
+                'candidate_incarnation': record['candidate_incarnation']}
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError):
+        return None
 
 
 # Compatible legacy vectors (design 8.2-5, decision K5). The migrated

@@ -1097,13 +1097,112 @@ class CatchupChecks(unittest.TestCase):
             self.assertEqual(published['intent']['prepared']['generation'], generation)
             self.assertEqual((slots(), store.head(handle)), (2, head))
             caught = intent_path.read_bytes()
-            with mock.patch.object(readers, 'reader_publish_cut',
-                                   side_effect=AssertionError('caught-up step acquired publication cut')):
-                again = step()
-            self.assertEqual(again['stage'], 'caught_up')
-            self.assertEqual(again['migration_state'], 'caught_up')
+            sync = importlib.import_module('laya_index_sync')
+            queue = Path(seed.reader.journal.select_route(str(case.project), action='recall')['queuePath'])
+
+            def receipt():
+                return migration.shadow_parity_receipt(case.state, candidate=candidate,
+                                                       candidate_incarnation=store._incarnation)
+
+            # caught_up is not parity. A recall difference on a corpus page
+            # raises and is never recorded, so no receipt can be sealed.
+            self.assertIsNone(receipt())
+            with mock.patch.object(migration, 'compare_combined_lexical_prompts',
+                                   side_effect=migration.IndexContractError('migration_recall_parity_mismatch')):
+                with self.assertRaisesRegex(Exception, 'migration_recall_parity_mismatch'):
+                    step()
             self.assertEqual(intent_path.read_bytes(), caught)
+            self.assertIsNone(receipt())
+
+            # Parity pages: one bounded page per step, no publication cut and
+            # no writer lock (the test holds the sync owner throughout).
+            stages = []
+            with mock.patch.object(migration, '_PARITY_MEMBERS', 1), \
+                    mock.patch.object(readers, 'reader_publish_cut',
+                                      side_effect=AssertionError('parity step acquired publication cut')), \
+                    sync._owner_lock(queue) as owned:
+                self.assertTrue(owned)
+                for _ in range(10):
+                    paged = step()
+                    stages.append(paged['stage'])
+                    if paged['intent']['parity']['compared']:
+                        break
+            first_parity = paged['intent']['parity']
+            members = store._db.execute('SELECT COUNT(*) FROM wiki_members WHERE gen_id=?',
+                                        (generation,)).fetchone()[0]
+            self.assertEqual(set(stages), {'parity'}, stages)
+            self.assertEqual(paged['migration_state'], 'caught_up')
+            self.assertEqual((first_parity['members'], first_parity['attempt'], first_parity['discarded_pages']),
+                             (members, 1, 0))
+            self.assertGreaterEqual(first_parity['pages'], members)
+            self.assertIsNone(first_parity['seal'])
+            self.assertIsNone(receipt())
+
+            # Seal: a busy writer is never waited on; nothing is written.
+            compared = intent_path.read_bytes()
+            with sync._owner_lock(queue) as owned:
+                self.assertTrue(owned)
+                busy = step()
+            self.assertEqual((busy['stage'], busy['reason'], busy['migration_state']),
+                             ('retry', 'sync_owner_busy', 'caught_up'))
+            self.assertEqual(intent_path.read_bytes(), compared)
+            # The quiesce bound is exceeded: the seal releases the writer and
+            # leaves the compared parity for a later retry.
+            actual_capture = migration.capture_effective
+            def slow_capture(*args, **kwargs):
+                result = actual_capture(*args, **kwargs)
+                time.sleep(1.05)
+                return result
+            with mock.patch.object(migration, '_STEP_SECONDS', 1.0), \
+                    mock.patch.object(migration, 'capture_effective', side_effect=slow_capture):
+                slow = step()
+            self.assertEqual((slow['stage'], slow['reason'], slow['migration_state']),
+                             ('retry', 'reader_snapshot_deadline', 'caught_up'))
+            self.assertEqual(intent_path.read_bytes(), compared)
+            with sync._owner_lock(queue) as owned:
+                self.assertTrue(owned)
+            # SIGKILL right before the seal write leaves the compared intent.
+            crash('shadow-intent-kill', 'shadow-step-before-intent')
+            self.assertEqual(intent_path.read_bytes(), compared)
+            self.assertIsNone(receipt())
+
+            sealed = step()
+            self.assertEqual((sealed['stage'], sealed['migration_state']), ('parity_seal', 'shadow_verified'))
+            self.assertIsInstance(sealed['quiesce_ms'], float)
+            self.assertGreaterEqual(sealed['quiesce_ms'], 0)
+            print('quiesce_ms', sealed['quiesce_ms'], 'pages', first_parity['pages'], flush=True)
+            proved = receipt()
+            self.assertEqual(proved, {'migration_id': started['migration_id'], 'generation': generation,
+                                      'digest': sealed['intent']['parity']['seal'], 'candidate': str(candidate),
+                                      'candidate_incarnation': store._incarnation})
+            self.assertIsNone(migration.shadow_parity_receipt(case.state, candidate=candidate,
+                                                              candidate_incarnation='0' * 32))
+            verified = intent_path.read_bytes()
+            with mock.patch.object(readers, 'reader_publish_cut',
+                                   side_effect=AssertionError('verified step acquired publication cut')):
+                again = step()
+            self.assertEqual((again['stage'], again['migration_state']), ('shadow_verified', 'shadow_verified'))
+            self.assertEqual(intent_path.read_bytes(), verified)
+            self.assertEqual(receipt(), proved)
             self.assertEqual((slots(), store.head(handle)), (2, head))
+            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+
+            # A writer commit after the receipt invalidates it: copying again,
+            # and the next parity starts over with the discarded pages counted.
+            self.assertEqual(exclude_with_fresh_writer(case.WIKI + '/decisions/kestrel-plan.md'), 'excluded')
+            pending = step()
+            self.assertEqual((pending['stage'], pending['migration_state']), ('restart_pending', 'copying'))
+            self.assertIsNone(receipt())
+            for _ in range(40):
+                resumed = step()
+                if resumed['migration_state'] == 'caught_up':
+                    break
+            self.assertEqual(resumed['migration_state'], 'caught_up')
+            self.assertIsNone(receipt())
+            restarted = step()
+            self.assertEqual(restarted['stage'], 'parity')
+            self.assertEqual((restarted['intent']['parity']['attempt'],
+                              restarted['intent']['parity']['discarded_pages']), (2, first_parity['pages']))
             self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
             self.assertTrue(store.verify_views())
 
@@ -1665,7 +1764,7 @@ class CatchupChecks(unittest.TestCase):
             caught_up, stages = run_until(lambda result: result['migration_state'] == 'caught_up', limit=80)
             self.assertEqual(stages[-2:], ['prepare', 'publish'])
             again = step()
-            self.assertEqual(again['stage'], 'caught_up')
+            self.assertEqual(again['stage'], 'parity')
             receipt = again['intent']['published']
             current, live_paths = source_now()
             self.assertEqual(receipt['source_revision'], current)

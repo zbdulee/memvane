@@ -23,7 +23,7 @@ test('U10 persisted schema3 reader endpoint, journal CAS and epoch floor', () =>
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.status === null ? JSON.stringify({ signal: result.signal })
       : result.stdout + result.stderr);
-    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 9} tests?\\b`));
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 10} tests?\\b`));
     assert.match(result.stderr, /\nOK\n/);
   } finally {
     removeTemp(home);
