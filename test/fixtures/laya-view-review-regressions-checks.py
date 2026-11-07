@@ -147,7 +147,10 @@ class ReaderReviewChecks(unittest.TestCase):
         case = self.compose()
         store, _, _, _, _, profile, _, pin = case.ready()
         baseline = store.search(pin, 'hello', 10)
-        original_search, original_read = store.search, store._read_generation
+        # The semantic lane's first store read is _read_pinned: a pin reuses its
+        # last full verification while no commit reached the store, so
+        # _read_generation alone may never run after the lexical lane.
+        original_search, original_read = store.search, store._read_pinned
         clock, lexical_done, sqlite_errors = [100.0], [], []
 
         def lexical(*args, **kwargs):
@@ -177,7 +180,7 @@ class ReaderReviewChecks(unittest.TestCase):
 
         with mock.patch('time.monotonic', side_effect=lambda: clock[0]), \
                 mock.patch.object(store, 'search', side_effect=lexical), \
-                mock.patch.object(store, '_read_generation', side_effect=interrupt_semantic):
+                mock.patch.object(store, '_read_pinned', side_effect=interrupt_semantic):
             result = store.search_hybrid(pin, 'hello', [1.0, 0.0], 10,
                                          profile_id=profile, deadline_seconds=2)
         self.emit(case='actual-sqlite-interrupt-control', sqlite_errors=sqlite_errors,

@@ -831,7 +831,7 @@ class NoActivation(CheckoutCase):
                 for top in tops for path in (top, *top.rglob('*'))
                 for info in (os.lstat(path),)}
 
-    def test_api_writes_nothing_and_no_live_route_uses_it(self):
+    def test_api_writes_nothing_and_only_named_paths_reach_candidates(self):
         linked = self.base / 'linked'
         self.git(self.root, 'worktree', 'add', '-q', '-b', 'side', str(linked))
         tops = [self.base]
@@ -853,16 +853,77 @@ class NoActivation(CheckoutCase):
                              'laya_view_schema', 'laya_view_fts',
                              'laya_view_values', 'laya_view_store', 'laya_view_reader',
                              'laya_view_fill', 'laya_view_vectors', 'laya_shadow_migration'}
-        users = [str(path.relative_to(REPO))
-                 for path in [*(REPO / 'core').rglob('*.py'), REPO / 'hooks/run-hook',
-                              *(REPO / 'hermes_adapter').rglob('*.py')]
-                 if path.stem not in candidate_modules
-                 and any(name in path.read_text(encoding='utf-8', errors='replace')
-                         for name in candidate_modules)]
-        self.assertEqual(users, ['core/laya_reader_dispatch.py'],
-                         'only the named reader adapter may reach candidate APIs')
+        users = sorted(str(path.relative_to(REPO))
+                       for path in [*(REPO / 'core').rglob('*.py'), REPO / 'hooks/run-hook',
+                                    *(REPO / 'hermes_adapter').rglob('*.py')]
+                       if path.stem not in candidate_modules
+                       and any(name in path.read_text(encoding='utf-8', errors='replace')
+                               for name in candidate_modules))
+        # Every module outside the candidate set that names one, the functions
+        # that import it, and the condition under which they run. No module
+        # imports a candidate module at module level, so loading a hook module
+        # never loads the candidate store.
+        reaches = {
+            # schema3 recall adapter: read-only ViewStore pin and query values,
+            # only for an endpoint whose journal record is store_format schema3.
+            'core/laya_reader_dispatch.py': {
+                '_approved_profile_matches', 'approved_query_vector', '_issue_candidate',
+                'query_endpoint', '_query_persisted_schema3'},
+            # schema3 endpoint record: shape constants, the read-only view pin,
+            # the shadow parity receipt of the v6 -> schema3 CAS, and the sync
+            # owner's resettle of a record that is already schema3.
+            'core/laya_journal_reader.py': {
+                '_schema3_shape', '_schema3_pin', '_parity_receipt', '_adopted_vector_spec'},
+            # Writer plan of a schema3-selected record: one query_only read of
+            # the store header and main worktree row.
+            'core/laya_writer_open_plan.py': {'_schema3_store'},
+            # Write-time dedup retrieval when the selected reader is schema3:
+            # read-only pinned exact search.
+            'core/wiki_compile_retrieval.py': {'_schema3_cosines'},
+            # The candidate writers: the schema3 sync owner's publish
+            # (_run_schema3, schema3 selected) and the shadow migration driver
+            # (shadow_pass behind _shadow_gate: journal v5, v6 selected, no
+            # rollback hold) plus its explicit resume.
+            'core/laya_product_sync_worker.py': {
+                '_publish_schema3', '_schema3_linked_worktree', '_publish_schema3_view',
+                '_schema3_wiki_cards', '_schema3_stage', '_schema3_vector_context',
+                '_schema3_vector_spec', '_schema3_chunker', '_schema3_vectors',
+                'shadow_pass', '_shadow_gate', '_shadow_open', '_shadow_step',
+                '_shadow_vector_spec', '_restart_shadow', '_orphaned_intent',
+                '_shadow_rewake', 'resume_shadow_migration'},
+            # Recall hook receipt while the shadow migration waits at
+            # shadow_verified/reader_ready on a v5 journal: reads one page of
+            # the selected v6 snapshot (capture_effective); opens no view store.
+            'core/laya_bridge_observer.py': {'_probe_hook_reader'},
+            # Explicit reader status, approved rollback and approved migration
+            # resume actions; hooks and workers never run them.
+            'core/setup_entry.py': {'main'},
+        }
+        self.assertEqual(users, sorted(reaches),
+                         'a new candidate API user needs a stated condition here')
+
+        def importing_functions(node, function, found):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.ImportFrom):
+                    names = {child.module}
+                elif isinstance(child, ast.Import):
+                    names = {item.name for item in child.names}
+                else:
+                    names = set()
+                if names & candidate_modules:
+                    found.add(function)
+                importing_functions(child, child.name if isinstance(
+                    child, (ast.FunctionDef, ast.AsyncFunctionDef)) else function, found)
+            return found
+
+        for rel, functions in reaches.items():
+            tree = ast.parse((REPO / rel).read_text(encoding='utf8'))
+            self.assertEqual(importing_functions(tree, None, set()), functions, rel)
         adapter=ast.parse((REPO/'core/laya_reader_dispatch.py').read_text(encoding='utf8'))
-        allowed={'laya_blob_values':{'profile'},'laya_view_vectors':{'query_values'},
+        # BlobStoreError and DEFERRED are the persisted schema3 query's error
+        # class and its deferred-reason set: values, not writers.
+        allowed={'laya_blob_values':{'profile','BlobStoreError'},
+                 'laya_view_vectors':{'query_values','DEFERRED'},
                  'laya_view_store':{'ViewStore'}}
         forbidden_calls={'create','open','register_worktree','ingest_card','put_fingerprint',
             'put_attestation','register_recipe','register_profile','put_chunk_set','put_embedding_set',

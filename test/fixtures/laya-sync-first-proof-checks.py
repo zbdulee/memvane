@@ -111,6 +111,34 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def trace(self,calls):return self.fixture.fixture.fixture.trace(calls)
 
+    @contextmanager
+    def shadow_spans(self,calls,spans):
+        """Record which traced opens belong to ``run``'s post-sync shadow pass.
+
+        ``run`` gives the shadow migration one pass after the sync owner is
+        released (``shadow_pass``). That pass reads the selected v6 snapshot
+        through the reader path, not the sync writer's owned connections.
+        """
+        original=self.worker.shadow_pass
+        def traced(*args,**kwargs):
+            start=len(calls)
+            try:return original(*args,**kwargs)
+            finally:spans.append((start,len(calls)))
+        with mock.patch.object(self.worker,'shadow_pass',side_effect=traced):yield
+
+    def assert_owned_sync_opens(self,calls,spans):
+        """Sync opens are writer-owned; shadow-pass opens are query-only reader opens.
+
+        ``_query_only_uri`` is ``mode=ro`` except on macOS Python 3.9, whose
+        Apple SQLite cannot open a WAL database read-only without ``-wal``.
+        """
+        from laya_index_a import _query_only_uri
+        inside={index for start,end in spans for index in range(start,end)}
+        sync=[call for index,call in enumerate(calls) if index not in inside]
+        shadow=[call for index,call in enumerate(calls) if index in inside]
+        self.assertTrue(sync and all(call['managed'] for call in sync),sync)
+        self.assertTrue(all(call['uri']==_query_only_uri(call['path']) for call in shadow),shadow)
+
     def publish_v4(self):
         tmp=self.case.journal.with_name('test-legacy-v4-image')
         tmp.write_bytes(self.v4);tmp.chmod(0o600);os.replace(tmp,self.case.journal)
@@ -354,12 +382,12 @@ class SyncFirstProofChecks(unittest.TestCase):
                 'dimension': profile['dimension']})
             service = mock.Mock()
             controller = SimpleNamespace(activity=lambda *_args: nullcontext())
-            calls, epochs = [], []
+            calls, epochs, spans = [], [], []
             def publish(_runtime, *, before_publish, **_kwargs):
                 before_publish()
                 epochs.append(self.J.inspect_journal(self.case.journal)['epoch'])
                 return {'state': 'unchanged'}
-            with self.trace(calls), \
+            with self.trace(calls), self.shadow_spans(calls, spans), \
                     mock.patch.object(self.worker, '_route_source', return_value=str(self.case.auto/'wiki')), \
                     mock.patch.object(self.worker, '_capacity_paths', return_value=None), \
                     mock.patch.object(self.worker, 'qa_sync_barrier', return_value=None), \
@@ -378,7 +406,8 @@ class SyncFirstProofChecks(unittest.TestCase):
                                          report={}, start_service=lambda *_a, **_kw: None)
             self.assertEqual(result, {'state': 'unchanged'})
             self.assertEqual(epochs, [proof['selectionEpoch'] + 1])
-            self.assertTrue(all(call['managed'] for call in calls), calls)
+            self.assertEqual(len(spans), 1)
+            self.assert_owned_sync_opens(calls, spans)
             service.stop.assert_called_once_with()
 
     def test_full_worker_actual_changed_card_is_fenced_published_and_acked(self):
@@ -759,7 +788,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             controller = SimpleNamespace(activity=lambda *_args: nullcontext())
             service = mock.Mock()
             original = LayaIndexRuntime.request_scan
-            marks, calls, baselines = [], [], []
+            marks, calls, baselines, spans = [], [], [], []
             def request_scan(runtime):
                 side=side_db()
                 marks.append(self.J.inspect_journal(self.case.journal)['newWriteSeen'])
@@ -768,7 +797,7 @@ class SyncFirstProofChecks(unittest.TestCase):
                           if table else None)
                 baselines.append(None if baseline is None else json.loads(baseline[0]))
                 return original(runtime)
-            with self.trace(calls), \
+            with self.trace(calls), self.shadow_spans(calls, spans), \
                     mock.patch.object(self.worker, '_route_source', return_value=roots), \
                     mock.patch.object(self.worker, '_capacity_paths',
                                       return_value=(str(self.case.catalog), str(self.case.store))), \
@@ -849,7 +878,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertIn(result['state'], ('indexed', 'unchanged', 'pending'), result)
             self.assertTrue(marks and all(marks))
             self.assertTrue(baselines and all(item is not None and item['rows'] >= 3 for item in baselines),baselines)
-            self.assertTrue(all(call['managed'] for call in calls), calls)
+            self.assert_owned_sync_opens(calls, spans)
             emit('capacity-owned-sync', result=result, managedContentOpens=len(calls))
 
     @contextmanager
