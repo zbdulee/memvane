@@ -1182,11 +1182,14 @@ def _after_sync(decision, proof, grants, result, *, store_format='v6'):
 # Shadow migration driver (design 8.2, U6). After a completed sync of a
 # selected main checkout, one pass advances the private schema3 candidate by
 # at most SHADOW_STEPS_PER_PASS steps: activation record -> candidate store
-# -> begin_migration -> advance_shadow ... -> shadow_verified. The selected
-# reader never changes here; reader_ready/switched belong to the
-# ``laya_shadow_migration.advance_reader_ready`` entry (U15), called once a
-# pass when it exists. Every step is crash-safe on its own: a SIGKILL leaves
-# the activation record, the candidate file or the intent, and the next pass
+# -> begin_migration -> advance_shadow ... -> shadow_verified. After a step
+# re-proves a verified head, ``laya_shadow_migration.advance_reader_ready``
+# (U15, found with getattr) runs once: shadow_verified -> reader_ready ends
+# the pass, and the next pass re-proves the head and runs the one reader CAS
+# (reader_ready -> switched). A switched install skips the driver; a CAS that
+# committed before its intent write is recorded by ``settle_switched``.
+# Every step is crash-safe on its own: a SIGKILL leaves the activation
+# record, the candidate file, the intent or the journal, and the next pass
 # resumes from whichever exists.
 # Provisional bounds (K8, measured by U8). The pass budget must hold one
 # lock-free prepare (about 25 s for 3,749 synthetic cards).
@@ -1298,12 +1301,14 @@ def shadow_pass(project, *, executing_root=None):
     """One bounded shadow migration pass for a selected main checkout.
 
     Returns ``{state, reason, steps, stages, migration_state}``. ``skipped``:
-    a guard refused and nothing was read from or written to the migration.
-    ``progressed``: the step cap was reached, or the head is verified and the
-    reader_ready entry is absent. ``waiting``: a step asked for a later retry,
-    the pass budget or a guard stopped it. ``error``: a step raised; only its
-    fixed code is kept. A pass past the guard emits one ``migration.driver``
-    event.
+    a guard refused and nothing was read from or written to the migration
+    (a schema3-selected install may only get its ``switched`` record, see
+    ``settle_switched``). ``progressed``: the step cap was reached, the head
+    is verified and the reader_ready entry is absent, or that entry recorded
+    reader_ready or switched. ``waiting``: a step asked for a later retry
+    (``reason`` is the switch gate code when it has one), the space
+    pre-check deferred it, the pass budget or a guard stopped it. ``error``: a step raised; only its fixed code is
+    kept. A pass past the guard emits one ``migration.driver`` event.
     """
     import event_log
     import laya_shadow_migration as migration
@@ -1312,6 +1317,12 @@ def shadow_pass(project, *, executing_root=None):
     bound, reason = _shadow_gate(project, executing_root)
     status = {'state': 'skipped', 'reason': reason, 'steps': 0, 'stages': [], 'migration_state': None}
     if bound is None:
+        settle = getattr(migration, 'settle_switched', None)
+        if reason == 'reader_schema3_selected' and callable(settle):
+            try:
+                settle(project)
+            except Exception:
+                pass  # The journal selection is the fact; the record can wait.
         return status
     decision, state = bound
     started = time.monotonic()
@@ -1329,11 +1340,13 @@ def shadow_pass(project, *, executing_root=None):
                     status.update(state='waiting', reason=reason or 'route_changed')
                     break
             ready = getattr(migration, 'advance_reader_ready', None)
-            if status['migration_state'] == 'shadow_verified':
+            retry_reason = None
+            if status['migration_state'] in ('shadow_verified', 'reader_ready') and callable(ready):
                 # The head was re-proved by this pass; U15 continues from it.
                 result = ready(store[0], project=Path(decision['projectRoot']),
                                executing_root=executing_root, deadline=deadline)
                 stage, current = result['stage'], result['migration_state']
+                retry_reason = result.get('reason')
             else:
                 stage, current, store = _shadow_step(decision, state, executing_root, store, deadline)
             status['steps'] += 1
@@ -1341,12 +1354,16 @@ def shadow_pass(project, *, executing_root=None):
             if current is not None:
                 status['migration_state'] = current
             if stage == 'retry':
-                status.update(state='waiting', reason='step_retry')
+                status.update(state='waiting', reason=retry_reason or 'step_retry')
                 break
-            if stage == 'reader_ready' or (current == 'shadow_verified' and not callable(ready)):
+            if (stage in ('reader_ready', 'switched')
+                    or (current in ('shadow_verified', 'reader_ready') and not callable(ready))):
                 break
     except Exception as exc:
-        status.update(state='error', reason=event_log.code(exc))
+        reason = event_log.code(exc)
+        # A space pre-check deferral wrote nothing; a later pass retries it.
+        deferred = reason in getattr(migration, '_DEFERRED_REASONS', ())
+        status.update(state='waiting' if deferred else 'error', reason=reason)
     finally:
         if store is not None:
             store[0].close()

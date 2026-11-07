@@ -1518,9 +1518,13 @@ _INTENT_KEYS = frozenset(('schema', 'migration_id', 'project', 'state', 'state_n
 #   caught_up - complete commitments and a recorded private candidate head
 #   shadow_verified - caught_up plus a sealed recall parity record bound to
 #               that head, its source observation and revision (U5 receipt)
-# Later states (reader_ready, switched) belong to later steps. deferred/retry
-# are restart_required plus a reason code, not states.
-_SHADOW_STATES = ('copying', 'caught_up', 'shadow_verified')
+#   reader_ready - shadow_verified plus a ``reader_ready`` record (U15): the
+#               schema3 target, the v6 CAS base and the release commit both
+#               hosts observed, bound to that sealed parity
+#   switched  - reader_ready plus the journal CAS result naming its target
+# The journal reader selection is the fact; the intent records it. deferred
+# and retry are restart_required plus a reason code, not states.
+_SHADOW_STATES = ('copying', 'caught_up', 'shadow_verified', 'reader_ready', 'switched')
 # Source changes proved by a later step; the copy restarts from a fresh scan.
 _SHADOW_RESTART_REASONS = frozenset(('migration_snapshot_changed', 'migration_source_revision_unproved'))
 # Writer races on the reader store itself; the next step re-proves the source.
@@ -1531,7 +1535,11 @@ def _shadow_state(intent):
     if intent.get('published') is None:
         return 'copying'
     parity = _bound_parity(intent)
-    return 'shadow_verified' if parity is not None and parity['seal'] is not None else 'caught_up'
+    if parity is None or parity['seal'] is None:
+        return 'caught_up'
+    if _bound_switched(intent) is not None:
+        return 'switched'
+    return 'reader_ready' if _bound_reader_ready(intent) is not None else 'shadow_verified'
 
 
 def _stamp(intent):
@@ -1558,6 +1566,12 @@ _MIGRATION_REASONS = frozenset((
     'reader_sidecar_revision_unproved', 'fts_deadline_exceeded'))
 _MIGRATION_REASONS |= frozenset(('sync_owner_busy', 'migration_parity_incomplete',
                                  'migration_space_deferred'))
+_MIGRATION_REASONS |= frozenset(('switch_parity_missing', 'switch_catchup_stale', 'switch_bridge_missing',
+                                 'switch_hosts_unsupported', 'switch_bundle_mismatch', 'switch_lifecycle_busy',
+                                 'switch_layout_not_current', 'switch_selection_changed',
+                                 'switch_reader_ready_stale', 'initial_build_busy', 'learning_compute_busy',
+                                 'reader_hosts_pending', 'reader_bridge_unproved', 'stale_reader_cas',
+                                 'reader_transition_busy', 'reader_head_regressed', 'reader_parity_unproved'))
 _MIGRATION_REASONS |= frozenset(('migration_vector_invalid', 'migration_vector_spec_invalid',
                                  'migration_vector_queries_invalid', 'migration_vectors_incomplete',
                                  'migration_semantic_parity_mismatch'))
@@ -1567,7 +1581,7 @@ _MIGRATION_REASONS |= frozenset(('migration_vector_invalid', 'migration_vector_s
 # the logs skill renders progress as a position in this tuple. A restart
 # replays ``copy``; comparisons belong to ``parity`` and ``vectors``.
 MIGRATION_OPS = ('begin', 'copy', 'verification', 'base_corpus', 'sidecar_corpus',
-                 'prepare', 'publish', 'vectors', 'parity', 'parity_seal')
+                 'prepare', 'publish', 'vectors', 'parity', 'parity_seal', 'reader_ready', 'switch')
 # Reasons that leave intent and candidate as they were and only ask a later
 # step to try again; their terminal event outcome is ``deferred``.
 _DEFERRED_REASONS = frozenset(('migration_space_deferred',))
@@ -2021,7 +2035,7 @@ def _migration_intent(path, *, project, state, node, store):
     if (not isinstance(intent, dict) or not _INTENT_KEYS <= set(intent)
             or set(intent) - _INTENT_KEYS - {'verification', 'corpora', 'restart_required', 'published',
                                             'prepared', 'revision_check', 'catch_up', 'static',
-                                            'vectors', 'parity'}
+                                            'vectors', 'parity', 'reader_ready', 'switched'}
             or intent['schema'] != 'memvane-shadow-migration-v1'
             or intent['project'] != str(project) or intent['state'] != str(state)
             or intent['state_node'] != journal._node(state)
@@ -2102,6 +2116,10 @@ def _migration_intent(path, *, project, state, node, store):
         _check_vector_record(intent['vectors'])
     if intent.get('parity') is not None:
         _check_parity_record(intent['parity'])
+    if intent.get('reader_ready') is not None:
+        _check_ready_record(intent['reader_ready'])
+    if intent.get('switched') is not None:
+        _check_switched_record(intent['switched'])
     if intent['migration_state'] not in _SHADOW_STATES or intent['migration_state'] != _shadow_state(intent):
         raise IndexContractError('migration_intent_invalid')
     return intent
@@ -3344,13 +3362,401 @@ def shadow_parity_receipt(state, *, candidate, candidate_incarnation):
         intent = _migration_intent(state / _INTENT, project=intent.get('project'), state=state,
                                    node=_db_file(candidate), store=store)
         record = _bound_parity(intent)
-        if intent['migration_state'] != 'shadow_verified' or record is None or record['seal'] is None:
+        # reader_ready and switched keep the sealed parity they were proved on.
+        if (intent['migration_state'] not in ('shadow_verified', 'reader_ready', 'switched')
+                or record is None or record['seal'] is None):
             return None
         return {'migration_id': intent['migration_id'], 'generation': record['generation'],
                 'digest': record['seal'], 'candidate': str(candidate),
                 'candidate_incarnation': record['candidate_incarnation']}
     except (OSError, ValueError, RuntimeError, KeyError, TypeError):
         return None
+
+
+# Reader switch (U15, design 4.1-4.3, decision K1): shadow_verified ->
+# reader_ready -> switched, one sync-driver step each. The reader_ready step
+# proves every precondition under the lock bundle and records the schema3
+# target, the v6 CAS base and a fixed transition id; the next pass re-proves
+# them and runs the one journal CAS (laya_journal_reader.cas_reader). A gate
+# that does not hold returns stage ``retry`` with its code and writes nothing,
+# so the driver tries again on a later pass. Preconditions:
+#   1. the sealed U5 parity receipt of this candidate (switch_parity_missing);
+#   2. latest catch-up: under the sync owner lock the private head is the
+#      published one and the v6 source observation and revision are the ones
+#      the parity compared (switch_catchup_stale);
+#   3-4. a live loaded-reader receipt set from Claude and Codex at the current
+#      reader epoch and preferred v6 endpoint, inside its TTL
+#      (switch_bridge_missing; cas_reader rechecks it before the replace);
+#   5. no older-id Hermes copy (switch_hosts_unsupported);
+#   6. executing bundle = journal-selected bundle = receipt release commit
+#      (switch_bundle_mismatch); the receipts carry the release commit whose
+#      bundle ships the schema3 reader, so they are its capability proof;
+#   7. no bundle upgrade, state move or project-folder move in progress and
+#      the project folder is ``.memvane`` only (switch_lifecycle_busy,
+#      switch_layout_not_current).
+# Lock bundle (design 4.3-2): installer -> build owner -> operation ->
+# provider lane -> sync owner, never waiting. cas_reader takes the journal
+# transition lock itself. Each step holds it for at most _SWITCH_SECONDS.
+_SWITCH_SECONDS = 10.0
+_SWITCH_HOSTS = frozenset(('claude', 'codex'))
+_READY_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'parity_seal', 'observation',
+                 'source_revision', 'release_commit', 'capability', 'endpoint_id', 'store_incarnation',
+                 'worktree_binding', 'floor', 'expected_epoch', 'expected_endpoint', 'transition_id')
+_SWITCHED_RECORD = ('migration_id', 'endpoint_id', 'transition_id', 'reader_epoch', 'previous_endpoint')
+# Gate refusals and busy locks: nothing was written, a later pass retries.
+_SWITCH_RETRY = frozenset((
+    'switch_parity_missing', 'switch_catchup_stale', 'switch_bridge_missing', 'switch_hosts_unsupported',
+    'switch_bundle_mismatch', 'switch_lifecycle_busy', 'switch_layout_not_current',
+    'switch_selection_changed', 'switch_reader_ready_stale', 'sync_owner_busy', 'initial_build_busy',
+    'learning_compute_busy', 'reader_snapshot_deadline', 'reader_hosts_pending', 'reader_bridge_unproved',
+    'stale_reader_cas', 'reader_transition_busy', 'reader_head_regressed', 'reader_parity_unproved'))
+# Source changes seen by the catch-up recheck; advance_shadow restarts on them.
+_SWITCH_STALE = frozenset(('migration_snapshot_changed', 'migration_source_revision_unproved',
+                           'migration_endpoint_changed'))
+
+
+def _check_ready_record(record):
+    import laya_blob_values as values
+    import laya_view_values as view_values
+    from laya_product_bundle import COMMIT
+    values.exact(record, _READY_RECORD)
+    for key in ('migration_id', 'candidate_incarnation', 'store_incarnation'):
+        values.identifier(record[key], values.UUID)
+    for key in ('parity_seal', 'observation', 'endpoint_id', 'worktree_binding', 'expected_endpoint'):
+        values.identifier(record[key])
+    _check_source_revision(record['source_revision'])
+    values.integer(record['expected_epoch'], 1)
+    floor = record['floor']
+    values.exact(floor, ('view_id', 'epoch', 'ordinal'))
+    values.identifier(floor['view_id'])
+    values.integer(floor['epoch'], 1)
+    values.integer(floor['ordinal'], 1)
+    if (not isinstance(record['generation'], str) or not view_values.GEN_ID.fullmatch(record['generation'])
+            or not isinstance(record['release_commit'], str) or not COMMIT.fullmatch(record['release_commit'])
+            or record['capability'] != journal.SCHEMA3_CAPABILITY
+            or not isinstance(record['transition_id'], str)
+            or not re.fullmatch(r'[0-9a-f]{32}', record['transition_id'])):
+        raise IndexContractError('migration_intent_invalid')
+    return record
+
+
+def _check_switched_record(record):
+    import laya_blob_values as values
+    values.exact(record, _SWITCHED_RECORD)
+    values.identifier(record['migration_id'], values.UUID)
+    values.identifier(record['endpoint_id'])
+    values.identifier(record['previous_endpoint'])
+    values.integer(record['reader_epoch'], 2)
+    if not isinstance(record['transition_id'], str) or not re.fullmatch(r'[0-9a-f]{32}', record['transition_id']):
+        raise IndexContractError('migration_intent_invalid')
+    return record
+
+
+def _bound_reader_ready(intent):
+    """The reader_ready record bound to the current sealed parity, else None."""
+    record, parity = intent.get('reader_ready'), _bound_parity(intent)
+    if (record is None or parity is None or parity['seal'] is None
+            or record['migration_id'] != intent['migration_id'] or record['parity_seal'] != parity['seal']
+            or record['generation'] != parity['generation']
+            or record['candidate_incarnation'] != parity['candidate_incarnation']
+            or record['observation'] != intent['observation']
+            or record['source_revision'] != intent['source_revision']):
+        return None
+    return record
+
+
+def _bound_switched(intent):
+    """The switched record naming the bound reader_ready target, else None."""
+    record, ready = intent.get('switched'), _bound_reader_ready(intent)
+    if (record is None or ready is None or record['migration_id'] != intent['migration_id']
+            or record['endpoint_id'] != ready['endpoint_id']
+            or record['transition_id'] != ready['transition_id']
+            or record['previous_endpoint'] != ready['expected_endpoint']
+            or record['reader_epoch'] != ready['expected_epoch'] + 1):
+        return None
+    return record
+
+
+def _switched_intent(intent, selection):
+    return _stamp({**intent, 'switched': {
+        'migration_id': intent['migration_id'], 'endpoint_id': selection.preferred_endpoint,
+        'transition_id': selection.transition_id, 'reader_epoch': selection.epoch,
+        'previous_endpoint': selection.previous_endpoint}})
+
+
+def _cas_landed(ready, selection):
+    """The journal already selects exactly the recorded transition."""
+    return (selection.preferred_endpoint == ready['endpoint_id']
+            and selection.transition_id == ready['transition_id']
+            and selection.previous_endpoint == ready['expected_endpoint']
+            and selection.epoch == ready['expected_epoch'] + 1)
+
+
+def _switch_preconditions(project, state):
+    """Read-only lifecycle, layout and host gates (7, 5)."""
+    import os
+    import laya_bridge_readiness as bridge
+    import laya_fresh_wiki_origin as fresh
+    import laya_active_upgrade as active
+    import laya_bound_upgrade as bound
+    import laya_inactive_upgrade as inactive
+    import laya_project_dir_move as folder_move
+    import laya_state_move as state_move
+    import project_dir
+    if project_dir.layout(project) != 'current':
+        raise IndexContractError('switch_layout_not_current')
+    intents = (active.INTENT, bound.INTENT, inactive.INTENT, state_move.INTENT, folder_move.INTENT)
+    pointers = (state_move.POINTER, folder_move.POINTER)
+    if (fresh.upgrade_fenced(str(project)) or any(os.path.lexists(state / name) for name in intents)
+            or any(os.path.lexists(project_dir.runtime_file(project, name)) for name in pointers)):
+        raise IndexContractError('switch_lifecycle_busy')
+    try:
+        bridge._require_supported_hosts(_SWITCH_HOSTS)
+    except ValueError as exc:
+        raise IndexContractError('switch_hosts_unsupported') from exc
+
+
+def _transition_id(expected_endpoint, endpoint_id):
+    # Fixed per (base, target): a retry after a committed CAS is its replay.
+    return hashlib.sha256(('memvane-shadow-switch-v1\0%s\0%s' % (expected_endpoint, endpoint_id))
+                          .encode('ascii')).hexdigest()[:32]
+
+
+def _offer_sync(project):
+    """One existing laya-sync wake so the next pass follows; best effort."""
+    try:
+        import runtime_work
+        runtime_work.request('laya-sync', str(project), start=False)
+    except Exception:
+        pass  # The next edit or session start wakes the sync anyway.
+
+
+def _switch_step(store, *, project, executing_root, deadline, expected):
+    """Prove the switch preconditions under the lock bundle; record or CAS.
+
+    ``expected`` is the shadow_verified (record reader_ready) or reader_ready
+    (journal CAS, then record switched) intent read by the caller. Returns
+    the written intent, or None after dropping a reader_ready record whose
+    re-proof differs (the next pass proves reader_ready again).
+    """
+    from contextlib import ExitStack
+    from pathlib import Path
+    import laya_bridge_readiness as bridge
+    import laya_fresh_wiki_origin as fresh
+    import laya_initial_build as build
+    import laya_ledger_common as ledger
+    import project_dir
+    from context_learning.resource_coordination import Coordinator
+    from laya_index_sync import _owner_lock
+    from laya_product_install import _install_lock
+    project, state, decision, node = _migration_state(project, store)
+    path, journal_path = state / _INTENT, state / 'install-journal.sqlite'
+    executing_root = Path(executing_root)
+    switching = expected['migration_state'] == 'reader_ready'
+    _switch_preconditions(project, state)
+    if shadow_parity_receipt(state, candidate=store._path, candidate_incarnation=store._incarnation) is None:
+        raise IndexContractError('switch_parity_missing')
+    # Initial-conversion recovery takes this lock bundle itself; seal first.
+    installer = journal.seal_current_reader(state, project, executing_root=executing_root)
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    op = 'switch' if switching else 'reader_ready'
+    with _migration_trace(state, op, op) as trace, ExitStack() as locks:
+        locks.enter_context(_install_lock(state))
+        if not locks.enter_context(build.owner(state)):
+            raise IndexContractError('initial_build_busy')
+        locks.enter_context(ledger._operation_lock(marker))
+        locks.enter_context(Coordinator().quiesce_provider())
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+            raise IndexContractError('sync_owner_busy')
+        held = time.monotonic()
+        quiesce = min(deadline, held + _SWITCH_SECONDS)
+        if _migration_state(project, store) != (project, state, decision, node):
+            raise IndexContractError('migration_route_changed')
+        intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+        trace['migration'] = intent['migration_id']
+        _migration_event(state, trace, 'attempt')
+        if intent != expected:
+            raise IndexContractError('migration_intent_changed')
+        _switch_preconditions(project, state)
+        parity, published = _bound_parity(intent), intent['published']
+        receipt = shadow_parity_receipt(state, candidate=store._path, candidate_incarnation=store._incarnation)
+        if receipt is None or parity is None or receipt['digest'] != parity['seal']:
+            raise IndexContractError('switch_parity_missing')
+        # 6: the executing root is proved to be the journal-selected bundle.
+        _record, _raw, proof = journal._recheck(installer.endpoint)
+        selected = journal.journal.inspect_journal(journal_path).get('selected') or {}
+        commit = proof.get('sourceCommit')
+        if (proof.get('productRouteAllowed') is not True
+                or proof.get('executingPluginRoot') != str(executing_root)
+                or selected.get('sourceCommit') != commit
+                or selected.get('bundleManifestSha256') != proof.get('bundleManifestSha256')):
+            raise IndexContractError('switch_bundle_mismatch')
+        # 3-4: the receipts name this commit and the current CAS base.
+        try:
+            receipts = bridge.find_loaded_bridge(state, release_commit=commit)
+        except ValueError as exc:
+            raise IndexContractError('switch_bridge_missing') from exc
+        base = journal.read_selection(journal_path)
+        # 2: latest catch-up, with every writer held off by the owner lock.
+        with leases.resolve_endpoint(project, action='recall', host_root=executing_root) as endpoint:
+            if (endpoint.endpoint_id != intent['endpoint_id'] or endpoint.endpoint_id != base.preferred_endpoint
+                    or endpoint.record['install_id'] != intent['install_id']):
+                raise IndexContractError('switch_selection_changed')
+            head = store.head(store.capture_view(intent['worktree_id'], deadline=quiesce))
+            if (head['gen_id'] != published['generation'] or head['view_id'] != published['view_id']
+                    or head['epoch'] != published['epoch']
+                    or head['incarnation'] != published['candidate_incarnation']):
+                raise IndexContractError('switch_catchup_stale')
+            with readers.inspect_warm_snapshot(endpoint, deadline=quiesce) as snapshot:
+                page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                         after=None, deadline=quiesce)
+                if (page['observation'] != intent['observation']
+                        or _source_revision(snapshot) != intent['source_revision']):
+                    raise IndexContractError('switch_catchup_stale')
+        target = journal.seal_schema3_endpoint(installer, store_path=store._path,
+            parity={key: receipt[key] for key in journal.PARITY_KEYS}, deadline=quiesce)
+        record = target.record
+        ready = {'migration_id': intent['migration_id'], 'generation': parity['generation'],
+                 'candidate_incarnation': parity['candidate_incarnation'], 'parity_seal': parity['seal'],
+                 'observation': intent['observation'], 'source_revision': intent['source_revision'],
+                 'release_commit': commit, 'capability': record['capability'],
+                 'endpoint_id': target.endpoint_id, 'store_incarnation': record['incarnation'],
+                 'worktree_binding': record['worktree_binding'], 'floor': dict(record['head_floor']),
+                 'expected_epoch': base.epoch, 'expected_endpoint': base.preferred_endpoint,
+                 'transition_id': _transition_id(base.preferred_endpoint, target.endpoint_id)}
+        if time.monotonic() >= quiesce:
+            raise IndexContractError('reader_snapshot_deadline')
+        if not switching:
+            updated = _stamp({**intent, 'reader_ready': ready, 'switched': None})
+            if ledger._read_json(path) != intent:
+                raise IndexContractError('migration_intent_changed')
+            ledger._write(path, updated, replace=True)
+            trace['outcome'] = 'reader_ready'
+            return updated
+        if intent['reader_ready'] != ready:
+            # The base, target or proof moved since reader_ready: prove it again.
+            ledger._write(path, _stamp({**intent, 'reader_ready': None}), replace=True)
+            trace.update(outcome='reader_ready_stale', reason='switch_reader_ready_stale')
+            return None
+        selection = journal.cas_reader(journal_path, expected_epoch=ready['expected_epoch'],
+            expected_endpoint=ready['expected_endpoint'], target=target,
+            transition_id=ready['transition_id'], loaded_bridge=(receipts, commit), deadline=quiesce)
+        if not _cas_landed(ready, selection):
+            raise IndexContractError('reader_selection_changed')
+        # The journal selection is the fact from here on; record it.
+        updated = _switched_intent(intent, selection)
+        ledger._write(path, updated, replace=True)
+        trace['outcome'] = 'switched'
+        return updated
+
+
+def _record_switched(store, project, state, node, expected, selection):
+    """Record a CAS that committed before its intent write (crash recovery)."""
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import project_dir
+    from laya_product_install import _install_lock
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    path = state / _INTENT
+    with _migration_trace(state, 'switch', 'switch') as trace, _install_lock(state), ledger._operation_lock(marker):
+        intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+        trace['migration'] = intent['migration_id']
+        _migration_event(state, trace, 'attempt')
+        current = journal.read_selection(state / 'install-journal.sqlite')
+        if intent != expected or not _cas_landed(intent['reader_ready'], current):
+            raise IndexContractError('migration_intent_changed')
+        updated = _switched_intent(intent, current)
+        ledger._write(path, updated, replace=True)
+        trace['outcome'] = 'switched'
+        return updated
+
+
+def advance_reader_ready(store, *, project, executing_root, deadline):
+    """One U15 driver step after a re-proved shadow_verified head.
+
+    shadow_verified -> prove the switch gates and record ``reader_ready``;
+    reader_ready -> re-prove them and run the one journal CAS, then record
+    ``switched``. A CAS that committed before its intent write is recorded
+    without a second CAS. Returns ``{stage, migration_state[, reason]}``;
+    stage ``retry`` means a gate did not hold and nothing was written (or a
+    stale reader_ready record was dropped for a fresh proof).
+    """
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    project, state, _, node = _migration_state(project, store)
+    path = state / _INTENT
+    intent = _migration_intent(path, project=project, state=state, node=node, store=store)
+    current = intent['migration_state']
+    if current == 'switched':
+        return {'stage': 'switched', 'migration_state': current}
+
+    def retry(reason):
+        try:
+            now = _migration_intent(path, project=project, state=state, node=node, store=store)
+        except (OSError, ValueError):
+            now = intent
+        return {'stage': 'retry', 'reason': reason, 'migration_state': now['migration_state']}
+
+    if current not in ('shadow_verified', 'reader_ready'):
+        return retry('switch_parity_missing')
+    try:
+        if current == 'reader_ready':
+            selection = journal.read_selection(state / 'install-journal.sqlite')
+            if _cas_landed(intent['reader_ready'], selection):
+                updated = _record_switched(store, project, state, node, intent, selection)
+                _offer_sync(project)
+                return {'stage': 'switched', 'migration_state': updated['migration_state']}
+        updated = _switch_step(store, project=project, executing_root=executing_root,
+                               deadline=deadline, expected=intent)
+        if updated is None:
+            return retry('switch_reader_ready_stale')
+    except ValueError as exc:
+        reason = str(exc)
+        reason = 'switch_catchup_stale' if reason in _SWITCH_STALE else reason
+        if reason not in _SWITCH_RETRY:
+            raise
+        return retry(reason)
+    _offer_sync(project)
+    return {'stage': updated['migration_state'], 'migration_state': updated['migration_state']}
+
+
+def settle_switched(project):
+    """Record ``switched`` when the journal already selects the recorded target.
+
+    For a sync pass that finds a schema3 reader selected: a CAS that committed
+    right before its intent write leaves the intent at reader_ready. Any other
+    intent (absent, unreadable, another state, another transition) is left as
+    it is and nothing is emitted. Returns True when it recorded the switch.
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+    import laya_ledger_common as ledger
+    from laya_blob_store import _db_file
+    try:
+        project = Path(project)
+        decision = journal.journal.select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            return False
+        state = journal._state(Path(decision['journalPath']).parent)
+        raw = ledger._read_json(state / _INTENT)
+        if (not isinstance(raw, dict) or raw.get('migration_state') != 'reader_ready'
+                or not isinstance(raw.get('published'), dict) or not isinstance(raw.get('candidate'), str)):
+            return False
+        candidate = Path(raw['candidate'])
+        store = SimpleNamespace(_path=candidate, _incarnation=raw.get('candidate_incarnation'),
+                                _policy=raw['published'].get('policy_digest'))
+        node = _db_file(candidate)
+        intent = _migration_intent(state / _INTENT, project=project, state=state, node=node, store=store)
+        ready = _bound_reader_ready(intent)
+        selection = journal.read_selection(state / 'install-journal.sqlite')
+        if ready is None or not _cas_landed(ready, selection):
+            return False
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    _record_switched(store, project, state, node, intent, selection)
+    _offer_sync(project)
+    return True
 
 
 # Compatible legacy vectors (design 8.2-5, decision K5). The migrated

@@ -407,6 +407,44 @@ def find_bridge_preflight(state: Path, *, release_commit: str):
     _refuse()
 
 
+def find_loaded_bridge(state: Path, *, release_commit: str) -> list:
+    """Receipt paths of a live loaded-reader set (Claude and Codex) for ``state``.
+
+    Scans the private challenge registry like ``find_bridge_preflight`` but
+    only for ``loaded.json`` challenges, and returns the first set that
+    passes ``check_loaded_bridge``: both hosts observed the current reader
+    epoch and preferred endpoint of the journal-selected bundle at
+    ``release_commit``, inside the challenge TTL. Nothing is collected here.
+    """
+    from laya_journal_paths import check_journal_namespace
+    state = _dir(Path(state))
+    check_journal_namespace(state)
+    if type(release_commit) is not str or not COMMIT.fullmatch(release_commit):
+        _refuse()
+    hosts = frozenset(('claude', 'codex'))
+    try:
+        registry = _registry()
+        with os.scandir(registry) as entries:
+            names = sorted(entry.name for entry in entries
+                           if _ID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False))
+    except (OSError, ValueError):
+        _refuse()
+    for name in names:
+        directory = registry / name
+        try:
+            challenge = _load_challenge(directory)
+            if (challenge['state'] != str(state) or challenge['release_commit'] != release_commit
+                    or frozenset(challenge['expected_hosts']) != hosts
+                    or _loaded_config(challenge) is None):
+                continue
+            refs = [directory / (host + '.json') for host in sorted(hosts)]
+            check_loaded_bridge(refs, release_commit=release_commit, expected_hosts=hosts)
+            return refs
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    _refuse()
+
+
 def ensure_bridge_preflight(state: Path, *, release_commit: str):
     """Reuse fresh host evidence or collect it before the writer acquires locks."""
     def mark_failure(exc, stage, host=None):

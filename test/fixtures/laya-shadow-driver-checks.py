@@ -335,7 +335,7 @@ class DriverChecks(unittest.TestCase):
                 before = len(self.events(case))
                 with mock.patch.object(os, 'statvfs', side_effect=tight):
                     status = W.shadow_pass(case.project)
-                self.assertEqual((status['state'], status['reason']), ('error', 'migration_space_deferred'))
+                self.assertEqual((status['state'], status['reason']), ('waiting', 'migration_space_deferred'))
                 self.assertEqual(status['stages'], ['activate', 'create'] if attempt == 0 else [])
                 files = self.files(case)
                 self.assertIsNotNone(files[W.SHADOW_CANDIDATE])

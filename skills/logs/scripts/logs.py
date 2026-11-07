@@ -28,7 +28,7 @@ import event_log  # noqa: E402
 FAILED = frozenset(('refused', 'failed', 'error', 'interrupted', 'exited'))
 # Same order as laya_shadow_migration.MIGRATION_OPS (the driver test pins it).
 MIGRATION_OPS = ('begin', 'copy', 'verification', 'base_corpus', 'sidecar_corpus',
-                 'prepare', 'publish', 'vectors', 'parity', 'parity_seal')
+                 'prepare', 'publish', 'vectors', 'parity', 'parity_seal', 'reader_ready', 'switch')
 MIGRATION_STATES = ('copying', 'caught_up', 'shadow_verified', 'reader_ready', 'switched')
 _HEX = re.compile(r'[0-9a-f]{32}')
 _STAGE = re.compile(r'[a-z_]{1,32}')
