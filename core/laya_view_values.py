@@ -66,7 +66,7 @@ def manifest(value, policy_digest):
     paths, ids, plain_sources = set(), set(), []
     for source in sources:
         v.exact(source, SOURCE_FIELDS)
-        v.relative(source['path']); v.identifier(source['fingerprint_id'])
+        v.source_path(source['path']); v.identifier(source['fingerprint_id'])
         if not isinstance(source['presence'], str) or source['presence'] not in PRESENCE:
             v.fail('source_presence_invalid')
         if source['path'] in paths or source['fingerprint_id'] in ids:

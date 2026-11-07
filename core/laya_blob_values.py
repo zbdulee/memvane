@@ -52,16 +52,31 @@ def identifier(value, pattern=SHA):
     return value
 
 
-def relative(value):
+def _path(value, refused_segment):
     if (not isinstance(value, str) or not value or len(value) > 4096
             or any(c in value for c in '\x00\r\n\\') or value.startswith('/')
-            or any(not p or p.startswith('.') for p in value.split('/'))):
+            or any(refused_segment(p) for p in value.split('/'))):
         fail('invalid_relative_path')
     try:
         value.encode('utf8')
     except UnicodeError:
         fail('invalid_relative_path')
     return value
+
+
+def relative(value):
+    """A wiki, filter or binding path: no empty or dot-led segment."""
+    return _path(value, lambda p: not p or p.startswith('.'))
+
+
+def source_path(value):
+    """A project-relative raw source path (fingerprints, manifest sources).
+
+    A raw root may sit in a dot directory (``.nova/06_Sessions``) and the
+    selected reader trusts revisions there, so only empty, ``.`` and ``..``
+    segments are refused.
+    """
+    return _path(value, lambda p: p in ('', '.', '..'))
 
 
 def repository(value):
@@ -245,7 +260,7 @@ FINGERPRINT_FIELDS = frozenset(('worktree_id', 'branch_key', 'path', 'source_sha
 def fingerprint(spec, object_format):
     exact(spec, FINGERPRINT_FIELDS)
     identifier(spec['worktree_id'], UUID); identifier(spec['scan_id'], UUID)
-    relative(spec['path']); identifier(spec['source_sha'])
+    source_path(spec['path']); identifier(spec['source_sha'])
     integer(spec['byte_length']); integer(spec['observed_ns'])
     if spec['tracked_state'] not in ('tracked', 'untracked', 'unknown') or spec['binding_state'] not in ('observed', 'legacy_unbound'):
         fail('source_state_invalid')

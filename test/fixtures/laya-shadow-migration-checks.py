@@ -337,6 +337,54 @@ class MigrationSnapshotChecks(unittest.TestCase):
                                  {'blob_sha': matched[0]['hash'], 'trust_digest': matched[0]['trust_digest']})
                 self.assertEqual(store.counts()['card_attestations'], attestations)
 
+    def test_legacy_revision_under_dot_directory_imports_with_reader_trust(self):
+        """A verified card citing a raw source under a dot directory (legacy
+        ``collectionPaths`` such as ``.nova/06_Sessions``) keeps v6 trust in
+        the import: its legacy attestation names the dot path."""
+        class DotRevision(seed_module.MoveSealChecks):
+            def before_conversion(self):
+                with sqlite3.connect(self.sidecar) as db:
+                    rowid, self.dot_path, title, body = db.execute(
+                        'SELECT rowid,path,title,body FROM docs ORDER BY path LIMIT 1').fetchone()
+                    revision = next(line for line in body.splitlines() if line.strip().startswith('- {'))
+                    parsed = json.loads(revision.strip()[2:])
+                    self.dot_source = '.nova/06_Sessions/' + parsed['path'].rsplit('/', 1)[-1]
+                    body = body.replace(revision, revision.replace(
+                        json.dumps(parsed['path']), json.dumps(self.dot_source), 1), 1)
+                    digest = hashlib.sha256(body.encode()).hexdigest()
+                    db.execute('UPDATE docs SET hash=?,body=? WHERE rowid=?', (digest, body, rowid))
+                    db.execute('DELETE FROM docs_fts WHERE rowid=?', (rowid,))
+                    db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
+                               (rowid, self.dot_path, title, body))
+        seed = DotRevision('runTest')
+        seed.setUp()
+        self.addCleanup(seed.doCleanups)
+        case = seed.case
+        checkout = importlib.import_module('laya_checkout_view')
+        blobs = importlib.import_module('laya_blob_store')
+        migration = importlib.import_module('laya_shadow_migration')
+        opens = importlib.import_module('laya_reader_open')
+        repository = checkout.register_repository(str(case.project))
+        worktree = checkout.register_worktree(str(case.project), repository)
+        store = blobs.BlobStore.create(case.state / 'dot-shadow.sqlite',
+            project_root=str(case.project), repository=repository, worktree=worktree,
+            scope_id=case.route['scopeId'])
+        self.addCleanup(store.close)
+        with seed.authority():
+            decision = seed.reader.journal.select_route(str(case.project), action='recall')
+            with seed.lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin) as endpoint:
+                with opens.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 10) as snapshot:
+                    scan = {'id': '3' * 32, 'observed_ns': time.time_ns()}
+                    result = migration.import_wiki_batch(store, worktree_id=worktree['worktreeId'],
+                        snapshot=snapshot, endpoint=endpoint, decision=decision, after=None,
+                        deadline=time.monotonic() + 10, provenance_scan=scan)
+                    matched = [row for row in result['trusted'] if row['path'] == seed.dot_path]
+                    self.assertEqual(len(matched), 1)
+                    evidence = store.attestation(matched[0]['trust_digest'])
+                    self.assertEqual([store.fingerprint(item['fingerprint_id'])['path']
+                                      for item in evidence['sources']], [seed.dot_source])
+                    self.assertTrue(store.verify())
+
     def test_legacy_evidence_matches_selected_reader_without_opening_raw_source(self):
         seed = seed_module.MoveSealChecks('runTest')
         seed.setUp()

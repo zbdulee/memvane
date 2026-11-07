@@ -55,7 +55,10 @@ class ProvenanceChecks(unittest.TestCase):
 
     def test_03_invalid_metadata_is_rejected_without_rows(self):
         bad = [('worktree_id', '0' * 32), ('branch_key', 'refs/heads/main'),
-               ('path', '../raw.md'), ('path', '/raw.md'), ('path', '.hidden/x.md'),
+               ('path', '../raw.md'), ('path', '/raw.md'), ('path', './x.md'),
+               ('path', 'a/./b.md'), ('path', 'a/../b.md'), ('path', 'a//b.md'), ('path', 'a/'),
+               ('path', ''), ('path', '.'), ('path', '..'), ('path', 'a\\b.md'), ('path', 'a\x00b.md'),
+               ('path', 'a\nb.md'), ('path', 'x' * 4097),
                ('source_sha', 'BAD'), ('byte_length', True), ('byte_length', -1),
                ('observed_ns', float('inf')), ('observed_ns', 10 ** 400),
                ('head_oid', 'a' * 40), ('tracked_state', 'yes'),
@@ -65,6 +68,39 @@ class ProvenanceChecks(unittest.TestCase):
                 row = self.fp(); row[key] = value
                 with self.assertRaises(self.Error): self.store.put_fingerprint(row)
         self.assertEqual(self.store.counts()['source_fingerprints'], 0)
+
+    def test_03b_source_path_under_dot_directory_roundtrips(self):
+        """Raw roots may sit in dot directories (``.nova/06_Sessions``): the
+        fingerprint and manifest source path rule refuses only empty, ``.``
+        and ``..`` segments. Wiki card paths keep refusing dot segments."""
+        values = sys.modules['laya_blob_values']
+        view_values = __import__('laya_view_values')
+        for path in ('.nova/06_Sessions/ep01.md', '.hidden/x.md', '.nova/x/.drafts/a.md', '..a/b.md'):
+            with self.subTest(path=path):
+                key = self.store.put_fingerprint(self.fp(path=path))
+                self.assertEqual(self.store.fingerprint(key), self.fp(path=path))
+                self.assertEqual(values.source_path(path), path)
+        manifest = dict(scan_id='1' * 32, policy_digest='b' * 64, revocation_epoch=0, complete=True,
+                        sources=[dict(path='.nova/06_Sessions/ep01.md', fingerprint_id='d' * 64,
+                                      presence='present')], members=[])
+        self.assertEqual(view_values.manifest(manifest, 'b' * 64)['sources'], manifest['sources'])
+        for path in ('.hidden/x.md', '.nova/card.md'):
+            with self.subTest(card=path):
+                with self.assertRaises(self.Error) as caught:
+                    values.relative(path)
+                self.assertEqual(caught.exception.reason, 'invalid_relative_path')
+                with self.assertRaises(self.Error):
+                    view_values.card_path(path)
+        # Same digest domain and canonical form: a plain path's key is the
+        # key the previous rule produced.
+        plain = values.fingerprint(self.fp(worktree_id='0' * 32), None)
+        self.assertEqual(values.digest('memvane-source-fingerprint-v1', plain),
+                         'd488f4b0d8c30f90a93fca16c1ffd7f8ce0caf8beebec01d997175c1e81c1bba')
+        plain_manifest = dict(manifest, sources=[dict(manifest['sources'][0], path='notes/source.md')],
+                              members=[dict(path='concepts/a.md', blob_sha='e' * 64, display_title='A',
+                                            trust_digest=None)])
+        self.assertEqual(view_values.manifest_digest(view_values.manifest(plain_manifest, 'b' * 64)),
+                         '885dd7b131d89f2a8de1262995449812ea9ab2e4202f637dc760c99818c3a581')
 
     def test_04_attestation_replay_and_canonical_roundtrip(self):
         fp = self.store.put_fingerprint(self.fp()); evidence = self.evidence(fp)
