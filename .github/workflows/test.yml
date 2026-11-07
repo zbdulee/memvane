@@ -23,6 +23,7 @@ jobs:
         env:
           LEGACY_FIXTURE_COMMIT: f9c33094e30d523415fe983ec7f3b4c35d5a21c0
           READER_BRIDGE_FIXTURE_COMMIT: 6437108f4c1165f1141114f94b3e32ccc021cb30
+          PR5_BUNDLE_FIXTURE_COMMIT: d01c859d5de14ec976fe832d4315728c33c73126
         run: |
           # The immutable 0.40.3 fixture lives in the predecessor repository,
           # outside this checkout's history. Compatibility tests archive its core.
@@ -33,6 +34,10 @@ jobs:
           git fetch --no-tags origin "$READER_BRIDGE_FIXTURE_COMMIT"
           git cat-file -e "${READER_BRIDGE_FIXTURE_COMMIT}^{commit}"
           git cat-file -e "${READER_BRIDGE_FIXTURE_COMMIT}:core"
+          # Schema3 checks run the last PR5 bridge bundle against a schema3 journal.
+          git fetch --no-tags origin "$PR5_BUNDLE_FIXTURE_COMMIT"
+          git cat-file -e "${PR5_BUNDLE_FIXTURE_COMMIT}^{commit}"
+          git cat-file -e "${PR5_BUNDLE_FIXTURE_COMMIT}:core"
       - name: Verify runtime prerequisites
         run: |
           node --version

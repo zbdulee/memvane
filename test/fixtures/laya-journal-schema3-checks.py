@@ -33,7 +33,9 @@ spec.loader.exec_module(seed_module)
 J = seed_module.base.J
 CTX = multiprocessing.get_context('fork')
 EXIT_AT_CHECKPOINT = 91
-PR5_BUNDLE_COMMIT = 'd01c859'  # Merge of PR #147, the last PR5 bridge bundle.
+# Merge of PR #147, the last PR5 bridge bundle. CI fetches this exact commit
+# (.github/workflows/test.yml) because a shallow checkout does not contain it.
+PR5_BUNDLE_COMMIT = 'd01c859d5de14ec976fe832d4315728c33c73126'
 HOSTS = frozenset(('claude', 'codex'))
 
 
