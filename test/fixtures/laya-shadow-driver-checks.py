@@ -294,6 +294,116 @@ class DriverChecks(unittest.TestCase):
         self.assertEqual(leftover.read_bytes(), b'{"leftover":true}')
         self.assertEqual([e for e in self.events(case)[before:] if e['event'].startswith('migration.')], [])
 
+    def logs(self, case, *args):
+        done = subprocess.run([sys.executable, '-B', str(ROOT / 'skills/logs/scripts/logs.py'),
+                               '--state-root', str(case.state), *args],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout
+
+    def test_space_precheck_defers_and_logs_summarize_without_source_text(self):
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        import event_log
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        spec = importlib.util.spec_from_file_location('shadow_driver_logs', ROOT / 'skills/logs/scripts/logs.py')
+        logs = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(logs)
+        # The skill renders progress over the migration's own operation order.
+        self.assertEqual(logs.MIGRATION_OPS, M.MIGRATION_OPS)
+        real = os.statvfs
+        state = case.state.resolve()
+
+        def tight(path):
+            # Only the migration's state directory is short of space: 4 blocks.
+            found = real(path)
+            if Path(path).resolve() != state:
+                return found
+            return os.statvfs_result((found.f_bsize, 4096, found.f_blocks, 4, 4, found.f_files,
+                                      found.f_ffree, found.f_favail, found.f_flag, found.f_namemax))
+
+        def deferred(before):
+            return [e for e in self.events(case)[before:] if e['event'] == 'migration.shadow'
+                    and e['outcome'] == 'deferred']
+
+        with self.authority(seed, case):
+            # Start: the activation record and the empty candidate exist, but
+            # no intent is written while the projected copy does not fit.
+            for attempt in range(2):
+                before = len(self.events(case))
+                with mock.patch.object(os, 'statvfs', side_effect=tight):
+                    status = W.shadow_pass(case.project)
+                self.assertEqual((status['state'], status['reason']), ('waiting', 'migration_space_deferred'))
+                self.assertEqual(status['stages'], ['activate', 'create'] if attempt == 0 else [])
+                files = self.files(case)
+                self.assertIsNotNone(files[W.SHADOW_CANDIDATE])
+                self.assertIsNone(files[M._INTENT])
+                if attempt:
+                    self.assertEqual(files, held)
+                held = files
+                rows = deferred(before)
+                self.assertEqual([(e['reason'], e['op']) for e in rows], [('migration_space_deferred', 'begin')])
+                self.assertEqual(rows[0]['free_bytes'], 4 * 4096)
+                self.assertGreater(rows[0]['needed_bytes'], rows[0]['free_bytes'])
+            # Space returns: the begin step writes the copy intent.
+            with mock.patch.object(W, 'SHADOW_STEPS_PER_PASS', 1):
+                self.assertEqual(W.shadow_pass(case.project)['stages'], ['begin'])
+            copying = self.files(case)
+            self.assertEqual(json.loads(copying[M._INTENT])['phase'], 'copying')
+            # Additional copy: a bounded retry that leaves intent and candidate as they were.
+            for _ in range(2):
+                before = len(self.events(case))
+                with mock.patch.object(os, 'statvfs', side_effect=tight):
+                    status = W.shadow_pass(case.project)
+                self.assertEqual((status['state'], status['reason'], status['stages']),
+                                 ('waiting', 'step_retry', ['retry']))
+                self.assertEqual(self.files(case), copying)
+                self.assertEqual([(e['reason'], e['op']) for e in deferred(before)],
+                                 [('migration_space_deferred', 'copy')])
+            summary = self.logs(case)
+            line = [row for row in summary.splitlines() if row.startswith('migration: ')]
+            self.assertEqual(len(line), 1, summary)
+            self.assertIn('state=copying', line[0])
+            self.assertIn('reason=migration_space_deferred', line[0])
+            self.assertIn('deferred=4', line[0])
+            self.assertIn(f'progress=2/{len(M.MIGRATION_OPS)}', line[0])
+            # Space returns again: the same migration finishes, with the
+            # legacy prompt debug flag on.
+            with mock.patch.dict(os.environ, {event_log.PROMPT_ENV: '1'}):
+                for _ in range(12):
+                    W.shadow_pass(case.project)
+                    if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                        break
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified')
+        self.assertEqual(self.intent(case)['migration_id'], json.loads(copying[M._INTENT])['migration_id'])
+        summary = self.logs(case)
+        line = [row for row in summary.splitlines() if row.startswith('migration: ')]
+        self.assertEqual(len(line), 1, summary)
+        self.assertIn('state=shadow_verified', line[0])
+        total = len(M.MIGRATION_OPS)
+        self.assertIn(f'progress={total}/{total}', line[0])
+        shadow = self.logs(case, 'migration', '--limit', '0')
+        self.assertIn('op=parity_seal', shadow)
+        self.assertIn('shadow_verified', shadow)
+        # No card text, recall parity prompt or prompt field reaches the log or the skill.
+        probes = set()
+        for card in case.project.rglob('*.md'):
+            if '.git' in card.parts:
+                continue
+            body = card.read_text(encoding='utf8')
+            rel = card.relative_to(case.project).as_posix()
+            probes.update(p for p in M.recall_corpus_prompts(rel, body, None) if len(p) >= 8)
+            probes.update(line.strip() for line in body.splitlines() if len(line.strip()) >= 12
+                          and not line.startswith(('---', 'title:', 'type:', 'status:', 'createdBy:')))
+        self.assertGreater(len(probes), 0)
+        raw = b''.join((case.state / name).read_bytes() for name in ('events.jsonl',)
+                       if (case.state / name).exists()).decode('utf8')
+        rendered = summary + shadow + self.logs(case, 'events', '--json', '--limit', '0')
+        self.assertEqual(sorted(p for p in probes if p in raw or p in rendered), [])
+        self.assertEqual([row for row in self.events(case) if 'prompt' in row], [])
+
     def test_driver_failure_never_changes_the_sync_result(self):
         W = self.W
         for result in ({'state': 'indexed', 'generation': 'g'}, {'state': 'unchanged'}):
