@@ -138,20 +138,22 @@ class DriverChecks(unittest.TestCase):
                 driver = [e for e in added if e['event'] == 'migration.driver']
                 self.assertEqual(len(driver), 1, added)
                 attempts = {e['attempt'] for e in added if e['event'] == 'migration.shadow'}
-                per_pass.append((driver[0]['steps'], len(attempts), driver[0].get('migration_state')))
+                per_pass.append((driver[0]['steps'], len(attempts), driver[0].get('migration_state'),
+                                 driver[0].get('reason')))
                 # Measurement only (contract 9/10): the driver's own wall time after the sync.
                 print('pass_ms', driver[0]['steps'], driver[0]['ms'], flush=True)
                 if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
                     break
             print('per_pass', per_pass, flush=True)
             self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', per_pass)
-            # More than one pass: every pass stops at the step cap.
+            # More than one pass: the prepare waits for a pass of its own.
             self.assertGreater(len(per_pass), 1)
-            for steps, attempts, _state in per_pass:
+            for steps, attempts, _state, _reason in per_pass:
                 self.assertLessEqual(steps, W.SHADOW_STEPS_PER_PASS)
                 # One step may trace several sub-stages; every pass ran some.
                 self.assertGreater(attempts, 0)
-            self.assertEqual(per_pass[0][0], W.SHADOW_STEPS_PER_PASS)
+            self.assertEqual([p[3] for p in per_pass].count('prepare_next_pass'), 1, per_pass)
+            self.assertEqual(per_pass[0][3], 'prepare_next_pass', per_pass)
             proved = self.receipt(case)
             self.assertIsNotNone(proved)
             activation = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
@@ -232,12 +234,19 @@ class DriverChecks(unittest.TestCase):
             check(dict.fromkeys(self.files(case)))
             # Started: nothing advances.
             started = W.shadow_pass(case.project)
-            self.assertEqual((started['state'], started['steps']), ('progressed', W.SHADOW_STEPS_PER_PASS))
+            # The pass stops where the lock-free prepare comes due (its own pass).
+            self.assertEqual((started['state'], started['reason']), ('progressed', 'prepare_next_pass'))
+            self.assertLess(started['steps'], W.SHADOW_STEPS_PER_PASS)
             self.assertIsNotNone(self.intent(case))
             check(self.files(case))
             # An unknown kill switch value does not disable the driver.
             with mock.patch.dict(os.environ, {W.SHADOW_KILL_SWITCH: 'on'}):
-                self.assertEqual(W.shadow_pass(case.project)['state'], 'progressed')
+                status = W.shadow_pass(case.project)
+                # It ran steps; how the pass ended depends on the time budget.
+                print('kill_switch_on_pass', status['state'], status['reason'], status['steps'], flush=True)
+                self.assertIn(status['state'], ('progressed', 'waiting'), status)
+                self.assertGreater(status['steps'], 0, status)
+                self.assertNotIn(status['reason'], ('disabled',), status)
 
     def test_worker_sigkill_resumes_from_intent(self):
         seed, case = self.seeded()

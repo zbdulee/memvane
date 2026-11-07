@@ -143,6 +143,41 @@ class ReaderMixin:
                                         full_vectors=full_vectors)
         return dict(generation), dict(seal), entry['capture'], stage
 
+    def _commit_stamp(self, db):
+        """Changes whenever any commit could have touched the store since the last stamp.
+
+        ``data_version`` moves on another connection's commit, ``total_changes``
+        on this connection's own writes and ``schema_version`` on DDL. Read
+        inside a read transaction, so it describes that transaction's snapshot.
+        """
+        return (db.execute('PRAGMA main.data_version').fetchone()[0], self._db.total_changes,
+                db.execute('PRAGMA main.schema_version').fetchone()[0])
+
+    def _read_pinned(self, db, pin, deadline):
+        """``_read_generation`` for a pin, reusing its last full verification.
+
+        Sealed generation rows are immutable (schema triggers, FTS authorizer).
+        While no commit at all reached the store since the pin's last full
+        verification (same commit stamp), the database is the one that was
+        verified, so its derived stage is reused after re-reading the
+        generation and seal rows. Any commit, including an out-of-band one,
+        re-runs the full verification and refreshes the reuse.
+        """
+        record = self._pinned(pin)
+        _remaining(deadline)
+        stamp = self._commit_stamp(db)
+        cached = record.get('verified')
+        if cached is not None and cached['stamp'] == stamp:
+            generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (pin.gen_id,)).fetchone()
+            seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (pin.gen_id,)).fetchone()
+            if (generation is not None and seal is not None and dict(generation) == cached['generation']
+                    and dict(seal) == cached['seal']):
+                return dict(generation), dict(seal), cached['capture'], cached['stage']
+        record['verified'] = None
+        generation, seal, capture, stage = self._read_generation(db, pin.gen_id, record['entry']['handle'], deadline)
+        record['verified'] = dict(stamp=stamp, generation=generation, seal=seal, capture=capture, stage=stage)
+        return dict(generation), dict(seal), capture, stage
+
     def pin_view(self, handle, *, deadline=None):
         if self._closed:
             v.fail('view_store_closed')
@@ -163,12 +198,15 @@ class ReaderMixin:
             head = self._head(db, handle)
             if head['gen_id'] is None:
                 v.fail('view_preparing')
-            generation, seal, _, stage = self._read_generation(db, head['gen_id'], handle, deadline)
+            generation, seal, capture, stage = self._read_generation(db, head['gen_id'], handle, deadline)
             if generation['state'] != 'published':
                 v.fail('view_head_invalid')
+            verified = dict(stamp=self._commit_stamp(db), generation=dict(generation), seal=dict(seal),
+                            capture=capture, stage=stage)
             sealed = stage['vector_spec']
             # The verified sealed spec, never the mutable shared cache; every
-            # later read re-verifies this seal before using it.
+            # later read checks this seal and re-verifies the generation
+            # after any commit to the store (_read_pinned).
             vector = None if sealed is None else dict(
                 sealed, dimension=self._profile(sealed['profile_id'])['dimension'])
         self._observe(issued,deadline=deadline)
@@ -178,7 +216,7 @@ class ReaderMixin:
         copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
         entry = dict(handle=copied, capture=json.loads(v.canonical(issued['capture'])), binding=issued['binding'])
         self._pins[pin.token] = dict(pin=pin, fields=(pin.view_id, pin.gen_id, pin.epoch, pin.incarnation, pin.token),
-            entry=entry, seal=v.digest('memvane-read-pin-seal-v1', seal), vector=vector)
+            entry=entry, seal=v.digest('memvane-read-pin-seal-v1', seal), vector=vector, verified=verified)
         return pin
 
     def _pinned(self, pin):
@@ -221,7 +259,7 @@ class ReaderMixin:
         self._observe(entry,deadline=deadline)
         _remaining(deadline)
         with self._reading(deadline) as db:
-            generation, seal, original, stage = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
+            generation, seal, original, stage = self._read_pinned(db, pin, deadline)
             if generation['state'] != 'published' or v.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
                 v.fail('view_pin_changed')
             paired = 'sidecar_corpus' in stage.get('legacy', {})
@@ -235,7 +273,7 @@ class ReaderMixin:
                 origin = _legacy_origin if paired else 'base'
                 mapping = {path: full for path, full in stage['legacy']['fts_paths'].items()
                            if not paired or stage['legacy']['fts_sources'][path] == origin}
-                args = [v.canonical(stage['legacy']['active_fts'][origin]), fts_query]
+                args = [fts_query, v.canonical(stage['legacy']['active_fts'][origin])]
                 path_expr = f"substr({name}.path_key,instr({name}.path_key,'/')+1)"
             else:
                 join = f'JOIN wiki_members m ON m.gen_id=? AND m.path={name}.path_key'
@@ -258,17 +296,32 @@ class ReaderMixin:
             args.append(limit)
             try:
                 if 'legacy' in stage:
-                    args.extend((v.canonical(mapping), pin.gen_id, pin.view_id))
-                    rows = db.execute(f'''SELECT m.path,m.blob_sha,m.display_title,r.score FROM (
-                        SELECT {name}.path_key AS full_path,bm25({name},1.5,4.0,1.0,0.0) AS score
-                        FROM {name} JOIN json_each(?) a ON a.key={name}.path_key
-                        WHERE {name} MATCH ? {extra}
-                        ORDER BY score ASC,{name}.path_key COLLATE BINARY ASC LIMIT ? OFFSET 0
-                        ) r JOIN json_each(?) p ON p.value=r.full_path
-                        JOIN wiki_members m ON m.gen_id=? AND m.path=p.key
-                        JOIN generations g ON g.gen_id=m.gen_id
-                        WHERE g.view_id=? AND m.eligible=1
-                        ORDER BY r.score ASC,r.full_path COLLATE BINARY ASC''', args).fetchall()
+                    # Active-path filter and path mapping stay out of joins: a
+                    # json_each join is quadratic in the generation size, on
+                    # the inner filter (SQLite 3.51) or the outer mapping (3.54).
+                    ranked = db.execute(f'''SELECT {name}.path_key AS full_path,
+                        bm25({name},1.5,4.0,1.0,0.0) AS score FROM {name}
+                        WHERE {name} MATCH ? AND {name}.path_key IN (SELECT key FROM json_each(?)) {extra}
+                        ORDER BY score ASC,{name}.path_key COLLATE BINARY ASC LIMIT ?''', args).fetchall()
+                    # Only the ranked window (at most ``limit`` rows) is mapped back;
+                    # unmapped or ineligible rows drop out without refilling.
+                    relative = {}
+                    for path, full in mapping.items():
+                        relative.setdefault(full, []).append(path)
+                    window = [(path, row['score']) for row in ranked for path in sorted(
+                        relative.get(row['full_path'], ()), key=lambda p: p.encode('utf8'))]
+                    wanted = [path for path, _ in window]
+                    members = {}
+                    if wanted:
+                        members = {m['path']: m for m in db.execute(
+                            '''SELECT m.path,m.blob_sha,m.display_title FROM wiki_members m
+                            JOIN generations g ON g.gen_id=m.gen_id
+                            WHERE m.gen_id=? AND g.view_id=? AND m.eligible=1
+                            AND m.path IN (SELECT value FROM json_each(?))''',
+                            (pin.gen_id, pin.view_id, v.canonical(wanted)))}
+                    rows = [dict(path=path, blob_sha=members[path]['blob_sha'],
+                                 display_title=members[path]['display_title'], score=score)
+                            for path, score in window if path in members]
                 else:
                     rows = db.execute(f'''SELECT m.path,m.blob_sha,m.display_title,bm25({name},1.5,4.0,1.0,0.0) AS score
                         FROM {name} {join}

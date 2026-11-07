@@ -334,7 +334,8 @@ class ReaderChecks(helpers.GenerationCase):
         with mock.patch.object(store,'_blob',wraps=store._blob) as blobs, mock.patch.object(store,'_attestation',wraps=store._attestation) as attestations:
             self.assertEqual(len(store.search(pin,'wiki',1)),1)
         self.assertLessEqual(blobs.call_count,4)
-        self.assertEqual(attestations.call_count,1)
+        # The pin verified the generation; an unchanged store reuses it (test_25).
+        self.assertLessEqual(attestations.call_count,1)
 
     def test_17_validation_cache_does_not_outlive_the_read_snapshot(self):
         store,_,h,_=self.published();pin=store.pin_view(h)
@@ -455,6 +456,26 @@ class ReaderChecks(helpers.GenerationCase):
         copy_path.chmod(0o600);os.replace(copy_path,store._path)
         self.assertEqual(self.refused(store.search,pin,'hello',1).reason,'candidate_file_changed')
         self.assertEqual(self.refused(store.pin_view,h).reason,'candidate_file_changed')
+
+    def test_25_pinned_reads_reuse_verification_until_any_commit(self):
+        store,_,h,gen=self.published()
+        with mock.patch.object(store,'_verify_generation',wraps=store._verify_generation) as verified:
+            pin=store.pin_view(h)
+            for _ in range(3):
+                self.assertEqual(len(store.search(pin,'hello',1)),1)
+            self.assertEqual(verified.call_count,1)
+            # Any commit by another connection re-verifies, even one that changes no value.
+            self.tamper(store._path,'generation_seals_update',
+                        'UPDATE generation_seals SET eligible_count=eligible_count WHERE gen_id=?',(gen,))
+            self.assertEqual(len(store.search(pin,'hello',1)),1)
+            self.assertEqual(verified.call_count,2)
+            self.assertEqual(len(store.search(pin,'hello',1)),1)
+            self.assertEqual(verified.call_count,2)
+            # A second pin verifies on its own; releasing one keeps the other's reuse.
+            other=store.pin_view(h);store.release(pin)
+            self.assertEqual(verified.call_count,3)
+            self.assertEqual(len(store.search(other,'hello',1)),1)
+            self.assertEqual(verified.call_count,3)
 
 
 if __name__=='__main__':unittest.main()

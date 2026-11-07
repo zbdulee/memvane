@@ -172,6 +172,9 @@ prepared·published FTS 변경은 거절하고 reader는 physical commitment를
 
 pin은 한 read transaction에서 head·seal·membership·source·trust·FTS를 확인하고
 불변 세대 참조를 보관한다. pin 수명 동안 SQLite read transaction을 열어 두지 않는다.
+같은 pin의 이후 읽기는 세대·seal 행을 다시 읽어 pin 시점 seal과 대조한다. 마지막 전체 검증 뒤
+store에 commit이 하나도 없으면(`PRAGMA data_version`·연결의 `total_changes`·`schema_version`이
+모두 같으면) 그 검증 결과를 재사용하고, commit이 있었으면 세대 전체를 다시 검증한다.
 검색 transaction도 호출에 한정하며 rollback journal을 사용한다. WAL·GC API는 없다.
 같은 view의 head가 새 세대로 바뀌어도 기존 pin은 원래 세대만 검색한다.
 
@@ -273,8 +276,10 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 `vector_work_exceeded`, `vector_deadline_exceeded`다.
 거절 뒤 다른 view·운영 v6로 우회하는 API는 없다.
 
-검증 성공은 store의 구조·일관성에 한정된다. `pin_view`와 검색은 호출마다 고정한 세대의
-구조·FTS commitment를 검증한다. 서빙하지 않은 행의 변조는 `verify_views`가 검출하며, 이 검증
+검증 성공은 store의 구조·일관성에 한정된다. `pin_view`는 고정한 세대의 구조·FTS commitment를
+검증하고, 검색은 그 뒤 store에 commit이 있었을 때 같은 검증을 다시 한다. SQLite commit 없이 파일
+바이트가 바뀐 손상은 다음 commit이나 새 pin, `verify_views` 전까지 검색이 검출하지 않는다.
+서빙하지 않은 행의 변조는 `verify_views`가 검출하며, 이 검증
 범위는 `test/laya-view-reader.test.mjs`·`test/laya-view-budget.test.mjs`가 고정한다.
 합성 1,800카드·10 Git views에서 새 프로세스 30개 표본(nearest-rank, py3.13)의 p95는
 카드 본문을 공유할 때 pin 80 ms·검색 77 ms, 본문이 모두 다를 때 pin 256 ms·검색 251 ms다.

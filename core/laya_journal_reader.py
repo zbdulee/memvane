@@ -788,8 +788,11 @@ def _schema3_record(state, project, decision, proof, ledger, info, stored, *, se
 
 
 @contextmanager
-def _schema3_pin(record, *, deadline, linked=None):
+def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
     """Pin the current main-view head of a schema3 endpoint and check its floor.
+
+    With ``pin_view=False`` it yields the head record (``view_id``, ``gen_id``,
+    ``epoch``) in place of a pin, without verifying the generation again.
 
     Floor limits: head_floor is fixed at CAS time; ViewStore._head refuses a
     head behind the view's highest published ordinal. A same-UID forger who
@@ -830,6 +833,18 @@ def _schema3_pin(record, *, deadline, linked=None):
         handle = store.capture_view(target, deadline=deadline)
         _need(store._handles[handle.token]['capture']['projectRoot'] == project,
               'reader_checkout_changed')
+        if not pin_view:
+            # Head identity only (seal join, highest published ordinal, floor);
+            # the generation itself is verified by the pin that served it.
+            head = store.head(handle)
+            if head['gen_id'] is None:
+                fail('view_preparing')
+            _need(head['incarnation'] == record['incarnation'], 'reader_store_changed')
+            floor = record.get('head_floor')
+            if floor is not None and head['view_id'] == floor['view_id']:
+                _need(head['epoch'] >= floor['epoch'], 'reader_head_regressed')
+            yield store, handle, head
+            return
         pin = store.pin_view(handle, deadline=deadline)
         try:
             _need(pin.incarnation == record['incarnation'], 'reader_store_changed')

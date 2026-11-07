@@ -372,7 +372,7 @@ class VectorMixin:
         self._observe(entry,deadline=deadline,timeout_reason=DEADLINE_EXCEEDED)
         _left(deadline)
         with self._reading(deadline) as db:
-            generation, seal, original, stage = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
+            generation, seal, original, stage = self._read_pinned(db, pin, deadline)
             if generation['state'] != 'published' or v.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
                 v.fail('view_pin_changed')
             sealed = stage['vector_spec']
@@ -429,7 +429,8 @@ class VectorMixin:
             v.identifier(profile_id)
         query = None if query_vector is None else query_values(query_vector)
         # The pinned record keeps the spec of the verified sealed stage; search
-        # below re-verifies that seal, and exact re-verifies everything again.
+        # below checks that seal, and both reads re-verify the generation after
+        # any commit to the store (_read_pinned).
         sealed = self._pinned(pin)['vector']
         if sealed is not None:
             if profile_id is not None and profile_id != sealed['profile_id']:
