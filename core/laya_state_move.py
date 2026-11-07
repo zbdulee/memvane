@@ -12,7 +12,8 @@ rewritten, each from bytes precomputed into ``state-move-intent.json``:
 * the reviewed route, the production attestation (journal and socket paths),
   the selection ledger, the build record and the build pointer,
 * the incremental document store's bound candidate path,
-* the install journal (``cas_relocate_state_root``; ``previous*`` cleared).
+* the install journal (``cas_relocate_state_root``; ``previous*`` cleared) and,
+  in the same image transaction, a selected schema3 reader endpoint.
 
 Phases: ``prepare`` (old root, nothing selected changes; a crash discards the
 intent), ``move`` (the rename), ``switch`` (compare-and-replace writes; a
