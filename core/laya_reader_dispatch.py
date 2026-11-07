@@ -324,7 +324,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
             raise ValueError('reader_vector_caller_unproved')
         deadline=min(deadline,valid[-1][6])
     from laya_host_response import (HYBRID_LIST_LIMIT, _fuse_verified_lists, _hybrid_fts_queries,
-                                    _fail)
+                                    _fail, merge_incremental_rows)
     from laya_index_host_route import wiki_index_roots
     from laya_index_source_port import auxiliary_wiki_row
     from laya_blob_values import BlobStoreError
@@ -348,6 +348,16 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         with store._reading(time.monotonic()+left()) as db:
             saved=db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
                              (handle.worktree_id,)).fetchone()
+            legacy=store._read_pinned(db,pin,time.monotonic()+left())[3].get('legacy',{})
+        # A migration head imported while a completed v6 sidecar shadowed its
+        # base keeps both sealed FTS corpora (paired); every active card is in
+        # exactly one. Each corpus is fused on its own and the two are merged
+        # by the v6 incremental merge rule (merge_incremental_rows).
+        origins=legacy['fts_sources'] if 'sidecar_corpus' in legacy else None
+        # The migration prepares that head without a vector spec (lexical
+        # only); vectors arrive with the next ordinary schema3 generation.
+        if origins is not None and vector is not None:
+            raise ValueError('migration_vector_spec_invalid')
 
         def rooted(source):
             if linked is None:
@@ -372,19 +382,26 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                 answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
                                'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
             return answer
-        lists=[shaped(store.search(pin,query,HYBRID_LIST_LIMIT,deadline_seconds=left()))
-               for query in queries]
+        lexical={origin:[shaped(store.search(pin,query,HYBRID_LIST_LIMIT,deadline_seconds=left(),
+                                             **({} if origin is None else {'_legacy_origin':origin})))
+                         for query in queries]
+                 for origin in ((None,) if origins is None else ('base','sidecar'))}
         status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
+        nearest=None
         if semantic:
             try:
-                lists.append(shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
-                                                       profile_id=vector['profile_id'],
-                                                       deadline_seconds=left())))
+                nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
+                                                  profile_id=vector['profile_id'],
+                                                  deadline_seconds=left()))
             except BlobStoreError as exc:
                 if exc.reason not in DEFERRED:
                     raise
                 status=DEFERRED[exc.reason]
-        rows=_fuse_verified_lists(lists,max_rows=15) if any(lists) else []
+
+        def fused(lists):
+            return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
+        rows=(fused(lexical[None]+([] if nearest is None else [nearest])) if origins is None
+              else merge_incremental_rows(fused(lexical['sidecar']),fused(lexical['base'])))
         spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
                                    deadline_seconds=left())
         if time.monotonic()>=deadline:
