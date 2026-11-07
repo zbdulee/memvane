@@ -32,7 +32,8 @@ class DispatchBoundary(unittest.TestCase):
         for name in ('old', 'new'):
             root = self.base / name
             (root / 'core').mkdir(parents=True)
-            for filename in ('laya_product_sync_worker.py', 'wiki_selected_laya.py'):
+            for filename in ('laya_product_sync_worker.py', 'wiki_selected_laya.py',
+                             'laya_wake_entry.py'):
                 (root / 'core' / filename).write_text('pass\n')
             self.bundles.append(root)
 
@@ -65,7 +66,11 @@ class DispatchBoundary(unittest.TestCase):
                      patch.object(dispatch, '_run_child', side_effect=child):
                     self.assertEqual(dispatch.run(kind, self.project)['state'], state)
                 argv, project, seconds = calls[0]
-                self.assertEqual(argv[:4], [sys.executable, '-B', str(CORE / 'laya_wake_entry.py'), kind])
+                # The target bundle's own bootstrap, never the dispatcher's:
+                # a foreign bootstrap leaves its modules in the child.
+                self.assertEqual(argv[:4], [sys.executable, '-B',
+                                            str(self.bundles[target] / 'core' / 'laya_wake_entry.py'),
+                                            kind])
                 self.assertEqual(argv[4:7], [str(self.project), str(self.bundles[target]),
                                              self.proof(self.bundles[target])['sourceCommit']])
                 self.assertEqual(project, str(self.project))
@@ -103,6 +108,30 @@ class DispatchBoundary(unittest.TestCase):
             self.assertEqual(failure_reason(caught.exception),
                              'dispatch:target_entry_invalid:' + 'a' * 40 + ':' + 'c' * 64)
         worker.chmod(0o644)
+        bootstrap = root / 'core' / 'laya_wake_entry.py'
+        foreign = self.base / 'foreign_entry.py'
+        foreign.write_text('pass\n')
+        for shape, expected in (('missing', 'target_entry_unavailable'),
+                                ('writable', 'target_entry_invalid'),
+                                ('symlink', 'target_entry_invalid')):
+            bootstrap.unlink(missing_ok=True)
+            if shape == 'writable':
+                bootstrap.write_text('pass\n')
+                bootstrap.chmod(0o666)
+            elif shape == 'symlink':
+                bootstrap.symlink_to(foreign)
+            with self.subTest(entry=shape), \
+                 patch('laya_index_host_route.select_route', return_value=self.route()), \
+                 patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+                 patch.object(dispatch, '_run_child') as child:
+                with self.assertRaises(DispatchFailure) as caught:
+                    dispatch.run('laya-sync', self.project)
+                # No fallback to the dispatcher's own bootstrap.
+                self.assertEqual(failure_reason(caught.exception),
+                                 'dispatch:' + expected + ':' + 'a' * 40 + ':' + 'c' * 64)
+                child.assert_not_called()
+        bootstrap.unlink()
+        bootstrap.write_text('pass\n')
         with patch('laya_index_host_route.select_route', return_value=self.route()), \
              patch('laya_install_journal.verify_dispatch_target', side_effect=ValueError('private path')):
             with self.assertRaises(DispatchFailure) as caught:
@@ -360,6 +389,13 @@ class SealedChildSubprocess(unittest.TestCase):
                                 'marker=os.environ.get("SEALED_STUB_MARKER")\n'
                                 'if marker: Path(marker).write_text("imported")\n'
                                 'def run(_project):\n'
+                                # The real sync worker's first proof: every
+                                # loaded Laya module is this bundle's file.
+                                ' import config, laya_index_a, laya_index_claim_queue\n'
+                                ' import laya_index_host_route, laya_package\n'
+                                ' import laya_product_bundle, laya_install_journal\n'
+                                ' laya_install_journal._executing_from_candidate(\n'
+                                '  Path(__file__).resolve().parent.parent)\n'
                                 ' hold=os.environ.get("SEALED_STUB_HOLD")\n'
                                 ' if hold: time.sleep(1);Path(hold).write_text("late")\n'
                                 ' return {"state":"indexed","bundle":%r}\n' % label)
@@ -372,10 +408,28 @@ class SealedChildSubprocess(unittest.TestCase):
                 return prepare_full_plugin_candidate(source, base / ('plugin-' + label),
                                                      commit_id=sha)
             old, new = commit('old'), commit('new')
+            # The UID dispatcher (this checkout, a third bundle) hands each
+            # wake to the target's own bootstrap: old->new and new->old.
+            for proof, label in ((new, 'new'), (old, 'old')):
+                target = {'terminal': False, 'project': str(project),
+                          'root': proof['pluginRoot'], 'sourceCommit': proof['sourceCommit'],
+                          'bundleManifestSha256': proof['bundleManifestSha256'],
+                          'ownershipManifestSha256': proof['ownershipManifestSha256'],
+                          'installId': '1' * 32, 'scopeId': '2' * 32,
+                          'dbIncarnation': '3' * 32, 'dbPath': str(base / 'index.sqlite'),
+                          'queuePath': str(base / 'claims.sqlite'),
+                          'journalPath': str(base / 'journal')}
+                with patch.object(dispatch, 'resolve', return_value=target):
+                    try:
+                        result = dispatch._run_target('laya-sync', str(project), target, None)
+                    except DispatchFailure as exc:
+                        self.fail('%s: %s' % (exc.code, exc.detail))
+                self.assertEqual(result['bundle'], label)
             for proof, label in ((new, 'new'), (old, 'old'), (new, 'new')):
                 marker = base / ('marker-' + label)
                 marker.unlink(missing_ok=True)
-                args = [sys.executable, '-B', str(CORE / 'laya_wake_entry.py'),
+                args = [sys.executable, '-B',
+                        str(Path(proof['pluginRoot']) / 'core' / 'laya_wake_entry.py'),
                         'laya-sync', str(project), proof['pluginRoot'],
                         proof['sourceCommit'], proof['bundleManifestSha256'],
                         proof['ownershipManifestSha256']]
@@ -409,7 +463,8 @@ class SealedChildSubprocess(unittest.TestCase):
             worker.write_text(worker.read_text() + '\n# altered after seal\n')
             marker = base / 'tampered-marker'
             env['SEALED_STUB_MARKER'] = str(marker)
-            refused = subprocess.run([sys.executable, '-B', str(CORE / 'laya_wake_entry.py'),
+            refused = subprocess.run([sys.executable, '-B',
+                                      str(Path(old['pluginRoot']) / 'core' / 'laya_wake_entry.py'),
                                       'laya-sync', str(project), old['pluginRoot'],
                                       old['sourceCommit'], old['bundleManifestSha256'],
                                       old['ownershipManifestSha256']],
