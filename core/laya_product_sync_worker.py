@@ -563,11 +563,17 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
     # A malformed route source fails before any model start or index write.
     source_root = _route_source(decision)
     if _selected_store_format(decision) == 'schema3':
-        # The view store path loads no model; v6 runtimes, capacity stores
-        # and discovery read v6 components that a schema3 writer refuses.
+        # The view store path loads no model and opens no v6 runtime or
+        # capacity store; discovery reads the view head, not the v6 lineage.
         if qa_sync_barrier(decision) is not None:
             raise IndexContractError('qa_barrier_schema3_unsupported')
-        return _run_schema3(decision, proof)
+        grants = None
+        if not isinstance(source_root, str):
+            # Snapshot hook grants before the scan, as on the v6 path.
+            import laya_wiki_discovery
+            grants = laya_wiki_discovery.observe_grants(decision)
+        result, proof = _run_schema3(decision, proof)
+        return _after_sync(decision, proof, grants, result, store_format='schema3')
     grants = None
     if not isinstance(source_root, str):
         # v2 only. Snapshot hook grants before the scan; later ones stay live.
@@ -751,8 +757,8 @@ def _run_schema3(decision, proof):
 
     Admission is the sync owner plus a worker writer scope over the current
     plan; the plan must still name a schema3 store. No model or v6 runtime
-    starts. External-edit drain and wiki discovery read v6 components and
-    are not run here (U14).
+    starts. Returns ``(result, proof)``: a publish advances the journal
+    epoch, so ``_after_sync`` rechecks against the proof the pass ended with.
     """
     import laya_install_journal as journal
     import laya_reader_windows as windows
@@ -764,7 +770,7 @@ def _run_schema3(decision, proof):
     try:
         with sync_owner(Path(decision['queuePath'])) as owner:
             if owner is None:
-                return {'state': 'deferred', 'reason': 'owner_busy'}
+                return {'state': 'deferred', 'reason': 'owner_busy'}, proof
             try:
                 try:
                     with journal.read_only_journals():
@@ -793,7 +799,7 @@ def _run_schema3(decision, proof):
                 if windows.local_pending_count() or readers.local_pending_proof_readers():
                     raise ResourceDeferred('writer_cleanup_unsettled')
     except ResourceDeferred as exc:
-        return _deferred(exc)
+        return _deferred(exc), proof
 
 
 def _schema3_wiki_cards(root):
@@ -829,7 +835,11 @@ def _schema3_wiki_cards(root):
 
 
 def _publish_schema3(decision, proof, writer):
-    """Changed cards only: head members with the same bytes keep their trust."""
+    """Changed cards only: head members with the same bytes keep their trust.
+
+    Returns ``(result, proof)``; ``proof`` is the writer's fresh admission
+    proof once this pass marked its first write.
+    """
     import laya_blob_values as v
     import laya_writer_scope as normal
     import wiki_lifecycle
@@ -866,14 +876,15 @@ def _publish_schema3(decision, proof, writer):
             if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
                     and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
                 return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
-                        'storeFormat': 'schema3', 'removed': len(removed)}
+                        'storeFormat': 'schema3', 'removed': len(removed)}, proof
             if not changed and not removed:
-                return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
+                return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}, proof
             # First store write of this pass: the journal fence comes first.
             fresh = normal.mark_new_write(writer)
             if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
                     or fresh.get('productRouteAllowed') is not True):
                 raise IndexContractError('new_write_proof_unconfirmed')
+            proof = fresh
             scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
             members, pending, ingested = {}, 0, 0
             for path in paths:
@@ -899,7 +910,7 @@ def _publish_schema3(decision, proof, writer):
                                      display_title=v.markdown_title(body, admitted['blob_sha']),
                                      trust_digest=admitted['trust_digest'])
             if not ingested and not removed:
-                return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
+                return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}, proof
             manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
                             complete=True, sources=[], members=[members[p] for p in sorted(members)])
             generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
@@ -908,19 +919,19 @@ def _publish_schema3(decision, proof, writer):
         except v.BlobStoreError as exc:
             if exc.reason in SCHEMA3_BINDING_REASONS:
                 return {'state': 'deferred', 'reason': 'schema3_binding_changed',
-                        'detail': exc.reason, 'storeFormat': 'schema3'}
+                        'detail': exc.reason, 'storeFormat': 'schema3'}, proof
             if exc.reason in SCHEMA3_TRANSIENT_REASONS:
-                return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
+                return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}, proof
             raise
     finally:
         store.close()
     return {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
             'generation': generation, 'ingested': ingested, 'removed': len(removed),
-            'pending': pending, 'skipped': skipped}
+            'pending': pending, 'skipped': skipped}, proof
 
 
-def _after_sync(decision, proof, grants, result):
-    """Wiki discovery after a completed sync, on both sync paths.
+def _after_sync(decision, proof, grants, result, *, store_format='v6'):
+    """External-edit drain and wiki discovery after a completed sync, on every sync path.
 
     After receipt and ACK, with the model service stopped. A raised error or
     a retry keeps this wake; the published head is not touched. ``proof`` is
@@ -928,9 +939,14 @@ def _after_sync(decision, proof, grants, result):
     fence). A blocked run, a burst skipped over the pending cap, or a run
     that started the cursor (earlier changes are not discovered) is reported
     as ``wikiDiscovery``.
+
+    A schema3 selection opens no v6 component: discovery takes the view
+    head this pass published or found (``result['generation']``) as its
+    cursor generation instead of the v6 lineage read.
     """
     if result.get('state') not in ('indexed', 'unchanged'):
         return result
+    schema3 = store_format == 'schema3'
 
     import laya_install_journal as journal
     from contextlib import nullcontext
@@ -957,7 +973,10 @@ def _after_sync(decision, proof, grants, result):
                 if grants is None:
                     return result
                 import laya_wiki_discovery
-                if v5:
+                if schema3:
+                    outcome = laya_wiki_discovery.drain_after_sync(
+                        decision, grants, recheck=recheck, view_generation=result.get('generation'))
+                elif v5:
                     with _discovery_base_component(decision,owner,proof) as component:
                         outcome = laya_wiki_discovery.drain_after_sync(
                             decision,grants,recheck=recheck,coordination=component)

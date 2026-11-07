@@ -326,6 +326,9 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
     locks, path checks, byte comparison and ownership recheck as
     ``retire_card`` guard the write, so a concurrent compiler rewrite or a
     human edit is never stamped.
+
+    A schema3-selected install records nothing (``schema3_selected``): the
+    rewritten card would be a new blob whose provenance no store holds.
     """
     root = Path(root).resolve()
     wiki_root = Path(wiki_root)
@@ -333,6 +336,10 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
         return 'blocked'
     with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
         wiki_selected_laya.recheck(selected)
+        if selected is not None and 'journalPath' in selected[0]:
+            from laya_product_sync_worker import _selected_store_format
+            if _selected_store_format(selected[0]) == 'schema3':
+                return 'schema3_selected'
         try:
             subpath = card.relative_to(wiki_root)
         except ValueError:

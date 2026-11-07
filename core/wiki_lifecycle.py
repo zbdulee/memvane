@@ -17,7 +17,7 @@ that format existed is judged by its `sources:` file list instead:
 | a recorded source file is missing                       | retire (`wiki_source_retire.retire_deleted_source`) |
 | a recorded source hash changed                          | enqueue regeneration (compile source queue) |
 | every source present with the same hash                 | keep |
-| no `sourceRevisions`, every `sources:` file exists      | backfill: record the current bytes (`wiki_source_retire.record_source_revisions`), keep |
+| no `sourceRevisions`, every `sources:` file exists      | backfill: record the current bytes (`wiki_source_retire.record_source_revisions`), keep; a schema3-selected install keeps the card unchanged |
 | no `sourceRevisions`, every `sources:` file is missing  | retire (`wiki_source_retire.retire_card`) |
 | session-only `sources:`                                 | outside file-source lifecycle; keep |
 | no `sourceRevisions` and no `sources:` file entry       | retire (`wiki_source_retire.retire_card`) |
@@ -642,6 +642,8 @@ def run(cwd: str) -> dict:
                 log(f"BACKFILL source_revisions {target}: {outcome}")
                 if outcome == "recorded":
                     result["backfilled"] += 1
+                elif outcome == "schema3_selected":
+                    result["kept"] += 1
                 elif outcome != "gone":
                     result["undecidable"] += 1
         elif kind == LEGACY_MISSING:

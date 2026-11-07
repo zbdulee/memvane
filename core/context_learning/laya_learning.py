@@ -4,7 +4,8 @@ A project whose installer selected the memvane-db index serves recall, edits and
 index publishes from memvane-db only. Learning reads the same evidence:
 
 * corpus fingerprint: the published, sealed head generation of the route's
-  scope (eligible, non-excluded membership rows and their content hashes);
+  scope (eligible, non-excluded membership rows and their content hashes),
+  or on a schema3 selection the eligible members of the pinned view head;
 * capture: the verified rows the query-time selector already scored (no
   source file re-read);
 * readiness: an installer-verified route, instead of a QMD store pointer.
@@ -88,6 +89,37 @@ def _sealed_head(db, scope):
     return head[0]
 
 
+# One read of a schema3 view head's members (store open, Git capture, pin).
+SCHEMA3_READ_SECONDS = 5
+
+
+def _schema3_members(root, decision):
+    """``(generation, [(collection/relative, sha256)])`` of a schema3 view head.
+
+    The journal-selected persisted reader endpoint and its pinned main-view
+    head (the recall reader); no v6 database is opened. Member ``blob_sha`` is
+    the same raw-byte sha256 the v6 membership hash is, so an unchanged
+    corpus keeps its fingerprint across the switch.
+    """
+    import laya_journal_reader as reader
+    import laya_reader_lease as lease
+    from laya_product_sync_worker import _writer_executing_root
+    deadline = time.monotonic() + SCHEMA3_READ_SECONDS
+    with lease.resolve_endpoint(root, action='recall', host_root=_writer_executing_root()) as endpoint:
+        record, _raw, _proof = reader._recheck(endpoint)
+        names = [item['name'] for item in record['roots'] if item.get('role') == 'wiki']
+        if (record.get('store_format') != 'schema3' or record['scope'] != decision['scopeId']
+                or len(names) != 1):
+            raise ValueError('laya_learning_schema3_endpoint_changed')
+        with reader._schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+            with store._reading(deadline) as db:
+                rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? '
+                                  'AND eligible=1 ORDER BY path COLLATE BINARY',
+                                  (pin.gen_id,)).fetchmany(MAX_DOCUMENTS + 1)
+            generation = pin.gen_id
+    return generation, [(names[0] + '/' + path, sha) for path, sha in rows]
+
+
 def corpus_snapshot(project_root, config, *, decision=None):
     """Deterministic candidate-corpus fingerprint of the sealed Laya head.
 
@@ -111,12 +143,20 @@ def corpus_snapshot(project_root, config, *, decision=None):
             decision = bound[0]
         names = set(wiki_names(decision))
         scope = decision['scopeId']
-        with closing(_open(decision)) as db:
-            generation = _sealed_head(db, scope)
-            docs = db.execute(
-                'SELECT m.path,m.hash FROM membership m WHERE m.gen=? AND m.scope=? '
-                'AND m.eligible=1 AND ' + _NOT_EXCLUDED + ' ORDER BY m.path COLLATE BINARY',
-                (generation, scope)).fetchmany(MAX_DOCUMENTS + 1)
+        schema3 = False
+        # A synthetic route without an installer journal has no reader selection.
+        if isinstance(decision.get('journalPath'), str) and Path(decision['journalPath']).is_file():
+            from laya_product_sync_worker import _selected_store_format
+            schema3 = _selected_store_format(decision) == 'schema3'
+        if schema3:
+            generation, docs = _schema3_members(root, decision)
+        else:
+            with closing(_open(decision)) as db:
+                generation = _sealed_head(db, scope)
+                docs = db.execute(
+                    'SELECT m.path,m.hash FROM membership m WHERE m.gen=? AND m.scope=? '
+                    'AND m.eligible=1 AND ' + _NOT_EXCLUDED + ' ORDER BY m.path COLLATE BINARY',
+                    (generation, scope)).fetchmany(MAX_DOCUMENTS + 1)
         if len(docs) > MAX_DOCUMENTS:
             return None
         active = []
