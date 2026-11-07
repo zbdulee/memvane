@@ -10,7 +10,9 @@ test('selected schema3 sync fills view vectors and publishes vector generations'
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'laya-schema3-vectors-')));
   const runtime = join(home, 'runtime'); mkdirSync(runtime, { mode: 0o700 });
   try {
-    const r = spawnSync('python3', ['-B', 'test/fixtures/laya-schema3-vectors-checks.py'], {
+    const selected = (process.env.MEMVANE_TEST_METHOD || '').split(',').filter(Boolean);
+    const r = spawnSync('python3', ['-B', 'test/fixtures/laya-schema3-vectors-checks.py',
+      ...selected.map((name) => `Schema3VectorChecks.${name}`)], {
       encoding: 'utf8', timeout: 600000,
       env: { ...process.env, HOME: home, TMPDIR: home, XDG_RUNTIME_DIR: runtime,
         MEMVANE_TEST_RUNTIME_ROOT: runtime, QMD_SETUP_GUARD_FIXTURE: '1', QMD_SANDBOX: '1',
@@ -18,6 +20,6 @@ test('selected schema3 sync fills view vectors and publishes vector generations'
     });
     if (r.stdout) process.stdout.write(r.stdout);
     assert.ifError(r.error); assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stderr, /Ran 10 tests\b/); assert.match(r.stderr, /\nOK\b/);
+    assert.match(r.stderr, new RegExp(`Ran ${selected.length || 11} tests?\\b`)); assert.match(r.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

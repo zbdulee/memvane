@@ -616,5 +616,226 @@ class ShadowRollbackChecks(unittest.TestCase):
         self.assertFalse(self.reader.rollback_pair(record, {**stored, 'profile': 'other'}))
         emit('rollback-after-upgrade', switched=list(switched), after=list(after))
 
+    @contextmanager
+    def as_bundle(self, new):
+        """The upgraded bundle ``new`` executing (the authority ``rollback_from`` uses)."""
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (_upgrade, target, _review, _att), \
+                mock.patch.object(J, '_verified_executing_root', return_value=str(new)), \
+                mock.patch.object(J, '_provider_file_identity', return_value=[[str(new / 'p.py'), 1, 2, 3, 4, 5]]):
+            yield target
+
+    def sync_from(self, new):
+        """One actual sync pass (``_run_sync`` unmocked) with ``new`` as the writer bundle."""
+        real = self.u15.project_dir.layout
+
+        def no_service(*_args, **_kwargs):
+            raise AssertionError('a lexical schema3 pass started a provider service')
+        with self.as_bundle(new) as target, \
+                mock.patch.object(self.u10.bridge, 'inspect_full_plugin_candidate',
+                                  side_effect=lambda root: {**target, 'pluginRoot': str(root)}), \
+                mock.patch.object(self.W, '_writer_executing_root', return_value=new), \
+                mock.patch.object(self.u15.project_dir, 'layout',
+                                  side_effect=lambda p: 'current' if Path(p) == self.case.project else real(p)):
+            return self.W.run(self.case.project, start_service=no_service)
+
+    def hook_from(self, new):
+        """One selected-route recall hook (``serve_selected``) loaded from ``new``.
+
+        Returns ``(context, recall event, sync wakes, stderr)``; a refusal raises.
+        """
+        import io
+        from contextlib import redirect_stderr
+        host = importlib.import_module('laya_host_response')
+        event_log = importlib.import_module('event_log')
+        payload = {'cwd': str(self.case.project), 'prompt': 'heron route northern marsh',
+                   'session_id': 'r4-hook', 'hook_event_name': 'UserPromptSubmit'}
+        wakes, events, stderr = [], [], io.StringIO()
+        with self.as_bundle(new) as target, redirect_stderr(stderr), \
+                mock.patch.object(self.u10.bridge, 'inspect_full_plugin_candidate',
+                                  side_effect=lambda root: {**target, 'pluginRoot': str(root)}), \
+                mock.patch.object(host, '__file__', str(new / 'core' / 'laya_host_response.py')), \
+                mock.patch.object(self.work, 'request',
+                                  side_effect=lambda kind, target='', **_kw: wakes.append((kind, target))), \
+                mock.patch.object(event_log, 'emit',
+                                  side_effect=lambda event, **fields: events.append(dict(fields, event=event))):
+            decision = J.select_route(str(self.case.project), action='recall')
+            answer = host.serve_selected('recall', 'claude', decision, payload)
+        recall = [event for event in events if event['event'] == 'recall']
+        self.assertEqual(len(recall), 1, events)
+        return answer['hookSpecificOutput']['additionalContext'], recall[0], wakes, stderr.getvalue()
+
+    def restore_to_old(self, new):
+        """The operator's restore of the completed upgrade to ``new``; returns its status or refusal."""
+        case = self.case
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, target, review, _att):
+            try:
+                return upgrade.upgrade(project_root=str(case.project), state_root=str(case.state),
+                                       source_root=str(case.home), plugin_root=str(new),
+                                       commit_id=target['sourceCommit'],
+                                       accepted_provider_sha256=review['proposalSha256'],
+                                       model_path='/synthetic/model', dimension=3, restore=True)['status']
+            except Exception as exc:  # InstallBlocked (forward-only) or a reader refusal (ValueError)
+                return type(exc).__name__ + ':' + str(exc)
+
+    def install_bytes(self):
+        """Journal, ledger, route, marker and attestation bytes a restore would change."""
+        fresh = importlib.import_module('laya_fresh_wiki_origin')
+        paths = [self.case.journal, self.case.state / fresh.LEDGER, self.case.state / J.PRODUCTION_ATTESTATION,
+                 self.case.state / 'reviewed-route.json']
+        paths += sorted(p for p in self.case.auto.iterdir() if p.is_file() and p.suffix == '.json')
+        return {str(p): p.read_bytes() for p in paths if p.exists()}
+
+    # ---- R4: settings re-seal after a completed upgrade --------------------
+    def test_12_settings_reseal_after_a_completed_upgrade_follows_the_successor_chain(self):
+        case, u15 = self.case, self.u15
+        _initial, switched = self.switched()
+        gen = u15.schema3_generation()
+        new = case.home / 'r4-new-plugin'
+        new.mkdir()
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, target, review, _att):
+            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                      target['sourceCommit'], review['proposalSha256'], '/synthetic/model', 3)
+            self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+        # The upgrade leaves the schema3 record on its sealed predecessor attestation.
+        _selection, stored, _history = self.M._read_history(case.journal)
+        live = J.inspect_journal(case.journal)['providerAttestationSha256']
+        self.assertEqual((stored['store_format'], u15.selection()), ('schema3', switched))
+        self.assertNotEqual(stored['attestation_sha256'], live)
+        with self.as_bundle(new):
+            _endpoint, _record, rows = lifecycle.Lifecycle.recall(self.u10, new, authority=False)
+        self.assertEqual(rows.data_generation, gen)
+        context, event, wakes, stderr = self.hook_from(new)
+        self.assertEqual((event.get('outcome'), event.get('store_format')), ('served', 'schema3'), event)
+        self.assertIn('generation ' + gen, context)
+        # An unchanged install is not re-sealed (the attestation alone is no reason).
+        with self.as_bundle(new):
+            self.assertFalse(self.reader.settings_resettle_pending(case.state, case.project, new))
+            self.assertEqual(self.reader.resettle_selection(case.state, case.project, new), 'unchanged')
+        self.assertEqual(u15.selection(), switched)
+        # The recall settings change.
+        settings = importlib.import_module('project_dir').settings_path(case.project)
+        value = json.loads(settings.read_text(encoding='utf8'))
+        settings.write_text(json.dumps(dict(value, skipPaths=['r4-skip'])), encoding='utf8')
+        # The re-seal proves the attestation step on the sealed successor chain
+        # in its CAS; a chain that does not reach the live attestation writes
+        # nothing, and the read-only pending check answers False.
+        bytes_before = case.journal.read_bytes()
+        real_chain = self.reader._successor_chain
+
+        def other_target(db, endpoint_id, stored, _target_sha, *args, **kwargs):
+            return real_chain(db, endpoint_id, stored, '0' * 64, *args, **kwargs)
+        with self.as_bundle(new), mock.patch.object(self.reader, '_successor_chain', side_effect=other_target):
+            self.assertFalse(self.reader.settings_resettle_pending(case.state, case.project, new))
+            with self.assertRaisesRegex(ValueError, '^reader_successor_unproved$'):
+                self.reader.resettle_selection(case.state, case.project, new)
+        self.assertEqual(case.journal.read_bytes(), bytes_before)
+        outcome = {}
+        # The recall hook answers without context and asks for the owner's sync.
+        context, event, wakes, stderr = self.hook_from(new)
+        outcome['hook_before'] = (context, event.get('outcome'), event.get('reason'), wakes,
+                                  'laya_reader_settings_resealing' in (event.get('notes') or []),
+                                  'request refused' in stderr)
+        with self.as_bundle(new):
+            outcome['pending'] = self.reader.settings_resettle_pending(case.state, case.project, new)
+            try:
+                lifecycle.Lifecycle.recall(self.u10, new, authority=False)
+                outcome['recall_before'] = 'served'
+            except ValueError as exc:
+                outcome['recall_before'] = str(exc)
+        # The sync owner's pass (the actual worker) re-seals before it publishes.
+        synced = self.sync_from(new)
+        emit('r4-upgrade-then-settings-sync', synced=synced)
+        outcome['resettle'] = synced.get('readerResettle', synced.get('reason', synced.get('state')))
+        with self.as_bundle(new):
+            try:
+                _endpoint, record, rows = lifecycle.Lifecycle.recall(self.u10, new, authority=False)
+                outcome['recall_after'] = 'served'
+                outcome['generation'] = rows.data_generation
+            except ValueError as exc:
+                outcome['recall_after'] = str(exc)
+        context, event, wakes, stderr = self.hook_from(new)
+        outcome['hook_after'] = (event.get('outcome'), event.get('reason'), event.get('store_format'),
+                                 'generation ' + synced['generation'] in context, wakes)
+        emit('r4-upgrade-then-settings-reseal', **outcome)
+        self.assertEqual(outcome, {
+            'hook_before': ('', 'empty', 'reader_settings_resealing', [('laya-sync', str(case.project))],
+                            True, False),
+            'pending': True, 'recall_before': 'reader_endpoint_changed',
+            'resettle': 'resealed', 'recall_after': 'served', 'generation': synced['generation'],
+            'hook_after': ('served', 'selected', 'schema3', True, [])})
+        # The re-sealed record sits on the live attestation; only the settings
+        # and the attestation separate it from its predecessor.
+        resealed, record, _history = self.M._read_history(case.journal)
+        self.assertEqual((resealed.epoch, resealed.previous_endpoint), (switched[0] + 1, switched[1]))
+        self.assertEqual(record['attestation_sha256'], live)
+        self.assertEqual({k for k in record if record[k] != stored[k]}, {'settings', 'attestation_sha256'})
+        with self.as_bundle(new):
+            self.assertFalse(self.reader.settings_resettle_pending(case.state, case.project, new))
+            self.assertEqual(self.reader.resettle_selection(case.state, case.project, new), 'unchanged')
+        # Shape: the attestation travels only with a re-seal change, one way.
+        pair = self.reader.resettled_pair
+        att = {'attestation_sha256': record['attestation_sha256']}
+        self.assertTrue(pair(stored, record))
+        self.assertFalse(pair(stored, {**stored, **att}))
+        self.assertTrue(pair(stored, {**stored, **att, 'vector_profile': 'p', 'vector_recipe': 'r'}))
+        self.assertFalse(pair(stored, {**record, 'profile': 'other'}))
+        # The sync pass that re-sealed also published: a restore of the
+        # upgrade is forward-only now, as without any re-seal; nothing is written.
+        before = self.install_bytes()
+        restored = self.restore_to_old(new)
+        emit('r4-restore-after-settings-reseal', restored=restored,
+             newWriteSeen=J.inspect_journal(case.journal)['newWriteSeen'])
+        self.assertEqual(restored, 'InstallBlocked:active_upgrade_rollback_forward_only')
+        self.assertTrue(J.inspect_journal(case.journal)['newWriteSeen'])
+        self.assertEqual(self.install_bytes(), before)
+        with self.as_bundle(new):
+            _endpoint, _record, rows = lifecycle.Lifecycle.recall(self.u10, new, authority=False)
+        self.assertEqual(rows.data_generation, synced['generation'])
+        # The rollback from the upgraded bundle still returns the v6 reader.
+        result, _endpoint, v6, rows = self.rollback_from(new)
+        self.assertEqual((result['status'], v6['store_format'], rows.store_format), ('rolled_back', 'v6', 'v6'))
+
+    def test_13_vector_spec_adoption_after_a_completed_upgrade_reseals(self):
+        """The first vector head after an upgrade: the same re-seal condition as settings.
+
+        The fixture provider is unusable (lexical only), so the adopted spec is
+        injected where ``_adopted_vector_spec`` reads the main head; the
+        re-seal CAS and its successor-chain proof are actual.
+        """
+        case, u15 = self.case, self.u15
+        _initial, switched = self.switched()
+        new = case.home / 'r4-vector-plugin'
+        new.mkdir()
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, target, review, _att):
+            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                      target['sourceCommit'], review['proposalSha256'], '/synthetic/model', 3)
+            self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+        _selection, stored, _history = self.M._read_history(case.journal)
+        live = J.inspect_journal(case.journal)['providerAttestationSha256']
+        self.assertEqual((stored['vector_profile'], stored['vector_recipe']), (None, None))
+        self.assertNotEqual(stored['attestation_sha256'], live)
+        spec = {'profile_id': 'r4-profile', 'recipe_id': 'r4-recipe'}
+        with self.as_bundle(new), mock.patch.object(self.reader, '_adopted_vector_spec', return_value=spec):
+            result = self.reader.resettle_selection(case.state, case.project, new)
+        resealed, record, _history = self.M._read_history(case.journal)
+        emit('r4-upgrade-then-vector-adoption', resettle=result, epoch=resealed.epoch)
+        self.assertEqual(result, 'resealed')
+        self.assertEqual((resealed.epoch, resealed.previous_endpoint), (switched[0] + 1, switched[1]))
+        self.assertEqual((record['vector_profile'], record['vector_recipe'], record['attestation_sha256']),
+                         ('r4-profile', 'r4-recipe', live))
+        self.assertEqual({k for k in record if record[k] != stored[k]},
+                         {'vector_profile', 'vector_recipe', 'attestation_sha256'})
+        # A restore of the upgrade after a re-seal without any new write: the
+        # restore seal binds the upgrade's reader seal to the selected endpoint,
+        # which the re-seal replaced. Refused before any change; nothing is written.
+        before = self.install_bytes()
+        self.assertFalse(J.inspect_journal(case.journal)['newWriteSeen'])
+        restored = self.restore_to_old(new)
+        emit('r4-restore-after-vector-reseal', restored=restored)
+        self.assertEqual(restored, 'JournalEvidenceError:reader_upgrade_seal_unproved')
+        self.assertFalse(importlib.import_module('laya_fresh_wiki_origin').upgrade_fenced(str(case.project)))
+        self.assertEqual(self.install_bytes(), before)
+        self.assertEqual(self.M._read_history(case.journal)[0].epoch, resealed.epoch)
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
