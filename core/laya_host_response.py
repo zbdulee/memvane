@@ -93,6 +93,21 @@ def _capture_learning(slot: list, started: float) -> None:
         pass
 
 
+def _record_loaded_receipt(host: str, decision, payload) -> None:
+    """After the answer is flushed: this host's loaded-reader receipt while a
+    shadow migration waits for the reader switch (bounded; never raises)."""
+    try:
+        import hook_budget
+        from laya_bridge_observer import record_hook_receipt
+        deadline = time.monotonic() + hook_budget.remaining()
+        status = record_hook_receipt(payload, host, decision, deadline=deadline)
+        if status in ('recorded', 'complete'):
+            event_log.emit('migration.bridge', outcome=status, decision=decision, host=host,
+                           session=event_log.session_id(payload))
+    except Exception:
+        pass
+
+
 class HostResponseError(ValueError):
     """Fixed diagnostic code; never includes document body or source path."""
 
@@ -3078,6 +3093,7 @@ def main(argv: list[str] | None = None) -> int:
         if action == "recall":
             # Learning work starts only after the context is in the pipe; a
             # host that kills this process on timeout still has the answer.
+            _record_loaded_receipt(host, decision, payload)
             _capture_learning(capture, started)
         return 0
     except Exception as exc:

@@ -3505,11 +3505,21 @@ def _switch_preconditions(project, state):
     import project_dir
     if project_dir.layout(project) != 'current':
         raise IndexContractError('switch_layout_not_current')
-    intents = (active.INTENT, bound.INTENT, inactive.INTENT, state_move.INTENT, folder_move.INTENT)
+    # The other intents are renamed to receipts when they finish; a finished
+    # active upgrade keeps its intent file as the receipt until a later bundle
+    # archives it, so only an unsettled one is busy.
+    intents = (bound.INTENT, inactive.INTENT, state_move.INTENT, folder_move.INTENT)
     pointers = (state_move.POINTER, folder_move.POINTER)
     if (fresh.upgrade_fenced(str(project)) or any(os.path.lexists(state / name) for name in intents)
             or any(os.path.lexists(project_dir.runtime_file(project, name)) for name in pointers)):
         raise IndexContractError('switch_lifecycle_busy')
+    if os.path.lexists(state / active.INTENT):
+        try:
+            intent = active._load_intent(state, project)
+            # Read-only; refuses an intent whose transition has not settled.
+            active.finished_intent_receipt(state, project, intent)
+        except Exception as exc:
+            raise IndexContractError('switch_lifecycle_busy') from exc
     try:
         bridge._require_supported_hosts(_SWITCH_HOSTS)
     except ValueError as exc:
