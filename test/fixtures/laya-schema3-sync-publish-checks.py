@@ -44,13 +44,13 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.raw_collection = next(c['name'] for c in self.decision['collections'] if c['role'] == 'raw')
 
     # -- helpers --------------------------------------------------------------
-    def card(self, relative, token):
+    def card(self, relative, token, source_dir='notes'):
         """A card that passes the reader's verified-frontmatter rule (trusted)."""
         import yaml_scalars
         raw = ('Synthetic source for ' + token + '.\n').encode('utf8')
-        source = self.case.project / 'notes' / (token + '.md')
-        source.parent.mkdir(exist_ok=True); source.write_bytes(raw)
-        revision = dict(kind='file', path='notes/' + token + '.md', collection=self.raw_collection,
+        source = self.case.project / source_dir / (token + '.md')
+        source.parent.mkdir(parents=True, exist_ok=True); source.write_bytes(raw)
+        revision = dict(kind='file', path=source_dir + '/' + token + '.md', collection=self.raw_collection,
                         sha256=hashlib.sha256(raw).hexdigest(), size=len(raw),
                         mtimeNs=source.stat().st_mtime_ns)
         line = yaml_scalars.dump_source_revisions([revision])[0]
@@ -125,7 +125,77 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertTrue(all(row['path'].startswith(wiki + '/') for row in hit.rows))
         return [row['path'][len(wiki) + 1:] for row in hit.rows]
 
+    def generation_sources(self, gen_id):
+        """``{path: (presence, fingerprint path)}`` of one generation's sealed manifest."""
+        with closing(sqlite3.connect(self.store_path.as_uri() + '?mode=ro', uri=True)) as db:
+            stage = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
+                               'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (gen_id,)).fetchone()[0]
+            result = {}
+            for source in json.loads(stage)['manifest']['sources']:
+                path = db.execute('SELECT path FROM source_fingerprints WHERE fingerprint_id=?',
+                                  (source['fingerprint_id'],)).fetchone()[0]
+                result[source['path']] = (source['presence'], path)
+            return result
+
+    def attested_source_paths(self, gen_id, card):
+        """Fingerprint paths of the attestation a generation member's trust digest names."""
+        store = self.views.ViewStore.open_reader(self.store_path, repository=self.repository,
+                                                 scope_id=self.case.route['scopeId'])
+        try:
+            with closing(sqlite3.connect(self.store_path.as_uri() + '?mode=ro', uri=True)) as db:
+                trust = db.execute('SELECT trust_digest FROM wiki_members WHERE gen_id=? AND path=?',
+                                   (gen_id, card)).fetchone()[0]
+            self.assertIsNotNone(trust)
+            evidence = store.attestation(trust)
+            return sorted(store.fingerprint(item['fingerprint_id'])['path'] for item in evidence['sources'])
+        finally:
+            store.close()
+
     # -- checks ---------------------------------------------------------------
+    def test_10_dot_raw_root_sources_are_observed_and_published(self):
+        """A raw collection rooted at a dot directory (legacy ``collectionPaths``
+        such as ``.nova/06_Sessions``) is observed like any other raw root.
+
+        Minimal settings always expand the raw root to the project, so the
+        route's raw ``sourceRoot`` is substituted in the decision the pass
+        hands to the raw observation; everything after it is the real pass.
+        """
+        self.select_schema3()
+        dot_root = self.case.project / '.nova' / '06_Sessions'
+        dot_root.mkdir(parents=True)
+        (dot_root / 'ep01.md').write_bytes(b'Session one notes.\n')
+        self.card('concepts/dotroot-card.md', 'dotrootprobe')
+        real = self.worker._schema3_sources
+
+        def dot_raw(decision, *args, **kwargs):
+            collections = [dict(item, sourceRoot=str(dot_root)) if item.get('role') == 'raw' else item
+                           for item in decision['collections']]
+            return real(dict(decision, collections=collections), *args, **kwargs)
+
+        with mock.patch.object(self.worker, '_schema3_sources', new=dot_raw):
+            first, _calls = self.run_pass()
+            self.assertEqual(first['state'], 'indexed', first)
+            self.assertEqual(self.generation_sources(first['generation']),
+                             {'.nova/06_Sessions/ep01.md': ('present', '.nova/06_Sessions/ep01.md')})
+            idle, idle_calls = self.run_pass()
+        self.assertEqual((idle['state'], idle_calls), ('unchanged', []), idle)
+        self.assertEqual(self.head()[0], first['generation'])
+        emit('schema3-dot-raw-root', sources=first['sources'])
+
+    def test_11_card_citing_a_dot_source_keeps_its_reader_trust(self):
+        """v6 trusts a verified card whose ``sourceRevisions`` path starts with a
+        dot directory; the schema3 ingest records the same legacy attestation."""
+        self.select_schema3()
+        self.card('concepts/dot-source.md', 'dotsourceprobe', source_dir='.nova/06_Sessions')
+        result, calls = self.run_pass()
+        self.assertEqual(result['state'], 'indexed', result)
+        self.assertIn('concepts/dot-source.md', calls)
+        self.assertEqual(self.attested_source_paths(result['generation'], 'concepts/dot-source.md'),
+                         ['.nova/06_Sessions/dotsourceprobe.md'])
+        self.assertGreaterEqual(self.card_sources(result['generation'], 'concepts/dot-source.md'), 1)
+        self.assertIn('concepts/dot-source.md', self.paths(self.recall('dotsourceprobe')))
+        emit('schema3-dot-source-card', trusted=True)
+
     def test_01_pass_publishes_edited_card_and_persisted_recall_reads_it(self):
         self.select_schema3()
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
