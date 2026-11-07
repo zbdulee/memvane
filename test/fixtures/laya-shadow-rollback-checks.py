@@ -381,5 +381,114 @@ class ShadowRollbackChecks(unittest.TestCase):
         self.assertEqual(len(list(case.state.glob('shadow-migration-intent.retired-*.json'))), 1)
 
 
+    # ---- U16b: unreadable schema3 store and changed recall settings --------
+    def test_08_unreadable_schema3_store_with_changed_settings_still_rolls_back(self):
+        case, u15 = self.case, self.u15
+        initial, switched = self.switched()
+        v6_gen = self.u11.v6_generation()
+        _selection, record, _history = self.M._read_history(case.journal)
+        self.assertEqual(record['store_format'], 'schema3')
+        # The schema3 store is lost (moved aside; nothing is deleted) ...
+        lost = Path(record['db_path'])
+        for suffix in ('', '-wal', '-shm'):
+            if os.path.lexists(str(lost) + suffix):
+                os.replace(str(lost) + suffix, str(lost) + suffix + '.lost')
+        # ... and the recall settings changed, so the owner cannot re-seal it.
+        settings = importlib.import_module('project_dir').settings_path(case.project)
+        value = json.loads(settings.read_text(encoding='utf8'))
+        settings.write_text(json.dumps(dict(value, skipPaths=['u16b-skip'])), encoding='utf8')
+        with self.assertRaises(ValueError):
+            self.reader.resettle_selection(case.state, case.project, case.plugin)
+        bytes_before = case.journal.read_bytes()
+        # A v6 store that is not the one the switch left is still refused.
+        real = self.reader._recheck
+
+        def other_db(endpoint):
+            saved, raw, proof = real(endpoint)
+            if saved.get('store_format') == 'v6':
+                saved = {**saved, 'db_node': [0, 1]}
+            return saved, raw, proof
+        with mock.patch.object(self.reader, '_recheck', side_effect=other_db), \
+                self.assertRaisesRegex(ValueError, 'rollback_v6_changed'):
+            self.rollback()
+        self.assertEqual(case.journal.read_bytes(), bytes_before)
+        # The v6 proof alone admits the rollback.
+        result, wakes = self.rollback()
+        self.assertEqual(result['status'], 'rolled_back', result)
+        self.assertEqual([a[:1] for a, _k in wakes], [('laya-sync',)])
+        after = u15.selection()
+        self.assertEqual((after[0], after[2], after[3]), (switched[0] + 1, switched[1], result['transition_id']))
+        _selection, stored, _history = self.M._read_history(case.journal)
+        self.assertEqual(stored['store_format'], 'v6')
+        # Only the recall settings digest separates the pair (current v6, stale schema3).
+        self.assertNotEqual(stored['settings'], record['settings'])
+        self.assertTrue(self.reader.rollback_pair(record, stored))
+        self.assertFalse(self.reader.rollback_pair(stored, record))
+        self.assertFalse(self.reader.rollback_pair(record, {**stored, 'install_id': '0' * 32}))
+        answer = u15.recall()
+        self.assertIn('generation ' + v6_gen, answer['context'])
+        code, status = self.setup('index-reader-status')
+        self.assertEqual((code, status['reader']['store_format'], status['held']), (0, 'v6', True))
+        again, wakes = self.rollback()
+        self.assertEqual((again['status'], again['transition_id']), ('rollback_retained', result['transition_id']))
+        # The logs skill shows the rollback, its refusal and its replay.
+        done = subprocess.run([sys.executable, '-B', str(ROOT / 'skills/logs/scripts/logs.py'),
+                               '--state-root', str(case.state), 'migration', '--limit', '0'],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = [line for line in done.stdout.splitlines() if 'migration.rollback' in line]
+        self.assertEqual([line.split('migration.rollback ', 1)[1].split(' ')[0] for line in lines],
+                         ['refused', 'rolled_back', 'retained'], done.stdout)
+        self.assertIn('reason=rollback_v6_changed', lines[0])
+        summary = subprocess.run([sys.executable, '-B', str(ROOT / 'skills/logs/scripts/logs.py'),
+                                  '--state-root', str(case.state)],
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(summary.returncode, 0, summary.stderr)
+        self.assertIn('rollback=retained', summary.stdout)
+        emit('rollback-unreadable-schema3', switched=list(switched), after=list(after))
+
+    # ---- U16b: a stopped lifecycle intent defers the rollback ---------------
+    def test_09_stopped_lifecycle_intents_defer_the_rollback(self):
+        case, u15 = self.case, self.u15
+        fresh = importlib.import_module('laya_fresh_wiki_origin')
+        state_move = importlib.import_module('laya_state_move')
+        folder_move = importlib.import_module('laya_project_dir_move')
+        project_dir = importlib.import_module('project_dir')
+        self.switched()
+        bytes_before = case.journal.read_bytes()
+
+        def busy():
+            with self.assertRaisesRegex(ValueError, 'rollback_lifecycle_busy'):
+                self.rollback()
+            self.assertEqual(case.journal.read_bytes(), bytes_before)
+        # An active upgrade stopped before its fence: the route it names is not selected yet.
+        receipt = u15.active_intent(settled=False)
+        busy()
+        # A stopped state move (intent) and project folder move (pointer).
+        u15.active_intent(settled=True)
+        for path in (case.state / state_move.INTENT,
+                     project_dir.runtime_file(case.project, folder_move.POINTER)):
+            path.write_bytes(b'{}')
+            path.chmod(0o600)
+            try:
+                busy()
+            finally:
+                path.unlink()
+        # The upgrade fence alone.
+        with mock.patch.object(fresh, 'upgrade_fenced', return_value=True):
+            busy()
+        # The entry point reports it as deferred (exit 75).
+        with mock.patch.object(self.M, 'rollback_reader',
+                               side_effect=self.M.IndexContractError('rollback_lifecycle_busy')):
+            code, deferred = self.setup('rollback-index-reader', '--approve-index-reader-rollback')
+        self.assertEqual((code, deferred['status'], deferred['reason']), (75, 'deferred', 'rollback_lifecycle_busy'))
+        # A settled upgrade receipt is not busy; the receipt stays.
+        before = receipt.read_bytes()
+        result, _wakes = self.rollback()
+        self.assertEqual(result['status'], 'rolled_back', result)
+        self.assertEqual(receipt.read_bytes(), before)
+        emit('rollback-lifecycle-busy', refused=4)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

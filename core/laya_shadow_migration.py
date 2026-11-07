@@ -3492,10 +3492,17 @@ def _cas_landed(ready, selection):
             and selection.epoch == ready['expected_epoch'] + 1)
 
 
-def _switch_preconditions(project, state):
-    """Read-only lifecycle, layout and host gates (7, 5)."""
+def _lifecycle_idle(project, state, code):
+    """Read-only: no lifecycle intent in progress or stopped; else ``code``.
+
+    Each intent captured the reader it started under (an active upgrade
+    re-proves the selected endpoint against its fenced reader; a state or
+    project folder move re-seals the then-selected record), so a reader CAS
+    underneath would strand it or make it re-seal another record. The
+    SessionStart bundle worker finishes a stopped intent; the caller asks
+    again afterwards.
+    """
     import os
-    import laya_bridge_readiness as bridge
     import laya_fresh_wiki_origin as fresh
     import laya_active_upgrade as active
     import laya_bound_upgrade as bound
@@ -3503,8 +3510,6 @@ def _switch_preconditions(project, state):
     import laya_project_dir_move as folder_move
     import laya_state_move as state_move
     import project_dir
-    if project_dir.layout(project) != 'current':
-        raise IndexContractError('switch_layout_not_current')
     # The other intents are renamed to receipts when they finish; a finished
     # active upgrade keeps its intent file as the receipt until a later bundle
     # archives it, so only an unsettled one is busy.
@@ -3512,14 +3517,23 @@ def _switch_preconditions(project, state):
     pointers = (state_move.POINTER, folder_move.POINTER)
     if (fresh.upgrade_fenced(str(project)) or any(os.path.lexists(state / name) for name in intents)
             or any(os.path.lexists(project_dir.runtime_file(project, name)) for name in pointers)):
-        raise IndexContractError('switch_lifecycle_busy')
+        raise IndexContractError(code)
     if os.path.lexists(state / active.INTENT):
         try:
             intent = active._load_intent(state, project)
             # Read-only; refuses an intent whose transition has not settled.
             active.finished_intent_receipt(state, project, intent)
         except Exception as exc:
-            raise IndexContractError('switch_lifecycle_busy') from exc
+            raise IndexContractError(code) from exc
+
+
+def _switch_preconditions(project, state):
+    """Read-only lifecycle, layout and host gates (7, 5)."""
+    import laya_bridge_readiness as bridge
+    import project_dir
+    if project_dir.layout(project) != 'current':
+        raise IndexContractError('switch_layout_not_current')
+    _lifecycle_idle(project, state, 'switch_lifecycle_busy')
     try:
         bridge._require_supported_hosts(_SWITCH_HOSTS)
     except ValueError as exc:
@@ -3784,10 +3798,11 @@ _ROLLBACK_SECONDS = 10.0
 _ROLLBACK_STORE = ('store_format', 'capability', 'incarnation', 'profile', 'checkout_policy',
                    'db_node', 'catalog_node', 'binding_node', 'legacy_sidecar_baseline')
 _ROLLBACK_PATHS = ('db_path', 'catalog_path', 'binding_path', 'sidecar_path')
-# Busy locks and a concurrent CAS: nothing was written; ask again later.
+# Busy locks, a concurrent CAS and a lifecycle intent the SessionStart worker
+# still has to finish: nothing was written; ask again later.
 ROLLBACK_BUSY = frozenset(('install_busy', 'cutover_operation_busy', 'sync_owner_busy', 'initial_build_busy',
                            'learning_compute_busy', 'reader_transition_busy', 'stale_reader_cas',
-                           'reader_selection_changed'))
+                           'reader_selection_changed', 'rollback_lifecycle_busy'))
 
 
 def _reader_history(db):
@@ -3940,8 +3955,11 @@ def rollback_reader(project, *, executing_root):
             deadline = time.monotonic() + _ROLLBACK_SECONDS
             if journal.journal.select_route(str(project), action='recall') != decision:
                 raise IndexContractError('migration_route_changed')
+            _lifecycle_idle(project, state, 'rollback_lifecycle_busy')
             # The owner re-seals a schema3 record whose recall settings changed,
             # so the v6 target (current settings) shares the install identity.
+            # When the schema3 store cannot be read, the CAS admits the
+            # settings-only difference (``rollback_pair``) on the v6 proof below.
             try:
                 journal.resettle_selection(state, project, executing_root)
             except (OSError, ValueError):

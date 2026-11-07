@@ -30,6 +30,9 @@ FAILED = frozenset(('refused', 'failed', 'error', 'interrupted', 'exited'))
 MIGRATION_OPS = ('begin', 'copy', 'verification', 'base_corpus', 'sidecar_corpus',
                  'prepare', 'publish', 'vectors', 'parity', 'parity_seal', 'reader_ready', 'switch')
 MIGRATION_STATES = ('copying', 'caught_up', 'shadow_verified', 'reader_ready', 'switched')
+# laya_shadow_migration.rollback_reader outcomes (event ``migration.rollback``).
+ROLLBACK_OUTCOMES = ('rolled_back', 'retained', 'refused')
+MIGRATION_EVENTS = ('migration.shadow', 'migration.driver', 'migration.rollback')
 _HEX = re.compile(r'[0-9a-f]{32}')
 _STAGE = re.compile(r'[a-z_]{1,32}')
 
@@ -122,7 +125,9 @@ def migration_summary(window):
     shadow = [row for row in window if row.get('event') == 'migration.shadow'
               and row.get('outcome') != 'attempt']
     driver = [row for row in window if row.get('event') == 'migration.driver']
-    if not shadow and not driver:
+    rollbacks = [row['outcome'] for row in window if row.get('event') == 'migration.rollback'
+                 and row.get('outcome') in ROLLBACK_OUTCOMES]
+    if not shadow and not driver and not rollbacks:
         return None
     states = [row['migration_state'] for row in driver if row.get('migration_state') in MIGRATION_STATES]
     state = states[-1] if states else '-'
@@ -144,6 +149,8 @@ def migration_summary(window):
     parts.append(f"restarts={outcomes['restarted'] + outcomes['restart_pending']}")
     parts.append(f"retries={sum(1 for row in driver if row.get('outcome') == 'waiting')}")
     parts.append(f"errors={outcomes['error']}")
+    if rollbacks:
+        parts.append(f'rollback={rollbacks[-1]}')
     return 'migration: ' + ' '.join(parts)
 
 
@@ -264,7 +271,7 @@ def main(argv=None):
                                                 if row.get('event') == 'bundle.upgrade'
                                                 else ''))
     elif args.view == 'migration':
-        _print([row for row in rows if row.get('event') in ('migration.shadow', 'migration.driver')
+        _print([row for row in rows if row.get('event') in MIGRATION_EVENTS
                 and row.get('outcome') != 'attempt'], args)
     else:
         _print([row for row in rows if not args.event or row.get('event') == args.event], args)

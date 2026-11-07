@@ -24,7 +24,7 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" recalls --limit 10   # recent recalls and why they were empty/degraded
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" errors --hours 6     # refusals and failures
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" upgrades             # bundle upgrade / journal conversion
-   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" migration            # private shadow migration steps and outcomes
+   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" migration            # private shadow migration steps, outcomes and reader rollbacks
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki  # one event kind; add --json for raw lines
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.backfill  # finite initial-pass progress
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.card  # cards refused or split for the selector budget
@@ -46,7 +46,11 @@ migration resumes on its own once space returns. `restarts` counts source change
 that sent the copy back, `retries` passes that stopped for a later retry, and
 `errors` steps that failed with a fixed `reason`
 (`migration_recall_parity_mismatch` and `migration_semantic_parity_mismatch` are
-parity failures).
+parity failures). `rollback` is the latest explicit reader rollback outcome:
+`rolled_back` (the previous index reader is selected again), `retained` (a
+repeated request; the journal already records it) or `refused` (the line in the
+`migration` view carries the fixed `reason`; `rollback_lifecycle_busy` and other
+busy codes mean nothing was written and the request can be repeated later).
 
 For `wiki.backfill`, `pending` and `dispatched` are unfinished source revisions;
 `settled` means the compile worker finished a terminal attempt (including no-card
