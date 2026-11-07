@@ -158,7 +158,15 @@ def _freeze(value):
 
 
 @contextmanager
-def _readonly(path, state):
+def _readonly(path, state, *, recover=False):
+    """One query_only snapshot transaction over a private store.
+
+    ``recover=True`` is for writer-plan reads only (every caller holds the
+    queue owner): the connection opens ``mode=rw`` so SQLite rolls back a hot
+    journal a killed writer left, which a ``mode=ro`` connection refuses with
+    ``SQLITE_READONLY_ROLLBACK``. ``query_only`` stays on, so that rollback is
+    the only write; the writer's own rw connection would perform it anyway.
+    """
     before = _file(path, state)
     for suffix in ('-wal', '-shm', '-journal'):
         side = Path(str(path) + suffix)
@@ -166,7 +174,8 @@ def _readonly(path, state):
             _file(side, state)
     try:
         from laya_index_a import _query_only_uri
-        with closing(sqlite3.connect(_query_only_uri(path), uri=True,
+        uri = Path(path).as_uri() + '?mode=rw' if recover else _query_only_uri(path)
+        with closing(sqlite3.connect(uri, uri=True,
                                      timeout=2, isolation_level=None)) as db:
             db.execute('PRAGMA query_only=ON')
             db.execute('PRAGMA trusted_schema=OFF')

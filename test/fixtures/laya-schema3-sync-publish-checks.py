@@ -12,8 +12,13 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import select
+import signal
 import sqlite3
+import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
@@ -498,6 +503,96 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(self.head(), held_head)
         self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], epoch)
         emit('schema3-sync-removal', removedOne=1, heldRemoval=held['removed'], headUnchanged=True)
+
+    # A spilled, uncommitted write by a killed process: SQLite's own hot journal.
+    HOT_WRITER = r'''import json,os,signal,sqlite3,sys
+from pathlib import Path
+signal.alarm(25)
+path=Path(sys.argv[1])
+db=sqlite3.connect(path,isolation_level=None)
+mode=db.execute('PRAGMA journal_mode').fetchone()[0]
+db.execute('PRAGMA cache_size=1')
+db.execute('PRAGMA cache_spill=ON')
+db.execute('BEGIN IMMEDIATE')
+db.execute('CREATE TABLE hot_probe(id INTEGER PRIMARY KEY,value TEXT NOT NULL)')
+db.executemany('INSERT INTO hot_probe VALUES(?,?)',[(n,'x'*3000) for n in range(80)])
+print(json.dumps(dict(event='uncommitted-spill',journalMode=mode)),flush=True)
+sys.stdin.readline()
+'''
+
+    def hot_journal(self):
+        """Kill a writer mid-transaction; returns the store bytes it interrupted."""
+        before = self.store_path.read_bytes()
+        process = subprocess.Popen([sys.executable, '-B', '-I', '-c', self.HOT_WRITER, str(self.store_path)],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   encoding='utf8')
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 15)[0], 'hot writer checkpoint')
+            evidence = json.loads(process.stdout.readline())
+            self.assertEqual(evidence, dict(event='uncommitted-spill', journalMode='delete'))
+            process.kill()
+            self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=5)
+        journal = Path(str(self.store_path) + '-journal')
+        self.assertTrue(journal.is_file() and journal.stat().st_size > 0)
+        # The pager spilled into the main file: without rollback it is torn.
+        self.assertNotEqual(self.store_path.read_bytes(), before)
+        return before, journal
+
+    def test_12_hot_rollback_journal_is_recovered_by_the_owner_pass(self):
+        from laya_index_a import _query_only_uri
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        first, _calls = self.run_pass()
+        self.assertEqual(first['state'], 'indexed', first)
+        published = self.head()
+        before, journal = self.hot_journal()
+        torn = self.store_path.read_bytes()
+        untouched = lambda: journal.exists() and self.store_path.read_bytes() == torn
+        outcomes = {}
+        # The view-store reader opens ro: it refuses and writes nothing.
+        try:
+            self.views.ViewStore.open_reader(self.store_path, repository=self.repository,
+                                             scope_id=self.case.route['scopeId']).close()
+            outcomes['openReader'] = 'opened'
+        except Exception as exc:  # noqa: BLE001 - the reason code is the evidence
+            outcomes['openReader'] = str(exc)
+        outcomes['openReaderWrote'] = not untouched()
+        # Recall's store reads use _query_only_uri: ro refuses; macOS Python
+        # 3.9 opens rw (its WAL workaround), so SQLite rolls the journal back.
+        try:
+            hit = self.recall('kestrelprobe')
+            outcomes['recall'] = ('served', hit.data_generation)
+        except Exception as exc:  # noqa: BLE001
+            outcomes['recall'] = ('refused', str(exc))
+        outcomes['recallWrote'] = not untouched()
+        for attempt in ('pass', 'retry'):
+            try:
+                result, calls = self.run_pass()
+                outcomes[attempt] = (result['state'], result.get('reason'), len(calls))
+            except Exception as exc:  # noqa: BLE001
+                outcomes[attempt] = ('raised', type(exc).__name__, str(exc))
+        recall_rw = _query_only_uri(self.store_path).endswith('?mode=rw')
+        emit('schema3-hot-journal', python=sys.version.split()[0], recallOpensRw=recall_rw, **outcomes)
+        self.assertEqual((outcomes['openReader'], outcomes['openReaderWrote']),
+                         ('candidate_open_failed', False), outcomes)
+        if recall_rw:
+            self.assertEqual((outcomes['recall'], outcomes['recallWrote']),
+                             (('served', published[0]), True), outcomes)
+        else:
+            self.assertEqual((outcomes['recall'], outcomes['recallWrote']),
+                             (('refused', 'reader_store_invalid'), False), outcomes)
+        self.assertEqual(outcomes['pass'], ('unchanged', None, 0), outcomes)
+        self.assertEqual(outcomes['retry'], ('unchanged', None, 0), outcomes)
+        self.assertFalse(os.path.lexists(journal))
+        self.assertEqual(self.store_path.read_bytes(), before)
+        self.assertEqual(self.head(), published)
+        hit = self.recall('kestrelprobe')
+        self.assertEqual(hit.data_generation, published[0])
+        self.assertIn('concepts/kestrel-perch.md', self.paths(hit))
 
     def test_04_v6_selection_keeps_the_v6_sync_path(self):
         self.assertEqual(self.worker._selected_store_format(self.decision), 'v6')
