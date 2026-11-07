@@ -926,6 +926,104 @@ class UpgradeProofChecks(unittest.TestCase):
                 with lease.resolve_endpoint(case.project,action='recall',host_root=roots[1]) as endpoint:
                     self.assertEqual(endpoint.endpoint_id,seed.selection.preferred_endpoint)
 
+    def test_v5_prefence_intent_retargets_after_its_bundle_disappears(self):
+        seed=fixture.MoveSealChecks('runTest');self.addCleanup(seed.doCleanups);seed.setUp()
+        case,reader,lease=seed.case,seed.reader,seed.lease
+        upgrade=importlib.import_module('laya_active_upgrade')
+        opens=importlib.import_module('laya_reader_open')
+        search=importlib.import_module('laya_v6_reader')
+        from laya_product_bundle import BundleEvidenceError
+        roots=[case.home/name for name in ('host-a','host-b','host-c','host-d')]
+        for root in roots:root.mkdir()
+        targets=[{**case.proof,'pluginRoot':str(root),'sourceCommit':str(i)*40,
+                  'bundleManifestSha256':str(i+4)*64,'ownershipManifestSha256':'abcd'[i-1]*64}
+                 for i,root in enumerate(roots,1)]
+        removed=set()
+        old_att=json.loads((case.state/reader.journal.PRODUCTION_ATTESTATION).read_bytes())
+        def attestation(proof):
+            return {**old_att,'sourceCommit':proof['sourceCommit'],
+                    'bundleManifestSha256':proof['bundleManifestSha256'],
+                    'ownershipManifestSha256':proof['ownershipManifestSha256'],
+                    'providerManifest':{**old_att['providerManifest'],'providerPath':proof['pluginRoot']+'/p.py'}}
+        def identify(att):return [[att['providerManifest']['providerPath'],1,2,3,4,5]]
+        def lookup(root):
+            if str(root) in removed:
+                raise BundleEvidenceError('bundle_root_unavailable')
+            return next(p for p in targets if p['pluginRoot']==str(root))
+        def review(**kw):
+            return {'proposalSha256':lookup(kw['plugin_root'])['sourceCommit'][0]*64,
+                    'reviewedProvider':{'vectorProfile':case.proof['vectorProfile']}}
+        def seals():
+            with sqlite3.connect(case.journal) as db:
+                if db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_seals'").fetchone() is None:
+                    return set()
+                return {row[0] for row in db.execute('SELECT intent_sha256 FROM upgrade_read_seals')}
+        def run(index):
+            return upgrade.upgrade(project_root=str(case.project),state_root=str(case.state),
+                source_root=case.home,plugin_root=str(roots[index]),
+                commit_id=targets[index]['sourceCommit'],
+                accepted_provider_sha256=str(index+1)*64,model_path='/synthetic/model',dimension=3)
+        def recall_at(index):
+            with mock.patch.object(reader.journal,'_verified_executing_root',return_value=str(roots[index])), \
+                 mock.patch.object(reader.journal,'_provider_file_identity',
+                                   return_value=identify(attestation(targets[index]))):
+                with lease.resolve_endpoint(case.project,action='recall',host_root=roots[index]) as endpoint:
+                    self.assertEqual(endpoint.endpoint_id,seed.selection.preferred_endpoint)
+                    current=reader.journal.select_route(str(case.project),action='recall')
+                    with opens.inspect_warm_snapshot(endpoint,deadline=time.monotonic()+10) as snapshot:
+                        result=search.query_v6_snapshot(snapshot,endpoint=endpoint,prompt='otter',
+                            decision=current,provider=None,deadline=time.monotonic()+10)
+                        self.assertTrue(any('otter' in row['body'] for row in result.rows))
+        with ExitStack() as stack:
+            for patch in (seed.authority(),
+                mock.patch.object(upgrade,'review_local_provider',side_effect=review),
+                mock.patch.object(upgrade,'reattest',return_value={'vectorProfile':case.proof['vectorProfile']}),
+                mock.patch.object(upgrade,'adopt_host_loaded_plugin',side_effect=lambda _source,root,**kw:lookup(root)),
+                mock.patch.object(upgrade,'inspect_full_plugin_candidate',side_effect=lookup),
+                mock.patch.object(upgrade,'attestation_record',side_effect=lambda **kw:attestation(kw['proof'])),
+                mock.patch.object(upgrade,'validate_production_provider_attestation'),
+                mock.patch.object(upgrade,'_provider_file_identity',side_effect=identify),
+                mock.patch.object(upgrade,'_wait_for_sockets'),
+                mock.patch.object(reader.journal,'inspect_full_plugin_candidate',side_effect=lookup),
+                mock.patch.object(reader.journal,'_executing_from_candidate'),
+                mock.patch.object(reader.journal,'_inspect_identity',side_effect=lambda identity:lookup(identity['pluginRoot'])),
+                mock.patch.object(reader.journal,'_bind_attestation',side_effect=lambda path,identity,proof:(
+                    hashlib.sha256(reader.journal._canon(attestation(proof)).encode()).hexdigest(),identify(attestation(proof))))):
+                stack.enter_context(patch)
+            ledger_path=case.state/upgrade.fresh.LEDGER
+            # 1. Stopped after writing its intent, before sealing or fencing.
+            with mock.patch.object(upgrade,'_seal_reader_intent',side_effect=RuntimeError('stopped')):
+                with self.assertRaisesRegex(RuntimeError,'stopped'):
+                    upgrade._prepare(case.project,case.state,case.journal,case.home,roots[0],
+                                     targets[0]['sourceCommit'],'1'*64,'/synthetic/model',3)
+            first=upgrade._load_intent(case.state,case.project)
+            self.assertEqual(upgrade.fresh._load(ledger_path),first['oldLedger'])
+            self.assertNotIn(hashlib.sha256(upgrade._bytes(first)).hexdigest(),seals())
+            removed.add(str(roots[0]))
+            self.assertEqual(run(1)['status'],'active_upgrade_complete')
+            retargeted=upgrade._load_intent(case.state,case.project)
+            self.assertEqual((retargeted['backup'],retargeted['counts']),(first['backup'],first['counts']))
+            self.assertIn(hashlib.sha256(upgrade._bytes(retargeted)).hexdigest(),seals())
+            recall_at(1)
+            # 2. Stopped after sealing its reader commitment, before fencing.
+            upgrade._archive_finished_intent(case.state,case.project,retargeted)
+            second=upgrade._prepare(case.project,case.state,case.journal,case.home,roots[2],
+                                    targets[2]['sourceCommit'],'3'*64,'/synthetic/model',3)
+            self.assertEqual(upgrade.fresh._load(ledger_path),second['oldLedger'])
+            self.assertIn(hashlib.sha256(upgrade._bytes(second)).hexdigest(),seals())
+            # The selected route syncs meanwhile and marks its first write.
+            self.assertFalse(second['journalBefore']['newWriteSeen'])
+            reader.journal.cas_mark_new_write(case.journal,
+                                              reader.journal.inspect_journal(case.journal)['epoch'])
+            removed.add(str(roots[2]))
+            self.assertEqual(run(3)['status'],'active_upgrade_complete')
+            third=upgrade._load_intent(case.state,case.project)
+            self.assertNotEqual(third['backup'],second['backup'])
+            self.assertTrue(Path(second['backup']).is_dir())
+            self.assertTrue(third['journalBefore']['newWriteSeen'])
+            self.assertEqual(third['newProof']['pluginRoot'],str(roots[3]))
+            recall_at(3)
+
     def test_removed_old_bundle_keeps_only_sealed_read_proof(self):
         seed=fixture.MoveSealChecks('runTest');self.addCleanup(seed.doCleanups);seed.setUp()
         old=seed.case.plugin;held=seed.case.home/'held-old-plugin'
@@ -1548,6 +1646,7 @@ if __name__=='__main__':
         UpgradeProofChecks('test_v5_bundle_drift_recall_uses_persisted_reader'),
         UpgradeProofChecks('test_prepared_upgrade_fence_keeps_persisted_reader'),
         UpgradeProofChecks('test_v2_retarget_preserves_reader_during_every_recovery_step'),
+        UpgradeProofChecks('test_v5_prefence_intent_retargets_after_its_bundle_disappears'),
         UpgradeProofChecks('test_v4_missing_old_bundle_bootstrap_is_conversion_only'),
         UpgradeProofChecks('test_v4_upgrade_driver_requires_preflight_and_converts_before_fence'),
         UpgradeProofChecks('test_current_v4_bundle_still_converts_after_preflight')]))

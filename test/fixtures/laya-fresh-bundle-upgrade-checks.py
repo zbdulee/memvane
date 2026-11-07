@@ -464,6 +464,29 @@ class BoundUpgradeTests(UpgradeCase):
         self.assertEqual((self.state / 'reviewed-route.json').read_bytes(), route)
         self.assertEqual(self.selection(), 'legacy')
 
+    def test_unswitched_intent_retargets_after_its_bundle_disappears(self):
+        self.bound()
+        with mock.patch.object(bound_upgrade, '_switch', side_effect=Kill()):
+            with self.assertRaises(Kill):
+                self.run_upgrade(bound_upgrade)
+        before = json.loads((self.state / bound_upgrade.INTENT).read_bytes())
+        self.assertEqual(self.fj.pending['pluginRoot'], self.old_root)
+        # The host replaced the intent's bundle before the switch ran.
+        self.removed.add(self.new_root)
+        root, commit = str(self.home / 'next-host'), '3' * 40
+        self.bundles[root] = proof(root, commit)
+        self.review['reviewedProvider']['providerManifest'] = manifest(root)
+        result = self.run_upgrade(bound_upgrade, root, commit)
+        self.assertEqual(result['status'], 'bound_upgrade_complete', result)
+        self.assertEqual(result['backup'], before['backup'])
+        self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 1)
+        self.assertEqual(self.fj.pending['pluginRoot'], root)
+        self.assertEqual(json.loads((self.state / 'reviewed-route.json').read_bytes())
+                         ['pluginRoot'], root)
+        self.assertEqual(self.row()['epoch'], before['oldLedger']['epoch'] + 1)
+        self.assertEqual(self.selection(), 'legacy')
+        self.kept()
+
     def test_qmd_origin_ledger_refuses_before_any_write(self):
         self.bound()
         before = self.row()
@@ -602,6 +625,62 @@ class ActiveUpgradeTests(UpgradeCase):
             self.run_upgrade(active, self.old_root, OLD_COMMIT)
         self.assertEqual(self.row(), fenced)
         self.assertEqual((self.state / active.INTENT).read_bytes(), intent)
+
+    def prefence_intent(self):
+        """Stop an active upgrade after its intent, before the fence."""
+        self.bound()
+        self.activate()
+        with mock.patch.object(active, '_fence', side_effect=Kill()):
+            with self.assertRaises(Kill):
+                self.run_upgrade(active)
+        self.assertEqual(self.row()['phase'], 'active')
+        self.assertEqual(self.fj.state, 'active')
+        self.assertNotIn('stage', self.fj.calls)
+        intent = json.loads((self.state / active.INTENT).read_bytes())
+        self.assertEqual(self.row(), intent['oldLedger'])
+        # The host replaced the intent's bundle before the next run.
+        self.removed.add(self.new_root)
+        root, commit = str(self.home / 'next-host'), '3' * 40
+        self.bundles[root] = proof(root, commit)
+        self.review['reviewedProvider']['providerManifest'] = manifest(root)
+        return intent, root, commit
+
+    def test_prefence_intent_retargets_after_its_bundle_disappears(self):
+        before, root, commit = self.prefence_intent()
+        result = self.run_upgrade(active, root, commit)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        after = json.loads((self.state / active.INTENT).read_bytes())
+        for key in ('backup', 'oldRecord', 'oldLedger', 'counts', 'journalBefore'):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(after['newProof']['pluginRoot'], root)
+        self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 1)
+        self.assertEqual(list(self.state.glob('active-upgrade-*-settled.json')), [])
+        self.assertEqual(self.fj.selected['pluginRoot'], root)
+        self.assertEqual(self.selection(), 'candidate')
+        self.kept()
+
+    def test_prefence_intent_takes_a_new_backup_after_the_store_moved(self):
+        before, root, commit = self.prefence_intent()
+        # The selected old route kept syncing: its first write marks the
+        # journal and the store counts move.
+        self.fj.new_write, self.fj.epoch = True, self.fj.epoch + 1
+        real = active.inactive._store_counts
+
+        def moved(identity):
+            counts = real(identity)
+            return {**counts, 'publishedDocuments': counts['publishedDocuments'] + 1}
+        with mock.patch.object(active.inactive, '_store_counts', moved):
+            result = self.run_upgrade(active, root, commit)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        after = json.loads((self.state / active.INTENT).read_bytes())
+        self.assertNotEqual(after['backup'], before['backup'])
+        self.assertTrue(Path(before['backup']).is_dir())  # never deleted
+        self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 2)
+        self.assertEqual(after['counts']['publishedDocuments'],
+                         before['counts']['publishedDocuments'] + 1)
+        self.assertTrue(after['journalBefore']['newWriteSeen'])
+        self.assertEqual(self.fj.selected['pluginRoot'], root)
+        self.assertEqual(self.selection(), 'candidate')
 
     def test_pending_fence_retargets_a_fresh_host_after_both_caches_disappear(self):
         self.fence()
@@ -940,23 +1019,31 @@ class CrossHostUpgradeTests(UpgradeCase):
         self.bundles[self.new_root] = proof(self.new_root, '4' * 40)
         self.assert_moved_to_next()
 
-    def test_unsettled_foreign_intent_still_refuses(self):
-        # An interrupted upgrade is not a receipt: another bundle must not
-        # archive it, and its own resume still verifies the new provider.
-        fenced = self.row()
+    def test_unsettled_foreign_intent_is_retargeted_not_archived(self):
+        # An interrupted upgrade is not a receipt: its own resume still
+        # verifies the new provider, and another bundle re-proves in its
+        # place instead of archiving it.
+        selected = self.row()
         with mock.patch.object(active, '_switch', side_effect=Kill()):
             with self.assertRaises(Kill):
                 self.run_upgrade(active, self.next_root, self.NEXT_COMMIT)
-        self.assertEqual(self.row(), fenced)
+        self.assertEqual(self.row(), selected)
         intent = json.loads((self.state / active.INTENT).read_bytes())
         self.assertEqual(intent['newProof']['pluginRoot'], self.next_root)
-        self.bundles[self.new_root] = proof(self.new_root, '5' * 40)
-        with self.assertRaisesRegex(Exception, 'active_upgrade_prior_unsettled'):
-            self.run_upgrade(active, self.new_root, '5' * 40)
         REEXTRACTED.add(self.next_root)
         with self.assertRaisesRegex(Exception, 'active_upgrade_new_provider_changed'):
             self.run_upgrade(active, self.next_root, self.NEXT_COMMIT)
-        self.assertEqual(self.row(), fenced)
+        self.assertEqual(self.row(), selected)
+        self.assertEqual(self.selection(), 'candidate')
+        REEXTRACTED.discard(self.next_root)
+        self.bundles[self.new_root] = proof(self.new_root, '5' * 40)
+        self.review = self.reviewed_at(self.new_root)
+        result = self.run_upgrade(active, self.new_root, '5' * 40)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        retargeted = json.loads((self.state / active.INTENT).read_bytes())
+        self.assertEqual(retargeted['backup'], intent['backup'])
+        self.assertEqual(retargeted['newProof']['sourceCommit'], '5' * 40)
+        self.assertEqual(len(list(self.state.glob('active-upgrade-*-settled.json'))), 1)
         self.assertEqual(self.selection(), 'candidate')
 
 
