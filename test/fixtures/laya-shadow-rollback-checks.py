@@ -31,6 +31,15 @@ spec = importlib.util.spec_from_file_location('rollback_switch_checks', HERE / '
 switch_checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(switch_checks)
 J = switch_checks.J
+# The U14b upgrade authority (a real _prepare/_switch on a schema3-selected install).
+spec = importlib.util.spec_from_file_location('rollback_lifecycle_checks', HERE / 'laya-schema3-lifecycle-checks.py')
+lifecycle = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lifecycle)
+
+
+class Stopped(BaseException):
+    """An upgrade worker stopped at a checkpoint (in-process unwinding, not SIGKILL)."""
+
 
 # One rollback in a separate process, optionally killed at a journal checkpoint.
 CHILD = r'''
@@ -489,6 +498,123 @@ class ShadowRollbackChecks(unittest.TestCase):
         self.assertEqual(receipt.read_bytes(), before)
         emit('rollback-lifecycle-busy', refused=4)
 
+
+    # ---- U16c: a stopped upgrade over an unreadable schema3 store ----------
+    def test_10_stopped_upgrade_over_unreadable_schema3_store_settles_then_rolls_back(self):
+        case, u15 = self.case, self.u15
+        fresh = importlib.import_module('laya_fresh_wiki_origin')
+        _initial, switched = self.switched()
+        v6_gen = self.u11.v6_generation()
+        new = case.home / 'u16c-new-plugin'
+        new.mkdir()
+
+        def stop_after(module, name, when=lambda result: True):
+            actual = getattr(module, name)
+
+            def stopped(*args, **kwargs):
+                result = actual(*args, **kwargs)
+                if when(result):
+                    raise Stopped(name)
+                return result
+            return mock.patch.object(module, name, side_effect=stopped)
+        # A real upgrade intent stops right after it took the fence.
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, target, review, _att):
+            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                      target['sourceCommit'], review['proposalSha256'], '/synthetic/model', 3)
+            with stop_after(fresh, '_change', lambda row: row['phase'] == 'upgrading'), \
+                    self.assertRaises(Stopped):
+                upgrade._switch(intent)
+        self.assertTrue(fresh.upgrade_fenced(str(case.project)))
+        # The schema3 store the fenced reader names is lost (moved aside; nothing is deleted).
+        _selection, record, _history = self.M._read_history(case.journal)
+        self.assertEqual(record['store_format'], 'schema3')
+        lost = Path(record['db_path'])
+        for suffix in ('', '-wal', '-shm'):
+            if os.path.lexists(str(lost) + suffix):
+                os.replace(str(lost) + suffix, str(lost) + suffix + '.lost')
+        # The fence defers the rollback (busy, exit 75); nothing is written.
+        bytes_before = case.journal.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'rollback_lifecycle_busy'):
+            self.rollback()
+        code, deferred = self.setup('rollback-index-reader', '--approve-index-reader-rollback')
+        self.assertEqual((code, deferred['status'], deferred['reason']), (75, 'deferred', 'rollback_lifecycle_busy'))
+        self.assertEqual(case.journal.read_bytes(), bytes_before)
+        # Worker passes never open the schema3 store: the first stops again
+        # after its journal activation, the next (the SessionStart worker's
+        # finish step) releases the fence.
+        args = dict(project_root=str(case.project), state_root=str(case.state), source_root=str(case.home),
+                    plugin_root=str(new), commit_id=target['sourceCommit'],
+                    accepted_provider_sha256=review['proposalSha256'], model_path='/synthetic/model',
+                    dimension=3)
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, _t, _r, _a):
+            with stop_after(upgrade, 'cas_activate'), self.assertRaises(Stopped):
+                upgrade.upgrade(**args)
+            self.assertTrue(fresh.upgrade_fenced(str(case.project)))
+            finished = upgrade.finish_activated(project_root=str(case.project), state_root=str(case.state),
+                                                requested_root=str(new))
+        self.assertEqual(finished['status'], 'active_upgrade_complete')
+        self.assertFalse(fresh.upgrade_fenced(str(case.project)))
+        self.assertFalse(lost.exists())
+        self.M._lifecycle_idle(case.project, case.state, 'rollback_lifecycle_busy')
+        # The settled receipt admits the rollback from the new bundle; recall reads v6.
+        result, endpoint_id, stored, rows = self.rollback_from(new)
+        after = u15.selection()
+        self.assertEqual((after[0], after[2], after[3]), (switched[0] + 1, switched[1], result['transition_id']))
+        self.assertEqual((endpoint_id, stored['store_format'], rows.store_format),
+                         (result['endpoint_id'], 'v6', 'v6'))
+        self.assertEqual(rows.data_generation, v6_gen)
+        self.assertIn(case.WIKI + '/concepts/heron-route.md', [r['path'] for r in rows.rows])
+        self.assertTrue(lost.with_name(lost.name + '.lost').exists())
+        emit('rollback-after-stopped-upgrade', switched=list(switched), after=list(after),
+             upgrade=finished['status'])
+
+    def rollback_from(self, new):
+        """Rollback and one recall from the upgraded bundle ``new``; returns (result, endpoint, record, rows)."""
+        case = self.case
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new), \
+                mock.patch.object(J, '_verified_executing_root', return_value=str(new)), \
+                mock.patch.object(J, '_provider_file_identity', return_value=[[str(new / 'p.py'), 1, 2, 3, 4, 5]]), \
+                mock.patch.object(self.work, 'request'):
+            result = self.M.rollback_reader(case.project, executing_root=new)
+            self.assertEqual(result['status'], 'rolled_back', result)
+            return (result, *lifecycle.Lifecycle.recall(self.u10, new, authority=False))
+
+    def test_11_rollback_after_a_completed_upgrade_follows_the_successor_chain(self):
+        case, u15 = self.case, self.u15
+        _initial, switched = self.switched()
+        v6_gen = self.u11.v6_generation()
+        new = case.home / 'u16c-new-plugin'
+        new.mkdir()
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, target, review, _att):
+            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                      target['sourceCommit'], review['proposalSha256'], '/synthetic/model', 3)
+            self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+        # The schema3 endpoint keeps its sealed predecessor attestation; reads follow the successor chain.
+        _selection, record, _history = self.M._read_history(case.journal)
+        self.assertEqual((record['store_format'], u15.selection()), ('schema3', switched))
+        # The CAS proves the attestation step on the sealed successor chain; a
+        # chain that does not reach the target attestation writes nothing.
+        bytes_before = case.journal.read_bytes()
+        real_chain = self.reader._successor_chain
+
+        def other_target(db, endpoint_id, stored, _target_sha, *args, **kwargs):
+            return real_chain(db, endpoint_id, stored, '0' * 64, *args, **kwargs)
+        with mock.patch.object(self.reader, '_successor_chain', side_effect=other_target), \
+                self.assertRaisesRegex(ValueError, 'reader_successor_unproved'):
+            self.rollback_from(new)
+        self.assertEqual(case.journal.read_bytes(), bytes_before)
+        result, endpoint_id, stored, rows = self.rollback_from(new)
+        after = u15.selection()
+        self.assertEqual((after[0], after[2]), (switched[0] + 1, switched[1]))
+        self.assertEqual((endpoint_id, stored['store_format'], rows.store_format),
+                         (result['endpoint_id'], 'v6', 'v6'))
+        self.assertEqual(rows.data_generation, v6_gen)
+        # Only the attestation (and nothing else) separates the pair; the shape rule stays one-way.
+        self.assertEqual({k for k in self.reader.INSTALL_IDENTITY if record[k] != stored[k]}, {'attestation_sha256'})
+        self.assertTrue(self.reader.rollback_pair(record, stored))
+        self.assertFalse(self.reader.rollback_pair(stored, record))
+        self.assertFalse(self.reader.rollback_pair(record, {**stored, 'profile': 'other'}))
+        emit('rollback-after-upgrade', switched=list(switched), after=list(after))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

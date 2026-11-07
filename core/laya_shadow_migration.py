@@ -3908,8 +3908,10 @@ def rollback_reader(project, *, executing_root):
     repeated request, or one whose process died after the CAS); both offer
     one laya-sync wake. Refuses ``rollback_not_switched`` when v6 is selected
     and never rolled back, ``rollback_v6_changed`` when the v6 store is not
-    the one the switch left, and every busy lock with its code
-    (``ROLLBACK_BUSY``) without writing anything.
+    the one the switch left, ``reader_successor_unproved`` when a newer
+    bundle attestation is not on the schema3 record's sealed successor chain,
+    and every busy lock with its code (``ROLLBACK_BUSY``) without writing
+    anything.
     """
     from contextlib import ExitStack
     from pathlib import Path
@@ -3926,6 +3928,10 @@ def rollback_reader(project, *, executing_root):
         raise IndexContractError('migration_project_invalid')
     decision = journal.journal.select_route(str(project), action='recall')
     if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        # A fenced route reads as blocked until the SessionStart worker
+        # settles the upgrade; that is busy (ask again), not a refusal.
+        if fresh.upgrade_fenced(str(project)):
+            raise IndexContractError('rollback_lifecycle_busy')
         raise IndexContractError('migration_route_invalid')
     state = journal._state(Path(decision['journalPath']).parent)
     path = state / 'install-journal.sqlite'
@@ -3959,7 +3965,9 @@ def rollback_reader(project, *, executing_root):
             # The owner re-seals a schema3 record whose recall settings changed,
             # so the v6 target (current settings) shares the install identity.
             # When the schema3 store cannot be read, the CAS admits the
-            # settings-only difference (``rollback_pair``) on the v6 proof below.
+            # settings difference (``rollback_pair``) on the v6 proof below; a
+            # newer attestation (a bundle upgrade since the switch) also needs
+            # the sealed successor chain, which ``cas_reader`` checks.
             try:
                 journal.resettle_selection(state, project, executing_root)
             except (OSError, ValueError):
