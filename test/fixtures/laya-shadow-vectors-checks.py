@@ -103,7 +103,7 @@ class ShadowVectorChecks(unittest.TestCase):
             self.assertEqual(result['migration_state'], 'caught_up', stages)
             self.assertNotIn('vectors', stages)
             generation = result['intent']['published']['generation']
-            self.assertEqual(step()['stage'], 'caught_up')
+            self.assertEqual(step()['stage'], 'parity')
             handle = store.capture_view(worktree['worktreeId'])
             pin = store.pin_view(handle)
             try:
@@ -119,9 +119,9 @@ class ShadowVectorChecks(unittest.TestCase):
             for _ in range(5):
                 result = step(wrong)
                 wrong_stages.append(result['stage'])
-                if result['stage'] == 'caught_up':
+                if result['stage'] == 'parity':
                     break
-            self.assertEqual(wrong_stages, ['vectors', 'vectors', 'caught_up'])
+            self.assertEqual(wrong_stages, ['vectors', 'vectors', 'parity'])
             record = result['intent']['vectors']
             self.assertEqual((record['total'], record['copied'], record['deferred']['profile_incompatible']),
                              (3, 0, 3))
@@ -161,9 +161,9 @@ class ShadowVectorChecks(unittest.TestCase):
             for _ in range(5):
                 result = step(good)
                 good_stages.append(result['stage'])
-                if result['stage'] == 'caught_up':
+                if result['stage'] == 'parity':
                     break
-            self.assertEqual(good_stages, ['vectors', 'vectors', 'caught_up'])
+            self.assertEqual(good_stages, ['vectors', 'vectors', 'parity'])
             record = result['intent']['vectors']
             self.assertTrue(record['complete'])
             self.assertEqual((record['total'], record['copied'], record['deferred']['input_differs']), (3, 2, 1))

@@ -268,8 +268,9 @@ class Schema3EndpointChecks(unittest.TestCase):
         initial = self.reader.read_selection(self.case.journal)
         target = self.seal()
         loaded = self.loaded(initial)
-        # No U5 resolver: fail-closed.
-        self.assertFalse(hasattr(self.migration, 'shadow_parity_receipt'))
+        # No shadow intent for this candidate: the U5 resolver proves nothing.
+        self.assertIsNone(self.migration.shadow_parity_receipt(self.case.state, candidate=self.store_path,
+            candidate_incarnation=target.record['incarnation']))
         self.refused('reader_parity_unproved', self.cas, target, loaded, base=initial)
         for name, receipt in (('other-migration', dict(parity=self.parity(migration_id='b' * 32))),
                               ('other-digest', dict(parity=self.parity(digest='e' * 64))),
@@ -308,6 +309,66 @@ class Schema3EndpointChecks(unittest.TestCase):
         copy.unlink()
         self.assertEqual(self.reader.read_selection(self.case.journal).preferred_endpoint,
                          initial.preferred_endpoint)
+
+    def test_10_shadow_verified_receipt_from_migration_switches(self):
+        """U5: the actual shadow migration seals the parity the CAS requires."""
+        migration, case = self.migration, self.case
+        store = self.views.ViewStore.open(self.store_path, repository=self.repository,
+                                          scope_id=case.route['scopeId'])
+        self.addCleanup(store.close)
+
+        def step():
+            return migration.advance_shadow(store, project=case.project, executing_root=case.plugin,
+                                            deadline=time.monotonic() + 60)
+
+        def run_until(state, limit=40):
+            stages = []
+            for _ in range(limit):
+                result = step()
+                stages.append(result['stage'])
+                if result['migration_state'] == state:
+                    return result, stages
+            self.fail('%s not reached: %s' % (state, stages))
+
+        with self.seed.authority():
+            migration.begin_migration(store, worktree_id=self.worktree_id, project=case.project,
+                                      executing_root=case.plugin, deadline=time.monotonic() + 30)
+            caught, _ = run_until('caught_up')
+        generation = caught['intent']['published']['generation']
+        initial = self.reader.read_selection(case.journal)
+        # caught_up is not parity: no receipt, and a CAS naming the private
+        # head generation is refused without journal change.
+        self.assertIsNone(migration.shadow_parity_receipt(case.state, candidate=self.store_path,
+            candidate_incarnation=store._incarnation))
+        guessed = self.seal(self.parity(generation=generation,
+                                        migration_id=caught['intent']['migration_id']))
+        loaded = self.loaded(initial)
+        self.refused('reader_parity_unproved', self.cas, guessed, loaded, base=initial)
+
+        with self.seed.authority():
+            verified, stages = run_until('shadow_verified')
+        self.assertIn('parity', stages)
+        self.assertEqual(stages[-1], 'parity_seal')
+        receipt = migration.shadow_parity_receipt(case.state, candidate=self.store_path,
+                                                  candidate_incarnation=store._incarnation)
+        self.assertEqual(set(receipt), {'migration_id', 'generation', 'digest', 'candidate',
+                                        'candidate_incarnation'})
+        self.assertEqual((receipt['migration_id'], receipt['generation'], receipt['candidate']),
+                         (verified['intent']['migration_id'], generation, str(self.store_path)))
+        self.assertIsNone(migration.shadow_parity_receipt(case.state, candidate=self.store_path,
+            candidate_incarnation='0' * 32))
+        self.assertIsNone(migration.shadow_parity_receipt(case.state,
+            candidate=case.state / 'other.sqlite', candidate_incarnation=store._incarnation))
+        parity = {key: receipt[key] for key in self.reader.PARITY_KEYS}
+        target = self.seal(parity)
+        selected = self.cas(target, loaded, base=initial)
+        emit('u5-receipt-switch', stages=stages, pages=verified['intent']['parity']['pages'])
+        self.assertEqual((selected.epoch, selected.preferred_endpoint, selected.previous_endpoint),
+                         (initial.epoch + 1, target.endpoint_id, initial.preferred_endpoint))
+        with closing(sqlite3.connect(case.journal)) as db:
+            stored = json.loads(db.execute('SELECT record FROM read_endpoints WHERE endpoint_id=?',
+                                           (target.endpoint_id,)).fetchone()[0])
+        self.assertEqual(stored['parity'], parity)
 
     def test_02b_parity_generation_must_not_exceed_floor(self):
         self.publish()
