@@ -374,7 +374,9 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             commitments = legacy_snapshot.get('commitments') if bounded else None
             v.exact(legacy_snapshot, (('observation' if bounded else 'snapshot'),
                                       'endpoint', 'decision', 'provenance_scan',
-                                      *(('commitments',) if commitments is not None else ())))
+                                      *(('commitments',) if commitments is not None else ()),
+                                      *(('build_id',) if commitments is not None and 'build_id' in legacy_snapshot
+                                        else ())))
             if commitments is not None:
                 v.exact(commitments, ('migration_id', 'verification', 'corpora'))
                 v.identifier(commitments['migration_id'], v.UUID)
@@ -386,12 +388,20 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             if (spec is not None or (not derive_manifest and
                     (manifest['sources'] or manifest['scan_id'] != legacy_snapshot['provenance_scan'].get('id')))):
                 v.fail('migration_manifest_mismatch')
-            source_args = {key: value for key, value in legacy_snapshot.items() if key != 'commitments'}
-            if commitments is not None:
-                source_args['commitment'] = {'migration_id': commitments['migration_id'],
-                                             'progress': commitments['verification']}
+            source_args = {key: value for key, value in legacy_snapshot.items()
+                           if key not in ('commitments', 'build_id')}
             source_deadline = min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30
-            evidence = (migration.collect_generation_members if bounded else migration.verify_generation_members)(
+            # A committed migration reuses its verified page chains: one pinned
+            # metadata read must refold to them, so prepare does not re-read
+            # every old body while writers keep moving the source.
+            reused = (migration.reuse_committed_members(self, worktree_id=handle.worktree_id,
+                          endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                          provenance_scan=legacy_snapshot['provenance_scan'],
+                          observation=legacy_snapshot['observation'], commitments=commitments,
+                          deadline=source_deadline)
+                      if commitments is not None else None)
+            evidence = reused['evidence'] if reused is not None else (
+                migration.collect_generation_members if bounded else migration.verify_generation_members)(
                 self, worktree_id=handle.worktree_id, **source_args, deadline=source_deadline)
             if derive_manifest:
                 manifest = vals.manifest({'scan_id': legacy_snapshot['provenance_scan']['id'],
@@ -400,18 +410,17 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             if sorted(evidence['members'], key=lambda row: row['path']) != sorted(
                     manifest['members'], key=lambda row: row['path']):
                 v.fail('migration_manifest_mismatch')
-            if bounded:
+            if reused is not None:
+                commitment, corpus = reused['sidecar_commitment'], reused['corpus']
+                needs_sidecar = commitment is not None
+            elif bounded:
                 commitment = migration.inspect_sidecar_bounded(endpoint=legacy_snapshot['endpoint'],
                     decision=legacy_snapshot['decision'], observation=evidence['observation'],
                     deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
                 needs_sidecar = commitment is not None
                 corpus = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
                     endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                    observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=False,
-                    commitment=None if commitments is None else {
-                        'migration_id': commitments['migration_id'], 'provenance_scan': legacy_snapshot['provenance_scan'],
-                        'verification_digest': commitments['verification']['digest'],
-                        'progress': commitments['corpora']['base']})
+                    observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=False)
             else:
                 needs_sidecar = migration.sidecar_fts_required(legacy_snapshot['snapshot'],
                     endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
@@ -425,16 +434,12 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
                       'corpus': corpus['members'], 'scan': dict(legacy_snapshot['provenance_scan']),
                       'active_fts': evidence['active_fts']}
             if needs_sidecar:
-                if bounded:
-                    if commitments is not None and commitments['corpora']['sidecar'] is None:
-                        v.fail('migration_commitment_mismatch')
+                if reused is not None:
+                    side = reused['sidecar_corpus']
+                elif bounded:
                     side = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
                         endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                        observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=True,
-                        commitment=None if commitments is None else {
-                            'migration_id': commitments['migration_id'], 'provenance_scan': legacy_snapshot['provenance_scan'],
-                            'verification_digest': commitments['verification']['digest'],
-                            'progress': commitments['corpora']['sidecar']})
+                        observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=True)
                 else:
                     side = migration.stage_sidecar_fts_corpus(self, worktree_id=handle.worktree_id,
                         snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
@@ -457,9 +462,12 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             side_rows = (self._legacy_fts_rows(legacy, verified_bodies=plan['verified_bodies'], sidecar=True, deadline=deadline)
                          if legacy is not None and 'sidecar_corpus' in legacy else None)
         files = _wiki_files(saved, plan['members']) if legacy is None else {}
-        # The migration scan survives a process crash in the private intent.
-        # Reusing it makes the two committed prepare stages replayable.
-        build_id = legacy_snapshot['provenance_scan']['id'] if derive_manifest else uuid.uuid4().hex
+        # The migration scan and its catch-up chain survive a process crash in
+        # the private intent; an id derived from them makes the two committed
+        # prepare stages replayable, and a caught-up source gets a new slot.
+        build_id = (uuid.uuid4().hex if not derive_manifest else
+                    legacy_snapshot.get('build_id', legacy_snapshot['provenance_scan']['id']))
+        v.identifier(build_id, v.UUID)
         stage = vals.stage(build_id, self._incarnation, handle, saved, base, manifest, skips, files, spec, legacy)
         stage_json = v.canonical(stage)
         # Stage1: metadata-only slot plus generation-owned FTS; the FTS guard
