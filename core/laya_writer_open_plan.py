@@ -97,7 +97,9 @@ def _schema3_store(record, state, decision):
     R._need(path.is_absolute() and str(path) != decision['dbPath'], 'writer_plan_store_changed')
     node = R._file(path, state)
     R._need(node == record['db_node'], 'writer_plan_store_changed')
-    with R._readonly(path, state) as db:
+    # Plans are captured and validated under the queue owner: this read may
+    # let SQLite roll back a hot journal (``recover``). Reader opens stay ro.
+    with R._readonly(path, state, recover=True) as db:
         db.row_factory = sqlite3.Row
         try:
             row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()

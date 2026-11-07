@@ -1733,6 +1733,26 @@ def _settings_resettle_pending(decision, project, root) -> bool:
 
 def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None,
                           main_proof=None, linked=None) -> dict:
+    """Serve the journal-preferred reader endpoint (``_serve_endpoint_recall``).
+
+    A store a killed writer left with a hot journal refuses the recall as
+    ``reader_store_recovery_pending`` (recall never rolls it back); the main
+    checkout's recall then offers its sync wake, whose owner pass recovers it.
+    """
+    try:
+        return _serve_endpoint_recall(host, payload, cwd=cwd, drift_decision=drift_decision,
+                                      main_proof=main_proof, linked=linked)
+    except Exception as exc:
+        if str(exc) == 'reader_store_recovery_pending' and main_proof is not None:
+            try:
+                _recall_sync_wake(drift_decision['projectRoot'])
+            except Exception:
+                pass  # The refusal stands; a later wake still recovers it.
+        raise
+
+
+def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None,
+                           main_proof=None, linked=None) -> dict:
     """Serve the journal-preferred reader endpoint.
 
     A v6 endpoint answers during or immediately after a fence. A schema3

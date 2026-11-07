@@ -19,6 +19,9 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / 'core'))
 from laya_index_a import IndexContractError  # noqa: E402
+_spec = importlib.util.spec_from_file_location('sqlite_hot_journal', HERE / 'sqlite_hot_journal.py')
+hot = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(hot)
 
 # A worker process killed inside the driver, right before an intent write.
 CHILD = r'''
@@ -275,6 +278,48 @@ class DriverChecks(unittest.TestCase):
         self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified')
         self.assertEqual(json.loads(copying)['migration_id'], self.intent(case)['migration_id'])
         self.assertIsNotNone(self.receipt(case))
+
+    def test_hot_journal_on_the_candidate_is_rolled_back_under_the_sync_owner(self):
+        import sqlite3
+        from contextlib import closing
+        seed, case = self.seeded()
+        W = self.W
+        candidate = case.state / W.SHADOW_CANDIDATE
+        with self.authority(seed, case):
+            first = W.shadow_pass(case.project)
+        self.assertIsNotNone(self.intent(case), first)
+        _before, journal = hot.kill_mid_write(candidate)
+        torn = candidate.read_bytes()
+
+        @contextmanager
+        def busy(_queue, **_kwargs):
+            yield None
+        def streak():
+            return json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8')).get('rewake_errors', 0)
+        with self.authority(seed, case):
+            # Recovery waits for the queue's sync owner and never takes it busy:
+            # a wait like the gate's, so the error streak never grows.
+            waits = []
+            with mock.patch.object(W, 'sync_owner', busy):
+                for _ in range(W.SHADOW_REWAKE_ERRORS):
+                    status = W.shadow_pass(case.project)
+                    waits.append((status['state'], status['reason'], status['steps'], streak()))
+            untouched = journal.exists() and candidate.read_bytes() == torn
+            resumed = W.shadow_pass(case.project)
+        probe = None  # A still-hot journal refuses a ro read.
+        if not os.path.lexists(journal):
+            with closing(sqlite3.connect(candidate.as_uri() + '?mode=ro', uri=True)) as db:
+                probe = db.execute("SELECT count(*) FROM sqlite_master WHERE name='hot_probe'").fetchone()[0]
+        print(json.dumps(dict(case='shadow-hot-journal', waits=waits,
+                              untouched=untouched, resumed=[resumed['state'], resumed['reason'],
+                                                            resumed['stages']],
+                              journalLeft=os.path.lexists(journal), probeTable=probe)), flush=True)
+        self.assertEqual(waits, [('waiting', 'sync_owner_busy', 0, 0)] * W.SHADOW_REWAKE_ERRORS)
+        self.assertTrue(untouched)
+        self.assertNotEqual(resumed['state'], 'error', resumed)
+        self.assertGreater(resumed['steps'], 0, resumed)
+        self.assertFalse(os.path.lexists(journal))
+        self.assertEqual(probe, 0)  # SQLite's rollback removed the killed write.
 
     def test_schema3_selected_install_is_never_touched(self):
         spec = importlib.util.spec_from_file_location(

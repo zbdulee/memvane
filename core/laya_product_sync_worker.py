@@ -1760,11 +1760,26 @@ def _shadow_gate(project, executing_root, *, prove=True):
     return (decision, state), None
 
 
-def _shadow_open(state, project, scope, candidate=None):
-    """Open the private candidate; its own store_meta and worktrees are the SSOT."""
+def _shadow_open(state, project, scope, candidate=None, *, queue=None):
+    """Open the private candidate; its own store_meta and worktrees are the SSOT.
+
+    With ``queue`` (the driver's), a ``-journal`` beside the candidate is first
+    handed to SQLite's own rollback under that queue's sync owner, never
+    waiting: a step killed mid-write leaves a hot journal that the read-only
+    open below refuses on every later pass. A busy owner is a wait
+    (``ResourceDeferred``), never a driver error.
+    """
     from laya_journal_reader import _readonly
     from laya_view_store import ViewStore
     path = state / SHADOW_CANDIDATE if candidate is None else Path(candidate)
+    if queue is not None and os.path.lexists(str(path) + '-journal'):
+        with sync_owner(Path(queue)) as owner:
+            if owner is None:
+                # Another sync holds it; a wait, not a driver error.
+                raise ResourceDeferred('sync_owner_busy')
+            with _readonly(path, state, recover=True) as db:
+                # The first read takes the shared lock; SQLite rolls back there.
+                db.execute('SELECT count(*) FROM sqlite_master').fetchone()
     with _readonly(path, state) as db:
         meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
         rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
@@ -1903,7 +1918,8 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
                          worktree=worktree, scope_id=decision['scopeId']).close()
         return 'create', None, store
     if store is None:
-        store = _shadow_open(state, project, decision['scopeId'], candidate)
+        store = _shadow_open(state, project, decision['scopeId'], candidate,
+                             queue=decision['queuePath'])
     view, worktree_id = store
     if not os.path.lexists(state / migration._INTENT):
         intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
@@ -2091,7 +2107,9 @@ def shadow_pass(project, *, executing_root=None):
     except Exception as exc:
         reason = event_log.code(exc)
         # A space pre-check deferral wrote nothing; a later pass retries it.
-        deferred = reason in getattr(migration, '_DEFERRED_REASONS', ())
+        # So does the candidate's recovery while another sync owns the queue.
+        deferred = (reason in getattr(migration, '_DEFERRED_REASONS', ())
+                    or (isinstance(exc, ResourceDeferred) and reason == 'sync_owner_busy'))
         status.update(state='waiting' if deferred else 'error', reason=reason)
     finally:
         if store is not None:
