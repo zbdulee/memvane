@@ -572,8 +572,23 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
             # Snapshot hook grants before the scan, as on the v6 path.
             import laya_wiki_discovery
             grants = laya_wiki_discovery.observe_grants(decision)
-        result, proof = _run_schema3(decision, proof)
-        return _after_sync(decision, proof, grants, result, store_format='schema3')
+        # One raw scan per pass: the main view's D2 observation is also the
+        # discovery snapshot (laya_wiki_discovery._raw_snapshot, same roots and bounds).
+        raw_scan = {}
+        result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
+                                     start_service=start_service, raw_scan=raw_scan)
+        result = _after_sync(decision, proof, grants, result, store_format='schema3',
+                             raw_snapshot=raw_scan.get('snapshot'))
+        vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
+        waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
+                   or [v for v in vectors if v['state'] in ('pending', 'deferred')])
+        if result.get('state') in ('indexed', 'unchanged') and waiting:
+            # The lexical generations are published and discovery ran; the
+            # wake stays until the views' vector generations are published,
+            # or ends ``blocked`` on a provider defect of the install.
+            state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
+            result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
+        return result
     grants = None
     if not isinstance(source_root, str):
         # v2 only. Snapshot hook grants before the scan; later ones stay live.
@@ -753,14 +768,20 @@ def _selected_store_format(decision):
                     raise
 
 
-def _run_schema3(decision, proof):
-    """One lexical publish of the selected schema3 view store's main view.
+def _run_schema3(decision, proof, *, coordinator=None, report=None,
+                 start_service=start_owned_embed_service, raw_scan=None):
+    """One publish pass of the selected schema3 view store (main view, then linked views).
 
     Admission is the sync owner plus a worker writer scope over the current
-    plan; the plan must still name a schema3 store. No model or v6 runtime
-    starts. Returns ``(result, proof)``: a publish advances the journal
-    epoch, so ``_after_sync`` rechecks against the proof the pass ended with.
+    plan; the plan must still name a schema3 store. No v6 runtime opens. The
+    provider lane is taken only when a view's vector fill has content no
+    store set holds yet (``_schema3_vectors``). Returns ``(result, proof)``:
+    a publish advances the journal epoch, so ``_after_sync`` rechecks
+    against the proof the pass ended with. A pass that published the main
+    view's first vector generation re-seals the selected record so recall
+    asks for query vectors (``resettle_selection``).
     """
+    from contextlib import ExitStack
     import laya_install_journal as journal
     import laya_journal_reader as journal_readers
     import laya_reader_windows as windows
@@ -791,13 +812,27 @@ def _run_schema3(decision, proof):
                 if plans.plan_store(plan) is None:
                     raise IndexContractError('selected_store_format_changed')
                 try:
-                    with normal.worker_writer_scope(plan, queue_owner=owner, operation_timeout=2) as writer:
+                    with ExitStack() as lane, \
+                            normal.worker_writer_scope(plan, queue_owner=owner, operation_timeout=2) as writer:
                         if normal.admission_proof(writer) != proof:
                             raise IndexContractError('selected_proof_changed')
-                        result, proof = _publish_schema3(decision, proof, writer)
-                        if resettle != 'unchanged':
-                            result = {**result, 'readerResettle': resettle}
-                        return result, proof
+                        vectors = _schema3_vector_context(
+                            decision, proof, lane, coordinator=coordinator, report=report,
+                            start_service=start_service)
+                        vectors['rawScan'] = raw_scan
+                        result, proof = _publish_schema3(decision, proof, writer, vectors)
+                    if (result.get('vector') or {}).get('state') == 'published':
+                        # The writer scope is closed; the owner still holds the queue.
+                        try:
+                            adopted = journal_readers.resettle_selection(
+                                Path(decision['journalPath']).parent, project, _writer_executing_root())
+                        except JournalEvidenceError as exc:
+                            adopted = str(exc)
+                        if adopted != 'unchanged':
+                            resettle = adopted
+                    if resettle != 'unchanged':
+                        result = {**result, 'readerResettle': resettle}
+                    return result, proof
                 except ReaderWindowBusy as exc:
                     if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
                                     'reader_lifetime_busy'):
@@ -856,16 +891,20 @@ SCHEMA3_LINKED_HELD = SCHEMA3_BINDING_REASONS | frozenset(('worktree_binding_con
                                                            'candidate_io_failed'))
 
 
-def _publish_schema3(decision, proof, writer):
+def _publish_schema3(decision, proof, writer, vectors=None):
     """Main view first, then each linked worktree's own view (design 5.2).
 
     Changed cards only: head members with the same bytes keep their trust. A
     linked worktree is published only while the main view is complete
-    (``indexed``/``unchanged``); its refusals hold that view alone.
+    (``indexed``/``unchanged``); its refusals hold that view alone. One
+    ``vectors`` context (``_schema3_vector_context``) serves every view of
+    the pass, so content two views share is embedded once.
 
     Returns ``(result, proof)``; ``proof`` is the writer's fresh admission
     proof once this pass marked its first write.
     """
+    if vectors is None:
+        vectors = {'spec': None}
     import laya_blob_values as v
     import laya_checkout_view as checkout
     import laya_writer_scope as normal
@@ -878,7 +917,8 @@ def _publish_schema3(decision, proof, writer):
             raise IndexContractError('schema3_store_changed')
         marks = {}
         result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
-                                       info['worktree_binding'], deadline, marks)
+                                       info['worktree_binding'], deadline, marks, vectors,
+                                       raw_scan=vectors.get('rawScan'))
         if result['state'] not in ('indexed', 'unchanged'):
             return result, marks.get('proof', proof)
         linked = []
@@ -896,7 +936,7 @@ def _publish_schema3(decision, proof, writer):
                 worktree_id = _schema3_linked_worktree(store, writer, proof, info, project,
                                                        deadline, marks)
                 outcome = _publish_schema3_view(store, writer, linked_decision,
-                                                proof, worktree_id, None, deadline, marks)
+                                                proof, worktree_id, None, deadline, marks, vectors)
             except checkout.CheckoutUnavailable as exc:
                 outcome = {'state': 'held', 'reason': exc.reason}
             except v.BlobStoreError as exc:
@@ -908,7 +948,8 @@ def _publish_schema3(decision, proof, writer):
                 # Retrying cannot clear these; that view keeps its last head.
                 outcome = {**outcome, 'state': 'held'}
             linked.append({'root': str(project), **{k: outcome[k] for k in
-                           ('state', 'reason', 'generation', 'ingested', 'pending') if k in outcome}})
+                           ('state', 'reason', 'generation', 'ingested', 'pending', 'vector')
+                           if k in outcome}})
     finally:
         store.close()
     proof = marks.get('proof', proof)
@@ -1014,13 +1055,21 @@ def _mark_schema3_write(writer, proof, marks):
     marks['proof'] = fresh
 
 
-def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks):
+def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
+                          vectors=None, *, raw_scan=None):
     """One view's pass: changed cards ingested, unchanged members keep their trust.
 
     ``binding`` is the main worktree's journal-recorded binding (None for a
     linked worktree, whose row the store itself re-observes). A view with no
     head yet (a first-seen worktree or branch) ingests every card: trust is
     never reused from another view (``ViewStore._card``: ``foreign_card_trust``).
+
+    The manifest's ``sources`` are this pass's raw source observation
+    (``_schema3_sources``, design D2). With the install provider's vector
+    spec (``vectors``), a complete fill publishes the manifest as a vector
+    generation; otherwise the lexical generation is published and the
+    result's ``vector`` names why the vectors wait. An unchanged lexical head
+    gets its vector generation from the same manifest.
     """
     import laya_blob_values as v
     import laya_writer_scope as normal
@@ -1029,6 +1078,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     import laya_view_values as view_values
     from laya_view_store import _skip_patterns
     import uuid
+    if vectors is None:
+        vectors = {'spec': None}
     try:
         handle = store.capture_view(worktree_id, deadline=deadline)
         head = store.head(handle)
@@ -1064,8 +1115,22 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
             return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
                     'storeFormat': 'schema3', 'removed': len(removed)}
-        if not changed and not removed and not excluded and not cold:
-            return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
+        observed = _schema3_sources(decision, handle, deadline, raw_scan=raw_scan)
+        stored = None if cold else _schema3_stage(store, head['gen_id'])
+        if (not changed and not removed and not excluded and not cold
+                and _schema3_sources_same(store, stored['manifest'], observed, handle)):
+            vector = _schema3_vectors(store, writer, proof, marks, handle, stored['manifest'],
+                                      stored['vector_spec'], vectors, deadline)
+            if vector['state'] != 'complete':
+                return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
+                        'vector': vector}
+            generation = store.prepare_generation(handle, stored['manifest'], expected_head=head,
+                                                  vector_spec=vectors['spec'], deadline=deadline)
+            normal.validate_normal_writer(writer)
+            store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+            return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
+                    'ingested': 0, 'removed': 0, 'pending': 0, 'skipped': skipped,
+                    'sources': len(observed), 'vector': dict(vector, state='published')}
         # First store write of this pass: the journal fence comes first.
         _mark_schema3_write(writer, proof, marks)
         scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
@@ -1094,9 +1159,16 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                                  trust_digest=admitted['trust_digest'])
         if pending and not ingested and not removed and not excluded:
             return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
+        sources = _schema3_put_sources(store, handle, scan, observed)
         manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
-                        complete=True, sources=[], members=[members[p] for p in sorted(members)])
-        generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
+                        complete=True, sources=sources, members=[members[p] for p in sorted(members)])
+        vector = {'state': 'pending', 'reason': 'schema3_view_preparing'}
+        if not (cold and pending):
+            vector = _schema3_vectors(store, writer, proof, marks, handle, manifest, None,
+                                      vectors, deadline)
+        spec = vectors['spec'] if vector['state'] == 'complete' else None
+        generation = store.prepare_generation(handle, manifest, expected_head=head,
+                                              vector_spec=spec, deadline=deadline)
         normal.validate_normal_writer(writer)
         if cold and pending:
             # No partial first generation: recall answers view_preparing until complete.
@@ -1111,12 +1183,346 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if exc.reason in SCHEMA3_TRANSIENT_REASONS:
             return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
         raise
+    if vector['state'] == 'complete':
+        vector = dict(vector, state='published')
     return {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
             'generation': generation, 'ingested': ingested, 'removed': len(removed),
-            'pending': pending, 'skipped': skipped}
+            'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector}
 
 
-def _after_sync(decision, proof, grants, result, *, store_format='v6'):
+def _schema3_stage(store, gen_id):
+    """The sealed stage of a published generation: its manifest and vector spec."""
+    import laya_blob_values as v
+    with store._session() as db:
+        row = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
+                         'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (gen_id,)).fetchone()
+    if row is None:
+        v.fail('generation_missing')
+    stage = v.parse_canonical(row[0])
+    return {'manifest': stage['manifest'], 'vector_spec': stage['vector_spec']}
+
+
+# Raw source observation of one view (design D2): the same bounded raw scan
+# v6 discovery runs (laya_wiki_discovery._raw_snapshot), recorded as observed
+# source fingerprints of this view's worktree, branch and HEAD. Only names,
+# hashes and lengths are kept.
+def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
+    """``{project-relative path: (sha256, byte_length, tracked_state)}`` of the raw roots.
+
+    A completed scan also leaves ``raw_scan['snapshot']`` (``{collection/relative:
+    sha256}``, the discovery snapshot shape); a scan over its bounds leaves
+    none, so discovery scans (and blocks) on its own.
+    """
+    import git_branch_safety
+    from laya_index_source_port import scan_collections
+    from laya_wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
+    project = Path(decision['projectRoot'])
+    roots = {item['name']: item['sourceRoot'] for item in decision['collections'] if item.get('role') == 'raw'}
+    if not roots:
+        return {}
+    try:
+        scan = scan_collections(roots, decision['scopeId'], None, max_files=RAW_SCAN_MAX_FILES,
+                                max_bytes=RAW_SCAN_MAX_BYTES)
+    except (IndexContractError, ValueError, OSError):
+        # Over the scan bounds or unreadable: the generation names no
+        # sources (as before D2) instead of holding the wiki publish.
+        return {}
+    if raw_scan is not None:
+        raw_scan['snapshot'] = {item.path: item.sha256 for item in scan.files if item.eligible}
+    observed = {}
+    for item in scan.files:
+        name, rel = item.path.split('/', 1)
+        try:
+            path = (Path(roots[name]) / rel).relative_to(project).as_posix()
+        except ValueError:
+            continue  # a raw root outside the project names no project-relative source
+        observed[path] = [item.sha256, len(item.data), 'unknown']
+    if handle.branch_key != 'non-git' and observed:
+        try:
+            # Literal pathspecs (git_branch_safety); output is relative to the project.
+            specs = sorted({Path(root).relative_to(project).as_posix() for root in roots.values()
+                            if Path(root) == project or project in Path(root).parents})
+            listed = git_branch_safety.run_git(['ls-files', '-z', '--', *specs], project,
+                                               deadline=deadline)
+            tracked = set(listed.stdout.decode('utf-8', 'surrogateescape').split('\0'))
+            for path, value in observed.items():
+                value[2] = 'tracked' if path in tracked else 'untracked'
+        except (git_branch_safety.GitUnavailable, OSError, ValueError):
+            pass  # unknown tracked state: observed, never deletion authority
+    return {path: tuple(value) for path, value in observed.items()}
+
+
+def _schema3_sources_same(store, manifest, observed, handle):
+    """The stored manifest's sources are exactly this observation at the same HEAD."""
+    if len(manifest['sources']) != len(observed):
+        return False
+    with store._session():
+        for source in manifest['sources']:
+            if source['presence'] != 'present' or source['path'] not in observed:
+                return False
+            spec = store._fingerprint(source['fingerprint_id'])
+            if ((spec['source_sha'], spec['byte_length'], spec['tracked_state']) != observed[source['path']]
+                    or (spec['worktree_id'], spec['branch_key'], spec['head_oid'], spec['binding_state'])
+                    != (handle.worktree_id, handle.branch_key, handle.head_oid, 'observed')):
+                return False
+    return True
+
+
+def _schema3_put_sources(store, handle, scan, observed):
+    """Record this scan's observed fingerprints in one write; returns the manifest sources."""
+    sources = []
+    with store._session(write=True) as db:
+        for path in sorted(observed):
+            sha, length, tracked = observed[path]
+            fingerprint = store._put_fingerprint(db, dict(
+                worktree_id=handle.worktree_id, branch_key=handle.branch_key, path=path,
+                source_sha=sha, byte_length=length, head_oid=handle.head_oid, tracked_state=tracked,
+                binding_state='observed', scan_id=scan['id'], observed_ns=scan['observed_ns']))
+            sources.append({'path': path, 'fingerprint_id': fingerprint, 'presence': 'present'})
+    return sources
+
+
+class _VectorMemberBlocked(Exception):
+    """A document whose provider chunks the view recipe cannot reproduce."""
+
+
+class _VectorProviderBlocked(Exception):
+    """The install's provider cannot be proved (attestation, manifest or profile defect)."""
+
+
+# Provider proof failures retrying cannot clear: the vector wake ends ``blocked``.
+SCHEMA3_PROVIDER_DEFECTS = frozenset(('provider_manifest_invalid', 'selected_provider_profile_mismatch',
+                                      'worker_attestation_invalid', 'worker_attestation_changed',
+                                      'worker_runtime_files_invalid', 'worker_provider_unapproved'))
+
+
+def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start_service):
+    """Per-pass vector state: the install provider's spec and a lazily admitted provider.
+
+    ``acquire()`` takes the provider lane (``controller.activity``) and the
+    warm service on first use and keeps both in ``lane`` until the pass
+    ends; a refusal is remembered for the rest of the pass. The spec is None
+    when the provider recipe has no view recipe (the view stays lexical).
+    """
+    from laya_view_vectors import provider_spec
+    spec = _schema3_vector_spec(proof)
+    context = {'spec': spec, 'provider': None, 'refused': None, 'calls': 0, 'stash': {}}
+    if spec is None:
+        return context
+
+    def acquire(current):
+        if context['refused'] is not None:
+            if context.get('blocked'):
+                raise _VectorProviderBlocked(context['refused'])
+            raise ResourceDeferred(context['refused'])
+        if context['provider'] is not None:
+            return context['provider']
+        try:
+            try:
+                provider = ReviewedLocalQmdProvider(current['providerManifest'])
+            except IndexContractError as exc:
+                raise IndexContractError('provider_manifest_invalid') from exc
+            profile = current['vectorProfile']
+            if (provider.profile['profile_id'] != profile['profileId']
+                    or provider_spec(provider.manifest, profile) != spec):
+                raise IndexContractError('selected_provider_profile_mismatch')
+            manifest = _schema3_worker_manifest(decision, current)
+            if manifest != current['providerManifest']:
+                raise IndexContractError('selected_provider_proof_changed')
+            if start_service is start_owned_embed_service:
+                # Outside the provider lane: adoption is requested, never awaited.
+                from laya_embed_resident import ensure_running
+                ensure_running(decision['projectRoot'], manifest)
+            controller = coordinator or Coordinator()
+            observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
+            lane.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+
+            def admit():
+                fresh = resource_report(EMBED_POLICY, detailed=True)
+                return controller.check(EMBED_POLICY, fresh)['ready']
+            service = _selected_service(decision, manifest, admit, start_service)
+            lane.callback(service.stop)
+        except (IndexContractError, JournalEvidenceError, OSError) as exc:
+            # A provider that cannot be proved or started holds the vectors,
+            # never the lexical publish of this pass. A defect of the install
+            # itself ends the wake as ``blocked`` (bounded by the wake policy,
+            # as v6); anything else is retried by a later wake.
+            context['refused'] = 'vector_provider_' + _code(exc)
+            if _code(exc) in SCHEMA3_PROVIDER_DEFECTS:
+                context['blocked'] = True
+                raise _VectorProviderBlocked(context['refused']) from exc
+            raise ResourceDeferred(context['refused']) from exc
+        except ResourceDeferred as exc:
+            context['refused'] = str(exc)
+            raise
+
+        def call(method, *args):
+            if _higher_priority_wake(controller):
+                raise ResourceDeferred('laya_sync_yield_priority')
+            context['calls'] += 1
+            try:
+                return method(*args)
+            except IndexContractError as exc:
+                if str(exc) == 'provider_member_refused':
+                    raise
+                # Socket, identity or result failures: retried by a later wake.
+                context['refused'] = 'vector_provider_' + _code(exc)
+                raise ResourceDeferred(context['refused']) from exc
+
+        class AdmittedProvider:
+            def embed_document_chunks(self, body, path):
+                return call(_embed_with_budget, provider, body, path)
+
+            def embed_document(self, body, title):
+                return call(provider.embed_document, body, title)
+        context['provider'] = AdmittedProvider()
+        return context['provider']
+    context['acquire'] = acquire
+    return context
+
+
+def _code(exc):
+    text = str(exc)
+    return text if re.fullmatch(r'[a-z0-9_]{1,60}', text) else 'failed'
+
+
+def _schema3_vector_spec(proof):
+    from laya_view_vectors import provider_spec
+    return provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
+
+
+def _schema3_worker_manifest(decision, proof):
+    """The worker attestation's provider manifest for the current proof (closure rehash)."""
+    import laya_install_journal as journal
+    with journal.read_only_journals():
+        if journal.journal_version(decision['journalPath']) != 5:
+            raise IndexContractError('writer_plan_v5_required')
+        return journal._worker_attestation_manifest(proof)
+
+
+def _schema3_chunker(context, current):
+    """View chunker over the provider's own chunking (one provider call per document).
+
+    The view recipe's chunks are the provider's first pass; the provider
+    re-splits a part over its token window, which has no reproducible text
+    here, so such a document is refused for the pass (``_VectorMemberBlocked``).
+    The vectors the call returned are kept for the embedder.
+    """
+    import laya_blob_values as v
+    from laya_view_vectors import qmd_first_pass
+
+    def chunker(document, _recipe):
+        body = document['body']
+        parts = qmd_first_pass(body)
+        try:
+            rows = context['acquire'](current()).embed_document_chunks(body, document['path'])
+        except IndexContractError as exc:
+            if str(exc) == 'provider_member_refused':
+                raise _VectorMemberBlocked('provider_member_refused') from exc
+            raise
+        if [row['pos'] for row in rows] != [pos for pos, _text in parts]:
+            raise _VectorMemberBlocked('chunk_text_unreconstructable')
+        title = document['title'] or 'none'
+        for (_pos, text), row in zip(parts, rows):
+            context['stash']['title: ' + title + ' | text: ' + text] = row['vector']
+        return [{'seq': seq, 'position': pos, 'text': text, 'text_sha': v.hash_bytes(text.encode('utf8'))}
+                for seq, (pos, text) in enumerate(parts)]
+
+    def embedder(inputs, _profile):
+        vectors = []
+        for text in inputs:
+            vector = context['stash'].pop(text, None)
+            if vector is None:
+                # A chunk set stored without its embedding set: embed each input
+                # whole; the worker formats the same ``title: | text:`` string.
+                title, sep, chunk = text[len('title: '):].partition(' | text: ')
+                if (not text.startswith('title: ') or not sep or not title or not chunk
+                        or 'title: ' + title + ' | text: ' + chunk != text):
+                    raise _VectorMemberBlocked('embedding_input_unparsed')
+                try:
+                    vector = context['acquire'](current()).embed_document(chunk, title)
+                except IndexContractError as exc:
+                    if str(exc) == 'provider_member_refused':
+                        raise _VectorMemberBlocked('provider_member_refused') from exc
+                    raise
+            vectors.append(vector)
+        return vectors
+    return chunker, embedder
+
+
+def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline):
+    """Fill this manifest's vectors for the pass's spec; ``state`` says what remains.
+
+    ``complete``: every eligible member has the spec's sets (the caller seals
+    a vector generation). ``current``: ``sealed`` (the head's vector spec)
+    already is the spec. ``off``: no spec. ``pending``: the pass budget ran
+    out (cursor kept). ``deferred``: the provider lane or service refused (no
+    store write was made for it). ``blocked``: a document the view recipe
+    cannot chunk; the view stays lexical until that card changes.
+    ``provider_blocked``: the install's provider cannot be proved
+    (``SCHEMA3_PROVIDER_DEFECTS``); the wake ends ``blocked``.
+    """
+    import laya_blob_values as v
+    spec = vectors.get('spec')
+    if spec is None:
+        return {'state': 'off'}
+    if sealed == spec:
+        return {'state': 'current'}
+    recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
+    current = lambda: marks.get('proof', proof)  # noqa: E731 - the proof after this pass's fence
+    try:
+        with store._session():
+            store._recipe(recipe_id); store._profile(profile_id)
+        registered = True
+    except v.BlobStoreError as exc:
+        if exc.reason not in ('recipe_missing', 'profile_missing'):
+            raise
+        registered = False
+    try:
+        if not registered:
+            vectors['acquire'](current())
+            _mark_schema3_write(writer, proof, marks)
+            from laya_view_vectors import register_provider_spec
+            if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
+                v.fail('vector_spec_mismatch')
+        _entry, _saved, _job, targets, stored = store._fill_plan(handle, manifest, recipe_id, profile_id)
+        cursor = 0 if stored is None else stored
+        with store._session() as db:
+            missing = sum(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? '
+                                     'AND profile_id=?', (t['blob_sha'], recipe_id, profile_id)).fetchone() is None
+                          for t in targets[cursor:])
+        if missing:
+            vectors['acquire'](current())
+        chunker, embedder = _schema3_chunker(vectors, current)
+        status = store.fill_status(handle, manifest, recipe_id, profile_id)
+        filled = hits = 0
+        while not status['complete']:
+            left = deadline - SCHEMA3_PUBLISH_RESERVE - time.monotonic()
+            if left <= 0:
+                return {'state': 'pending', 'reason': 'schema3_vector_budget', 'filled': filled,
+                        'cacheHits': hits, 'remaining': len(targets) - status['cursor']}
+
+            def fence():
+                _mark_schema3_write(writer, proof, marks)
+            step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
+                                   embedder=embedder, write_fence=fence,
+                                   expected_cursor=status['cursor'], max_bytes=v.MAX_BODY,
+                                   deadline_seconds=min(30, left))
+            filled += step['filled']; hits += step['cache_hits']
+            if step['status'] == 'deferred':
+                return {'state': 'pending', 'reason': 'schema3_vector_content_busy', 'filled': filled,
+                        'cacheHits': hits, 'remaining': len(targets) - step['cursor']}
+            status = step
+    except ResourceDeferred as exc:
+        return {'state': 'deferred', 'reason': str(exc)}
+    except _VectorMemberBlocked as exc:
+        return {'state': 'blocked', 'reason': str(exc)}
+    except _VectorProviderBlocked as exc:
+        return {'state': 'provider_blocked', 'reason': str(exc)}
+    return {'state': 'complete', 'filled': filled, 'cacheHits': hits, 'targets': len(targets)}
+
+
+def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snapshot=None):
     """External-edit drain and wiki discovery after a completed sync, on every sync path.
 
     After receipt and ACK, with the model service stopped. A raised error or
@@ -1161,7 +1567,8 @@ def _after_sync(decision, proof, grants, result, *, store_format='v6'):
                 import laya_wiki_discovery
                 if schema3:
                     outcome = laya_wiki_discovery.drain_after_sync(
-                        decision, grants, recheck=recheck, view_generation=result.get('generation'))
+                        decision, grants, recheck=recheck, view_generation=result.get('generation'),
+                        raw_snapshot=raw_snapshot)
                 elif v5:
                     with _discovery_base_component(decision,owner,proof) as component:
                         outcome = laya_wiki_discovery.drain_after_sync(
@@ -1277,6 +1684,23 @@ def _shadow_open(state, project, scope, candidate=None):
     return ViewStore.open(path, repository=json.loads(meta[0]), scope_id=scope), rows[0][0]
 
 
+def _shadow_vector_spec(decision):
+    """``(manifest, vector profile)`` of the install provider for this pass (K5), or None.
+
+    One read-only selected-route proof; the view spec is derived from its
+    reviewed provider manifest and vector profile only (no store write).
+    """
+    import laya_install_journal as journal
+    from laya_view_vectors import provider_spec
+    try:
+        with journal.read_only_journals():
+            proof = journal.verify_selected_route(decision)
+    except Exception:
+        return None  # the step itself reproves and refuses; vectors just wait
+    provider = (proof.get('providerManifest'), proof.get('vectorProfile'))
+    return provider if provider_spec(*provider) is not None else None
+
+
 def _activation_record(state, project, *, candidate, resumed_after=None):
     record = {'schema': _ACTIVATION_SCHEMA, 'project': str(project), 'state': str(state),
               'candidate': str(candidate), 'activated_ns': time.time_ns()}
@@ -1351,8 +1775,13 @@ def _orphaned_intent(state, project, candidate):
         return False
 
 
-def _shadow_step(decision, state, executing_root, store, deadline):
-    """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``."""
+def _shadow_step(decision, state, executing_root, store, deadline, provider=None):
+    """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``.
+
+    With ``provider`` (``_shadow_vector_spec``) the candidate store registers
+    the install provider's recipe/profile and the caught-up head copies
+    compatible legacy vectors into the shared sets (``advance_shadow``).
+    """
     import laya_ledger_common as ledger
     import laya_shadow_migration as migration
     project = Path(decision['projectRoot'])
@@ -1390,8 +1819,12 @@ def _shadow_step(decision, state, executing_root, store, deadline):
         intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
                                            executing_root=executing_root, deadline=deadline)
         return 'begin', intent['migration_state'], store
+    vector_spec = None
+    if provider is not None:
+        from laya_view_vectors import register_provider_spec
+        vector_spec = register_provider_spec(view, *provider)
     result = migration.advance_shadow(view, project=project, executing_root=executing_root,
-                                      deadline=deadline)
+                                      deadline=deadline, vector_spec=vector_spec)
     return result['stage'], result['migration_state'], store
 
 
@@ -1469,6 +1902,7 @@ def shadow_pass(project, *, executing_root=None):
     decision, state = bound
     started = time.monotonic()
     deadline = started + SHADOW_PASS_SECONDS
+    provider = _shadow_vector_spec(decision)
     status['state'], status['reason'] = 'progressed', None
     store = None
     try:
@@ -1490,7 +1924,8 @@ def shadow_pass(project, *, executing_root=None):
                 stage, current = result['stage'], result['migration_state']
                 retry_reason = result.get('reason')
             else:
-                stage, current, store = _shadow_step(decision, state, executing_root, store, deadline)
+                stage, current, store = _shadow_step(decision, state, executing_root, store, deadline,
+                                                     provider)
             status['steps'] += 1
             status['stages'].append(stage)
             if current is not None:

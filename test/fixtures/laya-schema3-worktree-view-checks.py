@@ -70,13 +70,27 @@ class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
         shutil.copytree(self.wiki, self.linked_wiki, dirs_exist_ok=True)
 
     def linked_card(self, relative, token):
-        """A card written only in the linked worktree (same shape as ``card``)."""
+        """A card written only in the linked worktree (same shape as ``card``).
+
+        ``card`` also writes the card's raw source under the main checkout;
+        that source moves to the linked worktree, so the main checkout's raw
+        observation (U12e/D2) is unchanged by a linked-only edit.
+        """
         wiki = self.wiki
+        source = self.case.project / 'notes' / (token + '.md')
+        before = source.read_bytes() if source.exists() else None
         try:
             self.wiki = self.linked_wiki
             self.card(relative, token)
         finally:
             self.wiki = wiki
+        target = self.linked / 'notes' / (token + '.md')
+        target.parent.mkdir(exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        if before is None:
+            source.unlink()
+        else:
+            source.write_bytes(before)
 
     @contextmanager
     def loaded(self):

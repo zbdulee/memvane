@@ -704,7 +704,8 @@ def _outcome(state, reason=None, **extra):
     return {'state': state, 'reason': reason, **extra}
 
 
-def drain_after_sync(decision, observed, *, recheck, coordination=None, view_generation=None):
+def drain_after_sync(decision, observed, *, recheck, coordination=None, view_generation=None,
+                     raw_snapshot=None):
     """Discover, journal and enqueue changed raw revisions; bounded, one pass.
 
     `recheck` re-proves the selected route and raises on change. Outcomes:
@@ -714,7 +715,9 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None, view_gen
     propagate, so the runtime dispatcher keeps the wake and its grants.
     ``view_generation`` is a schema3 selection's view head: it replaces the
     v6 head and lineage read as the cursor generation, and no v6 component
-    is opened.
+    is opened. ``raw_snapshot`` is that pass's own raw scan (the sync's
+    source observation, same roots and bounds); without one the raw roots are
+    scanned here.
     """
     phases = ((observed.get('grants'), observed.get('provisional'))
               if isinstance(observed, dict) else ())
@@ -728,7 +731,7 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None, view_gen
             try:
                 return _drain_locked(decision, seen_ids, recheck, state_path,
                                      grants_path, roots, raw, observed.get('engines', {}), coordination,
-                                     view_generation)
+                                     view_generation, raw_snapshot)
             except DiscoveryBlocked:
                 # The dispatcher ACKs a blocked run's wake, so the grants it
                 # observed end here too; a later wake must not inherit them.
@@ -745,18 +748,18 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None, view_gen
 
 
 def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination,
-                  view_generation=None):
+                  view_generation=None, raw_snapshot=None):
     # Whether this run starts the cursor; a blocked run raises and writes none.
     starting = not os.path.lexists(state_path)
     result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines,
-                         coordination, view_generation)
+                         coordination, view_generation, raw_snapshot)
     if starting:
         result['cursorStarted'] = True
     return result
 
 
 def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination,
-                view_generation=None):
+                view_generation=None, raw_snapshot=None):
     recheck()
     state = _read(state_path)
     if state is None and os.path.isfile(decision['journalPath']):
@@ -791,7 +794,8 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
             raise DiscoveryBlocked('generation_unproved')
         head = view_generation
         base = state['baseGen'] if state is not None else head
-        snapshot = _raw_snapshot(decision, raw, schema3=True)
+        snapshot = (dict(raw_snapshot) if isinstance(raw_snapshot, dict)
+                    else _raw_snapshot(decision, raw, schema3=True))
     import laya_wiki_backfill as backfill
     # Existing synthetic/noninstalled cursors have no backfill contract. Keep
     # their unchanged/no-pending sync independent of compile configuration.
