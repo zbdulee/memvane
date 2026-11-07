@@ -66,11 +66,26 @@ def coverage_digest(spec_value, rows):
 # profile are derived from the install's reviewed provider manifest and route
 # vector profile only, so the migration copy, the sync fill and the reader all
 # name the same content-addressed IDs. The recipe is the QMD regex/token chunk
-# recipe the v6 provider embeds with (900/135/200 tokens); the tokenizer is the
-# model's own and the chunker identity is the embedding fingerprint, which
-# already commits the provider bytes and the chunk recipe text.
+# recipe the v6 provider embeds with (900/135/200 tokens), and the tokenizer is
+# the model's own. A document the provider keeps on its first chunking pass
+# (``qmd_first_pass``) has those chunks; a document the provider re-splits
+# over its token window (no reproducible text here) has the fallback windows
+# ``qmd_first_pass(body, *FALLBACK_CHARS)``, each embedded alone. Whether the
+# provider re-splits is decided by the token count of the recipe's tokenizer,
+# so the chunk set is a function of (body, tokenizer). The chunker identity
+# commits the embedding fingerprint (provider bytes and chunk recipe text)
+# and that fallback rule.
 PROVIDER_CHUNK_RECIPE = 'qmd-regex-token-chunks-candidate-v1'
 QMD_CHUNK_TOKENS = (900, 135, 200)
+FALLBACK_CHARS = (600, 90, 135)  # max/overlap/window UTF-16 code units
+
+
+def chunker_sha(embedding_fingerprint):
+    max_chars, overlap, window = FALLBACK_CHARS
+    return v.digest('memvane-provider-chunker-v1', {
+        'embedding_fingerprint': v.identifier(embedding_fingerprint),
+        'resplit_fallback': {'rule': 'qmd-first-pass', 'max_chars': max_chars, 'overlap_chars': overlap,
+                             'window_chars': window, 'unit': 'utf16-code-unit'}})
 
 
 def provider_specs(manifest, vector_profile):
@@ -86,7 +101,7 @@ def provider_specs(manifest, vector_profile):
         window, overlap, search = QMD_CHUNK_TOKENS
         recipe = v.recipe({
             'input_recipe': 'blob-input-v1', 'tokenizer_sha': manifest['modelSha256'],
-            'chunker_sha': vector_profile['embeddingFingerprint'], 'window_tokens': window,
+            'chunker_sha': chunker_sha(vector_profile['embeddingFingerprint']), 'window_tokens': window,
             'overlap_tokens': overlap, 'window_search_tokens': search,
             'offset_unit': 'utf16-code-unit', 'heading_rule': 'qmd-markdown-v1',
             'document_template': 'title: {title} | text: {text}', 'synthetic_path': 'blobs/{blob_sha}.md'})
@@ -127,7 +142,8 @@ def register_provider_spec(store, manifest, vector_profile):
 # with the token chunker's 3-chars-per-token sizes), in UTF-16 code units. It
 # needs no tokenizer; the provider then re-splits only a part over 900 model
 # tokens, which this side cannot reproduce, so the caller compares the
-# provider's chunk positions with these and refuses a re-split document.
+# provider's chunk positions with these and gives a re-split document the
+# recipe's fallback windows (``FALLBACK_CHARS``, same break rules).
 _QMD_WS = '\t\n\v\f\r    -     　﻿'
 _QMD_BREAKS = ((r'\n#(?!#)', 100), (r'\n##(?!#)', 90), (r'\n###(?!#)', 80), (r'\n####(?!#)', 70),
                (r'\n#####(?!#)', 60), (r'\n######(?!#)', 50), (r'\n```', 80),

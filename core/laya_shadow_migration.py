@@ -4109,14 +4109,17 @@ def _classify_vectors(store, base, *, scope, generation, members, names, seal, p
     """Classify one page of candidate members; copy exact-input sets when ``write``.
 
     Input equality is proved per row against ``BlobStore.vector_input_sha``.
-    Without a candidate chunk set the only reconstructable v6 input is one
-    chunk at position 0: the QMD chunker returns the whole content as that
-    chunk (``chunkDocument``/``chunkDocumentByTokens``), and the equal
-    embedding fingerprint commits that chunk recipe. Anything else waits for
-    the new-recipe backfill.
+    Without a candidate chunk set the reconstructable v6 inputs are the
+    provider's first chunking pass (``qmd_first_pass``; one chunk at
+    position 0 for a short document): v6 positions equal to it name those
+    texts, the chunks the view recipe gives a document the provider did not
+    re-split, and the equal embedding fingerprint commits that chunk recipe.
+    A re-split document (``multi_chunk_unreconstructable``) and anything else
+    waits for the new-recipe backfill.
     """
     import laya_blob_values as values
     from laya_blob_values import BlobStoreError
+    from laya_view_vectors import qmd_first_pass
     recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
     compatible = all(profile[key] == seal[key] for key in ('model_id', 'embedding_fingerprint', 'dimension'))
     page = []
@@ -4147,24 +4150,26 @@ def _classify_vectors(store, base, *, scope, generation, members, names, seal, p
                 defer('chunk_positions_differ')
                 continue
             texts = [row['text'] for row in chunks]
-        elif len(old) != 1 or old[0]['pos'] != 0:
-            defer('multi_chunk_unreconstructable')
-            continue
         else:
             body = store.document(blob)['body']
+            parts = qmd_first_pass(body)
+            if [row['pos'] for row in old] != [pos for pos, _text in parts]:
+                defer('multi_chunk_unreconstructable')
+                continue
             if values.markdown_title(body, blob) != title:
                 # Checked before any write: a derived chunk set is stored only
                 # together with the copied set it explains.
                 defer('input_differs')
                 continue
-            texts = [body]
+            texts = [text for _pos, text in parts]
         expected = [values.hash_bytes(('title: ' + title + ' | text: ' + text).encode('utf8')) for text in texts]
         if chunks is None:
             if not write:
                 defer('input_differs')
                 continue
-            store.put_chunk_set(blob, recipe_id, [{'seq': 0, 'position': 0, 'text': texts[0],
-                                                   'text_sha': values.hash_bytes(texts[0].encode('utf8'))}])
+            store.put_chunk_set(blob, recipe_id, [{'seq': seq, 'position': pos, 'text': text,
+                                                   'text_sha': values.hash_bytes(text.encode('utf8'))}
+                                                  for seq, (pos, text) in enumerate(parts)])
         actual = [store.vector_input_sha(blob, recipe_id, profile_id, seq) for seq in range(len(expected))]
         if actual != expected:
             if chunks is None:

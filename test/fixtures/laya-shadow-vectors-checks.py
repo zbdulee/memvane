@@ -20,10 +20,15 @@ spec.loader.exec_module(seed_module)
 # A card without a Markdown heading: the v6 title is its filename stem, the
 # path-independent recipe's title is its blob SHA, so the inputs differ.
 TITLE_ONLY = 'Kestrel plan'
+# A card long enough for several first-pass parts whose v6 positions are that
+# first pass (copied).
+MULTI = 'Otter ledger'
+LONG = ''.join('%03d the sealed river counts keep every otter crossing in the ledger\n' % n
+               for n in range(90))
 
 
-def synthetic_vector(path):
-    digest = hashlib.sha256(path.encode('utf8')).digest()
+def synthetic_vector(path, seq=0):
+    digest = hashlib.sha256((path if seq == 0 else '%s#%d' % (path, seq)).encode('utf8')).digest()
     return [0.1 + digest[index] / 255.0 for index in range(3)]
 
 
@@ -33,11 +38,16 @@ class ShadowVectorChecks(unittest.TestCase):
         original_card = published.card
 
         def card(title, body):
+            if title == MULTI:
+                body += '\n' + LONG
             text = original_card(title, body)
             return text.replace('## Summary\n', '') if title == TITLE_ONLY else text
+        views_vectors = importlib.import_module('laya_view_vectors')
 
         def embed(_provider, body, path):
-            return [{'seq': 0, 'pos': 0, 'vector': synthetic_vector(path)}]
+            positions = [pos for pos, _text in views_vectors.qmd_first_pass(body)]
+            return [{'seq': seq, 'pos': pos, 'vector': synthetic_vector(path, seq)}
+                    for seq, pos in enumerate(positions)]
 
         class BaseOnly(seed_module.MoveSealChecks):
             PUBLISH_SIDECAR = False
@@ -170,21 +180,44 @@ class ShadowVectorChecks(unittest.TestCase):
             self.assertEqual(sum(record['deferred'].values()), 1)
             print('compat_ratio', '%d/%d' % (record['copied'], record['total']),
                   round(record['copied'] / record['total'], 3), flush=True)
-            self.assertEqual(counts(), {'chunk_sets': 2, 'embedding_sets': 2, 'vectors': 2})
             members = dict(store._db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=?',
                                              (generation,)).fetchall())
             self.assertEqual(len(members), 3)
+            import struct
+            multi_parts = views_vectors.qmd_first_pass(store.document(members['concepts/otter-ledger.md'])['body'])
+            self.assertGreater(len(multi_parts), 1)
+            self.assertEqual(counts(), {'chunk_sets': 2, 'embedding_sets': 2, 'vectors': 1 + len(multi_parts)})
             for rel, blob in members.items():
                 copied = [tuple(row) for row in store._db.execute('SELECT embedding FROM vectors WHERE blob_sha=? '
-                    'AND recipe_id=? AND profile_id=?', (blob, good['recipe_id'], good['profile_id']))]
+                    'AND recipe_id=? AND profile_id=? ORDER BY seq', (blob, good['recipe_id'], good['profile_id']))]
                 if rel.endswith('kestrel-plan.md'):
                     self.assertEqual(copied, [])
                     self.assertIsNone(store._db.execute('SELECT 1 FROM chunk_sets WHERE blob_sha=?',
                                                         (blob,)).fetchone())
+                elif rel.endswith('otter-ledger.md'):
+                    # The v6 positions are the first pass: its texts make the chunk set.
+                    chunks = store.chunks(blob, good['recipe_id'])
+                    self.assertEqual([(c['position'], c['text']) for c in chunks], multi_parts)
+                    self.assertEqual(copied, [(struct.pack('<fff', *synthetic_vector(case.WIKI + '/' + rel, seq)),)
+                                              for seq in range(len(multi_parts))])
                 else:
                     expected = synthetic_vector(case.WIKI + '/' + rel)
-                    import struct
                     self.assertEqual(copied, [(struct.pack('<fff', *expected),)])
+            # v6 positions the provider re-split (not its first pass) are not
+            # copied even when writing: that card's chunk set is the fill's.
+            kestrel = members['decisions/kestrel-plan.md']
+            before = counts()
+            resplit = (TITLE_ONLY, [{'seq': 0, 'pos': 0, 'embedding': struct.pack('<fff', 1, 0, 0)},
+                                    {'seq': 1, 'pos': 5, 'embedding': struct.pack('<fff', 0, 1, 0)}])
+            stored_profile = store._profile(good['profile_id'])
+            with mock.patch.object(migration, '_legacy_vector_set', return_value=resplit):
+                page = migration._classify_vectors(
+                    store, None, scope=None, generation=generation, members=[('decisions/kestrel-plan.md', kestrel)],
+                    names=[case.WIKI], seal=stored_profile, profile=stored_profile, spec=good,
+                    deadline=time.monotonic() + 30, write=True)
+            self.assertEqual([(row['status'], row['reason']) for row in page],
+                             [('budget-deferred', 'multi_chunk_unreconstructable')])
+            self.assertEqual(counts(), before)
             completed = intent_path.read_bytes()
             again = migration.advance_vectors(store, project=case.project, executing_root=case.plugin,
                                               vector_spec=good, deadline=time.monotonic() + 30)

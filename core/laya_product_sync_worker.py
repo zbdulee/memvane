@@ -1403,13 +1403,15 @@ def _schema3_worker_manifest(decision, proof):
 def _schema3_chunker(context, current):
     """View chunker over the provider's own chunking (one provider call per document).
 
-    The view recipe's chunks are the provider's first pass; the provider
-    re-splits a part over its token window, which has no reproducible text
-    here, so such a document is refused for the pass (``_VectorMemberBlocked``).
-    The vectors the call returned are kept for the embedder.
+    A document whose provider chunk positions are the provider's first pass
+    (``qmd_first_pass``) has those chunks, and the vectors the call returned
+    are kept for the embedder (v6 inputs and bytes). A document the provider
+    re-split over its token window has no reproducible text here: it gets the
+    recipe's fallback windows (``FALLBACK_CHARS``) and keeps no vector, so the
+    embedder embeds each window alone.
     """
     import laya_blob_values as v
-    from laya_view_vectors import qmd_first_pass
+    from laya_view_vectors import FALLBACK_CHARS, qmd_first_pass
 
     def chunker(document, _recipe):
         body = document['body']
@@ -1420,11 +1422,16 @@ def _schema3_chunker(context, current):
             if str(exc) == 'provider_member_refused':
                 raise _VectorMemberBlocked('provider_member_refused') from exc
             raise
-        if [row['pos'] for row in rows] != [pos for pos, _text in parts]:
-            raise _VectorMemberBlocked('chunk_text_unreconstructable')
-        title = document['title'] or 'none'
-        for (_pos, text), row in zip(parts, rows):
-            context['stash']['title: ' + title + ' | text: ' + text] = row['vector']
+        kept = [row['pos'] for row in rows] == [pos for pos, _text in parts]
+        if not kept:
+            parts = qmd_first_pass(body, *FALLBACK_CHARS)
+        if len(parts) > v.MAX_CHUNKS:
+            # The store refuses the set; only this card's vectors wait.
+            raise _VectorMemberBlocked('chunk_set_too_large')
+        if kept:
+            title = document['title'] or 'none'
+            for (_pos, text), row in zip(parts, rows):
+                context['stash']['title: ' + title + ' | text: ' + text] = row['vector']
         return [{'seq': seq, 'position': pos, 'text': text, 'text_sha': v.hash_bytes(text.encode('utf8'))}
                 for seq, (pos, text) in enumerate(parts)]
 
@@ -1450,19 +1457,49 @@ def _schema3_chunker(context, current):
     return chunker, embedder
 
 
+# One fill call's soft budget inside the pass's vector budget.
+SCHEMA3_FILL_CALL_SECONDS = 30
+# The content filler drops an embedding set finished after its deadline
+# (laya_blob_fill: an expired callback result is never published), while the
+# chunk set stored before the embedder stays. A target whose chunk set is
+# stored without its embedding set therefore had its embeddings dropped by an
+# earlier deadline: it alone gets the large-document embedding budget
+# (``_embed_with_budget``'s 270 s), so a card whose single embeddings outlast
+# one fill call completes on its next pass instead of repeating the same
+# dropped work every wake.
+SCHEMA3_RESUME_SECONDS = 270
+SCHEMA3_FILL_DEADLINES = frozenset(('content_fill_deadline', 'fill_deadline_exceeded'))
+
+
+def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
+    """Index of the first target from ``cursor`` without its embedding set, when its chunk set is stored."""
+    with store._session() as db:
+        for index in range(cursor, len(targets)):
+            blob = targets[index]['blob_sha']
+            if db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                          (blob, recipe_id, profile_id)).fetchone() is None:
+                chunked = db.execute('SELECT 1 FROM chunk_sets WHERE blob_sha=? AND recipe_id=?',
+                                     (blob, recipe_id)).fetchone()
+                return index if chunked is not None else None
+    return None
+
+
 def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline):
     """Fill this manifest's vectors for the pass's spec; ``state`` says what remains.
 
     ``complete``: every eligible member has the spec's sets (the caller seals
     a vector generation). ``current``: ``sealed`` (the head's vector spec)
     already is the spec. ``off``: no spec. ``pending``: the pass budget ran
-    out (cursor kept). ``deferred``: the provider lane or service refused (no
-    store write was made for it). ``blocked``: a document the view recipe
-    cannot chunk; the view stays lexical until that card changes.
+    out or a fill call hit its deadline (cursor kept; committed content sets
+    stay). ``deferred``: the provider lane or service refused (no
+    store write was made for it). ``blocked``: the provider refused a document
+    or its chunk set is over the store's limit; the view stays lexical until
+    that card changes.
     ``provider_blocked``: the install's provider cannot be proved
     (``SCHEMA3_PROVIDER_DEFECTS``); the wake ends ``blocked``.
     """
     import laya_blob_values as v
+    from laya_view_fill import MAX_FILES
     spec = vectors.get('spec')
     if spec is None:
         return {'state': 'off'}
@@ -1504,10 +1541,22 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
 
             def fence():
                 _mark_schema3_write(writer, proof, marks)
-            step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
-                                   embedder=embedder, write_fence=fence,
-                                   expected_cursor=status['cursor'], max_bytes=v.MAX_BODY,
-                                   deadline_seconds=min(30, left))
+            files, seconds = 8, min(SCHEMA3_FILL_CALL_SECONDS, left)
+            resume = _schema3_resume(store, targets, status['cursor'], recipe_id, profile_id)
+            if resume is not None and resume - status['cursor'] < MAX_FILES:
+                files, seconds = resume - status['cursor'] + 1, SCHEMA3_RESUME_SECONDS
+            try:
+                step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
+                                       embedder=embedder, write_fence=fence,
+                                       expected_cursor=status['cursor'], max_files=files,
+                                       max_bytes=v.MAX_BODY, deadline_seconds=seconds)
+            except v.BlobStoreError as exc:
+                if exc.reason not in SCHEMA3_FILL_DEADLINES:
+                    raise
+                # Content sets committed before the deadline stay (cache hits
+                # next pass); the lexical publish of this pass goes on.
+                return {'state': 'pending', 'reason': 'schema3_vector_deadline', 'filled': filled,
+                        'cacheHits': hits, 'remaining': len(targets) - status['cursor']}
             filled += step['filled']; hits += step['cache_hits']
             if step['status'] == 'deferred':
                 return {'state': 'pending', 'reason': 'schema3_vector_content_busy', 'filled': filled,
