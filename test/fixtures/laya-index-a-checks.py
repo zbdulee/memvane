@@ -819,6 +819,40 @@ class LayaIndexASlice(unittest.TestCase):
                               index_incarnation='not-an-incarnation')
         self.assertFalse((self.root / 'invalid-binding.sqlite').exists())
 
+    def _strip_closed_wal_sidecars(self, path):
+        # A stock SQLite build deletes -wal/-shm on the last clean close;
+        # Apple's /usr/lib/libsqlite3 keeps them. Reproduce the stock end state
+        # (WAL header, no sidecars) on any build: checkpoint fully, then drop
+        # the now-empty sidecars, as a non-Apple writer's close leaves them.
+        with contextlib.closing(sqlite3.connect(path, isolation_level=None)) as db:
+            self.assertEqual(db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0], 0)
+        for suffix in ('-wal', '-shm'):
+            sidecar = Path(str(path) + suffix)
+            if sidecar.exists():
+                if suffix == '-wal':
+                    self.assertEqual(sidecar.stat().st_size, 0)
+                sidecar.unlink()
+        self.assertEqual(tuple(path.read_bytes()[18:20]), (2, 2))
+        self.assertEqual([p.name for p in path.parent.iterdir() if p.name.startswith(path.name)],
+                         [path.name])
+
+    def test_wal_stores_closed_without_sidecars_reopen_on_every_sqlite_build(self):
+        incarnation = self.index.incarnation()
+        self.assertEqual(self.index.stage('g0', 'alpha', [('one', 'target', True)]), 'prepared')
+        self.index.close()
+        self._strip_closed_wal_sidecars(self.db_path)
+        self.index = LayaIndexA(self.db_path)
+        self.assertEqual(self.index.incarnation(), incarnation)
+        self.assertEqual(self.index.inspect()['generations'], 1)
+        path = self.root / 'cold-queue.sqlite'
+        ClaimQueue.create(path, index_incarnation=incarnation).close()
+        self._strip_closed_wal_sidecars(path)
+        reopened = ClaimQueue.open(path)
+        try:
+            self.assertEqual(reopened.binding(), incarnation)
+        finally:
+            reopened.close()
+
     def test_queue_v1_reopens_only_as_unbound_legacy_queue(self):
         path = self.root / 'legacy-queue.sqlite'
         with sqlite3.connect(path, isolation_level=None) as db:
@@ -1219,7 +1253,9 @@ class LayaIndexASlice(unittest.TestCase):
 
         def swap_before_rw(database, *args, **kwargs):
             nonlocal swapped
-            if database == rw_uri and not swapped:
+            # The read classifier may itself use mode=rw (_query_only_uri on
+            # macOS Python 3.9); swap before the mutating autocommit connection.
+            if database == rw_uri and kwargs.get('isolation_level', '') is None and not swapped:
                 first_path.rename(parked)
                 second_path.rename(first_path)
                 swapped = True
