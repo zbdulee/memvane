@@ -663,18 +663,20 @@ class Pr67IntegrationChecks(unittest.TestCase):
         self.assertEqual((result['status'], stored['store_format'], rows.store_format),
                          ('rolled_back', 'v6', 'v6'))
 
-    def test_05b_stopped_upgrade_fence_restore_releases_recall_but_rollback_stays_deferred(self):
+    def test_05b_stopped_upgrade_fence_restore_settles_and_rollback_proceeds(self):
         """A worker stopped after its fence for a reason unrelated to schema3.
 
-        Documents the operator path that exists today: the active upgrade's
-        restore action releases the fence (recall and the edit gate work
-        again), but the restored intent stays unsettled, so the reader
-        rollback remains deferred (exit 75) until a bundle worker finishes or
-        archives that intent.
+        The operator restore of the active upgrade releases the fence (recall
+        and the edit gate work again). Nothing was staged, so the journal keeps
+        selecting the old bundle; the restored intent is a settled receipt: a
+        second restore is a no-op, the SessionStart worker refuses the same
+        bundle before any fence instead of retrying it, the reader rollback
+        proceeds, and the operator's explicit upgrade archives the receipt.
         """
         case, u15 = self.case, self.u15
         fresh = importlib.import_module('laya_fresh_wiki_origin')
         active = importlib.import_module('laya_active_upgrade')
+        auto = importlib.import_module('laya_bundle_upgrade')
         _initial, switched = self.u16.switched()
         gen = u15.schema3_generation()
         new = case.home / 'pr67-stuck-plugin'
@@ -691,27 +693,55 @@ class Pr67IntegrationChecks(unittest.TestCase):
         code, deferred = self.u16.setup('rollback-index-reader', '--approve-index-reader-rollback')
         self.assertEqual((code, deferred['status'], deferred['reason']), (75, 'deferred', 'rollback_lifecycle_busy'))
         bytes_before = case.journal.read_bytes()
-        # The operator restore of the active upgrade (the entry point's restore action).
-        with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, _t, review, _a):
-            restored = upgrade.upgrade(project_root=str(case.project), state_root=str(case.state),
+        ledger_path = case.state / fresh.LEDGER
+
+        def operator(restore):
+            # The entry point's upgrade/restore action for the stuck bundle.
+            with lifecycle.Lifecycle.upgrade_authority(self.u10, new) as (upgrade, _t, review, _a):
+                return upgrade.upgrade(project_root=str(case.project), state_root=str(case.state),
                                        source_root=str(case.home), plugin_root=str(new),
                                        commit_id=target['sourceCommit'],
                                        accepted_provider_sha256=review['proposalSha256'],
-                                       model_path='/synthetic/model', dimension=3, restore=True)
+                                       model_path='/synthetic/model', dimension=3, restore=restore)
+        restored = operator(True)
         self.assertEqual(restored['status'], 'active_upgrade_restored_laya')
         self.assertFalse(fresh.upgrade_fenced(str(case.project)))
         self.assertEqual(case.journal.read_bytes(), bytes_before)
         # Recall answers again from the selected schema3 view.
         self.assertEqual(self.gen_of(u15.recall()), gen)
-        # The restored intent is not a settled receipt: the rollback stays deferred.
-        with self.assertRaisesRegex(Exception, 'active_upgrade_prior_unsettled'):
-            active.finished_intent_receipt(case.state, case.project, active._load_intent(case.state, case.project))
-        with self.assertRaisesRegex(ValueError, 'rollback_lifecycle_busy'):
-            self.u16.rollback()
-        self.assertEqual(u15.selection(), switched)
-        self.assertEqual(case.journal.read_bytes(), bytes_before)
+        # The restored intent is a settled receipt; a second restore changes nothing.
+        intent = active._load_intent(case.state, case.project)
+        receipt = active.finished_intent_receipt(case.state, case.project, intent)
+        self.assertFalse(receipt.exists())
+        ledger_before = ledger_path.read_bytes()
+        self.assertEqual(operator(True)['status'], 'active_upgrade_restored_laya')
+        self.assertEqual((ledger_path.read_bytes(), case.journal.read_bytes()), (ledger_before, bytes_before))
+        # The SessionStart worker for the same bundle refuses before any review
+        # or fence: the operator restored away from it.
+        # The fixture authority stubs ``upgrade_install``; load the real one.
+        spec = importlib.util.spec_from_file_location('pr67_bundle_upgrade', ROOT / 'core' / 'laya_bundle_upgrade.py')
+        real = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real)
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new):
+            with self.assertRaisesRegex(real.UpgradeRefused, '^active_upgrade_restored$'):
+                real.upgrade_install(case.project, case.state, new, home=case.home)
+        self.assertIn('active_upgrade_restored', auto.REFUSALS)
+        self.assertFalse(fresh.upgrade_fenced(str(case.project)))
+        self.assertEqual((ledger_path.read_bytes(), case.journal.read_bytes()), (ledger_before, bytes_before))
+        self.assertEqual(active._load_intent(case.state, case.project), intent)
+        # The reader rollback proceeds and recall reads the v6 view.
+        result, _wakes = self.u16.rollback()
+        self.assertEqual(result['status'], 'rolled_back', result)
+        self.assertNotEqual(u15.selection(), switched)
+        self.assertIn('generation ' + self.u11.v6_generation(), u15.recall()['context'])
+        # After fixing the cause, the operator's explicit upgrade archives the
+        # receipt and moves the install to the bundle.
+        self.assertEqual(operator(False)['status'], 'active_upgrade_complete')
+        self.assertFalse(fresh.upgrade_fenced(str(case.project)))
+        self.assertEqual(len(list(case.state.glob('active-upgrade-*-settled.json'))), 1)
+        self.assertEqual(active._load_intent(case.state, case.project)['newProof']['pluginRoot'], str(new))
         emit('pr67-stuck-fence-restore', restored=restored['status'], journal=J.inspect_journal(case.journal).get('state'),
-             rollback='rollback_lifecycle_busy')
+             rollback=result['status'])
 
     # ---- 7. linked worktree of a switched install --------------------------
     def git(self, cwd, *args):

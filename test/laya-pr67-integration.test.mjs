@@ -19,7 +19,7 @@ const GROUPS = {
   ],
   'upgrade crossing, linked worktree and the other sqlite build': [
     'test_05_upgrade_finished_inside_the_migration_still_switches',
-    'test_05b_stopped_upgrade_fence_restore_releases_recall_but_rollback_stays_deferred',
+    'test_05b_stopped_upgrade_fence_restore_settles_and_rollback_proceeds',
     'test_07_linked_worktree_reads_its_own_view_and_a_branch_switch_is_cold',
     'test_08_other_interpreter_advances_and_reads_the_same_stores',
   ],
