@@ -405,7 +405,11 @@ class Schema3EndpointChecks(unittest.TestCase):
                 return record, raw, proof
             with self.subTest(field=field), self.receipt(), \
                     mock.patch.object(self.reader, '_recheck', side_effect=changed):
-                self.refused('reader_install_changed', self.cas, target, loaded, base=initial)
+                # An attestation-only step passes the shape check (a bundle upgrade
+                # during the migration) and must then be proved on the v6
+                # endpoint's sealed successor chain, which this install has none of.
+                self.refused('reader_successor_unproved' if field == 'attestation_sha256'
+                             else 'reader_install_changed', self.cas, target, loaded, base=initial)
         # Store identity differs from the v6 base by design and is accepted.
         with self.receipt():
             selected = self.cas(target, loaded, base=initial)

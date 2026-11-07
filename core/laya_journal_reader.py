@@ -1312,7 +1312,8 @@ def _selection(db):
         fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
                   else ('install_id',))
         _need(all(record[k] == previous[k] for k in fields) or relocated_pair(previous, record)
-              or resettled_pair(previous, record) or rollback_pair(previous, record),
+              or resettled_pair(previous, record) or rollback_pair(previous, record)
+              or upgraded_pair(previous, record),
               'reader_install_changed')
     from laya_move_reader_journal import validate_selection
     validate_selection(db, selected, record)
@@ -1461,6 +1462,24 @@ def rollback_pair(old, new):
         return (old.get('store_format') == 'schema3' and set(old) == _SCHEMA3_KEYS
                 and new.get('store_format') == 'v6' and new.get('capability') == 'v6-ro-v1'
                 and all(old[k] == new[k] for k in INSTALL_IDENTITY if k not in _ROLLBACK_NEWER))
+    except (AttributeError, KeyError, TypeError):
+        return False
+
+
+def upgraded_pair(old, new):
+    """``new`` is the schema3 reader a switch selects over a v6 ``old`` sealed by an earlier bundle.
+
+    Switch direction only (steady v6 -> schema3), shape only. A bundle upgrade
+    that finished during the migration leaves the v6 record on its sealed
+    predecessor attestation (read through the successor chain); the schema3
+    target is sealed from the current install. Only ``attestation_sha256``
+    may differ; ``cas_reader`` proves that step on the v6 endpoint's chain.
+    """
+    try:
+        return (old.get('store_format') == 'v6' and old.get('capability') == 'v6-ro-v1'
+                and new.get('store_format') == 'schema3' and set(new) == _SCHEMA3_KEYS
+                and old['attestation_sha256'] != new['attestation_sha256']
+                and all(old[k] == new[k] for k in INSTALL_IDENTITY if k != 'attestation_sha256'))
     except (AttributeError, KeyError, TypeError):
         return False
 
@@ -1794,7 +1813,19 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
         _need(formats in (('v6', 'v6'), ('v6', 'schema3'), ('schema3', 'v6')),
               'reader_format_not_selectable')
         _need(all(record[k] == base[k] for k in stable_fields(base, record))
-              or rollback_pair(base, record), 'reader_install_changed')
+              or rollback_pair(base, record) or upgraded_pair(base, record), 'reader_install_changed')
+
+        def attestation_step():
+            # The base reads through its sealed bundle successors
+            # (``_match_persisted``); the target must sit at the chain's end,
+            # which the live journal selects.
+            from laya_install_journal import _row  # ``journal`` is the path argument here
+            row = _row(db)
+            _need(row['state'] in ('active', 'restored_old') and row['pending'] is None and
+                  row['provider_attestation_sha'] == record['attestation_sha256'],
+                  'reader_successor_unproved')
+            _successor_chain(db, expected_endpoint, base, record['attestation_sha256'],
+                             row['selected'], max_epoch=row['epoch'])
         if replay:
             outcome.append(current)
             return False
@@ -1805,20 +1836,13 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
             _parity_receipt(path.parent, record)
             _schema3_parity_floor(record, deadline=deadline)
             _loaded_bridge(loaded_bridge, proof, expected_epoch, expected_endpoint)
+            if record['attestation_sha256'] != base['attestation_sha256']:
+                attestation_step()
             admitted.append(proof)
         elif formats == ('schema3', 'v6'):
             _need(record['capability'] == 'v6-ro-v1', 'reader_format_not_selectable')
             if record['attestation_sha256'] != base['attestation_sha256']:
-                # The schema3 base reads through its sealed bundle successors
-                # (``_match_persisted``); the target must sit at the chain's
-                # end, which the live journal selects.
-                from laya_install_journal import _row  # ``journal`` is the path argument here
-                row = _row(db)
-                _need(row['state'] in ('active', 'restored_old') and row['pending'] is None and
-                      row['provider_attestation_sha'] == record['attestation_sha256'],
-                      'reader_successor_unproved')
-                _successor_chain(db, expected_endpoint, base, record['attestation_sha256'],
-                                 row['selected'], max_epoch=row['epoch'])
+                attestation_step()
         _need(not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
                              (transition_id,)).fetchone(), 'reader_transition_reused')
         _insert_endpoint(db, target, record, raw)
