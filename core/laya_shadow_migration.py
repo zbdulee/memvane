@@ -1527,7 +1527,7 @@ _SHADOW_STATES = ('copying', 'caught_up', 'shadow_verified')
 # Source changes proved by a later step; the copy restarts from a fresh scan.
 _SHADOW_RESTART_REASONS = frozenset(('migration_snapshot_changed', 'migration_source_revision_unproved'))
 # Writer races on the reader store itself; the next step re-proves the source.
-_SHADOW_RETRY_REASONS = frozenset(('reader_store_changed',))
+_SHADOW_RETRY_REASONS = frozenset(('reader_store_changed', 'migration_space_deferred'))
 
 
 def _shadow_state(intent):
@@ -1559,27 +1559,88 @@ _MIGRATION_REASONS = frozenset((
     'reader_component_changed', 'reader_lifetime_busy', 'reader_selection_changed',
     'reader_selection_unproved', 'reader_snapshot_changed', 'reader_store_changed',
     'reader_sidecar_revision_unproved', 'fts_deadline_exceeded'))
-_MIGRATION_REASONS |= frozenset(('sync_owner_busy', 'migration_parity_incomplete'))
+_MIGRATION_REASONS |= frozenset(('sync_owner_busy', 'migration_parity_incomplete',
+                                 'migration_space_deferred'))
 _MIGRATION_REASONS |= frozenset(('migration_vector_invalid', 'migration_vector_spec_invalid',
                                  'migration_vector_queries_invalid', 'migration_vectors_incomplete',
                                  'migration_semantic_parity_mismatch'))
 
 
+# Operations in shadow order (``op`` of every ``migration.shadow`` event);
+# the logs skill renders progress as a position in this tuple. A restart
+# replays ``copy``; comparisons belong to ``parity`` and ``vectors``.
+MIGRATION_OPS = ('begin', 'copy', 'verification', 'base_corpus', 'sidecar_corpus',
+                 'prepare', 'publish', 'vectors', 'parity', 'parity_seal')
+# Reasons that leave intent and candidate as they were and only ask a later
+# step to try again; their terminal event outcome is ``deferred``.
+_DEFERRED_REASONS = frozenset(('migration_space_deferred',))
+# Integer diagnostics a terminal event may carry (bounded; never text).
+_EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms')
+
+# Space pre-check (design 10: old DB + new DB + WAL + reserve, from actual
+# file sizes and the expected copy size; no fixed 2x guarantee is claimed).
+# The candidate copies the wiki members of the selected v6 store (bodies,
+# FTS and compatible vectors), so the v6 DB and its WAL bound the final
+# candidate size; raw collections in the v6 DB make that an over-estimate,
+# never an under-estimate of one generation. Bytes still to come are that
+# bound minus what the candidate DB and WAL already hold. One step writes at
+# most MAX_BATCH_BYTES of bodies plus their FTS and index pages into the
+# WAL before a checkpoint; twice the batch covers both. The reserve keeps
+# the copy from taking the filesystem's last blocks. Measured sizes (U8, n)
+# may replace these provisional constants.
+_SPACE_WAL_HEADROOM = 2 * MAX_BATCH_BYTES
+_SPACE_RESERVE = 16 * 1024 * 1024
+
+
+def _file_bytes(path):
+    import os
+    try:
+        return os.lstat(path).st_size
+    except FileNotFoundError:
+        return 0
+
+
+def _space_needed(source, candidate):
+    """Projected bytes a copy may still write, from actual file sizes."""
+    projected = sum(_file_bytes(str(source) + suffix) for suffix in ('', '-wal'))
+    written = sum(_file_bytes(str(candidate) + suffix) for suffix in ('', '-wal'))
+    return max(0, projected - written) + _SPACE_WAL_HEADROOM + _SPACE_RESERVE
+
+
+def _space_check(trace, state, decision, store):
+    """Defer the start or the next copy while the projected bytes do not fit.
+
+    Read-only: a deferral writes nothing to the intent or the candidate.
+    """
+    import os
+    stat = os.statvfs(state)
+    free = stat.f_bavail * stat.f_frsize
+    needed = _space_needed(decision['dbPath'], store._path)
+    if free < needed:
+        trace['stage'] = 'space'
+        trace['fields'] = {'needed_bytes': needed, 'free_bytes': free}
+        raise IndexContractError('migration_space_deferred')
+
+
 def _migration_event(state, trace, outcome, *, reason=None, ms=None):
     try:
         import event_log
+        fields = {key: value for key, value in (trace.get('fields') or {}).items()
+                  if key in _EVENT_FIELDS and type(value) in (int, float)}
         event_log.emit('migration.shadow', state_root=state, host='worker',
-            outcome=outcome, reason=reason, ms=ms, stage=trace['stage'],
-            migration=trace['migration'], attempt=trace['attempt'])
+            outcome=outcome, reason=reason, ms=ms, stage=trace['stage'], op=trace['op'],
+            migration=trace['migration'], attempt=trace['attempt'], **fields)
     except Exception:
         pass
 
 
 @contextmanager
-def _migration_trace(state, stage):
+def _migration_trace(state, stage, op):
     """Emit one bounded terminal event without source text or exception messages."""
     import uuid
-    trace = {'stage': stage, 'migration': None, 'outcome': None, 'attempt': uuid.uuid4().hex}
+    if op not in MIGRATION_OPS:
+        raise IndexContractError('migration_trace_invalid')
+    trace = {'stage': stage, 'op': op, 'migration': None, 'outcome': None, 'attempt': uuid.uuid4().hex}
     started = time.monotonic()
     reason = None
     try:
@@ -1589,6 +1650,8 @@ def _migration_trace(state, stage):
         value = str(exc)
         if value in _MIGRATION_REASONS:
             reason = value
+            if value in _DEFERRED_REASONS:
+                trace['outcome'] = 'deferred'
         elif isinstance(exc, OSError):
             reason = 'storage_full' if exc.errno == errno.ENOSPC else 'storage_io'
         elif isinstance(exc, sqlite3.Error):
@@ -2188,9 +2251,10 @@ def begin_migration(store, *, worktree_id, project, executing_root, deadline):
         raise IndexContractError('reader_snapshot_deadline')
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'lock') as trace, _install_lock(state), ledger._operation_lock(marker):
+    with _migration_trace(state, 'lock', 'begin') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
+        _space_check(trace, state, decision, store)
         trace['stage'] = 'endpoint'
         with leases.resolve_endpoint(project, action='recall', host_root=Path(executing_root)) as endpoint:
             if endpoint.record['state'] != str(state) or endpoint.record['scope'] != store._scope:
@@ -2241,7 +2305,7 @@ def advance_migration(store, *, project, executing_root, deadline):
     deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'lock') as trace, _install_lock(state), ledger._operation_lock(marker):
+    with _migration_trace(state, 'lock', 'copy') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
         trace['stage'] = 'intent'
@@ -2249,6 +2313,8 @@ def advance_migration(store, *, project, executing_root, deadline):
         intent = _migration_intent(path, project=project, state=state, node=node, store=store)
         trace['migration'] = intent['migration_id']
         _migration_event(state, trace, 'attempt')
+        # Every path below may import pages (copy, catch-up, full restart).
+        _space_check(trace, state, decision, store)
         trace['stage'] = 'endpoint'
         with leases.resolve_endpoint(project, action='recall', host_root=Path(executing_root)) as endpoint:
             if (endpoint.endpoint_id != intent['endpoint_id']
@@ -2389,7 +2455,7 @@ def advance_verification(store, *, project, executing_root, deadline):
     deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'lock') as trace, _install_lock(state), ledger._operation_lock(marker):
+    with _migration_trace(state, 'lock', 'verification') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
         path = state / _INTENT
@@ -2458,7 +2524,8 @@ def advance_corpus(store, *, project, executing_root, sidecar, deadline):
     deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'lock') as trace, _install_lock(state), ledger._operation_lock(marker):
+    op = 'sidecar_corpus' if sidecar else 'base_corpus'
+    with _migration_trace(state, 'lock', op) as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
         path = state / _INTENT
@@ -2527,7 +2594,7 @@ def _mark_shadow_restart(store, project, expected, deadline, reason=None):
     from laya_product_install import _install_lock
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'restart_pending') as trace, _install_lock(state), ledger._operation_lock(marker):
+    with _migration_trace(state, 'restart_pending', 'copy') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
         path = state / _INTENT
@@ -2552,7 +2619,7 @@ def _record_prepared(store, project, expected, generation, deadline):
     from laya_product_install import _install_lock
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'prepared') as trace, _install_lock(state), ledger._operation_lock(marker):
+    with _migration_trace(state, 'prepared', 'prepare') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
         path = state / _INTENT
@@ -2612,7 +2679,7 @@ def prepare_shadow_generation(store, *, project, executing_root, deadline):
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
     path = state / _INTENT
-    with _migration_trace(state, 'prepare') as trace, ExitStack() as lifetime:
+    with _migration_trace(state, 'prepare', 'prepare') as trace, ExitStack() as lifetime:
         with _install_lock(state), ledger._operation_lock(marker):
             if _migration_state(project, store) != (project, state, decision, node):
                 raise IndexContractError('migration_route_changed')
@@ -2691,7 +2758,7 @@ def publish_shadow_generation(store, generation, *, project, executing_root, dea
         values.fail('generation_id_invalid')
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'publish') as trace, _install_lock(state), ledger._operation_lock(marker):
+    with _migration_trace(state, 'publish', 'publish') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
         intent = _migration_intent(state / _INTENT, project=project, state=state, node=node, store=store)
@@ -2790,7 +2857,7 @@ def compare_shadow_queries(store, generation, *, project, executing_root, querie
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
     path = state / _INTENT
-    with _migration_trace(state, 'compare') as trace, ExitStack() as lifetime:
+    with _migration_trace(state, 'compare', 'parity') as trace, ExitStack() as lifetime:
         with _install_lock(state), ledger._operation_lock(marker):
             if _migration_state(project, store) != (project, state, decision, node):
                 raise IndexContractError('migration_route_changed')
@@ -2876,7 +2943,7 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
     path = state / _INTENT
-    with _migration_trace(state, 'compare_corpus') as trace, ExitStack() as lifetime:
+    with _migration_trace(state, 'compare_corpus', 'parity') as trace, ExitStack() as lifetime:
         with _install_lock(state), ledger._operation_lock(marker):
             if _migration_state(project, store) != (project, state, decision, node):
                 raise IndexContractError('migration_route_changed')
@@ -2940,7 +3007,8 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
     (advance_vectors); without one, or with nothing compatible, the lexical
     shadow is complete on its own. The seal step reports ``quiesce_ms``; a busy
     writer or an exceeded quiesce bound returns stage ``retry`` with ``reason``
-    and leaves the intent unchanged.
+    and leaves the intent unchanged. A copy whose projected bytes do not fit
+    (``migration_space_deferred``) also returns ``retry`` with nothing written.
     """
     import laya_blob_values as values
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -3174,7 +3242,7 @@ def _advance_parity(store, *, project, executing_root, deadline):
         executing_root=executing_root, after=record['cursor'], deadline=deadline)
     updated = _stamp({**intent, 'parity': _fold_parity(record, page)})
     marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'parity') as trace, _install_lock(state), ledger._operation_lock(marker):
+    with _migration_trace(state, 'parity', 'parity') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
             raise IndexContractError('migration_route_changed')
         current = _migration_intent(path, project=project, state=state, node=node, store=store)
@@ -3216,7 +3284,7 @@ def _seal_parity(store, *, project, executing_root, deadline):
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
     path = state / _INTENT
-    with _migration_trace(state, 'parity_seal') as trace, ExitStack() as locks:
+    with _migration_trace(state, 'parity_seal', 'parity_seal') as trace, ExitStack() as locks:
         locks.enter_context(_install_lock(state))
         locks.enter_context(ledger._operation_lock(marker))
         if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
@@ -3252,8 +3320,9 @@ def _seal_parity(store, *, project, executing_root, deadline):
         if time.monotonic() >= quiesce or ledger._read_json(path) != intent:
             raise IndexContractError('reader_snapshot_deadline')
         ledger._write(path, updated, replace=True)
-        trace['outcome'] = 'shadow_verified'
-        return updated, round((time.monotonic() - held) * 1000, 3)
+        quiesce_ms = round((time.monotonic() - held) * 1000, 3)
+        trace.update(outcome='shadow_verified', fields={'quiesce_ms': quiesce_ms})
+        return updated, quiesce_ms
 
 
 def shadow_parity_receipt(state, *, candidate, candidate_incarnation):
@@ -3556,7 +3625,7 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
     profile = store._profile(spec['profile_id'])
     store._recipe(spec['recipe_id'])
     _, state, _, _ = _migration_state(project, store)
-    with _migration_trace(state, 'vectors') as trace, \
+    with _migration_trace(state, 'vectors', 'vectors') as trace, \
             _vector_session(store, project, executing_root, deadline=deadline) as proof:
         intent, receipt = proof['intent'], proof['intent']['published']
         trace['migration'] = intent['migration_id']
@@ -3645,7 +3714,7 @@ def compare_vector_queries(store, generation, *, project, executing_root, vector
             values.fail('vector_query_invalid')
         queries.append((list(value), query))
     _, state, _, _ = _migration_state(project, store)
-    with _migration_trace(state, 'vector_compare') as trace, \
+    with _migration_trace(state, 'vector_compare', 'vectors') as trace, \
             _vector_session(store, project, executing_root, deadline=deadline) as proof:
         intent, snapshot = proof['intent'], proof['snapshot']
         trace['migration'] = intent['migration_id']
