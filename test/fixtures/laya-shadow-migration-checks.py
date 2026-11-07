@@ -45,6 +45,63 @@ class busy_timeouts_armed:
         return False
 
 
+def legacy_join_oracle(view, pin, query, limit, *, path_prefixes=None, excluded_paths=None, origin=None):
+    """The legacy-origin lexical search as the earlier json_each-join SQL (oracle).
+
+    ``laya_view_reader.search`` filters active paths with ``IN`` and maps the
+    ranked window in Python; it must return exactly these rows in this order.
+    """
+    import laya_blob_values as values
+    import laya_view_fts as fts
+    with view._reading(time.monotonic() + 30) as db:
+        generation, _, _, stage = view._read_pinned(db, pin, time.monotonic() + 30)
+        legacy = stage['legacy']
+        paired = 'sidecar_corpus' in legacy
+        side = paired and origin == 'sidecar'
+        name = fts.table(generation['ordinal'], sidecar=side)
+        chosen = origin if paired else 'base'
+        mapping = {path: full for path, full in legacy['fts_paths'].items()
+                   if not paired or legacy['fts_sources'][path] == chosen}
+        path_expr = f"substr({name}.path_key,instr({name}.path_key,'/')+1)"
+        args, conditions = [values.canonical(legacy['active_fts'][chosen]), query], []
+        if path_prefixes is not None:
+            conditions.append('0' if not path_prefixes else '(' + ' OR '.join(
+                f'({path_expr}=? OR substr({path_expr},1,?)=?)' for _ in path_prefixes) + ')')
+            for path in path_prefixes:
+                args.extend((path, len(path) + 1, path + '/'))
+        if excluded_paths:
+            conditions.append(path_expr + ' NOT IN (' + ','.join('?' for _ in excluded_paths) + ')')
+            args.extend(excluded_paths)
+        extra = ''.join(' AND ' + clause for clause in conditions)
+        args.extend((limit, values.canonical(mapping), pin.gen_id, pin.view_id))
+        return [tuple(row) for row in db.execute(f'''SELECT m.path,m.blob_sha,m.display_title,r.score FROM (
+            SELECT {name}.path_key AS full_path,bm25({name},1.5,4.0,1.0,0.0) AS score
+            FROM {name} JOIN json_each(?) a ON a.key={name}.path_key
+            WHERE {name} MATCH ? {extra}
+            ORDER BY score ASC,{name}.path_key COLLATE BINARY ASC LIMIT ? OFFSET 0
+            ) r JOIN json_each(?) p ON p.value=r.full_path
+            JOIN wiki_members m ON m.gen_id=? AND m.path=p.key
+            JOIN generations g ON g.gen_id=m.gen_id
+            WHERE g.view_id=? AND m.eligible=1
+            ORDER BY r.score ASC,r.full_path COLLATE BINARY ASC''', args)]
+
+
+def assert_legacy_oracle(case, view, pin, queries, **origin):
+    """Same rows, same order as the join oracle over limits, prefixes and exclusions."""
+    compared = 0
+    for query in queries:
+        for options in ({}, {'path_prefixes': ['concepts']}, {'path_prefixes': []},
+                        {'excluded_paths': ['concepts/heron-route.md', 'concepts/otter-ledger.md']}):
+            for limit in (1, 2, 3, 100):
+                got = [(row['path'], row['blob_sha'], row['display_title'], row['score'])
+                       for row in view.search(pin, query, limit, **options, **origin)]
+                case.assertEqual(got, legacy_join_oracle(view, pin, query, limit, **options,
+                                                         origin=origin.get('_legacy_origin')),
+                                 (query, limit, options, origin))
+                compared += len(got)
+    return compared
+
+
 class MigrationSnapshotChecks(unittest.TestCase):
     def test_base_search_applies_limit_before_legacy_trust(self):
         class BaseOnly(seed_module.MoveSealChecks):
@@ -135,6 +192,10 @@ class MigrationSnapshotChecks(unittest.TestCase):
                                              ['concepts/heron-route.md'])
                             self.assertEqual([row['path'] for row in view.search(pin, 'caporderprobe', 1,
                                 excluded_paths=['concepts/otter-ledger.md'])], ['concepts/heron-route.md'])
+                            # The untrusted otter card ranks first and is dropped,
+                            # never refilled; so does the oracle.
+                            self.assertGreater(assert_legacy_oracle(
+                                self, view, pin, ('caporderprobe', 'heron', 'otter OR heron')), 0)
                         finally:
                             view.release(pin)
                     finally:
@@ -532,6 +593,9 @@ class MigrationSnapshotChecks(unittest.TestCase):
                         self.assertEqual(view.search(pin, 'overlaptoken', 1, path_prefixes=[],
                                                      _legacy_origin='sidecar'), [])
                         self.assertEqual(view.search(pin, 'overlaptoken', 10, _legacy_origin='base'), [])
+                        compared = sum(assert_legacy_oracle(self, view, pin, ('overlaptoken', 'migration', 'heron'),
+                                                            _legacy_origin=origin) for origin in ('sidecar', 'base'))
+                        self.assertGreater(compared, 0)
                         comparison = migration.compare_lexical_queries(snapshot, endpoint=endpoint,
                             decision=decision, store=view, pin=pin,
                             queries=('migration', 'heron'), deadline=time.monotonic() + 30)

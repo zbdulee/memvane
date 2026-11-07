@@ -1647,10 +1647,16 @@ def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snaps
 # Every step is crash-safe on its own: a SIGKILL leaves the activation
 # record, the candidate file, the intent or the journal, and the next pass
 # resumes from whichever exists.
-# Provisional bounds (K8, measured by U8). The pass budget must hold one
-# lock-free prepare (about 25 s for 3,749 synthetic cards).
-SHADOW_STEPS_PER_PASS = 4
-SHADOW_PASS_SECONDS = 60.0
+# Bounds (K8, measured by U8b/U20). A pass runs steps until about
+# SHADOW_PASS_SECONDS have passed (no step starts with less than
+# laya_shadow_migration._STEP_SECONDS left), at most SHADOW_STEPS_PER_PASS.
+# Locks are released between steps, so a writer waits at most one step.
+# The lock-free prepare (about 6 s for 3,749 synthetic cards) starts only as
+# the first step of a pass, on its own SHADOW_PREPARE_SECONDS budget; due
+# later in a pass, the pass ends and the next one starts with it.
+SHADOW_STEPS_PER_PASS = 32
+SHADOW_PASS_SECONDS = 10.0
+SHADOW_PREPARE_SECONDS = 60.0
 # ``off`` stops the driver before it reads or writes anything.
 SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
 SHADOW_ACTIVATION = 'shadow-migration-activation.json'
@@ -1824,7 +1830,7 @@ def _orphaned_intent(state, project, candidate):
         return False
 
 
-def _shadow_step(decision, state, executing_root, store, deadline, provider=None):
+def _shadow_step(decision, state, executing_root, store, deadline, provider=None, prepare=True):
     """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``.
 
     With ``provider`` (``_shadow_vector_spec``) the candidate store registers
@@ -1873,7 +1879,7 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
         from laya_view_vectors import register_provider_spec
         vector_spec = register_provider_spec(view, *provider)
     result = migration.advance_shadow(view, project=project, executing_root=executing_root,
-                                      deadline=deadline, vector_spec=vector_spec)
+                                      deadline=deadline, vector_spec=vector_spec, prepare=prepare)
     return result['stage'], result['migration_state'], store
 
 
@@ -1927,7 +1933,8 @@ def shadow_pass(project, *, executing_root=None):
     Returns ``{state, reason, steps, stages, migration_state}``. ``skipped``:
     a guard refused and nothing was read from or written to the migration
     (a schema3-selected install may only get its ``switched`` record, see
-    ``settle_switched``). ``progressed``: the step cap was reached, the head
+    ``settle_switched``). ``progressed``: the step cap was reached, a prepare
+    came due after the pass's first step (``reason`` ``prepare_next_pass``), the head
     is verified and the reader_ready entry is absent, or that entry recorded
     reader_ready or switched. ``waiting``: a step asked for a later retry
     (``reason`` is the switch gate code when it has one), the space
@@ -1967,14 +1974,23 @@ def shadow_pass(project, *, executing_root=None):
             ready = getattr(migration, 'advance_reader_ready', None)
             retry_reason = None
             if status['migration_state'] in ('shadow_verified', 'reader_ready') and callable(ready):
-                # The head was re-proved by this pass; U15 continues from it.
+                # The head was re-proved by this pass; U15 continues from it,
+                # on its own lock budget whatever is left of the pass.
                 result = ready(store[0], project=Path(decision['projectRoot']),
-                               executing_root=executing_root, deadline=deadline)
+                               executing_root=executing_root,
+                               deadline=max(deadline, time.monotonic() + migration._SWITCH_SECONDS))
                 stage, current = result['stage'], result['migration_state']
                 retry_reason = result.get('reason')
             else:
-                stage, current, store = _shadow_step(decision, state, executing_root, store, deadline,
-                                                     provider)
+                # Only a pass's first step may start the lock-free prepare,
+                # with the whole prepare budget; later it waits for a pass.
+                first = not status['steps']
+                stage, current, store = _shadow_step(
+                    decision, state, executing_root, store,
+                    started + SHADOW_PREPARE_SECONDS if first else deadline, provider, prepare=first)
+                if stage == 'prepare_deferred':
+                    status['reason'] = 'prepare_next_pass'
+                    break
             status['steps'] += 1
             status['stages'].append(stage)
             if current is not None:

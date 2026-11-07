@@ -181,6 +181,18 @@ class Schema3RecallChecks(unittest.TestCase):
                 self.assertTrue(after['event']['vector_fallback'].startswith('selected_provider_manifest_'))
                 self.assertIn(after['event']['vector_fallback'] + '; serving lexical results',
                               after['stderr'])
+        # One full generation verification per recall (the serving pin): its
+        # lexical/exact reads reuse it and the closing head check skips it.
+        view_store = importlib.import_module('laya_view_store')
+        original, verified = view_store.ViewStore._verify_generation, []
+
+        def counted(store, *args, **kwargs):
+            verified.append(kwargs.get('full_vectors', False))
+            return original(store, *args, **kwargs)
+        with mock.patch.object(view_store.ViewStore, '_verify_generation', counted):
+            again = self.recall('claude')
+        self.assertEqual(again['context'], emitted['claude']['context'])
+        self.assertEqual(verified, [False])
         emit('schema3-main-recall', v6Generation=v6_gen, schema3Generation=gen,
              v6Event={k: before['event'].get(k) for k in ('outcome', 'reason', 'notes', 'cards')},
              hosts=emitted)

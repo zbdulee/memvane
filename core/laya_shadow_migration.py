@@ -1105,7 +1105,7 @@ def compare_lexical_queries(snapshot, *, endpoint, decision, store, pin, queries
     if store._scope != endpoint.record['scope']:
         raise IndexContractError('migration_endpoint_changed')
     with store._reading(deadline) as db:
-        generation, _, _, stage = store._read_generation(db, pin.gen_id, record['entry']['handle'], deadline)
+        generation, _, _, stage = store._read_pinned(db, pin, deadline)
         root = db.execute('SELECT project_root FROM worktrees WHERE worktree_id=?',
                           (record['entry']['handle'].worktree_id,)).fetchone()
         if (generation['state'] != 'published' or root is None
@@ -1134,7 +1134,7 @@ def compare_lexical_queries(snapshot, *, endpoint, decision, store, pin, queries
                           if stage['legacy']['fts_sources'][relative] == 'sidecar'}
         roots = wiki_index_roots(decision['collections'])
         with readers._validation_deadline(snapshot.connections, deadline), store._reading(deadline) as db:
-            generation, _, _, _ = store._read_generation(db, pin.gen_id, record['entry']['handle'], deadline)
+            generation, _, _, _ = store._read_pinned(db, pin, deadline)
             name = fts_table(generation['ordinal'], sidecar=True)
             for query in queries:
                 try:
@@ -1232,7 +1232,7 @@ def compare_incremental_lexical_prompts(snapshot, *, endpoint, decision, store, 
     if store._scope != endpoint.record['scope']:
         raise IndexContractError('migration_endpoint_changed')
     with store._reading(deadline) as db:
-        generation, seal, _, stage = store._read_generation(db, pin.gen_id, record['entry']['handle'], deadline)
+        generation, seal, _, stage = store._read_pinned(db, pin, deadline)
         import laya_blob_values as values
         root = db.execute('SELECT project_root FROM worktrees WHERE worktree_id=?',
                           (record['entry']['handle'].worktree_id,)).fetchone()
@@ -1262,7 +1262,7 @@ def compare_incremental_lexical_prompts(snapshot, *, endpoint, decision, store, 
             raise IndexContractError('migration_recall_probe_unproved')
         def probe(atom):
             with store._reading(deadline) as db:
-                _, seal, _, _ = store._read_generation(db, pin.gen_id, record['entry']['handle'], deadline)
+                _, seal, _, _ = store._read_pinned(db, pin, deadline)
                 if values.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
                     raise IndexContractError('migration_snapshot_changed')
                 match = db.execute(f'SELECT path_key FROM {name} WHERE {name} MATCH ? '
@@ -1394,7 +1394,7 @@ def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin
     if store._scope != endpoint.record['scope']:
         raise IndexContractError('migration_endpoint_changed')
     with store._reading(deadline) as db:
-        generation, seal, _, stage = store._read_generation(db, pin.gen_id, handle, deadline)
+        generation, seal, _, stage = store._read_pinned(db, pin, deadline)
         root = db.execute('SELECT project_root FROM worktrees WHERE worktree_id=?',
                           (handle.worktree_id,)).fetchone()
         legacy = stage.get('legacy')
@@ -1466,7 +1466,7 @@ def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin
         if not paired:
             raise IndexContractError('migration_lexical_sidecar_unproved')
         with store._reading(deadline) as db:
-            _, current, _, _ = store._read_generation(db, pin.gen_id, handle, deadline)
+            _, current, _, _ = store._read_pinned(db, pin, deadline)
             if values.digest('memvane-read-pin-seal-v1', current) != record['seal']:
                 raise IndexContractError('migration_snapshot_changed')
             match = db.execute(f'SELECT path_key FROM {side_table} WHERE {side_table} MATCH ? '
@@ -3012,7 +3012,7 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
                 'prompts': len(prompts), 'digest': digest, 'next': page['next']}
 
 
-def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None):
+def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None, prepare=True):
     """Run at most one bounded step of the private shadow state machine per call.
 
     copy -> verification -> base/sidecar corpus -> prepare -> publish ->
@@ -3024,6 +3024,8 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
     writer or an exceeded quiesce bound returns stage ``retry`` with ``reason``
     and leaves the intent unchanged. A copy whose projected bytes do not fit
     (``migration_space_deferred``) also returns ``retry`` with nothing written.
+    With ``prepare=False`` a due lock-free prepare is not started: the call
+    returns stage ``prepare_deferred`` and writes nothing.
     """
     import laya_blob_values as values
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -3105,6 +3107,8 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
                 return reread()
             stage = 'shadow_verified'
         elif prepared is None:
+            if not prepare:
+                return step('prepare_deferred', intent)
             # The lock-free build runs on the caller's wall deadline; only the
             # intent pointer is written under both locks afterwards.
             def run():

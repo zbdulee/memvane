@@ -1938,8 +1938,9 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
         record, _raw, current = reader._recheck(endpoint)
         if not _proof_still_current(current, proof):
             return False
-        with reader._schema3_pin(record, deadline=deadline, linked=linked) as (_store, _handle, pin):
-            return pin.gen_id == result.data_generation
+        with reader._schema3_pin(record, deadline=deadline, linked=linked,
+                                 pin_view=False) as (_store, _handle, head):
+            return head['gen_id'] == result.data_generation
     return _serve_verified_rows(
         host, decision, payload, settings, prompt, list(result.rows), top_n=top_n,
         title_only=result.title_only, locations=dict(result.source_locations),
