@@ -23,7 +23,7 @@ test('U16 rollback returns a switched install to its v6 reader and restarts lost
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.status === null ? JSON.stringify({ signal: result.signal })
       : result.stdout + result.stderr);
-    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 11} tests?\\b`));
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 13} tests?\\b`));
     assert.match(result.stderr, /\nOK\n/);
   } finally {
     removeTemp(home);

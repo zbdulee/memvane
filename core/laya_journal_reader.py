@@ -1107,6 +1107,18 @@ def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, ma
     _need(rows and current_sha == target_sha and identity == target_identity, 'reader_successor_unproved')
 
 
+def _attestation_step(db, endpoint_id, stored, raw):
+    """The live journal selects ``raw`` at the end of ``endpoint_id``'s sealed successor chain.
+
+    ``stored`` (the endpoint's record) carries an earlier bundle's attestation:
+    a bundle upgrade left it there and reads follow the chain.
+    """
+    row = journal._row(db)
+    _need(row['state'] in ('active','restored_old') and row['pending'] is None and
+          row['provider_attestation_sha'] == _sha(raw), 'reader_successor_unproved')
+    _successor_chain(db, endpoint_id, stored, _sha(raw), row['selected'], max_epoch=row['epoch'])
+
+
 def _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof):
     if 'legacy_sidecar_baseline' in stored:
         current['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
@@ -1115,10 +1127,7 @@ def _match_persisted(state, endpoint_id, stored, attestation, current, raw, proo
     if raw != attestation:
         current['attestation_sha256'] = stored['attestation_sha256']
         with _readonly(Path(state) / _JOURNAL, Path(state)) as db:
-            row = journal._row(db)
-            _need(row['state'] in ('active','restored_old') and row['pending'] is None and
-                  row['provider_attestation_sha'] == _sha(raw), 'reader_successor_unproved')
-            _successor_chain(db, endpoint_id, stored, _sha(raw), row['selected'], max_epoch=row['epoch'])
+            _attestation_step(db, endpoint_id, stored, raw)
     packed = _raw(current)
     _need(packed == _raw(stored) and _sha(attestation) == stored['attestation_sha256'] and
           endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed), 'reader_endpoint_changed')
@@ -1412,6 +1421,8 @@ def relocate_selection(db, journal_path, attestation_sha256, *, released=None):
 
 
 _RESETTLED = frozenset(('settings', 'vector_profile', 'vector_recipe'))
+# Carried only alongside a ``_RESETTLED`` change, never alone.
+_RESETTLED_WITH = frozenset(('attestation_sha256',))
 
 
 def resettled_pair(old, new):
@@ -1420,14 +1431,18 @@ def resettled_pair(old, new):
     Either the project's recall settings changed (``settings``), or a record
     sealed without a vector spec adopts the spec of a vector head the owner
     published (``vector_profile``/``vector_recipe``: both None before, both
-    set after; never changed or cleared). Store, incarnation, worktree
-    binding, policy, roots and every other field are identical.
+    set after; never changed or cleared). A record a bundle upgrade left on
+    its sealed predecessor attestation (read through the successor chain)
+    is re-sealed with the current one (``attestation_sha256``), but only
+    together with such a change; ``resettle_selection`` proves that step on
+    the chain. Store, incarnation, worktree binding, policy, roots and every
+    other field are identical.
     """
     try:
         if not (old.get('store_format') == new.get('store_format') == 'schema3'
                 and set(old) == set(new) == _SCHEMA3_KEYS):
             return False
-        changed = {k for k in _SCHEMA3_KEYS if old[k] != new[k]}
+        changed = {k for k in _SCHEMA3_KEYS if old[k] != new[k]} - _RESETTLED_WITH
         vector = changed & {'vector_profile', 'vector_recipe'}
         return (bool(changed) and changed <= _RESETTLED
                 and (not vector or (old['vector_profile'] is None and old['vector_recipe'] is None
@@ -1520,7 +1535,9 @@ def _resettle_inputs(state, project, executing_root):
 def settings_resettle_pending(state, project, executing_root) -> bool:
     """The selected schema3 record differs from the install only in its recall settings.
 
-    That is the difference the sync owner re-seals (``resettle_selection``);
+    A record a bundle upgrade left on its predecessor attestation may differ
+    in that attestation too, when the successor chain proves the step. That
+    is the difference the sync owner re-seals (``resettle_selection``);
     until it does, the persisted reader refuses with ``reader_endpoint_changed``.
     Read-only and authority-free: a recall uses it only to answer without
     context instead of with an error. Any other difference, or a failed
@@ -1530,10 +1547,14 @@ def settings_resettle_pending(state, project, executing_root) -> bool:
         found = _resettle_inputs(state, project, executing_root)
         if found is None:
             return False
-        _path, _selected, stored, attestation, current, raw, _proof = found
-        return (raw == attestation and stored['settings'] != current['settings']
-                and resettled_pair(stored, current)
-                and {k for k in stored if stored[k] != current[k]} == {'settings'})
+        path, selected, stored, attestation, current, raw, _proof = found
+        if not (stored['settings'] != current['settings'] and resettled_pair(stored, current)
+                and {k for k in stored if stored[k] != current[k]} - _RESETTLED_WITH == {'settings'}):
+            return False
+        if raw != attestation:
+            with _readonly(path, path.parent) as db:
+                _attestation_step(db, selected.preferred_endpoint, stored, raw)
+        return True
     except Exception:
         return False
 
@@ -1546,9 +1567,12 @@ def resettle_selection(state, project, executing_root):
     without a vector spec adopts the main head's spec once the owner has
     published a vector generation of the install provider's spec. When the
     result differs from the stored record only as ``resettled_pair`` allows,
-    one journal image transaction selects the re-sealed record with the same
-    attestation. Returns ``'resealed'`` or ``'unchanged'``; any other
-    difference is left for the reader to refuse (``reader_endpoint_changed``).
+    one journal image transaction selects the re-sealed record. A record a
+    bundle upgrade left on its predecessor attestation is re-sealed with the
+    current one only when that transaction proves the step on the
+    endpoint's sealed successor chain (``_attestation_step``, as a persisted
+    read does); an unproved step raises and writes nothing. Returns
+    ``'resealed'`` or ``'unchanged'``; any other difference is left for the reader to refuse (``reader_endpoint_changed``).
     Recall itself never re-seals.
     """
     import time
@@ -1560,7 +1584,7 @@ def resettle_selection(state, project, executing_root):
         adopted = _adopted_vector_spec(current, proof, deadline=time.monotonic() + 10)
         if adopted is not None:
             current['vector_profile'], current['vector_recipe'] = adopted['profile_id'], adopted['recipe_id']
-    if _raw(current) == _raw(stored) or not (raw == attestation and resettled_pair(stored, current)):
+    if _raw(current) == _raw(stored) or not resettled_pair(stored, current):
         return 'unchanged'
     packed = _raw(current)
     endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
@@ -1569,6 +1593,8 @@ def resettle_selection(state, project, executing_root):
         now, record = _selection(db)
         _need(now.preferred_endpoint == selected.preferred_endpoint and now.epoch == selected.epoch
               and record == stored, 'stale_reader_cas')
+        if raw != attestation:
+            _attestation_step(db, now.preferred_endpoint, record, raw)
         transition = _sha(b'memvane-reader-resettle-v1\0' + endpoint_id.encode('ascii')
                           + str(now.epoch).encode('ascii'))[:32]
         _need(not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
