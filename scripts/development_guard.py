@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""One user-wide development job, sampled tree budgets, private checkpoints.
+"""User-wide development lease, sampled tree budgets, private checkpoints.
+
+Ordinary tests share heavy.lock and take one of TEST_SLOTS slot locks; every
+other job, the full suite (--exclusive) and calibration hold heavy.lock alone.
 
 This is a cooperative sampled guard, not an OS containment boundary. A process
 that forks, detaches and exits between samples can escape ancestry observation.
@@ -64,26 +67,57 @@ def private_dir(root):
     return root
 
 
+TEST_SLOTS=3
+
+
 class Lease(AbstractContextManager):
-    """Same UID/path for tests, backup and hashing across all worktrees."""
-    def __init__(self,root):self.root=Path(root);self.fd=None
+    """Same UID/path for tests, backup and hashing across all worktrees.
+
+    Exclusive: LOCK_EX on heavy.lock, as every older checkout does. Shared:
+    LOCK_SH on heavy.lock plus LOCK_EX on one test-slot-N.lock, so up to
+    TEST_SLOTS ordinary tests run together and never beside exclusive work.
+    """
+    def __init__(self,root,shared=False):
+        self.root=Path(root);self.shared=shared;self.fds=[];self.slot=None
+    @property
+    def fd(self):return self.fds[0] if self.fds else None
+    def _lock(self,name,mode):
+        fd=os.open(self.root/name,os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+        self.fds.append(fd)
+        info=os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077:
+            raise GuardError('unsafe_guard_lock')
+        try:fcntl.flock(fd,mode|fcntl.LOCK_NB)
+        except BlockingIOError:
+            self.fds.pop();os.close(fd);return False
+        return True
     def __enter__(self):
         private_dir(self.root)
         try:
-            self.fd=os.open(self.root/'heavy.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
-            info=os.fstat(self.fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077:
-                raise GuardError('unsafe_guard_lock')
-            fcntl.flock(self.fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.__exit__(None,None,None);raise GuardError('development_job_busy')
+            if not self._lock('heavy.lock',fcntl.LOCK_SH if self.shared else fcntl.LOCK_EX):
+                raise GuardError('development_job_busy')
+            if self.shared:
+                self.slot=next((i for i in range(TEST_SLOTS)
+                                if self._lock(f'test-slot-{i}.lock',fcntl.LOCK_EX)),None)
+                if self.slot is None:raise GuardError('development_job_busy')
+        except GuardError:
+            self.__exit__(None,None,None);raise
         except OSError as exc:
             self.__exit__(None,None,None);raise GuardError('unsafe_guard_lock') from exc
         except BaseException:
             self.__exit__(None,None,None);raise
         return self
     def __exit__(self,*_):
-        if self.fd is not None:os.close(self.fd);self.fd=None
+        while self.fds:os.close(self.fds.pop())
+        self.slot=None
+    def state_name(self):
+        return 'active.json' if self.slot is None else f'active-test-slot-{self.slot}.json'
+
+
+def shared_test(args):
+    """Ordinary focused tests share slots; the full suite and calibration do not."""
+    return (args.kind=='test' and not getattr(args,'exclusive',False)
+            and not getattr(args,'calibration_envelope',None))
 
 
 def put(path,value):
@@ -284,7 +318,7 @@ def run_job(args,root):
     global PROBE_DEADLINE
     command=command_for(args.kind,args.command)
     if execution_hold():raise GuardError('work_remains_on_hold')
-    with Lease(root) as lease:
+    with Lease(root,shared=shared_test(args)) as lease:
         calibration=None;calibration_policy=None
         if getattr(args,'calibration_envelope',None):
             from context_learning.bounded_calibration import load
@@ -293,12 +327,20 @@ def run_job(args,root):
             calibration_policy={**calibration['policy'],'calibration':calibration}
         policy=Policy()
         policy.resource_limits=args.kind in ('model-test','backup') or calibration is not None
-        active=root/'active.json'
-        if active.exists() and not json.loads(active.read_text()).get('settled',False):
-            raise GuardError('previous_job_unsettled_review_checkpoint')
+        # A shared run reads only records no live run can own: the exclusive
+        # record (heavy.lock is shared) and its own slot (held exclusively).
+        # Exclusive work holds heavy.lock alone, so every record is settled or left over.
+        active=root/lease.state_name()
+        names=(['active.json',active.name] if lease.shared else
+               ['active.json',*(f'active-test-slot-{i}.json' for i in range(TEST_SLOTS))])
+        for name in dict.fromkeys(names):
+            record=root/name
+            if record.exists() and not json.loads(record.read_text()).get('settled',False):
+                raise GuardError('previous_job_unsettled_review_checkpoint')
         run=private_dir(root/'runs'/uuid.uuid4().hex)
         state={'status':'preflight','completed':False,'settled':False,'kind':args.kind,
                'resourceLimits':policy.resource_limits,'run':str(run)}
+        if lease.slot is not None:state['slot']=lease.slot
         if args.kind=='model-test':state['proofNonce']=secrets.token_hex(24)
         if calibration is not None:state['calibrationRunId']=calibration['runId']
         def save():checkpoint(run,state);put(active,state)
@@ -352,7 +394,7 @@ def run_job(args,root):
                 environment['QMD_DEVELOPMENT_GUARD_NONCE']=state['proofNonce']
             if interrupted:raise GuardError('interrupted')
             if time.monotonic()>=PROBE_DEADLINE:raise GuardError('wall_time_budget')
-            child=subprocess.Popen(command,start_new_session=True,env=environment,pass_fds=(lease.fd,))
+            child=subprocess.Popen(command,start_new_session=True,env=environment,pass_fds=tuple(lease.fds))
             tree=OwnedTree(child.pid);state.update(status='running',pid=child.pid);save()
             while True:
                 owned=tree.observe(processes());sample=system_sample();elapsed=time.monotonic()-began
@@ -396,6 +438,8 @@ def main():
     global PROBE_DEADLINE
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kind',choices=('test','model-test','review','backup','hash'),default='test')
+    parser.add_argument('--exclusive',action='store_true',
+                        help='hold heavy.lock alone, even for --kind test (full suite)')
     parser.add_argument('--sample-only',action='store_true')
     parser.add_argument('--sample-seconds',type=float,default=5)
     parser.add_argument('--max-seconds',type=float,default=900)
