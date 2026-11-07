@@ -27,6 +27,9 @@ sys.path.insert(0, str(ROOT / 'core'))
 spec = importlib.util.spec_from_file_location('schema3_endpoint_checks', HERE / 'laya-journal-schema3-checks.py')
 endpoint_checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(endpoint_checks)
+spec = importlib.util.spec_from_file_location('sqlite_hot_journal', HERE / 'sqlite_hot_journal.py')
+hot = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hot)
 seed_module = endpoint_checks.seed_module
 J = endpoint_checks.J
 CTX = multiprocessing.get_context('fork')
@@ -341,6 +344,42 @@ class Schema3RecallChecks(unittest.TestCase):
                 self.assertNotIn('request refused', answer['stderr'])
                 emitted[host] = answer['event'].get('reason')
         emit('schema3-recall-cold-view', reasons=emitted)
+
+    # ---- hot rollback journal ----------------------------------------------
+    def test_07_hot_journal_refuses_recall_with_recovery_reason_and_offers_sync(self):
+        from laya_index_a import _query_only_uri
+        import runtime_work
+        case = self.case
+        self.u10.switched()
+        store = self.u10.store_path
+        _before, journal = hot.kill_mid_write(store)
+        torn = store.read_bytes()
+        decision = J.select_route(str(case.project), action='recall')
+        payload = {'cwd': str(case.project), 'prompt': 'heron route northern marsh',
+                   'session_id': 'synthetic-hot', 'hook_event_name': 'UserPromptSubmit'}
+        requests = []
+
+        def request(kind, root, **kwargs):
+            requests.append((kind, root))
+            return {'status': 'queued'}
+        with self.loaded(), redirect_stderr(io.StringIO()), \
+                mock.patch.object(runtime_work, 'request', side_effect=request):
+            try:
+                answer = self.host.serve_selected('recall', 'claude', decision, payload)
+                outcome = ('served', bool(answer['hookSpecificOutput']['additionalContext']))
+            except Exception as exc:  # noqa: BLE001 - the reason code is the evidence
+                outcome = ('refused', type(exc).__name__, str(exc))
+        wrote = not journal.exists() or store.read_bytes() != torn
+        recall_rw = _query_only_uri(store).endswith('?mode=rw')
+        emit('schema3-recall-hot-journal', python=sys.version.split()[0], recallOpensRw=recall_rw,
+             outcome=outcome, wrote=wrote, requests=requests)
+        if recall_rw:
+            # macOS Python 3.9 opens rw (its WAL workaround): SQLite rolls back.
+            self.assertEqual((outcome, wrote), (('served', True), True))
+            return
+        self.assertEqual(outcome, ('refused', 'JournalEvidenceError', 'reader_store_recovery_pending'))
+        self.assertFalse(wrote)
+        self.assertEqual(requests, [('laya-sync', str(case.project))])
 
 
 if __name__ == '__main__':

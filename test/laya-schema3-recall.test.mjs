@@ -23,7 +23,7 @@ test('U11 main recall reads the journal-selected schema3 view', () => {
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.status === null ? JSON.stringify({ signal: result.signal })
       : result.stdout + result.stderr);
-    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 6} tests?\\b`));
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 7} tests?\\b`));
     assert.match(result.stderr, /\nOK\n/);
   } finally {
     removeTemp(home);

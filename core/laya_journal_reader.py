@@ -157,12 +157,15 @@ def _freeze(value):
     return value
 
 
+_READONLY_ROLLBACK = getattr(sqlite3, 'SQLITE_READONLY_ROLLBACK', 776)
+
+
 @contextmanager
 def _readonly(path, state, *, recover=False):
     """One query_only snapshot transaction over a private store.
 
-    ``recover=True`` is for writer-plan reads only (every caller holds the
-    queue owner): the connection opens ``mode=rw`` so SQLite rolls back a hot
+    ``recover=True`` is for reads under the queue's sync owner only (writer
+    plans, the shadow driver's candidate): the connection opens ``mode=rw`` so SQLite rolls back a hot
     journal a killed writer left, which a ``mode=ro`` connection refuses with
     ``SQLITE_READONLY_ROLLBACK``. ``query_only`` stays on, so that rollback is
     the only write; the writer's own rw connection would perform it anyway.
@@ -183,6 +186,11 @@ def _readonly(path, state, *, recover=False):
             yield db
             _need(before == _file(path, state), 'reader_store_changed')
     except sqlite3.Error as exc:
+        # A killed writer's hot journal: a ro open refuses SQLite's rollback
+        # and writes nothing. The owner's next pass rolls it back (``recover``).
+        if (getattr(exc, 'sqlite_errorcode', None) == _READONLY_ROLLBACK
+                and os.path.lexists(str(path) + '-journal')):
+            raise journal.JournalEvidenceError('reader_store_recovery_pending') from exc
         raise journal.JournalEvidenceError('reader_store_invalid') from exc
 
 
