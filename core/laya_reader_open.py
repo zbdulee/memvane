@@ -127,7 +127,13 @@ class _ReaderOwner:
         self.pending = False
 
 
-def _bound(endpoint):
+def _bound(endpoint, *, capability='v6-ro-v1'):
+    """Lifetime-bound read-only endpoint of one capability.
+
+    Callers that open v6 stores (``inspect_warm_snapshot``) keep the default;
+    a schema3 recall names ``R.SCHEMA3_CAPABILITY`` and never reaches them.
+    """
+    R._need(capability in ('v6-ro-v1', R.SCHEMA3_CAPABILITY), 'reader_endpoint_unsupported')
     R._need(type(endpoint) is R.VerifiedEndpoint and endpoint in R._issued
             and endpoint in R._read_only and endpoint in L._scoped_readers,
             'reader_endpoint_not_issued')
@@ -135,7 +141,7 @@ def _bound(endpoint):
     L._check_shared_scope(scope)
     R._need(scope in L._shared_stack.get() and endpoint.record['install_id'] == scope.install_id,
             'reader_lifetime_invalid')
-    R._need(endpoint.record['capability'] == 'v6-ro-v1', 'reader_endpoint_unsupported')
+    R._need(endpoint.record['capability'] == capability, 'reader_endpoint_unsupported')
     return scope
 
 

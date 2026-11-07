@@ -8,6 +8,6 @@ test('sidecar changes are caught up while the old reader remains selected', () =
     env: {...process.env, QMD_SANDBOX: '1', QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 10 tests/);
+  assert.match(result.stderr, /Ran 11 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

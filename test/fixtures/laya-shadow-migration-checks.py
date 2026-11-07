@@ -8,6 +8,7 @@ import importlib.util
 from pathlib import Path
 import sqlite3
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,28 @@ sys.path.insert(0, str(HERE.parents[1] / 'core'))
 spec = importlib.util.spec_from_file_location('migration_seed', HERE / 'laya-reader-move-seal-checks.py')
 seed_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seed_module)
+
+
+class busy_timeouts_armed:
+    """Record every ``PRAGMA busy_timeout=N`` the connection runs while active."""
+
+    _pattern = re.compile(r'\s*PRAGMA\s+busy_timeout\s*=\s*(\d+)\s*;?\s*', re.I)
+
+    def __init__(self, db):
+        self.db, self.values = db, []
+
+    def _trace(self, sql):
+        match = self._pattern.fullmatch(sql)
+        if match:
+            self.values.append(int(match.group(1)))
+
+    def __enter__(self):
+        self.db.set_trace_callback(self._trace)
+        return self
+
+    def __exit__(self, *exc):
+        self.db.set_trace_callback(None)
+        return False
 
 
 class MigrationSnapshotChecks(unittest.TestCase):
@@ -867,12 +890,17 @@ class MigrationSnapshotChecks(unittest.TestCase):
                     blocker = sqlite3.connect(case.state / 'shadow-candidate.sqlite', timeout=1)
                     try:
                         blocker.execute('BEGIN IMMEDIATE')
-                        started = time.monotonic()
-                        with self.assertRaisesRegex(Exception, 'candidate_busy'):
+                        # The busy wait is bounded by the step deadline, not the
+                        # store default: every timeout armed for the call fits 1s.
+                        armed = busy_timeouts_armed(store._db)
+                        with armed, self.assertRaisesRegex(Exception, 'candidate_busy'):
                             migration.import_wiki_batch(store, worktree_id=worktree['worktreeId'],
                                 snapshot=snapshot, endpoint=endpoint, decision=decision, after=None,
                                 deadline=time.monotonic() + 1)
-                        self.assertLess(time.monotonic() - started, 1.5)
+                        self.assertGreater(initial_timeout, 1000)
+                        self.assertGreaterEqual(len(armed.values), 2, armed.values)
+                        self.assertTrue(all(value <= 1000 for value in armed.values[:-1]), armed.values)
+                        self.assertEqual(armed.values[-1], initial_timeout)
                     finally:
                         blocker.rollback()
                         blocker.close()
@@ -1111,11 +1139,18 @@ class MigrationSnapshotChecks(unittest.TestCase):
                         blocker = sqlite3.connect(case.state / 'shadow-candidate.sqlite', timeout=1)
                         try:
                             blocker.execute('BEGIN IMMEDIATE')
-                            started_wait = time.monotonic()
-                            with self.assertRaisesRegex(Exception, 'candidate_busy|reader_snapshot_deadline'):
+                            armed = busy_timeouts_armed(view._db)
+                            with armed, self.assertRaisesRegex(Exception, 'candidate_busy|reader_snapshot_deadline') as busy:
                                 view.publish_generation(handle, generation, expected_head=base_head,
                                                         legacy_snapshot=legacy)
-                            self.assertLess(time.monotonic() - started_wait, 1.5)
+                            # A busy candidate waits within the 1s cut budget (below
+                            # the store default), and the default is restored.
+                            self.assertGreater(previous_timeout, 1000)
+                            if 'candidate_busy' in str(busy.exception):
+                                self.assertGreaterEqual(len(armed.values), 2, armed.values)
+                            self.assertTrue(all(value <= 1000 for value in armed.values[:-1]), armed.values)
+                            if armed.values:
+                                self.assertEqual(armed.values[-1], previous_timeout)
                         finally:
                             blocker.rollback()
                             blocker.close()
