@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Selected schema3 writer plan: store identity, v6 parity and refusals.
 
-The journal record uses the PR7 design section 1.1 shape. Until the U10
-journal reader accepts schema3 records, ``schema3_reader`` stands in for its
-``_stored_endpoint`` format branch; everything else is the real v5 install.
+The schema3 record is issued by the U10 ``seal_schema3_endpoint`` over a real
+view store head and read back by the real ``_stored_endpoint``; everything else
+is the real v5 install. Selections are written with ``mutate_image`` (no
+loaded-bridge CAS), so no parity receipt is needed.
 """
 from contextlib import ExitStack, closing, contextmanager
 import hashlib
@@ -44,7 +45,6 @@ class Schema3WriterPlanChecks(unittest.TestCase):
             setattr(self, name, getattr(self.fixture, name))
         self.N = importlib.import_module('laya_writer_scope')
         self.R = importlib.import_module('laya_journal_reader')
-        self.native_stored = self.R._stored_endpoint
         project = self.case.project
         git = ['git', '-C', str(project), '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + os.devnull,
                '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']
@@ -54,68 +54,64 @@ class Schema3WriterPlanChecks(unittest.TestCase):
                        check=True, capture_output=True, timeout=10)
         time.sleep(1.1)  # Git racy-index window before the checkout capture.
         checkout = importlib.import_module('laya_checkout_view')
-        blobs = importlib.import_module('laya_blob_store')
+        views = importlib.import_module('laya_view_store')
         self.repository = checkout.register_repository(str(project))
         self.worktree = checkout.register_worktree(str(project), self.repository)
         self.store_path = self.case.state / 'writer-schema3-store.sqlite'
-        store = blobs.BlobStore.create(self.store_path, project_root=str(project),
-            repository=self.repository, worktree=self.worktree, scope_id=self.case.route['scopeId'])
+        scope = self.case.route['scopeId']
+        views.ViewStore.create(self.store_path, project_root=str(project), repository=self.repository,
+                               worktree=self.worktree, scope_id=scope).close()
+        store = views.ViewStore.open(self.store_path, repository=self.repository, scope_id=scope)
         try:
             self.store_incarnation, self.store_policy = store._incarnation, store._policy
+            # One published (empty) generation: the seal pins the view head.
+            handle = store.capture_view(self.worktree['worktreeId'])
+            head = store.head(handle)
+            generation = store.prepare_generation(handle, dict(
+                scan_id='6' * 32, policy_digest=handle.policy_digest, revocation_epoch=0,
+                complete=True, sources=[], members=[]), expected_head=head)
+            store.publish_generation(handle, generation, expected_head=head)
         finally:
             store.close()
         with closing(sqlite3.connect(self.store_path.as_uri() + '?mode=ro', uri=True)) as db:
             self.binding = db.execute('SELECT binding_digest FROM worktrees WHERE worktree_id=?',
                                       (self.worktree['worktreeId'],)).fetchone()[0]
-        self.repository_digest = checkout._digest(self.repository)
+            repository_json = db.execute('SELECT repository_json FROM store_meta').fetchone()[0]
+        self.repository_digest = self.R._repository_digest(repository_json)
         self.v6_content = {Path(self.case.db), Path(self.case.catalog), Path(self.case.store),
                            Path(self.seed.sidecar), Path(self.queue)}
         _selection, self.v6_record, self.v6_attestation = self.current()
         self.assertEqual(self.v6_record['store_format'], 'v6')
+        with self.seed.authority():
+            installer = self.R.seal_current_reader(self.case.state, project, executing_root=self.case.plugin)
+            self.sealed = self.R.seal_schema3_endpoint(installer, store_path=self.store_path, parity=dict(
+                migration_id='7' * 32, generation=generation, digest='8' * 64))
+        sealed = self.sealed.record
+        self.assertEqual(set(sealed), set(INSTALL + STORE))
+        self.assertEqual((sealed['capability'], sealed['checkout_policy']),
+                         ('schema3-ro-v1', 'selected-main-schema3-v1'))
+        self.assertEqual((sealed['incarnation'], sealed['worktree_id'], sealed['worktree_binding'],
+                          sealed['settings_policy_digest'], sealed['repository_digest']),
+                         (self.store_incarnation, self.worktree['worktreeId'], self.binding,
+                          self.store_policy, self.repository_digest))
+        self.assertEqual(sealed['attestation_sha256'], self.R._sha(self.v6_attestation))
 
     # -- journal fixture ------------------------------------------------------
-    def stand_in(self, db, endpoint_id):
-        """U10 section 1.4 shape: same id prefix, exact schema3 field set."""
-        row = db.execute('SELECT record,attestation FROM read_endpoints WHERE endpoint_id=?',
-                         (endpoint_id,)).fetchone()
-        record = json.loads(row[0]) if row and isinstance(row[0], str) else None
-        if not isinstance(record, dict) or record.get('store_format') != 'schema3':
-            return self.native_stored(db, endpoint_id)
-        packed = row[0].encode('utf8')
-        self.R._need(self.R._raw(record) == packed
-                     and self.R._sha(PREFIX + packed) == endpoint_id
-                     and set(record) == set(INSTALL + STORE)
-                     and record['capability'] == 'schema3-ro-v1'
-                     and record['attestation_sha256'] == self.R._sha(row[1]), 'reader_endpoint_invalid')
-        return record
-
-    @contextmanager
-    def schema3_reader(self):
-        with mock.patch.object(self.R, '_stored_endpoint', side_effect=self.stand_in):
-            yield
-
     def current(self):
         # _selection also validates the previous endpoint, which may be schema3.
-        with self.schema3_reader(), self.R._readonly(self.case.journal, self.case.state) as db:
+        with self.R._readonly(self.case.journal, self.case.state) as db:
             selection, record = self.R._selection(db)
             attestation = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
                                      (selection.preferred_endpoint,)).fetchone()[0]
         return selection, record, attestation
 
     def schema3_record(self, **override):
-        v6, attestation = self.v6_record, self.v6_attestation
-        record = {key: v6[key] for key in INSTALL}
-        record.update(store_format='schema3', capability='schema3-ro-v1',
-            checkout_policy='selected-main-schema3-v1', incarnation=self.store_incarnation,
-            db_path=str(self.store_path), db_node=self.R._file(self.store_path, self.case.state),
-            repository_digest=self.repository_digest, worktree_id=self.worktree['worktreeId'],
-            worktree_binding=self.binding, settings_policy_digest=self.store_policy,
-            vector_profile=None, vector_recipe=None,
-            head_floor={'view_id': None, 'epoch': 0, 'ordinal': 0},
-            parity={'migration_id': '7' * 32, 'generation': 'migration-generation', 'digest': '8' * 64},
-            creation_epoch=v6['creation_epoch'])
+        """The sealed U10 record, optionally with store fields changed after sealing."""
+        packed = self.R._issued[self.sealed][4]  # exact sealed record bytes
+        self.assertEqual(self.R._sha(PREFIX + packed), self.sealed.endpoint_id)
+        record = json.loads(packed)
         record.update(override)
-        return record, attestation
+        return record, self.v6_attestation
 
     def select(self, endpoint_id, transition, record=None, attestation=None):
         def operation(db):
@@ -129,9 +125,8 @@ class Schema3WriterPlanChecks(unittest.TestCase):
                        'transition_id=? WHERE id=1',
                        (current.epoch + 1, endpoint_id, current.preferred_endpoint, transition))
             return True
-        with self.schema3_reader():
-            self.R.mutate_image(self.case.journal, operation)
-            return self.current()[0]
+        self.R.mutate_image(self.case.journal, operation)
+        return self.current()[0]
 
     def select_schema3(self, transition='5' * 32, **override):
         record, attestation = self.schema3_record(**override)
@@ -170,28 +165,27 @@ class Schema3WriterPlanChecks(unittest.TestCase):
         self.assertNotIn('store', v6_snapshot)
         self.assertIsNone(self.P.plan_store(v6_plan))
         schema3_id, v6_id, record = self.select_schema3()
-        with self.schema3_reader():
-            with self.traced() as calls:
-                plan = self.capture()
-                self.P.validate_writer_plan(plan)
-            _packed, snapshot = self.P._plan_record(plan)
-            self.assertEqual(snapshot['endpoint']['store_format'], 'schema3')
-            self.assertEqual(snapshot['endpoint_id'], schema3_id)
-            self.assertEqual(snapshot['store'], self.expected_store())
-            self.assertEqual(self.P.plan_store(plan), self.expected_store())
-            self.assertEqual(snapshot['components'], v6_snapshot['components'])
-            self.assertEqual(plan.queue_path, v6_plan.queue_path)
-            v6_connects = [path for path in calls if Path(path) in self.v6_content]
-            store_connects = [path for path in calls if Path(path) == self.store_path]
-            self.assertEqual(v6_connects, [])
-            self.assertEqual(len(store_connects), 2)  # one metadata read per _snapshot
-            with self.assertRaisesRegex(ValueError, 'writer_plan_changed'):
-                self.P.validate_writer_plan(v6_plan)
-            self.select(v6_id, '6' * 32)
-            with self.assertRaisesRegex(ValueError, 'writer_plan_changed'):
-                self.P.validate_writer_plan(plan)
-            # v6 preferred again; the stand-in only reads the schema3 previous.
-            again = self.capture()
+        with self.traced() as calls:
+            plan = self.capture()
+            self.P.validate_writer_plan(plan)
+        _packed, snapshot = self.P._plan_record(plan)
+        self.assertEqual(snapshot['endpoint']['store_format'], 'schema3')
+        self.assertEqual(snapshot['endpoint_id'], schema3_id)
+        self.assertEqual(snapshot['store'], self.expected_store())
+        self.assertEqual(self.P.plan_store(plan), self.expected_store())
+        self.assertEqual(snapshot['components'], v6_snapshot['components'])
+        self.assertEqual(plan.queue_path, v6_plan.queue_path)
+        v6_connects = [path for path in calls if Path(path) in self.v6_content]
+        store_connects = [path for path in calls if Path(path) == self.store_path]
+        self.assertEqual(v6_connects, [])
+        self.assertEqual(len(store_connects), 2)  # one metadata read per _snapshot
+        with self.assertRaisesRegex(ValueError, 'writer_plan_changed'):
+            self.P.validate_writer_plan(v6_plan)
+        self.select(v6_id, '6' * 32)
+        with self.assertRaisesRegex(ValueError, 'writer_plan_changed'):
+            self.P.validate_writer_plan(plan)
+        # v6 preferred again; the reader still validates the schema3 previous.
+        again = self.capture()
         again_packed, again_snapshot = self.P._plan_record(again)
         normalized = json.loads(again_packed)
         normalized['reader_epoch'] = v6_snapshot['reader_epoch']
@@ -201,19 +195,18 @@ class Schema3WriterPlanChecks(unittest.TestCase):
 
     def test_store_identity_change_and_unknown_format_refuse_plan(self):
         self.select_schema3()
-        with self.schema3_reader():
-            plan = self.capture()
-            saved = self.store_path.with_name('writer-schema3-saved.sqlite')
-            os.rename(self.store_path, saved)
-            try:
-                shutil.copy2(saved, self.store_path); os.chmod(self.store_path, 0o600)
-                with self.assertRaisesRegex(ValueError, 'writer_plan_store_changed'):
-                    self.P.validate_writer_plan(plan)
-                with self.assertRaisesRegex(ValueError, 'writer_plan_store_changed'):
-                    self.capture()
-            finally:
-                self.store_path.unlink(); os.rename(saved, self.store_path)
-            self.P.validate_writer_plan(plan)
+        plan = self.capture()
+        saved = self.store_path.with_name('writer-schema3-saved.sqlite')
+        os.rename(self.store_path, saved)
+        try:
+            shutil.copy2(saved, self.store_path); os.chmod(self.store_path, 0o600)
+            with self.assertRaisesRegex(ValueError, 'writer_plan_store_changed'):
+                self.P.validate_writer_plan(plan)
+            with self.assertRaisesRegex(ValueError, 'writer_plan_store_changed'):
+                self.capture()
+        finally:
+            self.store_path.unlink(); os.rename(saved, self.store_path)
+        self.P.validate_writer_plan(plan)
         for label, override in (('incarnation', dict(incarnation='9' * 32)),
                                 ('repository', dict(repository_digest='9' * 64)),
                                 ('binding', dict(worktree_binding='9' * 64)),
@@ -223,13 +216,14 @@ class Schema3WriterPlanChecks(unittest.TestCase):
                                                db_node=self.R._file(Path(self.case.db), self.case.state)))):
             with self.subTest(field=label):
                 self.select_schema3(transition=hashlib.sha256(label.encode()).hexdigest()[:32], **override)
-                with self.schema3_reader():
-                    with self.assertRaisesRegex(ValueError, 'writer_plan_store_changed'):
-                        self.capture()
-        self.select_schema3(transition='4' * 32, checkout_policy='selected-main-v6')
-        with self.schema3_reader():
-            with self.assertRaisesRegex(ValueError, 'writer_selection_unavailable'):
-                self.capture()
+                with self.assertRaisesRegex(ValueError, 'writer_plan_store_changed'):
+                    self.capture()
+        # An unknown checkout policy fails the U10 record shape: the journal
+        # image refuses the selection, so no writer plan can ever see it.
+        before = Path(self.case.journal).read_bytes()
+        with self.assertRaisesRegex(ValueError, 'reader_endpoint_invalid'):
+            self.select_schema3(transition='4' * 32, checkout_policy='selected-main-v6')
+        self.assertEqual(Path(self.case.journal).read_bytes(), before)
         emit('schema3-writer-store-identity', refusals=7)
 
     def v6_files(self):
@@ -240,18 +234,12 @@ class Schema3WriterPlanChecks(unittest.TestCase):
                 result[str(side)] = side.read_bytes() if side.exists() else None
         return result
 
-    def test_pre_u10_reader_and_v6_consumers_refuse_schema3_selection(self):
+    def test_v6_consumers_refuse_schema3_selection(self):
         worker = importlib.import_module('laya_product_sync_worker')
         decision = self.J.select_route(str(self.case.project), action='index')
         self.select_schema3()
         epoch = self.J.inspect_journal(self.case.journal)['epoch']
-        # Without the stand-in this tree's journal reader is the pre-U10 one
-        # every older bundle runs: a schema3 selection never issues a plan.
-        with self.traced() as calls:
-            with self.assertRaisesRegex(ValueError, 'reader_endpoint_invalid'):
-                self.capture()
-        self.assertEqual(calls, [])
-        with self.schema3_reader(), self.F.warm(), self.seed.authority(), ExitStack() as owners, \
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners, \
                 mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin):
             owner = owners.enter_context(self.sync.sync_owner(self.queue))
             proof = worker._selected_v5_proof(self.case.project, decision, owner)
@@ -272,33 +260,31 @@ class Schema3WriterPlanChecks(unittest.TestCase):
             # Route proof reads v6 identity read-only; no v6 byte may change.
             self.assertEqual(self.v6_files(), files)
         self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], epoch)
-        emit('schema3-v6-consumers-refuse', oldReader='reader_endpoint_invalid',
-             v6Runtime='writer_selection_unavailable', v6BytesUnchanged=True)
+        emit('schema3-v6-consumers-refuse', v6Runtime='writer_selection_unavailable', v6BytesUnchanged=True)
 
     def test_upgrading_fence_refuses_schema3_plan(self):
         fresh = importlib.import_module('laya_fresh_wiki_origin')
         self.select_schema3()
         ledger = self.case.state / fresh.LEDGER
-        with self.schema3_reader():
-            plan = self.capture()
-            row = fresh._load(ledger)
-            fenced = fresh._change(ledger, row['epoch'], 'active', 'upgrading')
-            errors = []
-            for call in (lambda: self.P.validate_writer_plan(plan), self.capture):
-                with self.assertRaises(ValueError) as caught:
-                    call()
-                errors.append(str(caught.exception))
-            fresh._change(ledger, fenced['epoch'], 'upgrading', 'active')
-            with self.assertRaisesRegex(ValueError, 'writer_plan_changed'):
-                self.P.validate_writer_plan(plan)
-            self.assertEqual(self.P.plan_store(self.capture()), self.expected_store())
+        plan = self.capture()
+        row = fresh._load(ledger)
+        fenced = fresh._change(ledger, row['epoch'], 'active', 'upgrading')
+        errors = []
+        for call in (lambda: self.P.validate_writer_plan(plan), self.capture):
+            with self.assertRaises(ValueError) as caught:
+                call()
+            errors.append(str(caught.exception))
+        fresh._change(ledger, fenced['epoch'], 'upgrading', 'active')
+        with self.assertRaisesRegex(ValueError, 'writer_plan_changed'):
+            self.P.validate_writer_plan(plan)
+        self.assertEqual(self.P.plan_store(self.capture()), self.expected_store())
         self.assertTrue(all(error in ('writer_route_unavailable', 'writer_plan_binding_changed')
                             for error in errors), errors)
         emit('schema3-writer-upgrading-fence', reasons=errors)
 
     def test_schema3_writer_marks_first_write_before_store_use(self):
         self.select_schema3()
-        with self.schema3_reader(), self.F.warm(), self.seed.authority(), ExitStack() as owners:
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners:
             owner = owners.enter_context(self.sync.sync_owner(self.queue))
             plan = self.capture()
             writer = owners.enter_context(self.N.worker_writer_scope(
