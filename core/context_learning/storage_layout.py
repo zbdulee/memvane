@@ -30,8 +30,12 @@ def _initialized(base):
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_mode & 0o077 or info.st_size == 0):
             return False
-        db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=1)
+        # The registry is WAL; Apple's libsqlite3 refuses mode=ro once a stock
+        # build closed it without -wal/-shm, which would pick the legacy root.
+        from laya_index_a import _query_only_uri
+        db = sqlite3.connect(_query_only_uri(path), uri=True, timeout=1)
         try:
+            db.execute('PRAGMA query_only=ON')
             return db.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION
         finally:
             db.close()

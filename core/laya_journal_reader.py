@@ -51,26 +51,38 @@ def stable_fields(first, second):
     return _V6_STABLE
 
 
-# A state-root move re-seals a schema3 endpoint with only these fields changed.
+# A state-root move re-seals the selected endpoint with only its state
+# directory paths and attestation digest changed.
 _RELOCATED = frozenset(('state', 'db_path', 'attestation_sha256'))
+_V6_STORE_PATHS = ('db_path', 'catalog_path', 'binding_path', 'sidecar_path')
+_RELOCATED_V6 = frozenset(('state', 'attestation_sha256') + _V6_STORE_PATHS)
 
 
 def relocated_pair(old, new):
     """``new`` is ``old`` re-sealed after its state directory moved by rename(2).
 
-    Both are schema3. ``state`` and ``db_path`` name the same basenames under
-    another parent and keep their ``[dev, ino]``; the attestation digest may
-    follow the relocated attestation. Every other field is identical.
+    Both are schema3, or both are steady v6 (``v6-ro-v1``). ``state`` and the
+    store paths name the same basenames under another parent and keep their
+    ``[dev, ino]``; the attestation digest may follow the relocated
+    attestation. Every other field is identical.
     """
     try:
-        return (old.get('store_format') == new.get('store_format') == 'schema3'
-                and set(old) == set(new) == _SCHEMA3_KEYS
-                and all(old[k] == new[k] for k in _SCHEMA3_KEYS - _RELOCATED)
+        if old.get('store_format') != new.get('store_format') or set(old) != set(new):
+            return False
+        if old['store_format'] == 'schema3':
+            paths, moved = ('db_path',), _RELOCATED
+            if set(old) != _SCHEMA3_KEYS:
+                return False
+        elif old['store_format'] == 'v6' and old['capability'] == new['capability'] == 'v6-ro-v1':
+            paths, moved = _V6_STORE_PATHS, _RELOCATED_V6
+        else:
+            return False
+        return (all(old[k] == new[k] for k in set(old) - moved)
                 and old['state'] != new['state']
                 and Path(old['state']).name == Path(new['state']).name
-                and Path(old['db_path']).parent == Path(old['state'])
-                and Path(new['db_path']) == Path(new['state']) / Path(old['db_path']).name)
-    except (AttributeError, TypeError):
+                and all(Path(old[k]).parent == Path(old['state'])
+                        and Path(new[k]) == Path(new['state']) / Path(old[k]).name for k in paths))
+    except (AttributeError, KeyError, TypeError):
         return False
 
 
@@ -1332,23 +1344,38 @@ def _insert_endpoint(db, endpoint, record, raw):
         _need(existing == row, 'reader_endpoint_conflict')
 
 
-def relocate_schema3_selection(db, journal_path, attestation_sha256):
-    """Re-seal a selected schema3 endpoint after its state root moved (``after_v5``).
+def relocate_selection(db, journal_path, attestation_sha256, *, released=None):
+    """Re-seal the selected endpoint after its state root moved (``after_v5``).
 
     Runs in the bundle journal's relocation image transaction: the new route
-    and this endpoint commit together. A v6 selection is left unchanged.
+    and this endpoint commit together. A schema3 or steady v6 endpoint gets
+    its state paths rebased onto the moved directory; any other selected
+    format refuses the move.
+
+    ``released`` (``(project, decision, proof)``: the caller's recall route
+    decision and its read-only selected proof) re-seals, in a later image
+    transaction, a steady v6 endpoint that a released state move (no reader
+    re-seal) left naming the legacy root; see ``_released_move``.
     """
     current, record = _selection(db)
-    if record.get('store_format') != 'schema3':
-        return
     state = Path(journal_path).parent
     raw = _read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
-    moved = dict(record, state=str(state), db_path=str(state / Path(record['db_path']).name),
-                 attestation_sha256=_sha(raw))
-    _need(type(raw) is bytes and moved['attestation_sha256'] == attestation_sha256
-          and relocated_pair(record, moved) and _schema3_shape(moved)
+    observed = None if released is None else _released_move(db, current, record, state, raw, *released)
+    if record.get('store_format') == 'schema3':
+        paths, nodes = ('db_path',), (('db_path', 'db_node'),)
+    else:
+        _need(record.get('capability') == 'v6-ro-v1', 'reader_relocation_unproved')
+        paths = _V6_STORE_PATHS
+        nodes = (('db_path', 'db_node'), ('catalog_path', 'catalog_node'), ('binding_path', 'binding_node'))
+    _need(type(raw) is bytes, 'reader_relocation_unproved')
+    moved = dict(record, state=str(state), attestation_sha256=_sha(raw),
+                 **{k: str(state / Path(record[k]).name) for k in paths})
+    _need(moved['attestation_sha256'] == attestation_sha256
+          and relocated_pair(record, moved)
+          and (record['store_format'] != 'schema3' or _schema3_shape(moved))
           and _node(state) == list(record['state_node'])
-          and _file(Path(moved['db_path']), state) == list(record['db_node']), 'reader_relocation_unproved')
+          and all(_file(Path(moved[k]), state) == list(record[n]) for k, n in nodes)
+          and (observed is None or observed == moved), 'reader_relocation_unproved')
     packed = _raw(moved)
     endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
     transition = _sha(b'memvane-reader-relocate-v1\0' + endpoint_id.encode('ascii'))[:32]
@@ -1361,6 +1388,58 @@ def relocate_schema3_selection(db, journal_path, attestation_sha256):
                (transition, epoch, endpoint_id, current.preferred_endpoint))
     db.execute('UPDATE reader_selection SET epoch=?,preferred_endpoint=?,previous_endpoint=?,transition_id=? '
                'WHERE id=1', (epoch, endpoint_id, current.preferred_endpoint, transition))
+
+
+def _released_move(db, current, record, state, raw, project, decision, proof):
+    """Prove a stale v6 endpoint names this install's pre-move root.
+
+    A released state move relocated the journal (route, attestation) but not
+    the reader. Accepted only when the move's settled intent here names the
+    endpoint's root as its source and this root as its target, the endpoint's
+    sealed attestation is that move's old attestation and relocates to the
+    current one, and the live install observed now differs from the stored
+    record only in the relocated fields (same store inodes).
+    """
+    import laya_initial_build as build
+    import laya_state_move as mover
+    import memvane_paths
+    _need(record.get('store_format') == 'v6' and record.get('capability') == 'v6-ro-v1'
+          and record.get('state') != str(state), 'reader_relocation_unproved')
+    old = Path(record['state'])
+    _need(len(old.parents) > len(memvane_paths.LEGACY_STATE_PARTS), 'reader_relocation_unproved')
+    # The one legal move: <home>/.local/state/laya/<id> -> <home>/.local/state/memvane/<id>.
+    home = old.parents[len(memvane_paths.LEGACY_STATE_PARTS)]
+    (sealed,) = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
+                           (current.preferred_endpoint,)).fetchone()
+    settled = []
+    for path in state.glob('state-move-*-settled.json'):
+        intent = build._read_json(path, max_bytes=mover.LIMIT)
+        if (isinstance(intent, dict) and set(intent) == mover.INTENT_FIELDS
+                and intent['schema'] == mover.SCHEMA
+                and path.name == 'state-move-%s-settled.json' % mover._sha(mover._canonical(intent))[:20]
+                and (intent['fromRoot'], intent['toRoot']) == (str(old), str(state))):
+            settled.append(intent)
+    _need(len(settled) == 1, 'reader_relocation_unproved')
+    intent = settled[0]
+    _need(intent['projectRoot'] == str(project) == record['project']
+          and intent['installId'] == state.name == old.name
+          and mover.legacy_root(old, home) and mover.target_root(old, home) == state
+          and intent['oldAttestation'].encode('utf-8') == sealed
+          and intent['newAttestation'].encode('utf-8') == raw
+          and journal._canon(journal.relocated_attestation(
+              json.loads(sealed, object_pairs_hook=journal._pairs, parse_constant=journal._nonfinite),
+              old, state)).encode('utf-8') == raw, 'reader_relocation_unproved')
+    import laya_fresh_wiki_origin as fresh
+    _need(proof.get('readOnlyAllowed') is True and proof.get('journalPath') == str(state / _JOURNAL)
+          and proof.get('projectRoot') == str(project), 'reader_relocation_unproved')
+    observed, live, _proof = _evidence_stores(state, project, decision, proof,
+                                              fresh._load(state / fresh.LEDGER),
+                                              journal.inspect_journal(state / _JOURNAL))
+    if 'legacy_sidecar_baseline' in record:
+        observed['legacy_sidecar_baseline'] = record['legacy_sidecar_baseline']
+    observed['creation_epoch'] = record['creation_epoch']
+    _need(live == raw and relocated_pair(record, observed), 'reader_relocation_unproved')
+    return observed
 
 
 def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, readiness) -> ReaderSelection:

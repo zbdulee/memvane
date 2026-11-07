@@ -1,6 +1,7 @@
 """Synthetic per-document publication checks; no host, model or live data."""
 from __future__ import annotations
 
+from contextlib import closing
 import os
 import hashlib
 import json
@@ -41,6 +42,26 @@ class Provider:
         self.calls.append(path)
         return [{'seq': seq, 'pos': seq * 32, 'vector': [1.0, 0.0]}
                 for seq in range(3 if 'many chunks' in body else 1)]
+
+
+def strip_closed_wal_sidecars(case, path):
+    """Leave ``path`` as a stock SQLite build's last close does: WAL header, no -wal/-shm.
+
+    Apple's /usr/lib/libsqlite3 keeps both sidecars and cannot open this state
+    with mode=ro, so the check reproduces Homebrew-closed stores on any build.
+    """
+    path = Path(path)
+    with closing(sqlite3.connect(path, isolation_level=None)) as db:
+        case.assertEqual(db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0], 0)
+    for suffix in ('-wal', '-shm'):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.exists():
+            if suffix == '-wal':
+                case.assertEqual(sidecar.stat().st_size, 0)
+            sidecar.unlink()
+    case.assertEqual(tuple(path.read_bytes()[18:20]), (2, 2))
+    case.assertEqual([p.name for p in path.parent.iterdir() if p.name.startswith(path.name)],
+                     [path.name])
 
 
 class IncrementalDocsTests(unittest.TestCase):
@@ -563,6 +584,23 @@ class IncrementalDocsTests(unittest.TestCase):
         self.addCleanup(other.close)
         self.assertTrue(incremental.publish_needed(
             other, 'wiki/card.md', sha, title, body, self.profile,
+            identity=self.identity, require_verified=True))
+
+    def test_uncoordinated_reader_opens_sidecar_closed_without_wal_files(self):
+        body = self.verified_card('cold reader fact')
+        self.write('card.md', body)
+        self.snapshot()
+        capacity.vector_fill_step(self.runtime, self.provider, on_document_complete=self.publish)
+        sha = hashlib.sha256(body.encode('utf-8')).hexdigest()
+        title = qmd_title(body)
+        strip_closed_wal_sidecars(self, self.state / incremental.FILE)
+        reader = incremental.PublishedReader(self.identity)
+        self.addCleanup(reader.close)
+        self.assertTrue(reader.published('wiki/card.md', sha, title, self.profile))
+        self.assertFalse(reader._refused)
+        self.assertEqual(reader._db.execute('PRAGMA query_only').fetchone(), (1,))
+        self.assertFalse(incremental.publish_needed(
+            reader, 'wiki/card.md', sha, title, body, self.profile,
             identity=self.identity, require_verified=True))
 
 

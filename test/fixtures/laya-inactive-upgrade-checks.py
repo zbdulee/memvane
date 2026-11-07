@@ -2,6 +2,7 @@
 """Synthetic inactive metadata switch: no model, host, or operating project."""
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -20,6 +21,22 @@ import laya_inactive_upgrade as upgrade
 
 def raw(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+
+
+def strip_closed_wal_sidecars(case, path):
+    """Leave ``path`` as a stock SQLite build's last close does: WAL header, no -wal/-shm."""
+    path = Path(path)
+    with closing(sqlite3.connect(path, isolation_level=None)) as db:
+        case.assertEqual(db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0], 0)
+    for suffix in ('-wal', '-shm'):
+        sidecar = Path(str(path) + suffix)
+        if sidecar.exists():
+            if suffix == '-wal':
+                case.assertEqual(sidecar.stat().st_size, 0)
+            sidecar.unlink()
+    case.assertEqual(tuple(path.read_bytes()[18:20]), (2, 2))
+    case.assertEqual([p.name for p in path.parent.iterdir() if p.name.startswith(path.name + '-')],
+                     [])
 
 
 class UpgradeCase(unittest.TestCase):
@@ -215,6 +232,52 @@ class UpgradeCase(unittest.TestCase):
             self.assertGreater(Path(str(candidate) + '-wal').stat().st_size, 0)
             with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
                 upgrade._verify_backup(intent)
+
+    def test_wal_stores_closed_without_sidecars_count_back_up_and_verify(self):
+        # A stock SQLite build's last close leaves WAL stores with no -wal or
+        # -shm, and every SQLite backup of a WAL store carries the WAL header
+        # without sidecars. Apple's /usr/lib/libsqlite3 refuses mode=ro on both.
+        from laya_index_a import LayaIndexA
+        from laya_index_capacity import GenerationBindingStore
+        from laya_index_claim_queue import ClaimQueue
+        from laya_index_host_route import wiki_index_roots
+        from laya_source_catalog import LayaSourceCatalog
+        index = LayaIndexA(self.old['candidateDb'], create=True)
+        incarnation = index.incarnation()
+        index.close()
+        project = self.project.resolve()  # selected roots are canonical paths
+        identity = {**self.old, 'dbIncarnation': incarnation, 'projectRoot': str(project),
+                    'collections': [{'name': 'raw', 'role': 'raw', 'sourceRoot': str(project)},
+                                    {'name': 'wiki', 'role': 'wiki',
+                                     'sourceRoot': str(project / 'wiki')}]}
+        roots = wiki_index_roots(identity['collections'])
+        ClaimQueue.create(identity['queueDb'], index_incarnation=incarnation).close()
+        LayaSourceCatalog(identity['catalogDb'], roots, identity['scopeId'], create=True).close()
+        GenerationBindingStore(identity['bindingStore'], scope=identity['scopeId'],
+                               db_incarnation=incarnation, roots=roots, create=True).close()
+        with closing(sqlite3.connect(identity['journalPath'])) as db:
+            db.execute('CREATE TABLE fixture_journal(id INTEGER PRIMARY KEY)')
+            db.commit()
+        cold = []
+        for key in ('candidateDb', 'queueDb', 'catalogDb', 'bindingStore', 'journalPath'):
+            path = Path(identity[key])
+            path.chmod(0o600)
+            if tuple(path.read_bytes()[18:20]) == (2, 2):
+                strip_closed_wal_sidecars(self, path)
+                cold.append(key)
+        self.assertEqual(cold[:3], ['candidateDb', 'queueDb', 'catalogDb'])
+        counts = upgrade._store_counts(identity)
+        self.assertEqual((counts['vectorChunkSets'], counts['publishedDocuments']), (0, 0))
+        record = {'identity': identity, 'phase': 'fixture'}
+        saved = upgrade._backup(identity, record, self.old_route, self.old_att, counts)
+        candidate = saved / 'candidateDb.sqlite'
+        self.assertEqual(tuple(candidate.read_bytes()[18:20]), (2, 2))
+        for path in saved.iterdir():
+            if path.name.endswith('.sqlite') and Path(str(path) + '-wal').exists():
+                strip_closed_wal_sidecars(self, path)
+        intent = {**self.intent, 'backup': str(saved), 'oldRecord': record, 'counts': counts}
+        upgrade._verify_backup(intent)
+        self.assertEqual(upgrade._sqlite_count(candidate, 'vector_chunk_sets'), 0)
 
 
 class JournalCase(unittest.TestCase):

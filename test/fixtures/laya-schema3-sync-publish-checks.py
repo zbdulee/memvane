@@ -98,8 +98,11 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
             with self.lease.resolve_endpoint(self.case.project, action='recall',
                                              host_root=self.case.plugin) as endpoint:
                 self.assertEqual(endpoint.record['store_format'], 'schema3')
+                # U11: the persisted schema3 reader binds to the reader's own decision.
+                decision = self.R._recheck(endpoint)[2]['readerDecision']
                 return self.dispatch.query_endpoint(endpoint, checkout=self.case.project, prompt=prompt,
-                                                    query_vector=None, deadline=time.monotonic() + 20)
+                                                    query_vector=None, deadline=time.monotonic() + 20,
+                                                    decision=decision)
 
     # -- checks ---------------------------------------------------------------
     def test_01_pass_publishes_edited_card_and_persisted_recall_reads_it(self):
@@ -122,7 +125,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(self.v6_files(), files)
         hit = self.recall('kestrelprobe')
         self.assertEqual((hit.store_format, hit.data_generation), ('schema3', published[0]))
-        self.assertIn('concepts/kestrel-perch.md', [row['path'] for row in hit.rows])
+        self.assertIn(self.case.WIKI + '/concepts/kestrel-perch.md', [row['path'] for row in hit.rows])
 
         # An unchanged pass writes nothing, not even the journal fence.
         idle, idle_calls = self.run_pass()
@@ -140,8 +143,8 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
                          {p: m for p, m in members.items() if p != 'concepts/kestrel-perch.md'})
         hit = self.recall('falconprobe')
         self.assertEqual(hit.data_generation, second['generation'])
-        self.assertIn('concepts/kestrel-perch.md', [row['path'] for row in hit.rows])
-        self.assertNotIn('concepts/kestrel-perch.md',
+        self.assertIn(self.case.WIKI + '/concepts/kestrel-perch.md', [row['path'] for row in hit.rows])
+        self.assertNotIn(self.case.WIKI + '/concepts/kestrel-perch.md',
                          [row['path'] for row in self.recall('kestrelprobe').rows])
         self.assertEqual(self.v6_files(), files)
         emit('schema3-sync-publish', firstIngests=len(first_calls), editIngests=len(second_calls),
@@ -198,7 +201,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(moved[1], start[1] + 2)
         replay, calls = self.run_pass()
         self.assertEqual((replay['state'], calls, self.head()), ('unchanged', [], moved))
-        self.assertIn('concepts/wren-path.md', [r['path'] for r in self.recall('robinprobe').rows])
+        self.assertIn(self.case.WIKI + '/concepts/wren-path.md', [r['path'] for r in self.recall('robinprobe').rows])
         emit('schema3-sync-interrupted-publish', beforeKeepsHead=True, afterIsUnchangedReplay=True)
 
     def test_05_ingest_cap_publishes_progress_as_pending_then_completes(self):

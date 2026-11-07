@@ -16,7 +16,7 @@ import stat
 import sys
 import time
 
-from laya_index_a import IndexContractError
+from laya_index_a import IndexContractError, _query_only_uri
 from laya_index_vector import LayaVectorIndex
 
 
@@ -467,8 +467,11 @@ class PublishedReader:
             return None
         db = None
         try:
-            db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True,
+            # Apple's libsqlite3 cannot open a WAL sidecar last closed by a
+            # stock build (no -wal/-shm) with mode=ro; use the shared rule.
+            db = sqlite3.connect(_query_only_uri(path), uri=True,
                                  isolation_level=None, timeout=2)
+            db.execute('PRAGMA query_only=ON')
             db.execute('PRAGMA trusted_schema=OFF')
             if db.execute('SELECT * FROM meta').fetchall() != [_expected_meta(self.identity)]:
                 raise IndexContractError('incremental_identity_changed')
