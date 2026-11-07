@@ -529,7 +529,22 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     A project that does not select a Laya route but has a registered
     inactive initial build runs one bounded build step instead
     (``run_initial_build``). Without one, the refusal is unchanged.
+
+    A completed sync (``indexed``/``unchanged``) then gives the private
+    shadow migration one bounded pass (``shadow_pass``). The pass runs after
+    every sync owner is released, and neither its outcome nor its failure
+    changes the returned sync result.
     """
+    result = _run_sync(project, coordinator=coordinator, report=report, start_service=start_service)
+    if isinstance(result, dict) and result.get('state') in ('indexed', 'unchanged'):
+        try:
+            shadow_pass(project)
+        except Exception:
+            pass  # shadow_pass records its own outcome; the sync stays done.
+    return result
+
+
+def _run_sync(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
     try:
         decision, proof = _selected(project)
     except ResourceDeferred as exc:
@@ -740,6 +755,178 @@ def _after_sync(decision, proof, grants, result):
             or outcome.get('cursorStarted') is True or 'initialBackfill' in outcome):
         result = {**result, 'wikiDiscovery': outcome}
     return result
+
+
+# Shadow migration driver (design 8.2, U6). After a completed sync of a
+# selected main checkout, one pass advances the private schema3 candidate by
+# at most SHADOW_STEPS_PER_PASS steps: activation record -> candidate store
+# -> begin_migration -> advance_shadow ... -> shadow_verified. The selected
+# reader never changes here; reader_ready/switched belong to the
+# ``laya_shadow_migration.advance_reader_ready`` entry (U15), called once a
+# pass when it exists. Every step is crash-safe on its own: a SIGKILL leaves
+# the activation record, the candidate file or the intent, and the next pass
+# resumes from whichever exists.
+# Provisional bounds (K8, measured by U8). The pass budget must hold one
+# lock-free prepare (about 25 s for 3,749 synthetic cards).
+SHADOW_STEPS_PER_PASS = 4
+SHADOW_PASS_SECONDS = 60.0
+# ``off`` stops the driver before it reads or writes anything.
+SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
+SHADOW_ACTIVATION = 'shadow-migration-activation.json'
+SHADOW_CANDIDATE = 'shadow-candidate.sqlite'
+
+
+def _shadow_gate(project, executing_root, *, prove=True):
+    """``(decision, state)`` when the driver may act, else ``(None, reason)``.
+
+    Read-only. Each step reacquires the install and operation locks and
+    reproves route, endpoint (bundle included) and intent itself; this gate
+    only keeps a pass from starting or continuing on a route it must not
+    touch. ``prove=False`` (between steps of one pass) skips the full bundle
+    proof the previous step already repeated.
+    """
+    if os.environ.get(SHADOW_KILL_SWITCH) == 'off':
+        return None, 'disabled'
+    import project_dir
+    if project_dir.layout(project) == 'split':
+        return None, 'project_dir_split'
+    import laya_install_journal as journal
+    with journal.read_only_journals():
+        # A linked worktree classifies as ``worktree``, never ``candidate``.
+        decision = select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            return None, 'route_not_selected'
+        if journal.journal_version(decision['journalPath']) != 5:
+            return None, 'journal_not_v5'
+    state = Path(decision['journalPath']).parent
+    import laya_ledger_common as ledger
+    if ledger.qmd_ledger_present(state):
+        return None, ledger.QMD_ORIGIN_DETACH_REQUIRED
+    import laya_fresh_wiki_origin as fresh
+    if fresh.upgrade_fenced(str(project)):
+        return None, 'upgrade_fenced'
+    if not prove:
+        return (decision, state), None
+    try:
+        with journal.read_only_journals():
+            proof = journal.verify_selected_route(decision)
+    except Exception as exc:
+        return None, 'bundle_drift' if journal.is_bundle_drift(exc) else 'selected_proof_unavailable'
+    if (proof.get('productRouteAllowed') is not True
+            or proof.get('executingPluginRoot') != str(executing_root)):
+        return None, 'selected_proof_unavailable'
+    return (decision, state), None
+
+
+def _shadow_open(state, project, scope):
+    """Open the private candidate; its own store_meta and worktrees are the SSOT."""
+    from laya_journal_reader import _readonly
+    from laya_view_store import ViewStore
+    path = state / SHADOW_CANDIDATE
+    with _readonly(path, state) as db:
+        meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                          (str(project),)).fetchall()
+    if meta is None or not isinstance(meta[0], str) or len(rows) != 1:
+        raise IndexContractError('migration_candidate_invalid')
+    return ViewStore.open(path, repository=json.loads(meta[0]), scope_id=scope), rows[0][0]
+
+
+def _shadow_step(decision, state, executing_root, store, deadline):
+    """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``."""
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    project = Path(decision['projectRoot'])
+    activation, candidate = state / SHADOW_ACTIVATION, state / SHADOW_CANDIDATE
+    if not os.path.lexists(activation):
+        ledger._write(activation, {'schema': 'memvane-shadow-activation-v1', 'project': str(project),
+                                   'state': str(state), 'candidate': str(candidate),
+                                   'activated_ns': time.time_ns()}, replace=False)
+        return 'activate', None, store
+    record = ledger._read_json(activation)
+    if (not isinstance(record, dict) or record.get('project') != str(project)
+            or record.get('state') != str(state) or record.get('candidate') != str(candidate)):
+        raise IndexContractError('migration_activation_invalid')
+    if not os.path.lexists(candidate):
+        import laya_checkout_view as checkout
+        from laya_view_store import ViewStore
+        repository = checkout.register_repository(str(project))
+        worktree = checkout.register_worktree(str(project), repository)
+        ViewStore.create(candidate, project_root=str(project), repository=repository,
+                         worktree=worktree, scope_id=decision['scopeId']).close()
+        return 'create', None, store
+    if store is None:
+        store = _shadow_open(state, project, decision['scopeId'])
+    view, worktree_id = store
+    if not os.path.lexists(state / migration._INTENT):
+        intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
+                                           executing_root=executing_root, deadline=deadline)
+        return 'begin', intent['migration_state'], store
+    result = migration.advance_shadow(view, project=project, executing_root=executing_root,
+                                      deadline=deadline)
+    return result['stage'], result['migration_state'], store
+
+
+def shadow_pass(project, *, executing_root=None):
+    """One bounded shadow migration pass for a selected main checkout.
+
+    Returns ``{state, reason, steps, stages, migration_state}``. ``skipped``:
+    a guard refused and nothing was read from or written to the migration.
+    ``progressed``: the step cap was reached, or the head is verified and the
+    reader_ready entry is absent. ``waiting``: a step asked for a later retry,
+    the pass budget or a guard stopped it. ``error``: a step raised; only its
+    fixed code is kept. A pass past the guard emits one ``migration.driver``
+    event.
+    """
+    import event_log
+    import laya_shadow_migration as migration
+    project = Path(project)
+    executing_root = Path(_writer_executing_root() if executing_root is None else executing_root)
+    bound, reason = _shadow_gate(project, executing_root)
+    status = {'state': 'skipped', 'reason': reason, 'steps': 0, 'stages': [], 'migration_state': None}
+    if bound is None:
+        return status
+    decision, state = bound
+    started = time.monotonic()
+    deadline = started + SHADOW_PASS_SECONDS
+    status['state'], status['reason'] = 'progressed', None
+    store = None
+    try:
+        while status['steps'] < SHADOW_STEPS_PER_PASS:
+            if status['steps']:
+                if deadline - time.monotonic() < migration._STEP_SECONDS:
+                    status.update(state='waiting', reason='pass_deadline')
+                    break
+                again, reason = _shadow_gate(project, executing_root, prove=False)
+                if again != bound:
+                    status.update(state='waiting', reason=reason or 'route_changed')
+                    break
+            ready = getattr(migration, 'advance_reader_ready', None)
+            if status['migration_state'] == 'shadow_verified':
+                # The head was re-proved by this pass; U15 continues from it.
+                result = ready(store[0], project=Path(decision['projectRoot']),
+                               executing_root=executing_root, deadline=deadline)
+                stage, current = result['stage'], result['migration_state']
+            else:
+                stage, current, store = _shadow_step(decision, state, executing_root, store, deadline)
+            status['steps'] += 1
+            status['stages'].append(stage)
+            if current is not None:
+                status['migration_state'] = current
+            if stage == 'retry':
+                status.update(state='waiting', reason='step_retry')
+                break
+            if stage == 'reader_ready' or (current == 'shadow_verified' and not callable(ready)):
+                break
+    except Exception as exc:
+        status.update(state='error', reason=event_log.code(exc))
+    finally:
+        if store is not None:
+            store[0].close()
+        event_log.emit('migration.driver', state_root=state, host='worker', outcome=status['state'],
+                       reason=status['reason'], ms=(time.monotonic() - started) * 1000,
+                       steps=status['steps'], migration_state=status['migration_state'])
+    return status
 
 
 def _checked(result):
