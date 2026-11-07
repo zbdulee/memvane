@@ -93,7 +93,6 @@ def _schema3_store(record, state, decision):
     """
     import laya_blob_store as blobs
     import laya_blob_values as values
-    from laya_checkout_view import _digest
     path = Path(record['db_path'])
     R._need(path.is_absolute() and str(path) != decision['dbPath'], 'writer_plan_store_changed')
     node = R._file(path, state)
@@ -102,7 +101,7 @@ def _schema3_store(record, state, decision):
         db.row_factory = sqlite3.Row
         try:
             row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
-            R._need(row is not None, 'writer_plan_store_changed')
+            R._need(row is not None and isinstance(row[0], str), 'writer_plan_store_changed')
             repository = values.repository(values.parse_canonical(row[0]))
             meta = blobs._header(db, repository, record['scope'])
             worktree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?',
@@ -111,8 +110,11 @@ def _schema3_store(record, state, decision):
             blobs._worktree_record(worktree, repository, meta['settings_policy_digest'])
         except values.BlobStoreError as exc:
             raise J.JournalEvidenceError('writer_plan_store_changed') from exc
+    # Same identity the U10 reader seals (_schema3_store): digest of the
+    # stored repository JSON, main worktree registered at this project.
     R._need(meta['incarnation'] == record['incarnation']
-            and _digest(repository) == record['repository_digest']
+            and R._repository_digest(row[0]) == record['repository_digest']
+            and worktree['project_root'] == record['project']
             and worktree['binding_digest'] == record['worktree_binding']
             and meta['settings_policy_digest'] == record['settings_policy_digest'],
             'writer_plan_store_changed')
