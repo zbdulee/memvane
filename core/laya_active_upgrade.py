@@ -167,13 +167,15 @@ def _load_intent(state, project):
     return value
 
 
-def _old_state(project, state, journal, ledger=None, *, prior_intent=None, unfenced_v4=False):
+def _old_state(project, state, journal, ledger=None, *, prior_intent=None, unfenced_v4=False,
+               unfenced=False):
     ledger = ledger or _Ledger('fresh')
     auto = project_dir.folder(project)
     row = ledger.load(state / ledger.name)
     if prior_intent is not None:
         old = prior_intent['oldLedger']
-        expected = old if unfenced_v4 else {**old, 'epoch': old['epoch'] + 1, 'phase': 'upgrading'}
+        expected = (old if unfenced_v4 or unfenced else
+                    {**old, 'epoch': old['epoch'] + 1, 'phase': 'upgrading'})
         if row != expected:
             _fail('active_upgrade_fence_changed')
         row = old
@@ -213,8 +215,18 @@ def _old_state(project, state, journal, ledger=None, *, prior_intent=None, unfen
 
 def _prepare(project, state, journal, source_root, plugin_root, commit_id,
              accepted_provider_sha256, model_path, dimension, ledger=None,
-             *, prior_intent=None, runtime_generation=None, unfenced_v4=False):
+             *, prior_intent=None, runtime_generation=None, unfenced_v4=False,
+             unfenced=False):
+    """Write one exact intent; ``prior_intent`` re-proves a new target.
+
+    ``unfenced`` replaces a pre-fence intent (``_prefence_intent``): its old
+    row is still selected, so it gets no retarget seal and is sealed afresh.
+    The selected store kept syncing meanwhile; its backup is reused only when
+    the counts and journal still match, otherwise a new one is taken.
+    """
     ledger = ledger or _Ledger('fresh')
+    if unfenced and (prior_intent is None or unfenced_v4):
+        _fail('active_upgrade_intent_invalid')
     if unfenced_v4:
         import laya_install_journal as install_journal
         if prior_intent is None or install_journal.journal_version(journal) != 4:
@@ -222,7 +234,8 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
     row, selected, old_route, old_att, old_marker = _old_state(project, state,
                                                                journal, ledger,
                                                                prior_intent=prior_intent,
-                                                               unfenced_v4=unfenced_v4)
+                                                               unfenced_v4=unfenced_v4,
+                                                               unfenced=unfenced)
     if unfenced_v4 and _journal_snapshot(selected) != prior_intent['journalBefore']:
         _fail('active_upgrade_journal_changed')
     record = build.read(state)
@@ -282,7 +295,9 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
         if row[key] != new_row[key]:
             _fail('active_upgrade_store_identity_changed')
     counts = inactive._store_counts(record['identity'])
-    if prior_intent is None:
+    if prior_intent is None or (unfenced and (
+            counts != prior_intent['counts'] or
+            _journal_snapshot(selected) != prior_intent['journalBefore'])):
         backup = inactive._backup(record['identity'], record, old_route, old_att,
                                   counts)
     else:
@@ -305,17 +320,19 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
               'backup': str(backup), 'counts': counts,
               'journalBefore': _journal_snapshot(selected)}
     if prior_intent is not None:
-        if unfenced_v4:
+        if unfenced_v4 or unfenced:
             current_row, current, _route, _att, _marker = _old_state(
-                project, state, journal, ledger, prior_intent=prior_intent, unfenced_v4=True)
-            if (current_row != row or _journal_snapshot(current) != prior_intent['journalBefore'] or
+                project, state, journal, ledger, prior_intent=prior_intent,
+                unfenced_v4=unfenced_v4, unfenced=unfenced)
+            if (current_row != row or _journal_snapshot(current) != intent['journalBefore'] or
                     _load_intent(state, project) != prior_intent):
                 _fail('active_upgrade_intent_changed')
             _backup_proof(prior_intent, verify_new=False)
-        _seal_prestage_retarget(prior_intent, intent)
+        if not unfenced:
+            _seal_prestage_retarget(prior_intent, intent)
     build._write_json(_intent_path(state), intent, replace=prior_intent is not None,
                       max_bytes=LIMIT)
-    if prior_intent is None:
+    if prior_intent is None or unfenced:
         _seal_reader_intent(state, project, intent)
     return intent
 
@@ -1531,6 +1548,28 @@ def _settled_restored(intent, row, journal):
             row == {**old, 'epoch': old['epoch'] + 2})
 
 
+def _prefence_intent(intent, row, journal):
+    """The intent was written but never fenced: nothing public changed.
+
+    The ledger row is the intent's old row itself (a release after a fence
+    leaves it two epochs on) and the journal still selects that old route
+    with nothing pending. ``newWriteSeen`` is not compared: the selected old
+    route may mark its own first write meanwhile; the target never staged.
+    """
+    old = intent['oldLedger']
+    return (intent['schema'] == V1 and row == old and
+            journal['state'] == 'active' and journal.get('pending') is None and
+            journal['pendingRouteSha256'] is None and
+            journal['selectedRouteSha256'] == old['routeSha256'])
+
+
+def _target_changed(intent, plugin_root, commit_id, accepted_provider_sha256):
+    return (intent['newProof']['pluginRoot'] != str(plugin_root) or
+            intent['newProof']['sourceCommit'] != commit_id or
+            intent['reviewSha256'] != accepted_provider_sha256 or
+            _reextracted(intent, plugin_root))
+
+
 def restored_away_from(project_root, state_root, plugin_root):
     """Read-only: the operator restored this install away from ``plugin_root``.
 
@@ -1813,10 +1852,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                 current_journal['state'] in ('active', 'restored_old') and
                 current_journal['selectedRouteSha256'] ==
                 intent['oldLedger']['routeSha256'] and
-                (intent['newProof']['pluginRoot'] != str(plugin_root) or
-                 intent['newProof']['sourceCommit'] != commit_id or
-                 intent['reviewSha256'] != accepted_provider_sha256 or
-                 _reextracted(intent, plugin_root))):
+                _target_changed(intent, plugin_root, commit_id, accepted_provider_sha256)):
             # Before staging, no target metadata is visible. Keep the fence
             # and original snapshot while re-proving a replacement target.
             _backup_proof(intent, verify_new=False)
@@ -1824,6 +1860,19 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                               source_root, plugin_root, commit_id,
                               accepted_provider_sha256, model_path, dimension,
                               ledger, prior_intent=intent, runtime_generation=runtime_generation)
+        elif (intent is not None and not settled_restored and
+              _prefence_intent(intent, current_row, current_journal) and
+              _target_changed(intent, plugin_root, commit_id, accepted_provider_sha256)):
+            # Stopped before its fence, e.g. at the worker deadline, and its
+            # bundle may since be gone. It is no receipt, so re-prove the
+            # requested target in its place instead of resuming the old one.
+            _backup_proof(intent, verify_new=False)
+            intent = _prepare(project, state, state / 'install-journal.sqlite',
+                              source_root, plugin_root, commit_id,
+                              accepted_provider_sha256, model_path, dimension,
+                              ledger, prior_intent=intent, runtime_generation=runtime_generation,
+                              unfenced=True)
+            prepared_here = True
         if intent is not None and (settled_restored or
                                    intent['newProof']['pluginRoot'] != str(plugin_root)
                                    or intent['newProof']['sourceCommit'] != commit_id

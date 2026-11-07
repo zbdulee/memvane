@@ -111,9 +111,41 @@ def _check_intent(intent):
         _fail('bound_upgrade_intent_changed')
 
 
+def _unswitched(intent, state, project, ledger):
+    """No switch step ran yet: every file still holds the intent's old bytes."""
+    identity = intent['oldRecord']['identity']
+    journal = inspect_journal(identity['journalPath'])
+    return (ledger.load(state / ledger.name) == intent['oldLedger'] and
+            build.read(state) == intent['oldRecord'] and
+            _read(state / PRODUCTION_ATTESTATION, 1024 * 1024) ==
+            intent['oldAttestation'].encode('utf-8') and
+            _read(identity['routeFile']) == intent['oldRoute'].encode('utf-8') and
+            _read(project_dir.folder(project) / ledger.marker_name) ==
+            intent['oldMarker'].encode('utf-8') and
+            journal['state'] == 'candidate_ready' and not journal['newWriteSeen'] and
+            journal['pendingRouteSha256'] == intent['oldLedger']['routeSha256'])
+
+
+def _target_stale(intent, plugin_root, commit_id, accepted_provider_sha256):
+    """The request names another bundle, or the intent's own bundle is gone."""
+    if (intent['newProof']['pluginRoot'] != str(plugin_root) or
+            intent['newProof']['sourceCommit'] != commit_id or
+            intent['reviewSha256'] != accepted_provider_sha256):
+        return True
+    try:
+        live = inspect_full_plugin_candidate(intent['newProof']['pluginRoot'])
+    except BundleEvidenceError:
+        return True
+    return any(live[key] != intent['newProof'][key] for key in intent['newProof'])
+
+
 def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
              commit_id, accepted_provider_sha256, model_path, dimension,
-             runtime_generation=None):
+             runtime_generation=None, prior_intent=None):
+    """Write one exact intent; ``prior_intent`` is an unswitched one replaced.
+
+    Its backup is reused while the store counts still match.
+    """
     record = build.read(state)
     if (record is None or record['phase'] != 'bound' or
             record['identity']['projectRoot'] != str(project) or
@@ -200,8 +232,17 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
     new_identity = {**identity, 'routeSha256': new_row['routeSha256'],
                     'attestationSha256': new_row['attestationSha256'],
                     'providerProposalSha256': review['proposalSha256']}
+    if prior_intent is not None and (
+            record != prior_intent['oldRecord'] or row != prior_intent['oldLedger'] or
+            old_route != prior_intent['oldRoute'].encode('utf-8') or
+            old_att != prior_intent['oldAttestation'].encode('utf-8') or
+            marker != prior_intent['oldMarker'].encode('utf-8')):
+        _fail('bound_upgrade_intent_changed')
     counts = inactive._store_counts(identity)
-    backup = inactive._backup(identity, record, old_route, old_att, counts)
+    if prior_intent is not None and counts == prior_intent['counts']:
+        backup = prior_intent['backup']
+    else:
+        backup = inactive._backup(identity, record, old_route, old_att, counts)
     intent = {'schema': SCHEMA, 'origin': ledger.origin,
               'projectRoot': str(project), 'stateRoot': str(state),
               'oldRecord': record, 'newIdentity': new_identity,
@@ -218,7 +259,10 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
               'reviewSha256': review['proposalSha256'],
               'backup': str(backup), 'counts': counts}
     _check_intent(intent)
-    build._write_json(state / INTENT, intent, replace=False, max_bytes=LIMIT)
+    if prior_intent is not None and _load_intent(state, project) != prior_intent:
+        _fail('bound_upgrade_intent_changed')
+    build._write_json(state / INTENT, intent, replace=prior_intent is not None,
+                      max_bytes=LIMIT)
     return intent
 
 
@@ -295,7 +339,17 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
         intent = _load_intent(state, project)
         if intent is not None and intent['origin'] != ledger.origin:
             _fail('bound_upgrade_intent_changed')
-        if intent is not None and (
+        if (intent is not None and _unswitched(intent, state, project, ledger) and
+                _target_stale(intent, plugin_root, commit_id, accepted_provider_sha256)):
+            # Nothing switched yet and its bundle may since be gone: re-prove
+            # the requested bundle in its place instead of finishing the old.
+            _check_intent(intent)
+            inactive._verify_backup(intent)
+            intent = _prepare(project, state, journal_path, ledger, source_root,
+                              plugin_root, commit_id, accepted_provider_sha256,
+                              model_path, dimension, runtime_generation,
+                              prior_intent=intent)
+        elif intent is not None and (
                 intent['newProof']['pluginRoot'] != str(plugin_root) or
                 intent['newProof']['sourceCommit'] != commit_id or
                 intent['reviewSha256'] != accepted_provider_sha256):
