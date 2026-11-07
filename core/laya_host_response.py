@@ -1866,8 +1866,11 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
             published_candidate_rows(rows,tuple(sorted(wiki_index_roots(decision['collections']))),decision['scopeId'])
             limit=min(decision['recallSettings']['topN'],3)
             selected=rows[:limit]
+            chosen_paths={row['path'] for row in selected}
             context=render_context(decision,selected,limit=limit,ranking='hybrid_rrf',
-                title_only_paths=result.title_only,source_locations=result.source_locations,
+                title_only_paths=result.title_only.intersection(chosen_paths),
+                source_locations={path:spans for path,spans in result.source_locations.items()
+                                  if path in chosen_paths},
                 allow_mixed_generation=True) if selected else ''
             return host_payload(host,context)
 

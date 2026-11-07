@@ -1832,6 +1832,86 @@ class BundleDriftChecks(unittest.TestCase):
                          '[memvane] executing_bundle_not_selected; request refused\n')
 
 
+class EndpointRecallChecks(unittest.TestCase):
+    """v6 endpoint recall (fence or bundle-drift read): only served rows carry metadata.
+
+    The reader's journal, lease, snapshot and query are stubbed at their module
+    boundaries; ``_serve_endpoint_recall`` and ``render_context`` run as is. The
+    query result is synthetic: gating and locations are planted on result rows,
+    not in a published store.
+    """
+
+    @staticmethod
+    def card(name, title):
+        body = ('---\ntitle: %s\nstatus: verified\n---\n## Summary\nBODY_%s fact.\n'
+                % (title, name.upper()))
+        return row(path='wiki/%s.md' % name, body=body)
+
+    def serve(self, rows, *, title_only=frozenset(), locations=None):
+        from contextlib import ExitStack, contextmanager, nullcontext
+        import laya_journal_reader
+        import laya_reader_dispatch
+        import laya_reader_lease
+        import laya_reader_open
+        from laya_v6_reader import ReaderResult
+        with tempfile.TemporaryDirectory(prefix='laya-endpoint-recall-') as temp:
+            project = Path(temp).resolve()
+            decision = v2_decision(str(project))
+            endpoint = SimpleNamespace(record={'store_format': 'v6'})
+
+            @contextmanager
+            def resolved(*_args, **_kwargs):
+                yield endpoint
+            result = ReaderResult('v6', 'e' * 64, 1, 'generation-7', rows, 'lexical_only',
+                                  title_only, dict(locations or {}))
+            with ExitStack() as stack:
+                enter = stack.enter_context
+                enter(patch.object(laya_reader_lease, 'resolve_endpoint', side_effect=resolved))
+                enter(patch.object(laya_journal_reader, '_recheck',
+                                   return_value=(None, None, {'readerDecision': decision})))
+                enter(patch.object(laya_reader_open, 'inspect_warm_snapshot',
+                                   return_value=nullcontext(object())))
+                enter(patch.object(laya_reader_dispatch, 'query_endpoint', return_value=result))
+                payload = response.serve_endpoint_recall(
+                    'claude', {'cwd': str(project), 'prompt': 'find alpha'},
+                    cwd=str(project), drift_decision=decision)
+        return payload['hookSpecificOutput']['additionalContext']
+
+    def ranked(self, count=5):
+        return [self.card('c%d' % index, 'Card %d' % index) for index in range(1, count + 1)]
+
+    def test_unserved_title_only_card_does_not_refuse_recall(self):
+        context = self.serve(self.ranked(), title_only=frozenset({'wiki/c4.md'}))
+        for index in (1, 2, 3):
+            self.assertIn('"wiki/c%d.md"' % index, context)
+            self.assertIn('BODY_C%d fact.' % index, context)
+        self.assertNotIn('wiki/c4.md', context)
+
+    def test_unserved_located_card_does_not_refuse_recall(self):
+        context = self.serve(self.ranked(),
+                             locations={'wiki/c5.md': ('docs/a.md#L2-L2',)})
+        self.assertIn('"wiki/c3.md"', context)
+        self.assertNotIn('wiki/c5.md', context)
+        self.assertNotIn('source lines cited by verifier', context)
+
+    def test_served_title_only_and_located_cards_keep_their_metadata(self):
+        # The served rows' own metadata still applies: the narrowed sets are
+        # not empty by key-shape mismatch.
+        context = self.serve(self.ranked(),
+                             title_only=frozenset({'wiki/c1.md', 'wiki/c4.md'}),
+                             locations={'wiki/c2.md': ('docs/a.md#L2-L2',),
+                                        'wiki/c5.md': ('docs/a.md#L3-L3',)})
+        lines = context.split('\n')
+        self.assertIn('  | title: Card 1', lines)
+        self.assertNotIn('BODY_C1 fact.', context)
+        self.assertIn('BODY_C2 fact.', context)
+        self.assertIn('  source lines cited by verifier (excerpt locations, not per-claim proof): '
+                      '"docs/a.md#L2-L2"', lines)
+        self.assertNotIn('docs/a.md#L3-L3', context)
+        self.assertNotIn('wiki/c4.md', context)
+        self.assertNotIn('wiki/c5.md', context)
+
+
 class ProofRetryChecks(unittest.TestCase):
     """A proof or view change during one recall (sync publish, upgrade)."""
 
