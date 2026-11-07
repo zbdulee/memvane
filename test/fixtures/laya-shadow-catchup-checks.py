@@ -411,10 +411,14 @@ class CatchupChecks(unittest.TestCase):
                     with mock.patch.object(readers, 'inspect_warm_snapshot', tracked_snapshot), \
                          mock.patch.object(migration, 'collect_generation_members',
                                            wraps=migration.collect_generation_members) as collect, \
+                         mock.patch.object(migration, 'reuse_committed_members',
+                                           wraps=migration.reuse_committed_members) as reuse, \
                          mock.patch.object(view, 'prepare_generation', side_effect=prepare_without_install_locks):
                         generation = migration.prepare_shadow_generation(view, project=case.project,
                             executing_root=case.plugin, deadline=time.monotonic() + 30)
-                    self.assertEqual(collect.call_count, 1)
+                    # The committed chains are refolded from one metadata read;
+                    # prepare no longer walks every old page again.
+                    self.assertEqual((collect.call_count, reuse.call_count), (0, 1))
                     self.assertIsNotNone(generation)
                     self.assertEqual(view._db.execute('SELECT COUNT(*) FROM generation_slots').fetchone()[0], 1)
                     marker = project_dir.runtime_file(case.project, fresh.MARKER)
@@ -1775,6 +1779,228 @@ class CatchupChecks(unittest.TestCase):
             self.assertNotIn(last.split('/', 1)[1], paths)
             self.assertNotIn(gap_path.split('/', 1)[1], paths)
             self.assertIn(overlap[0].split('/', 1)[1], paths)
+            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+            self.assertTrue(store.verify_views())
+
+    def test_prepare_reuses_committed_pages_while_writers_continue(self):
+        normal_spec = importlib.util.spec_from_file_location(
+            'shadow_prepare_reuse_seed', HERE / 'laya-normal-writer-connections-checks.py')
+        normal_module = importlib.util.module_from_spec(normal_spec)
+        normal_spec.loader.exec_module(normal_module)
+        normal = normal_module.NormalWriterConnectionChecks('runTest')
+        seed_module = normal_module
+        for _ in range(6):
+            seed_module = seed_module.existing
+        def remove_completed_row(seed):
+            # One completed row leaves the sidecar so a publication seals it
+            # and both stores carry writer receipts before the copy starts.
+            with sqlite3.connect(seed.sidecar) as db:
+                seed.overlap_sidecar_rows = db.execute(
+                    'SELECT path,hash,title,body,profile_id FROM docs ORDER BY path LIMIT 1').fetchall()
+                for row in seed.overlap_sidecar_rows:
+                    db.execute('DELETE FROM docs_fts WHERE path=?', (row[0],))
+                    db.execute('DELETE FROM docs WHERE path=?', (row[0],))
+        with mock.patch.object(seed_module.MoveSealChecks, 'before_conversion',
+                               new=remove_completed_row, create=True):
+            normal.setUp()
+        self.addCleanup(normal.doCleanups)
+        seed, case = normal.seed, normal.case
+        subprocess.run(['git', '-c', 'init.defaultBranch=main', 'init', '-q', str(case.project)],
+                       check=True, capture_output=True, timeout=10)
+        subprocess.run(['git', '-C', str(case.project), '-c', 'commit.gpgsign=false',
+                        '-c', 'core.hooksPath=' + os.devnull, '-c', 'user.name=Fixture',
+                        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+                        '-qm', 'fixture'], check=True, capture_output=True, timeout=10)
+        checkout = importlib.import_module('laya_checkout_view')
+        blobs = importlib.import_module('laya_blob_store')
+        views = importlib.import_module('laya_view_store')
+        migration = importlib.import_module('laya_shadow_migration')
+        readers = importlib.import_module('laya_reader_open')
+        incremental = importlib.import_module('laya_incremental_docs')
+        import laya_ledger_common as ledger
+        import laya_fresh_wiki_origin as fresh
+        import project_dir
+        from laya_product_install import _install_lock
+        repository = checkout.register_repository(str(case.project))
+        worktree = checkout.register_worktree(str(case.project), repository)
+        candidate = case.state / 'prepare-reuse-shadow.sqlite'
+        blobs.BlobStore.create(candidate, project_root=str(case.project), repository=repository,
+                               worktree=worktree, scope_id=case.route['scopeId']).close()
+        store = views.ViewStore.open(candidate, repository=repository, scope_id=case.route['scopeId'])
+        self.addCleanup(store.close)
+        time.sleep(1.1)
+        intent_path = case.state / 'shadow-migration-intent.json'
+        marker = project_dir.runtime_file(case.project, fresh.MARKER)
+        (sealing,) = seed.overlap_sidecar_rows
+
+        def step():
+            return migration.advance_shadow(store, project=case.project,
+                                            executing_root=case.plugin, deadline=time.monotonic() + 60)
+
+        def exclude_with_fresh_writer(path):
+            normal.plan = normal.P.capture_writer_plan(case.project, executing_root=case.plugin)
+            with ExitStack() as owners:
+                writer, _ = normal.admission(owners)
+                with normal.runtime(writer) as runtime:
+                    normal.N.mark_new_write(writer)
+                    return runtime.index.exclude(writer.scope_id, path=path)
+
+        def publish_sidecar_row(row):
+            normal.plan = normal.P.capture_writer_plan(case.project, executing_root=case.plugin)
+            with ExitStack() as owners:
+                writer, _ = normal.admission(owners)
+                runtime = owners.enter_context(importlib.import_module('laya_index_runtime').LayaIndexRuntime(
+                    source_root={case.WIKI: str(case.auto / 'wiki')}, scope=case.route['scopeId'],
+                    db_path=str(case.db), queue_path=str(normal.queue),
+                    db_incarnation=case.route['dbIncarnation'], catalog_path=str(case.catalog),
+                    binding_store_path=str(case.store), wiki_only=True,
+                    connection_windows={role: normal.component(writer, role)
+                                        for role in ('base', 'queue', 'catalog', 'binding')}))
+                component = normal.component(writer, 'sidecar')
+                identity = importlib.import_module('laya_initial_build').read(case.state)['identity']
+                catalog = runtime.catalog.require_complete()
+                normal.N.mark_new_write(writer)
+                return incremental.publish_document(runtime, identity, catalog, *row,
+                    require_verified=False, coordination=component)['status']
+
+        def source_now():
+            with seed.lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin) as endpoint:
+                decision = seed.reader.journal.select_route(str(case.project), action='recall')
+                with readers.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 10) as snapshot:
+                    observed = migration.capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                        after=None, deadline=time.monotonic() + 10)['observation']
+                    effective = [row['path'] for row in migration.capture_effective(
+                        snapshot, endpoint=endpoint, decision=decision, after=None,
+                        deadline=time.monotonic() + 10, _all_inventory=True,
+                        include_ineligible=True)['members'] if row['eligible'] == 1 and not row['excluded']]
+                    return observed, migration._source_revision(snapshot), effective
+
+        def run_until(predicate, limit=80):
+            stages = []
+            for _ in range(limit):
+                result = step()
+                stages.append(result['stage'])
+                if predicate(result):
+                    return result, stages
+            self.fail(stages)
+
+        def corpora_complete(result):
+            corpora = result['intent'].get('corpora')
+            return bool(result['intent'].get('verification') and result['intent']['verification']['complete']
+                        and corpora and corpora['base'] and corpora['base']['complete']
+                        and corpora['sidecar'] and corpora['sidecar']['complete'])
+
+        def write_intent(value):
+            with _install_lock(case.state), ledger._operation_lock(marker):
+                ledger._write(intent_path, value, replace=True)
+
+        def slots():
+            return store._db.execute('SELECT COUNT(*) FROM generation_slots').fetchone()[0]
+
+        # Members that a prepare call re-verifies against old wiki bodies.
+        prepare_state = {'active': False, 'verified': [], 'calls': 0}
+        original_batch = migration.import_wiki_batch
+        def counting_batch(*args, **kwargs):
+            page = original_batch(*args, **kwargs)
+            if prepare_state['active']:
+                prepare_state['verified'].append(len(page['inventory']) + len(page['corpus']))
+            return page
+        original_prepare = migration.prepare_shadow_generation
+        def tracked_prepare(*args, **kwargs):
+            prepare_state['active'] = True
+            prepare_state['calls'] += 1
+            try:
+                return original_prepare(*args, **kwargs)
+            finally:
+                prepare_state['active'] = False
+
+        with seed.authority(), mock.patch.object(migration, 'MAX_BATCH', 1):
+            self.assertEqual(publish_sidecar_row(sealing), 'published')
+            self.assertEqual(exclude_with_fresh_writer(case.WIKI + '/bench/u2b-noise-00.md'), 'excluded')
+            started = migration.begin_migration(store, worktree_id=worktree['worktreeId'],
+                project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
+            ready, _ = run_until(corpora_complete)
+            committed = ready['intent']
+            members = committed['verification']['rows']
+            self.assertGreater(members, 2)
+            observation, revision, effective = source_now()
+            self.assertEqual(observation, committed['observation'])
+            self.assertEqual(len(effective), members)
+
+            # A reused chain that differs from the pinned source refuses: the
+            # source changes, then the intent is rebound to it without a catch-up.
+            first_change = effective[-1]
+            self.assertEqual(exclude_with_fresh_writer(first_change), 'excluded')
+            changed, changed_revision, _ = source_now()
+            self.assertNotEqual(changed, committed['observation'])
+            def rebind(progress, key=None):
+                cursor_observation = changed if key is None else migration._corpus_observation(key, changed)
+                return {**progress, 'observation': changed,
+                        'cursor': None if progress['cursor'] is None else {
+                            'after': progress['cursor']['after'], 'observation': cursor_observation}}
+            forged = {**committed, 'observation': changed, 'source_revision': changed_revision,
+                      'verification': rebind(committed['verification']),
+                      'corpora': {**committed['corpora'], 'base': rebind(committed['corpora']['base'], 'base'),
+                                  'sidecar': rebind(committed['corpora']['sidecar'], 'sidecar')}}
+            before_counts = store.counts()
+            write_intent(forged)
+            try:
+                with self.assertRaisesRegex(Exception, 'migration_commitment_mismatch'):
+                    migration.prepare_shadow_generation(store, project=case.project,
+                        executing_root=case.plugin, deadline=time.monotonic() + 30)
+            finally:
+                write_intent(committed)
+            self.assertEqual((store.counts(), slots()), (before_counts, 0))
+
+            # The unchanged chain against the moved source refuses before any
+            # candidate body is read.
+            with mock.patch.object(store, '_blob', wraps=store._blob) as bodies:
+                with self.assertRaisesRegex(Exception, 'migration_snapshot_changed'):
+                    migration.prepare_shadow_generation(store, project=case.project,
+                        executing_root=case.plugin, deadline=time.monotonic() + 30)
+            self.assertEqual(bodies.call_count, 0)
+            self.assertEqual((store.counts(), slots()), (before_counts, 0))
+
+            # One writer commit lands inside the next prepare, another right
+            # after the following build sealed its slot but before publish.
+            # Both are caught up from receipts: no full recopy, no new scan.
+            second_change = effective[-2]
+            injected = []
+            original_build = store.prepare_generation
+            def build_with_writer(*args, **kwargs):
+                if not injected:
+                    injected.append(exclude_with_fresh_writer(second_change))
+                    return original_build(*args, **kwargs)
+                result = original_build(*args, **kwargs)
+                if len(injected) == 1:
+                    self.assertEqual(slots(), 1)
+                    injected.append(exclude_with_fresh_writer(case.WIKI + '/bench/u2b-noise-01.md'))
+                return result
+            with mock.patch.object(migration, 'import_wiki_batch', side_effect=counting_batch), \
+                 mock.patch.object(migration, 'prepare_shadow_generation', side_effect=tracked_prepare), \
+                 mock.patch.object(store, 'prepare_generation', side_effect=build_with_writer):
+                caught_up, stages = run_until(lambda result: result['migration_state'] == 'caught_up')
+            self.assertEqual(injected, ['excluded', 'excluded'])
+            self.assertGreaterEqual(prepare_state['calls'], 3)
+            self.assertEqual(stages.count('restart_pending'), 2)
+            # Full recopies: none; the stale slot stays private beside the new one.
+            self.assertNotIn('copy', stages)
+            self.assertEqual(slots(), 2)
+            print('prepare_reverified_members', sum(prepare_state['verified']), 'members', members,
+                  'prepare_calls', prepare_state['calls'], flush=True)
+            self.assertLessEqual(sum(prepare_state['verified']), 2)
+            intent = caught_up['intent']
+            self.assertEqual(intent['provenance_scan'], started['provenance_scan'])
+            self.assertEqual(intent['catch_up']['from'], started['source_revision'])
+            self.assertGreaterEqual(intent['catch_up']['paths'], 2)
+            observation, revision, effective = source_now()
+            self.assertEqual((intent['observation'], intent['source_revision']), (observation, revision))
+            with store._session() as db:
+                paths = [row[0] for row in db.execute('SELECT path FROM wiki_members WHERE gen_id=?',
+                                                      (intent['published']['generation'],))]
+            self.assertEqual(sorted(paths), sorted(path.split('/', 1)[1] for path in effective))
+            self.assertNotIn(first_change.split('/', 1)[1], paths)
+            self.assertNotIn(second_change.split('/', 1)[1], paths)
             self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
             self.assertTrue(store.verify_views())
 

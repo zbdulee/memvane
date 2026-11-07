@@ -529,7 +529,22 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     A project that does not select a Laya route but has a registered
     inactive initial build runs one bounded build step instead
     (``run_initial_build``). Without one, the refusal is unchanged.
+
+    A completed sync (``indexed``/``unchanged``) then gives the private
+    shadow migration one bounded pass (``shadow_pass``). The pass runs after
+    every sync owner is released, and neither its outcome nor its failure
+    changes the returned sync result.
     """
+    result = _run_sync(project, coordinator=coordinator, report=report, start_service=start_service)
+    if isinstance(result, dict) and result.get('state') in ('indexed', 'unchanged'):
+        try:
+            shadow_pass(project)
+        except Exception:
+            pass  # shadow_pass records its own outcome; the sync stays done.
+    return result
+
+
+def _run_sync(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
     try:
         decision, proof = _selected(project)
     except ResourceDeferred as exc:
@@ -548,11 +563,17 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     # A malformed route source fails before any model start or index write.
     source_root = _route_source(decision)
     if _selected_store_format(decision) == 'schema3':
-        # The view store path loads no model; v6 runtimes, capacity stores
-        # and discovery read v6 components that a schema3 writer refuses.
+        # The view store path loads no model and opens no v6 runtime or
+        # capacity store; discovery reads the view head, not the v6 lineage.
         if qa_sync_barrier(decision) is not None:
             raise IndexContractError('qa_barrier_schema3_unsupported')
-        return _run_schema3(decision, proof)
+        grants = None
+        if not isinstance(source_root, str):
+            # Snapshot hook grants before the scan, as on the v6 path.
+            import laya_wiki_discovery
+            grants = laya_wiki_discovery.observe_grants(decision)
+        result, proof = _run_schema3(decision, proof)
+        return _after_sync(decision, proof, grants, result, store_format='schema3')
     grants = None
     if not isinstance(source_root, str):
         # v2 only. Snapshot hook grants before the scan; later ones stay live.
@@ -694,16 +715,17 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
 
 
 # One schema3 pass: wall budget and card ingests (each a Git capture). A
-# cold or large change set publishes its progress and stays ``pending``.
+# large change set to a published view publishes its progress and stays
+# ``pending``; a cold view (no published generation) only prepares it.
 SCHEMA3_PASS_SECONDS = 45
 SCHEMA3_MAX_INGEST = 64
 # Ingest stops this long before the pass deadline so prepare/publish of the
 # ingested cards always fits; otherwise an over-budget pass would publish
 # nothing and the next one would redo the same ingests.
 SCHEMA3_PUBLISH_RESERVE = 15
-# The store binds the settings bytes, policy and wiki root identity in an
-# immutable worktree row; any change refuses reads and writes alike, and no
-# in-place rebinding exists (context: u12c-binding-design). Not transient.
+# The store binds the v6 settings identity (collections, roles, roots) and
+# the wiki root node in an immutable worktree row; a change refuses reads and
+# writes alike, and no in-place rebinding exists. Not transient.
 SCHEMA3_BINDING_REASONS = frozenset(('wiki_binding_changed', 'wiki_settings_changed',
                                      'worktree_policy_mismatch', 'wiki_root_changed'))
 # A concurrent edit, Git operation or busy store: the next wake retries.
@@ -736,10 +758,11 @@ def _run_schema3(decision, proof):
 
     Admission is the sync owner plus a worker writer scope over the current
     plan; the plan must still name a schema3 store. No model or v6 runtime
-    starts. External-edit drain and wiki discovery read v6 components and
-    are not run here (U14).
+    starts. Returns ``(result, proof)``: a publish advances the journal
+    epoch, so ``_after_sync`` rechecks against the proof the pass ended with.
     """
     import laya_install_journal as journal
+    import laya_journal_reader as journal_readers
     import laya_reader_windows as windows
     import laya_writer_proof_reader as readers
     import laya_writer_open_plan as plans
@@ -749,7 +772,14 @@ def _run_schema3(decision, proof):
     try:
         with sync_owner(Path(decision['queuePath'])) as owner:
             if owner is None:
-                return {'state': 'deferred', 'reason': 'owner_busy'}
+                return {'state': 'deferred', 'reason': 'owner_busy'}, proof
+            # The owner re-seals the selected reader when only the project's
+            # recall settings changed; recall never does (it refuses until then).
+            try:
+                resettle = journal_readers.resettle_selection(Path(decision['journalPath']).parent, project,
+                                                              _writer_executing_root())
+            except JournalEvidenceError as exc:
+                resettle = str(exc)
             try:
                 try:
                     with journal.read_only_journals():
@@ -764,7 +794,10 @@ def _run_schema3(decision, proof):
                     with normal.worker_writer_scope(plan, queue_owner=owner, operation_timeout=2) as writer:
                         if normal.admission_proof(writer) != proof:
                             raise IndexContractError('selected_proof_changed')
-                        return _publish_schema3(decision, proof, writer)
+                        result, proof = _publish_schema3(decision, proof, writer)
+                        if resettle != 'unchanged':
+                            result = {**result, 'readerResettle': resettle}
+                        return result, proof
                 except ReaderWindowBusy as exc:
                     if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
                                     'reader_lifetime_busy'):
@@ -778,7 +811,7 @@ def _run_schema3(decision, proof):
                 if windows.local_pending_count() or readers.local_pending_proof_readers():
                     raise ResourceDeferred('writer_cleanup_unsettled')
     except ResourceDeferred as exc:
-        return _deferred(exc)
+        return _deferred(exc), proof
 
 
 def _schema3_wiki_cards(root):
@@ -813,99 +846,278 @@ def _schema3_wiki_cards(root):
     return sorted(cards), skipped
 
 
+# Linked git worktrees whose own views one pass may publish after the main
+# view (``git worktree list`` order). Later ones wait for the next wake.
+SCHEMA3_MAX_LINKED = 16
+# Refusals that hold one linked worktree's view (its row, settings or wiki
+# root no longer match, or registration is refused) without failing the pass.
+SCHEMA3_LINKED_HELD = SCHEMA3_BINDING_REASONS | frozenset(('worktree_binding_conflict',
+                                                           'worktree_missing', 'wiki_binding_invalid',
+                                                           'candidate_io_failed'))
+
+
 def _publish_schema3(decision, proof, writer):
-    """Changed cards only: head members with the same bytes keep their trust."""
+    """Main view first, then each linked worktree's own view (design 5.2).
+
+    Changed cards only: head members with the same bytes keep their trust. A
+    linked worktree is published only while the main view is complete
+    (``indexed``/``unchanged``); its refusals hold that view alone.
+
+    Returns ``(result, proof)``; ``proof`` is the writer's fresh admission
+    proof once this pass marked its first write.
+    """
     import laya_blob_values as v
+    import laya_checkout_view as checkout
     import laya_writer_scope as normal
-    import wiki_lifecycle
-    from laya_blob_store import _regular
     from laya_view_store import ViewStore
-    import uuid
     info = normal.writer_store(writer)
     deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
     store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
     try:
         if (store._incarnation, store._policy) != (info['incarnation'], info['policy_digest']):
             raise IndexContractError('schema3_store_changed')
-        try:
-            handle = store.capture_view(info['worktree_id'], deadline=deadline)
-            head = store.head(handle)
-            with store._session() as db:
-                row = db.execute('SELECT wiki_root,binding_digest FROM worktrees WHERE worktree_id=?',
-                                 (info['worktree_id'],)).fetchone()
-                old = ({} if head['gen_id'] is None else
-                       {m['path']: m for m in store._stored(db, head['gen_id'])[0]})
-            if row is None or row['binding_digest'] != info['worktree_binding']:
-                v.fail('wiki_binding_changed')
-            root = row['wiki_root']
-            paths, skipped = _schema3_wiki_cards(root)
-            current = {}
-            for path in paths:
-                try:
-                    raw, _node, _root = _regular(root, path, v.MAX_BODY)
-                except OSError:
-                    v.fail('wiki_card_unavailable')
-                current[path] = (v.hash_bytes(raw), raw)
-            changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
-            removed = sorted(set(old) - set(current))
-            if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
-                    and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
-                return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
-                        'storeFormat': 'schema3', 'removed': len(removed)}
-            if not changed and not removed:
-                return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
-            # First store write of this pass: the journal fence comes first.
-            fresh = normal.mark_new_write(writer)
-            if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
-                    or fresh.get('productRouteAllowed') is not True):
-                raise IndexContractError('new_write_proof_unconfirmed')
-            scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
-            members, pending, ingested = {}, 0, 0
-            for path in paths:
-                sha, raw = current[path]
-                if path not in changed:
-                    members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
-                                                                'trust_digest')}
-                    continue
-                if (pending or ingested >= SCHEMA3_MAX_INGEST
-                        or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
-                    # Left for the next wake; the published head keeps its old bytes.
-                    pending += 1
-                    if path in old:
-                        members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
-                                                                    'trust_digest')}
-                    continue
-                admitted = store.ingest_attested_card(info['worktree_id'], path, decision=decision,
-                                                      provenance_scan=scan)
-                ingested += 1
-                body = (raw.decode('utf8') if admitted['blob_sha'] == sha
-                        else store.document(admitted['blob_sha'])['body'])
-                members[path] = dict(path=path, blob_sha=admitted['blob_sha'],
-                                     display_title=v.markdown_title(body, admitted['blob_sha']),
-                                     trust_digest=admitted['trust_digest'])
-            if not ingested and not removed:
-                return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
-            manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
-                            complete=True, sources=[], members=[members[p] for p in sorted(members)])
-            generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
-            normal.validate_normal_writer(writer)
-            store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
-        except v.BlobStoreError as exc:
-            if exc.reason in SCHEMA3_BINDING_REASONS:
-                return {'state': 'deferred', 'reason': 'schema3_binding_changed',
-                        'detail': exc.reason, 'storeFormat': 'schema3'}
-            if exc.reason in SCHEMA3_TRANSIENT_REASONS:
-                return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
-            raise
+        marks = {}
+        result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
+                                       info['worktree_binding'], deadline, marks)
+        if result['state'] not in ('indexed', 'unchanged'):
+            return result, marks.get('proof', proof)
+        linked = []
+        for project in _schema3_linked_projects(decision, deadline):
+            if time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE:
+                linked.append({'root': str(project), 'state': 'pending', 'reason': 'schema3_pass_budget'})
+                continue
+            try:
+                linked_decision = _linked_decision(decision, project)
+            except ValueError:
+                linked.append({'root': str(project), 'state': 'held',
+                               'reason': 'linked_root_outside_project'})
+                continue
+            try:
+                worktree_id = _schema3_linked_worktree(store, writer, proof, info, project,
+                                                       deadline, marks)
+                outcome = _publish_schema3_view(store, writer, linked_decision,
+                                                proof, worktree_id, None, deadline, marks)
+            except checkout.CheckoutUnavailable as exc:
+                outcome = {'state': 'held', 'reason': exc.reason}
+            except v.BlobStoreError as exc:
+                if exc.reason not in SCHEMA3_LINKED_HELD:
+                    raise
+                outcome = {'state': 'held', 'reason': exc.reason}
+            if outcome['state'] == 'deferred' and outcome['reason'] in (
+                    'schema3_binding_changed', 'schema3_mass_removal_held'):
+                # Retrying cannot clear these; that view keeps its last head.
+                outcome = {**outcome, 'state': 'held'}
+            linked.append({'root': str(project), **{k: outcome[k] for k in
+                           ('state', 'reason', 'generation', 'ingested', 'pending') if k in outcome}})
     finally:
         store.close()
+    proof = marks.get('proof', proof)
+    if not linked:
+        return result, proof
+    result = {**result, 'worktrees': linked}
+    if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
+        result['state'] = 'indexed'
+    if any(item['state'] in ('pending', 'deferred') for item in linked):
+        result['state'] = 'pending'
+    return result, proof
+
+
+def _schema3_linked_projects(decision, deadline):
+    """Linked worktrees of the main checkout that the route selector serves from it.
+
+    Each listed worktree's project must classify as ``worktree`` of exactly
+    this main project (same common Git dir, no route of its own, same derived
+    settings identity: ``laya_index_host_route._worktree_route``).
+    """
+    import git_branch_safety
+    project = Path(decision['projectRoot'])
+    try:
+        facts = git_branch_safety.repo_facts(project, deadline=deadline)
+        if facts is None or facts['linked']:
+            return []
+        relative = project.relative_to(facts['toplevel'])
+        out = git_branch_safety.run_git(['worktree', 'list', '--porcelain', '-z'], project,
+                                        deadline=deadline)
+    except (git_branch_safety.GitUnavailable, OSError, ValueError):
+        return []
+    listed = [field[len('worktree '):] for field in
+              out.stdout.decode('utf-8', 'surrogateescape').split('\0')
+              if field.startswith('worktree ')]
+    found = []
+    for root in listed[1:]:
+        if len(found) >= SCHEMA3_MAX_LINKED:
+            break
+        try:
+            candidate = Path(root).resolve(strict=True) / relative
+            if not candidate.is_dir():
+                continue
+            route = select_route(str(candidate), action='index')
+        except (OSError, RuntimeError, ValueError):
+            continue
+        main = route.get('mainRoute')
+        if (route.get('state') == 'worktree' and isinstance(main, dict)
+                and main.get('projectRoot') == str(project)
+                and route.get('worktreeProjectRoot') == str(candidate)):
+            found.append(candidate)
+    return found
+
+
+def _schema3_linked_worktree(store, writer, proof, info, project, deadline, marks):
+    """The linked worktree's registered id, registering it on first sight.
+
+    Registration is a store write, so the pass's journal fence comes first.
+    The record is built by ``laya_checkout_view.register_worktree`` and bound
+    by ``ViewStore.register_worktree`` (no rebinding of an existing row).
+    """
+    import laya_checkout_view as checkout
+    with store._session() as db:
+        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                          (str(project),)).fetchall()
+    if len(rows) > 1 or any(row[0] == info['worktree_id'] for row in rows):
+        raise IndexContractError('schema3_worktree_rows_invalid')
+    if rows:
+        return rows[0][0]
+    _mark_schema3_write(writer, proof, marks)
+    record = checkout.register_worktree(str(project), info['repository'], deadline=deadline)
+    return store.register_worktree(str(project), record)
+
+
+def _linked_decision(decision, project):
+    """The main decision with its collection roots rebased onto a linked worktree.
+
+    Same derived settings identity (proved by the selector); only
+    ``projectRoot`` and the roots move, as the store's attested-ingest rule
+    binds the decision to that worktree row's project and wiki root.
+    """
+    main = Path(decision['projectRoot'])
+
+    def rebased(root):
+        return str(project / Path(root).relative_to(main))
+    return {**decision, 'projectRoot': str(project),
+            'collections': [{**item, 'sourceRoot': rebased(item['sourceRoot'])}
+                            for item in decision['collections']],
+            'collectionRoots': {name: rebased(root)
+                                for name, root in decision.get('collectionRoots', {}).items()}}
+
+
+def _mark_schema3_write(writer, proof, marks):
+    """The pass's first store write: one journal fence (idempotent after the first).
+
+    ``proof`` is the pass's admission proof; the fresh one is kept in
+    ``marks['proof']`` for ``_after_sync``.
+    """
+    import laya_writer_scope as normal
+    fresh = normal.mark_new_write(writer)
+    if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
+            or fresh.get('productRouteAllowed') is not True):
+        raise IndexContractError('new_write_proof_unconfirmed')
+    marks['proof'] = fresh
+
+
+def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks):
+    """One view's pass: changed cards ingested, unchanged members keep their trust.
+
+    ``binding`` is the main worktree's journal-recorded binding (None for a
+    linked worktree, whose row the store itself re-observes). A view with no
+    head yet (a first-seen worktree or branch) ingests every card: trust is
+    never reused from another view (``ViewStore._card``: ``foreign_card_trust``).
+    """
+    import laya_blob_values as v
+    import laya_writer_scope as normal
+    import wiki_lifecycle
+    from laya_blob_store import _regular
+    import laya_view_values as view_values
+    from laya_view_store import _skip_patterns
+    import uuid
+    try:
+        handle = store.capture_view(worktree_id, deadline=deadline)
+        head = store.head(handle)
+        cold = head['gen_id'] is None
+        with store._session() as db:
+            row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
+            # A cold view publishes nothing until complete; its progress is
+            # the newest generation it prepared and never published.
+            base = (head['gen_id'] if not cold else next(iter(db.execute(
+                "SELECT gen_id FROM generations WHERE view_id=? AND state='prepared' "
+                'ORDER BY ordinal DESC LIMIT 1', (handle.view_id,)).fetchone() or ()), None))
+            old = {} if base is None else {m['path']: m for m in store._stored(db, base)[0]}
+        if row is None or (binding is not None and row['binding_digest'] != binding):
+            v.fail('wiki_binding_changed')
+        root = row['wiki_root']
+        found, skipped = _schema3_wiki_cards(root)
+        # skipPaths is read each pass, outside the binding: a card it newly
+        # covers leaves the generation (not a file removal), one it no longer
+        # covers is ingested like a new card.
+        skips = _skip_patterns(dict(row))
+        paths = [p for p in found if not view_values.skipped(p, skips)]
+        removed = sorted(set(old) - set(found))
+        excluded = sorted(set(old) & (set(found) - set(paths)))
+        current = {}
+        for path in paths:
+            try:
+                raw, _node, _root = _regular(root, path, v.MAX_BODY)
+            except OSError:
+                v.fail('wiki_card_unavailable')
+            current[path] = (v.hash_bytes(raw), raw)
+        changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
+        if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
+                and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
+            return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
+                    'storeFormat': 'schema3', 'removed': len(removed)}
+        if not changed and not removed and not excluded and not cold:
+            return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
+        # First store write of this pass: the journal fence comes first.
+        _mark_schema3_write(writer, proof, marks)
+        scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
+        members, pending, ingested = {}, 0, 0
+        for path in paths:
+            sha, raw = current[path]
+            if path not in changed:
+                members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
+                                                            'trust_digest')}
+                continue
+            if (pending or ingested >= SCHEMA3_MAX_INGEST
+                    or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
+                # Left for the next wake; the published head keeps its old bytes.
+                pending += 1
+                if path in old:
+                    members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
+                                                                'trust_digest')}
+                continue
+            admitted = store.ingest_attested_card(worktree_id, path, decision=decision,
+                                                  provenance_scan=scan)
+            ingested += 1
+            body = (raw.decode('utf8') if admitted['blob_sha'] == sha
+                    else store.document(admitted['blob_sha'])['body'])
+            members[path] = dict(path=path, blob_sha=admitted['blob_sha'],
+                                 display_title=v.markdown_title(body, admitted['blob_sha']),
+                                 trust_digest=admitted['trust_digest'])
+        if pending and not ingested and not removed and not excluded:
+            return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
+        manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
+                        complete=True, sources=[], members=[members[p] for p in sorted(members)])
+        generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
+        normal.validate_normal_writer(writer)
+        if cold and pending:
+            # No partial first generation: recall answers view_preparing until complete.
+            return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
+                    'generation': None, 'prepared': generation, 'ingested': ingested,
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped}
+        store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+    except v.BlobStoreError as exc:
+        if exc.reason in SCHEMA3_BINDING_REASONS:
+            return {'state': 'deferred', 'reason': 'schema3_binding_changed',
+                    'detail': exc.reason, 'storeFormat': 'schema3'}
+        if exc.reason in SCHEMA3_TRANSIENT_REASONS:
+            return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
+        raise
     return {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
             'generation': generation, 'ingested': ingested, 'removed': len(removed),
             'pending': pending, 'skipped': skipped}
 
 
-def _after_sync(decision, proof, grants, result):
-    """Wiki discovery after a completed sync, on both sync paths.
+def _after_sync(decision, proof, grants, result, *, store_format='v6'):
+    """External-edit drain and wiki discovery after a completed sync, on every sync path.
 
     After receipt and ACK, with the model service stopped. A raised error or
     a retry keeps this wake; the published head is not touched. ``proof`` is
@@ -913,9 +1125,14 @@ def _after_sync(decision, proof, grants, result):
     fence). A blocked run, a burst skipped over the pending cap, or a run
     that started the cursor (earlier changes are not discovered) is reported
     as ``wikiDiscovery``.
+
+    A schema3 selection opens no v6 component: discovery takes the view
+    head this pass published or found (``result['generation']``) as its
+    cursor generation instead of the v6 lineage read.
     """
     if result.get('state') not in ('indexed', 'unchanged'):
         return result
+    schema3 = store_format == 'schema3'
 
     import laya_install_journal as journal
     from contextlib import nullcontext
@@ -942,7 +1159,10 @@ def _after_sync(decision, proof, grants, result):
                 if grants is None:
                     return result
                 import laya_wiki_discovery
-                if v5:
+                if schema3:
+                    outcome = laya_wiki_discovery.drain_after_sync(
+                        decision, grants, recheck=recheck, view_generation=result.get('generation'))
+                elif v5:
                     with _discovery_base_component(decision,owner,proof) as component:
                         outcome = laya_wiki_discovery.drain_after_sync(
                             decision,grants,recheck=recheck,coordination=component)
@@ -957,6 +1177,183 @@ def _after_sync(decision, proof, grants, result):
             or outcome.get('cursorStarted') is True or 'initialBackfill' in outcome):
         result = {**result, 'wikiDiscovery': outcome}
     return result
+
+
+# Shadow migration driver (design 8.2, U6). After a completed sync of a
+# selected main checkout, one pass advances the private schema3 candidate by
+# at most SHADOW_STEPS_PER_PASS steps: activation record -> candidate store
+# -> begin_migration -> advance_shadow ... -> shadow_verified. The selected
+# reader never changes here; reader_ready/switched belong to the
+# ``laya_shadow_migration.advance_reader_ready`` entry (U15), called once a
+# pass when it exists. Every step is crash-safe on its own: a SIGKILL leaves
+# the activation record, the candidate file or the intent, and the next pass
+# resumes from whichever exists.
+# Provisional bounds (K8, measured by U8). The pass budget must hold one
+# lock-free prepare (about 25 s for 3,749 synthetic cards).
+SHADOW_STEPS_PER_PASS = 4
+SHADOW_PASS_SECONDS = 60.0
+# ``off`` stops the driver before it reads or writes anything.
+SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
+SHADOW_ACTIVATION = 'shadow-migration-activation.json'
+SHADOW_CANDIDATE = 'shadow-candidate.sqlite'
+
+
+def _shadow_gate(project, executing_root, *, prove=True):
+    """``(decision, state)`` when the driver may act, else ``(None, reason)``.
+
+    Read-only. Each step reacquires the install and operation locks and
+    reproves route, endpoint (bundle included) and intent itself; this gate
+    only keeps a pass from starting or continuing on a route it must not
+    touch. ``prove=False`` (between steps of one pass) skips the full bundle
+    proof the previous step already repeated.
+    """
+    if os.environ.get(SHADOW_KILL_SWITCH) == 'off':
+        return None, 'disabled'
+    import project_dir
+    if project_dir.layout(project) == 'split':
+        return None, 'project_dir_split'
+    import laya_install_journal as journal
+    with journal.read_only_journals():
+        # A linked worktree classifies as ``worktree``, never ``candidate``.
+        decision = select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            return None, 'route_not_selected'
+        if journal.journal_version(decision['journalPath']) != 5:
+            return None, 'journal_not_v5'
+    # An install that already reads a schema3 store is past this migration;
+    # its intent, candidate and activation record stay as they are.
+    selected = _selected_store_format(decision)
+    if selected != 'v6':
+        return None, 'reader_schema3_selected' if selected == 'schema3' else 'reader_selection_unproved'
+    state = Path(decision['journalPath']).parent
+    import laya_ledger_common as ledger
+    if ledger.qmd_ledger_present(state):
+        return None, ledger.QMD_ORIGIN_DETACH_REQUIRED
+    import laya_fresh_wiki_origin as fresh
+    if fresh.upgrade_fenced(str(project)):
+        return None, 'upgrade_fenced'
+    if not prove:
+        return (decision, state), None
+    try:
+        with journal.read_only_journals():
+            proof = journal.verify_selected_route(decision)
+    except Exception as exc:
+        return None, 'bundle_drift' if journal.is_bundle_drift(exc) else 'selected_proof_unavailable'
+    if (proof.get('productRouteAllowed') is not True
+            or proof.get('executingPluginRoot') != str(executing_root)):
+        return None, 'selected_proof_unavailable'
+    return (decision, state), None
+
+
+def _shadow_open(state, project, scope):
+    """Open the private candidate; its own store_meta and worktrees are the SSOT."""
+    from laya_journal_reader import _readonly
+    from laya_view_store import ViewStore
+    path = state / SHADOW_CANDIDATE
+    with _readonly(path, state) as db:
+        meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                          (str(project),)).fetchall()
+    if meta is None or not isinstance(meta[0], str) or len(rows) != 1:
+        raise IndexContractError('migration_candidate_invalid')
+    return ViewStore.open(path, repository=json.loads(meta[0]), scope_id=scope), rows[0][0]
+
+
+def _shadow_step(decision, state, executing_root, store, deadline):
+    """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``."""
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    project = Path(decision['projectRoot'])
+    activation, candidate = state / SHADOW_ACTIVATION, state / SHADOW_CANDIDATE
+    if not os.path.lexists(activation):
+        ledger._write(activation, {'schema': 'memvane-shadow-activation-v1', 'project': str(project),
+                                   'state': str(state), 'candidate': str(candidate),
+                                   'activated_ns': time.time_ns()}, replace=False)
+        return 'activate', None, store
+    record = ledger._read_json(activation)
+    if (not isinstance(record, dict) or record.get('project') != str(project)
+            or record.get('state') != str(state) or record.get('candidate') != str(candidate)):
+        raise IndexContractError('migration_activation_invalid')
+    if not os.path.lexists(candidate):
+        import laya_checkout_view as checkout
+        from laya_view_store import ViewStore
+        repository = checkout.register_repository(str(project))
+        worktree = checkout.register_worktree(str(project), repository)
+        ViewStore.create(candidate, project_root=str(project), repository=repository,
+                         worktree=worktree, scope_id=decision['scopeId']).close()
+        return 'create', None, store
+    if store is None:
+        store = _shadow_open(state, project, decision['scopeId'])
+    view, worktree_id = store
+    if not os.path.lexists(state / migration._INTENT):
+        intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
+                                           executing_root=executing_root, deadline=deadline)
+        return 'begin', intent['migration_state'], store
+    result = migration.advance_shadow(view, project=project, executing_root=executing_root,
+                                      deadline=deadline)
+    return result['stage'], result['migration_state'], store
+
+
+def shadow_pass(project, *, executing_root=None):
+    """One bounded shadow migration pass for a selected main checkout.
+
+    Returns ``{state, reason, steps, stages, migration_state}``. ``skipped``:
+    a guard refused and nothing was read from or written to the migration.
+    ``progressed``: the step cap was reached, or the head is verified and the
+    reader_ready entry is absent. ``waiting``: a step asked for a later retry,
+    the pass budget or a guard stopped it. ``error``: a step raised; only its
+    fixed code is kept. A pass past the guard emits one ``migration.driver``
+    event.
+    """
+    import event_log
+    import laya_shadow_migration as migration
+    project = Path(project)
+    executing_root = Path(_writer_executing_root() if executing_root is None else executing_root)
+    bound, reason = _shadow_gate(project, executing_root)
+    status = {'state': 'skipped', 'reason': reason, 'steps': 0, 'stages': [], 'migration_state': None}
+    if bound is None:
+        return status
+    decision, state = bound
+    started = time.monotonic()
+    deadline = started + SHADOW_PASS_SECONDS
+    status['state'], status['reason'] = 'progressed', None
+    store = None
+    try:
+        while status['steps'] < SHADOW_STEPS_PER_PASS:
+            if status['steps']:
+                if deadline - time.monotonic() < migration._STEP_SECONDS:
+                    status.update(state='waiting', reason='pass_deadline')
+                    break
+                again, reason = _shadow_gate(project, executing_root, prove=False)
+                if again != bound:
+                    status.update(state='waiting', reason=reason or 'route_changed')
+                    break
+            ready = getattr(migration, 'advance_reader_ready', None)
+            if status['migration_state'] == 'shadow_verified':
+                # The head was re-proved by this pass; U15 continues from it.
+                result = ready(store[0], project=Path(decision['projectRoot']),
+                               executing_root=executing_root, deadline=deadline)
+                stage, current = result['stage'], result['migration_state']
+            else:
+                stage, current, store = _shadow_step(decision, state, executing_root, store, deadline)
+            status['steps'] += 1
+            status['stages'].append(stage)
+            if current is not None:
+                status['migration_state'] = current
+            if stage == 'retry':
+                status.update(state='waiting', reason='step_retry')
+                break
+            if stage == 'reader_ready' or (current == 'shadow_verified' and not callable(ready)):
+                break
+    except Exception as exc:
+        status.update(state='error', reason=event_log.code(exc))
+    finally:
+        if store is not None:
+            store[0].close()
+        event_log.emit('migration.driver', state_root=state, host='worker', outcome=status['state'],
+                       reason=status['reason'], ms=(time.monotonic() - started) * 1000,
+                       steps=status['steps'], migration_state=status['migration_state'])
+    return status
 
 
 def _checked(result):

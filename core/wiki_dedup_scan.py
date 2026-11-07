@@ -18,6 +18,8 @@ selected route already stored for its sealed head generation
 nothing to a provider and makes no paid call; the resolver agent judges every
 queued pair. Only cards whose bytes on disk still hash to the indexed hash are
 compared, so a card edited after the last publish waits for the next one.
+A schema3-selected install is skipped with ``SCHEMA3_VECTORS_UNAVAILABLE``:
+its v6 database is frozen and its view heads hold no chunk vectors yet.
 
 Bounds per run: at most ``MAX_CARDS`` indexed cards, at most
 ``MAX_PAGES_PER_SCAN`` changed cards compared against the rest,
@@ -56,6 +58,8 @@ EXCLUDED_STATUSES = {"superseded", "discarded"}
 SNAPSHOT_VERSION = 1
 # Changed cards compared per run. Each is compared against every indexed card.
 MAX_PAGES_PER_SCAN = 50
+# A schema3-selected install: its view heads carry no chunk vectors to scan.
+SCHEMA3_VECTORS_UNAVAILABLE = "selected_dedup_schema3_vectors_unavailable"
 # Upper bound on chunk rows read from the head generation in one run.
 MAX_VECTOR_ROWS = 50_000
 DEADLINE_SECONDS = 20.0
@@ -298,6 +302,21 @@ def run(cwd: str) -> dict:
         log("ABORT: unsafe_compile_path")
         return result
 
+    from laya_product_sync_worker import _selected_store_format
+    try:
+        store_format = (_selected_store_format(decision) if "journalPath" in decision
+                        else "v6")
+    except Exception as exc:  # the journal moved or is busy: next run retries
+        log(f"DEFER: selected store format unreadable ({type(exc).__name__})")
+        result["state"] = "deferred"
+        return result
+    if store_format == "schema3":
+        # The frozen v6 head is not this install's index any more, and its
+        # view heads publish without chunk vectors until the view vector
+        # fill exists: there is nothing current to compare.
+        log(f"SKIP: {SCHEMA3_VECTORS_UNAVAILABLE}")
+        result["reason"] = SCHEMA3_VECTORS_UNAVAILABLE
+        return result
     deadline = time.monotonic() + DEADLINE_SECONDS
     try:
         generation, cards = indexed_cards(decision, deadline)

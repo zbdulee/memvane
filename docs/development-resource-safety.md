@@ -32,15 +32,16 @@ subset of those same cases, so `npm test` excludes only those wrapper test names
 Ordinary mock, regression and integration tests (`--kind test`, including CI),
 remote review (`--kind review`) and hash or staging work (`--kind hash`) do not
 use model-work OS pressure, CPU/RSS, relative headroom, swap or system-load
-admission limits. They retain one global lease, file concurrency1, finite wall
+admission limits. They retain the global lease, file concurrency1, finite wall
 time, a process-count limit, verified ownership and abnormal-child cleanup.
 Actual model-loading/training tests must use `--kind model-test`; an explicit
 calibration envelope also always retains resource limits. This development-test
 distinction does not change any installed runtime learning admission.
 
 Independent review uses `--kind review` with a read-only reviewer command. It
-shares the global lease, process monitoring, finite timeout, and cleanup rules.
-It must not overlap a test or another review. Backup retains resource limits.
+holds the global lease alone and keeps process monitoring, finite timeout, and
+cleanup rules, so it never overlaps a test or another review. Backup retains
+resource limits.
 
 `--calibration-envelope` is accepted only with `--kind test` or `--kind model-test`
 and `--max-seconds` of at most 30 (otherwise `calibration_requires_short_test`).
@@ -48,14 +49,29 @@ The envelope is a one-shot synthetic trial that expires 30 seconds after issue
 and cannot be reused (`calibration_already_consumed`); its schema, fixed policy
 values and window rules are defined in `core/context_learning/bounded_calibration.py`.
 
-All kinds and all worktrees share `~/Library/Logs/qmd-development-guard/heavy.lock`
+All kinds and all worktrees use `~/Library/Logs/qmd-development-guard/heavy.lock`
 on macOS (`~/.local/state/qmd-development-guard/heavy.lock` on Linux). The home
 comes from the OS UID database, so an isolated `HOME` variable cannot create a
 different global lease. Checkpoints and logs remain on disk across a reboot.
-One process holds the lease across preflight, execution, monitoring and cleanup.
-Tests must not overlap backup/hash work or independent review. Direct shell
-commands and older checkouts are not automatically intercepted: agents must use
-the wrapper. `npm run test:guard-unit` is the narrow bootstrap exception for the
+One process holds the lease across preflight, execution, monitoring and cleanup,
+and the child inherits the lock descriptors so they stay held while it lives.
+
+Ordinary focused tests (`--kind test`) take `heavy.lock` shared plus one of three
+`test-slot-N.lock` files exclusively, so at most three run at once across all
+worktrees and agents. The full suite (`npm test` passes `--exclusive`), backup,
+hash, model-test, review, sampler-only and any calibration envelope take
+`heavy.lock` exclusively: they run alone, and no ordinary test starts beside
+them. Older checkouts take `heavy.lock` exclusively as well, so they exclude and
+are excluded by shared tests. A request that finds no free lease exits 75 with
+`development_job_busy`; there is no queue, so callers wait and retry.
+
+Each run keeps its own `runs/ID` directory, checkpoint, samples, temporary
+runtime root and process tree. Exclusive runs record `active.json`; a shared test
+records `active-test-slot-N.json` for its slot. A shared test refuses an
+unsettled `active.json` or its own slot record; an exclusive job refuses any
+unsettled record. Older checkouts read only `active.json`.
+Direct shell commands and older checkouts are not automatically intercepted:
+agents must use the wrapper. `npm run test:guard-unit` is the narrow bootstrap exception for the
 small Python-only safety tests, which perform no real host probes or model work.
 
 ## Resource-limited work policy, not measured safe thresholds
@@ -94,7 +110,7 @@ unverified process group or existing session is terminated.
 
 Private `runs/ID/samples.jsonl` under the persistent development log directory records system pressure/headroom/swap/load and
 each observed child's CPU/RSS/start identity, without command arguments or
-environment secrets. `checkpoint.json` and `active.json` distinguish passed,
+environment secrets. `checkpoint.json` and `active.json` (or the slot record) distinguish passed,
 failed, stopped and unsettled cleanup. A resource stop is never completion.
 Unknown root identity/failed cleanup or a killed supervisor leaves an unsettled
 checkpoint and blocks the next guarded job pending manual inspection. Child

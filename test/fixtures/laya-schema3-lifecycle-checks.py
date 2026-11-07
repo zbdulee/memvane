@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -48,16 +49,22 @@ class Lifecycle(schema3.Schema3EndpointChecks):
             stack.enter_context(J.read_only_journals())
             endpoint = stack.enter_context(self.lease.resolve_endpoint(
                 self.case.project, action='recall', host_root=host_root or self.case.plugin))
-            result = self.query(endpoint)
+            if endpoint.record['store_format'] == 'v6':
+                # A v6 endpoint answers from a pinned warm snapshot (U9 recall).
+                decision = self.reader._recheck(endpoint)[2]['readerDecision']
+                deadline = time.monotonic() + 20
+                snapshot = stack.enter_context(self.opens.inspect_warm_snapshot(endpoint, deadline=deadline))
+                result = self.dispatch.query_endpoint(endpoint, checkout=self.case.project, prompt='heron',
+                                                      query_vector=None, deadline=deadline,
+                                                      snapshot=snapshot, decision=decision)
+            else:
+                result = self.query(endpoint)
             return endpoint.endpoint_id, thaw(endpoint.record), result
 
+    def heron(self, rows):
+        """The fixture card is among the recall rows (U11 recall row paths)."""
+        return self.case.WIKI + '/concepts/heron-route.md' in [r['path'] for r in rows.rows]
 
-# Reuse the U10 setup and helpers, not its scenarios.
-for _name in [n for n in dir(schema3.Schema3EndpointChecks) if n.startswith('test_')]:
-    setattr(Lifecycle, _name, None)
-
-
-class ActiveUpgradeChecks(Lifecycle):
     @contextmanager
     def upgrade_authority(self, new):
         case, reader = self.case, self.reader
@@ -96,6 +103,13 @@ class ActiveUpgradeChecks(Lifecycle):
                 stack.enter_context(patch)
             yield upgrade, target, review, new_att
 
+
+# Reuse the U10 setup and helpers, not its scenarios.
+for _name in [n for n in dir(schema3.Schema3EndpointChecks) if n.startswith('test_')]:
+    setattr(Lifecycle, _name, None)
+
+
+class ActiveUpgradeChecks(Lifecycle):
     def test_01_active_upgrade_fence_activation_and_restore_keep_schema3_reader(self):
         _initial, switched_target, _selected = self.switched()
         expected = switched_target.endpoint_id
@@ -116,7 +130,7 @@ class ActiveUpgradeChecks(Lifecycle):
                         endpoint_id, record, rows = self.recall(host_root, authority=False)
                         observed.append(('fence', str(host_root) == str(new), endpoint_id,
                                          record['store_format'], rows.store_format,
-                                         'concepts/heron-route.md' in [r['path'] for r in rows.rows]))
+                                         self.heron(rows)))
                 return result
             with mock.patch.object(fresh, '_change', side_effect=change):
                 self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
@@ -125,11 +139,11 @@ class ActiveUpgradeChecks(Lifecycle):
                                       return_value=[[str(new / 'p.py'), 1, 2, 3, 4, 5]]):
                 endpoint_id, record, rows = self.recall(new, authority=False)
                 observed.append(('activated', True, endpoint_id, record['store_format'], rows.store_format,
-                                 'concepts/heron-route.md' in [r['path'] for r in rows.rows]))
+                                 self.heron(rows)))
             self.assertEqual(upgrade._restore(intent)['status'], 'active_upgrade_restored_laya')
         endpoint_id, record, rows = self.recall()
         observed.append(('restored', False, endpoint_id, record['store_format'], rows.store_format,
-                         'concepts/heron-route.md' in [r['path'] for r in rows.rows]))
+                         self.heron(rows)))
         emit('schema3-active-upgrade', observed=observed)
         self.assertEqual([o[0] for o in observed], ['fence', 'fence', 'activated', 'restored'])
         for stage in observed:
@@ -160,7 +174,7 @@ class ActiveUpgradeChecks(Lifecycle):
             endpoint_id, record, rows = self.recall(companion, authority=False)
         emit('schema3-companion', kind=kind, endpoint=endpoint_id, store_format=rows.store_format)
         self.assertEqual((endpoint_id, record['store_format'], rows.store_format), (expected, 'schema3', 'schema3'))
-        self.assertIn('concepts/heron-route.md', [r['path'] for r in rows.rows])
+        self.assertTrue(self.heron(rows), [r['path'] for r in rows.rows])
 
 
 class StateMoveChecks(Lifecycle):
@@ -218,7 +232,7 @@ class StateMoveChecks(Lifecycle):
         endpoint_id, record, rows = self.recall()
         self.assertEqual((endpoint_id, record, rows.store_format), (current.preferred_endpoint, moved, 'schema3'))
         self.assertEqual(rows.data_generation, self.gens[-1])
-        self.assertIn('concepts/heron-route.md', [r['path'] for r in rows.rows])
+        self.assertTrue(self.heron(rows), [r['path'] for r in rows.rows])
         # Rollback (U16) from the re-sealed endpoint keeps the original v6 sidecar baseline.
         original = self.stored(initial.preferred_endpoint)
         with self.seed.authority():
@@ -283,6 +297,201 @@ class StateMoveChecks(Lifecycle):
         self.assertEqual((endpoint_id, record['state'], rows.store_format),
                          (current.preferred_endpoint, str(target), 'schema3'))
 
+
+    def test_03_state_move_reseals_v6_endpoint_for_recall_and_active_upgrade(self):
+        # B5: a v6-selected v5 install (no schema3 switch) moves its state root.
+        case = self.case
+        initial = self.reader.read_selection(case.journal)
+        old = self.stored(initial.preferred_endpoint)
+        self.assertEqual(old['store_format'], 'v6')
+        target = self.state_mover.target_root(case.state, case.home)
+        with self.move_authority():
+            chosen, result = self.state_mover.move(case.project, case.state, home=case.home)
+        self.assertEqual((chosen, result['status']), (target, 'state_move_complete'))
+        self.moved_case(target)
+        current = self.reader.read_selection(case.journal)
+        moved = self.stored(current.preferred_endpoint)
+        outcomes, recalled, observed = {}, [], []
+
+        def attempt(name, fn):
+            try:
+                fn()
+                outcomes[name] = 'ok'
+            except Exception as exc:  # noqa: BLE001 - the refusal code is the evidence
+                outcomes[name] = str(getattr(exc, 'reason', None) or exc)
+
+        # (a) the persisted endpoint (the drift/fence recall path) reissues at the new root.
+        attempt('recall', lambda: recalled.append(self.recall()))
+        # (b) the next active upgrade seals that reader and serves the fenced recall from it.
+        new = case.home / 'new-plugin'
+        new.mkdir()
+
+        def upgrade_once():
+            with self.upgrade_authority(new) as (upgrade, upgrade_target, review, _new_att):
+                intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                          upgrade_target['sourceCommit'], review['proposalSha256'],
+                                          '/synthetic/model', 3)
+                fresh = importlib.import_module('laya_fresh_wiki_origin')
+                actual_change = fresh._change
+
+                def change(*args, **kwargs):
+                    result = actual_change(*args, **kwargs)
+                    if result['phase'] == 'upgrading':
+                        fenced_id, fenced_record, fenced_rows = self.recall(new, authority=False)
+                        observed.append((fenced_id, fenced_record['state'], fenced_rows.store_format,
+                                         self.heron(fenced_rows)))
+                    return result
+                with mock.patch.object(fresh, '_change', side_effect=change):
+                    self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+                self.assertEqual(upgrade._restore(intent)['status'], 'active_upgrade_restored_laya')
+        attempt('active_upgrade', upgrade_once)
+        emit('v6-state-move', selection=list(self.selection()), state=moved['state'], db=moved['db_path'],
+             outcomes=outcomes, fenced=observed)
+        self.assertEqual(outcomes, {'recall': 'ok', 'active_upgrade': 'ok'})
+        self.assertEqual((current.epoch, current.previous_endpoint),
+                         (initial.epoch + 1, initial.preferred_endpoint))
+        self.assertEqual({k for k in old if old[k] != moved[k]},
+                         {'state', 'db_path', 'catalog_path', 'binding_path', 'sidecar_path',
+                          'attestation_sha256'})
+        self.assertEqual(moved['state'], str(target))
+        for key in ('db_path', 'catalog_path', 'binding_path', 'sidecar_path'):
+            self.assertEqual(moved[key], str(target / Path(old[key]).name), key)
+        self.assertTrue(self.reader.relocated_pair(old, moved))
+        for field, value in (('incarnation', '0' * 32), ('state_node', [0, 0]), ('creation_epoch', 99),
+                             ('db_node', [0, 0]), ('catalog_path', str(target / 'other.sqlite')),
+                             ('roots', ['other'])):
+            with self.subTest(forged=field):
+                self.assertFalse(self.reader.relocated_pair(old, dict(moved, **{field: value})))
+        endpoint_id, record, rows = recalled[0]
+        self.assertEqual((endpoint_id, record, rows.store_format), (current.preferred_endpoint, moved, 'v6'))
+        self.assertTrue(self.heron(rows), [r['path'] for r in rows.rows])
+        self.assertEqual(observed, [(current.preferred_endpoint, str(target), 'v6', True)])
+        endpoint_id, record, _rows = self.recall()
+        self.assertEqual((endpoint_id, record['state']), (current.preferred_endpoint, str(target)))
+
+    def released_move(self):
+        """Move the state root as 0.43.46 did: the journal CAS leaves the v6 reader record unchanged."""
+        case = self.case
+        initial = self.reader.read_selection(case.journal)
+        target = self.state_mover.target_root(case.state, case.home)
+        with self.move_authority(), mock.patch.object(self.reader, 'relocate_selection',
+                                                      lambda *args, **kwargs: None):
+            chosen, result = self.state_mover.move(case.project, case.state, home=case.home)
+        self.assertEqual((chosen, result['status']), (target, 'state_move_complete'))
+        self.moved_case(target)
+        stale = self.reader.read_selection(case.journal)
+        self.assertEqual((stale.epoch, stale.preferred_endpoint), (initial.epoch, initial.preferred_endpoint))
+        old = self.stored(initial.preferred_endpoint)
+        self.assertEqual((old['store_format'], Path(old['state']).parent.name), ('v6', 'laya'))
+        return initial, old, target
+
+    def upgrade_with_fence(self, observed):
+        """One active upgrade (switch and restore), recalling once while fenced."""
+        case = self.case
+        new = case.home / 'new-plugin'
+        new.mkdir(exist_ok=True)
+        with self.upgrade_authority(new) as (upgrade, upgrade_target, review, _new_att):
+            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                      upgrade_target['sourceCommit'], review['proposalSha256'],
+                                      '/synthetic/model', 3)
+            fresh = importlib.import_module('laya_fresh_wiki_origin')
+            actual_change = fresh._change
+
+            def change(*args, **kwargs):
+                result = actual_change(*args, **kwargs)
+                if result['phase'] == 'upgrading':
+                    fenced_id, fenced_record, fenced_rows = self.recall(new, authority=False)
+                    observed.append((fenced_id, fenced_record['state'], fenced_rows.store_format,
+                                     self.heron(fenced_rows)))
+                return result
+            with mock.patch.object(fresh, '_change', side_effect=change):
+                self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+            self.assertEqual(upgrade._restore(intent)['status'], 'active_upgrade_restored_laya')
+
+    def test_04_active_upgrade_reseals_reader_left_by_released_state_move(self):
+        # B6: a 0.43.46 move left the v6 reader naming the legacy root.
+        case = self.case
+        initial, old, target = self.released_move()
+        outcomes, observed = {}, []
+
+        def attempt(name, fn):
+            try:
+                fn()
+                outcomes[name] = 'ok'
+            except Exception as exc:  # noqa: BLE001 - the refusal code is the evidence
+                outcomes[name] = str(getattr(exc, 'reason', None) or exc)
+                causes[name] = repr(exc.__context__)
+        causes = {}
+        # Recall writes nothing: the persisted endpoint still names the old root.
+        attempt('recall_before', self.recall)
+        attempt('active_upgrade', lambda: self.upgrade_with_fence(observed))
+        current = self.reader.read_selection(case.journal)
+        moved = self.stored(current.preferred_endpoint)
+        emit('v6-released-move-recovery', selection=list(self.selection()), state=moved['state'],
+             outcomes=outcomes, causes=causes, fenced=observed)
+        self.assertEqual(outcomes, {'recall_before': 'reader_install_changed', 'active_upgrade': 'ok'})
+        self.assertEqual((current.epoch, current.previous_endpoint),
+                         (initial.epoch + 1, initial.preferred_endpoint))
+        self.assertEqual({k for k in old if old[k] != moved[k]},
+                         {'state', 'db_path', 'catalog_path', 'binding_path', 'sidecar_path',
+                          'attestation_sha256'})
+        self.assertEqual(moved['state'], str(target))
+        self.assertTrue(self.reader.relocated_pair(old, moved))
+        self.assertEqual(observed, [(current.preferred_endpoint, str(target), 'v6', True)])
+        endpoint_id, record, rows = self.recall()
+        self.assertEqual((endpoint_id, record['state'], rows.store_format),
+                         (current.preferred_endpoint, str(target), 'v6'))
+        self.assertTrue(self.heron(rows), [r['path'] for r in rows.rows])
+
+    def test_05_released_move_recovery_refuses_unproved_relocations(self):
+        case = self.case
+        initial, old, target = self.released_move()
+        raw = (case.state / J.PRODUCTION_ATTESTATION).read_bytes()
+        (settled,) = sorted(case.state.glob('state-move-*-settled.json'))
+
+        def released(record=None, attestation=raw):
+            with self.seed.authority(), self.reader._readonly(case.journal, case.state) as db:
+                current, stored = self.reader._selection(db)
+                decision = J.select_route(str(case.project), action='recall')
+                proof = J.verify_selected_route_read_only(decision)
+                try:
+                    return self.reader._released_move(db, current, stored if record is None else record,
+                                                      case.state, attestation, case.project, decision, proof)
+                except ValueError as exc:
+                    return str(exc)
+        observed = released()
+        self.assertTrue(self.reader.relocated_pair(old, observed))
+        self.assertEqual(observed['state'], str(target))
+        other = Path(old['state']).with_name('4' * 32)
+        cases = {'state_node': dict(old, state_node=[0, 0]), 'db_node': dict(old, db_node=[0, 0]),
+                 'binding_node': dict(old, binding_node=[0, 0]), 'roots': dict(old, roots=['other']),
+                 'incarnation': dict(old, incarnation='0' * 32),
+                 'other_root': dict(old, state=str(other),
+                                    **{k: str(other / Path(old[k]).name) for k in
+                                       ('db_path', 'catalog_path', 'binding_path', 'sidecar_path')}),
+                 'not_legacy': dict(old, state=str(target.with_name('5' * 32)))}
+        refused = {name: released(record) for name, record in cases.items()}
+        refused['attestation'] = released(attestation=raw[:-1] + b' ')
+        hidden = settled.with_name('kept.json')
+        os.rename(settled, hidden)
+        try:
+            refused['no_settled_move'] = released()
+            with self.upgrade_authority(case.home / 'new-plugin') as (upgrade, upgrade_target, review, _att):
+                (case.home / 'new-plugin').mkdir()
+                try:
+                    upgrade._prepare(case.project, case.state, case.journal, case.home, case.home / 'new-plugin',
+                                     upgrade_target['sourceCommit'], review['proposalSha256'],
+                                     '/synthetic/model', 3)
+                    refused['active_upgrade'] = 'ok'
+                except Exception as exc:  # noqa: BLE001 - the refusal code is the evidence
+                    refused['active_upgrade'] = str(exc)
+        finally:
+            os.rename(hidden, settled)
+        emit('v6-released-move-refusals', refused=refused)
+        self.assertEqual(refused, {**{name: 'reader_relocation_unproved' for name in refused},
+                                   'active_upgrade': 'active_upgrade_reader_changed'})
+        current = self.reader.read_selection(case.journal)
+        self.assertEqual((current.epoch, current.preferred_endpoint), (initial.epoch, initial.preferred_endpoint))
 
 if __name__ == '__main__':
     unittest.main()

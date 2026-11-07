@@ -457,6 +457,52 @@ def _selected_runtime(bound, roots, capacity):
 
 
 @contextmanager
+def _schema3_search(bound, text):
+    """Lexical candidates from the journal-selected schema3 view head.
+
+    The same persisted reader endpoint and row shape as schema3 recall
+    (``resolve_endpoint`` + ``query_endpoint``), held under the sync owner
+    like the v5 runtime path; no v6 component is opened. The view store has
+    no exclusion table. No query vector is asked: the schema3 rows carry an
+    RRF score, not the cosine the vector-only relevance rule needs.
+    """
+    import laya_journal_reader as reader
+    import laya_reader_dispatch as dispatch
+    import laya_reader_lease as lease
+    import project_dir
+    from laya_index_host_route import wiki_index_roots
+    from laya_index_sync import sync_owner
+    from laya_product_sync_worker import _owned_selected_proof, _writer_executing_root
+    from resource_deferred import ResourceDeferred
+    decision, proof = bound
+    project = Path(decision['projectRoot'])
+    if project_dir.layout(decision['projectRoot']) == 'split':
+        raise ValueError('project_dir_split')
+    names = tuple(sorted(wiki_index_roots(decision['collections'])))
+    with sync_owner(Path(decision['queuePath'])) as owner:
+        if owner is None:
+            raise ResourceDeferred('owner_busy')
+        if _owned_selected_proof(decision, owner) != proof:
+            raise ValueError('selected_compile_proof_changed')
+        with lease.resolve_endpoint(project, action='recall',
+                                    host_root=_writer_executing_root()) as endpoint:
+            if endpoint.record.get('store_format') != 'schema3':
+                raise ValueError('selected_store_format_changed')
+            _record, _raw, current = reader._recheck(endpoint)
+            if current.get('installId') != proof.get('installId'):
+                raise ValueError('selected_compile_proof_changed')
+            result = dispatch.query_endpoint(
+                endpoint, checkout=project, prompt=text, query_vector=None,
+                deadline=time.monotonic() + QUERY_SECONDS, snapshot=None, decision=decision,
+                provider=None, authority=endpoint)
+        if _owned_selected_proof(decision, owner) != proof:
+            raise ValueError('selected_compile_proof_changed')
+    yield ([(row['path'].split('/', 1)[1], row['hash'], None) for row in result.rows
+            if row['path'].partition('/')[0] in names],
+           (frozenset(), frozenset()), names[0], 'bound')
+
+
+@contextmanager
 def selected_search(bound, text):
     """Open only the capacity path; never fall back to a whole-root scan."""
     from laya_index_runtime import capacity_store_paths
@@ -465,6 +511,12 @@ def selected_search(bound, text):
     from laya_source_catalog import load_exclusions
     import laya_host_response as response
     decision, proof = bound
+    if 'journalPath' in decision:
+        from laya_product_sync_worker import _selected_store_format
+        if _selected_store_format(decision) == 'schema3':
+            with _schema3_search(bound, text) as found:
+                yield found
+            return
     capacity = capacity_store_paths(decision['dbPath'])
     roots = wiki_index_roots(decision['collections'])
     names = tuple(sorted(roots))

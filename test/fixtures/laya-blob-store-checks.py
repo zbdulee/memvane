@@ -414,7 +414,7 @@ class BlobStoreChecks(BlobStoreCase):
             result = original(root, path, limit)
             if path == 'cards/a.md':
                 (self.root / '.memvane/settings.json').write_text(
-                    json.dumps(dict(SETTINGS, skipPaths=['notes'])), encoding='utf8')
+                    json.dumps(dict(SETTINGS, name='renamed')), encoding='utf8')
             return result
         with mock.patch.object(self.mod, '_regular', side_effect=read):
             self.refused(store.ingest_card, wid, 'cards/a.md')
@@ -461,14 +461,17 @@ class BlobStoreChecks(BlobStoreCase):
         store, repository, _ = self.create(main)
         return store, repository, linked
 
-    def test_19_different_worktree_skip_policy_is_not_combined(self):
+    def test_19_different_worktree_collections_are_not_combined_but_skip_paths_are(self):
         store, repository, linked = self.pair_for_policy('different-policy')
-        (linked / '.memvane/settings.json').write_text(
-            json.dumps(dict(SETTINGS, skipPaths=['notes'])), encoding='utf8')
+        settings = linked / '.memvane/settings.json'
+        settings.write_text(json.dumps(dict(SETTINGS, name='renamed')), encoding='utf8')
         record = view.register_worktree(str(linked), repository)
         before = store.counts()
         self.refused(store.register_worktree, str(linked), record)
         self.assertEqual(store.counts(), before)
+        # skipPaths is outside the settings identity (as for a v6 route).
+        settings.write_text(json.dumps(dict(SETTINGS, skipPaths=['notes'])), encoding='utf8')
+        self.assertEqual(store.register_worktree(str(linked), record), record['worktreeId'])
 
     def test_20_same_semantic_policy_can_use_different_json_spelling(self):
         store, repository, linked = self.pair_for_policy('same-policy')

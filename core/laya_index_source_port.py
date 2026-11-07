@@ -396,7 +396,9 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
     The route/cutover proof binds the physical roots. A-int's source manifest
     binds their sorted ``collection/relative`` text members under one scope.
     No project-root traversal is used: a hidden wiki root is entered only when
-    it was explicitly approved as a collection root.
+    it was explicitly approved as a collection root. ``index`` None is a
+    store without an exclusion table (a schema3 selection's raw discovery):
+    every scanned file is eligible.
     """
     if (not isinstance(roots, Mapping) or not 1 <= len(roots) <= 16
             or not isinstance(scope, str) or not scope):
@@ -417,7 +419,8 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
     budget = _Budget(_positive_int("max_files", max_files),
                      _positive_int("max_bytes", max_bytes))
     _require_platform()
-    excluded_paths, excluded_hashes = _load_exclusions(index, scope)
+    excluded_paths, excluded_hashes = ((frozenset(), frozenset()) if index is None
+                                       else _load_exclusions(index, scope))
     raw: list[tuple[str, str, bytes]] = []
     for name, root in ordered.items():
         try:

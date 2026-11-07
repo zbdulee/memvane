@@ -29,7 +29,7 @@ SOURCE_FIELDS = ('path', 'fingerprint_id', 'presence')
 MEMBER_FIELDS = ('path', 'blob_sha', 'display_title', 'trust_digest')
 HEAD_FIELDS = ('view_id', 'gen_id', 'epoch', 'incarnation')
 VIEW_FIELDS = ('view_id', 'worktree_id', 'branch_key', 'head_oid', 'checkout_digest', 'policy_digest')
-STAGE_FIELDS = ('schema', 'build_id', 'incarnation', 'view', 'worktree_binding', 'settings_sha',
+STAGE_FIELDS = ('schema', 'build_id', 'incarnation', 'view', 'worktree_binding',
                 'base', 'manifest_digest', 'manifest', 'skip_paths', 'files', 'vector_mode', 'vector_spec')
 STAGE_SCHEMA = 'memvane-generation-stage-v2'
 LEGACY_STAGE_SCHEMA = 'memvane-generation-stage-legacy-v1'
@@ -155,8 +155,7 @@ def view_fields(handle):
 def stage(build_id, incarnation, handle, saved, base, value, skips, files, vector_spec=None, legacy=None):
     result = dict(schema=STAGE_SCHEMA if legacy is None else LEGACY_STAGE_SCHEMA,
                        build_id=build_id, incarnation=incarnation,
-                       view=view_fields(handle), worktree_binding=saved['binding_digest'],
-                       settings_sha=saved['settings_sha'], base=base,
+                       view=view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
                        manifest_digest=manifest_digest(value), manifest=value,
                        skip_paths=skips, files=files, vector_mode=vectors.mode(vector_spec),
                        vector_spec=vector_spec)

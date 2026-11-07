@@ -165,7 +165,7 @@ class FillGuardChecks(helpers.FillCase):
         def observe_then_change(entry):
             saved = observe(entry)
             if self.calls['embedder'] and not changed:
-                path.write_text(json.dumps(dict(name='blobfixture', skipPaths=['notes'])), encoding='utf8')
+                path.write_text(json.dumps(dict(name='blobfixture-renamed')), encoding='utf8')
                 changed.append(True)
             return saved
         try:

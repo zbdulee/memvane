@@ -917,7 +917,7 @@ class MigrationSnapshotChecks(unittest.TestCase):
                     original_capture = migration.capture_wiki_bytes
                     def change_settings(*args, **kwargs):
                         captured = original_capture(*args, **kwargs)
-                        settings_path.write_bytes(original_settings + b' ')
+                        settings_path.write_text(json.dumps(dict(json.loads(original_settings), name='renamed')))
                         return captured
                     try:
                         with mock.patch.object(migration, 'capture_wiki_bytes', side_effect=change_settings):

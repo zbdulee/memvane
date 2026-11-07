@@ -604,7 +604,7 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
                 raw = body.encode('utf8')
                 proof = {'schema': 'memvane-v6-wiki-admission-v1', 'blob_sha': digest,
                          'worktree_id': worktree_id, 'path': relative,
-                         'binding_digest': row['binding_digest'], 'settings_sha': row['settings_sha'],
+                         'binding_digest': row['binding_digest'],
                          'wiki_root': saved['wiki_root'],
                          'wiki_identity': {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']},
                          'repository_digest': worktree['repositoryDigest'],
@@ -632,19 +632,16 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
                         trusted.append({'path': member['path'], 'hash': digest, 'trust_digest': trust,
                                         'title': member['title'], 'source': member['source']})
             import os
-            import project_dir
-            settings = Path(saved['settings_path'])
-            current_settings = project_dir.settings_path(Path(saved['project_root']))
-            if current_settings != settings:
+            try:
+                blobs._bound_settings(saved)
+            except values.BlobStoreError:
                 values.fail('wiki_admission_changed')
-            raw_settings, _, _ = blobs._regular(settings.parent, settings.name, 1024 * 1024)
             wiki_fd = blobs._dirfd(Path(saved['wiki_root']))
             try:
                 wiki_node = blobs._node(os.fstat(wiki_fd))
             finally:
                 os.close(wiki_fd)
-            if (values.hash_bytes(raw_settings) != saved['settings_sha']
-                    or wiki_node != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
+            if (wiki_node != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
                     or not checkout.capture_matches(observed['capture'], store._repository,
                                                     worktree, deadline=deadline)
                     or time.monotonic() >= deadline):
@@ -837,6 +834,181 @@ def stage_fts_corpus_bounded(store, *, worktree_id, endpoint, decision, observat
             if commitment is not None and progress != expected:
                 raise IndexContractError('migration_commitment_mismatch')
             return {'observation': page['observation'], 'members': corpus}
+
+
+def _committed_pages(items, size):
+    """Split rows exactly as the bounded captures do: MAX_BATCH rows, then MAX_BATCH_BYTES."""
+    pages, page, used = [], [], 0
+    for item in items:
+        length = size(item)
+        if page and (len(page) == MAX_BATCH or used + length > MAX_BATCH_BYTES):
+            pages.append(page)
+            page, used = [], 0
+        if length > MAX_BATCH_BYTES:
+            raise IndexContractError('migration_body_limit')
+        page.append(item)
+        used += length
+    pages.append(page)
+    return pages
+
+
+def _fold_committed(progress, fold, pages, observation, content):
+    for index, rows in enumerate(pages):
+        last = index == len(pages) - 1
+        page = {**content(rows), 'next': None if last else {'after': rows[-1]['path'],
+                                                             'observation': observation}}
+        progress = fold(progress, page)
+        yield progress, page
+
+
+def reuse_committed_members(store, *, worktree_id, endpoint, decision, provenance_scan,
+                            observation, commitments, deadline):
+    """Rebuild the committed mapping and corpora without re-reading old bodies.
+
+    The verification and corpus steps already proved every page against the
+    source at ``observation`` and folded it into the intent's chains. Here one
+    pinned snapshot supplies only metadata (paths, hashes, sources, sidecar
+    titles and rowids) and must still show ``observation``; bodies come from
+    the candidate's content-addressed blobs. The rebuilt pages are accepted
+    only if they refold to exactly the committed chains, so any difference
+    between the reused chain and the pinned source refuses. The caller's
+    final recheck still proves the source revision; this grants no authority.
+    """
+    import laya_blob_store as blobs
+    import laya_blob_values as values
+    from pathlib import Path
+    from laya_index_a import _qmd_title
+
+    values.identifier(observation)
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    values.exact(commitments, ('migration_id', 'verification', 'corpora'))
+    values.identifier(commitments['migration_id'], values.UUID)
+    values.identifier(worktree_id, values.UUID)
+    identity = {'migration_id': commitments['migration_id'], 'observation': observation,
+                'provenance_scan': provenance_scan}
+    expected = _verification_progress(commitments['verification'], identity)
+    corpora = commitments['corpora']
+    values.exact(corpora, ('verification_digest', 'base', 'sidecar'))
+    if (not expected['complete'] or corpora['verification_digest'] != expected['digest']
+            or corpora['base'] is None):
+        raise IndexContractError('migration_commitment_mismatch')
+    expected_corpora = {}
+    for key in ('base', 'sidecar'):
+        if corpora[key] is not None:
+            expected_corpora[key] = _verification_progress(
+                corpora[key], identity, cursor_observation=_corpus_observation(key, observation))
+            if not expected_corpora[key]['complete']:
+                raise IndexContractError('migration_commitment_mismatch')
+    with store._session() as db:
+        saved = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
+    if saved is None:
+        values.fail('worktree_missing')
+    saved = dict(saved)
+    worktree = blobs._worktree_record(saved, store._repository, store._policy)
+    if worktree['gitDir'] != store._repository['commonGitDir']:
+        values.fail('migration_main_checkout_required')
+    if saved['project_root'] != endpoint.record['project'] or store._scope != endpoint.record['scope']:
+        values.fail('migration_endpoint_changed')
+    row, observed = blobs._worktree_row(saved['project_root'], store._repository,
+                                         worktree, deadline=deadline)
+    if any(saved[key] != value for key, value in row.items()):
+        values.fail('wiki_binding_changed')
+    roots = {item['name']: item['sourceRoot'] for item in decision['collections']
+             if item.get('role') == 'wiki'}
+    prefixes = tuple(name + '/' for name in wiki_index_roots(decision['collections']))
+
+    step_deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
+    with readers.inspect_warm_snapshot(endpoint, deadline=step_deadline) as snapshot:
+        current = capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                    after=None, deadline=step_deadline)
+        if current['observation'] != observation:
+            raise IndexContractError('migration_snapshot_changed')
+        inventory = capture_effective(snapshot, endpoint=endpoint, decision=decision, after=None,
+                                      deadline=step_deadline, include_ineligible=True, _all_inventory=True)
+        base, _, _, side = snapshot.connections
+        needs_sidecar = side is not None and any(item['source'] == 'sidecar'
+                                                 for item in inventory['members'])
+        sidecar_commitment = (sidecar_fts_commitment(snapshot, endpoint=endpoint, decision=decision,
+                                                     deadline=step_deadline) if needs_sidecar else None)
+        with readers._validation_deadline(snapshot.connections, step_deadline):
+            args = (snapshot.published[0], decision['scopeId'])
+            edges = [None] + [edge for item in _prefix_ranges(prefixes) for edge in item] + [None]
+            for lower, upper in zip(edges[0::2], edges[1::2]):
+                if base.execute('SELECT 1 FROM membership m WHERE m.gen=? AND m.scope=? AND m.eligible=1' +
+                                ('' if lower is None else ' AND m.path>=?') +
+                                ('' if upper is None else ' AND m.path<?') + ' LIMIT 1',
+                                args + tuple(edge for edge in (lower, upper) if edge is not None)).fetchone():
+                    raise IndexContractError('migration_raw_fts_corpus_unproved')
+            base_rows = base.execute('SELECT m.path,m.hash FROM membership m WHERE m.gen=? AND m.scope=? '
+                                     'AND m.eligible=1 ORDER BY m.path COLLATE BINARY LIMIT ?',
+                                     (snapshot.published[0], decision['scopeId'], MAX_DOCS + 1)).fetchall()
+            side_rows = (side.execute('SELECT path,hash,title,rowid FROM docs ORDER BY path COLLATE BINARY '
+                                      'LIMIT ?', (MAX_DOCS + 1,)).fetchall() if needs_sidecar else [])
+        if len(base_rows) > MAX_DOCS or len(side_rows) > MAX_DOCS:
+            raise IndexContractError('migration_membership_limit')
+    if time.monotonic() >= step_deadline:
+        raise IndexContractError('reader_snapshot_deadline')
+
+    titles = {path: title for path, _, title, _ in side_rows}
+    effective = [item for item in inventory['members'] if item['eligible'] == 1 and not item['excluded']]
+    base_corpus = [{'path': path, 'hash': digest} for path, digest in base_rows]
+    side_corpus = [{'path': path, 'hash': digest, 'title': title, 'rowid': rowid}
+                   for path, digest, title, rowid in side_rows]
+    bodies = {}
+    with store._session() as db:
+        def body(digest):
+            if time.monotonic() >= deadline:
+                raise IndexContractError('reader_snapshot_deadline')
+            if digest not in bodies:
+                bodies[digest] = store._blob(digest)
+            return bodies[digest]
+
+        def size(item):
+            return len(body(item['hash']).encode('utf8'))
+
+        def mapping(members):
+            inventory_rows, trusted = [], []
+            for member in members:
+                name, _ = member['path'].split('/', 1)
+                if name not in roots or str(Path(roots[name])) != saved['wiki_root']:
+                    values.fail('migration_wiki_root_changed')
+                text = body(member['hash'])
+                title = (_qmd_title(text, member['path']) if member['source'] == 'base'
+                         else titles.get(member['path']))
+                inventory_rows.append({key: member[key] for key in ('path', 'hash', 'source')})
+                evidence = legacy_card_evidence({**inventory_rows[-1], 'body': text, 'title': title}, decision)
+                if evidence is not None:
+                    trust = store._put_legacy_attestation(db, blob_sha=member['hash'], worktree_id=worktree_id,
+                        branch_key=observed['capture']['branchKey'], evidence=evidence,
+                        provenance_scan=provenance_scan, verify_only=True)
+                    trusted.append({'path': member['path'], 'hash': member['hash'], 'trust_digest': trust,
+                                    'title': title, 'source': member['source']})
+            return {'inventory': inventory_rows, 'trusted': trusted}
+
+        state, progress = _verified_state(observation), _initial_verification(identity)
+        for progress, page in _fold_committed(progress, _fold_verification,
+                                              _committed_pages(effective, size), observation, mapping):
+            _merge_verified_page(state, page)
+        if progress != expected:
+            raise IndexContractError('migration_commitment_mismatch')
+        corpora_out = {}
+        for key, rows in (('base', base_corpus), ('sidecar', side_corpus)):
+            if key == 'sidecar' and not needs_sidecar:
+                continue
+            if key not in expected_corpora:
+                raise IndexContractError('migration_commitment_mismatch')
+            corpus_observation = _corpus_observation(key, observation)
+            progress = _initial_corpus(identity, key, corpus_observation)
+            for progress, _ in _fold_committed(progress, _fold_corpus, _committed_pages(rows, size),
+                                               corpus_observation, lambda part: {'corpus': part}):
+                pass
+            if progress != expected_corpora[key]:
+                raise IndexContractError('migration_commitment_mismatch')
+            corpora_out[key] = {'observation': corpus_observation, 'members': rows}
+    return {'evidence': state, 'sidecar_commitment': sidecar_commitment,
+            'corpus': corpora_out['base'], 'sidecar_corpus': corpora_out.get('sidecar')}
 
 
 def sidecar_fts_required(snapshot, *, endpoint, decision, deadline):
@@ -1751,12 +1923,19 @@ def _static_digest(endpoint, decision):
                                                       'decision': decision})
 
 
-def _scan_slot_exists(store, scan_id):
-    """A derived candidate build owns its scan id; a new source needs a new scan."""
-    with store._session() as db:
-        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='generation_slots'").fetchone() is None:
-            return False
-        return db.execute('SELECT 1 FROM generation_slots WHERE build_id=?', (scan_id,)).fetchone() is not None
+def _build_id(intent):
+    """The candidate slot id of this intent's source state.
+
+    A slot is bound to one stage, so a source change needs a new id. A fresh
+    scan uses its scan id; every receipt catch-up extends the catch-up digest
+    chain, so the kept scan gets a new, replayable id per caught-up source.
+    """
+    import laya_blob_values as values
+    catch_up = intent.get('catch_up')
+    if catch_up is None:
+        return intent['provenance_scan']['id']
+    return values.digest('memvane-shadow-build-v1', {'scan': intent['provenance_scan']['id'],
+                                                    'catch_up': catch_up['digest']})[:32]
 
 
 def _check_source_revision(source):
@@ -2093,9 +2272,11 @@ def advance_migration(store, *, project, executing_root, deadline):
                     progresses = [intent.get('verification')] + ([] if corpora is None else
                                                                   [corpora['base'], corpora['sidecar']])
                     changes = None
+                    # A prepared or published slot of the kept scan does not
+                    # block a catch-up: the caught-up source builds under a new
+                    # _build_id, and the old slot stays private.
                     if (intent.get('static') == static
-                            and all(item is None or _progress_current(item) for item in progresses)
-                            and not _scan_slot_exists(store, intent['provenance_scan']['id'])):
+                            and all(item is None or _progress_current(item) for item in progresses)):
                         changes = _revision_changes(snapshot, decision=decision,
                             previous=intent['source_revision'], check=check, receipts=receipts,
                             deadline=deadline)
@@ -2459,7 +2640,7 @@ def prepare_shadow_generation(store, *, project, executing_root, deadline):
             generation = receipt['generation']
         else:
             proof = {'observation': intent['observation'], 'endpoint': endpoint, 'decision': decision,
-                     'provenance_scan': intent['provenance_scan'],
+                     'provenance_scan': intent['provenance_scan'], 'build_id': _build_id(intent),
                      'commitments': {'migration_id': intent['migration_id'],
                                      'verification': verification, 'corpora': corpora}}
             generation = store.prepare_generation(handle, None, expected_head=head,

@@ -1703,13 +1703,17 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
 
 
 def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None,
-                          main_proof=None) -> dict:
+                          main_proof=None, linked=None) -> dict:
     """Serve the journal-preferred reader endpoint.
 
     A v6 endpoint answers during or immediately after a fence. A schema3
     endpoint answers there and also for the main checkout's selected route:
     ``main_proof`` is then that route's full proof (non-degraded: a cold
     provider may be woken), never a drift or fence read.
+
+    ``linked`` is the ``worktree`` decision of a linked git worktree recall.
+    A schema3 endpoint then serves that worktree's own view (never the main
+    one); a v6 endpoint ignores it and serves the main checkout as before.
     """
     if main_proof is not None and drift_decision is None:
         _fail('reader_selection_unproved')
@@ -1768,7 +1772,7 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=
         if endpoint.record.get('store_format') == 'schema3':
             return _serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
                                          decision=decision, project=project, prompt=prompt,
-                                         deadline=deadline, main_proof=main_proof)
+                                         deadline=deadline, main_proof=main_proof, linked=linked)
         if main_proof is not None:
             # The selection moved back to v6 after this recall read it.
             raise ValueError('reader_selection_changed')
@@ -1804,12 +1808,18 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=
 
 
 def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, prompt,
-                          deadline, main_proof):
+                          deadline, main_proof, linked=None):
     """Recall from a journal-selected schema3 view; no v6 store or source file is opened.
 
     Settings, admission, provider and vector-fallback rules are the v6
     recall's. The query vector, when the sealed view has vectors and a warm
     provider answers, is bound to this endpoint by ``approved_query_vector``.
+
+    ``linked`` reads the linked worktree's own view. A view with no
+    published head yet (a first-seen worktree or branch) answers with no
+    context and ``view_preparing``; a checkout that keeps changing under the
+    read answers with no context and ``checkout_changed``. Neither falls
+    back to another view.
     """
     import config
     import laya_journal_reader as reader
@@ -1820,7 +1830,11 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     _recall_epoch(proof)
     _trace_fields(store_format='schema3', reader_endpoint=endpoint.endpoint_id)
     if degraded:
-        _trace_fields(degraded='reader_endpoint')
+        _trace_fields(degraded='worktree' if linked is not None else 'reader_endpoint')
+    if linked is not None:
+        state = _RECALL_STATE.get()
+        if state is not None:
+            state['ownView'] = True
     settings = config.load_project_config(decision['projectRoot'])
     selected_settings = decision['recallSettings']
     if any(settings.get(key) != value for key, value in selected_settings.items()):
@@ -1856,9 +1870,36 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
                 prompt=prompt, deadline=deadline))
             if vector is None:
                 vector_off.append('provider_unavailable')
-        result = dispatch.query_endpoint(endpoint, checkout=project, prompt=prompt,
-                                         query_vector=vector, deadline=deadline, snapshot=None,
-                                         decision=decision, provider=provider, authority=endpoint)
+        for attempt in range(2):
+            try:
+                result = dispatch.query_endpoint(
+                    endpoint, checkout=project, prompt=prompt, query_vector=vector,
+                    deadline=deadline, snapshot=None, decision=decision, provider=provider,
+                    authority=endpoint, linked=linked)
+                break
+            except Exception as exc:
+                # Design 5.1/5.2: a cold view, or a checkout that moved twice
+                # under the read, answers with no context and no other view.
+                # (The view store's error carries ``reason``; this module
+                # reaches the candidate store only through the reader adapter.)
+                reason = getattr(exc, 'reason', None)
+                if reason == 'checkout_changed' and not attempt and time.monotonic() < deadline:
+                    continue
+                if reason not in ('view_preparing', 'checkout_changed'):
+                    raise
+                if reason == 'view_preparing':
+                    # The sync pass that prepares this view is asked for; it
+                    # publishes the view's first generation only when complete.
+                    if main_proof is not None:
+                        try:
+                            _recall_sync_wake(decision['projectRoot'])
+                        except Exception:
+                            pass
+                    _write_selection_log(decision['projectRoot'], 'laya_view_preparing', [])
+                _trace_final(reason)
+                print(f'[memvane] {reason}; no context from this checkout\'s view yet',
+                      file=sys.stderr)
+                return host_payload(host, '')
     _trace_fields(semantic=result.semantic_status)
     vector_fallback = None
     if provider is None:
@@ -1869,7 +1910,8 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
         code = _wake_provider(decision, main_proof)
         vector_fallback = ('selected_provider_resource_deferred'
                            if vector_off[0] == 'resource_deferred' else code)
-    elif unsealed:
+    elif unsealed or (vector is not None and result.semantic_status == 'lexical_only'):
+        # The second case: a linked worktree view sealed lexical-first.
         vector_fallback = 'selected_view_vectors_pending'
     if vector_fallback is not None:
         _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
@@ -1881,7 +1923,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
         record, _raw, current = reader._recheck(endpoint)
         if not _proof_still_current(current, proof):
             return False
-        with reader._schema3_pin(record, deadline=deadline) as (_store, _handle, pin):
+        with reader._schema3_pin(record, deadline=deadline, linked=linked) as (_store, _handle, pin):
             return pin.gen_id == result.data_generation
     return _serve_verified_rows(
         host, decision, payload, settings, prompt, list(result.rows), top_n=top_n,
@@ -2484,11 +2526,40 @@ WORKTREE_NOTICE = ('[memvane] linked git worktree: search serves the main checko
                    'and learning run only from the main checkout.')
 
 
+# A schema3-selected install gives each linked worktree its own view, filled
+# by the main checkout's sync owner (laya_product_sync_worker).
+WORKTREE_VIEW_NOTICE = ('[memvane] linked git worktree: search serves this worktree\'s own '
+                        'published wiki view; the main checkout\'s sync owner updates it. Wiki '
+                        'compile, wiki lifecycle and learning run only from the main checkout.')
+
+
 def _worktree_label(decision: dict) -> str:
     main = decision['mainRoute']['projectRoot']
     return ('[memvane] read-only from the main checkout ' + main + ': this cwd is a '
             'linked git worktree. Cards and paths below are the main checkout\'s last '
             'published wiki index; changes made only in this worktree are not indexed.')
+
+
+def _worktree_view_label(decision: dict) -> str:
+    return ('[memvane] linked git worktree ' + decision['worktreeProjectRoot'] + ': cards and '
+            'paths below are this worktree\'s own last published wiki view.')
+
+
+def _request_worktree_sync(main: dict, proof: dict, recheck) -> None:
+    """Record the main checkout's existing ``laya-sync`` wake for a linked worktree.
+
+    Its owner publishes the main view and then each linked worktree's own
+    view. No compile, lifecycle or discovery grant is recorded from here.
+    """
+    import runtime_work
+    result = runtime_work.request('laya-sync', main['projectRoot'])
+    refreshed = recheck(main)
+    stable = lambda row: {key: value for key, value in row.items() if key != 'selectionEpoch'}
+    if (stable(refreshed) != stable(proof)
+            or refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
+        _fail('selected_proof_changed')
+    if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
+        _fail('selected_sync_enqueue_failed')
 
 
 def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -2498,6 +2569,11 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     and derived settings identity. No sync, compile or index wake, wiki grant,
     provider start or learning capture is recorded, and edit events are not
     validated against the main project's paths.
+
+    When the main checkout's journal selects a schema3 endpoint, recall reads
+    this worktree's own view instead (``view_preparing`` until its first
+    publish), and SessionStart, ``index`` and a successful Bash record the
+    main checkout's ``laya-sync`` wake, whose owner fills that view.
     """
     from laya_install_journal import verify_selected_route_read_only as recheck
     main = decision.get('mainRoute')
@@ -2522,8 +2598,12 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         if version == 5:
             try:
                 main_payload = {**payload, 'cwd': main['projectRoot']}
+                state = _RECALL_STATE.get()
+                if state is not None:
+                    state.pop('ownView', None)
                 response = serve_endpoint_recall(host,main_payload,cwd=main['projectRoot'],
-                    drift_decision=main if main.get('state') == 'candidate' else None)
+                    drift_decision=main if main.get('state') == 'candidate' else None,
+                    linked=decision)
                 cwd = payload.get('cwd', decision.get('worktreeProjectRoot'))
                 current = select_route(cwd, action='recall') if isinstance(cwd,str) else {}
                 fenced_after_pin = (main.get('state') == 'candidate' and
@@ -2546,7 +2626,9 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         holder = response if key else response.get('hookSpecificOutput', {})
         field = key or 'additionalContext'
         if isinstance(holder, dict) and holder.get(field):
-            labelled = _worktree_label(decision) + '\n' + holder[field]
+            own = (_RECALL_STATE.get() or {}).get('ownView')
+            labelled = ((_worktree_view_label if own else _worktree_label)(decision) + '\n' +
+                        holder[field])
             if len(labelled.encode('utf-8')) > MAX_CONTEXT_BYTES:
                 _fail('result_context_too_large')
             holder[field] = labelled
@@ -2556,12 +2638,23 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
             _fail('invalid_session_event')
         if recheck(main) != proof:
             _fail('selected_proof_changed')
+        if _selected_store_format(main) == 'schema3':
+            _request_worktree_sync(main, proof, recheck)
+            if host == 'hermes':
+                return {'status': 'worktree_view', 'notice': WORKTREE_VIEW_NOTICE}
+            return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
+                                           'additionalContext': WORKTREE_VIEW_NOTICE}}
         if host == 'hermes':
             return {'status': 'worktree_read_only', 'notice': WORKTREE_NOTICE}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
                                        'additionalContext': WORKTREE_NOTICE}}
     if recheck(main) != proof:
         _fail('selected_proof_changed')
+    if (action in ('index', 'file-change-event')
+            and (_successful_edit(payload) if action == 'index' else _successful_bash(payload))
+            and _selected_store_format(main) == 'schema3'):
+        _request_worktree_sync(main, proof, recheck)
+        return {}
     if action == 'gate':
         if host == 'hermes':
             return {'action': 'continue'}

@@ -205,7 +205,7 @@ class GenerationChecks(GenerationCase):
 
     def test_10_settings_change_invalidates_original_prepared_handle(self):
         store,_,h=self.seeded();gen,base=self.prepared(store,h)
-        p=self.root/'.memvane/settings.json';p.write_text(json.dumps(dict(helpers.SETTINGS,skipPaths=['notes'])))
+        p=self.root/'.memvane/settings.json';p.write_text(json.dumps(dict(helpers.SETTINGS,name='renamed')))
         self.refused(store.publish_generation,h,gen,expected_head=base)
         self.assertEqual(store._db.execute('SELECT COUNT(*) FROM view_heads').fetchone()[0],0)
 

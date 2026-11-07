@@ -52,6 +52,108 @@ class GuardChecks(unittest.TestCase):
                     with guard.Lease(root):pass
             with guard.Lease(root):pass
 
+    def test_ordinary_tests_share_three_slots_and_a_fourth_is_busy(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            with guard.Lease(root,shared=True) as a, guard.Lease(root,shared=True) as b, \
+                 guard.Lease(root,shared=True) as c:
+                self.assertEqual(sorted((a.slot,b.slot,c.slot)),[0,1,2])
+                with self.assertRaisesRegex(guard.GuardError,'busy'):
+                    with guard.Lease(root,shared=True):pass
+                freed=b.slot;b.__exit__(None,None,None)
+                with guard.Lease(root,shared=True) as again:self.assertEqual(again.slot,freed)
+            self.assertEqual(guard.TEST_SLOTS,3)
+
+    def test_shared_tests_and_exclusive_jobs_exclude_each_other(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            with guard.Lease(root,shared=True):
+                with self.assertRaisesRegex(guard.GuardError,'busy'):
+                    with guard.Lease(root):pass
+            with guard.Lease(root):
+                with self.assertRaisesRegex(guard.GuardError,'busy'):
+                    with guard.Lease(root,shared=True):pass
+            with guard.Lease(root,shared=True):pass
+
+    def test_older_copy_exclusive_heavy_lock_still_excludes_shared_tests(self):
+        import fcntl
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            def older_copy():
+                # What an older checkout's guard does: LOCK_EX on heavy.lock only.
+                fd=os.open(root/'heavy.lock',os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);return fd
+            fd=older_copy()
+            try:
+                with self.assertRaisesRegex(guard.GuardError,'busy'):
+                    with guard.Lease(root,shared=True):pass
+            finally:os.close(fd)
+            with guard.Lease(root,shared=True):
+                with self.assertRaises(BlockingIOError):older_copy()
+
+    def test_shared_lease_rejects_unsafe_slot_lock(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder);target=root/'other';target.write_text('unchanged')
+            (root/'test-slot-0.lock').symlink_to(target)
+            with self.assertRaises(guard.GuardError):
+                with guard.Lease(root,shared=True):pass
+            self.assertEqual(target.read_text(),'unchanged')
+
+    def test_lease_mode_follows_kind_exclusive_flag_and_calibration(self):
+        from types import SimpleNamespace
+        cases=[(SimpleNamespace(kind='test'),True),
+               (SimpleNamespace(kind='test',exclusive=True),False),
+               (SimpleNamespace(kind='test',calibration_envelope='/x.json'),False),
+               (SimpleNamespace(kind='model-test'),False),(SimpleNamespace(kind='backup'),False),
+               (SimpleNamespace(kind='hash'),False),(SimpleNamespace(kind='review'),False)]
+        for args,shared in cases:
+            with self.subTest(args=args):self.assertEqual(guard.shared_test(args),shared)
+        argv=['development_guard.py','--kind','test','--exclusive','--','node','--test']
+        with patch.object(sys,'argv',argv), patch.object(guard,'state_root',return_value=Path('/synthetic')), \
+             patch.object(guard,'run_job',return_value=0) as run:
+            self.assertEqual(guard.main(),0)
+        self.assertTrue(run.call_args.args[0].exclusive)
+
+    def test_shared_runs_keep_state_per_slot_and_exclusive_runs_check_every_slot(self):
+        from types import SimpleNamespace
+        sample={'total_bytes':10000,'available_percent':70,'pressure':'normal',
+                'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
+        def launch(root,args):
+            child=SimpleNamespace(pid=500,poll=lambda:0)
+            with patch.object(guard,'execution_hold',return_value=False), \
+                 patch.object(guard,'system_sample',return_value=sample), \
+                 patch.object(guard,'processes',side_effect=[[],[proc(500,1,500)],[]]), \
+                 patch.object(guard.subprocess,'Popen',return_value=child) as popen, \
+                 patch.object(guard.time,'sleep'):
+                return guard.run_job(args,root),popen
+        test=lambda:SimpleNamespace(kind='test',command=['node','--test'],max_seconds=60,sample_seconds=2)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            # Two neighbours are running: their unsettled slot state does not block a third.
+            for slot in (0,1):guard.put(root/f'active-test-slot-{slot}.json',{'settled':False,'status':'running'})
+            with guard.Lease(root,shared=True), guard.Lease(root,shared=True):
+                code,popen=launch(root,test())
+                self.assertEqual(code,0)
+                self.assertEqual(len(popen.call_args.kwargs['pass_fds']),2)
+            state=guard.json.loads((root/'active-test-slot-2.json').read_text())
+            self.assertTrue(state['settled'] and state['completed'])
+            self.assertEqual(state['slot'],2)
+            self.assertFalse((root/'active.json').exists())
+            # A free slot that still records an unsettled run is a leftover and blocks.
+            with self.assertRaisesRegex(guard.GuardError,'unsettled'):launch(root,test())
+            # Exclusive work sees leftovers in any slot.
+            guard.put(root/'active-test-slot-0.json',{'settled':True})
+            with self.assertRaisesRegex(guard.GuardError,'unsettled'):
+                launch(root,SimpleNamespace(kind='hash',command=['git','status'],max_seconds=60,sample_seconds=2))
+            guard.put(root/'active-test-slot-1.json',{'settled':True})
+            code,popen=launch(root,SimpleNamespace(kind='test',exclusive=True,command=['node','--test'],
+                max_seconds=60,sample_seconds=2))
+            self.assertEqual(code,0)
+            self.assertEqual(len(popen.call_args.kwargs['pass_fds']),1)
+            state=guard.json.loads((root/'active.json').read_text())
+            self.assertTrue(state['settled'] and state['completed'])
+            self.assertNotIn('slot',state)
+
     def test_symlink_lock_is_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);target=root/'other';target.write_text('unchanged')

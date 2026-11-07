@@ -79,6 +79,10 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
             return db.execute('SELECT count(*) FROM card_sources WHERE gen_id=? AND wiki_path=?',
                               (gen_id, path)).fetchone()[0]
 
+    def view_heads(self):
+        with closing(sqlite3.connect(self.store_path.as_uri() + '?mode=ro', uri=True)) as db:
+            return sorted(db.execute('SELECT view_id,gen_id,epoch FROM view_heads').fetchall())
+
     def run_pass(self):
         """One sync pass; returns (result, ingest_attested_card call count)."""
         original = self.views.ViewStore.ingest_attested_card
@@ -95,11 +99,31 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
 
     def recall(self, prompt):
         with self.seed.authority(), self.J.read_only_journals():
+            decision = self.J.select_route(str(self.case.project), action='recall')
             with self.lease.resolve_endpoint(self.case.project, action='recall',
                                              host_root=self.case.plugin) as endpoint:
                 self.assertEqual(endpoint.record['store_format'], 'schema3')
+                # U11: the persisted schema3 reader binds to the reader's own decision.
+                decision = self.R._recheck(endpoint)[2]['readerDecision']
                 return self.dispatch.query_endpoint(endpoint, checkout=self.case.project, prompt=prompt,
-                                                    query_vector=None, deadline=time.monotonic() + 20)
+                                                    query_vector=None, deadline=time.monotonic() + 20,
+                                                    decision=decision)
+
+    def store_paths(self, query):
+        """Read the store's current main-view head directly (no reader endpoint)."""
+        store = self.views.ViewStore.open_reader(self.store_path, repository=self.repository,
+                                                 scope_id=self.case.route['scopeId'])
+        try:
+            pin = store.pin_view(store.capture_view(self.worktree['worktreeId']))
+            return pin.gen_id, [row['path'] for row in store.search(pin, query, 10)]
+        finally:
+            store.close()
+
+    def paths(self, hit):
+        """Member paths of recall rows (rows carry ``<wiki collection>/<member path>``)."""
+        wiki = next(c['name'] for c in self.decision['collections'] if c['role'] == 'wiki')
+        self.assertTrue(all(row['path'].startswith(wiki + '/') for row in hit.rows))
+        return [row['path'][len(wiki) + 1:] for row in hit.rows]
 
     # -- checks ---------------------------------------------------------------
     def test_01_pass_publishes_edited_card_and_persisted_recall_reads_it(self):
@@ -122,7 +146,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(self.v6_files(), files)
         hit = self.recall('kestrelprobe')
         self.assertEqual((hit.store_format, hit.data_generation), ('schema3', published[0]))
-        self.assertIn('concepts/kestrel-perch.md', [row['path'] for row in hit.rows])
+        self.assertIn('concepts/kestrel-perch.md', self.paths(hit))
 
         # An unchanged pass writes nothing, not even the journal fence.
         idle, idle_calls = self.run_pass()
@@ -140,36 +164,132 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
                          {p: m for p, m in members.items() if p != 'concepts/kestrel-perch.md'})
         hit = self.recall('falconprobe')
         self.assertEqual(hit.data_generation, second['generation'])
-        self.assertIn('concepts/kestrel-perch.md', [row['path'] for row in hit.rows])
+        self.assertIn('concepts/kestrel-perch.md', self.paths(hit))
         self.assertNotIn('concepts/kestrel-perch.md',
-                         [row['path'] for row in self.recall('kestrelprobe').rows])
+                         self.paths(self.recall('kestrelprobe')))
         self.assertEqual(self.v6_files(), files)
         emit('schema3-sync-publish', firstIngests=len(first_calls), editIngests=len(second_calls),
              epochs=[start[1], published[1], self.head()[1]], v6BytesUnchanged=True)
 
-    def test_02_settings_change_defers_without_writes_and_restored_bytes_publish(self):
+    def test_02_settings_bytes_and_skip_paths_edits_publish_and_recall_reads(self):
+        self.select_schema3()
+        settings = importlib.import_module('project_dir').settings_path(self.case.project)
+        original = settings.read_bytes()
+        start = self.head()
+        self.card('concepts/heron-watch.md', 'heronwatchprobe')
+        # Same settings identity, different bytes: v6 keeps serving, so does schema3.
+        settings.write_bytes(original.rstrip(b'\n') + b'\n\n')
+        spaced, calls = self.run_pass()
+        self.assertEqual(spaced['state'], 'indexed', spaced)
+        self.assertIn('concepts/heron-watch.md', calls)
+        self.assertEqual(self.head(), (spaced['generation'], start[1] + 1))
+        self.assertIn('concepts/heron-watch.md', self.paths(self.recall('heronwatchprobe')))
+        # A skipPaths edit only changes which cards the next generation holds:
+        # newly skipped cards leave without ingest (not a mass removal) ...
+        concepts = sorted(p for p in self.members(spaced['generation']) if p.startswith('concepts/'))
+        self.assertGreaterEqual(len(concepts), 3)
+        value = json.loads(original)
+        settings.write_text(json.dumps(dict(value, skipPaths=['concepts'])), encoding='utf8')
+        # Until the owner re-seals, the selected reader refuses with one fixed
+        # reason: its record binds the recallSettings digest (skipPaths included).
+        self.assert_stale_reader()
+        skipped, calls = self.run_pass()
+        self.assertEqual((skipped['state'], calls, skipped.get('readerResettle')),
+                         ('indexed', [], 'resealed'), skipped)
+        self.assertEqual(self.head(), (skipped['generation'], start[1] + 2))
+        self.assertEqual([p for p in self.members(skipped['generation']) if p.startswith('concepts/')], [])
+        self.assertEqual(self.store_paths('heronwatchprobe'), (skipped['generation'], []))
+        hit = self.recall('heronwatchprobe')
+        self.assertEqual(hit.data_generation, skipped['generation'])
+        self.assertNotIn('concepts/heron-watch.md', self.paths(hit))
+        idle, calls = self.run_pass()
+        self.assertEqual((idle['state'], calls, idle.get('readerResettle')), ('unchanged', [], None), idle)
+        # ... and cards skipPaths no longer covers come back like new cards.
+        settings.write_bytes(original)
+        self.assert_stale_reader()
+        restored, calls = self.run_pass()
+        self.assertEqual((restored['state'], sorted(calls), restored.get('readerResettle')),
+                         ('indexed', concepts, 'resealed'), restored)
+        self.assertEqual(self.members(restored['generation'])['concepts/heron-watch.md'][1], 1)
+        self.assertIn('concepts/heron-watch.md', self.paths(self.recall('heronwatchprobe')))
+        emit('schema3-sync-settings-edits', spacedPublishes=True, skipRepublishes=True, resealed=2,
+             epochs=[start[1], self.head()[1]])
+
+    def assert_stale_reader(self):
+        import traceback
+        try:
+            self.recall('heronwatchprobe')
+        except Exception as exc:
+            self.assertEqual(str(exc), 'reader_endpoint_changed', ''.join(traceback.format_exc()[-6000:]))
+        else:
+            self.fail('stale reader served')
+
+    def test_07_identity_edit_v6_also_refuses_stays_fixed_reason(self):
         self.select_schema3()
         settings = importlib.import_module('project_dir').settings_path(self.case.project)
         original = settings.read_bytes()
         start = self.head()
         epoch = self.J.inspect_journal(self.case.journal)['epoch']
         self.card('concepts/heron-watch.md', 'heronwatchprobe')
-        # Same policy, different bytes: the store's immutable worktree binding changes.
-        settings.write_bytes(original.rstrip(b'\n') + b'\n\n')
+        store = self.views.ViewStore.open(self.store_path, repository=self.repository,
+                                          scope_id=self.case.route['scopeId'])
+        self.addCleanup(store.close)
+        value = json.loads(original)
+        # Collection name (and so the v6 settings identity) changes.
+        settings.write_text(json.dumps(dict(value, name=value['name'] + '-renamed')), encoding='utf8')
         try:
-            held, calls = self.run_pass()
+            with self.assertRaises(importlib.import_module('laya_blob_values').BlobStoreError) as caught:
+                store.capture_view(self.worktree['worktreeId'])
+            self.assertEqual(caught.exception.reason, 'wiki_binding_changed')
+            try:
+                held, calls = self.run_pass()
+            except Exception as exc:  # the route itself refuses before the store
+                held, calls = {'state': 'raised', 'reason': type(exc).__name__ + ':' + str(exc)}, []
         finally:
             settings.write_bytes(original)
-        self.assertEqual((held['state'], held['reason'], held['detail']),
-                         ('deferred', 'schema3_binding_changed', 'wiki_binding_changed'))
-        self.assertEqual((calls, self.head()), ([], start))
+        emit('schema3-sync-identity-observed', held=held)
+        self.assertNotIn(held['state'], ('indexed', 'pending', 'unchanged'), held)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.head(), start)
         self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], epoch)
-        resumed, calls = self.run_pass()
-        self.assertEqual(resumed['state'], 'indexed', resumed)
-        self.assertIn('concepts/heron-watch.md', calls)
-        self.assertEqual(self.head(), (resumed['generation'], start[1] + 1))
-        emit('schema3-sync-binding-held', reason=held['reason'], detail=held['detail'],
-             headUnchanged=True, journalUnchanged=True, restoredPublishes=True)
+        emit('schema3-sync-identity-held', state=held['state'], reason=held.get('reason'))
+
+    def test_08_cold_view_publishes_only_complete_and_recall_is_preparing(self):
+        import subprocess
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        self.card('concepts/wren-path.md', 'wrenprobe')
+        warm, _calls = self.run_pass()
+        self.assertEqual(warm['state'], 'indexed', warm)
+        cards = sorted(self.members(warm['generation']))
+        self.assertGreaterEqual(len(cards), 5)
+        # A new branch is a new view with no published generation (D9).
+        subprocess.run(['git', '-C', str(self.case.project), 'checkout', '-q', '-b', 'cold-side'],
+                       check=True, capture_output=True, timeout=10)
+        time.sleep(1.1)  # Git racy-index window before the checkout capture.
+        views_before = self.view_heads()
+        everything, passes = [], []
+        with mock.patch.object(self.worker, 'SCHEMA3_MAX_INGEST', 2):
+            while True:
+                result, calls = self.run_pass()
+                passes.append(result); everything.extend(calls)
+                if result['state'] != 'pending':
+                    break
+                self.assertEqual(result['reason'], 'schema3_view_preparing', result)
+                self.assertEqual(self.view_heads(), views_before)
+                with self.assertRaises(importlib.import_module('laya_blob_values').BlobStoreError) as caught:
+                    self.recall('kestrelprobe')
+                self.assertEqual(caught.exception.reason, 'view_preparing')
+                self.assertLess(len(passes), len(cards))
+        self.assertEqual(result['state'], 'indexed', result)
+        self.assertEqual(len(passes), -(-len(cards) // 2))
+        self.assertEqual(sorted(everything), cards)
+        self.assertEqual(len(self.view_heads()), len(views_before) + 1)
+        self.assertEqual(sorted(self.members(result['generation'])), cards)
+        hit = self.recall('kestrelprobe')
+        self.assertEqual(hit.data_generation, result['generation'])
+        self.assertIn('concepts/kestrel-perch.md', self.paths(hit))
+        emit('schema3-sync-cold-view', passes=len(passes), cards=len(cards), ingests=len(everything))
 
     def test_03_interrupted_publish_keeps_old_head_and_next_pass_resumes(self):
         self.select_schema3()
@@ -198,7 +318,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(moved[1], start[1] + 2)
         replay, calls = self.run_pass()
         self.assertEqual((replay['state'], calls, self.head()), ('unchanged', [], moved))
-        self.assertIn('concepts/wren-path.md', [r['path'] for r in self.recall('robinprobe').rows])
+        self.assertIn('concepts/wren-path.md', self.paths(self.recall('robinprobe')))
         emit('schema3-sync-interrupted-publish', beforeKeepsHead=True, afterIsUnchangedReplay=True)
 
     def test_05_ingest_cap_publishes_progress_as_pending_then_completes(self):

@@ -174,28 +174,72 @@ def _current_file_node(root, relative):
         os.close(fd)
 
 
-def _observation(project_root, repository, worktree, *, deadline=None):
+SETTINGS_LIMIT = 1024 * 1024
+
+
+def _settings_identity(root):
+    """The settings identity a worktree binding commits to, read once.
+
+    It is the v6 route's settings identity (``settings_identity_digest``:
+    ``{name, role, sourceRoot}`` per derived collection, plus the project
+    root): the absolute rows are the binding's ``collections``, and the store
+    policy digests the same rows checkout-relative (folder spelling
+    normalized), so linked worktrees share it. Settings bytes and fields
+    outside that identity (``skipPaths`` and other options) are not bound;
+    readers take ``skipPaths`` from ``config`` here at each use.
+    """
     import config
     import laya_index_host_route as routes
     import project_dir
+    from pathlib import PurePosixPath
+    settings = project_dir.settings_path(root)
+    if settings is None:
+        v.fail('wiki_settings_missing')
+    raw, _, _ = _regular(settings.parent, settings.name, SETTINGS_LIMIT)
+    value = json.loads(raw.decode('utf8'), object_pairs_hook=routes._pairs)
+    if not isinstance(value, dict):
+        v.fail('wiki_binding_invalid')
+    collections = routes._derived_collections({'schema': routes.SCHEMA_V2}, root, raw)
+    routes.selected_collection_roots(root, collections)
+    wiki = Path(next(iter(routes.wiki_index_roots(collections).values())))
+    rows = []
+    for item in collections:
+        parts = PurePosixPath(os.path.relpath(item['sourceRoot'], root).replace(os.sep, '/')).parts
+        if parts and parts[0] in project_dir.NAMES:
+            parts = (project_dir.CURRENT, *parts[1:])
+        rows.append({'name': item['name'], 'role': item['role'],
+                     'sourceRoot': str(PurePosixPath(*parts)) if parts else '.'})
+    policy = v.digest('memvane-candidate-policy-v2', {
+        'schema': routes.SETTINGS_IDENTITY_SCHEMA,
+        'collections': sorted(rows, key=lambda item: item['name'])})
+    config_value = config.normalize_config(config.expand_minimal_settings(value, project_dir.CURRENT),
+                                           project_dir.CURRENT)
+    return {'policy_digest': policy, 'collections': collections, 'wiki_root': str(wiki),
+            'raw_config': value, 'config': config_value}
+
+
+def _bound_settings(saved):
+    """Current settings identity of a saved worktree row; any drift is a binding change."""
+    try:
+        current = _settings_identity(Path(saved['project_root']))
+        binding = v.parse_canonical(saved['binding_json'])
+        if (current['policy_digest'] != saved['policy_digest'] or current['wiki_root'] != saved['wiki_root']
+                or not isinstance(binding, dict) or current['collections'] != binding.get('collections')):
+            v.fail('wiki_binding_changed')
+        return current
+    except BlobStoreError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, StopIteration):
+        v.fail('wiki_settings_invalid')
+
+
+def _observation(project_root, repository, worktree, *, deadline=None):
     try:
         limit = None if deadline is None else min(deadline, time.monotonic()+checkout.CAPTURE_SECONDS)
         capture = checkout.capture_view(str(project_root), repository, worktree, deadline=limit)
         root = Path(capture['projectRoot'])
-        settings = project_dir.settings_path(root)
-        if settings is None:
-            v.fail('wiki_settings_missing')
-        raw, _, _ = _regular(settings.parent, settings.name, 1024 * 1024)
-        raw_config = json.loads(raw.decode('utf8'), object_pairs_hook=routes._pairs)
-        if not isinstance(raw_config, dict):
-            v.fail('wiki_binding_invalid')
-        policy_config = config.normalize_config(config.expand_minimal_settings(raw_config, project_dir.CURRENT),
-                                                project_dir.CURRENT)
-        policy_digest = v.digest('memvane-candidate-policy-v1', policy_config)
-        collections = routes._derived_collections({'schema': routes.SCHEMA_V2}, root, raw)
-        roots = routes.selected_collection_roots(root, collections)
-        wiki = Path(next(iter(routes.wiki_index_roots(collections).values())))
-        fd = _dirfd(wiki)
+        identity = _settings_identity(root)
+        fd = _dirfd(Path(identity['wiki_root']))
         try:
             node = _node(os.fstat(fd))
         finally:
@@ -204,13 +248,12 @@ def _observation(project_root, repository, worktree, *, deadline=None):
         if not checkout.capture_matches(capture, repository, worktree, deadline=limit,
                                         _raise_timeout=deadline is not None):
             v.fail('checkout_changed')
-        again, _, _ = _regular(settings.parent, settings.name, 1024 * 1024)
-        if raw != again:
-            v.fail('wiki_settings_changed')
-        return {'project_root': str(root), 'settings_path': str(settings),
-                'settings_sha': v.hash_bytes(raw), 'policy_digest': policy_digest, 'wiki_root': str(wiki),
-                'wiki_dev': node['dev'], 'wiki_ino': node['ino'],
-                'collections': roots, 'capture': capture}
+        again = _settings_identity(root)
+        if any(again[k] != identity[k] for k in ('policy_digest', 'collections', 'wiki_root')):
+            v.fail('wiki_binding_changed')
+        return {'project_root': str(root), 'policy_digest': identity['policy_digest'],
+                'wiki_root': identity['wiki_root'], 'wiki_dev': node['dev'], 'wiki_ino': node['ino'],
+                'collections': identity['collections'], 'capture': capture}
     except BlobStoreError:
         raise
     except checkout.CheckoutUnavailable as exc:
@@ -219,6 +262,13 @@ def _observation(project_root, repository, worktree, *, deadline=None):
         v.fail('wiki_binding_invalid')
     except (OSError, ValueError, KeyError, StopIteration):
         v.fail('wiki_binding_invalid')
+
+
+# Binding evidence: the v6 settings identity (project root, collections and
+# the policy over them), the wiki root node and the checkout record.
+BINDING_SCHEMA = 'memvane-blob-worktree-v2'
+BINDING_COLUMNS = ('policy_digest', 'wiki_root', 'wiki_dev', 'wiki_ino')
+BINDING_FIELDS = ('project_root', *BINDING_COLUMNS, 'collections', 'record')
 
 
 def _worktree_row(project_root, repository, worktree, *, deadline=None):
@@ -231,10 +281,10 @@ def _worktree_row(project_root, repository, worktree, *, deadline=None):
            'root_dev': worktree['checkout']['dev'], 'root_ino': worktree['checkout']['ino'],
            'admin_dev': worktree['gitDir']['dev'] if worktree['gitDir'] else None,
            'admin_ino': worktree['gitDir']['ino'] if worktree['gitDir'] else None,
-           'binding_digest': v.digest('memvane-blob-worktree-v1', evidence),
+           'binding_digest': v.digest(BINDING_SCHEMA, evidence),
            'binding_json': v.canonical(evidence),
            'project_root': observation['project_root'], 'record_json': v.canonical(worktree),
-           **{k: observation[k] for k in ('settings_path', 'settings_sha', 'policy_digest', 'wiki_root', 'wiki_dev', 'wiki_ino')}}
+           **{k: observation[k] for k in BINDING_COLUMNS}}
     return row, observation
 
 
@@ -264,8 +314,7 @@ def _header(db, repository, scope):
 def _worktree_record(row, repository, policy_digest):
     record = v.parse_canonical(row['record_json'])
     binding = v.parse_canonical(row['binding_json'])
-    v.exact(binding, ('project_root', 'settings_path', 'settings_sha', 'policy_digest', 'wiki_root',
-                      'wiki_dev', 'wiki_ino', 'collections', 'record'))
+    v.exact(binding, BINDING_FIELDS)
     if (not isinstance(record, dict) or set(record) != checkout.WORKTREE_FIELDS
             or record.get('schema') != checkout.WORKTREE_SCHEMA
             or record.get('worktreeId') != row['worktree_id']
@@ -274,7 +323,7 @@ def _worktree_record(row, repository, policy_digest):
             or not all(checkout._identity(record.get(k)) for k in ('project', 'checkout'))
             or (record.get('gitDir') is not None and not checkout._identity(record['gitDir']))
             or binding.get('record') != record
-            or v.digest('memvane-blob-worktree-v1', binding) != row['binding_digest']):
+            or v.digest(BINDING_SCHEMA, binding) != row['binding_digest']):
         v.fail('worktree_evidence_invalid')
     expected = dict(project_root=record['project']['path'],
                     canonical_root=record['checkout']['path'], root_dev=record['checkout']['dev'],
@@ -284,8 +333,7 @@ def _worktree_record(row, repository, policy_digest):
                     admin_ino=record['gitDir']['ino'] if record['gitDir'] else None)
     if (any(row[k] != val for k, val in expected.items())
                 or row['policy_digest'] != policy_digest
-                or any(binding.get(k) != row[k] for k in
-                   ('project_root', 'settings_path', 'settings_sha', 'policy_digest', 'wiki_root', 'wiki_dev', 'wiki_ino'))):
+                or any(binding.get(k) != row[k] for k in ('project_root', *BINDING_COLUMNS))):
         v.fail('worktree_evidence_invalid')
     return record
 
@@ -497,10 +545,10 @@ class BlobStore:
         legacy = isinstance(proof, dict) and proof.get('schema') == 'memvane-v6-wiki-admission-v1'
         if legacy:
             v.exact(proof, ('schema', 'blob_sha', 'worktree_id', 'path', 'binding_digest',
-                            'settings_sha', 'wiki_root', 'wiki_identity', 'repository_digest',
+                            'wiki_root', 'wiki_identity', 'repository_digest',
                             'capture', 'endpoint_id', 'observation'))
         else:
-            v.exact(proof, ('blob_sha', 'worktree_id', 'path', 'file', 'binding_digest', 'settings_sha',
+            v.exact(proof, ('blob_sha', 'worktree_id', 'path', 'file', 'binding_digest',
                             'wiki_root', 'wiki_identity', 'repository_digest', 'capture'))
         capture = proof['capture']
         capture_key = (worktree_id, v.canonical(capture)) if cache is not None else None
@@ -515,7 +563,7 @@ class BlobStore:
                 cache['captures'].add(capture_key)
         if (proof.get('blob_sha') != blob_sha or proof['worktree_id'] != saved['worktree_id']
                 or proof['binding_digest'] != saved['binding_digest']
-                or proof['settings_sha'] != saved['settings_sha'] or proof['wiki_root'] != saved['wiki_root']
+                or proof['wiki_root'] != saved['wiki_root']
                 or proof['wiki_identity'] != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
                 or proof['repository_digest'] != worktree['repositoryDigest']
                 or not capture_valid
@@ -609,7 +657,7 @@ class BlobStore:
                     or not checkout.capture_matches(before['capture'], self._repository, worktree)):
                 v.fail('wiki_admission_changed')
             proof = dict(blob_sha=sha, worktree_id=worktree_id, path=path, file=node,
-                         binding_digest=row['binding_digest'], settings_sha=row['settings_sha'],
+                         binding_digest=row['binding_digest'],
                          wiki_root=saved['wiki_root'], wiki_identity=rootnode,
                          repository_digest=worktree['repositoryDigest'], capture=observation['capture'])
             evidence = None
@@ -636,10 +684,7 @@ class BlobStore:
                         provenance_scan=attest[1])
                 if _current_file_node(saved['wiki_root'], path) != node:
                     v.fail('wiki_card_changed')
-                settings = Path(saved['settings_path'])
-                final_settings, _, _ = _regular(settings.parent, settings.name, 1024 * 1024)
-                if v.hash_bytes(final_settings) != saved['settings_sha']:
-                    v.fail('wiki_settings_changed')
+                _bound_settings(saved)
             return sha, trust
         except BlobStoreError:
             raise

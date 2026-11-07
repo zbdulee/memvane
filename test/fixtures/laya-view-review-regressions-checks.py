@@ -87,7 +87,7 @@ class ReaderReviewChecks(unittest.TestCase):
                                       (handle.worktree_id,)).fetchone())
         capture = store._check(handle)['capture']
         settings = case.root / '.memvane' / 'settings.json'
-        settings.write_bytes(settings.read_bytes() + b'\n')
+        settings.write_text(json.dumps(dict(json.loads(settings.read_bytes()), name='renamed')))
         observed, clock, outcome = [], [100.0], None
         baseline_error = None
         try:
@@ -119,7 +119,7 @@ class ReaderReviewChecks(unittest.TestCase):
         case = self.compose()
         store, _, _, _, _, profile, _, pin = case.ready()
         settings = case.root / '.memvane' / 'settings.json'
-        settings.write_bytes(settings.read_bytes() + b'\n')
+        settings.write_text(json.dumps(dict(json.loads(settings.read_bytes()), name='renamed')))
         actual, clock, observed = store._observe, [100.0], []
 
         def observe(*args,**kwargs):
