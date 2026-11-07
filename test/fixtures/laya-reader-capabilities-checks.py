@@ -438,7 +438,9 @@ class CapabilityChecks(fixture.ReaderChecks):
         spec=importlib.util.spec_from_file_location('recovery_fixture',HERE/'laya-journal-reader-recovery-checks.py')
         recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
         with recovery.fixture(converted=True) as (_helper,case,reader,_bridge,_installer,_readiness,selected):
-            with self.assertRaisesRegex(ValueError,'reader_format_not_selectable'):
+            # The in-process candidate descriptor has no journal issuance; format
+            # pairs are judged only for issued endpoints (journal-schema3 test_*).
+            with self.assertRaisesRegex(ValueError,'reader_endpoint_not_issued'):
                 reader.cas_reader(case.journal,expected_epoch=selected.epoch,
                     expected_endpoint=selected.preferred_endpoint,target=endpoint,transition_id='d'*32)
             self.assertEqual(reader.read_selection(case.journal).preferred_endpoint,selected.preferred_endpoint)

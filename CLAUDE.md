@@ -16,14 +16,14 @@ MemVane 색인 기반 자동 컨텍스트 주입 훅을 **Claude Code · Codex �
 
 로컬 `.development-hold.json`이 true인 동안 일반 검사·백업/해시·모델 작업·운영 활성화를 재개하지 않는다. 해당 보류를 해제하는 사용자 지시가 있어야 재개하며, 실행 허가는 자원 기준이나 소유 프로세스 정리 가드를 우회하는 권한이 아니다. 세션별 승인 기록과 기계 상태는 이 공개 문서 대신 로컬 작업 기록에 남긴다.
 
-테스트·백업·해시 같은 무거운 개발 작업은 사용자 전역 `scripts/development_guard.py` 잠금 1개를 공유한다. 다른 worktree/에이전트의 검사를 동시에 시작하지 않는다. 테스트 파일 병렬도는 1이며, 내부 자식 프로세스까지 합산한다. 독립 리뷰도 모든 검사 종료 후 순서대로 진행한다. 보호 장치 자체의 작은 합성 단위 검사(`test:guard-unit`)만 bootstrap 예외다. 실제 프로세스·모델 검증은 OS 관측이 가능한 승인된 일반 호스트에서 가드를 통해 실행한다. 샌드박스의 관측 거부는 명시적으로 보고하고 가드를 끄지 않는다. 런타임 조율은 `docs/runtime-resource-coordination.md`, 보호 장치 기준·체크포인트·샘플링 한계는 `docs/development-resource-safety.md`를 읽는다.
+테스트·백업·해시 같은 무거운 개발 작업은 사용자 전역 `scripts/development_guard.py` 잠금을 거친다. 일반 focused 검사(`npm run test:focused`, `--kind test`)는 worktree/에이전트를 합쳐 최대 3개까지 동시에 돈다. 전체 검사(`npm test`, `--exclusive`)·백업·해시·실제 모델 검사·리뷰·calibration은 단독으로 돌고, 이들이 도는 동안 일반 검사도 시작하지 않는다. 자리가 없으면 exit 75로 거절되며 기다렸다 다시 시도한다. 각 검사의 파일 병렬도는 1이며, 내부 자식 프로세스까지 합산한다. 독립 리뷰도 모든 검사 종료 후 순서대로 진행한다. 보호 장치 자체의 작은 합성 단위 검사(`test:guard-unit`)만 bootstrap 예외다. 실제 프로세스·모델 검증은 OS 관측이 가능한 승인된 일반 호스트에서 가드를 통해 실행한다. 샌드박스의 관측 거부는 명시적으로 보고하고 가드를 끄지 않는다. 런타임 조율은 `docs/runtime-resource-coordination.md`, 보호 장치 기준·체크포인트·샘플링 한계는 `docs/development-resource-safety.md`를 읽는다.
 
 ```bash
 npm run test:guard-unit                    # 작은 합성 보호 장치 단위 검사만 순차 실행
-npm test                                   # guard + 파일 병렬 1
-npm run test:focused -- test/laya-runtime-provision.test.mjs # 같은 guard/잠금/병렬 1
-npm run dev:guard -- --kind backup -- <명령> # 테스트와 같은 잠금
-npm run dev:guard -- --kind hash -- <명령>   # 같은 잠금
+npm test                                   # guard 단독(--exclusive) + 파일 병렬 1
+npm run test:focused -- test/laya-runtime-provision.test.mjs # 같은 guard, 최대 3개 동시, 병렬 1
+npm run dev:guard -- --kind backup -- <명령> # 같은 잠금을 단독으로
+npm run dev:guard -- --kind hash -- <명령>   # 단독
 npm run dev:guard -- --kind model-test -- node --test <실제 모델 시험> # 학습용 자원 제한 유지
 
 bash skills/query/scripts/query.sh <프로젝트> "<질문>"  # 선택된 Laya 경로의 수동 recall

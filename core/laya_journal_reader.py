@@ -51,6 +51,29 @@ def stable_fields(first, second):
     return _V6_STABLE
 
 
+# A state-root move re-seals a schema3 endpoint with only these fields changed.
+_RELOCATED = frozenset(('state', 'db_path', 'attestation_sha256'))
+
+
+def relocated_pair(old, new):
+    """``new`` is ``old`` re-sealed after its state directory moved by rename(2).
+
+    Both are schema3. ``state`` and ``db_path`` name the same basenames under
+    another parent and keep their ``[dev, ino]``; the attestation digest may
+    follow the relocated attestation. Every other field is identical.
+    """
+    try:
+        return (old.get('store_format') == new.get('store_format') == 'schema3'
+                and set(old) == set(new) == _SCHEMA3_KEYS
+                and all(old[k] == new[k] for k in _SCHEMA3_KEYS - _RELOCATED)
+                and old['state'] != new['state']
+                and Path(old['state']).name == Path(new['state']).name
+                and Path(old['db_path']).parent == Path(old['state'])
+                and Path(new['db_path']) == Path(new['state']) / Path(old['db_path']).name)
+    except (AttributeError, TypeError):
+        return False
+
+
 @dataclass(frozen=True, eq=False, init=False)
 class VerifiedEndpoint:
     endpoint_id: str
@@ -644,10 +667,16 @@ def _issue_endpoint(state, project, root, options, record, raw, proof):
     if journal.journal_version(path)==5:
         with _readonly(path,Path(state)) as db:
             current,selected=_selection(db)
-            if selected.get('store_format') == 'schema3' and current.previous_endpoint is not None:
+            if selected.get('store_format') == 'schema3':
                 # A rollback target keeps the v6 sidecar commitment of the
-                # endpoint that was selected before the schema3 switch.
-                selected=_stored_endpoint(db,current.previous_endpoint)
+                # endpoint that was selected before the schema3 switch; a
+                # state-move re-seal may stand between them.
+                for (endpoint_id,) in db.execute('SELECT preferred_endpoint FROM reader_transitions '
+                                                 'WHERE epoch<? ORDER BY epoch DESC', (current.epoch,)):
+                    earlier=_stored_endpoint(db,endpoint_id)
+                    if earlier.get('store_format') == 'v6':
+                        selected=earlier
+                        break
             if 'legacy_sidecar_baseline' in selected:
                 record['legacy_sidecar_baseline']=selected['legacy_sidecar_baseline']
     elif os.path.lexists(record['sidecar_path']):
@@ -728,8 +757,13 @@ def _schema3_evidence(state, project, root, stored, *, allow_drift):
     """
     state, project, decision, proof, ledger, info = _selected_proof(state, project, root,
                                                                     allow_drift=allow_drift)
+    return _schema3_record(state, project, decision, proof, ledger, info, stored)
+
+
+def _schema3_record(state, project, decision, proof, ledger, info, stored, *, sealed_attestation=None):
+    """Schema3 record after the caller proves the selection (also the fenced upgrade proof)."""
     _install_checks(state, project, decision, proof, ledger, info)
-    raw = _attestation(state, ledger)
+    raw = _attestation(state, ledger, sealed_attestation)
     store = _schema3_store(state, project, proof, decision, stored['db_path'], stored['worktree_id'])
     record = dict(install_id=proof['installId'], project=str(project), project_node=_node(project),
                   state=str(state), state_node=_node(state), scope=proof['scopeId'],
@@ -1242,7 +1276,8 @@ def _selection(db):
         previous = _stored_endpoint(db, selected.previous_endpoint)
         fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
                   else ('install_id',))
-        _need(all(record[k] == previous[k] for k in fields), 'reader_install_changed')
+        _need(all(record[k] == previous[k] for k in fields) or relocated_pair(previous, record),
+              'reader_install_changed')
     from laya_move_reader_journal import validate_selection
     validate_selection(db, selected, record)
     return selected, record
@@ -1276,6 +1311,37 @@ def _insert_endpoint(db, endpoint, record, raw):
         db.execute('INSERT INTO read_endpoints VALUES(?,?,?)', (endpoint.endpoint_id, *row))
     else:
         _need(existing == row, 'reader_endpoint_conflict')
+
+
+def relocate_schema3_selection(db, journal_path, attestation_sha256):
+    """Re-seal a selected schema3 endpoint after its state root moved (``after_v5``).
+
+    Runs in the bundle journal's relocation image transaction: the new route
+    and this endpoint commit together. A v6 selection is left unchanged.
+    """
+    current, record = _selection(db)
+    if record.get('store_format') != 'schema3':
+        return
+    state = Path(journal_path).parent
+    raw = _read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
+    moved = dict(record, state=str(state), db_path=str(state / Path(record['db_path']).name),
+                 attestation_sha256=_sha(raw))
+    _need(type(raw) is bytes and moved['attestation_sha256'] == attestation_sha256
+          and relocated_pair(record, moved) and _schema3_shape(moved)
+          and _node(state) == list(record['state_node'])
+          and _file(Path(moved['db_path']), state) == list(record['db_node']), 'reader_relocation_unproved')
+    packed = _raw(moved)
+    endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
+    transition = _sha(b'memvane-reader-relocate-v1\0' + endpoint_id.encode('ascii'))[:32]
+    _need(not db.execute('SELECT 1 FROM read_endpoints WHERE endpoint_id=?', (endpoint_id,)).fetchone()
+          and not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
+                             (transition,)).fetchone(), 'reader_relocation_unproved')
+    db.execute('INSERT INTO read_endpoints VALUES(?,?,?)', (endpoint_id, packed.decode('utf8'), raw))
+    epoch = current.epoch + 1
+    db.execute('INSERT INTO reader_transitions VALUES(?,?,?,?)',
+               (transition, epoch, endpoint_id, current.preferred_endpoint))
+    db.execute('UPDATE reader_selection SET epoch=?,preferred_endpoint=?,previous_endpoint=?,transition_id=? '
+               'WHERE id=1', (epoch, endpoint_id, current.preferred_endpoint, transition))
 
 
 def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, readiness) -> ReaderSelection:

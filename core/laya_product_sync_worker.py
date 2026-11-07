@@ -562,6 +562,12 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
                                  report=report, start_service=start_service)
     # A malformed route source fails before any model start or index write.
     source_root = _route_source(decision)
+    if _selected_store_format(decision) == 'schema3':
+        # The view store path loads no model; v6 runtimes, capacity stores
+        # and discovery read v6 components that a schema3 writer refuses.
+        if qa_sync_barrier(decision) is not None:
+            raise IndexContractError('qa_barrier_schema3_unsupported')
+        return _run_schema3(decision, proof)
     grants = None
     if not isinstance(source_root, str):
         # v2 only. Snapshot hook grants before the scan; later ones stay live.
@@ -702,6 +708,217 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
     return _after_sync(decision, proof, grants, result)
 
 
+# One schema3 pass: wall budget and card ingests (each a Git capture). A
+# cold or large change set publishes its progress and stays ``pending``.
+SCHEMA3_PASS_SECONDS = 45
+SCHEMA3_MAX_INGEST = 64
+# Ingest stops this long before the pass deadline so prepare/publish of the
+# ingested cards always fits; otherwise an over-budget pass would publish
+# nothing and the next one would redo the same ingests.
+SCHEMA3_PUBLISH_RESERVE = 15
+# The store binds the settings bytes, policy and wiki root identity in an
+# immutable worktree row; any change refuses reads and writes alike, and no
+# in-place rebinding exists (context: u12c-binding-design). Not transient.
+SCHEMA3_BINDING_REASONS = frozenset(('wiki_binding_changed', 'wiki_settings_changed',
+                                     'worktree_policy_mismatch', 'wiki_root_changed'))
+# A concurrent edit, Git operation or busy store: the next wake retries.
+SCHEMA3_TRANSIENT_REASONS = frozenset(('checkout_changed', 'fts_deadline_exceeded', 'candidate_busy',
+                                       'wiki_admission_changed', 'wiki_card_changed',
+                                       'wiki_member_changed', 'wiki_card_unavailable',
+                                       'source_file_changed', 'reader_snapshot_deadline'))
+_SCHEMA3_ROOT_META = frozenset(('SCHEMA.md', 'index.md', 'log.md'))
+
+
+def _selected_store_format(decision):
+    """Store format of the journal's preferred reader endpoint (v4: ``v6``)."""
+    import laya_install_journal as journal
+    import laya_journal_reader as readers
+    with journal.read_only_journals():
+        if journal.journal_version(decision['journalPath']) != 5:
+            return 'v6'
+        for attempt in range(3):
+            path = readers._journal(decision['journalPath'])
+            try:
+                with readers._readonly(path, path.parent) as db:
+                    return readers._selection(db)[1].get('store_format')
+            except JournalEvidenceError as exc:
+                if str(exc) != 'reader_store_changed' or attempt == 2:
+                    raise
+
+
+def _run_schema3(decision, proof):
+    """One lexical publish of the selected schema3 view store's main view.
+
+    Admission is the sync owner plus a worker writer scope over the current
+    plan; the plan must still name a schema3 store. No model or v6 runtime
+    starts. External-edit drain and wiki discovery read v6 components and
+    are not run here (U14).
+    """
+    import laya_install_journal as journal
+    import laya_reader_windows as windows
+    import laya_writer_proof_reader as readers
+    import laya_writer_open_plan as plans
+    import laya_writer_scope as normal
+    from laya_reader_windows import ReaderWindowBusy
+    project = Path(decision['projectRoot'])
+    try:
+        with sync_owner(Path(decision['queuePath'])) as owner:
+            if owner is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}
+            try:
+                try:
+                    with journal.read_only_journals():
+                        plan = plans.capture_writer_plan(project, executing_root=_writer_executing_root())
+                except JournalEvidenceError as exc:
+                    if str(exc) == 'writer_windows_not_prepared':
+                        raise ResourceDeferred(str(exc)) from exc
+                    raise
+                if plans.plan_store(plan) is None:
+                    raise IndexContractError('selected_store_format_changed')
+                try:
+                    with normal.worker_writer_scope(plan, queue_owner=owner, operation_timeout=2) as writer:
+                        if normal.admission_proof(writer) != proof:
+                            raise IndexContractError('selected_proof_changed')
+                        return _publish_schema3(decision, proof, writer)
+                except ReaderWindowBusy as exc:
+                    if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
+                                    'reader_lifetime_busy'):
+                        raise ResourceDeferred(str(exc)) from exc
+                    raise
+            finally:
+                try:
+                    windows.drain_pending(deadline=time.monotonic()+2)
+                finally:
+                    readers.drain_proof_readers(deadline=time.monotonic()+2)
+                if windows.local_pending_count() or readers.local_pending_proof_readers():
+                    raise ResourceDeferred('writer_cleanup_unsettled')
+    except ResourceDeferred as exc:
+        return _deferred(exc)
+
+
+def _schema3_wiki_cards(root):
+    """Sorted card paths under the bound wiki root: regular ``.md`` files only.
+
+    Dot segments, root meta pages and links are not cards; a file the store
+    would refuse to admit (not owned, linked, too large) is counted, not read.
+    """
+    import laya_blob_values as v
+    import laya_view_values as view_values
+    cards, skipped = [], 0
+    for base, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = sorted(name for name in dirs if not name.startswith('.'))
+        relative = os.path.relpath(base, root)
+        for name in sorted(files):
+            if name.startswith('.') or not name.endswith('.md'):
+                continue
+            path = name if relative == '.' else relative.replace(os.sep, '/') + '/' + name
+            if path in _SCHEMA3_ROOT_META:
+                continue
+            try:
+                info = os.lstat(os.path.join(base, name))
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_size > v.MAX_BODY):
+                skipped += 1
+                continue
+            cards.append(path)
+            if len(cards) > view_values.MAX_MEMBERS:
+                raise IndexContractError('schema3_wiki_too_many_cards')
+    return sorted(cards), skipped
+
+
+def _publish_schema3(decision, proof, writer):
+    """Changed cards only: head members with the same bytes keep their trust."""
+    import laya_blob_values as v
+    import laya_writer_scope as normal
+    import wiki_lifecycle
+    from laya_blob_store import _regular
+    from laya_view_store import ViewStore
+    import uuid
+    info = normal.writer_store(writer)
+    deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
+    store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
+    try:
+        if (store._incarnation, store._policy) != (info['incarnation'], info['policy_digest']):
+            raise IndexContractError('schema3_store_changed')
+        try:
+            handle = store.capture_view(info['worktree_id'], deadline=deadline)
+            head = store.head(handle)
+            with store._session() as db:
+                row = db.execute('SELECT wiki_root,binding_digest FROM worktrees WHERE worktree_id=?',
+                                 (info['worktree_id'],)).fetchone()
+                old = ({} if head['gen_id'] is None else
+                       {m['path']: m for m in store._stored(db, head['gen_id'])[0]})
+            if row is None or row['binding_digest'] != info['worktree_binding']:
+                v.fail('wiki_binding_changed')
+            root = row['wiki_root']
+            paths, skipped = _schema3_wiki_cards(root)
+            current = {}
+            for path in paths:
+                try:
+                    raw, _node, _root = _regular(root, path, v.MAX_BODY)
+                except OSError:
+                    v.fail('wiki_card_unavailable')
+                current[path] = (v.hash_bytes(raw), raw)
+            changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
+            removed = sorted(set(old) - set(current))
+            if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
+                    and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
+                return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
+                        'storeFormat': 'schema3', 'removed': len(removed)}
+            if not changed and not removed:
+                return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
+            # First store write of this pass: the journal fence comes first.
+            fresh = normal.mark_new_write(writer)
+            if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
+                    or fresh.get('productRouteAllowed') is not True):
+                raise IndexContractError('new_write_proof_unconfirmed')
+            scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
+            members, pending, ingested = {}, 0, 0
+            for path in paths:
+                sha, raw = current[path]
+                if path not in changed:
+                    members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
+                                                                'trust_digest')}
+                    continue
+                if (pending or ingested >= SCHEMA3_MAX_INGEST
+                        or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
+                    # Left for the next wake; the published head keeps its old bytes.
+                    pending += 1
+                    if path in old:
+                        members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
+                                                                    'trust_digest')}
+                    continue
+                admitted = store.ingest_attested_card(info['worktree_id'], path, decision=decision,
+                                                      provenance_scan=scan)
+                ingested += 1
+                body = (raw.decode('utf8') if admitted['blob_sha'] == sha
+                        else store.document(admitted['blob_sha'])['body'])
+                members[path] = dict(path=path, blob_sha=admitted['blob_sha'],
+                                     display_title=v.markdown_title(body, admitted['blob_sha']),
+                                     trust_digest=admitted['trust_digest'])
+            if not ingested and not removed:
+                return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
+            manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
+                            complete=True, sources=[], members=[members[p] for p in sorted(members)])
+            generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
+            normal.validate_normal_writer(writer)
+            store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+        except v.BlobStoreError as exc:
+            if exc.reason in SCHEMA3_BINDING_REASONS:
+                return {'state': 'deferred', 'reason': 'schema3_binding_changed',
+                        'detail': exc.reason, 'storeFormat': 'schema3'}
+            if exc.reason in SCHEMA3_TRANSIENT_REASONS:
+                return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
+            raise
+    finally:
+        store.close()
+    return {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
+            'generation': generation, 'ingested': ingested, 'removed': len(removed),
+            'pending': pending, 'skipped': skipped}
+
+
 def _after_sync(decision, proof, grants, result):
     """Wiki discovery after a completed sync, on both sync paths.
 
@@ -798,6 +1015,11 @@ def _shadow_gate(project, executing_root, *, prove=True):
             return None, 'route_not_selected'
         if journal.journal_version(decision['journalPath']) != 5:
             return None, 'journal_not_v5'
+    # An install that already reads a schema3 store is past this migration;
+    # its intent, candidate and activation record stay as they are.
+    selected = _selected_store_format(decision)
+    if selected != 'v6':
+        return None, 'reader_schema3_selected' if selected == 'schema3' else 'reader_selection_unproved'
     state = Path(decision['journalPath']).parent
     import laya_ledger_common as ledger
     if ledger.qmd_ledger_present(state):

@@ -343,12 +343,16 @@ def _seal_reader_intent(state, project, intent):
     def commit(db):
         selected, endpoint = reader._selection(db)
         row = journal._row(db)
+        # A v6 endpoint names the selected v6 store; a schema3 endpoint names
+        # its own store incarnation, reproved by the fenced reader evidence.
+        store_ok = ((endpoint['capability'] == 'v6-ro-v1' and
+                     endpoint['incarnation'] == proof['dbIncarnation']) or
+                    endpoint['capability'] == reader.SCHEMA3_CAPABILITY)
         if (_journal_snapshot(journal.inspect_journal(path)) != intent['journalBefore'] or
                 row['epoch'] != proof['selectionEpoch'] or
                 endpoint['scope'] != proof['scopeId'] or endpoint['install_id'] != proof['installId'] or
                 endpoint['project'] != str(project) or endpoint['state'] != str(state) or
-                endpoint['capability'] != 'v6-ro-v1' or
-                endpoint['incarnation'] != proof['dbIncarnation'] or
+                not store_ok or
                 endpoint['profile'] != proof['vectorProfile']['profileId']):
             _fail('active_upgrade_reader_changed')
         previous_sha = _sha(intent['oldAttestation'].encode('utf8'))
@@ -737,9 +741,14 @@ def _fenced_reader_evidence(state, project, root, endpoint_id, stored, attestati
              'readerDecision': decision}
     if target_host:
         proof['providerManifest'] = json.loads(intent['newAttestation'])['providerManifest']
-    current_record, current_att, proof = reader._evidence_stores(state, project, decision, proof,
-                                                                  old, store_info,
-                                                                  sealed_attestation=att)
+    if stored.get('store_format') == 'schema3':
+        current_record, current_att, proof = reader._schema3_record(state, project, decision, proof,
+                                                                     old, store_info, stored,
+                                                                     sealed_attestation=att)
+    else:
+        current_record, current_att, proof = reader._evidence_stores(state, project, decision, proof,
+                                                                      old, store_info,
+                                                                      sealed_attestation=att)
     current_record['attestation_sha256'] = stored['attestation_sha256']
     if 'legacy_sidecar_baseline' in stored:
         current_record['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
