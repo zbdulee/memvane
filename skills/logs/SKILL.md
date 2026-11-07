@@ -30,23 +30,34 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.card  # cards refused or split for the selector budget
    ```
 
-3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` is `bundle_drift` (read-only after a plugin update) or `worktree`.
+3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` is `bundle_drift` (read-only after a plugin update), `worktree` or `reader_endpoint` (the new-format reader answered during an upgrade fence or bundle mismatch). A recall served by the new index format carries `store_format: schema3`; its `reason` `view_preparing` means this checkout's view has no published generation yet (a linked worktree's first use or a branch just switched to), and `checkout_changed` that the checkout kept moving during the read. Both give no context until the next sync publishes the view.
 
 Upgrade lines can include an opaque `operation` and `attempt`; matching start and final lines describe one execution. A bridge failure can include its fixed `stage` and `bridgeHost`.
 
 The `migration:` summary line describes the private shadow migration that
-follows a completed sync; the selected reader does not change while it runs.
-`state` is `copying`, `caught_up` or `shadow_verified`; `last` is the latest
-operation (`begin`, `copy`, `verification`, `base_corpus`, `sidecar_corpus`,
-`prepare`, `publish`, `vectors`, `parity`, `parity_seal`) and its outcome;
-`progress` is that operation's position in this order. `deferred` counts steps
-held back with nothing written: `migration_space_deferred` means the disk lacks
-the projected copy space (`needed_bytes` / `free_bytes` on the line), and the
-migration resumes on its own once space returns. `restarts` counts source changes
-that sent the copy back, `retries` passes that stopped for a later retry, and
-`errors` steps that failed with a fixed `reason`
+follows a completed sync and the reader switch that ends it. Until the switch,
+recall reads the previous index format. `state` is `copying`, `caught_up`,
+`shadow_verified` (the copy is verified), `reader_ready` (the switch gates held;
+the next pass re-proves them and updates the journal) or `switched` (recall reads
+the new format). `last` is the latest operation (`begin`, `copy`, `verification`,
+`base_corpus`, `sidecar_corpus`, `prepare`, `publish`, `vectors`, `parity`,
+`parity_seal`, `reader_ready`, `switch`) and its outcome; `progress` is that
+operation's position in this order. `passes` counts driver passes. `deferred`
+counts steps held back with nothing written: `migration_space_deferred` means the
+disk lacks the projected copy space (`needed_bytes` / `free_bytes` on the line),
+and the migration resumes on its own once space returns. `restarts` counts source
+changes that sent the copy back, `retries` passes that stopped for a later retry,
+and `errors` steps that ended with a fixed `reason`
 (`migration_recall_parity_mismatch` and `migration_semantic_parity_mismatch` are
-parity failures). `rollback` is the latest explicit reader rollback outcome:
+parity failures). A `switch_*` reason, on a `reader_ready` or `switch` operation or
+on a `waiting` `migration.driver` line of the `migration` view, is a switch gate that
+did not hold yet; nothing was written and a later pass tries again. The common ones:
+`switch_bridge_missing` (Claude Code and Codex have not both answered a prompt in
+this project with this release within ten minutes), `switch_hosts_unsupported` (a
+Hermes copy of the plugin is installed), `switch_layout_not_current` and
+`switch_lifecycle_busy` (a folder move, state move or bundle upgrade is in progress
+or stopped). `events --event migration.bridge` lists the recall hooks that recorded
+their host for the switch. `rollback` is the latest explicit reader rollback outcome:
 `rolled_back` (the previous index reader is selected again), `retained` (a
 repeated request; the journal already records it) or `refused` (the line in the
 `migration` view carries the fixed `reason`; `rollback_lifecycle_busy` and other

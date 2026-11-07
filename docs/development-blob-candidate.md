@@ -7,7 +7,11 @@ candidate v1/v2와 운영 v6 파일은 자동 변환하지 않고 읽기 전용 
 `BlobStore`는 내용·provenance API를 소유하고 `laya_view_store.ViewStore`가 같은 형식의
 view generation·FTS·lexical reader를 제공한다. 세대 API는
 [`development-view-candidate.md`](development-view-candidate.md)에 있다.
-운영 hook·route·v6 reader와의 연결 및 migration·activation·GC API는 없다.
+`BlobStore`에는 hook·route·reader 선택·migration·activation·GC API가 없다. 운영 연결은
+호출자가 소유한다: v6 reader가 선택된 설치에서는 shadow migration 후보(`laya_shadow_migration`),
+schema3 reader가 선택된 설치에서는 sync 게시(`laya_product_sync_worker`)와 recall·dedup retrieval
+(`laya_journal_reader`·`laya_reader_dispatch`·`wiki_compile_retrieval`). 어느 store를
+읽고 쓸 권한은 설치 journal의 schema3 endpoint record와 writer scope가 정한다.
 
 ## 소유권과 위키 소속
 
@@ -29,6 +33,15 @@ commit 직전 파일·설정을 다시 확인하며 변경이 관측되면 trans
 절대 경로·traversal·dot 자식 경로·symlink·다중 hardlink·디렉터리는 거절한다.
 wiki root의 `SCHEMA.md`·`index.md`·`log.md`는 제외하고 하위 디렉터리의 같은 이름은 카드다.
 
+`ingest_attested_card(worktree_id, path, *, decision, provenance_scan)`는 같은 admission에
+카드 신뢰 판정을 더한다. `decision`은 호출자의 선택 route 결정이며 그 `projectRoot`·`scopeId`와
+wiki collection이 이 store의 worktree·scope와 맞아야 한다. 저장소는 읽은 카드 바이트의
+frontmatter를 recall의 신뢰 규칙(`legacy_card_evidence`, shadow migration import와 같은 함수)으로
+직접 판정한다. 통과한 카드에는 각 `sourceRevisions` 항목을 `binding_state='legacy_unbound'`·
+HEAD 없음·`tracked_state='unknown'` 지문으로 기록하고 `legacy_verified` attestation을 붙인다.
+통과하지 못한 카드는 trust 없이 admission만 한다. 현재 HEAD를 과거 compile commit으로 쓰지 않으며
+호출자가 trust 값을 넘기는 인자는 없다. `provenance_scan`은 지문의 scan UUID·관측 시각이다.
+
 blob key는 읽은 정확한 UTF-8 바이트의 SHA256이다. decode/encode가 같아야 하며
 BOM·CRLF·Unicode를 정규화하지 않는다. 같은 digest의 다른 바이트는 conflict다.
 같은 내용의 재입력은 경로·worktree가 달라도 내용 행을 추가하지 않는다.
@@ -48,6 +61,7 @@ candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인
 | `BlobStore.open(path, *, repository, scope_id)` | 동일한 저장소·scope의 candidate 열기 |
 | `register_worktree(project_root, worktree)` | 같은 repository/project와 호환 policy의 worktree ID |
 | `ingest_card(worktree_id, path)` | wiki 카드 blob SHA |
+| `ingest_attested_card(worktree_id, path, *, decision, provenance_scan)` | `{blob_sha, trust_digest}`. 신뢰 규칙을 통과하지 못하면 `trust_digest`는 null |
 | `document(blob_sha)` | 저장한 wiki `{body,path,title}`. path는 `blobs/<sha>.md` |
 | `register_recipe(spec)` / `register_profile(spec)` | canonical spec의 domain-separated SHA ID |
 | `put_chunk_set(blob_sha, recipe_id, rows)` / `chunks(...)` | 완전한 chunk set의 digest / 행 |
@@ -151,8 +165,9 @@ receipt는 version·verdict·result digest·prior trust만 허용하며 raw body
 SQLite는 PK/FK·형식·타입·불변성·no-REPLACE 구조를 보호하며 API와 `verify`가
 hash·완전성·참조 의미를 검증한다. 내부 connection과 직접 SQL 쓰기는 지원 인터페이스가 아니다.
 **trust digest와 candidate 검증 성공은 compiler 실행 사실·원문 일치·운영 권한의 증명이 아니다.**
-candidate의 generation seal도 같은 구조적 commitment다. 운영 owner의 실제 증명·policy·
-publication 권한 검증은 후속 통합이 소유한다.
+candidate의 generation seal도 같은 구조적 commitment다. 운영 owner의 증명·policy·
+publication 권한은 journal endpoint record와 sync owner의 writer scope
+(`laya_writer_scope`·`laya_writer_open_plan`)가 확인한다.
 
 ## 유한 입력
 
