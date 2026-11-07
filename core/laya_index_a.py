@@ -826,9 +826,14 @@ class LayaIndexA:
         path = self.path
         if not path.is_file():
             raise IndexContractError('database_missing')
-        uri = path.resolve(strict=True).as_uri()
+        resolved = path.resolve(strict=True)
+        uri = resolved.as_uri()
         try:
-            with closing(sqlite3.connect(uri + '?mode=ro', uri=True, timeout=2)) as check:
+            # Same read classifier as the coordinated open (_connect_owned):
+            # Apple's libsqlite3 refuses mode=ro on a WAL store whose last
+            # close by a stock build removed -wal/-shm.
+            with closing(sqlite3.connect(_query_only_uri(resolved), uri=True, timeout=2)) as check:
+                check.execute('PRAGMA query_only=ON')
                 self._validate_existing(check)
         except sqlite3.Error as exc:
             raise IndexContractError('database_unreadable') from exc
