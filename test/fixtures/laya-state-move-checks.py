@@ -793,6 +793,30 @@ class ServiceLeaseTests(MoveCase):
         self.assertIsNone(service.legacy_lease)
 
 
+class ColdSidecarTests(unittest.TestCase):
+    def test_docs_candidate_reads_a_sidecar_closed_without_wal_files(self):
+        # A stock SQLite build's last close leaves a WAL header and no -wal or
+        # -shm. Apple's /usr/lib/libsqlite3 cannot open that with mode=ro.
+        import tempfile
+        import laya_state_move as move
+        from laya_incremental_docs import FILE
+        with tempfile.TemporaryDirectory(prefix='laya-state-move-cold-') as directory:
+            state = Path(directory).resolve()
+            path = state / FILE
+            with closing(sqlite3.connect(path, isolation_level=None)) as db:
+                self.assertEqual(db.execute('PRAGMA journal_mode=WAL').fetchone(), ('wal',))
+                db.execute('CREATE TABLE meta(candidate_db TEXT NOT NULL)')
+                db.execute("INSERT INTO meta VALUES('/state/laya-build.sqlite')")
+                self.assertEqual(db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0], 0)
+            for suffix in ('-wal', '-shm'):
+                sidecar = Path(str(path) + suffix)
+                if sidecar.exists():
+                    sidecar.unlink()
+            self.assertEqual(tuple(path.read_bytes()[18:20]), (2, 2))
+            self.assertEqual([p.name for p in state.iterdir()], [FILE])
+            self.assertEqual(move._docs_candidate(state), '/state/laya-build.sqlite')
+
+
 def tearDownModule():
     if _mtimes() != BEFORE:
         raise AssertionError('real per-user state changed: ' + json.dumps(_mtimes()))

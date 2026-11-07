@@ -327,7 +327,10 @@ def _docs_candidate(state):
     path = Path(state) / FILE
     if not path.exists():
         return None
-    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
+    from laya_index_a import _query_only_uri
+    # WAL sidecar: same read rule as its readers (Apple libsqlite3 + mode=ro).
+    with closing(sqlite3.connect(_query_only_uri(path), uri=True, timeout=2)) as db:
+        db.execute('PRAGMA query_only=ON')
         try:
             rows = db.execute('SELECT candidate_db FROM meta').fetchall()
         except sqlite3.OperationalError:
