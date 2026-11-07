@@ -1288,8 +1288,8 @@ def cas_relocate_state_root(journal_path, expected_epoch, old_route_raw, new_rou
     only the route's three state paths and the attestation's journal and
     socket paths name the new directory. The sealed provider file identity
     must be unchanged. ``previous*`` is cleared: no rollback target may name
-    the directory that no longer exists. A selected schema3 reader endpoint
-    is re-sealed with the moved paths in the same image transaction.
+    the directory that no longer exists. The selected reader endpoint (v5) is
+    re-sealed with the moved paths in the same image transaction.
     """
     def relocate(path, row):
         if row['state'] not in ('active', 'restored_old') or row['selected'] is None:
@@ -1342,10 +1342,10 @@ def cas_relocate_state_root(journal_path, expected_epoch, old_route_raw, new_rou
         return {**cleared, 'provider_attestation_sha': digest}
 
     def reseal_reader(db, path, _before, values):
-        # A selected schema3 reader names the state root: re-seal it in this
-        # same image transaction (v5 only; a v6 selection is unchanged).
-        from laya_journal_reader import relocate_schema3_selection
-        relocate_schema3_selection(db, path, values.get('provider_attestation_sha'))
+        # The selected reader names the state root: re-seal it in this same
+        # image transaction (v5 only).
+        from laya_journal_reader import relocate_selection
+        relocate_selection(db, path, values.get('provider_attestation_sha'))
     return _cas(journal_path, expected_epoch, relocate, after_v5=reseal_reader)
 
 
