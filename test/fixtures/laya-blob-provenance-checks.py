@@ -14,6 +14,8 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+OLD_SETTINGS_COLUMNS = ("settings_path TEXT NOT NULL CHECK(typeof(settings_path)='text'), settings_sha TEXT NOT NULL "
+                        "CHECK(typeof(settings_sha)='text' AND length(settings_sha)=64 AND settings_sha NOT GLOB '*[^0-9a-f]*'), ")
 spec = importlib.util.spec_from_file_location('blob_set_helpers', HERE / 'laya-blob-sets-checks.py')
 helpers = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helpers)
@@ -512,9 +514,13 @@ class ProvenanceChecks(unittest.TestCase):
 
     def test_28_pre_reservation_schema3_store_is_refused_readonly(self):
         import laya_blob_schema as schema
-        old_ddl = [ddl for ddl in schema.statements() if 'delete_receipts' not in ddl]
+        # That store's worktree rows also carried the settings path and byte digest.
+        old_ddl = [ddl.replace('policy_digest TEXT NOT NULL', OLD_SETTINGS_COLUMNS + 'policy_digest TEXT NOT NULL', 1)
+                   if ddl.startswith('CREATE TABLE worktrees(') else ddl
+                   for ddl in schema.statements() if 'delete_receipts' not in ddl]
         meta = dict(self.store._db.execute('SELECT * FROM store_meta').fetchone())
-        trees = [dict(r) for r in self.store._db.execute('SELECT * FROM worktrees')]
+        trees = [dict(r, settings_path='/fixture/.memvane/settings.json', settings_sha='0' * 64)
+                 for r in self.store._db.execute('SELECT * FROM worktrees')]
         path = self.state / 'pre-reservation.sqlite'
         with contextlib.closing(sqlite3.connect(path)) as db:
             for ddl in old_ddl:

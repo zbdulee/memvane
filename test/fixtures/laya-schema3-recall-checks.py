@@ -310,5 +310,26 @@ class Schema3RecallChecks(unittest.TestCase):
         self.assertIn('generation ' + self.v6_generation(), first['context'])
 
 
+    # ---- cold view (design 14-1, D9) -------------------------------------
+    def test_06_new_branch_view_without_generation_answers_preparing_without_context(self):
+        import subprocess
+        self.u10.switched()
+        subprocess.run(['git', '-C', str(self.case.project), 'checkout', '-q', '-b', 'cold-side'],
+                       check=True, capture_output=True, timeout=10)
+        time.sleep(1.1)  # Git racy-index window before the checkout capture.
+        emitted = {}
+        for host in HOSTS:
+            with self.subTest(host=host):
+                answer = self.recall(host)
+                self.assertEqual(answer['context'], '')
+                self.assertEqual((answer['event'].get('outcome'), answer['event'].get('reason')),
+                                 ('empty', 'view_preparing'), answer['event'])
+                self.assertIn('laya_view_preparing', answer['event'].get('notes') or [])
+                self.assertEqual((answer['results'], answer['v6_runtime']), ([], 0))
+                self.assertNotIn('request refused', answer['stderr'])
+                emitted[host] = answer['event'].get('reason')
+        emit('schema3-recall-cold-view', reasons=emitted)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -18,7 +18,7 @@ import uuid
 import laya_blob_values as v
 import laya_checkout_view as checkout
 from laya_blob_values import BlobStoreError
-from laya_blob_store import (BlobStore, _current_file_node, _insert, _regular,
+from laya_blob_store import (BlobStore, _bound_settings, _current_file_node, _insert, _regular,
                              _worktree_record, _worktree_row)
 import laya_view_fts as view_fts
 import laya_view_values as vals
@@ -27,7 +27,6 @@ from laya_view_fill import FillMixin
 from laya_view_reader import ReaderMixin
 from laya_view_vectors import VectorMixin
 
-SETTINGS_LIMIT = 1024 * 1024
 # Publication cut budget; only an O(1) source identity and the commit run under it.
 _CUT_SECONDS = 1.0
 
@@ -45,22 +44,18 @@ class ViewHandle:
 
 
 def _skip_patterns(saved):
-    import config
-    import laya_index_host_route as routes
-    import project_dir
-    path = Path(saved['settings_path'])
+    """Current ``skipPaths`` of a bound worktree; the binding itself must still hold.
+
+    ``skipPaths`` is outside the binding: a prepared generation seals the
+    patterns it used in its stage, and the next prepare reads the current ones.
+    """
+    current = _bound_settings(saved)
     try:
-        raw, _, _ = _regular(path.parent, path.name, SETTINGS_LIMIT)
-        if v.hash_bytes(raw) != saved['settings_sha']:
-            v.fail('wiki_settings_changed')
-        value = json.loads(raw.decode('utf8'), object_pairs_hook=routes._pairs)
-        normalized = config.normalize_config(config.expand_minimal_settings(value, project_dir.CURRENT),
-                                             project_dir.CURRENT)
+        return vals.skip_patterns(current['config'], current['raw_config'])
     except BlobStoreError:
         raise
-    except (OSError, ValueError, TypeError, KeyError):
+    except (ValueError, TypeError, KeyError):
         v.fail('wiki_settings_invalid')
-    return vals.skip_patterns(normalized, value)
 
 
 def _wiki_files(saved, members):
@@ -87,14 +82,11 @@ def _live(db, saved, files):
     row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (saved['worktree_id'],)).fetchone()
     if row is None or dict(row) != saved:
         v.fail('wiki_binding_changed')
-    settings = Path(saved['settings_path'])
+    _bound_settings(saved)
     try:
-        raw, _, _ = _regular(settings.parent, settings.name, SETTINGS_LIMIT)
         current = {path: _current_file_node(saved['wiki_root'], path) for path in files}
     except OSError:
         v.fail('wiki_member_changed')
-    if v.hash_bytes(raw) != saved['settings_sha']:
-        v.fail('wiki_settings_changed')
     if current != files:
         v.fail('wiki_member_changed')
 
@@ -577,8 +569,7 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             v.fail('generation_slot_invalid')
         stage = vals.check_stage(v.parse_canonical(slot['stage_json']), handle, self._incarnation)
         if (stage['build_id'] != slot['build_id'] or stage['manifest_digest'] != slot['manifest_digest']
-                or stage['worktree_binding'] != saved['binding_digest']
-                or stage['settings_sha'] != saved['settings_sha']):
+                or stage['worktree_binding'] != saved['binding_digest']):
             v.fail('generation_binding_mismatch')
         seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (generation['gen_id'],)).fetchone()
         if seal is None:

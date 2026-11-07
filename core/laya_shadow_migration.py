@@ -604,7 +604,7 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
                 raw = body.encode('utf8')
                 proof = {'schema': 'memvane-v6-wiki-admission-v1', 'blob_sha': digest,
                          'worktree_id': worktree_id, 'path': relative,
-                         'binding_digest': row['binding_digest'], 'settings_sha': row['settings_sha'],
+                         'binding_digest': row['binding_digest'],
                          'wiki_root': saved['wiki_root'],
                          'wiki_identity': {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']},
                          'repository_digest': worktree['repositoryDigest'],
@@ -632,19 +632,16 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
                         trusted.append({'path': member['path'], 'hash': digest, 'trust_digest': trust,
                                         'title': member['title'], 'source': member['source']})
             import os
-            import project_dir
-            settings = Path(saved['settings_path'])
-            current_settings = project_dir.settings_path(Path(saved['project_root']))
-            if current_settings != settings:
+            try:
+                blobs._bound_settings(saved)
+            except values.BlobStoreError:
                 values.fail('wiki_admission_changed')
-            raw_settings, _, _ = blobs._regular(settings.parent, settings.name, 1024 * 1024)
             wiki_fd = blobs._dirfd(Path(saved['wiki_root']))
             try:
                 wiki_node = blobs._node(os.fstat(wiki_fd))
             finally:
                 os.close(wiki_fd)
-            if (values.hash_bytes(raw_settings) != saved['settings_sha']
-                    or wiki_node != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
+            if (wiki_node != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
                     or not checkout.capture_matches(observed['capture'], store._repository,
                                                     worktree, deadline=deadline)
                     or time.monotonic() >= deadline):

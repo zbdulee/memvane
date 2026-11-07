@@ -336,7 +336,7 @@ class ReaderMixin:
                 saved = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (handle.worktree_id,)).fetchone()
                 if (saved is None or slot['view_id'] != handle.view_id or slot['build_id'] != stage['build_id']
                         or slot['manifest_digest'] != stage['manifest_digest']
-                        or stage['worktree_binding'] != saved['binding_digest'] or stage['settings_sha'] != saved['settings_sha']):
+                        or stage['worktree_binding'] != saved['binding_digest']):
                     v.fail('generation_slot_invalid')
                 _worktree_record(saved, self._repository, self._policy)
                 if stage['vector_spec'] is not None:

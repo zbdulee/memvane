@@ -1307,7 +1307,8 @@ def _selection(db):
         previous = _stored_endpoint(db, selected.previous_endpoint)
         fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
                   else ('install_id',))
-        _need(all(record[k] == previous[k] for k in fields) or relocated_pair(previous, record),
+        _need(all(record[k] == previous[k] for k in fields) or relocated_pair(previous, record)
+              or resettled_pair(previous, record),
               'reader_install_changed')
     from laya_move_reader_journal import validate_selection
     validate_selection(db, selected, record)
@@ -1388,6 +1389,67 @@ def relocate_selection(db, journal_path, attestation_sha256, *, released=None):
                (transition, epoch, endpoint_id, current.preferred_endpoint))
     db.execute('UPDATE reader_selection SET epoch=?,preferred_endpoint=?,previous_endpoint=?,transition_id=? '
                'WHERE id=1', (epoch, endpoint_id, current.preferred_endpoint, transition))
+
+
+def resettled_pair(old, new):
+    """``new`` is the schema3 ``old`` re-sealed after the project's recall settings changed.
+
+    Only ``settings`` (the recallSettings digest) differs; store, incarnation,
+    worktree binding, policy, roots and every other field are identical.
+    """
+    try:
+        return (old.get('store_format') == new.get('store_format') == 'schema3'
+                and set(old) == set(new) == _SCHEMA3_KEYS
+                and old['settings'] != new['settings']
+                and all(old[k] == new[k] for k in _SCHEMA3_KEYS - {'settings'}))
+    except (AttributeError, KeyError, TypeError):
+        return False
+
+
+def resettle_selection(state, project, executing_root):
+    """Owner re-seal of the selected schema3 endpoint after its recall settings changed.
+
+    The selected record is proved again from the current install (the same
+    full proof a persisted reader needs, no bundle drift). When the result
+    differs from the stored record only in ``settings``, one journal image
+    transaction selects the re-sealed record (``resettled_pair``) with the
+    same attestation. Returns ``'resealed'`` or ``'unchanged'``; any other
+    difference is left for the reader to refuse (``reader_endpoint_changed``).
+    Recall itself never re-seals.
+    """
+    path = _journal(Path(state) / _JOURNAL)
+    with _readonly(path, path.parent) as db:
+        selected, stored = _selection(db)
+        (attestation,) = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
+                                    (selected.preferred_endpoint,)).fetchone()
+    if stored.get('store_format') != 'schema3':
+        return 'unchanged'
+    current, raw, proof = _schema3_evidence(path.parent, project, executing_root, stored, allow_drift=False)
+    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
+    current['creation_epoch'] = stored['creation_epoch']
+    if _raw(current) == _raw(stored) or not (raw == attestation and resettled_pair(stored, current)):
+        return 'unchanged'
+    packed = _raw(current)
+    endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
+
+    def reseal(db):
+        now, record = _selection(db)
+        _need(now.preferred_endpoint == selected.preferred_endpoint and now.epoch == selected.epoch
+              and record == stored, 'stale_reader_cas')
+        transition = _sha(b'memvane-reader-resettle-v1\0' + endpoint_id.encode('ascii')
+                          + str(now.epoch).encode('ascii'))[:32]
+        _need(not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
+                             (transition,)).fetchone(), 'reader_transition_reused')
+        if not db.execute('SELECT 1 FROM read_endpoints WHERE endpoint_id=?', (endpoint_id,)).fetchone():
+            db.execute('INSERT INTO read_endpoints VALUES(?,?,?)', (endpoint_id, packed.decode('utf8'), raw))
+        epoch = now.epoch + 1
+        db.execute('INSERT INTO reader_transitions VALUES(?,?,?,?)',
+                   (transition, epoch, endpoint_id, now.preferred_endpoint))
+        db.execute('UPDATE reader_selection SET epoch=?,preferred_endpoint=?,previous_endpoint=?,'
+                   'transition_id=? WHERE id=1', (epoch, endpoint_id, now.preferred_endpoint, transition))
+        return True
+    mutate_image(path, reseal)
+    return 'resealed'
 
 
 def _released_move(db, current, record, state, raw, project, decision, proof):

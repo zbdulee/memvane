@@ -715,16 +715,17 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
 
 
 # One schema3 pass: wall budget and card ingests (each a Git capture). A
-# cold or large change set publishes its progress and stays ``pending``.
+# large change set to a published view publishes its progress and stays
+# ``pending``; a cold view (no published generation) only prepares it.
 SCHEMA3_PASS_SECONDS = 45
 SCHEMA3_MAX_INGEST = 64
 # Ingest stops this long before the pass deadline so prepare/publish of the
 # ingested cards always fits; otherwise an over-budget pass would publish
 # nothing and the next one would redo the same ingests.
 SCHEMA3_PUBLISH_RESERVE = 15
-# The store binds the settings bytes, policy and wiki root identity in an
-# immutable worktree row; any change refuses reads and writes alike, and no
-# in-place rebinding exists (context: u12c-binding-design). Not transient.
+# The store binds the v6 settings identity (collections, roles, roots) and
+# the wiki root node in an immutable worktree row; a change refuses reads and
+# writes alike, and no in-place rebinding exists. Not transient.
 SCHEMA3_BINDING_REASONS = frozenset(('wiki_binding_changed', 'wiki_settings_changed',
                                      'worktree_policy_mismatch', 'wiki_root_changed'))
 # A concurrent edit, Git operation or busy store: the next wake retries.
@@ -761,6 +762,7 @@ def _run_schema3(decision, proof):
     epoch, so ``_after_sync`` rechecks against the proof the pass ended with.
     """
     import laya_install_journal as journal
+    import laya_journal_reader as journal_readers
     import laya_reader_windows as windows
     import laya_writer_proof_reader as readers
     import laya_writer_open_plan as plans
@@ -771,6 +773,13 @@ def _run_schema3(decision, proof):
         with sync_owner(Path(decision['queuePath'])) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}, proof
+            # The owner re-seals the selected reader when only the project's
+            # recall settings changed; recall never does (it refuses until then).
+            try:
+                resettle = journal_readers.resettle_selection(Path(decision['journalPath']).parent, project,
+                                                              _writer_executing_root())
+            except JournalEvidenceError as exc:
+                resettle = str(exc)
             try:
                 try:
                     with journal.read_only_journals():
@@ -785,7 +794,10 @@ def _run_schema3(decision, proof):
                     with normal.worker_writer_scope(plan, queue_owner=owner, operation_timeout=2) as writer:
                         if normal.admission_proof(writer) != proof:
                             raise IndexContractError('selected_proof_changed')
-                        return _publish_schema3(decision, proof, writer)
+                        result, proof = _publish_schema3(decision, proof, writer)
+                        if resettle != 'unchanged':
+                            result = {**result, 'readerResettle': resettle}
+                        return result, proof
                 except ReaderWindowBusy as exc:
                     if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
                                     'reader_lifetime_busy'):
@@ -1014,20 +1026,32 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     import laya_writer_scope as normal
     import wiki_lifecycle
     from laya_blob_store import _regular
+    import laya_view_values as view_values
+    from laya_view_store import _skip_patterns
     import uuid
     try:
         handle = store.capture_view(worktree_id, deadline=deadline)
         head = store.head(handle)
+        cold = head['gen_id'] is None
         with store._session() as db:
-            row = db.execute('SELECT wiki_root,binding_digest FROM worktrees WHERE worktree_id=?',
-                             (worktree_id,)).fetchone()
-            old = ({} if head['gen_id'] is None else
-                   {m['path']: m for m in store._stored(db, head['gen_id'])[0]})
+            row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
+            # A cold view publishes nothing until complete; its progress is
+            # the newest generation it prepared and never published.
+            base = (head['gen_id'] if not cold else next(iter(db.execute(
+                "SELECT gen_id FROM generations WHERE view_id=? AND state='prepared' "
+                'ORDER BY ordinal DESC LIMIT 1', (handle.view_id,)).fetchone() or ()), None))
+            old = {} if base is None else {m['path']: m for m in store._stored(db, base)[0]}
         if row is None or (binding is not None and row['binding_digest'] != binding):
             v.fail('wiki_binding_changed')
-        cold = head['gen_id'] is None
         root = row['wiki_root']
-        paths, skipped = _schema3_wiki_cards(root)
+        found, skipped = _schema3_wiki_cards(root)
+        # skipPaths is read each pass, outside the binding: a card it newly
+        # covers leaves the generation (not a file removal), one it no longer
+        # covers is ingested like a new card.
+        skips = _skip_patterns(dict(row))
+        paths = [p for p in found if not view_values.skipped(p, skips)]
+        removed = sorted(set(old) - set(found))
+        excluded = sorted(set(old) & (set(found) - set(paths)))
         current = {}
         for path in paths:
             try:
@@ -1036,12 +1060,11 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 v.fail('wiki_card_unavailable')
             current[path] = (v.hash_bytes(raw), raw)
         changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
-        removed = sorted(set(old) - set(current))
         if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
                 and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
             return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
                     'storeFormat': 'schema3', 'removed': len(removed)}
-        if not changed and not removed and not cold:
+        if not changed and not removed and not excluded and not cold:
             return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
         # First store write of this pass: the journal fence comes first.
         _mark_schema3_write(writer, proof, marks)
@@ -1069,12 +1092,17 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             members[path] = dict(path=path, blob_sha=admitted['blob_sha'],
                                  display_title=v.markdown_title(body, admitted['blob_sha']),
                                  trust_digest=admitted['trust_digest'])
-        if not ingested and not removed and not (cold and not pending):
+        if pending and not ingested and not removed and not excluded:
             return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
         manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
                         complete=True, sources=[], members=[members[p] for p in sorted(members)])
         generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
         normal.validate_normal_writer(writer)
+        if cold and pending:
+            # No partial first generation: recall answers view_preparing until complete.
+            return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
+                    'generation': None, 'prepared': generation, 'ingested': ingested,
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped}
         store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
     except v.BlobStoreError as exc:
         if exc.reason in SCHEMA3_BINDING_REASONS:

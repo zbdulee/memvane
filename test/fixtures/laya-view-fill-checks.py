@@ -240,7 +240,7 @@ class FillChecks(FillCase):
         options = self.callbacks(store); embedder = options['embedder']
         def changing(inputs, profile):
             vectors = embedder(inputs, profile)
-            path.write_text(json.dumps(dict(name='blobfixture', skipPaths=['notes'])), encoding='utf8')
+            path.write_text(json.dumps(dict(name='blobfixture-renamed')), encoding='utf8')
             return vectors
         try:
             self.bounded_refusal(self.fill, store, h, manifest, r, p, embedder=changing)

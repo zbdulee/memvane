@@ -59,6 +59,8 @@ source 지문은 handle과 같은 worktree·branch·path에 속해야 한다.
 `complete: true`는 호출자의 완료 주장이고 원문 전체를 관측했다는 증명이 아니다.
 
 검색 자격 `eligible`은 저장소가 source·attestation·`skipPaths`에서 도출한다.
+prepare는 그 시점 settings의 `skipPaths`를 쓰고 stage에 봉인하며, 게시된 세대의 검증은
+봉인된 값으로 다시 도출한다.
 호출자가 직접 지정하지 않는다. 같은 blob SHA라도 다른 view의 trust를 빌리지 않는다.
 non-null trust의 blob·policy가 다르거나 다른 worktree·branch 출처이면 거절한다.
 source가 없거나 trust가 null인 카드, 누락·held source, SHA·길이가 바뀐 source,

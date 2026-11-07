@@ -232,7 +232,7 @@ class ReaderChecks(helpers.GenerationCase):
         def trace(sql):
             if ' MATCH ' in sql and not changed:
                 changed.append(True)
-                (self.root/'.memvane/settings.json').write_text(json.dumps(dict(helpers.helpers.SETTINGS,skipPaths=['notes'])))
+                (self.root/'.memvane/settings.json').write_text(json.dumps(dict(helpers.helpers.SETTINGS,name='renamed')))
         store._db.set_trace_callback(trace)
         try:self.refused(store.search,pin,'hello',10)
         finally:store._db.set_trace_callback(None)

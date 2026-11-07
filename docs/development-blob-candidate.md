@@ -13,15 +13,17 @@ view generation·FTS·lexical reader를 제공한다. 세대 API는
 
 호출자는 PR1 repository/worktree 등록 JSON과 scope UUID를 제공한다.
 저장소는 common Git dir의 경로·dev/ino와 프로젝트 상대 위치에 묶이며,
-worktree는 checkout·Git admin 정체성과 실제 프로젝트 settings·wiki root를 묶는다.
-등록 worktree들의 normalized settings policy는 같아야 한다. `skipPaths`도
-policy에 포함되며 JSON 공백·키 순서·생략된 기본값과 두 설정 폴더 이름은 정규화한다.
-각 worktree의 실제 settings 바이트 지문은 별도로 고정한다. 설정이나 root가 바뀌면
+worktree는 checkout·Git admin 정체성, settings 정체성, wiki root 디렉터리 노드를 묶는다.
+settings 정체성은 v6 route의 `settings_identity_digest`와 같은 범위다: 프로젝트 root와
+도출한 collection마다 `{name, role, sourceRoot}`. 저장소 policy는 같은 행을 프로젝트
+상대 경로(두 설정 폴더 이름은 정규화)로 다이제스트하므로 등록 worktree들의 policy는 같아야 한다.
+settings 바이트, `skipPaths`와 그 밖의 옵션은 묶지 않는다. `skipPaths`는 쓰는 시점의
+현재 settings에서 읽고 prepare가 세대 stage에 봉인한다. 정체성이나 wiki root가 바뀌면
 기존 binding을 자동 인계하지 않는다.
 
 `ingest_card`는 등록 worktree와 **wiki 상대 Markdown 경로**만 받는다.
 현재 settings에서 도출한 raw/wiki role, FD로 고정한 root·파일 정체성,
-제한된 파일 읽기, 설정 지문과 checkout capture를 전후에 확인한다.
+제한된 파일 읽기, settings 정체성과 checkout capture를 전후에 확인한다.
 commit 직전 파일·설정을 다시 확인하며 변경이 관측되면 transaction을 취소한다.
 이 관측은 파일시스템·Git의 원자적 snapshot을 보장하지 않는다.
 절대 경로·traversal·dot 자식 경로·symlink·다중 hardlink·디렉터리는 거절한다.

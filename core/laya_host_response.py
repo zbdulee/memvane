@@ -1887,6 +1887,15 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
                     continue
                 if reason not in ('view_preparing', 'checkout_changed'):
                     raise
+                if reason == 'view_preparing':
+                    # The sync pass that prepares this view is asked for; it
+                    # publishes the view's first generation only when complete.
+                    if main_proof is not None:
+                        try:
+                            _recall_sync_wake(decision['projectRoot'])
+                        except Exception:
+                            pass
+                    _write_selection_log(decision['projectRoot'], 'laya_view_preparing', [])
                 _trace_final(reason)
                 print(f'[memvane] {reason}; no context from this checkout\'s view yet',
                       file=sys.stderr)
