@@ -457,7 +457,9 @@ published wiki bytes and trust only, never raw bodies or raw FTS. A space
 pre-check defers a step without writing. At `shadow_verified` the switch waits for
 its gates: the parity receipt, a catch-up under the sync owner lock, loaded-reader
 receipts from both a Claude Code and a Codex recall hook of the selected release
-within 600 seconds, the executing bundle equal to the journal-selected one, no
+(a hook receipt holds while the journal epoch, preferred endpoint and release
+commit it observed stay selected, for at most 24 hours, so the two hosts may
+answer hours apart), the executing bundle equal to the journal-selected one, no
 bundle upgrade, state move or project-folder move intent, a `current` project
 folder layout, and no Hermes copy of the plugin. One pass records
 `reader_ready`; a later pass proves the same gates again and runs one journal CAS

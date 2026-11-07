@@ -1717,6 +1717,20 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
     return host_payload(host, context)
 
 
+# A schema3 recall whose sealed reader differs from the install only in the
+# recall settings (the owner's next sync re-seals it): empty answer, sync wake.
+_RESETTLE_PENDING = 'reader_settings_resealing'
+
+
+def _settings_resettle_pending(decision, project, root) -> bool:
+    try:
+        import laya_journal_reader as reader
+        return (decision.get('state') == 'candidate' and
+                reader.settings_resettle_pending(Path(decision['journalPath']).parent, project, root))
+    except Exception:
+        return False
+
+
 def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None,
                           main_proof=None, linked=None) -> dict:
     """Serve the journal-preferred reader endpoint.
@@ -1772,6 +1786,22 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=
                 endpoint = stack.enter_context(lease.resolve_endpoint(project,action='recall',host_root=root))
                 break
             except ValueError as exc:
+                if (str(exc) == 'reader_endpoint_changed' and drift_decision is not None and
+                        _settings_resettle_pending(drift_decision, project, root)):
+                    # Only the project's recall settings moved (skipPaths and
+                    # the like): the sync owner re-seals the schema3 reader.
+                    # Until then this recall answers without context, never
+                    # from the stale record and never as an error.
+                    if main_proof is not None:
+                        try:
+                            _recall_sync_wake(drift_decision['projectRoot'])
+                        except Exception:
+                            pass
+                    _write_selection_log(drift_decision['projectRoot'], 'laya_' + _RESETTLE_PENDING, [])
+                    _trace_final(_RESETTLE_PENDING)
+                    print(f'[memvane] {_RESETTLE_PENDING}; no context until the index applies '
+                          'the new recall settings', file=sys.stderr)
+                    return host_payload(host, '')
                 if (attempt or str(exc) != 'reader_selection_changed'
                         or time.monotonic() >= deadline):
                     raise

@@ -148,6 +148,8 @@ def migration_summary(window):
     parts.append(f"deferred={outcomes['deferred']}")
     parts.append(f"restarts={outcomes['restarted'] + outcomes['restart_pending']}")
     parts.append(f"retries={sum(1 for row in driver if row.get('outcome') == 'waiting')}")
+    # Switch gates that do not hold yet are waits, not errors.
+    parts.append(f"gate_waits={outcomes['waiting']}")
     parts.append(f"errors={outcomes['error']}")
     if rollbacks:
         parts.append(f'rollback={rollbacks[-1]}')

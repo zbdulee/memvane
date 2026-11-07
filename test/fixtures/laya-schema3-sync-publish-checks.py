@@ -215,6 +215,72 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         emit('schema3-sync-settings-edits', spacedPublishes=True, skipRepublishes=True, resealed=2,
              epochs=[start[1], self.head()[1]])
 
+    def hook_recall(self, prompt):
+        """One selected-route recall through the host response (as a registered hook would).
+
+        Returns ``(context, recall event, sync wakes, stderr)``; a refusal raises.
+        """
+        import io
+        from contextlib import redirect_stderr
+        host = importlib.import_module('laya_host_response')
+        runtime_work = importlib.import_module('runtime_work')
+        event_log = importlib.import_module('event_log')
+        decision = self.J.select_route(str(self.case.project), action='recall')
+        payload = {'cwd': str(self.case.project), 'prompt': prompt, 'session_id': 'u15c-settings',
+                   'hook_event_name': 'UserPromptSubmit'}
+        wakes, events, stderr = [], [], io.StringIO()
+        with self.seed.authority(), redirect_stderr(stderr), \
+                mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
+                mock.patch.object(runtime_work, 'request',
+                                  side_effect=lambda kind, target='', **kw: wakes.append((kind, target))), \
+                mock.patch.object(event_log, 'emit',
+                                  side_effect=lambda event, **fields: events.append(dict(fields, event=event))):
+            answer = host.serve_selected('recall', 'claude', decision, payload)
+        recall = [event for event in events if event['event'] == 'recall']
+        self.assertEqual(len(recall), 1, events)
+        return answer['hookSpecificOutput']['additionalContext'], recall[0], wakes, stderr.getvalue()
+
+    def test_09_recall_settings_edit_answers_empty_until_the_owner_reseals(self):
+        self.select_schema3()
+        settings = importlib.import_module('project_dir').settings_path(self.case.project)
+        original = settings.read_bytes()
+        self.card('concepts/heron-watch.md', 'heronwatchprobe')
+        first, _calls = self.run_pass()
+        self.assertEqual(first['state'], 'indexed', first)
+        settings.write_text(json.dumps(dict(json.loads(original), skipPaths=['concepts'])), encoding='utf8')
+        # The persisted reader itself still refuses (the proof boundary is unchanged) ...
+        self.assert_stale_reader()
+        # ... but the recall hook answers without context, asks for the owner's
+        # sync and leaves one fixed event reason, not a refusal.
+        context, event, wakes, stderr = self.hook_recall('heronwatchprobe')
+        self.assertEqual(context, '')
+        self.assertEqual((event.get('outcome'), event.get('reason')), ('empty', 'reader_settings_resealing'), event)
+        self.assertIn('laya_reader_settings_resealing', event.get('notes') or [])
+        self.assertEqual(wakes, [('laya-sync', str(self.case.project))])
+        self.assertNotIn('request refused', stderr)
+        # Any other record difference stays a refusal.
+        real = self.R._schema3_evidence
+
+        def other(*args, **kwargs):
+            record, raw, proof = real(*args, **kwargs)
+            return dict(record, profile=record['profile'] + '-other'), raw, proof
+        with mock.patch.object(self.R, '_schema3_evidence', side_effect=other):
+            with self.assertRaisesRegex(ValueError, 'reader_endpoint_changed'):
+                self.hook_recall('heronwatchprobe')
+        # The next owner pass re-seals; the recall reads the new generation again.
+        resealed, _calls = self.run_pass()
+        self.assertEqual(resealed.get('readerResettle'), 'resealed', resealed)
+        hit = self.recall('heronwatchprobe')
+        self.assertEqual(hit.data_generation, resealed['generation'])
+        # The hook answers from the re-sealed reader (the skipped card is gone,
+        # so this prompt finds no row; the answer is not the pending one).
+        context, event, wakes, stderr = self.hook_recall('heronwatchprobe')
+        self.assertEqual(event.get('store_format'), 'schema3', event)
+        self.assertIn(event.get('outcome'), ('served', 'empty'), event)
+        self.assertNotEqual(event.get('reason'), 'reader_settings_resealing', event)
+        self.assertNotIn('laya_reader_settings_resealing', event.get('notes') or [])
+        emit('schema3-recall-settings-resealing', pending=True, after=[event.get('outcome'), event.get('reason')])
+
     def assert_stale_reader(self):
         import traceback
         try:
