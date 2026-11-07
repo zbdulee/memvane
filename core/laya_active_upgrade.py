@@ -343,6 +343,15 @@ def _seal_reader_intent(state, project, intent):
     def commit(db):
         selected, endpoint = reader._selection(db)
         row = journal._row(db)
+        if endpoint['state'] != str(state):
+            # A released state move relocated the journal but not the v6
+            # reader. Re-seal it here only when the move proves the old root.
+            try:
+                reader.relocate_selection(db, path, row['provider_attestation_sha'],
+                                          released=(project, decision, proof))
+            except (ValueError, OSError, KeyError, TypeError):
+                _fail('active_upgrade_reader_changed')
+            selected, endpoint = reader._selection(db)
         # A v6 endpoint names the selected v6 store; a schema3 endpoint names
         # its own store incarnation, reproved by the fenced reader evidence.
         store_ok = ((endpoint['capability'] == 'v6-ro-v1' and

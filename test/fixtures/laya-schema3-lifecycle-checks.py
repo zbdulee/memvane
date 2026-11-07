@@ -369,5 +369,129 @@ class StateMoveChecks(Lifecycle):
         endpoint_id, record, _rows = self.recall()
         self.assertEqual((endpoint_id, record['state']), (current.preferred_endpoint, str(target)))
 
+    def released_move(self):
+        """Move the state root as 0.43.46 did: the journal CAS leaves the v6 reader record unchanged."""
+        case = self.case
+        initial = self.reader.read_selection(case.journal)
+        target = self.state_mover.target_root(case.state, case.home)
+        with self.move_authority(), mock.patch.object(self.reader, 'relocate_selection',
+                                                      lambda *args, **kwargs: None):
+            chosen, result = self.state_mover.move(case.project, case.state, home=case.home)
+        self.assertEqual((chosen, result['status']), (target, 'state_move_complete'))
+        self.moved_case(target)
+        stale = self.reader.read_selection(case.journal)
+        self.assertEqual((stale.epoch, stale.preferred_endpoint), (initial.epoch, initial.preferred_endpoint))
+        old = self.stored(initial.preferred_endpoint)
+        self.assertEqual((old['store_format'], Path(old['state']).parent.name), ('v6', 'laya'))
+        return initial, old, target
+
+    def upgrade_with_fence(self, observed):
+        """One active upgrade (switch and restore), recalling once while fenced."""
+        case = self.case
+        new = case.home / 'new-plugin'
+        new.mkdir(exist_ok=True)
+        with self.upgrade_authority(new) as (upgrade, upgrade_target, review, _new_att):
+            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                      upgrade_target['sourceCommit'], review['proposalSha256'],
+                                      '/synthetic/model', 3)
+            fresh = importlib.import_module('laya_fresh_wiki_origin')
+            actual_change = fresh._change
+
+            def change(*args, **kwargs):
+                result = actual_change(*args, **kwargs)
+                if result['phase'] == 'upgrading':
+                    fenced_id, fenced_record, fenced_rows = self.recall(new, authority=False)
+                    observed.append((fenced_id, fenced_record['state'], fenced_rows.store_format,
+                                     self.heron(fenced_rows)))
+                return result
+            with mock.patch.object(fresh, '_change', side_effect=change):
+                self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+            self.assertEqual(upgrade._restore(intent)['status'], 'active_upgrade_restored_laya')
+
+    def test_04_active_upgrade_reseals_reader_left_by_released_state_move(self):
+        # B6: a 0.43.46 move left the v6 reader naming the legacy root.
+        case = self.case
+        initial, old, target = self.released_move()
+        outcomes, observed = {}, []
+
+        def attempt(name, fn):
+            try:
+                fn()
+                outcomes[name] = 'ok'
+            except Exception as exc:  # noqa: BLE001 - the refusal code is the evidence
+                outcomes[name] = str(getattr(exc, 'reason', None) or exc)
+                causes[name] = repr(exc.__context__)
+        causes = {}
+        # Recall writes nothing: the persisted endpoint still names the old root.
+        attempt('recall_before', self.recall)
+        attempt('active_upgrade', lambda: self.upgrade_with_fence(observed))
+        current = self.reader.read_selection(case.journal)
+        moved = self.stored(current.preferred_endpoint)
+        emit('v6-released-move-recovery', selection=list(self.selection()), state=moved['state'],
+             outcomes=outcomes, causes=causes, fenced=observed)
+        self.assertEqual(outcomes, {'recall_before': 'reader_install_changed', 'active_upgrade': 'ok'})
+        self.assertEqual((current.epoch, current.previous_endpoint),
+                         (initial.epoch + 1, initial.preferred_endpoint))
+        self.assertEqual({k for k in old if old[k] != moved[k]},
+                         {'state', 'db_path', 'catalog_path', 'binding_path', 'sidecar_path',
+                          'attestation_sha256'})
+        self.assertEqual(moved['state'], str(target))
+        self.assertTrue(self.reader.relocated_pair(old, moved))
+        self.assertEqual(observed, [(current.preferred_endpoint, str(target), 'v6', True)])
+        endpoint_id, record, rows = self.recall()
+        self.assertEqual((endpoint_id, record['state'], rows.store_format),
+                         (current.preferred_endpoint, str(target), 'v6'))
+        self.assertTrue(self.heron(rows), [r['path'] for r in rows.rows])
+
+    def test_05_released_move_recovery_refuses_unproved_relocations(self):
+        case = self.case
+        initial, old, target = self.released_move()
+        raw = (case.state / J.PRODUCTION_ATTESTATION).read_bytes()
+        (settled,) = sorted(case.state.glob('state-move-*-settled.json'))
+
+        def released(record=None, attestation=raw):
+            with self.seed.authority(), self.reader._readonly(case.journal, case.state) as db:
+                current, stored = self.reader._selection(db)
+                decision = J.select_route(str(case.project), action='recall')
+                proof = J.verify_selected_route_read_only(decision)
+                try:
+                    return self.reader._released_move(db, current, stored if record is None else record,
+                                                      case.state, attestation, case.project, decision, proof)
+                except ValueError as exc:
+                    return str(exc)
+        observed = released()
+        self.assertTrue(self.reader.relocated_pair(old, observed))
+        self.assertEqual(observed['state'], str(target))
+        other = Path(old['state']).with_name('4' * 32)
+        cases = {'state_node': dict(old, state_node=[0, 0]), 'db_node': dict(old, db_node=[0, 0]),
+                 'binding_node': dict(old, binding_node=[0, 0]), 'roots': dict(old, roots=['other']),
+                 'incarnation': dict(old, incarnation='0' * 32),
+                 'other_root': dict(old, state=str(other),
+                                    **{k: str(other / Path(old[k]).name) for k in
+                                       ('db_path', 'catalog_path', 'binding_path', 'sidecar_path')}),
+                 'not_legacy': dict(old, state=str(target.with_name('5' * 32)))}
+        refused = {name: released(record) for name, record in cases.items()}
+        refused['attestation'] = released(attestation=raw[:-1] + b' ')
+        hidden = settled.with_name('kept.json')
+        os.rename(settled, hidden)
+        try:
+            refused['no_settled_move'] = released()
+            with self.upgrade_authority(case.home / 'new-plugin') as (upgrade, upgrade_target, review, _att):
+                (case.home / 'new-plugin').mkdir()
+                try:
+                    upgrade._prepare(case.project, case.state, case.journal, case.home, case.home / 'new-plugin',
+                                     upgrade_target['sourceCommit'], review['proposalSha256'],
+                                     '/synthetic/model', 3)
+                    refused['active_upgrade'] = 'ok'
+                except Exception as exc:  # noqa: BLE001 - the refusal code is the evidence
+                    refused['active_upgrade'] = str(exc)
+        finally:
+            os.rename(hidden, settled)
+        emit('v6-released-move-refusals', refused=refused)
+        self.assertEqual(refused, {**{name: 'reader_relocation_unproved' for name in refused},
+                                   'active_upgrade': 'active_upgrade_reader_changed'})
+        current = self.reader.read_selection(case.journal)
+        self.assertEqual((current.epoch, current.preferred_endpoint), (initial.epoch, initial.preferred_endpoint))
+
 if __name__ == '__main__':
     unittest.main()
