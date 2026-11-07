@@ -451,7 +451,7 @@ view per checkout and branch. Recall branches on the selected endpoint
 
 A v6-selected main checkout builds the schema3 copy off-hook. After a selected
 sync ends `indexed` or `unchanged`, `laya_product_sync_worker.shadow_pass` runs at
-most four bounded steps in 60 seconds (`core/laya_shadow_migration.py`):
+about 10 seconds of bounded steps, at most 32 (`core/laya_shadow_migration.py`):
 `copying → caught_up → shadow_verified → reader_ready → switched`. The copy holds
 published wiki bytes and trust only, never raw bodies or raw FTS. A space
 pre-check defers a step without writing. A pass that progressed or ran out of its
