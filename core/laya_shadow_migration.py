@@ -1585,6 +1585,10 @@ MIGRATION_OPS = ('begin', 'copy', 'verification', 'base_corpus', 'sidecar_corpus
 # Reasons that leave intent and candidate as they were and only ask a later
 # step to try again; their terminal event outcome is ``deferred``.
 _DEFERRED_REASONS = frozenset(('migration_space_deferred',))
+# Switch gates that do not hold yet (receipts, catch-up, hosts, layout,
+# lifecycle): nothing is written and a later pass proves them again. Their
+# terminal event outcome is ``waiting``, never ``error``.
+_WAITING_REASONS = frozenset(reason for reason in _MIGRATION_REASONS if reason.startswith('switch_'))
 # Integer diagnostics a terminal event may carry (bounded; never text).
 _EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms')
 
@@ -1663,6 +1667,11 @@ def _migration_trace(state, stage, op):
             reason = value
             if value in _DEFERRED_REASONS:
                 trace['outcome'] = 'deferred'
+            elif value in _WAITING_REASONS or (trace['op'] in ('reader_ready', 'switch')
+                                               and value in _SWITCH_STALE):
+                # A source change seen by the switch gate's catch-up recheck
+                # is ``switch_catchup_stale`` to the driver: also a wait.
+                trace['outcome'] = 'waiting'
         elif isinstance(exc, OSError):
             reason = 'storage_full' if exc.errno == errno.ENOSPC else 'storage_io'
         elif isinstance(exc, sqlite3.Error):

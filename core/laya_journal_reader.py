@@ -1484,6 +1484,45 @@ def upgraded_pair(old, new):
         return False
 
 
+def _resettle_inputs(state, project, executing_root):
+    """The selected schema3 record and the same record proved again now, or None for v6.
+
+    Read-only; ``resettle_selection`` and ``settings_resettle_pending`` share it.
+    """
+    path = _journal(Path(state) / _JOURNAL)
+    with _readonly(path, path.parent) as db:
+        selected, stored = _selection(db)
+        (attestation,) = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
+                                    (selected.preferred_endpoint,)).fetchone()
+    if stored.get('store_format') != 'schema3':
+        return None
+    current, raw, proof = _schema3_evidence(path.parent, project, executing_root, stored, allow_drift=False)
+    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
+    current['creation_epoch'] = stored['creation_epoch']
+    return path, selected, stored, attestation, current, raw, proof
+
+
+def settings_resettle_pending(state, project, executing_root) -> bool:
+    """The selected schema3 record differs from the install only in its recall settings.
+
+    That is the difference the sync owner re-seals (``resettle_selection``);
+    until it does, the persisted reader refuses with ``reader_endpoint_changed``.
+    Read-only and authority-free: a recall uses it only to answer without
+    context instead of with an error. Any other difference, or a failed
+    proof, is False.
+    """
+    try:
+        found = _resettle_inputs(state, project, executing_root)
+        if found is None:
+            return False
+        _path, _selected, stored, attestation, current, raw, _proof = found
+        return (raw == attestation and stored['settings'] != current['settings']
+                and resettled_pair(stored, current)
+                and {k for k in stored if stored[k] != current[k]} == {'settings'})
+    except Exception:
+        return False
+
+
 def resettle_selection(state, project, executing_root):
     """Owner re-seal of the selected schema3 endpoint (recall settings or vector spec).
 
@@ -1498,16 +1537,10 @@ def resettle_selection(state, project, executing_root):
     Recall itself never re-seals.
     """
     import time
-    path = _journal(Path(state) / _JOURNAL)
-    with _readonly(path, path.parent) as db:
-        selected, stored = _selection(db)
-        (attestation,) = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
-                                    (selected.preferred_endpoint,)).fetchone()
-    if stored.get('store_format') != 'schema3':
+    found = _resettle_inputs(state, project, executing_root)
+    if found is None:
         return 'unchanged'
-    current, raw, proof = _schema3_evidence(path.parent, project, executing_root, stored, allow_drift=False)
-    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
-    current['creation_epoch'] = stored['creation_epoch']
+    path, selected, stored, attestation, current, raw, proof = found
     if stored['vector_profile'] is None:
         adopted = _adopted_vector_spec(current, proof, deadline=time.monotonic() + 10)
         if adopted is not None:

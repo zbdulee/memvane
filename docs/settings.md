@@ -90,8 +90,9 @@ digest입니다(`laya_index_host_route.settings_identity_digest`). 그래서 `sk
 wiki 루트 디렉터리 노드만 묶습니다. `skipPaths`는 binding 밖이라 sync pass마다 현재 settings에서
 읽고, 새로 덮이는 카드는 다음 게시 세대에서 빠집니다. 다만 recall 설정(`skipPaths`·`topN`·
 `minScore`·`rawFallbackMinScore`·`recallStrategy`·`lexicalPatterns`)을 바꾸면 다음 sync pass의
-owner가 reader 기록을 다시 봉인할 때까지 recall이 `reader_endpoint_changed`로 거절됩니다.
-편집이나 SessionStart가 sync를 깨우면 풀립니다.
+owner가 reader 기록을 다시 봉인할 때까지 recall은 컨텍스트 없이 끝나고(exit 0, 이벤트 reason
+`reader_settings_resealing`) 그 sync를 깨웁니다. 봉인된 기록과 현재 설치가 recall 설정만 다를
+때의 동작이고, 다른 차이는 그대로 `reader_endpoint_changed`로 거절됩니다.
 
 이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall과 compile 쪽(이미 compile된
 revision 판정, 원문 삭제 시 카드 정리, wiki lifecycle)이 같은 규칙으로 다룹니다.

@@ -23,6 +23,11 @@ _LOADED_SCHEMA = 'memvane-loaded-reader-v1'
 _LOADED_FIELDS = frozenset(('endpoint_id','reader_epoch','store_format','generation',
                             'sentinel_sha256','owner_role','plugin_node'))
 _TTL = 600
+# Hook-issued loaded-reader challenges (U15b/U15c) last up to a day: each
+# receipt counts only while the journal epoch, preferred endpoint and
+# release commit it observed stay selected (``check_loaded_bridge``), so
+# Claude and Codex may arrive hours apart. QA challenges keep ``_TTL``.
+_HOOK_TTL = 86400
 _ISSUED = weakref.WeakKeyDictionary()
 
 
@@ -138,7 +143,7 @@ def _load_challenge(directory):
             or record['challenge_id'] != directory.name
             or not _SHA.fullmatch(record['nonce_sha256'])
             or not COMMIT.fullmatch(record['release_commit'])
-            or not 0 < record['expires_at'] - record['issued_at'] <= _TTL
+            or not 0 < record['expires_at'] - record['issued_at'] <= _ttl(record)
             or not record['issued_at'] <= now < record['expires_at']
             or _hosts(frozenset(record['expected_hosts'])) != record['expected_hosts']):
         _refuse()
@@ -146,6 +151,18 @@ def _load_challenge(directory):
     if [state.st_dev, state.st_ino] != record['state_node']:
         _refuse()
     return record
+
+
+def _hook_issued(record):
+    """The challenge was issued by a recall hook (its nonce is the public commitment)."""
+    try:
+        return record['nonce_sha256'] == _sha(_hook_nonce(record).encode('ascii'))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _ttl(record):
+    return _HOOK_TTL if _hook_issued(record) else _TTL
 
 
 def begin_bridge_preflight(state: Path, *, release_commit: str, expected_hosts: frozenset):
@@ -351,8 +368,12 @@ def check_loaded_bridge(receipts: list, *, release_commit: str, expected_hosts: 
             _refuse()
         observations.append(observed)
     first,second=observations
-    if (any(first[key] != second[key] for key in
-            ('endpoint_id','reader_epoch','store_format','generation','sentinel_sha256','manifest_sha256')) or
+    # A hook-issued pair may read different generations of the same reader
+    # (the hosts arrive hours apart; every publish moves the generation). The
+    # sentinel, endpoint, epoch and bundle stay shared; each host's own read
+    # is checked above. A QA pair is read together and shares the generation.
+    keys = _HOOK_PAIR if _hook_issued(registry) else _HOOK_PAIR + ('generation',)
+    if (any(first[key] != second[key] for key in keys) or
             {first['owner_role'],second['owner_role']} != {'owner','companion'} or
             first['plugin_root'] == second['plugin_root'] or first['session_id'] == second['session_id'] or
             (first['process_pid'],first['process_start']) == (second['process_pid'],second['process_start'])):
@@ -450,11 +471,13 @@ def find_loaded_bridge(state: Path, *, release_commit: str) -> list:
 # delivers a secret. The nonce is a public commitment to the challenge id,
 # state root (path and node), release commit and issue time, recomputable from
 # challenge.json; that is what marks a challenge as hook-issued. Endpoint,
-# epoch, generation and sentinel are bound by the observations, which
-# ``check_loaded_bridge`` compares with each other and with the journal.
+# epoch and sentinel are bound by the observations, which
+# ``check_loaded_bridge`` compares with each other and with the journal; the
+# two hosts' generations may differ (they may arrive up to a day apart).
 _HOOK_KIND = 'memvane-loaded-hook-v1'
-_HOOK_PAIR = ('endpoint_id', 'reader_epoch', 'store_format', 'generation', 'sentinel_sha256',
-              'manifest_sha256')
+# Fields two hook observations of one challenge share (no generation, see
+# ``check_loaded_bridge``).
+_HOOK_PAIR = ('endpoint_id', 'reader_epoch', 'store_format', 'sentinel_sha256', 'manifest_sha256')
 _HOOK_DROP = 8
 
 
@@ -501,15 +524,37 @@ def _drop_hook_challenge(directory):
     os.rmdir(directory)
 
 
-def hook_receipt_fresh(state: Path, *, release_commit: str, host: str) -> bool:
-    """A live hook challenge holds ``host``'s receipt for at least half its TTL."""
+def hook_receipt_fresh(state: Path, *, release_commit: str, host: str, reader_epoch: int,
+                       endpoint_id: str) -> bool:
+    """``host`` needs no new probe: its receipt stands and no newer challenge waits for it.
+
+    True when a live hook challenge holds ``host``'s receipt of the current
+    reader (``reader_epoch``/``endpoint_id``) for at least half the hook TTL,
+    and no live challenge issued after it holds only the other host's receipt
+    of that reader (one this host could not join, e.g. a moved sentinel).
+    A moved epoch or endpoint, a newer partner, or half a day probes again.
+    """
+    other = 'codex' if host == 'claude' else 'claude'
     try:
         live, _expired = _hook_challenges(_dir(Path(state)), release_commit, time.time())
     except (OSError, ValueError):
         return False
     now = time.time()
-    return any(os.path.lexists(directory / (host + '.json')) and record['expires_at'] - now >= _TTL / 2
-               for record, directory in live)
+    mine, waiting = [], []
+    for record, directory in live:
+        try:
+            if os.path.lexists(directory / (host + '.json')):
+                seen = _read(directory / (host + '.audit'))
+                if (seen.get('reader_epoch') == reader_epoch and seen.get('endpoint_id') == endpoint_id
+                        and record['expires_at'] - now >= _HOOK_TTL / 2):
+                    mine.append(record['issued_at'])
+            elif os.path.lexists(directory / (other + '.json')):
+                seen = _read(directory / (other + '.audit'))
+                if seen.get('reader_epoch') == reader_epoch and seen.get('endpoint_id') == endpoint_id:
+                    waiting.append(record['issued_at'])
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return bool(mine) and max(mine) >= max(waiting, default=0)
 
 
 def record_hook_observation(state: Path, *, release_commit: str, host: str, observed: dict,
@@ -519,9 +564,10 @@ def record_hook_observation(state: Path, *, release_commit: str, host: str, obse
     ``observed`` holds every ``_check_observation`` field except the two
     ``observed_*`` challenge fields. Joins the newest live hook challenge of
     this state root and release commit where ``host`` is empty and the other
-    host saw the same reader (``_HOOK_PAIR``); otherwise issues one. Returns
-    ``complete`` when both hosts are now recorded, else ``recorded``, or
-    ``fresh`` when this host's receipt is already live for half a TTL. The
+    host saw the same reader (``_HOOK_PAIR``); otherwise issues one (valid
+    for ``_HOOK_TTL``). Returns ``complete`` when both hosts are now recorded,
+    else ``recorded``, or ``fresh`` when this host's receipt of the same
+    reader is already live for half the hook TTL. The
     switch gate (``find_loaded_bridge``) remains the only verifier.
     """
     from laya_journal_paths import check_journal_namespace
@@ -539,21 +585,31 @@ def record_hook_observation(state: Path, *, release_commit: str, host: str, obse
             _drop_hook_challenge(directory)
         except OSError:
             pass  # A later hook retries; an expired challenge is never evidence.
-    target, fresh = None, False
+    # ``partner``: a newer challenge holds only the other host. A standing
+    # receipt older than it is not ``fresh``; a new challenge makes this
+    # host's receipt the newest, so ``hook_receipt_fresh`` stops probing.
+    target, fresh, partner = None, False, False
     for record, directory in sorted(live, key=lambda item: item[0]['issued_at'], reverse=True):
         try:
+            own = os.path.lexists(directory / (host + '.audit')) or os.path.lexists(directory / (host + '.json'))
+            if not own and os.path.lexists(directory / (other + '.json')):
+                partner_here = True
+            else:
+                partner_here = False
             loaded = _loaded_config(record)
             if loaded is None or loaded['sentinel_path'] != sentinel_path or \
                     loaded['sentinel_sha256'] != observed['sentinel_sha256']:
+                partner = partner or partner_here
                 continue
-            if os.path.lexists(directory / (host + '.audit')) or os.path.lexists(directory / (host + '.json')):
+            if own:
                 mine = _read(directory / (host + '.audit'))
-                fresh = fresh or (record['expires_at'] - now >= _TTL / 2
+                fresh = fresh or (not partner and record['expires_at'] - now >= _HOOK_TTL / 2
                                   and all(mine.get(key) == observed[key] for key in _HOOK_PAIR))
                 continue
-            if os.path.lexists(directory / (other + '.json')):
+            if partner_here:
                 seen = _read(directory / (other + '.audit'))
                 if any(seen.get(key) != observed[key] for key in _HOOK_PAIR):
+                    partner = True
                     continue
             if target is None:
                 target = (record, directory)
@@ -565,7 +621,7 @@ def record_hook_observation(state: Path, *, release_commit: str, host: str, obse
         directory = _registry(create=True) / secrets.token_hex(16)
         directory.mkdir(mode=0o700)
         info = state.stat()
-        record = dict(challenge_id=directory.name, issued_at=now, expires_at=now + _TTL,
+        record = dict(challenge_id=directory.name, issued_at=now, expires_at=now + _HOOK_TTL,
                       release_commit=release_commit, expected_hosts=['claude', 'codex'],
                       state=str(state), state_node=[info.st_dev, info.st_ino])
         record['nonce_sha256'] = _sha(_hook_nonce(record).encode('ascii'))

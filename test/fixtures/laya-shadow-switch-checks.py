@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -624,6 +625,141 @@ class ShadowSwitchChecks(unittest.TestCase):
         self.assertEqual(len(probes), 2)
         emit('switch-hook-receipts', challenges=len(self.challenges()), probe_budget=probes)
 
+
+    # ---- U15c: receipts hours apart, epoch-bound, gate waits are not errors --
+    def audits(self, name):
+        directory = self.bridge._registry() / name
+        return {host: json.loads((directory / (host + '.audit')).read_text(encoding='utf8'))
+                for host in ('claude', 'codex') if (directory / (host + '.audit')).exists()}
+
+    def logs(self, *args):
+        done = subprocess.run([sys.executable, '-B', str(ROOT / 'skills/logs/scripts/logs.py'),
+                               '--state-root', str(self.case.state), *args],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done.stdout
+
+    def republish(self, card, marker):
+        """An actual v6 publish of one edited card; the shadow copy then catches up to it."""
+        case = self.case
+        before = self.u11.v6_generation()
+        card.write_text(card.read_text(encoding='utf8').replace('\n---\n', '\n---\n' + marker + '\n', 1),
+                        encoding='utf8')
+        roots = {case.WIKI: str(case.auto / 'wiki')}
+        with self.u10.seed.authority():
+            with case.runtime(roots) as runtime:
+                runtime.catalog.request_scan()
+            case.publish_all(roots)
+            case.rebind_fixture_ledger(roots)
+        self.assertNotEqual(self.u11.v6_generation(), before)
+        verified, passes = self.intent(), []
+        with self.driver():
+            for _ in range(30):
+                passes.append(self.run_pass())
+                now = self.intent()
+                if (now['migration_state'] == 'shadow_verified'
+                        and now['observation'] != verified['observation']):
+                    return passes
+        self.fail('catch-up not reached: %s' % passes)
+
+    def described(self):
+        """Challenge contents for an assertion message (no card text)."""
+        value = {}
+        for name in self.challenges():
+            loaded = json.loads((self.bridge._registry() / name / 'loaded.json').read_text(encoding='utf8'))
+            value[name] = dict(loaded=loaded, **{host: {key: audit.get(key) for key in (
+                'endpoint_id', 'reader_epoch', 'generation', 'sentinel_sha256', 'manifest_sha256')}
+                for host, audit in self.audits(name).items()})
+        return json.dumps(value, sort_keys=True)
+
+    def test_08_hook_receipts_hours_apart_switch_while_the_selection_holds(self):
+        case = self.case
+        initial = self.selection()
+        self.challenges()
+        with self.driver():
+            self.drive_to('shadow_verified')
+        probes, wakes = [], []
+        self.hook('claude', probes=probes, wakes=wakes)
+        (first,) = self.challenges()
+        claude_first = self.audits(first)['claude']
+        loaded = json.loads((self.bridge._registry() / first / 'loaded.json').read_text(encoding='utf8'))
+        wiki = case.auto / 'wiki'
+        sentinel = next(path for path in sorted(wiki.rglob('*.md'))
+                        if loaded['sentinel_path'].endswith('/' + path.relative_to(wiki).as_posix()))
+        other = next(path for path in sorted(wiki.rglob('*.md')) if path != sentinel)
+        # The sentinel card changes: Codex an hour later cannot join Claude's
+        # challenge and issues its own; no pair, no wake.
+        passes = self.republish(sentinel, 'Sentinel later marker.')
+        real_time = time.time
+
+        def clock(hours):
+            return mock.Mock(time=lambda: real_time() + hours * 3600, monotonic=time.monotonic)
+        wakes[:] = []
+        with mock.patch.object(self.bridge, 'time', clock(1)):
+            self.hook('codex', probes=probes, wakes=wakes)
+        self.assertEqual(len(self.challenges()), 2, self.described())
+        (second,) = [name for name in self.challenges() if name != first]
+        self.assertEqual((list(self.audits(second)), wakes), (['codex'], []))
+        # A switch gate that does not hold yet is a wait, not an error.
+        waits = [e for e in self.events() if e['event'] == 'migration.shadow'
+                 and e.get('reason') == 'switch_bridge_missing']
+        self.assertTrue(waits)
+        self.assertEqual({e['outcome'] for e in waits}, {'waiting'})
+        line = [row for row in self.logs().splitlines() if row.startswith('migration: ')]
+        self.assertEqual(len(line), 1)
+        self.assertIn('gate_waits=%d' % len(waits), line[0])
+        # Only actual step errors stay errors; no switch gate (nor the gate's
+        # catch-up recheck seeing the moved source) is among them.
+        errors = [(e.get('op'), e.get('reason')) for e in self.events()
+                  if e['event'] == 'migration.shadow' and e['outcome'] == 'error']
+        self.assertFalse([e for e in errors if e[0] in ('reader_ready', 'switch')
+                          or str(e[1]).startswith('switch_')], errors)
+        self.assertIn('errors=%d' % len(errors), line[0])
+        self.assertNotIn('switch_bridge_missing', self.logs('errors'))
+        # Another card changes (the v6 generation moves again, the sentinel
+        # stays). Claude three hours later probes again because Codex's newer
+        # challenge waits for it, and joins it although the generations differ.
+        passes += self.republish(other, 'Kestrel later marker.')
+        wakes[:] = []
+        before = len(probes)
+        with mock.patch.object(self.bridge, 'time', clock(3)):
+            self.hook('claude', probes=probes, wakes=wakes)
+            self.assertEqual(len(probes), before + 1)
+            self.assertEqual(sorted(self.audits(second)), ['claude', 'codex'], self.described())
+            pair = self.audits(second)
+            self.assertNotEqual(pair['claude']['generation'], pair['codex']['generation'])
+            self.assertEqual((pair['claude']['reader_epoch'], pair['claude']['endpoint_id']),
+                             (claude_first['reader_epoch'], claude_first['endpoint_id']))
+            self.assertEqual(wakes.count(('laya-sync', str(case.project))), 1)
+            # Both hosts now stand: neither probes again.
+            self.hook('claude', probes=probes)
+            self.hook('codex', probes=probes)
+            self.assertEqual(len(probes), before + 1)
+            # The journal epoch moves: the pair is not evidence; nothing is written.
+            real_selection = self.reader.read_selection
+
+            def epoch_moved(path):
+                value = real_selection(path)
+                return SimpleNamespace(epoch=value.epoch + 1, preferred_endpoint=value.preferred_endpoint,
+                                       previous_endpoint=value.previous_endpoint,
+                                       transition_id=value.transition_id)
+            held = self.intent()
+            with self.driver(), mock.patch.object(self.reader, 'read_selection', side_effect=epoch_moved):
+                result = self.ready()
+            self.assertEqual((result['stage'], result.get('reason')), ('retry', 'switch_bridge_missing'))
+            self.assertEqual((self.intent(), self.selection()), (held, initial))
+            with self.driver():
+                ready_pass, switch_pass = self.run_pass(), self.run_pass()
+        self.assertEqual([(e['outcome'], e['migration_state']) for e in (ready_pass, switch_pass)],
+                         [('progressed', 'reader_ready'), ('progressed', 'switched')])
+        self.assertEqual(self.store_format(), 'schema3')
+        # A day after its issue the challenge is no evidence (hook TTL upper bound).
+        with mock.patch.object(self.bridge, 'time', clock(1 + 24)):
+            with self.assertRaises(ValueError):
+                self.bridge.find_loaded_bridge(case.state, release_commit=claude_first['release_commit'])
+        emit('switch-hook-receipts-hours-apart',
+             generations=[pair['codex']['generation'], pair['claude']['generation']],
+             challenges=len(self.challenges()), passes=len(passes), gate_waits=len(waits), step_errors=errors)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

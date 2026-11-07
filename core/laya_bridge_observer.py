@@ -88,7 +88,9 @@ def _probe_loaded_reader(project, root, *, sentinel_path, sentinel_sha256, deadl
 # Ordinary recall hooks (U15b, context/u15b-loaded-receipt-design.md): while a
 # shadow migration waits for the reader switch, a selected recall hook of
 # Claude or Codex records its own loaded-reader receipt in the same registry
-# format the QA collector writes. ``check_loaded_bridge`` stays the verifier.
+# format the QA collector writes. ``check_loaded_bridge`` stays the verifier;
+# a hook receipt holds while its journal epoch, preferred endpoint and release
+# commit stay selected, for at most ``_HOOK_TTL`` (a day).
 HOOK_RECEIPT_SECONDS = 2.0
 _HOOK_STATES = ('shadow_verified', 'reader_ready')
 _SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'))
@@ -174,10 +176,12 @@ def record_hook_receipt(payload, host, decision, *, deadline):
     Returns a short status code and never raises. Before any reader read it
     needs: Claude or Codex outside a QA challenge, a host session id, a
     bundle with the schema3 reader capability, a v5 journal whose shadow
-    migration waits at shadow_verified or reader_ready, and no live receipt
-    of this host for half a TTL (so a host probes at most once per 300 s).
+    migration waits at shadow_verified or reader_ready, and no standing
+    receipt of this host for the selected reader (``hook_receipt_fresh``: a
+    host probes again after the journal epoch or preferred endpoint moved,
+    after a partner challenge it could not join, or after half a day).
     When the write completes the Claude/Codex pair, one existing ``laya-sync``
-    wake is offered so the reader_ready and switch passes follow in the TTL.
+    wake is offered so the reader_ready and switch passes follow.
     """
     try:
         if host not in ('claude', 'codex') or 'MEMVANE_BRIDGE_PREFLIGHT' in os.environ:
@@ -204,8 +208,10 @@ def record_hook_receipt(payload, host, decision, *, deadline):
             if journal.journal_version(state / 'install-journal.sqlite') != 5:
                 return 'not_needed'
             selected = journal.inspect_journal(state / 'install-journal.sqlite')['selected']
+            current = reader.read_selection(state / 'install-journal.sqlite')
         commit = selected['sourceCommit']
-        if B.hook_receipt_fresh(state, release_commit=commit, host=host):
+        if B.hook_receipt_fresh(state, release_commit=commit, host=host, reader_epoch=current.epoch,
+                                endpoint_id=current.preferred_endpoint):
             return 'fresh'
         deadline = min(deadline, time.monotonic() + HOOK_RECEIPT_SECONDS)
         observation, sentinel_path = _probe_hook_reader(project, deadline=deadline)

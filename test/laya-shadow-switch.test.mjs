@@ -23,7 +23,7 @@ test('U15 sync passes switch the reader from shadow_verified to schema3', () => 
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.status === null ? JSON.stringify({ signal: result.signal })
       : result.stdout + result.stderr);
-    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 7} tests?\\b`));
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 8} tests?\\b`));
     assert.match(result.stderr, /\nOK\n/);
   } finally {
     removeTemp(home);
