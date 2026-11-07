@@ -200,14 +200,22 @@ def _issue_candidate(path, *, repository, scope_id, worktree_id, checkout, deadl
 
 
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
-                   snapshot=None, decision=None, provider=None, authority=None):
-    """Read a pinned v6 snapshot or a verified inactive candidate checkout."""
+                   snapshot=None, decision=None, provider=None, authority=None, linked=None):
+    """Read a pinned v6 snapshot or a verified inactive candidate checkout.
+
+    ``linked`` (a ``worktree`` route decision) reads that linked worktree's
+    own view of a journal-selected schema3 endpoint; any other endpoint
+    refuses it.
+    """
     from laya_view_store import ViewStore
     if type(endpoint) is not journal.VerifiedEndpoint:
         raise ValueError('reader_endpoint_not_issued')
     if endpoint in journal._issued and endpoint.record.get('store_format')=='schema3':
         return _query_persisted_schema3(endpoint,checkout=checkout,prompt=prompt,query_vector=query_vector,
-            deadline=deadline,snapshot=snapshot,decision=decision,provider=provider,authority=authority)
+            deadline=deadline,snapshot=snapshot,decision=decision,provider=provider,authority=authority,
+            linked=linked)
+    if linked is not None:
+        raise ValueError('reader_endpoint_invalid')
     if endpoint in journal._issued:
         if (endpoint.record.get('store_format')!='v6' or snapshot is None or decision is None or query_vector is not None
                 or Path(checkout)!=Path(endpoint.record['project'])):
@@ -275,13 +283,18 @@ def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
 
 
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
-                             provider,authority):
+                             provider,authority,linked=None):
     """Read the journal-selected schema3 endpoint at its current view head.
 
     Rows leave in the recall row shape (``scope, generation, path, hash, body,
     score``) with ``<wiki collection>/<member path>`` paths, the same FTS
     term builder and RRF fusion as the v6 hybrid list, and source locators
     read from the generation's stored card provenance (no source re-read).
+
+    With ``linked`` the pinned view is that linked worktree's own (see
+    ``_schema3_pin``); its wiki collection is the main one rebased onto the
+    worktree project root. A linked view sealed without vectors answers
+    lexical lists only (``lexical_only``).
     """
     import laya_reader_lease as leases
     import laya_reader_open as readers
@@ -323,18 +336,27 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         remaining=min(30,deadline-time.monotonic())
         if remaining<=0:raise ValueError('reader_snapshot_deadline')
         return remaining
-    with journal._schema3_pin(record,deadline=deadline) as (store,_handle,pin):
+    with journal._schema3_pin(record,deadline=deadline,linked=linked) as (store,handle,pin):
         vector=store._pinned(pin)['vector']
-        if query_vector is not None:
+        semantic=query_vector is not None and not (linked is not None and vector is None)
+        if semantic:
             proof=_vector_proof(authority,None,decision,provider,deadline)
             if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)
                     or proof!=valid[-1][7]):
                 raise ValueError('reader_vector_caller_unproved')
         with store._reading(time.monotonic()+left()) as db:
             saved=db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
-                             (record['worktree_id'],)).fetchone()
+                             (handle.worktree_id,)).fetchone()
+
+        def rooted(source):
+            if linked is None:
+                return str(Path(source))
+            try:
+                return str(Path(linked['worktreeProjectRoot'])/Path(source).relative_to(record['project']))
+            except ValueError:
+                return None
         names=[item['name'] for item in record['roots'] if item.get('role')=='wiki'
-               and saved is not None and str(Path(item['sourceRoot']))==saved[0]]
+               and saved is not None and rooted(item['sourceRoot'])==saved[0]]
         if len(names)!=1:
             _fail('selected_wiki_required')
         name=names[0]
@@ -352,7 +374,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         lists=[shaped(store.search(pin,query,HYBRID_LIST_LIMIT,deadline_seconds=left()))
                for query in queries]
         status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
-        if query_vector is not None and vector is not None:
+        if semantic:
             try:
                 lists.append(shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
                                                        profile_id=vector['profile_id'],
@@ -366,7 +388,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                                    deadline_seconds=left())
         if time.monotonic()>=deadline:
             raise ValueError('reader_snapshot_deadline')
-        if query_vector is not None and _vector_proof(authority,None,decision,provider,deadline)!=proof:
+        if semantic and _vector_proof(authority,None,decision,provider,deadline)!=proof:
             raise ValueError('reader_vector_caller_unproved')
         locations={name+'/'+path:tuple(found) for path,found in spans.items() if found}
         return ReaderResult('schema3',endpoint.endpoint_id,selected.epoch,pin.gen_id,

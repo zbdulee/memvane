@@ -813,92 +813,244 @@ def _schema3_wiki_cards(root):
     return sorted(cards), skipped
 
 
+# Linked git worktrees whose own views one pass may publish after the main
+# view (``git worktree list`` order). Later ones wait for the next wake.
+SCHEMA3_MAX_LINKED = 16
+# Refusals that hold one linked worktree's view (its row, settings or wiki
+# root no longer match, or registration is refused) without failing the pass.
+SCHEMA3_LINKED_HELD = SCHEMA3_BINDING_REASONS | frozenset(('worktree_binding_conflict',
+                                                           'worktree_missing', 'wiki_binding_invalid',
+                                                           'candidate_io_failed'))
+
+
 def _publish_schema3(decision, proof, writer):
-    """Changed cards only: head members with the same bytes keep their trust."""
+    """Main view first, then each linked worktree's own view (design 5.2).
+
+    Changed cards only: head members with the same bytes keep their trust. A
+    linked worktree is published only while the main view is complete
+    (``indexed``/``unchanged``); its refusals hold that view alone.
+    """
     import laya_blob_values as v
+    import laya_checkout_view as checkout
     import laya_writer_scope as normal
-    import wiki_lifecycle
-    from laya_blob_store import _regular
     from laya_view_store import ViewStore
-    import uuid
     info = normal.writer_store(writer)
     deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
     store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
     try:
         if (store._incarnation, store._policy) != (info['incarnation'], info['policy_digest']):
             raise IndexContractError('schema3_store_changed')
-        try:
-            handle = store.capture_view(info['worktree_id'], deadline=deadline)
-            head = store.head(handle)
-            with store._session() as db:
-                row = db.execute('SELECT wiki_root,binding_digest FROM worktrees WHERE worktree_id=?',
-                                 (info['worktree_id'],)).fetchone()
-                old = ({} if head['gen_id'] is None else
-                       {m['path']: m for m in store._stored(db, head['gen_id'])[0]})
-            if row is None or row['binding_digest'] != info['worktree_binding']:
-                v.fail('wiki_binding_changed')
-            root = row['wiki_root']
-            paths, skipped = _schema3_wiki_cards(root)
-            current = {}
-            for path in paths:
-                try:
-                    raw, _node, _root = _regular(root, path, v.MAX_BODY)
-                except OSError:
-                    v.fail('wiki_card_unavailable')
-                current[path] = (v.hash_bytes(raw), raw)
-            changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
-            removed = sorted(set(old) - set(current))
-            if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
-                    and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
-                return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
-                        'storeFormat': 'schema3', 'removed': len(removed)}
-            if not changed and not removed:
-                return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
-            # First store write of this pass: the journal fence comes first.
-            fresh = normal.mark_new_write(writer)
-            if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
-                    or fresh.get('productRouteAllowed') is not True):
-                raise IndexContractError('new_write_proof_unconfirmed')
-            scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
-            members, pending, ingested = {}, 0, 0
-            for path in paths:
-                sha, raw = current[path]
-                if path not in changed:
-                    members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
-                                                                'trust_digest')}
-                    continue
-                if (pending or ingested >= SCHEMA3_MAX_INGEST
-                        or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
-                    # Left for the next wake; the published head keeps its old bytes.
-                    pending += 1
-                    if path in old:
-                        members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
-                                                                    'trust_digest')}
-                    continue
-                admitted = store.ingest_attested_card(info['worktree_id'], path, decision=decision,
-                                                      provenance_scan=scan)
-                ingested += 1
-                body = (raw.decode('utf8') if admitted['blob_sha'] == sha
-                        else store.document(admitted['blob_sha'])['body'])
-                members[path] = dict(path=path, blob_sha=admitted['blob_sha'],
-                                     display_title=v.markdown_title(body, admitted['blob_sha']),
-                                     trust_digest=admitted['trust_digest'])
-            if not ingested and not removed:
-                return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
-            manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
-                            complete=True, sources=[], members=[members[p] for p in sorted(members)])
-            generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
-            normal.validate_normal_writer(writer)
-            store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
-        except v.BlobStoreError as exc:
-            if exc.reason in SCHEMA3_BINDING_REASONS:
-                return {'state': 'deferred', 'reason': 'schema3_binding_changed',
-                        'detail': exc.reason, 'storeFormat': 'schema3'}
-            if exc.reason in SCHEMA3_TRANSIENT_REASONS:
-                return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
-            raise
+        result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
+                                       info['worktree_binding'], deadline)
+        if result['state'] not in ('indexed', 'unchanged'):
+            return result
+        linked = []
+        for project in _schema3_linked_projects(decision, deadline):
+            if time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE:
+                linked.append({'root': str(project), 'state': 'pending', 'reason': 'schema3_pass_budget'})
+                continue
+            try:
+                linked_decision = _linked_decision(decision, project)
+            except ValueError:
+                linked.append({'root': str(project), 'state': 'held',
+                               'reason': 'linked_root_outside_project'})
+                continue
+            try:
+                worktree_id = _schema3_linked_worktree(store, writer, proof, info, project, deadline)
+                outcome = _publish_schema3_view(store, writer, linked_decision,
+                                                proof, worktree_id, None, deadline)
+            except checkout.CheckoutUnavailable as exc:
+                outcome = {'state': 'held', 'reason': exc.reason}
+            except v.BlobStoreError as exc:
+                if exc.reason not in SCHEMA3_LINKED_HELD:
+                    raise
+                outcome = {'state': 'held', 'reason': exc.reason}
+            if outcome['state'] == 'deferred' and outcome['reason'] in (
+                    'schema3_binding_changed', 'schema3_mass_removal_held'):
+                # Retrying cannot clear these; that view keeps its last head.
+                outcome = {**outcome, 'state': 'held'}
+            linked.append({'root': str(project), **{k: outcome[k] for k in
+                           ('state', 'reason', 'generation', 'ingested', 'pending') if k in outcome}})
     finally:
         store.close()
+    if not linked:
+        return result
+    result = {**result, 'worktrees': linked}
+    if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
+        result['state'] = 'indexed'
+    if any(item['state'] in ('pending', 'deferred') for item in linked):
+        result['state'] = 'pending'
+    return result
+
+
+def _schema3_linked_projects(decision, deadline):
+    """Linked worktrees of the main checkout that the route selector serves from it.
+
+    Each listed worktree's project must classify as ``worktree`` of exactly
+    this main project (same common Git dir, no route of its own, same derived
+    settings identity: ``laya_index_host_route._worktree_route``).
+    """
+    import git_branch_safety
+    project = Path(decision['projectRoot'])
+    try:
+        facts = git_branch_safety.repo_facts(project, deadline=deadline)
+        if facts is None or facts['linked']:
+            return []
+        relative = project.relative_to(facts['toplevel'])
+        out = git_branch_safety.run_git(['worktree', 'list', '--porcelain', '-z'], project,
+                                        deadline=deadline)
+    except (git_branch_safety.GitUnavailable, OSError, ValueError):
+        return []
+    listed = [field[len('worktree '):] for field in
+              out.stdout.decode('utf-8', 'surrogateescape').split('\0')
+              if field.startswith('worktree ')]
+    found = []
+    for root in listed[1:]:
+        if len(found) >= SCHEMA3_MAX_LINKED:
+            break
+        try:
+            candidate = Path(root).resolve(strict=True) / relative
+            if not candidate.is_dir():
+                continue
+            route = select_route(str(candidate), action='index')
+        except (OSError, RuntimeError, ValueError):
+            continue
+        main = route.get('mainRoute')
+        if (route.get('state') == 'worktree' and isinstance(main, dict)
+                and main.get('projectRoot') == str(project)
+                and route.get('worktreeProjectRoot') == str(candidate)):
+            found.append(candidate)
+    return found
+
+
+def _schema3_linked_worktree(store, writer, proof, info, project, deadline):
+    """The linked worktree's registered id, registering it on first sight.
+
+    Registration is a store write, so the pass's journal fence comes first.
+    The record is built by ``laya_checkout_view.register_worktree`` and bound
+    by ``ViewStore.register_worktree`` (no rebinding of an existing row).
+    """
+    import laya_checkout_view as checkout
+    with store._session() as db:
+        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                          (str(project),)).fetchall()
+    if len(rows) > 1 or any(row[0] == info['worktree_id'] for row in rows):
+        raise IndexContractError('schema3_worktree_rows_invalid')
+    if rows:
+        return rows[0][0]
+    _mark_schema3_write(writer, proof)
+    record = checkout.register_worktree(str(project), info['repository'], deadline=deadline)
+    return store.register_worktree(str(project), record)
+
+
+def _linked_decision(decision, project):
+    """The main decision with its collection roots rebased onto a linked worktree.
+
+    Same derived settings identity (proved by the selector); only
+    ``projectRoot`` and the roots move, as the store's attested-ingest rule
+    binds the decision to that worktree row's project and wiki root.
+    """
+    main = Path(decision['projectRoot'])
+
+    def rebased(root):
+        return str(project / Path(root).relative_to(main))
+    return {**decision, 'projectRoot': str(project),
+            'collections': [{**item, 'sourceRoot': rebased(item['sourceRoot'])}
+                            for item in decision['collections']],
+            'collectionRoots': {name: rebased(root)
+                                for name, root in decision.get('collectionRoots', {}).items()}}
+
+
+def _mark_schema3_write(writer, proof):
+    """The pass's first store write: one journal fence (idempotent after the first)."""
+    import laya_writer_scope as normal
+    fresh = normal.mark_new_write(writer)
+    if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
+            or fresh.get('productRouteAllowed') is not True):
+        raise IndexContractError('new_write_proof_unconfirmed')
+
+
+def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline):
+    """One view's pass: changed cards ingested, unchanged members keep their trust.
+
+    ``binding`` is the main worktree's journal-recorded binding (None for a
+    linked worktree, whose row the store itself re-observes). A view with no
+    head yet (a first-seen worktree or branch) ingests every card: trust is
+    never reused from another view (``ViewStore._card``: ``foreign_card_trust``).
+    """
+    import laya_blob_values as v
+    import laya_writer_scope as normal
+    import wiki_lifecycle
+    from laya_blob_store import _regular
+    import uuid
+    try:
+        handle = store.capture_view(worktree_id, deadline=deadline)
+        head = store.head(handle)
+        with store._session() as db:
+            row = db.execute('SELECT wiki_root,binding_digest FROM worktrees WHERE worktree_id=?',
+                             (worktree_id,)).fetchone()
+            old = ({} if head['gen_id'] is None else
+                   {m['path']: m for m in store._stored(db, head['gen_id'])[0]})
+        if row is None or (binding is not None and row['binding_digest'] != binding):
+            v.fail('wiki_binding_changed')
+        cold = head['gen_id'] is None
+        root = row['wiki_root']
+        paths, skipped = _schema3_wiki_cards(root)
+        current = {}
+        for path in paths:
+            try:
+                raw, _node, _root = _regular(root, path, v.MAX_BODY)
+            except OSError:
+                v.fail('wiki_card_unavailable')
+            current[path] = (v.hash_bytes(raw), raw)
+        changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
+        removed = sorted(set(old) - set(current))
+        if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
+                and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
+            return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
+                    'storeFormat': 'schema3', 'removed': len(removed)}
+        if not changed and not removed and not cold:
+            return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id']}
+        # First store write of this pass: the journal fence comes first.
+        _mark_schema3_write(writer, proof)
+        scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
+        members, pending, ingested = {}, 0, 0
+        for path in paths:
+            sha, raw = current[path]
+            if path not in changed:
+                members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
+                                                            'trust_digest')}
+                continue
+            if (pending or ingested >= SCHEMA3_MAX_INGEST
+                    or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
+                # Left for the next wake; the published head keeps its old bytes.
+                pending += 1
+                if path in old:
+                    members[path] = {k: old[path][k] for k in ('path', 'blob_sha', 'display_title',
+                                                                'trust_digest')}
+                continue
+            admitted = store.ingest_attested_card(worktree_id, path, decision=decision,
+                                                  provenance_scan=scan)
+            ingested += 1
+            body = (raw.decode('utf8') if admitted['blob_sha'] == sha
+                    else store.document(admitted['blob_sha'])['body'])
+            members[path] = dict(path=path, blob_sha=admitted['blob_sha'],
+                                 display_title=v.markdown_title(body, admitted['blob_sha']),
+                                 trust_digest=admitted['trust_digest'])
+        if not ingested and not removed and not (cold and not pending):
+            return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
+        manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
+                        complete=True, sources=[], members=[members[p] for p in sorted(members)])
+        generation = store.prepare_generation(handle, manifest, expected_head=head, deadline=deadline)
+        normal.validate_normal_writer(writer)
+        store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+    except v.BlobStoreError as exc:
+        if exc.reason in SCHEMA3_BINDING_REASONS:
+            return {'state': 'deferred', 'reason': 'schema3_binding_changed',
+                    'detail': exc.reason, 'storeFormat': 'schema3'}
+        if exc.reason in SCHEMA3_TRANSIENT_REASONS:
+            return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
+        raise
     return {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
             'generation': generation, 'ingested': ingested, 'removed': len(removed),
             'pending': pending, 'skipped': skipped}

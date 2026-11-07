@@ -776,28 +776,47 @@ def _schema3_record(state, project, decision, proof, ledger, info, stored, *, se
 
 
 @contextmanager
-def _schema3_pin(record, *, deadline):
+def _schema3_pin(record, *, deadline, linked=None):
     """Pin the current main-view head of a schema3 endpoint and check its floor.
 
     Floor limits: head_floor is fixed at CAS time; ViewStore._head refuses a
     head behind the view's highest published ordinal. A same-UID forger who
     removes the head trigger and also unpublishes every later generation above
     the floor is not detected (the accepted same-UID consistent forgery limit).
+
+    ``linked`` (a ``worktree`` route decision) pins that linked worktree's own
+    view in the same store instead: its registered row is found by project
+    root, never the main view. No row or no published head is
+    ``view_preparing``. Its view may be sealed without vectors (lexical-first);
+    a vector profile other than the endpoint's is refused.
     """
     from laya_view_store import ViewStore
+    from laya_blob_values import fail
     state, path = Path(record['state']), Path(record['db_path'])
+    target, project = record['worktree_id'], record['project']
     with _readonly(path, state) as db:
         row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+        if linked is not None:
+            project = linked.get('worktreeProjectRoot')
+            _need(isinstance(project, str) and project != record['project'], 'reader_checkout_changed')
+            trees = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                               (project,)).fetchall()
     _need(row is not None and isinstance(row[0], str)
           and _repository_digest(row[0]) == record['repository_digest'], 'reader_store_changed')
+    if linked is not None:
+        _need(len(trees) <= 1 and all(tree[0] != record['worktree_id'] for tree in trees),
+              'reader_store_changed')
+        if not trees:
+            fail('view_preparing')
+        target = trees[0][0]
     store = ViewStore.open_reader(path, repository=json.loads(row[0]), scope_id=record['scope'],
                                  deadline=deadline)
     try:
         _need(store._incarnation == record['incarnation']
               and store._policy == record['settings_policy_digest']
               and _file(path, state) == list(record['db_node']), 'reader_store_changed')
-        handle = store.capture_view(record['worktree_id'], deadline=deadline)
-        _need(store._handles[handle.token]['capture']['projectRoot'] == record['project'],
+        handle = store.capture_view(target, deadline=deadline)
+        _need(store._handles[handle.token]['capture']['projectRoot'] == project,
               'reader_checkout_changed')
         pin = store.pin_view(handle, deadline=deadline)
         try:
@@ -806,7 +825,7 @@ def _schema3_pin(record, *, deadline):
             if floor is not None and pin.view_id == floor['view_id']:
                 _need(pin.epoch >= floor['epoch'], 'reader_head_regressed')
             vector = store._pinned(pin)['vector']
-            if 'vector_profile' in record:
+            if 'vector_profile' in record and not (linked is not None and vector is None):
                 _need((None if vector is None else vector['profile_id']) == record['vector_profile'] and
                       (None if vector is None else vector['recipe_id']) == record['vector_recipe'],
                       'reader_endpoint_changed')
