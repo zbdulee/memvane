@@ -1308,7 +1308,7 @@ def _selection(db):
         fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
                   else ('install_id',))
         _need(all(record[k] == previous[k] for k in fields) or relocated_pair(previous, record)
-              or resettled_pair(previous, record),
+              or resettled_pair(previous, record) or rollback_pair(previous, record),
               'reader_install_changed')
     from laya_move_reader_journal import validate_selection
     validate_selection(db, selected, record)
@@ -1402,6 +1402,25 @@ def resettled_pair(old, new):
                 and set(old) == set(new) == _SCHEMA3_KEYS
                 and old['settings'] != new['settings']
                 and all(old[k] == new[k] for k in _SCHEMA3_KEYS - {'settings'}))
+    except (AttributeError, KeyError, TypeError):
+        return False
+
+
+def rollback_pair(old, new):
+    """``new`` is the v6 reader a rollback selected over a stale schema3 ``old``.
+
+    Rollback direction only (schema3 -> steady v6). The v6 endpoint is
+    re-issued with the current recall settings while an unreadable schema3
+    store could not be re-sealed (``resettle_selection``), so only
+    ``settings`` (the recallSettings digest) may differ; every other install
+    identity field is identical. The caller proves the v6 store is the one
+    the switch left (``laya_shadow_migration.rollback_reader``).
+    """
+    try:
+        return (old.get('store_format') == 'schema3' and set(old) == _SCHEMA3_KEYS
+                and new.get('store_format') == 'v6' and new.get('capability') == 'v6-ro-v1'
+                and old['settings'] != new['settings']
+                and all(old[k] == new[k] for k in INSTALL_IDENTITY if k != 'settings'))
     except (AttributeError, KeyError, TypeError):
         return False
 
@@ -1727,7 +1746,8 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
         formats = (base['store_format'], record['store_format'])
         _need(formats in (('v6', 'v6'), ('v6', 'schema3'), ('schema3', 'v6')),
               'reader_format_not_selectable')
-        _need(all(record[k] == base[k] for k in stable_fields(base, record)), 'reader_install_changed')
+        _need(all(record[k] == base[k] for k in stable_fields(base, record))
+              or rollback_pair(base, record), 'reader_install_changed')
         if replay:
             outcome.append(current)
             return False
