@@ -11,9 +11,11 @@ positive path patches ``project_dir.layout`` to ``current`` for this project
 only; the refusal tests use the real layout. No actual host, provider or
 operational setup entry point is exercised.
 """
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
+import hashlib
 import importlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -450,6 +452,177 @@ class ShadowSwitchChecks(unittest.TestCase):
         self.assertEqual(json.loads(out.strip().splitlines()[-1])['migration_state'], 'switched', out + err)
         self.assertTrue(all(found in ([old_gen], [new_gen]) for found in served), served)
         self.assertEqual(self.recall()['results'][-1].data_generation, new_gen)
+
+    # ---- U15b: a finished bundle upgrade's receipt is not a busy lifecycle ---
+    def active_intent(self, *, settled):
+        """``active-upgrade-intent.json`` as ``laya_active_upgrade`` leaves it.
+
+        settled: the upgrade switched to the current route and released its
+        fence; the file stays as the receipt until a later bundle archives it.
+        Otherwise the intent was written and the fence not yet taken: the
+        current route is still the old one.
+        """
+        active = importlib.import_module('laya_active_upgrade')
+        build = importlib.import_module('laya_initial_build')
+        case = self.case
+        ledger = active._origin(case.state)
+        row = ledger.load(case.state / ledger.name)
+        self.assertEqual(row['phase'], 'active')
+        other = hashlib.sha256(b'u15b-other-route').hexdigest()
+        if settled:
+            old, new = {**row, 'routeSha256': other}, {**row, 'phase': 'upgrading'}
+        else:
+            old, new = dict(row), {**row, 'routeSha256': other, 'phase': 'upgrading'}
+        identity = {'projectRoot': str(case.project), 'stateRoot': str(case.state)}
+        intent = {'schema': active.V1, 'projectRoot': str(case.project), 'stateRoot': str(case.state),
+                  'backup': str(case.state / 'active-upgrade-backup'), 'oldRecord': {'identity': identity},
+                  'oldLedger': old, 'newLedger': new,
+                  **{name: '{}' for name in ('oldRoute', 'newRoute', 'oldAttestation', 'newAttestation',
+                                             'oldMarker', 'newMarker')}}
+        path = case.state / active.INTENT
+        if path.exists():
+            path.unlink()
+        build._write_json(path, intent, replace=False, max_bytes=active.LIMIT)
+        return path
+
+    def test_06_settled_active_upgrade_receipt_lets_the_switch_proceed(self):
+        fresh = importlib.import_module('laya_fresh_wiki_origin')
+        with self.driver():
+            self.drive_to('shadow_verified')
+            self.loaded()
+        initial = self.selection()
+
+        def gate(state='shadow_verified'):
+            with self.driver():
+                result = self.ready()
+            return (result['stage'], result.get('reason'), result['migration_state'])
+        # In progress: the intent names a route the ledger does not select yet.
+        receipt = self.active_intent(settled=False)
+        self.assertEqual(gate(), ('retry', 'switch_lifecycle_busy', 'shadow_verified'))
+        # The upgrade fence alone is busy too.
+        self.active_intent(settled=True)
+        with mock.patch.object(fresh, 'upgrade_fenced', return_value=True):
+            self.assertEqual(gate(), ('retry', 'switch_lifecycle_busy', 'shadow_verified'))
+        self.assertEqual(self.selection(), initial)
+        # Settled forward receipt only: passes reach switched, receipt untouched.
+        before = receipt.read_bytes()
+        with self.driver():
+            first, second = self.run_pass(), self.run_pass()
+        self.assertEqual([(e['outcome'], e['migration_state']) for e in (first, second)],
+                         [('progressed', 'reader_ready'), ('progressed', 'switched')])
+        self.assertEqual(self.selection()[:3], (initial[0] + 1, self.intent()['switched']['endpoint_id'], initial[1]))
+        self.assertEqual(receipt.read_bytes(), before)
+        emit('switch-settled-active-receipt', passes=[first['migration_state'], second['migration_state']])
+
+    # ---- U15b: ordinary recall hooks of both hosts record the receipts ------
+    def hook(self, host, *, wakes=None, probes=None, fail=False):
+        """One registered recall hook through ``laya_host_response.main`` (serve-stdin).
+
+        Synthetic authority as in ``loaded``: the companion's executing root,
+        its host cache layout and the host process identity. Returns
+        ``(exit, stdout)``.
+        """
+        case = self.case
+        host_response = self.u11.host
+        observer = importlib.import_module('laya_bridge_observer')
+        upgrade = importlib.import_module('laya_bundle_upgrade')
+        runtime_work = importlib.import_module('runtime_work')
+        hook_budget = importlib.import_module('hook_budget')
+        companion = case.home / 'schema3-companion'
+        companion.mkdir(exist_ok=True)
+        root = case.plugin if host == 'claude' else companion
+        payload = {'cwd': str(case.project), 'prompt': 'heron route northern marsh',
+                   'session_id': 'u15b-session-' + host, 'hook_event_name': 'UserPromptSubmit'}
+        identity = dict(pid=os.getpid() + (2 if host == 'codex' else 1), uid=os.getuid(), parent=os.getpid(),
+                        start=1000.5 + (host == 'codex'), start_key=(1000, 5), argv=(host,),
+                        executable=str(Path(sys.executable).resolve()))
+        real_probe = observer._probe_hook_reader
+
+        def probe(*args, **kwargs):
+            if probes is not None:
+                probes.append(kwargs['deadline'] - time.monotonic())
+            if fail:
+                raise ValueError('reader_hosts_pending')
+            return real_probe(*args, **kwargs)
+
+        def request(kind, target='', **kwargs):
+            if wakes is not None:
+                wakes.append((kind, target))
+        stdin = mock.Mock(buffer=io.BytesIO(json.dumps(payload).encode('utf8')))
+        out, err = io.StringIO(), io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(self.driver())
+            stack.enter_context(mock.patch.object(J, '_verified_executing_root', return_value=str(root)))
+            stack.enter_context(mock.patch.object(host_response, '__file__',
+                                                  str(root / 'core' / 'laya_host_response.py')))
+            stack.enter_context(mock.patch.object(upgrade, 'host_layout', return_value=(host, root)))
+            stack.enter_context(mock.patch.object(observer, '_hook_host_process', return_value=identity))
+            stack.enter_context(mock.patch.object(observer, '_probe_hook_reader', side_effect=probe))
+            stack.enter_context(mock.patch.object(runtime_work, 'request', side_effect=request))
+            stack.enter_context(mock.patch.object(sys, 'stdin', stdin))
+            stack.enter_context(redirect_stdout(out))
+            stack.enter_context(redirect_stderr(err))
+            stack.enter_context(mock.patch.object(hook_budget, '_deadline', None))
+            code = host_response.main(['serve-stdin', 'recall', host, str(case.project)])
+        self.assertEqual(code, 0, err.getvalue())
+        return code, out.getvalue()
+
+    def challenges(self):
+        """Challenge directories written after the fixture's own setup."""
+        registry = self.bridge._registry()
+        names = sorted(p.name for p in registry.iterdir()) if registry.exists() else []
+        if not hasattr(self, '_setup_challenges'):
+            self._setup_challenges = set(names)
+        return [name for name in names if name not in self._setup_challenges]
+
+    def test_07_recall_hooks_of_both_hosts_record_receipts_and_passes_switch(self):
+        case = self.case
+        initial = self.selection()
+        self.challenges()
+        # Before shadow_verified the hook reads no reader for a receipt.
+        probes, wakes = [], []
+        code, out = self.hook('claude', probes=probes)
+        self.assertEqual(code, 0)
+        self.assertIn('additionalContext', out)
+        self.assertEqual((probes, self.challenges()), ([], []))
+        with self.driver():
+            self.drive_to('shadow_verified')
+        # A failing probe never changes the hook answer.
+        code, failed = self.hook('claude', probes=probes, fail=True)
+        self.assertEqual((code, len(probes), self.challenges()), (0, 1, []))
+        self.assertEqual(failed, out)
+        # Claude alone: one receipt, one probe bounded by the receipt budget.
+        probes[:] = []
+        code, answer = self.hook('claude', probes=probes, wakes=wakes)
+        self.assertEqual((code, answer), (0, out))
+        self.assertEqual(len(probes), 1)
+        self.assertLessEqual(probes[0], importlib.import_module('laya_bridge_observer').HOOK_RECEIPT_SECONDS)
+        self.assertEqual(len(self.challenges()), 1)
+        claude_wakes = len(wakes)
+        # The same host again while its receipt is fresh: no probe, no write.
+        self.hook('claude', probes=probes)
+        self.assertEqual((len(probes), len(self.challenges())), (1, 1))
+        event = None
+        with self.driver():
+            event = self.run_pass()
+        self.assertEqual((event['outcome'], event['reason'], event['migration_state']),
+                         ('waiting', 'switch_bridge_missing', 'shadow_verified'))
+        # Codex joins the same challenge and offers one sync wake.
+        wakes[:] = []
+        code, codex = self.hook('codex', probes=probes, wakes=wakes)
+        self.assertEqual(code, 0)
+        self.assertEqual((len(probes), len(self.challenges())), (2, 1))
+        self.assertEqual(wakes.count(('laya-sync', str(case.project))) - claude_wakes, 1)
+        with self.driver():
+            first, second = self.run_pass(), self.run_pass()
+        self.assertEqual([(e['outcome'], e['migration_state']) for e in (first, second)],
+                         [('progressed', 'reader_ready'), ('progressed', 'switched')])
+        self.assertEqual(self.selection()[:3], (initial[0] + 1, self.intent()['switched']['endpoint_id'], initial[1]))
+        self.assertEqual(self.store_format(), 'schema3')
+        # Past the switch the hook records nothing more.
+        self.hook('codex', probes=probes)
+        self.assertEqual(len(probes), 2)
+        emit('switch-hook-receipts', challenges=len(self.challenges()), probe_budget=probes)
 
 
 if __name__ == '__main__':
