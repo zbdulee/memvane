@@ -50,6 +50,105 @@ def _wiki_card_path(path, prefixes):
                for prefix in prefixes)
 
 
+def _prefix_ranges(prefixes):
+    """Ordered disjoint path ranges [prefix, next) that hold exactly the ``prefix`` paths."""
+    ranges = []
+    for prefix in sorted(set(prefixes)):
+        if type(prefix) is not str or not prefix.endswith('/'):
+            raise IndexContractError('migration_inventory_invalid')
+        if not any(prefix.startswith(lower) for lower, _ in ranges):
+            # '0' is the code point after '/', so the range is exactly the
+            # paths starting with ``prefix`` under SQLite BINARY ordering.
+            ranges.append((prefix, prefix[:-1] + '0'))
+    return ranges
+
+
+def _membership_rows(base, *, gen, scope, ranges, include_ineligible, after, limit):
+    """At most ``limit`` wiki-root membership rows after ``after``, path-ordered."""
+    columns = 'm.path,m.hash,m.eligible' if include_ineligible else 'm.path,m.hash'
+    eligibility = '' if include_ineligible else 'AND m.eligible=1 '
+    rows = []
+    for lower, upper in ranges:
+        if after is not None and after >= upper:
+            continue
+        rows.extend(base.execute('SELECT ' + columns + ' FROM membership m WHERE m.gen=? AND m.scope=? ' +
+                                 eligibility + 'AND m.path>=? AND m.path<? AND m.path>? '
+                                 'ORDER BY m.path LIMIT ?',
+                                 (gen, scope, lower, upper, '' if after is None else after,
+                                  limit - len(rows))).fetchall())
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _sidecar_rows(side, *, after, limit):
+    """At most ``limit`` sidecar docs after ``after``, path-ordered."""
+    if after is None:
+        return side.execute('SELECT path,hash FROM docs ORDER BY path LIMIT ?', (limit,)).fetchall()
+    return side.execute('SELECT path,hash FROM docs WHERE path>? ORDER BY path LIMIT ?',
+                        (after, limit)).fetchall()
+
+
+def _path_stream(fetch, *, after, chunk, deadline, check, reason):
+    """Yield strictly path-ordered rows after ``after``, fetching ``chunk`` at a time."""
+    while True:
+        rows = fetch(after, chunk)
+        if time.monotonic() >= deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        for row in rows:
+            if type(row[0]) is not str or (after is not None and not row[0] > after):
+                raise IndexContractError(reason)
+            check(row)
+            after = row[0]
+            yield row
+        if len(rows) < chunk:
+            return
+
+
+def _merge_effective(base_rows, side_rows, *, prefixes, excluded_paths, excluded_hashes,
+                     include_ineligible, limit):
+    """Merge path-ordered base membership and sidecar docs into effective members.
+
+    A sidecar doc replaces the base row of its path unless both carry the same
+    digest and the base row is eligible. Rows are pulled only as needed, so a
+    page of ``limit`` members reads at most ``limit + 1`` rows per source plus
+    the meta-page and hidden rows it skips. Returns (members, more).
+    """
+    want = None if limit is None else limit + 1
+    out, pending = [], object()
+    b = s = pending
+    while want is None or len(out) < want:
+        if b is pending:
+            b = next(base_rows, None)
+        if s is pending:
+            s = next(side_rows, None)
+        if b is None and s is None:
+            break
+        if s is None or (b is not None and b[0] < s[0]):
+            path, row, doc, b = b[0], b, None, pending
+        elif b is None or s[0] < b[0]:
+            path, row, doc, s = s[0], None, s, pending
+        else:
+            path, row, doc, b, s = b[0], b, s, pending, pending
+        if not _wiki_card_path(path, prefixes):
+            continue
+        eligible = 1 if row is None or len(row) < 3 else row[2]
+        if doc is None or (row is not None and row[1] == doc[1] and eligible == 1):
+            digest, source = row[1], 'base'
+        else:
+            digest, source, eligible = doc[1], 'sidecar', 1
+        hidden = path in excluded_paths or digest in excluded_hashes
+        if hidden and not include_ineligible:
+            continue
+        member = {'path': path, 'hash': digest, 'source': source}
+        if include_ineligible:
+            member.update(eligible=eligible, excluded=hidden)
+        out.append(member)
+    if want is None:
+        return out, False
+    return out[:limit], len(out) > limit
+
+
 def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_ineligible=False,
                       _all_inventory=False, _page_limit=None):
     """Capture one metadata page; this observation does not authorize a write."""
@@ -94,63 +193,54 @@ def capture_effective(snapshot, *, endpoint, decision, after, deadline, include_
             if baseline is None or dict(baseline) != snapshot.sidecar.get('legacyCommitment'):
                 raise IndexContractError('reader_sidecar_revision_unproved')
         prefixes = tuple(name + '/' for name in wiki_index_roots(decision['collections']))
-        scope = decision['scopeId']
+        ranges = _prefix_ranges(prefixes)
+        scope, gen = decision['scopeId'], snapshot.published[0]
         excluded_paths, excluded_hashes = _exclusions(base, scope)
         def valid(path, digest):
             return (type(path) is str and _valid_relative_path(path)
                     and path.startswith(prefixes) and type(digest) is str
                     and re.fullmatch(r'[0-9a-f]{64}', digest) is not None)
-        columns = 'm.path,m.hash,m.eligible' if include_ineligible else 'm.path,m.hash'
-        eligibility = '' if include_ineligible else 'AND m.eligible=1 '
-        rows = base.execute('SELECT ' + columns + ' FROM membership m WHERE m.gen=? AND m.scope=? ' + eligibility +
-                            'AND EXISTS (SELECT 1 FROM json_each(?) p '
-                            'WHERE substr(m.path,1,length(p.value))=p.value) ORDER BY m.path LIMIT ?',
-                            (snapshot.published[0], scope, json.dumps(prefixes), MAX_DOCS + 1)).fetchall()
+        if after is None:
+            # Every page walk starts here, and its observation binds the
+            # immutable published membership and the sidecar revision, so the
+            # inventory bound is proved once per walk. The count reads index
+            # entries only; no member row is materialized.
+            eligibility = '' if include_ineligible else 'AND m.eligible=1 '
+            total = sum(base.execute('SELECT count(*) FROM (SELECT 1 FROM membership m WHERE m.gen=? '
+                                     'AND m.scope=? ' + eligibility + 'AND m.path>=? AND m.path<? LIMIT ?)',
+                                     (gen, scope, lower, upper, MAX_DOCS + 1)).fetchone()[0]
+                        for lower, upper in ranges)
+            if total > MAX_DOCS:
+                raise IndexContractError('migration_membership_limit')
+            if side is not None and side.execute('SELECT count(*) FROM (SELECT 1 FROM docs LIMIT ?)',
+                                                 (MAX_DOCS + 1,)).fetchone()[0] > MAX_DOCS:
+                raise IndexContractError('migration_sidecar_invalid')
+        def check_base(row):
+            if ((include_ineligible and (type(row[2]) is not int or row[2] not in (0, 1)))
+                    or not valid(row[0], row[1])):
+                raise IndexContractError('migration_membership_invalid')
+        def check_side(row):
+            if not valid(row[0], row[1]):
+                raise IndexContractError('migration_sidecar_invalid')
+        # One page reads at most size + 1 rows per source (the extra row
+        # decides ``next``), plus the meta-page and hidden rows it skips.
+        size = MAX_BATCH if _page_limit is None else min(_page_limit, MAX_BATCH)
+        base_rows = _path_stream(
+            lambda start, limit: _membership_rows(base, gen=gen, scope=scope, ranges=ranges,
+                include_ineligible=include_ineligible, after=start, limit=limit),
+            after=after, chunk=size + 1, deadline=deadline, check=check_base,
+            reason='migration_membership_invalid')
+        side_rows = iter(()) if side is None else _path_stream(
+            lambda start, limit: _sidecar_rows(side, after=start, limit=limit),
+            after=after, chunk=size + 1, deadline=deadline, check=check_side,
+            reason='migration_sidecar_invalid')
+        members, more = _merge_effective(base_rows, side_rows, prefixes=prefixes,
+            excluded_paths=excluded_paths, excluded_hashes=excluded_hashes,
+            include_ineligible=include_ineligible, limit=None if _all_inventory else size)
         if time.monotonic() >= deadline:
             raise IndexContractError('reader_snapshot_deadline')
-        if len(rows) > MAX_DOCS:
-            raise IndexContractError('migration_membership_limit')
-        if include_ineligible:
-            if any(type(row[2]) is not int or row[2] not in (0, 1) for row in rows):
-                raise IndexContractError('migration_membership_invalid')
-            members = {path: (digest, 'base', eligible) for path, digest, eligible in rows}
-        else:
-            members = {path: (digest, 'base', 1) for path, digest in rows}
-        if len(members) != len(rows) or any(not valid(path, value[0]) for path, value in members.items()):
-            raise IndexContractError('migration_membership_invalid')
-        members = {path: value for path, value in members.items()
-                   if _wiki_card_path(path, prefixes)}
-        if side is not None:
-            docs = side.execute('SELECT path,hash FROM docs ORDER BY path').fetchall()
-            if len(docs) > MAX_DOCS or len({row[0] for row in docs}) != len(docs):
-                raise IndexContractError('migration_sidecar_invalid')
-            for path, digest in docs:
-                if time.monotonic() >= deadline:
-                    raise IndexContractError('reader_snapshot_deadline')
-                if not valid(path, digest):
-                    raise IndexContractError('migration_sidecar_invalid')
-                if not _wiki_card_path(path, prefixes):
-                    continue
-                previous = members.get(path)
-                if previous is not None and previous[0] == digest and previous[2] == 1:
-                    continue
-                members.pop(path, None)
-                if include_ineligible or (path not in excluded_paths and digest not in excluded_hashes):
-                    members[path] = (digest, 'sidecar', 1)
-        paths = [path for path in sorted(members)
-                 if (after is None or path > after) and (include_ineligible or
-                 (path not in excluded_paths and members[path][0] not in excluded_hashes))]
-        page = paths if _all_inventory else paths[:MAX_BATCH if _page_limit is None
-                                                    else min(_page_limit, MAX_BATCH)]
-        def output(path):
-            digest, source, eligible = members[path]
-            result = {'path': path, 'hash': digest, 'source': source}
-            if include_ineligible:
-                result.update(eligible=eligible, excluded=path in excluded_paths or digest in excluded_hashes)
-            return result
-        return {'members': [output(path) for path in page], 'observation': observation,
-                'next': {'after': page[-1], 'observation': observation}
-                        if len(paths) > len(page) else None}
+        return {'members': members, 'observation': observation,
+                'next': {'after': members[-1]['path'], 'observation': observation} if more else None}
 
 
 def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expected_observation=None,
@@ -331,13 +421,19 @@ def capture_base_fts_corpus(snapshot, *, endpoint, decision, after, deadline):
         path_after = after['after']
     prefixes = tuple(name + '/' for name in wiki_index_roots(decision['collections']))
     base = snapshot.connections[0]
-    args = (snapshot.published[0], decision['scopeId'], json.dumps(prefixes))
+    args = (snapshot.published[0], decision['scopeId'])
     with readers._validation_deadline(snapshot.connections, deadline):
-        nonwiki = base.execute('SELECT 1 FROM membership m WHERE m.gen=? AND m.scope=? AND m.eligible=1 '
-            'AND NOT EXISTS (SELECT 1 FROM json_each(?) p '
-            'WHERE substr(m.path,1,length(p.value))=p.value) LIMIT 1', args).fetchone()
-        if nonwiki is not None:
-            raise IndexContractError('migration_raw_fts_corpus_unproved')
+        # Probe only the gaps between wiki-root ranges: each is one index
+        # seek, so this check does not grow with the wiki corpus.
+        edges = [None] + [edge for item in _prefix_ranges(prefixes) for edge in item] + [None]
+        for lower, upper in zip(edges[0::2], edges[1::2]):
+            nonwiki = base.execute('SELECT 1 FROM membership m WHERE m.gen=? AND m.scope=? AND m.eligible=1' +
+                                   ('' if lower is None else ' AND m.path>=?') +
+                                   ('' if upper is None else ' AND m.path<?') + ' LIMIT 1',
+                                   args + tuple(edge for edge in (lower, upper) if edge is not None)
+                                   ).fetchone()
+            if nonwiki is not None:
+                raise IndexContractError('migration_raw_fts_corpus_unproved')
         rows = base.execute('SELECT m.path,m.hash FROM membership m '
             'WHERE m.gen=? AND m.scope=? AND m.eligible=1 AND m.path>? '
             'ORDER BY m.path COLLATE BINARY LIMIT ?',
