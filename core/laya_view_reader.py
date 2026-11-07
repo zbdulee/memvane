@@ -72,7 +72,7 @@ def _card_locations(db, gen_id, paths):
            ','.join('?' for _ in paths) + ') ORDER BY wiki_path,ordinal')
     for source in db.execute(sql, (gen_id, *paths)):
         for span in v.parse_canonical(source['spans_json']):
-            if span.get('kind') != 'legacy-lines-v1':
+            if span.get('kind') not in (v.LEGACY_LINE_SPAN, v.LINE_SPAN):
                 v.fail('legacy_card_trust_invalid')
             locations.setdefault(source['wiki_path'], []).append(span)
     for path, spans in locations.items():
@@ -350,9 +350,10 @@ class ReaderMixin:
         """Source line locators of pinned members, from stored card provenance only.
 
         Any generation (legacy import or ordinary) answers from its own
-        ``card_sources`` rows; no source file is opened. Only
-        ``legacy-lines-v1`` spans are shown, and any other kind refuses the
-        read. A path without spans is absent from the result.
+        ``card_sources`` rows; no source file is opened. Only line spans
+        (``legacy-lines-v1`` and the compiled chain's ``lines-v1``) are shown,
+        in one locator format; any other kind, byte spans included, refuses
+        the read. A path without spans is absent from the result.
         """
         if (not isinstance(paths, (list, tuple)) or len(paths) > 100
                 or any(type(path) is not str or not path for path in paths)):
