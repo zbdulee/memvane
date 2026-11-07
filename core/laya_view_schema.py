@@ -56,6 +56,16 @@ def tables(text,sha,uuid,integer):
       'view_heads':f'''CREATE TABLE view_heads(
         {sha('view_id')} PRIMARY KEY REFERENCES views(view_id), {text('gen_id')},
         {integer('epoch',1)}, FOREIGN KEY(gen_id,view_id) REFERENCES generations(gen_id,view_id))''',
+      # Reserved deletion/hold proof per view path (§7.1); metadata only, no writer yet.
+      # observed_head is NULL when Git could not answer (always a hold).
+      'delete_receipts':f'''CREATE TABLE delete_receipts(
+        {sha('receipt_id')} PRIMARY KEY, {sha('view_id')} REFERENCES views(view_id),
+        {text('base_gen')} REFERENCES generations(gen_id), {text('path')},
+        {sha('fingerprint_id')} REFERENCES source_fingerprints(fingerprint_id),
+        observed_head TEXT CHECK(observed_head IS NULL OR typeof(observed_head)='text'),
+        {text('proof_json')} CHECK(json_valid(proof_json)),
+        {text('decision')} CHECK(decision IN ('hold','retire')), {text('reason')}, {integer('created_ns')},
+        FOREIGN KEY(base_gen,view_id) REFERENCES generations(gen_id,view_id))''',
     }
 
 
@@ -64,7 +74,7 @@ def immutable_keys():
             'wiki_members':(('gen_id','path'),), 'source_members':(('gen_id','path'),),
             'card_sources':(('gen_id','wiki_path','ordinal'),),
             'member_vectors':(('gen_id','path'),),
-            'generation_seals':(('gen_id',),)}
+            'generation_seals':(('gen_id',),), 'delete_receipts':(('receipt_id',),)}
 
 
 def statements():
@@ -127,5 +137,6 @@ def statements():
       '''CREATE INDEX member_vector_by_set ON member_vectors(blob_sha,recipe_id,profile_id,gen_id)''',
       '''CREATE INDEX source_member_by_fingerprint ON source_members(fingerprint_id,gen_id,path)''',
       '''CREATE INDEX card_source_by_fingerprint ON card_sources(fingerprint_id,gen_id,wiki_path)''',
+      '''CREATE INDEX delete_by_view ON delete_receipts(view_id,base_gen,path)''',
     ])
     return result

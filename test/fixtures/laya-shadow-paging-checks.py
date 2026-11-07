@@ -129,7 +129,7 @@ class ReadCounter:
             self.count += 1
             return original(path, prefixes)
         self.patches = [mock.patch.object(self.migration, '_wiki_card_path', side_effect=counted)]
-        for name in ('_membership_rows', '_sidecar_rows'):
+        for name in ('_membership_rows', '_sidecar_rows', '_membership_rows_at', '_sidecar_rows_at'):
             reader = getattr(self.migration, name, None)
             if reader is not None:
                 def fetched(*args, _reader=reader, **kwargs):
@@ -197,6 +197,28 @@ class CapturePagingChecks(unittest.TestCase):
                                 break
                         self.assertEqual(joined, oracle)
                         self.assertEqual(pages, -(-total // page))
+                    # Catch-up pages (_only) read only the requested paths and
+                    # keep the full-scan filter, exclusion and page boundaries.
+                    picked = [row['path'] for row in expected[::7]]
+                    only = frozenset(picked + [case.WIKI + '/scale/absent.md', case.WIKI + '/index.md'])
+                    wanted = [row for row in expected if row['path'] in only]
+                    cursor, joined = None, []
+                    while True:
+                        with ReadCounter(migration) as reads:
+                            got = migration.capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                after=cursor, deadline=time.monotonic() + 30, _only=only)
+                        # Skipped targets (absent, meta) may pull one more chunk.
+                        self.assertLessEqual(reads.cost(), 2 * (page + 1))
+                        after = None if cursor is None else cursor['after']
+                        rest = [row for row in wanted if after is None or row['path'] > after]
+                        self.assertEqual(got['members'], rest[:page])
+                        self.assertEqual(got['next'] is None, len(rest) <= page)
+                        joined.extend(got['members'])
+                        cursor = got['next']
+                        if cursor is None:
+                            break
+                    self.assertEqual(joined, wanted)
+                    self.assertGreater(len(wanted), page)
                     full = migration.capture_effective(snapshot, endpoint=endpoint, decision=decision,
                         after=None, deadline=time.monotonic() + 30, include_ineligible=True,
                         _all_inventory=True)
