@@ -18,6 +18,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT / 'core'))
+from laya_index_a import IndexContractError  # noqa: E402
 
 # A worker process killed inside the driver, right before an intent write.
 CHILD = r'''
@@ -458,6 +459,156 @@ class DriverChecks(unittest.TestCase):
             self.assertEqual(db.execute('SELECT profile_id FROM vector_profiles').fetchall(),
                              [(expected['profile_id'],)])
         print('vector_copy', record['total'], record['copied'], dict(record['deferred']), flush=True)
+
+    @contextmanager
+    def queued(self):
+        """The fixture's private wake queue, a virtual wall clock and a spy on its offers.
+
+        The fixture runtime root lives in this temp HOME; QMD_SANDBOX is
+        cleared only so ``runtime_work.request`` writes that queue, and
+        QMD_RUNTIME_DISPATCH keeps it from starting a worker process.
+        """
+        import runtime_work
+        from types import SimpleNamespace
+        clock = {'now': time.time()}
+        fake = SimpleNamespace(time=lambda: clock['now'], monotonic=time.monotonic, sleep=lambda _s: None)
+        offers, real = [], runtime_work.request
+
+        def spy(kind, target='', **kwargs):
+            offers.append((kind, target, kwargs, clock['now']))
+            return real(kind, target, **kwargs)
+        with mock.patch.dict(os.environ, {'QMD_SANDBOX': '', 'QMD_SETUP_GUARD_FIXTURE': '',
+                                          'QMD_RUNTIME_DISPATCH': '1'}), \
+                mock.patch.object(runtime_work, 'time', fake), \
+                mock.patch.object(runtime_work, 'request', side_effect=spy):
+            yield runtime_work.WakeQueue(), clock, offers
+
+    def test_queue_rewakes_carry_the_migration_to_shadow_verified(self):
+        # U6b: one natural sync wake, then only the wake queue (no edit, no
+        # hook): each eligible pass offers the same laya-sync wake once, due
+        # one interval later, and the chain ends at shadow_verified.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        import runtime_work
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        project = str(case.project)
+        passes, drains = [], []
+        with self.authority(seed, case), self.queued() as (queue, clock, offers):
+            def execute(row):
+                self.assertEqual((row['kind'], row['target']), ('laya-sync', project))
+                before = len(self.events(case))
+                result = W.run(Path(row['target']))
+                driver = [e for e in self.events(case)[before:] if e['event'] == 'migration.driver']
+                self.assertEqual(len(driver), 1)
+                passes.append((clock['now'], driver[0]))
+                return result['state'] in ('indexed', 'unchanged')
+            self.assertEqual(queue.offer('laya-sync', project), 'queued')
+            for _ in range(60):
+                drains.append(runtime_work.drain(queue, execute=execute, ready=lambda: True,
+                                                 wall=lambda: clock['now'], sleep=lambda _s: None))
+                rows = queue.pending()
+                if not rows:
+                    break
+                row, = rows
+                # Not due yet: the worker released its lease instead of running it again.
+                self.assertGreater(row['due'], clock['now'])
+                clock['now'] = row['due']
+        trail = [(e['outcome'], e['reason'], e['migration_state'], e.get('rewake')) for _t, e in passes]
+        self.assertEqual((self.intent(case) or {}).get('migration_state'), 'shadow_verified', trail)
+        self.assertGreater(len(passes), 1, trail)
+        self.assertEqual(queue.pending(), [])
+        # Every pass but the last (at shadow_verified) offered exactly one rewake.
+        self.assertEqual([e.get('rewake') for _t, e in passes], [True] * (len(passes) - 1) + [False], trail)
+        self.assertEqual(len(offers), len(passes) - 1)
+        self.assertLessEqual(len(offers), len(passes))
+        self.assertEqual({(k, t, kw.get('delay'), kw.get('start')) for k, t, kw, _n in offers},
+                         {('laya-sync', project, W.SHADOW_REWAKE_SECONDS, False)})
+        # One pass per drain: the rewake never ran inside the drain that offered it.
+        self.assertEqual([d['runs'] for d in drains], [1] * len(passes))
+        times = [t for t, _e in passes]
+        self.assertTrue(all(b - a >= W.SHADOW_REWAKE_SECONDS for a, b in zip(times, times[1:])), times)
+        print('rewake_passes', len(passes), trail, flush=True)
+
+    def test_rewake_stops_on_waits_error_streak_and_kill_switch(self):
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        import laya_install_journal as journal
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        real = os.statvfs
+        state = case.state.resolve()
+
+        def tight(path):
+            found = real(path)
+            if Path(path).resolve() != state:
+                return found
+            return os.statvfs_result((found.f_bsize, 4096, found.f_blocks, 4, 4, found.f_files,
+                                      found.f_ffree, found.f_favail, found.f_flag, found.f_namemax))
+        with self.authority(seed, case), self.queued() as (queue, _clock, offers):
+            # Space held: waiting, no rewake.
+            with mock.patch.object(os, 'statvfs', side_effect=tight):
+                status = W.shadow_pass(case.project)
+            self.assertEqual((status['state'], status['reason'], status['rewake']),
+                             ('waiting', 'migration_space_deferred', False))
+            self.assertEqual(offers, [])
+            # The kill switch and other guards: skipped, nothing offered or written.
+            files = self.files(case)
+            for guard in (mock.patch.dict(os.environ, {W.SHADOW_KILL_SWITCH: 'off'}),
+                          mock.patch.object(journal, 'verify_selected_route',
+                                            side_effect=journal.JournalEvidenceError('installed_bundle_changed'))):
+                with guard:
+                    self.assertEqual(W.run(case.project), {'state': 'unchanged'})
+                    self.assertEqual(W.shadow_pass(case.project)['state'], 'skipped')
+            self.assertEqual((offers, self.files(case)), ([], files))
+            # A progressing pass offers one rewake.
+            status = W.shadow_pass(case.project)
+            self.assertEqual((status['state'], status['rewake']), ('progressed', True), status)
+            self.assertEqual(len(offers), 1)
+            # Consecutive errors rewake until the streak reaches the cap, then
+            # only natural wakes run passes; a progressing pass resets it.
+            flags = []
+            with mock.patch.object(M, 'advance_shadow',
+                                   side_effect=IndexContractError('fts_deadline_exceeded')):
+                for _ in range(W.SHADOW_REWAKE_ERRORS + 1):
+                    status = W.shadow_pass(case.project)
+                    self.assertEqual((status['state'], status['reason']), ('error', 'fts_deadline_exceeded'))
+                    flags.append(status['rewake'])
+            self.assertEqual(flags, [True] * (W.SHADOW_REWAKE_ERRORS - 1) + [False, False])
+            self.assertEqual(len(offers), W.SHADOW_REWAKE_ERRORS)
+            # One step keeps this pass before shadow_verified (a step-cap pass).
+            with mock.patch.object(W, 'SHADOW_STEPS_PER_PASS', 1):
+                status = W.shadow_pass(case.project)
+            self.assertEqual((status['state'], status['rewake']), ('progressed', True), status)
+            # The pass budget ends a migration that can go on: rewake (the
+            # first step still runs on the prepare budget).
+            with mock.patch.object(W, 'SHADOW_PASS_SECONDS', 0):
+                status = W.shadow_pass(case.project)
+            self.assertEqual((status['state'], status['reason'], status['rewake']),
+                             ('waiting', 'pass_deadline', True), status)
+            self.assertNotEqual(status['migration_state'], 'shadow_verified', status)
+            with mock.patch.object(M, 'advance_shadow',
+                                   side_effect=IndexContractError('fts_deadline_exceeded')):
+                self.assertTrue(W.shadow_pass(case.project)['rewake'])
+            # The streak lives in the activation record; its identity fields stay.
+            record = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+            self.assertEqual((record['project'], record['candidate'], record['rewake_errors']),
+                             (str(case.project), str(case.state / W.SHADOW_CANDIDATE), 1))
+            # A gate wait at shadow_verified offers nothing.
+            for _ in range(16):
+                W.shadow_pass(case.project)
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+            self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified')
+            before = len(offers)
+            gate = {'stage': 'retry', 'reason': 'switch_bridge_missing', 'migration_state': 'shadow_verified'}
+            with mock.patch.object(M, 'advance_reader_ready', return_value=gate, create=True):
+                status = W.shadow_pass(case.project)
+            self.assertEqual((status['state'], status['reason'], status['rewake']),
+                             ('waiting', 'switch_bridge_missing', False), status)
+            self.assertEqual(len(offers), before)
 
     def test_driver_failure_never_changes_the_sync_result(self):
         W = self.W

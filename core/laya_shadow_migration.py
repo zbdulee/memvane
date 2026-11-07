@@ -3559,13 +3559,20 @@ def _transition_id(expected_endpoint, endpoint_id):
                           .encode('ascii')).hexdigest()[:32]
 
 
-def _offer_sync(project, start=False):
-    """One existing laya-sync wake so the next pass follows; best effort."""
+def _offer_sync(project, start=False, delay=0):
+    """One existing laya-sync wake so the next pass follows; best effort.
+
+    ``delay`` makes it due that many seconds later (the driver's rewake,
+    ``laya_product_sync_worker._shadow_rewake``). Returns the request result,
+    or None when nothing was offered.
+    """
     try:
         import runtime_work
-        runtime_work.request('laya-sync', str(project), start=start)
+        if delay:
+            return runtime_work.request('laya-sync', str(project), start=start, delay=delay)
+        return runtime_work.request('laya-sync', str(project), start=start)
     except Exception:
-        pass  # The next edit or session start wakes the sync anyway.
+        return None  # The next edit or session start wakes the sync anyway.
 
 
 def _switch_step(store, *, project, executing_root, deadline, expected):

@@ -10,7 +10,10 @@ only ``runtime-wake-timer.lock``, never the worker lease) sleeps until the
 earliest due time and wakes a worker then; it re-reads the queue at least every
 ``TIMER_CHUNK_SECONDS``, exits when the queue is empty and hands over to a
 successor after ``TIMER_MAX_SECONDS``. Any wake that finds only backed-off rows
-arms it, so a retry runs on time without another hook. ``hook_wake``,
+arms it, so a retry runs on time without another hook. A handler may re-offer
+its own running wake with a delay (``offer(delay=)``); the row then waits like
+a backed-off one (marked ``DELAYED_REASON``), and the next plain offer runs
+it at once. ``hook_wake``,
 ``request`` (recall pulls its sync row due) and the resident service's
 ``runtime_monitor`` still wake a worker as soon as something is due.
 
@@ -55,6 +58,10 @@ KINDS=wake_policy.KINDS
 RETRY=wake_policy.RETRY
 MAX_WAKES=wake_policy.MAX_WAKES
 HANDOFF_SECONDS=180
+# Longest delay a handler may put on a wake it re-offers (``offer(delay=)``).
+MAX_OFFER_DELAY=3600
+# The reason a delayed re-offer leaves on its row; a plain offer runs it now.
+DELAYED_REASON='delayed'
 YIELD_FILE='runtime-worker-yield.json'
 # A yield request older than this is ignored even if its expiry says
 # otherwise: a mover's whole attempt is bounded well below it.
@@ -133,13 +140,20 @@ class WakeQueue:
             with db:yield db
         finally:db.close()
 
-    def offer(self,kind,target,*,now=None,pull_due=False):
+    def offer(self,kind,target,*,now=None,pull_due=False,delay=0):
         """'queued', 'retained' (capacity-deferred, promoted later) or 'dropped'.
 
         pull_due moves an existing row's backed-off due to now. Its attempt
         count and last reason stay as recorded.
+        delay (0..MAX_OFFER_DELAY seconds) makes a new row due that much later
+        and pushes the running row it re-offers (a handler's own wake) to at
+        least then, marked ``DELAYED_REASON``; the ACK keeps that due and mark.
+        A pending row keeps its due. A plain offer pulls a marked row to now;
+        any other row keeps its due as before.
         """
         wake_policy.validate_wake(kind,target)
+        if (type(delay) not in (int,float) or not 0<=delay<=MAX_OFFER_DELAY
+                or (delay and pull_due)):raise ValueError('invalid_wake_delay')
         key=wake_policy.wake_key(kind,target)
         now=time.time() if now is None else now
         with self.connect() as db:
@@ -147,7 +161,7 @@ class WakeQueue:
             exists=db.execute('SELECT 1 FROM wakes WHERE id=?',(key,)).fetchone()
             limit=wake_policy.capacity_limit(kind,MAX_WAKES)
             if exists or db.execute('SELECT COUNT(*) FROM wakes').fetchone()[0]<limit:
-                _upsert(db,key,kind,target,now,pull_due=pull_due);return 'queued'
+                _upsert(db,key,kind,target,now,pull_due=pull_due,delay=delay);return 'queued'
             retained=(db.execute('SELECT 1 FROM wake_overflow WHERE id=?',(key,)).fetchone() is not None
                       or db.execute('SELECT COUNT(*) FROM wake_overflow').fetchone()[0]<wake_policy.MAX_OVERFLOW)
             if retained:db.execute('INSERT INTO wake_overflow VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',(key,kind,target,now))
@@ -177,10 +191,18 @@ def _next_revision(db):
     return value
 
 
-def _upsert(db,key,kind,target,now,*,pull_due=False):
-    db.execute("INSERT INTO wakes VALUES (?,?,?,?,'pending',?,0,NULL) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision"
-               +(",due=MIN(due,excluded.due)" if pull_due else ""),
-               (key,kind,target,_next_revision(db),now))
+def _upsert(db,key,kind,target,now,*,pull_due=False,delay=0):
+    if pull_due:update=",due=MIN(due,excluded.due)"
+    # Only the running row (the handler's own wake) is pushed and marked.
+    elif delay:update=(",due=CASE WHEN status='running' THEN MAX(due,excluded.due) ELSE due END"
+                       ",reason=CASE WHEN status='running' THEN excluded.reason ELSE reason END")
+    # A plain offer runs a delayed row now; a backed-off row keeps its due.
+    else:update=(",due=CASE WHEN reason=:delayed THEN MIN(due,excluded.due) ELSE due END"
+                 ",reason=CASE WHEN reason=:delayed THEN NULL ELSE reason END")
+    db.execute("INSERT INTO wakes VALUES (:id,:kind,:target,:revision,'pending',:due,0,:mark) "
+               "ON CONFLICT(id) DO UPDATE SET revision=excluded.revision"+update,
+               {'id':key,'kind':kind,'target':target,'revision':_next_revision(db),'due':now+delay,
+                'mark':DELAYED_REASON if delay else None,'delayed':DELAYED_REASON})
 
 
 def _promote_overflow(db,now):
@@ -250,8 +272,11 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
                     db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
-                    # The surviving newer revision starts a fresh retry history.
-                    db.execute("UPDATE wakes SET status='pending',due=?,attempts=0,reason=NULL WHERE id=?",(step['due'],row['id']))
+                    # The surviving newer revision starts a fresh retry history;
+                    # a delayed re-offer keeps its later due and its mark.
+                    db.execute("UPDATE wakes SET status='pending',due=MAX(due,:due),attempts=0,"
+                               "reason=CASE WHEN reason=:delayed AND due>:due THEN reason ELSE NULL END WHERE id=:id",
+                               {'due':step['due'],'delayed':DELAYED_REASON,'id':row['id']})
                 else:
                     db.execute("UPDATE wakes SET status='pending',due=?,attempts=attempts+?,reason=? WHERE id=?",(step['due'],step['count'],step['reason'],row['id']))
                     _record_failure_detail(queue.root,row,error,wall())
@@ -507,10 +532,11 @@ def _handoff_worker(queue,handoff_fd):
         if handoff_fd is not None:os.close(handoff_fd)
 
 
-def request(kind,target='',*,start=True,pull_due=False):
+def request(kind,target='',*,start=True,pull_due=False,delay=0):
     # Fixture runs must never create runtime files/children in the real UID home.
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1' or os.environ.get('QMD_SANDBOX'):return
-    offered=WakeQueue().offer(kind,target,pull_due=pull_due) if pull_due else WakeQueue().offer(kind,target)
+    offered=(WakeQueue().offer(kind,target,pull_due=pull_due) if pull_due
+             else WakeQueue().offer(kind,target,delay=delay) if delay else WakeQueue().offer(kind,target))
     if start and os.environ.get('QMD_RUNTIME_DISPATCH')!='1':
         # Contend only for a lease another worker holds; a not-yet-due row
         # or a mover's yield request needs no waiting contender.
