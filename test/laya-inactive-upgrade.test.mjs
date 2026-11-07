@@ -10,6 +10,6 @@ test('inactive candidate bundle switch, interruption and rollback are fenced', (
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 6 tests\b/);
+  assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 7 tests\b/);
   assert.match(result.stderr, /\nOK\b/);
 });

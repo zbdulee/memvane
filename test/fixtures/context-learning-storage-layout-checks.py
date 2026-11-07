@@ -139,3 +139,34 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-escape-', dir='/tmp
     else:
         raise AssertionError('nested story symlink escape accepted')
     assert project_view(project_id, home=home)['current_root'] == str(project)
+
+
+# A registry last closed by a stock SQLite build is a WAL file without -wal or
+# -shm. Apple's /usr/lib/libsqlite3 (the macOS system python3) refuses mode=ro
+# there, which made root() pass over the MemVane registry for the legacy one.
+with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-cold-', dir='/tmp') as directory:
+    import sqlite3
+    from contextlib import closing
+    from context_learning.storage_layout import LEGACY_ROOT_PARTS, ROOT_PARTS, SCHEMA_VERSION
+    home = Path(directory).resolve()
+    current, legacy = home.joinpath(*ROOT_PARTS), home.joinpath(*LEGACY_ROOT_PARTS)
+    for base, wal in ((current, True), (legacy, False)):
+        base.mkdir(mode=0o700, parents=True)
+        path = base / 'registry.sqlite3'
+        with closing(sqlite3.connect(path, isolation_level=None)) as db:
+            if wal:
+                assert db.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',)
+            db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+            db.execute('CREATE TABLE projects (project_id TEXT PRIMARY KEY)')
+            if wal:
+                assert db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+        path.chmod(0o600)
+    cold = current / 'registry.sqlite3'
+    for suffix in ('-wal', '-shm'):
+        sidecar = Path(str(cold) + suffix)
+        if sidecar.exists():
+            assert suffix != '-wal' or sidecar.stat().st_size == 0
+            sidecar.unlink()
+    assert tuple(cold.read_bytes()[18:20]) == (2, 2)
+    assert [p.name for p in current.iterdir()] == ['registry.sqlite3']
+    assert root(home) == current, root(home)
