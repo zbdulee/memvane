@@ -352,7 +352,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         # A migration head imported while a completed v6 sidecar shadowed its
         # base keeps both sealed FTS corpora (paired); every active card is in
         # exactly one. Each corpus is fused on its own and the two are merged
-        # by the v6 incremental rule, as the v6 reader ranked the same snapshot.
+        # by the v6 incremental merge rule (merge_incremental_rows).
         origins=legacy['fts_sources'] if 'sidecar_corpus' in legacy else None
 
         def rooted(source):
