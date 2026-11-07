@@ -1199,6 +1199,11 @@ SHADOW_PASS_SECONDS = 60.0
 SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
 SHADOW_ACTIVATION = 'shadow-migration-activation.json'
 SHADOW_CANDIDATE = 'shadow-candidate.sqlite'
+# A restart (lost candidate, moved state or project, explicit resume after a
+# rollback) names a fresh candidate; the old store and intent stay (D4).
+_SHADOW_CANDIDATE_NAME = re.compile(r'shadow-candidate(?:-[0-9a-f]{32})?\.sqlite')
+_SHADOW_INTENT_RETIRED = 'shadow-migration-intent.retired-%s.json'
+_ACTIVATION_SCHEMA = 'memvane-shadow-activation-v1'
 
 
 def _shadow_gate(project, executing_root, *, prove=True):
@@ -1229,6 +1234,16 @@ def _shadow_gate(project, executing_root, *, prove=True):
     if selected != 'v6':
         return None, 'reader_schema3_selected' if selected == 'schema3' else 'reader_selection_unproved'
     state = Path(decision['journalPath']).parent
+    # A rollback (U16) holds the driver until an explicit resume names it;
+    # otherwise the next passes would switch the install back (K1).
+    import laya_shadow_migration as migration
+    hold = getattr(migration, 'rollback_hold', None)
+    if callable(hold):
+        try:
+            if hold(state) is not None:
+                return None, 'migration_rollback_retained'
+        except Exception:
+            return None, 'reader_selection_unproved'
     import laya_ledger_common as ledger
     if ledger.qmd_ledger_present(state):
         return None, ledger.QMD_ORIGIN_DETACH_REQUIRED
@@ -1248,11 +1263,11 @@ def _shadow_gate(project, executing_root, *, prove=True):
     return (decision, state), None
 
 
-def _shadow_open(state, project, scope):
+def _shadow_open(state, project, scope, candidate=None):
     """Open the private candidate; its own store_meta and worktrees are the SSOT."""
     from laya_journal_reader import _readonly
     from laya_view_store import ViewStore
-    path = state / SHADOW_CANDIDATE
+    path = state / SHADOW_CANDIDATE if candidate is None else Path(candidate)
     with _readonly(path, state) as db:
         meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
         rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
@@ -1262,22 +1277,105 @@ def _shadow_open(state, project, scope):
     return ViewStore.open(path, repository=json.loads(meta[0]), scope_id=scope), rows[0][0]
 
 
+def _activation_record(state, project, *, candidate, resumed_after=None):
+    record = {'schema': _ACTIVATION_SCHEMA, 'project': str(project), 'state': str(state),
+              'candidate': str(candidate), 'activated_ns': time.time_ns()}
+    if resumed_after is not None:
+        record['resumed_after'] = resumed_after
+    return record
+
+
+def _read_activation(state):
+    """The activation record and its candidate path; ``migration_activation_invalid`` if malformed."""
+    import laya_ledger_common as ledger
+    record = ledger._read_json(state / SHADOW_ACTIVATION)
+    if (not isinstance(record, dict) or not isinstance(record.get('project'), str)
+            or not isinstance(record.get('state'), str) or not isinstance(record.get('candidate'), str)
+            or record.get('schema', _ACTIVATION_SCHEMA) != _ACTIVATION_SCHEMA
+            or not isinstance(record.get('resumed_after', ''), str)):
+        raise IndexContractError('migration_activation_invalid')
+    return record, Path(record['candidate'])
+
+
+def _restart_shadow(state, project, record):
+    """Name a fresh candidate, then retire the intent by rename; nothing is deleted.
+
+    The activation goes first: a crash before the rename leaves an intent
+    bound to another candidate, which the next pass retires the same way.
+    Returns the retired intent's file name, or None when there was none.
+    """
+    import uuid
+    import laya_journal_reader as readers
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    candidate = state / ('shadow-candidate-%s.sqlite' % uuid.uuid4().hex)
+    ledger._write(state / SHADOW_ACTIVATION,
+                  _activation_record(state, project, candidate=candidate,
+                                     resumed_after=(record or {}).get('resumed_after')), replace=True)
+    intent = state / migration._INTENT
+    if not os.path.lexists(intent):
+        return None
+    retired = _SHADOW_INTENT_RETIRED % uuid.uuid4().hex
+    os.rename(intent, state / retired)
+    readers._sync(state, True)
+    return retired
+
+
+def _orphaned_intent(state, project, candidate):
+    """True when the intent names another project, state or candidate file (a move or a lost store).
+
+    Read-only and identity-only: an intent that names this candidate but is
+    otherwise invalid is left to advance_shadow (``migration_intent_invalid``),
+    so a defect that recurs in every new intent cannot multiply candidates.
+    """
+    import laya_journal_reader as readers
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    from laya_blob_store import _db_file
+    path = state / migration._INTENT
+    if not os.path.lexists(path):
+        return False
+    try:
+        intent = ledger._read_json(path)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(intent, dict):
+        return False
+    if (intent.get('project') != str(project) or intent.get('state') != str(state)
+            or intent.get('candidate') != str(candidate) or not os.path.lexists(candidate)):
+        return True
+    try:
+        return (intent.get('state_node') != readers._node(state)
+                or intent.get('candidate_node') != _db_file(candidate))
+    except (OSError, ValueError):
+        return False
+
+
 def _shadow_step(decision, state, executing_root, store, deadline):
     """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``."""
     import laya_ledger_common as ledger
     import laya_shadow_migration as migration
     project = Path(decision['projectRoot'])
-    activation, candidate = state / SHADOW_ACTIVATION, state / SHADOW_CANDIDATE
+    activation = state / SHADOW_ACTIVATION
     if not os.path.lexists(activation):
-        ledger._write(activation, {'schema': 'memvane-shadow-activation-v1', 'project': str(project),
-                                   'state': str(state), 'candidate': str(candidate),
-                                   'activated_ns': time.time_ns()}, replace=False)
+        ledger._write(activation, _activation_record(state, project, candidate=state / SHADOW_CANDIDATE),
+                      replace=False)
         return 'activate', None, store
-    record = ledger._read_json(activation)
-    if (not isinstance(record, dict) or record.get('project') != str(project)
-            or record.get('state') != str(state) or record.get('candidate') != str(candidate)):
-        raise IndexContractError('migration_activation_invalid')
+    record, candidate = _read_activation(state)
+    # A moved state root or project leaves absolute paths that no longer name
+    # this install; a lost candidate leaves an intent bound to nothing.
+    if (record['project'] != str(project) or record['state'] != str(state)
+            or candidate.parent != state or not _SHADOW_CANDIDATE_NAME.fullmatch(candidate.name)
+            or _orphaned_intent(state, project, candidate)):
+        if store is not None:
+            store[0].close()
+        _restart_shadow(state, project, record)
+        return 'restart', None, None
     if not os.path.lexists(candidate):
+        if any(os.path.lexists(str(candidate) + suffix) for suffix in ('-wal', '-shm', '-journal')):
+            # Leftover journal files of a lost store must never meet a new one.
+            _restart_shadow(state, project, record)
+            return 'restart', None, None
         import laya_checkout_view as checkout
         from laya_view_store import ViewStore
         repository = checkout.register_repository(str(project))
@@ -1286,7 +1384,7 @@ def _shadow_step(decision, state, executing_root, store, deadline):
                          worktree=worktree, scope_id=decision['scopeId']).close()
         return 'create', None, store
     if store is None:
-        store = _shadow_open(state, project, decision['scopeId'])
+        store = _shadow_open(state, project, decision['scopeId'], candidate)
     view, worktree_id = store
     if not os.path.lexists(state / migration._INTENT):
         intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
@@ -1295,6 +1393,50 @@ def _shadow_step(decision, state, executing_root, store, deadline):
     result = migration.advance_shadow(view, project=project, executing_root=executing_root,
                                       deadline=deadline)
     return result['stage'], result['migration_state'], store
+
+
+def resume_shadow_migration(project, *, executing_root=None):
+    """Explicitly release a rollback hold: a fresh migration on a new candidate.
+
+    Under the installer, operation and sync owner locks (never waiting): the
+    journal must select v6 and hold the driver (``rollback_hold``). The
+    activation names a new candidate and the rollback it resumes after; the
+    old intent is renamed, the old candidate store stays (D4). The next sync
+    passes start the migration from the beginning. Returns
+    ``{status: 'resumed', candidate, retiredIntent, resumedAfter}``.
+    """
+    from contextlib import ExitStack
+    import laya_fresh_wiki_origin as fresh
+    import laya_install_journal as journal
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    import project_dir
+    from laya_index_sync import _owner_lock
+    from laya_product_install import _install_lock
+    project = Path(project)
+    decision = select_route(str(project), action='recall')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('migration_route_invalid')
+    state = Path(decision['journalPath']).parent
+    with ExitStack() as locks:
+        locks.enter_context(_install_lock(state))
+        locks.enter_context(ledger._operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+            raise IndexContractError('sync_owner_busy')
+        if _selected_store_format(decision) != 'v6':
+            raise IndexContractError('migration_not_held')
+        hold = migration.rollback_hold(state)
+        if hold is None:
+            raise IndexContractError('migration_not_held')
+        record = None
+        if os.path.lexists(state / SHADOW_ACTIVATION):
+            try:
+                record = _read_activation(state)[0]
+            except (OSError, ValueError):
+                record = None  # Replaced below; the old bytes are not needed to resume.
+        retired = _restart_shadow(state, project, {**(record or {}), 'resumed_after': hold['transition_id']})
+    return {'status': 'resumed', 'candidate': _read_activation(state)[0]['candidate'],
+            'retiredIntent': retired, 'resumedAfter': hold['transition_id']}
 
 
 def shadow_pass(project, *, executing_root=None):

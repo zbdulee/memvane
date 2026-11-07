@@ -3532,11 +3532,11 @@ def _transition_id(expected_endpoint, endpoint_id):
                           .encode('ascii')).hexdigest()[:32]
 
 
-def _offer_sync(project):
+def _offer_sync(project, start=False):
     """One existing laya-sync wake so the next pass follows; best effort."""
     try:
         import runtime_work
-        runtime_work.request('laya-sync', str(project), start=False)
+        runtime_work.request('laya-sync', str(project), start=start)
     except Exception:
         pass  # The next edit or session start wakes the sync anyway.
 
@@ -3767,6 +3767,209 @@ def settle_switched(project):
     _record_switched(store, project, state, node, intent, selection)
     _offer_sync(project)
     return True
+
+
+# Reader rollback (U16, design 4.6, decision K7): one reader CAS from the
+# selected schema3 endpoint back to a v6 endpoint re-issued from the current
+# install, then one laya-sync wake. While schema3 was selected the v6 writer
+# plan refused (writer_selection_unavailable), so the v6 store is the one the
+# switch left; the woken v6 sync re-indexes what changed since (no replay,
+# K7). The journal is the record: the latest schema3 -> v6 transition is the
+# rollback, and it holds the shadow driver (``rollback_hold``) until an
+# explicit resume names it. Nothing is deleted (D4): v6 DB, sidecar, the
+# schema3 candidate store, intent and activation all stay for PR10.
+_ROLLBACK_SECONDS = 10.0
+# Store identity the re-issued v6 endpoint must share with the v6 endpoint
+# selected before the switch. Nodes, not paths: a state move renames them.
+_ROLLBACK_STORE = ('store_format', 'capability', 'incarnation', 'profile', 'checkout_policy',
+                   'db_node', 'catalog_node', 'binding_node', 'legacy_sidecar_baseline')
+_ROLLBACK_PATHS = ('db_path', 'catalog_path', 'binding_path', 'sidecar_path')
+# Busy locks and a concurrent CAS: nothing was written; ask again later.
+ROLLBACK_BUSY = frozenset(('install_busy', 'cutover_operation_busy', 'sync_owner_busy', 'initial_build_busy',
+                           'learning_compute_busy', 'reader_transition_busy', 'stale_reader_cas',
+                           'reader_selection_changed'))
+
+
+def _reader_history(db):
+    """``[(epoch, transition_id, preferred record, previous record or None)]`` by epoch."""
+    rows = db.execute('SELECT epoch,transition_id,preferred_endpoint,previous_endpoint '
+                      'FROM reader_transitions ORDER BY epoch').fetchall()
+    records = {}
+
+    def record(endpoint_id):
+        if endpoint_id is None:
+            return None
+        if endpoint_id not in records:
+            records[endpoint_id] = journal._stored_endpoint(db, endpoint_id)
+        return records[endpoint_id]
+    return [(epoch, transition, preferred, previous, record(preferred), record(previous))
+            for epoch, transition, preferred, previous in rows]
+
+
+def _last_rollback(history):
+    for epoch, transition, preferred, previous, record, before in reversed(history):
+        if (before is not None and before.get('store_format') == 'schema3'
+                and record.get('store_format') == 'v6'):
+            return {'transition_id': transition, 'reader_epoch': epoch, 'endpoint_id': preferred,
+                    'previous_endpoint': previous}
+    return None
+
+
+def _read_history(journal_path):
+    from pathlib import Path
+    path = journal._journal(journal_path)
+    with journal._readonly(path, Path(path).parent) as db:
+        selection, record = journal._selection(db)
+        return selection, record, _reader_history(db)
+
+
+def rollback_hold(state):
+    """The latest rollback transition when it still holds the shadow driver, else None.
+
+    Read-only. A rollback holds the driver until an activation record names
+    it in ``resumed_after`` (``laya_product_sync_worker.resume_shadow_migration``).
+    """
+    import os
+    from pathlib import Path
+    import laya_ledger_common as ledger
+    state = Path(state)
+    _selection, _record, history = _read_history(state / 'install-journal.sqlite')
+    last = _last_rollback(history)
+    if last is None:
+        return None
+    activation = state / 'shadow-migration-activation.json'
+    record = ledger._read_json(activation) if os.path.lexists(activation) else None
+    if isinstance(record, dict) and record.get('resumed_after') == last['transition_id']:
+        return None
+    return last
+
+
+def reader_status(project):
+    """Read-only reader selection, migration and rollback state of a selected main checkout."""
+    import os
+    from pathlib import Path
+    import laya_ledger_common as ledger
+    project = Path(project)
+    decision = journal.journal.select_route(str(project), action='recall')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('migration_route_invalid')
+    state = journal._state(Path(decision['journalPath']).parent)
+    selection, record, history = _read_history(state / 'install-journal.sqlite')
+
+    def raw(name, key):
+        try:
+            value = ledger._read_json(state / name) if os.path.lexists(state / name) else None
+        except (OSError, ValueError):
+            return 'unreadable'
+        return value.get(key) if isinstance(value, dict) else None
+    return {'status': 'inspected', 'reader': {'epoch': selection.epoch, 'store_format': record['store_format'],
+                                              'endpoint_id': selection.preferred_endpoint,
+                                              'previous_endpoint': selection.previous_endpoint},
+            'migration_state': raw(_INTENT, 'migration_state'),
+            'candidate': raw('shadow-migration-activation.json', 'candidate'),
+            'rollback': _last_rollback(history), 'held': rollback_hold(state) is not None}
+
+
+def _rollback_transition_id(expected_endpoint, endpoint_id, epoch):
+    # Fixed per (base, target, epoch): a retry after a committed CAS is its replay.
+    return hashlib.sha256(('memvane-reader-rollback-v1\0%s\0%s\0%d' % (expected_endpoint, endpoint_id, epoch))
+                          .encode('ascii')).hexdigest()[:32]
+
+
+def _rollback_event(state, outcome, reason=None, ms=None):
+    try:
+        import event_log
+        event_log.emit('migration.rollback', state_root=state, outcome=outcome, reason=reason, ms=ms)
+    except Exception:
+        pass
+
+
+def rollback_reader(project, *, executing_root):
+    """Select a v6 reader again on a schema3-selected install (explicit request only).
+
+    Returns ``{status, transition_id, reader_epoch, endpoint_id,
+    previous_endpoint}``: ``rolled_back`` after this call's CAS, or
+    ``rollback_retained`` when the journal already records the rollback (a
+    repeated request, or one whose process died after the CAS); both offer
+    one laya-sync wake. Refuses ``rollback_not_switched`` when v6 is selected
+    and never rolled back, ``rollback_v6_changed`` when the v6 store is not
+    the one the switch left, and every busy lock with its code
+    (``ROLLBACK_BUSY``) without writing anything.
+    """
+    from contextlib import ExitStack
+    from pathlib import Path
+    import laya_fresh_wiki_origin as fresh
+    import laya_initial_build as build
+    import laya_ledger_common as ledger
+    import project_dir
+    from context_learning.resource_coordination import Coordinator
+    from laya_index_sync import _owner_lock
+    from laya_product_install import _install_lock
+    started = time.monotonic()
+    project, executing_root = Path(project), Path(executing_root)
+    if not project.is_absolute() or project.resolve(strict=True) != project:
+        raise IndexContractError('migration_project_invalid')
+    decision = journal.journal.select_route(str(project), action='recall')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('migration_route_invalid')
+    state = journal._state(Path(decision['journalPath']).parent)
+    path = state / 'install-journal.sqlite'
+
+    def retained(history):
+        last = _last_rollback(history)
+        if last is None:
+            raise IndexContractError('rollback_not_switched')
+        _offer_sync(project, start=True)
+        _rollback_event(state, 'retained')
+        return {'status': 'rollback_retained', **last}
+
+    selection, record, history = _read_history(path)
+    if record['store_format'] != 'schema3':
+        return retained(history)
+    # Initial-conversion recovery takes the lock bundle itself; seal first.
+    installer = journal.seal_current_reader(state, project, executing_root=executing_root)
+    try:
+        with ExitStack() as locks:
+            locks.enter_context(_install_lock(state))
+            if not locks.enter_context(build.owner(state)):
+                raise IndexContractError('initial_build_busy')
+            locks.enter_context(ledger._operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
+            locks.enter_context(Coordinator().quiesce_provider())
+            if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+                raise IndexContractError('sync_owner_busy')
+            deadline = time.monotonic() + _ROLLBACK_SECONDS
+            if journal.journal.select_route(str(project), action='recall') != decision:
+                raise IndexContractError('migration_route_changed')
+            # The owner re-seals a schema3 record whose recall settings changed,
+            # so the v6 target (current settings) shares the install identity.
+            try:
+                journal.resettle_selection(state, project, executing_root)
+            except (OSError, ValueError):
+                pass  # An unreadable schema3 store must not block its rollback.
+            selection, record, history = _read_history(path)
+            if record['store_format'] != 'schema3':
+                return retained(history)
+            before = next((stored for *_row, stored, _prev in reversed(history)
+                           if stored.get('store_format') == 'v6'), None)
+            if before is None:
+                raise IndexContractError('rollback_not_switched')
+            target = installer.endpoint
+            current = journal._recheck(target)[0]
+            if (any(current.get(key) != before.get(key) for key in _ROLLBACK_STORE)
+                    or any(Path(current[key]).name != Path(before[key]).name for key in _ROLLBACK_PATHS)):
+                raise IndexContractError('rollback_v6_changed')
+            transition = _rollback_transition_id(selection.preferred_endpoint, target.endpoint_id,
+                                                 selection.epoch)
+            landed = journal.cas_reader(path, expected_epoch=selection.epoch,
+                                        expected_endpoint=selection.preferred_endpoint, target=target,
+                                        transition_id=transition, deadline=deadline)
+    except (ValueError, RuntimeError) as exc:
+        _rollback_event(state, 'refused', reason=str(exc), ms=(time.monotonic() - started) * 1000)
+        raise
+    _offer_sync(project, start=True)
+    _rollback_event(state, 'rolled_back', ms=(time.monotonic() - started) * 1000)
+    return {'status': 'rolled_back', 'transition_id': landed.transition_id, 'reader_epoch': landed.epoch,
+            'endpoint_id': landed.preferred_endpoint, 'previous_endpoint': landed.previous_endpoint}
 
 
 # Compatible legacy vectors (design 8.2-5, decision K5). The migrated
