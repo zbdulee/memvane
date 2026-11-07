@@ -22,7 +22,7 @@ test('U14b schema3-selected install: state move, active upgrade, companion seal'
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.status === null ? JSON.stringify({ signal: result.signal })
       : result.stdout + result.stderr);
-    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 5} tests?\\b`));
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 7} tests?\\b`));
     assert.match(result.stderr, /\nOK\n/);
   } finally {
     removeTemp(home);
