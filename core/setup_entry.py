@@ -77,7 +77,9 @@ def main(argv=None):
                                           'abandon-index-build','abandon-inactive-index-build',
                                           'seal-host-copy',
                                           'onboarding-skip', 'onboarding-never',
-                                          'onboarding-resume', 'onboarding-status'))
+                                          'onboarding-resume', 'onboarding-status',
+                                          'index-reader-status', 'rollback-index-reader',
+                                          'resume-index-reader-migration'))
     parser.add_argument('--project')
     parser.add_argument('--learning-choice',choices=('preserve','local-auto-apply','local-staged','off'),default='preserve')
     parser.add_argument('--learning-namespace')
@@ -102,6 +104,8 @@ def main(argv=None):
     parser.add_argument('--approve-index-runtime-download', action='store_true')
     parser.add_argument('--approve-index-runtime-gc', action='store_true')
     parser.add_argument('--approve-legacy-cleanup', action='store_true')
+    parser.add_argument('--approve-index-reader-rollback', action='store_true')
+    parser.add_argument('--approve-index-reader-migration-resume', action='store_true')
     parser.add_argument('--include-user-qmd-data', action='store_true')
     parser.add_argument('--wake-revision', type=int)
     parser.add_argument('--session')
@@ -124,6 +128,31 @@ def main(argv=None):
                 result = choice.resume(args.project)
             else:
                 result = choice.status(args.project)
+        elif args.action in ('index-reader-status', 'rollback-index-reader',
+                             'resume-index-reader-migration'):
+            # The selected main checkout's reader: status, an explicit rollback
+            # from schema3 to v6 (K7), or resuming the migration it holds.
+            # Hooks, workers and bundle upgrades never call these.
+            import laya_shadow_migration as migration
+            project = Path(args.project).resolve(strict=True)
+            installed = Path(__file__).resolve(strict=True).parent.parent
+            try:
+                if args.action == 'index-reader-status':
+                    result = migration.reader_status(project)
+                elif args.action == 'rollback-index-reader':
+                    if not args.approve_index_reader_rollback:
+                        raise ValueError('index_reader_rollback_approval_required')
+                    result = migration.rollback_reader(project, executing_root=installed)
+                else:
+                    if not args.approve_index_reader_migration_resume:
+                        raise ValueError('index_reader_migration_resume_approval_required')
+                    import laya_product_sync_worker as worker
+                    result = worker.resume_shadow_migration(project)
+            except (ValueError, RuntimeError) as exc:
+                if str(exc) in migration.ROLLBACK_BUSY:
+                    from resource_deferred import ResourceDeferred
+                    raise ResourceDeferred(str(exc)) from exc
+                raise
         elif args.action == 'state-root-status':
             # Read only: installs and shared trees still under ~/.local/state/laya.
             import laya_state_move

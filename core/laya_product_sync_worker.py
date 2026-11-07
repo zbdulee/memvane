@@ -572,15 +572,22 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
             # Snapshot hook grants before the scan, as on the v6 path.
             import laya_wiki_discovery
             grants = laya_wiki_discovery.observe_grants(decision)
+        # One raw scan per pass: the main view's D2 observation is also the
+        # discovery snapshot (laya_wiki_discovery._raw_snapshot, same roots and bounds).
+        raw_scan = {}
         result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
-                                     start_service=start_service)
-        result = _after_sync(decision, proof, grants, result, store_format='schema3')
-        waiting = [item['vector'] for item in [result, *result.get('worktrees', ())]
-                   if (item.get('vector') or {}).get('state') in ('pending', 'deferred')]
+                                     start_service=start_service, raw_scan=raw_scan)
+        result = _after_sync(decision, proof, grants, result, store_format='schema3',
+                             raw_snapshot=raw_scan.get('snapshot'))
+        vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
+        waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
+                   or [v for v in vectors if v['state'] in ('pending', 'deferred')])
         if result.get('state') in ('indexed', 'unchanged') and waiting:
             # The lexical generations are published and discovery ran; the
-            # wake stays until the views' vector generations are published.
-            result = {**result, 'state': waiting[0]['state'], 'reason': waiting[0].get('reason')}
+            # wake stays until the views' vector generations are published,
+            # or ends ``blocked`` on a provider defect of the install.
+            state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
+            result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
         return result
     grants = None
     if not isinstance(source_root, str):
@@ -762,7 +769,7 @@ def _selected_store_format(decision):
 
 
 def _run_schema3(decision, proof, *, coordinator=None, report=None,
-                 start_service=start_owned_embed_service):
+                 start_service=start_owned_embed_service, raw_scan=None):
     """One publish pass of the selected schema3 view store (main view, then linked views).
 
     Admission is the sync owner plus a worker writer scope over the current
@@ -812,6 +819,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
                         vectors = _schema3_vector_context(
                             decision, proof, lane, coordinator=coordinator, report=report,
                             start_service=start_service)
+                        vectors['rawScan'] = raw_scan
                         result, proof = _publish_schema3(decision, proof, writer, vectors)
                     if (result.get('vector') or {}).get('state') == 'published':
                         # The writer scope is closed; the owner still holds the queue.
@@ -909,7 +917,8 @@ def _publish_schema3(decision, proof, writer, vectors=None):
             raise IndexContractError('schema3_store_changed')
         marks = {}
         result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
-                                       info['worktree_binding'], deadline, marks, vectors)
+                                       info['worktree_binding'], deadline, marks, vectors,
+                                       raw_scan=vectors.get('rawScan'))
         if result['state'] not in ('indexed', 'unchanged'):
             return result, marks.get('proof', proof)
         linked = []
@@ -1047,7 +1056,7 @@ def _mark_schema3_write(writer, proof, marks):
 
 
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
-                          vectors=None):
+                          vectors=None, *, raw_scan=None):
     """One view's pass: changed cards ingested, unchanged members keep their trust.
 
     ``binding`` is the main worktree's journal-recorded binding (None for a
@@ -1106,7 +1115,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
             return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
                     'storeFormat': 'schema3', 'removed': len(removed)}
-        observed = _schema3_sources(decision, handle, deadline)
+        observed = _schema3_sources(decision, handle, deadline, raw_scan=raw_scan)
         stored = None if cold else _schema3_stage(store, head['gen_id'])
         if (not changed and not removed and not excluded and not cold
                 and _schema3_sources_same(store, stored['manifest'], observed, handle)):
@@ -1197,8 +1206,13 @@ def _schema3_stage(store, gen_id):
 # v6 discovery runs (laya_wiki_discovery._raw_snapshot), recorded as observed
 # source fingerprints of this view's worktree, branch and HEAD. Only names,
 # hashes and lengths are kept.
-def _schema3_sources(decision, handle, deadline):
-    """``{project-relative path: (sha256, byte_length, tracked_state)}`` of the raw roots."""
+def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
+    """``{project-relative path: (sha256, byte_length, tracked_state)}`` of the raw roots.
+
+    A completed scan also leaves ``raw_scan['snapshot']`` (``{collection/relative:
+    sha256}``, the discovery snapshot shape); a scan over its bounds leaves
+    none, so discovery scans (and blocks) on its own.
+    """
     import git_branch_safety
     from laya_index_source_port import scan_collections
     from laya_wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
@@ -1213,6 +1227,8 @@ def _schema3_sources(decision, handle, deadline):
         # Over the scan bounds or unreadable: the generation names no
         # sources (as before D2) instead of holding the wiki publish.
         return {}
+    if raw_scan is not None:
+        raw_scan['snapshot'] = {item.path: item.sha256 for item in scan.files if item.eligible}
     observed = {}
     for item in scan.files:
         name, rel = item.path.split('/', 1)
@@ -1270,6 +1286,16 @@ class _VectorMemberBlocked(Exception):
     """A document whose provider chunks the view recipe cannot reproduce."""
 
 
+class _VectorProviderBlocked(Exception):
+    """The install's provider cannot be proved (attestation, manifest or profile defect)."""
+
+
+# Provider proof failures retrying cannot clear: the vector wake ends ``blocked``.
+SCHEMA3_PROVIDER_DEFECTS = frozenset(('provider_manifest_invalid', 'selected_provider_profile_mismatch',
+                                      'worker_attestation_invalid', 'worker_attestation_changed',
+                                      'worker_runtime_files_invalid', 'worker_provider_unapproved'))
+
+
 def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start_service):
     """Per-pass vector state: the install provider's spec and a lazily admitted provider.
 
@@ -1286,6 +1312,8 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
 
     def acquire(current):
         if context['refused'] is not None:
+            if context.get('blocked'):
+                raise _VectorProviderBlocked(context['refused'])
             raise ResourceDeferred(context['refused'])
         if context['provider'] is not None:
             return context['provider']
@@ -1293,7 +1321,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             try:
                 provider = ReviewedLocalQmdProvider(current['providerManifest'])
             except IndexContractError as exc:
-                raise ResourceDeferred('provider_manifest_invalid') from exc
+                raise IndexContractError('provider_manifest_invalid') from exc
             profile = current['vectorProfile']
             if (provider.profile['profile_id'] != profile['profileId']
                     or provider_spec(provider.manifest, profile) != spec):
@@ -1316,8 +1344,13 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             lane.callback(service.stop)
         except (IndexContractError, JournalEvidenceError, OSError) as exc:
             # A provider that cannot be proved or started holds the vectors,
-            # never the lexical publish of this pass.
+            # never the lexical publish of this pass. A defect of the install
+            # itself ends the wake as ``blocked`` (bounded by the wake policy,
+            # as v6); anything else is retried by a later wake.
             context['refused'] = 'vector_provider_' + _code(exc)
+            if _code(exc) in SCHEMA3_PROVIDER_DEFECTS:
+                context['blocked'] = True
+                raise _VectorProviderBlocked(context['refused']) from exc
             raise ResourceDeferred(context['refused']) from exc
         except ResourceDeferred as exc:
             context['refused'] = str(exc)
@@ -1426,6 +1459,8 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     out (cursor kept). ``deferred``: the provider lane or service refused (no
     store write was made for it). ``blocked``: a document the view recipe
     cannot chunk; the view stays lexical until that card changes.
+    ``provider_blocked``: the install's provider cannot be proved
+    (``SCHEMA3_PROVIDER_DEFECTS``); the wake ends ``blocked``.
     """
     import laya_blob_values as v
     spec = vectors.get('spec')
@@ -1482,10 +1517,12 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         return {'state': 'deferred', 'reason': str(exc)}
     except _VectorMemberBlocked as exc:
         return {'state': 'blocked', 'reason': str(exc)}
+    except _VectorProviderBlocked as exc:
+        return {'state': 'provider_blocked', 'reason': str(exc)}
     return {'state': 'complete', 'filled': filled, 'cacheHits': hits, 'targets': len(targets)}
 
 
-def _after_sync(decision, proof, grants, result, *, store_format='v6'):
+def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snapshot=None):
     """External-edit drain and wiki discovery after a completed sync, on every sync path.
 
     After receipt and ACK, with the model service stopped. A raised error or
@@ -1530,7 +1567,8 @@ def _after_sync(decision, proof, grants, result, *, store_format='v6'):
                 import laya_wiki_discovery
                 if schema3:
                     outcome = laya_wiki_discovery.drain_after_sync(
-                        decision, grants, recheck=recheck, view_generation=result.get('generation'))
+                        decision, grants, recheck=recheck, view_generation=result.get('generation'),
+                        raw_snapshot=raw_snapshot)
                 elif v5:
                     with _discovery_base_component(decision,owner,proof) as component:
                         outcome = laya_wiki_discovery.drain_after_sync(
@@ -1568,6 +1606,11 @@ SHADOW_PASS_SECONDS = 60.0
 SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
 SHADOW_ACTIVATION = 'shadow-migration-activation.json'
 SHADOW_CANDIDATE = 'shadow-candidate.sqlite'
+# A restart (lost candidate, moved state or project, explicit resume after a
+# rollback) names a fresh candidate; the old store and intent stay (D4).
+_SHADOW_CANDIDATE_NAME = re.compile(r'shadow-candidate(?:-[0-9a-f]{32})?\.sqlite')
+_SHADOW_INTENT_RETIRED = 'shadow-migration-intent.retired-%s.json'
+_ACTIVATION_SCHEMA = 'memvane-shadow-activation-v1'
 
 
 def _shadow_gate(project, executing_root, *, prove=True):
@@ -1598,6 +1641,16 @@ def _shadow_gate(project, executing_root, *, prove=True):
     if selected != 'v6':
         return None, 'reader_schema3_selected' if selected == 'schema3' else 'reader_selection_unproved'
     state = Path(decision['journalPath']).parent
+    # A rollback (U16) holds the driver until an explicit resume names it;
+    # otherwise the next passes would switch the install back (K1).
+    import laya_shadow_migration as migration
+    hold = getattr(migration, 'rollback_hold', None)
+    if callable(hold):
+        try:
+            if hold(state) is not None:
+                return None, 'migration_rollback_retained'
+        except Exception:
+            return None, 'reader_selection_unproved'
     import laya_ledger_common as ledger
     if ledger.qmd_ledger_present(state):
         return None, ledger.QMD_ORIGIN_DETACH_REQUIRED
@@ -1617,11 +1670,11 @@ def _shadow_gate(project, executing_root, *, prove=True):
     return (decision, state), None
 
 
-def _shadow_open(state, project, scope):
+def _shadow_open(state, project, scope, candidate=None):
     """Open the private candidate; its own store_meta and worktrees are the SSOT."""
     from laya_journal_reader import _readonly
     from laya_view_store import ViewStore
-    path = state / SHADOW_CANDIDATE
+    path = state / SHADOW_CANDIDATE if candidate is None else Path(candidate)
     with _readonly(path, state) as db:
         meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
         rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
@@ -1648,6 +1701,80 @@ def _shadow_vector_spec(decision):
     return provider if provider_spec(*provider) is not None else None
 
 
+def _activation_record(state, project, *, candidate, resumed_after=None):
+    record = {'schema': _ACTIVATION_SCHEMA, 'project': str(project), 'state': str(state),
+              'candidate': str(candidate), 'activated_ns': time.time_ns()}
+    if resumed_after is not None:
+        record['resumed_after'] = resumed_after
+    return record
+
+
+def _read_activation(state):
+    """The activation record and its candidate path; ``migration_activation_invalid`` if malformed."""
+    import laya_ledger_common as ledger
+    record = ledger._read_json(state / SHADOW_ACTIVATION)
+    if (not isinstance(record, dict) or not isinstance(record.get('project'), str)
+            or not isinstance(record.get('state'), str) or not isinstance(record.get('candidate'), str)
+            or record.get('schema', _ACTIVATION_SCHEMA) != _ACTIVATION_SCHEMA
+            or not isinstance(record.get('resumed_after', ''), str)):
+        raise IndexContractError('migration_activation_invalid')
+    return record, Path(record['candidate'])
+
+
+def _restart_shadow(state, project, record):
+    """Name a fresh candidate, then retire the intent by rename; nothing is deleted.
+
+    The activation goes first: a crash before the rename leaves an intent
+    bound to another candidate, which the next pass retires the same way.
+    Returns the retired intent's file name, or None when there was none.
+    """
+    import uuid
+    import laya_journal_reader as readers
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    candidate = state / ('shadow-candidate-%s.sqlite' % uuid.uuid4().hex)
+    ledger._write(state / SHADOW_ACTIVATION,
+                  _activation_record(state, project, candidate=candidate,
+                                     resumed_after=(record or {}).get('resumed_after')), replace=True)
+    intent = state / migration._INTENT
+    if not os.path.lexists(intent):
+        return None
+    retired = _SHADOW_INTENT_RETIRED % uuid.uuid4().hex
+    os.rename(intent, state / retired)
+    readers._sync(state, True)
+    return retired
+
+
+def _orphaned_intent(state, project, candidate):
+    """True when the intent names another project, state or candidate file (a move or a lost store).
+
+    Read-only and identity-only: an intent that names this candidate but is
+    otherwise invalid is left to advance_shadow (``migration_intent_invalid``),
+    so a defect that recurs in every new intent cannot multiply candidates.
+    """
+    import laya_journal_reader as readers
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    from laya_blob_store import _db_file
+    path = state / migration._INTENT
+    if not os.path.lexists(path):
+        return False
+    try:
+        intent = ledger._read_json(path)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(intent, dict):
+        return False
+    if (intent.get('project') != str(project) or intent.get('state') != str(state)
+            or intent.get('candidate') != str(candidate) or not os.path.lexists(candidate)):
+        return True
+    try:
+        return (intent.get('state_node') != readers._node(state)
+                or intent.get('candidate_node') != _db_file(candidate))
+    except (OSError, ValueError):
+        return False
+
+
 def _shadow_step(decision, state, executing_root, store, deadline, provider=None):
     """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``.
 
@@ -1658,17 +1785,26 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
     import laya_ledger_common as ledger
     import laya_shadow_migration as migration
     project = Path(decision['projectRoot'])
-    activation, candidate = state / SHADOW_ACTIVATION, state / SHADOW_CANDIDATE
+    activation = state / SHADOW_ACTIVATION
     if not os.path.lexists(activation):
-        ledger._write(activation, {'schema': 'memvane-shadow-activation-v1', 'project': str(project),
-                                   'state': str(state), 'candidate': str(candidate),
-                                   'activated_ns': time.time_ns()}, replace=False)
+        ledger._write(activation, _activation_record(state, project, candidate=state / SHADOW_CANDIDATE),
+                      replace=False)
         return 'activate', None, store
-    record = ledger._read_json(activation)
-    if (not isinstance(record, dict) or record.get('project') != str(project)
-            or record.get('state') != str(state) or record.get('candidate') != str(candidate)):
-        raise IndexContractError('migration_activation_invalid')
+    record, candidate = _read_activation(state)
+    # A moved state root or project leaves absolute paths that no longer name
+    # this install; a lost candidate leaves an intent bound to nothing.
+    if (record['project'] != str(project) or record['state'] != str(state)
+            or candidate.parent != state or not _SHADOW_CANDIDATE_NAME.fullmatch(candidate.name)
+            or _orphaned_intent(state, project, candidate)):
+        if store is not None:
+            store[0].close()
+        _restart_shadow(state, project, record)
+        return 'restart', None, None
     if not os.path.lexists(candidate):
+        if any(os.path.lexists(str(candidate) + suffix) for suffix in ('-wal', '-shm', '-journal')):
+            # Leftover journal files of a lost store must never meet a new one.
+            _restart_shadow(state, project, record)
+            return 'restart', None, None
         import laya_checkout_view as checkout
         from laya_view_store import ViewStore
         repository = checkout.register_repository(str(project))
@@ -1677,7 +1813,7 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
                          worktree=worktree, scope_id=decision['scopeId']).close()
         return 'create', None, store
     if store is None:
-        store = _shadow_open(state, project, decision['scopeId'])
+        store = _shadow_open(state, project, decision['scopeId'], candidate)
     view, worktree_id = store
     if not os.path.lexists(state / migration._INTENT):
         intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
@@ -1690,6 +1826,50 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
     result = migration.advance_shadow(view, project=project, executing_root=executing_root,
                                       deadline=deadline, vector_spec=vector_spec)
     return result['stage'], result['migration_state'], store
+
+
+def resume_shadow_migration(project, *, executing_root=None):
+    """Explicitly release a rollback hold: a fresh migration on a new candidate.
+
+    Under the installer, operation and sync owner locks (never waiting): the
+    journal must select v6 and hold the driver (``rollback_hold``). The
+    activation names a new candidate and the rollback it resumes after; the
+    old intent is renamed, the old candidate store stays (D4). The next sync
+    passes start the migration from the beginning. Returns
+    ``{status: 'resumed', candidate, retiredIntent, resumedAfter}``.
+    """
+    from contextlib import ExitStack
+    import laya_fresh_wiki_origin as fresh
+    import laya_install_journal as journal
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    import project_dir
+    from laya_index_sync import _owner_lock
+    from laya_product_install import _install_lock
+    project = Path(project)
+    decision = select_route(str(project), action='recall')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('migration_route_invalid')
+    state = Path(decision['journalPath']).parent
+    with ExitStack() as locks:
+        locks.enter_context(_install_lock(state))
+        locks.enter_context(ledger._operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+            raise IndexContractError('sync_owner_busy')
+        if _selected_store_format(decision) != 'v6':
+            raise IndexContractError('migration_not_held')
+        hold = migration.rollback_hold(state)
+        if hold is None:
+            raise IndexContractError('migration_not_held')
+        record = None
+        if os.path.lexists(state / SHADOW_ACTIVATION):
+            try:
+                record = _read_activation(state)[0]
+            except (OSError, ValueError):
+                record = None  # Replaced below; the old bytes are not needed to resume.
+        retired = _restart_shadow(state, project, {**(record or {}), 'resumed_after': hold['transition_id']})
+    return {'status': 'resumed', 'candidate': _read_activation(state)[0]['candidate'],
+            'retiredIntent': retired, 'resumedAfter': hold['transition_id']}
 
 
 def shadow_pass(project, *, executing_root=None):

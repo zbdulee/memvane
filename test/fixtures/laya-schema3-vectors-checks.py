@@ -437,6 +437,51 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         emit('schema3-vector-main-linked', providerCalls=len(calls), mainBlobs=len(main_blobs),
              linkedBlobs=len(linked_blobs))
 
+    def test_08_one_raw_scan_serves_sources_and_discovery(self):
+        state_path, _grants, _lock = self.D._paths(self.decision)
+        self.D._write(state_path, self.D._state_doc(self.decision, 'v6-pre-switch-head', {}, {}))
+        self.select_schema3()
+        self.raw_file('scanned-once.md', 'A raw note the pass scans once.\n')
+        grant = self.D.record_grant(self.decision, 'sync', engine='codex')
+        self.assertTrue(self.D.activate_grant(self.decision, 'sync', grant))
+        port = importlib.import_module('laya_index_source_port')
+        real, scans = port.scan_collections, []
+
+        def counted(*args, **kwargs):
+            scans.append(sorted(args[0]))
+            return real(*args, **kwargs)
+        with mock.patch.object(port, 'scan_collections', new=counted):
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertIn(result['state'], ('indexed', 'unchanged', 'pending'), result)
+        self.assertNotEqual(result.get('wikiDiscovery', {}).get('state'), 'blocked', result)
+        state = self.D._read(state_path)
+        self.assertEqual(state['baseGen'], self.head()[0])
+        self.assertIn(self.raw_collection + '/notes/scanned-once.md', state['rawSnapshot'])
+        self.assertEqual(len(scans), 1, scans)
+        emit('schema3-raw-scan-once', scans=len(scans))
+
+    def test_09_provider_defect_ends_the_wake_blocked_lexical_kept(self):
+        self.select_schema3()
+        self.card('concepts/finch-perch.md', 'finchprobe')
+        journal = importlib.import_module('laya_install_journal')
+        start = self.head()
+
+        def invalid(_decision, _proof):
+            raise journal.JournalEvidenceError('worker_attestation_invalid')
+        with mock.patch.object(self.worker, '_schema3_worker_manifest', new=invalid):
+            result, _ingests, calls = self.run_vector_pass()
+        self.assertEqual((result['state'], result['reason'], result['vector']['state']),
+                         ('blocked', 'vector_provider_worker_attestation_invalid', 'provider_blocked'), result)
+        self.assertEqual(calls, [])
+        self.assertEqual(self.head(), (result['generation'], start[1] + 1))
+        self.assertEqual(self.stage(result['generation'])[0]['vector_mode'], 'lexical-only')
+        self.assertIn('concepts/finch-perch.md', self.paths(self.recall('finchprobe')))
+        # A refused resource stays a retried deferral, not blocked.
+        self.card('concepts/finch-perch.md', 'sparrowprobe')
+        deferred, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        self.assertEqual((deferred['state'], deferred['reason']), ('deferred', 'cpu_pressure'), deferred)
+        emit('schema3-vector-provider-defect', state=result['state'], reason=result['reason'])
+
 
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
