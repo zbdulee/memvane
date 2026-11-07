@@ -260,10 +260,9 @@ def _forward_image(before, after):
           and all(current.get(key) == value for key, value in endpoints.items()),
           'reader_store_changed')
     _need(all(new_seals.get(key) == value for key,value in old_seals.items()), 'reader_store_changed')
-    stable = ('scope', 'install_id', 'project', 'state', 'incarnation', 'project_node',
-              'state_node', 'attestation_sha256', 'profile', 'checkout_policy', 'settings', 'roots')
     for key, record in records.items():
-        _need(all(record.get(name) == old_stored[name] for name in stable)
+        _need(all(record.get(name) == old_stored[name]
+                  for name in reader.stable_fields(record, old_stored))
               and current[key][1] == endpoints[old.preferred_endpoint][1],
               'reader_install_changed')
 
