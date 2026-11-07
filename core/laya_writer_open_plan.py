@@ -4,12 +4,36 @@ A plan describes existing canonical files and sealed coordination locks. It
 grants no SQLite open, writer, reader, mover, cohort or immutable capability.
 The caller must acquire lifetime/physical windows and prove the full current
 installation before issuing normal writer authority.
+
+Store formats. The plan follows the journal's preferred reader endpoint
+(``snapshot['endpoint']['store_format']``):
+
+- ``v6``: unchanged. The snapshot has no ``store`` key, so the packed bytes
+  and ``plan_id`` equal those of earlier releases.
+- ``schema3``: capability ``schema3-ro-v1`` and checkout policy
+  ``selected-main-schema3-v1``. Install identity is checked as for v6 except
+  the record incarnation, which is the store's. The snapshot adds ``store``
+  (see ``plan_store``), read from the store with one query_only connection.
+
+Both formats keep the five v6 ``components`` and their physical locks: the
+lock manifest contract is shared, and an older writer is kept out by the
+journal record, not by a lock. ``laya_writer_scope`` refuses every v6
+component to a schema3 writer (``writer_selection_unavailable``).
+
+Refusal codes a caller can see here: ``writer_route_unavailable`` (route not
+a selected candidate), ``writer_selection_unavailable`` (unknown format or
+capability, pending bundle), ``writer_plan_binding_changed`` (install/ledger
+binding, also an ``upgrading`` ledger fence), ``writer_plan_store_changed``
+(schema3 store node, path, incarnation, repository, worktree binding or
+policy differs from the record), ``writer_plan_changed`` (a revalidated plan
+differs, e.g. after a reader CAS), ``writer_windows_not_prepared``.
 """
 from dataclasses import dataclass
 import fcntl
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import threading
 import time
@@ -60,6 +84,49 @@ def _manifest(install_id):
         os.close(fd)
 
 
+def _schema3_store(record, state, decision):
+    """Match the selected schema3 record against its store, read-only.
+
+    One query_only connection reads ``store_meta`` and the main worktree row;
+    ``laya_blob_store`` validates header, schema and worktree evidence. The
+    store is never the route's v6 ``dbPath``.
+    """
+    import laya_blob_store as blobs
+    import laya_blob_values as values
+    path = Path(record['db_path'])
+    R._need(path.is_absolute() and str(path) != decision['dbPath'], 'writer_plan_store_changed')
+    node = R._file(path, state)
+    R._need(node == record['db_node'], 'writer_plan_store_changed')
+    # Plans are captured and validated under the queue owner: this read may
+    # let SQLite roll back a hot journal (``recover``). Reader opens stay ro.
+    with R._readonly(path, state, recover=True) as db:
+        db.row_factory = sqlite3.Row
+        try:
+            row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+            R._need(row is not None and isinstance(row[0], str), 'writer_plan_store_changed')
+            repository = values.repository(values.parse_canonical(row[0]))
+            meta = blobs._header(db, repository, record['scope'])
+            worktree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?',
+                                  (record['worktree_id'],)).fetchone()
+            R._need(worktree is not None, 'writer_plan_store_changed')
+            blobs._worktree_record(worktree, repository, meta['settings_policy_digest'])
+        except values.BlobStoreError as exc:
+            raise J.JournalEvidenceError('writer_plan_store_changed') from exc
+    # Same identity the U10 reader seals (_schema3_store): digest of the
+    # stored repository JSON, main worktree registered at this project.
+    R._need(meta['incarnation'] == record['incarnation']
+            and R._repository_digest(row[0]) == record['repository_digest']
+            and worktree['project_root'] == record['project']
+            and worktree['binding_digest'] == record['worktree_binding']
+            and meta['settings_policy_digest'] == record['settings_policy_digest'],
+            'writer_plan_store_changed')
+    return dict(path=str(path), node=node, incarnation=meta['incarnation'],
+                worktree_id=record['worktree_id'], repository=repository,
+                repository_digest=record['repository_digest'],
+                worktree_binding=record['worktree_binding'],
+                policy_digest=meta['settings_policy_digest'])
+
+
 def _snapshot(project, executing_root):
     project = _canonical_directory(project)
     root = _canonical_directory(executing_root)
@@ -82,9 +149,12 @@ def _snapshot(project, executing_root):
             if attestation_sha != record['attestation_sha256']:
                 R._successor_chain(db, selection.preferred_endpoint, record, attestation_sha,
                                    bundle['selected'], max_epoch=bundle['epoch'])
+        store_format = record['store_format']
         R._need(bundle['state'] in ('active', 'restored_old') and bundle['pending'] is None
-                and record['capability'] == 'v6-ro-v1'
-                and record['store_format'] == 'v6', 'writer_selection_unavailable')
+                and ((store_format == 'v6' and record['capability'] == 'v6-ro-v1')
+                     or (store_format == 'schema3' and record['capability'] == 'schema3-ro-v1'
+                         and record['checkout_policy'] == 'selected-main-schema3-v1')),
+                'writer_selection_unavailable')
         selected = bundle['selected']
         R._need(type(selected) is dict and selected['bundleKind'] == 'full_plugin'
                 and selected['pluginRoot'] == str(root) == decision['pluginRoot'],
@@ -92,7 +162,7 @@ def _snapshot(project, executing_root):
         R._need(record['install_id'] == selected['installId'] == decision['installId']
                 and J.ID.fullmatch(record['install_id']) is not None
                 and record['scope'] == bundle['scope_id'] == decision['scopeId']
-                and record['incarnation'] == decision['dbIncarnation']
+                and (store_format != 'v6' or record['incarnation'] == decision['dbIncarnation'])
                 and record['profile'] == decision['vectorProfile']['profileId'],
                 'writer_plan_binding_changed')
         R._need(record['project'] == bundle['project_root'] == str(project)
@@ -145,18 +215,24 @@ def _snapshot(project, executing_root):
             R._need(node == ledger[node_field], 'writer_plan_component_changed')
             components[role] = dict(path=str(location), node=node)
         from laya_incremental_docs import FILE
-        sidecar = Path(record['sidecar_path'])
+        # A schema3 record names no v6 sidecar; the install's own path is it.
+        sidecar = Path(record['sidecar_path']) if store_format == 'v6' else state / FILE
         R._need(sidecar == state / FILE, 'writer_plan_component_changed')
         components['sidecar'] = dict(path=str(sidecar), node=(
             R._file(sidecar, state) if os.path.lexists(sidecar) else None))
         R._need(len({row['path'] for row in components.values()}) == len(components),
                 'writer_plan_component_changed')
+        store = _schema3_store(record, state, decision) if store_format == 'schema3' else None
         manifest = _manifest(record['install_id'])
-        return dict(project=str(project), executing_root=str(root), executing_root_node=R._node(root),
-                    decision=decision, ledger=ledger, build_identity=identity,
-                    bundle=bundle, endpoint=record, reader_epoch=selection.epoch,
-                    endpoint_id=selection.preferred_endpoint, components=components,
-                    manifest=manifest, attestation_sha=attestation_sha)
+        snapshot = dict(project=str(project), executing_root=str(root), executing_root_node=R._node(root),
+                        decision=decision, ledger=ledger, build_identity=identity,
+                        bundle=bundle, endpoint=record, reader_epoch=selection.epoch,
+                        endpoint_id=selection.preferred_endpoint, components=components,
+                        manifest=manifest, attestation_sha=attestation_sha)
+        if store is not None:
+            # Only schema3 adds a key: v6 snapshots stay byte-identical.
+            snapshot['store'] = store
+        return snapshot
 
 
 def capture_writer_plan(project, *, executing_root):
@@ -188,6 +264,21 @@ def validate_writer_plan(plan):
     packed, snapshot = _plan_record(plan)
     current = _snapshot(snapshot['project'], snapshot['executing_root'])
     R._need(R._raw(current) == packed, 'writer_plan_changed')
+
+
+def plan_store(plan):
+    """Return the issued schema3 store description, or None for v6.
+
+    Keys: ``path`` (absolute store file in the state root), ``node``
+    ([dev, ino]), ``incarnation`` (store_meta), ``worktree_id`` (main
+    checkout), ``repository`` (store_meta repository JSON, for
+    ``ViewStore.open``), ``repository_digest``, ``worktree_binding`` and
+    ``policy_digest``. This is a description, not write authority: the
+    caller still needs a writer scope and ``validate_writer_plan``.
+    """
+    _packed, snapshot = _plan_record(plan)
+    store = snapshot.get('store')
+    return None if store is None else json.loads(R._raw(store))
 
 
 @dataclass(frozen=True, eq=False, init=False)

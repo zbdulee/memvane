@@ -20,7 +20,7 @@ import sqlite3
 import time
 import uuid
 
-from laya_index_a import IndexContractError
+from laya_index_a import IndexContractError, _query_only_uri
 
 ACK, REPROCESS, DEFER, LEASE_LOST = 'ack', 'reprocess', 'defer', 'lease_lost'
 FIELDS = ('claim', 'scope', 'gen', 'source_manifest', 'claim_digest',
@@ -175,8 +175,11 @@ class ClaimQueue:
                 raise UnknownDatabase('queue_unreadable') from exc
         try:
             # Classify a single read snapshot before requesting RW/WAL access.
-            with closing(sqlite3.connect(uri + '?mode=ro', uri=True, timeout=2,
-                                         isolation_level=None)) as check:
+            # LayaIndexA's read classifier: Apple's libsqlite3 cannot open a
+            # WAL queue closed by a stock build (no -wal/-shm) with mode=ro.
+            with closing(sqlite3.connect(_query_only_uri(path.resolve(strict=True)), uri=True,
+                                         timeout=2, isolation_level=None)) as check:
+                check.execute('PRAGMA query_only=ON')
                 check.execute('BEGIN')
                 try:
                     cls._check_database(check)

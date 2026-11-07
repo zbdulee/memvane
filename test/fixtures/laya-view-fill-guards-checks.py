@@ -165,7 +165,7 @@ class FillGuardChecks(helpers.FillCase):
         def observe_then_change(entry):
             saved = observe(entry)
             if self.calls['embedder'] and not changed:
-                path.write_text(json.dumps(dict(name='blobfixture', skipPaths=['notes'])), encoding='utf8')
+                path.write_text(json.dumps(dict(name='blobfixture-renamed')), encoding='utf8')
                 changed.append(True)
             return saved
         try:
@@ -226,8 +226,8 @@ class FillGuardChecks(helpers.FillCase):
             active[blob] -= 1
             if not active[blob]:
                 del active[blob]
-        def observed(blob):
-            body = TrackedBody(original(blob))
+        def observed(blob, **kwargs):
+            body = TrackedBody(original(blob, **kwargs))
             active[blob] = active.get(blob, 0) + 1
             peak[0] = max(peak[0], len(active))
             weakref.finalize(body, released, blob)

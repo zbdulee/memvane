@@ -1,16 +1,20 @@
 # View candidate 세대와 lexical·vector reader 계약
 
-`laya_view_store.ViewStore`는 `BlobStore`를 확장하는 비활성 개발용 API다.
+`laya_view_store.ViewStore`는 `BlobStore`를 확장하는 schema3 view store API다.
 형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
 candidate v1/v2와 운영 v6 파일은 읽기 전용 preflight에서 바이트 변경 없이 거절한다.
-운영 v6 reader·hook·route는 이 API를 호출하지 않는다.
-운영 embed provider·worker를 연결하거나 query embedding을 생성하지 않는다.
+v6 reader가 선택된 설치에서는 shadow migration이 후보 store를 만들 때만 이 API를 쓰고 recall은
+쓰지 않는다. schema3 reader가 선택된 뒤에는 recall pin, sync 게시와 vector fill, dedup retrieval이
+이 API를 쓴다.
+`ViewStore`는 provider를 직접 부르거나 query embedding을 만들지 않는다. chunk·embedding은
+호출자 callback으로 받고, 운영 sync owner가 resident provider를 callback으로 넘긴다.
 
 내용 admission·recipe·profile·provenance 계약은
 [`development-blob-candidate.md`](development-blob-candidate.md), checkout 등록·capture는
 [`development-checkout-capture.md`](development-checkout-capture.md)에 있다.
-원문 body API는 없다. reader bridge, migration, 운영 활성화,
-lifecycle, frontmatter 변경, retention·GC는 이 candidate API의 범위 밖이다.
+원문 body API는 없다. reader 선택·전환·rollback은 `laya_journal_reader`·`laya_shadow_migration`,
+운영 게시 순서는 `laya_product_sync_worker`가 소유한다. lifecycle, frontmatter 변경,
+retention·GC는 이 API에 없다.
 
 ## 내부 API와 수명
 
@@ -59,6 +63,8 @@ source 지문은 handle과 같은 worktree·branch·path에 속해야 한다.
 `complete: true`는 호출자의 완료 주장이고 원문 전체를 관측했다는 증명이 아니다.
 
 검색 자격 `eligible`은 저장소가 source·attestation·`skipPaths`에서 도출한다.
+prepare는 그 시점 settings의 `skipPaths`를 쓰고 stage에 봉인하며, 게시된 세대의 검증은
+봉인된 값으로 다시 도출한다.
 호출자가 직접 지정하지 않는다. 같은 blob SHA라도 다른 view의 trust를 빌리지 않는다.
 non-null trust의 blob·policy가 다르거나 다른 worktree·branch 출처이면 거절한다.
 source가 없거나 trust가 null인 카드, 누락·held source, SHA·길이가 바뀐 source,
@@ -166,6 +172,9 @@ prepared·published FTS 변경은 거절하고 reader는 physical commitment를
 
 pin은 한 read transaction에서 head·seal·membership·source·trust·FTS를 확인하고
 불변 세대 참조를 보관한다. pin 수명 동안 SQLite read transaction을 열어 두지 않는다.
+같은 pin의 이후 읽기는 세대·seal 행을 다시 읽어 pin 시점 seal과 대조한다. 마지막 전체 검증 뒤
+store에 commit이 하나도 없으면(`PRAGMA data_version`·연결의 `total_changes`·`schema_version`이
+모두 같으면) 그 검증 결과를 재사용하고, commit이 있었으면 세대 전체를 다시 검증한다.
 검색 transaction도 호출에 한정하며 rollback journal을 사용한다. WAL·GC API는 없다.
 같은 view의 head가 새 세대로 바뀌어도 기존 pin은 원래 세대만 검색한다.
 
@@ -218,6 +227,27 @@ body는 저장한 wiki 카드이며 반환 전 blob 바이트와 seal을 확인�
 seal·receipt·지문·검색 자격은 구조적 commitment다. compiler 실행 사실, 실제 원문 관측,
 인용 정확성, 운영 owner의 권한이나 삭제 권한을 증명하지 않는다.
 
+## 운영 사용
+
+schema3 reader가 선택된 설치에서 설치 journal의 endpoint record가 store 경로·incarnation·
+main worktree binding·head floor·vector recipe/profile을 고정한다. recall은 그 record로
+main view를, 연결 워크트리에서는 그 워크트리의 자기 view를 pin한다. CAS 때 고정한 floor보다
+뒤의 head는 거절한다. 같은 UID가 head trigger를 지우고 floor 위 세대를 모두 게시 취소하는
+일관된 위조는 검출하지 않는다.
+
+sync owner는 pass마다 main view를 먼저, 그 뒤 연결 워크트리 view를 게시한다. 게시 head가
+없는 view는 완료 전까지 prepared 세대만 남기고 게시하지 않으며, 그동안 recall은
+`view_preparing`이다. 바뀐 카드만 ingest하고 같은 바이트의 member는 기존 trust를 유지한다.
+manifest의 `sources`는 같은 pass의 raw 관측이며 관측 상한(4,096 파일·64 MB)을 넘으면
+빈 목록이다.
+
+vector는 lexical 세대를 먼저 게시한 뒤 `fill_view` cursor로 설치 provider spec의 set을 채우고,
+완료되면 vector 세대를 새로 게시한다. view chunk는 provider의 1차 분할과 같은 위치여야 한다.
+provider가 token window로 다시 쪼개는 카드는 재현할 chunk 텍스트가 없어
+`chunk_text_unreconstructable`로 그 view의 vector fill을 막고, 그 view는 카드가 바뀔 때까지
+lexical 세대로 남는다. main view의 vector spec이 endpoint record에 봉인되기 전까지 recall은
+lexical 결과만 쓴다.
+
 ## 입력 상한과 실패
 
 | 대상 | 상한 |
@@ -246,11 +276,16 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 `vector_work_exceeded`, `vector_deadline_exceeded`다.
 거절 뒤 다른 view·운영 v6로 우회하는 API는 없다.
 
-검증 성공은 candidate의 구조·일관성에 한정된다. 합성 1,800카드·10 Git views의
-warm 검색 30개 표본은 중앙값 1,064.34 ms, p95 1,425.94 ms다. 검색은 호출마다
-전체 세대의 구조·FTS commitment를 검증한다. warm view p95 50 ms와 lexical
-p95 150 ms 목표는 충족하지 못하며 운영 활성화 전 해결할 성능 항목이다.
+검증 성공은 store의 구조·일관성에 한정된다. `pin_view`는 고정한 세대의 구조·FTS commitment를
+검증하고, 검색은 그 뒤 store에 commit이 있었을 때 같은 검증을 다시 한다. SQLite commit 없이 파일
+바이트가 바뀐 손상은 다음 commit이나 새 pin, `verify_views` 전까지 검색이 검출하지 않는다.
+서빙하지 않은 행의 변조는 `verify_views`가 검출하며, 이 검증
+범위는 `test/laya-view-reader.test.mjs`·`test/laya-view-budget.test.mjs`가 고정한다.
+합성 1,800카드·10 Git views에서 새 프로세스 30개 표본(nearest-rank, py3.13)의 p95는
+카드 본문을 공유할 때 pin 80 ms·검색 77 ms, 본문이 모두 다를 때 pin 256 ms·검색 251 ms다.
+같은 표본에서 `capture_view`(Git 호출 14회)의 p95는 280–303 ms이고 recall 비용의 큰 몫이다.
+측정은 `MEMVANE_VIEW_WARM_RED=1`일 때만 돈다.
 호스트 실행 비용에 따라 기본 2초 제한으로 `fts_deadline_exceeded`를 반환할 수 있다.
 규모 fixture는 완료 비용 측정을 위해 명시적 30초 제한을 사용하며,
 기본 제한의 거절·복구 검사는 별도로 유지한다.
-모델 품질, 실제 migration 또는 운영 endpoint parity도 이 candidate 검증의 범위 밖이다.
+모델 품질과 v6 대비 parity는 이 검증의 범위 밖이다. parity는 shadow migration의 receipt가 봉인한다.

@@ -87,6 +87,8 @@ class SyncFirstProofChecks(unittest.TestCase):
                 'test_unmarked_writer_cannot_create_sidecar',
                 'test_capacity_worker_defers_writer_deadline',
                 'test_capacity_worker_propagates_pending_rollback',
+                'test_capacity_worker_defers_physical_window_busy',
+                'test_capacity_worker_propagates_physical_busy_pending_rollback',
             }
             if self._testMethodName in absent_sidecar_cases:
                 import laya_incremental_docs
@@ -108,6 +110,34 @@ class SyncFirstProofChecks(unittest.TestCase):
     def selected(self):return self.worker._selected(self.case.project)
 
     def trace(self,calls):return self.fixture.fixture.fixture.trace(calls)
+
+    @contextmanager
+    def shadow_spans(self,calls,spans):
+        """Record which traced opens belong to ``run``'s post-sync shadow pass.
+
+        ``run`` gives the shadow migration one pass after the sync owner is
+        released (``shadow_pass``). That pass reads the selected v6 snapshot
+        through the reader path, not the sync writer's owned connections.
+        """
+        original=self.worker.shadow_pass
+        def traced(*args,**kwargs):
+            start=len(calls)
+            try:return original(*args,**kwargs)
+            finally:spans.append((start,len(calls)))
+        with mock.patch.object(self.worker,'shadow_pass',side_effect=traced):yield
+
+    def assert_owned_sync_opens(self,calls,spans):
+        """Sync opens are writer-owned; shadow-pass opens are query-only reader opens.
+
+        ``_query_only_uri`` is ``mode=ro`` except on macOS Python 3.9, whose
+        Apple SQLite cannot open a WAL database read-only without ``-wal``.
+        """
+        from laya_index_a import _query_only_uri
+        inside={index for start,end in spans for index in range(start,end)}
+        sync=[call for index,call in enumerate(calls) if index not in inside]
+        shadow=[call for index,call in enumerate(calls) if index in inside]
+        self.assertTrue(sync and all(call['managed'] for call in sync),sync)
+        self.assertTrue(all(call['uri']==_query_only_uri(call['path']) for call in shadow),shadow)
 
     def publish_v4(self):
         tmp=self.case.journal.with_name('test-legacy-v4-image')
@@ -352,12 +382,12 @@ class SyncFirstProofChecks(unittest.TestCase):
                 'dimension': profile['dimension']})
             service = mock.Mock()
             controller = SimpleNamespace(activity=lambda *_args: nullcontext())
-            calls, epochs = [], []
+            calls, epochs, spans = [], [], []
             def publish(_runtime, *, before_publish, **_kwargs):
                 before_publish()
                 epochs.append(self.J.inspect_journal(self.case.journal)['epoch'])
                 return {'state': 'unchanged'}
-            with self.trace(calls), \
+            with self.trace(calls), self.shadow_spans(calls, spans), \
                     mock.patch.object(self.worker, '_route_source', return_value=str(self.case.auto/'wiki')), \
                     mock.patch.object(self.worker, '_capacity_paths', return_value=None), \
                     mock.patch.object(self.worker, 'qa_sync_barrier', return_value=None), \
@@ -376,7 +406,8 @@ class SyncFirstProofChecks(unittest.TestCase):
                                          report={}, start_service=lambda *_a, **_kw: None)
             self.assertEqual(result, {'state': 'unchanged'})
             self.assertEqual(epochs, [proof['selectionEpoch'] + 1])
-            self.assertTrue(all(call['managed'] for call in calls), calls)
+            self.assertEqual(len(spans), 1)
+            self.assert_owned_sync_opens(calls, spans)
             service.stop.assert_called_once_with()
 
     def test_full_worker_actual_changed_card_is_fenced_published_and_acked(self):
@@ -757,7 +788,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             controller = SimpleNamespace(activity=lambda *_args: nullcontext())
             service = mock.Mock()
             original = LayaIndexRuntime.request_scan
-            marks, calls, baselines = [], [], []
+            marks, calls, baselines, spans = [], [], [], []
             def request_scan(runtime):
                 side=side_db()
                 marks.append(self.J.inspect_journal(self.case.journal)['newWriteSeen'])
@@ -766,7 +797,7 @@ class SyncFirstProofChecks(unittest.TestCase):
                           if table else None)
                 baselines.append(None if baseline is None else json.loads(baseline[0]))
                 return original(runtime)
-            with self.trace(calls), \
+            with self.trace(calls), self.shadow_spans(calls, spans), \
                     mock.patch.object(self.worker, '_route_source', return_value=roots), \
                     mock.patch.object(self.worker, '_capacity_paths',
                                       return_value=(str(self.case.catalog), str(self.case.store))), \
@@ -847,7 +878,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertIn(result['state'], ('indexed', 'unchanged', 'pending'), result)
             self.assertTrue(marks and all(marks))
             self.assertTrue(baselines and all(item is not None and item['rows'] >= 3 for item in baselines),baselines)
-            self.assertTrue(all(call['managed'] for call in calls), calls)
+            self.assert_owned_sync_opens(calls, spans)
             emit('capacity-owned-sync', result=result, managedContentOpens=len(calls))
 
     @contextmanager
@@ -1180,7 +1211,8 @@ class SyncFirstProofChecks(unittest.TestCase):
                     base.execute("INSERT INTO schema_meta(key,value) VALUES('reader-sidecar-required:v1','1')")
             for suffix in ('', '-wal', '-shm', '-journal'):
                 Path(str(sidecar)+suffix).unlink(missing_ok=True)
-            if recovery not in ('create', 'interrupt', 'closefail', 'busy', 'busy_pending', 'lost'):
+            if recovery not in ('create', 'interrupt', 'closefail', 'busy', 'busy_pending',
+                                'physical_busy', 'physical_busy_pending', 'lost'):
                 import laya_initial_build
                 identity = laya_initial_build.read(self.case.state)['identity']
                 with closing(sqlite3.connect(sidecar, isolation_level=None)) as db:
@@ -1206,9 +1238,10 @@ class SyncFirstProofChecks(unittest.TestCase):
             controller = SimpleNamespace(activity=lambda *_args: nullcontext())
             observed = []
             def capacity(*_args, **_kwargs):
-                if recovery in ('busy', 'busy_pending'):
-                    error = self.W.ReaderWindowBusy('reader_write_deadline')
-                    if recovery == 'busy_pending':
+                if recovery in ('busy', 'busy_pending', 'physical_busy', 'physical_busy_pending'):
+                    reason = 'reader_physical_busy' if recovery.startswith('physical_') else 'reader_write_deadline'
+                    error = self.W.ReaderWindowBusy(reason)
+                    if recovery.endswith('_pending'):
                         error.rollback_pending = True
                     raise error
                 observed.append((sidecar.exists(), self.J.inspect_journal(self.case.journal)['newWriteSeen']))
@@ -1221,14 +1254,16 @@ class SyncFirstProofChecks(unittest.TestCase):
                     mock.patch.object(laya_wiki_discovery, 'observe_grants', return_value=None), \
                     mock.patch.object(self.worker, '_member_diagnosis', return_value=None), \
                     mock.patch.object(self.worker, '_sync_capacity', side_effect=capacity):
-                if recovery == 'busy':
+                if recovery in ('busy', 'physical_busy'):
                     result = self.worker.run(self.case.project, coordinator=controller,
                                              report={}, start_service=lambda *_a, **_kw: None)
                     self.assertEqual((result['state'], result['reason']),
-                                     ('deferred', 'reader_write_deadline'))
+                                     ('deferred', 'reader_physical_busy' if recovery == 'physical_busy'
+                                      else 'reader_write_deadline'))
                     return
-                elif recovery == 'busy_pending':
-                    with self.assertRaisesRegex(self.W.ReaderWindowBusy, 'reader_write_deadline') as caught:
+                elif recovery in ('busy_pending', 'physical_busy_pending'):
+                    reason = 'reader_physical_busy' if recovery == 'physical_busy_pending' else 'reader_write_deadline'
+                    with self.assertRaisesRegex(self.W.ReaderWindowBusy, reason) as caught:
                         self.worker.run(self.case.project, coordinator=controller,
                                         report={}, start_service=lambda *_a, **_kw: None)
                     self.assertTrue(caught.exception.rollback_pending)
@@ -1324,6 +1359,12 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_capacity_worker_propagates_pending_rollback(self):
         self._capacity_sidecar_fixture(recovery='busy_pending')
+
+    def test_capacity_worker_defers_physical_window_busy(self):
+        self._capacity_sidecar_fixture(recovery='physical_busy')
+
+    def test_capacity_worker_propagates_physical_busy_pending_rollback(self):
+        self._capacity_sidecar_fixture(recovery='physical_busy_pending')
 
     def test_capacity_worker_resumes_empty_cold_sidecar_after_fence(self):
         self._capacity_sidecar_fixture(recovery='empty')

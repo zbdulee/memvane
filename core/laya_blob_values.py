@@ -52,16 +52,31 @@ def identifier(value, pattern=SHA):
     return value
 
 
-def relative(value):
+def _path(value, refused_segment):
     if (not isinstance(value, str) or not value or len(value) > 4096
             or any(c in value for c in '\x00\r\n\\') or value.startswith('/')
-            or any(not p or p.startswith('.') for p in value.split('/'))):
+            or any(refused_segment(p) for p in value.split('/'))):
         fail('invalid_relative_path')
     try:
         value.encode('utf8')
     except UnicodeError:
         fail('invalid_relative_path')
     return value
+
+
+def relative(value):
+    """A wiki, filter or binding path: no empty or dot-led segment."""
+    return _path(value, lambda p: not p or p.startswith('.'))
+
+
+def source_path(value):
+    """A project-relative raw source path (fingerprints, manifest sources).
+
+    A raw root may sit in a dot directory (``.nova/06_Sessions``) and the
+    selected reader trusts revisions there, so only empty, ``.`` and ``..``
+    segments are refused.
+    """
+    return _path(value, lambda p: p in ('', '.', '..'))
 
 
 def repository(value):
@@ -245,7 +260,7 @@ FINGERPRINT_FIELDS = frozenset(('worktree_id', 'branch_key', 'path', 'source_sha
 def fingerprint(spec, object_format):
     exact(spec, FINGERPRINT_FIELDS)
     identifier(spec['worktree_id'], UUID); identifier(spec['scan_id'], UUID)
-    relative(spec['path']); identifier(spec['source_sha'])
+    source_path(spec['path']); identifier(spec['source_sha'])
     integer(spec['byte_length']); integer(spec['observed_ns'])
     if spec['tracked_state'] not in ('tracked', 'untracked', 'unknown') or spec['binding_state'] not in ('observed', 'legacy_unbound'):
         fail('source_state_invalid')
@@ -260,7 +275,11 @@ def fingerprint(spec, object_format):
         if head is not None and (not isinstance(head, str) or re.fullmatch('[0-9a-f]{' + str(length) + '}', head) is None):
             fail('source_head_invalid')
         if branch.startswith('detached:'):
-            if head is None or branch != 'detached:' + head:
+            detached_oid = branch[len('detached:'):]
+            unbound = (head is None and spec['binding_state'] == 'legacy_unbound'
+                       and spec['tracked_state'] == 'unknown')
+            if (re.fullmatch('[0-9a-f]{' + str(length) + '}', detached_oid) is None
+                    or (not unbound and branch != 'detached:' + str(head))):
                 fail('source_branch_invalid')
         elif branch.startswith('refs/heads/'):
             tail = branch[len('refs/heads/'):]
@@ -273,25 +292,54 @@ def fingerprint(spec, object_format):
     return json.loads(canonical(spec))
 
 
-def attestation(spec):
-    exact(spec, ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest', 'receipt', 'sources'))
-    identifier(spec['blob_sha']); text(spec['engine_identity']); identifier(spec['policy_digest'])
-    kind = spec['verification_kind']
-    if kind not in ('compiled', 'rebound', 'legacy_verified'):
-        fail('verification_kind_invalid')
-    receipt = spec['receipt']
-    exact(receipt, ('schema', 'verdict', 'result_digest', 'prior_trust'))
-    if receipt['schema'] != 'memvane-card-evidence-v1' or receipt['verdict'] != 'verified':
+ATTESTATION_KINDS = ('compiled', 'rebound', 'legacy_verified')
+LEGACY_LINE_SPAN = 'legacy-lines-v1'
+# Reserved compiled line-span kind: the yaml_scalars span shape bound to the
+# fingerprint's path/source SHA, never an excerpt. A rebound copies its prior's
+# spans verbatim, so the compiled chain (compiled + rebound) shares one set.
+LINE_SPAN = 'lines-v1'
+LINE_SPAN_KINDS = frozenset(('compiled', 'rebound'))
+RECEIPT_V1 = 'memvane-card-evidence-v1'
+RECEIPT_V1_FIELDS = frozenset(('schema', 'verdict', 'result_digest', 'prior_trust'))
+# Reserved compile receipt: v1 plus the verifier verdict digest, verifiedMode and
+# verifier engine. Later extensions are a new schema value, never extra v2 keys.
+RECEIPT_V2 = 'memvane-card-evidence-v2'
+RECEIPT_V2_FIELDS = RECEIPT_V1_FIELDS | {'verdict_digest', 'verified_mode', 'verify_engine'}
+
+
+def _receipt(receipt, kind):
+    schema = receipt.get('schema') if isinstance(receipt, dict) else None
+    if schema == RECEIPT_V2 and kind in LINE_SPAN_KINDS:
+        exact(receipt, RECEIPT_V2_FIELDS)
+        import config
+        identifier(receipt['verdict_digest']); text(receipt['verify_engine'])
+        if receipt['verified_mode'] not in config.VERIFIED_MODES:
+            fail('receipt_invalid')
+    elif schema == RECEIPT_V1:
+        exact(receipt, RECEIPT_V1_FIELDS)
+    else:
+        exact(receipt, RECEIPT_V1_FIELDS)
+        fail('receipt_invalid')
+    if receipt['verdict'] != 'verified':
         fail('receipt_invalid')
     identifier(receipt['result_digest'])
     if kind == 'rebound':
         identifier(receipt['prior_trust'])
     elif receipt['prior_trust'] is not None:
         fail('receipt_prior_invalid')
+
+
+def attestation(spec):
+    exact(spec, ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest', 'receipt', 'sources'))
+    identifier(spec['blob_sha']); text(spec['engine_identity']); identifier(spec['policy_digest'])
+    kind = spec['verification_kind']
+    if kind not in ATTESTATION_KINDS:
+        fail('verification_kind_invalid')
+    _receipt(spec['receipt'], kind)
     sources = spec['sources']
     if not isinstance(sources, list) or len(sources) > 64 or (kind == 'rebound' and not sources):
         fail('attestation_sources_invalid')
-    seen = set()
+    seen, line_count = set(), 0
     for source in sources:
         exact(source, ('fingerprint_id', 'spans'))
         identifier(source['fingerprint_id'])
@@ -301,11 +349,32 @@ def attestation(spec):
         spans = source['spans']
         if not isinstance(spans, list) or len(spans) > 256:
             fail('source_spans_invalid')
-        end = 0
+        end, mode, line_keys = 0, None, set()
         for span in spans:
+            line_kind = span.get('kind') if isinstance(span, dict) else None
+            if line_kind in (LEGACY_LINE_SPAN, LINE_SPAN):
+                allowed = ('legacy_verified',) if line_kind == LEGACY_LINE_SPAN else LINE_SPAN_KINDS
+                if kind not in allowed or mode not in (None, line_kind):
+                    fail('source_spans_invalid')
+                import yaml_scalars
+                line_count += 1
+                if line_count > yaml_scalars.MAX_SOURCE_SPANS:
+                    fail('source_spans_invalid')
+                original = {key: value for key, value in span.items() if key != 'kind'}
+                if (yaml_scalars.normalize_source_span(original) != original
+                        or len(spans) > yaml_scalars.MAX_SOURCE_SPANS):
+                    fail('source_spans_invalid')
+                line_key = (original['path'], original['startLine'], original['endLine'])
+                if line_key in line_keys:
+                    fail('source_spans_invalid')
+                line_keys.add(line_key)
+                mode = line_kind
+                continue
+            if mode is not None and mode != 'bytes':
+                fail('source_spans_invalid')
             exact(span, ('start', 'end'))
             start, stop = integer(span['start']), integer(span['end'])
             if start < end or stop <= start:
                 fail('source_spans_invalid')
-            end = stop
+            end, mode = stop, 'bytes'
     return json.loads(canonical(spec))

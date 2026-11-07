@@ -136,7 +136,9 @@ def _child_env():
     keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'QMD_QA_CALL_LEDGER',
             'QMD_QA_CALL_LIMIT', 'QMD_DEVELOPMENT_GUARD_RUN',
             'QMD_DEVELOPMENT_GUARD_NONCE', 'LAYA_QA_SYNC_BARRIER',
-            'MEMVANE_TEST_RUNTIME_ROOT')
+            'MEMVANE_TEST_RUNTIME_ROOT',
+            # The shadow migration kill switch (laya_product_sync_worker).
+            'MEMVANE_SHADOW_MIGRATION')
     env = {key: os.environ[key] for key in keys if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['QMD_RUNTIME_DISPATCH'] = '1'

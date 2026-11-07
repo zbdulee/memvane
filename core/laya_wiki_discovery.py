@@ -610,15 +610,26 @@ class _PendingOverflow(Exception):
         self.count = count
 
 
-def _raw_snapshot(decision, raw, *, coordination=None):
+def _raw_snapshot(decision, raw, *, coordination=None, schema3=False):
     """Scan bounded raw roots without adding raw bodies to Laya membership.
 
     Only names and hashes leave this function. The source port checks every
     path without following symlinks and refuses an unstable file. Its bounded
     4096-file/64-MB scan is off-hook; the source port still checks each path.
+    A schema3 selection opens no v6 database: its view store has no
+    exclusion table, so the scan runs without one.
     """
     from laya_index_a import IndexContractError, LayaIndexA
     from laya_index_source_port import scan_collections
+    if schema3:
+        roots = {name: decision['collectionRoots'][name] for name in raw}
+        try:
+            scan = scan_collections(roots, decision['scopeId'], None,
+                                    max_files=RAW_SCAN_MAX_FILES,
+                                    max_bytes=RAW_SCAN_MAX_BYTES)
+        except IndexContractError as exc:
+            raise DiscoveryBlocked('raw_source_stale') from exc
+        return {file.path: file.sha256 for file in scan.files if file.eligible}
     index = LayaIndexA(decision['dbPath'], **({'coordination': coordination} if coordination is not None else {}))
     try:
         if index.incarnation() != decision['dbIncarnation']:
@@ -693,7 +704,8 @@ def _outcome(state, reason=None, **extra):
     return {'state': state, 'reason': reason, **extra}
 
 
-def drain_after_sync(decision, observed, *, recheck, coordination=None):
+def drain_after_sync(decision, observed, *, recheck, coordination=None, view_generation=None,
+                     raw_snapshot=None):
     """Discover, journal and enqueue changed raw revisions; bounded, one pass.
 
     `recheck` re-proves the selected route and raises on change. Outcomes:
@@ -701,6 +713,11 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None):
     blocked (fail closed; no cursor write, the observed active grants are retired
     with the wake) and retry (transient; keep the wake). Unexpected errors
     propagate, so the runtime dispatcher keeps the wake and its grants.
+    ``view_generation`` is a schema3 selection's view head: it replaces the
+    v6 head and lineage read as the cursor generation, and no v6 component
+    is opened. ``raw_snapshot`` is that pass's own raw scan (the sync's
+    source observation, same roots and bounds); without one the raw roots are
+    scanned here.
     """
     phases = ((observed.get('grants'), observed.get('provisional'))
               if isinstance(observed, dict) else ())
@@ -713,7 +730,8 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None):
         with _locked(lock, WORKER_LOCK_SECONDS):
             try:
                 return _drain_locked(decision, seen_ids, recheck, state_path,
-                                     grants_path, roots, raw, observed.get('engines', {}), coordination)
+                                     grants_path, roots, raw, observed.get('engines', {}), coordination,
+                                     view_generation, raw_snapshot)
             except DiscoveryBlocked:
                 # The dispatcher ACKs a blocked run's wake, so the grants it
                 # observed end here too; a later wake must not inherit them.
@@ -729,16 +747,19 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None):
         return _outcome('blocked', str(exc))
 
 
-def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination):
+def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination,
+                  view_generation=None, raw_snapshot=None):
     # Whether this run starts the cursor; a blocked run raises and writes none.
     starting = not os.path.lexists(state_path)
-    result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination)
+    result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines,
+                         coordination, view_generation, raw_snapshot)
     if starting:
         result['cursorStarted'] = True
     return result
 
 
-def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination):
+def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination,
+                view_generation=None, raw_snapshot=None):
     recheck()
     state = _read(state_path)
     if state is None and os.path.isfile(decision['journalPath']):
@@ -762,9 +783,19 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
                           recorded_engines[grant] == seen_engines.get(grant)), 'unknown')
                for kind in live}
     used = {grant for kind in live for grant in usable[kind]}
-    head, base, _base_rows, _head_rows = _read_view(
-        decision, state['baseGen'] if state is not None else None, coordination=coordination)
-    snapshot = _raw_snapshot(decision, raw, coordination=coordination)
+    if view_generation is None:
+        head, base, _base_rows, _head_rows = _read_view(
+            decision, state['baseGen'] if state is not None else None, coordination=coordination)
+        snapshot = _raw_snapshot(decision, raw, coordination=coordination)
+    else:
+        # schema3: the view store's own epochs order publication; the cursor
+        # only records which head it last saw (a pre-switch v6 id included).
+        if not isinstance(view_generation, str) or not _GENERATION.fullmatch(view_generation):
+            raise DiscoveryBlocked('generation_unproved')
+        head = view_generation
+        base = state['baseGen'] if state is not None else head
+        snapshot = (dict(raw_snapshot) if isinstance(raw_snapshot, dict)
+                    else _raw_snapshot(decision, raw, schema3=True))
     import laya_wiki_backfill as backfill
     # Existing synthetic/noninstalled cursors have no backfill contract. Keep
     # their unchanged/no-pending sync independent of compile configuration.

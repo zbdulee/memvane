@@ -7,8 +7,9 @@
 완료된 index generation 하나를 pin하고 위키 카드만 검색한다. 색인 DB에 게시된
 위키 본문과 해시·세대·범위·명시 제외를 확인하며, 현재 원문 파일이나 pending
 refresh 원장을 다시 읽지 않는다. 원문 변경 뒤 위키 생성·색인 게시가 끝나기
-전에는 마지막 완료본이 검색된다. binding store가 없는 구형 선택 경로는 질의 시
-live scan을 사용한다. 흐름은 [위키 색인과 검색 주입](architecture/flows/03-wiki-index-search.md)에
+전에는 마지막 완료본이 검색된다. 설치 journal이 schema3 reader를 선택한 설치는 v6 색인 대신
+view store의 게시 세대를 같은 규칙으로 pin한다(아래 linked git worktree 절 참고).
+binding store가 없는 구형 선택 경로는 질의 시 live scan을 사용한다. 흐름은 [위키 색인과 검색 주입](architecture/flows/03-wiki-index-search.md)에
 정리돼 있다.
 
 ## 현재 반영 범위
@@ -29,6 +30,7 @@ hook은 wake만 기록한다. off-hook owner(`core/laya_product_sync_worker.py`)
 
 sync가 성공하면(`indexed` 또는 `unchanged`) 같은 worker가 bounded raw 범위를
 스캔해 path/hash 쌍을 비공개 cursor와 비교한다(`core/laya_wiki_discovery.py`).
+schema3 reader가 선택된 설치에서는 sync pass가 같은 상한으로 이미 관측한 raw 범위를 재사용한다.
 raw 본문은 Laya membership·FTS·vector에 들어가지 않는다. 바뀐 revision은
 `wiki_compile_enqueue.enqueue_changed_sources`의 trigger 정책으로 넘기고, 삭제된
 경로는 버리며, 위키만 바뀐 변경은 무시한다. cursor나 grant 상태가 손상되거나
@@ -64,35 +66,60 @@ route record와 selection marker는 추적되지 않는 런타임 파일이라 l
   폴더 이름(`.memvane`·`.auto-context`)은 같은 것으로 보므로, 폴더를 옮기기 전
   브랜치의 worktree도 main checkout의 색인을 공유한다.
 
-`worktree` route의 검색은 main checkout이 마지막으로 게시한 위키 색인을 읽기
-전용으로 쓴다. sync, wiki compile, wiki lifecycle, 학습은 main checkout에서만
-실행되므로, worktree에서만 바뀐 내용은 이 색인에 반영되지 않는다. 조건이 맞지
-않으면 worktree는 자기 cwd 기준 분류를 그대로 따른다.
+`worktree` route의 검색은 main checkout journal이 선택한 reader 형식에 따라 갈린다.
+
+- v6 reader: main checkout이 마지막으로 게시한 위키 색인을 읽기 전용으로 쓴다.
+  worktree hook은 wake를 남기지 않으므로 worktree에서만 바뀐 내용은 이 색인에
+  반영되지 않는다.
+- schema3 reader: 같은 view store 안의 그 worktree 자기 view만 읽는다. 결과는 그
+  worktree checkout에서 게시된 카드뿐이고 main view나 다른 worktree view로
+  폴백하지 않는다. 게시된 head가 없으면(처음 보는 worktree·브랜치) `view_preparing`,
+  읽는 동안 checkout이 두 번 바뀌면 `checkout_changed`로 컨텍스트 없이 끝난다.
+  worktree의 SessionStart, 성공한 편집(`index`), Claude의 성공한 Bash는 main checkout의
+  `laya-sync` wake를 기록한다. main의 sync owner가 main view를 게시한 뒤
+  `git worktree list` 순서로 연결 worktree view를 pass당 최대 16개 등록·게시한다.
+  view binding이 바뀐 worktree는 그 view만 마지막 head로 보류된다. recall은 wake를
+  남기지 않으므로 `git switch` 직후에는 다음 SessionStart나 편집 전까지
+  `view_preparing`이다. 다른 worktree·branch view의 카드 trust는 빌리지 않는다.
+
+두 형식 모두 wiki compile, wiki lifecycle, 학습은 main checkout에서만 실행된다.
+worktree에서만 바뀐 원문은 위키 compile 대상이 되지 않는다. 조건이 맞지 않으면
+worktree는 자기 cwd 기준 분류를 그대로 따른다.
 
 ## 검색 일관성 목표와 후속 설계
 
-다음 항목은 **정책 목표**이며, 구현된 기능이라고 해석하면 안 된다.
+다음 항목은 **정책 목표**다. schema3 reader가 선택된 설치에서 성립하는 부분은 항목마다
+따로 적었다. 적지 않은 부분은 구현된 기능으로 해석하면 안 된다.
 
 - 검색 가시성은 실제 요청을 수행하는 checkout/worktree별 현재 파일 집합을
   따른다. dirty 작업 파일도 허용된 collection 범위라면 그 worktree의 내용으로
-  취급한다. 자동 `git pull`은 하지 않는다.
+  취급한다. 자동 `git pull`은 하지 않는다. schema3: 각 worktree view는 그 checkout의
+  현재 위키 카드 파일(커밋하지 않은 변경 포함)을 sync pass에서 게시한다. 원문 변경은
+  main checkout의 위키 compile을 거쳐야 카드에 반영된다.
 - 콘텐츠 캐시 재사용 키에는 바이트 해시뿐 아니라 파서, 청킹 및 임베딩 모델의
   버전·설정을 포함한다. rename은 새 경로로 교체하되 같은 콘텐츠의 유효한
   파생물은 재사용할 수 있다. 삭제는 해당 view에서만 제외하며 공유 콘텐츠
-  캐시의 GC와 worktree 삭제를 별도 절차로 둔다.
+  캐시의 GC와 worktree 삭제를 별도 절차로 둔다. schema3: chunk·vector set은 카드 blob
+  SHA와 recipe(tokenizer/chunker artifact SHA 포함)·profile(model bytes SHA 포함)로
+  묶이고 view·경로가 달라도 재사용된다. 공유 set의 GC는 없다.
 - 신규·수정 파일은 현재 raw 파일 경로를 먼저 사용할 수 있어야 한다. 임베딩과
   위키 생성은 후속 단계다. **현재 경로는 raw 즉시 검색 fallback이나 새 파일의
   즉시 주입을 구현하지 않는다.** 검색은 게시된 위키 generation만 읽는다.
 - 갱신 중에는 이전 브랜치 결과를 조용히 주입하지 않는다. 한 검색 요청은
   게시된 단일 generation만 사용해야 한다. 준비 중인 generation의 부분 결과를
-  현재 view와 섞지 않는다.
+  현재 view와 섞지 않는다. schema3: 한 recall은 한 view의 게시 세대 하나만 pin하고,
+  게시 head가 없는 view는 다른 view로 폴백하지 않고 `view_preparing`으로 끝난다.
+  게시된 세대가 현재 checkout보다 뒤처질 수 있으며, 결과는 그 view의 마지막 게시본이다.
 - main 공유 위키는 현재 checkout과 모든 관련 원문 의존성이 일치할 때만
   재사용한다. 기존 파일의 해시가 같아도 파일 추가·삭제로 전체 의존 집합이
-  바뀌면 무효화한다.
+  바뀌면 무효화한다. schema3: 다른 view의 카드 trust는 같은 blob이라도 빌리지 않는다.
+  의존 집합 전체를 대조하는 판정은 없다.
 - 읽기 실패, 권한 거부, 일시적 I/O 오류는 파일 삭제의 증거가 아니다. 해당
   경로의 이전 view를 유지하고 오류를 드러낸 뒤 재시도한다. 읽을 수 있는
-  collection 스캔에서 파일 부재가 확인되면 현재 view에서 제외한다.
+  collection 스캔에서 파일 부재가 확인되면 현재 view에서 제외한다. schema3: sync는
+  대량 삭제를 `schema3_mass_removal_held`로 보류하고, raw 관측이 상한을 넘거나 실패하면
+  manifest `sources`를 비운 채 위키 게시를 계속한다.
 
-checkout별 게시 generation, 콘텐츠 캐시 키/GC, 공유 위키의 완전한 의존성
-판정은 별도 구현·회귀 검증이 필요하다. 현재 MemVane 색인 및 recall 경로가 이
-계약을 이미 만족한다고 주장하지 않는다.
+schema3 reader 설치는 checkout별 게시 세대와 content set 재사용 키를 가진다. 공유
+set GC, raw 즉시 검색, 공유 위키의 완전한 의존성 판정은 구현돼 있지 않다. v6 reader
+설치의 MemVane 색인 및 recall 경로가 이 계약을 만족한다고 주장하지 않는다.

@@ -62,6 +62,170 @@ def coverage_digest(spec_value, rows):
                              'members': [[row[k] for k in REF_FIELDS] for row in rows]})
 
 
+# The installed provider's view vector identity (decision K5). The recipe and
+# profile are derived from the install's reviewed provider manifest and route
+# vector profile only, so the migration copy, the sync fill and the reader all
+# name the same content-addressed IDs. The recipe is the QMD regex/token chunk
+# recipe the v6 provider embeds with (900/135/200 tokens), and the tokenizer is
+# the model's own. A document the provider keeps on its first chunking pass
+# (``qmd_first_pass``) has those chunks; a document the provider re-splits
+# over its token window (no reproducible text here) has the fallback windows
+# ``qmd_first_pass(body, *FALLBACK_CHARS)``, each embedded alone. Whether the
+# provider re-splits is decided by the token count of the recipe's tokenizer,
+# so the chunk set is a function of (body, tokenizer). The chunker identity
+# commits the embedding fingerprint (provider bytes and chunk recipe text)
+# and that fallback rule.
+PROVIDER_CHUNK_RECIPE = 'qmd-regex-token-chunks-candidate-v1'
+QMD_CHUNK_TOKENS = (900, 135, 200)
+FALLBACK_CHARS = (600, 90, 135)  # max/overlap/window UTF-16 code units
+
+
+def chunker_sha(embedding_fingerprint):
+    max_chars, overlap, window = FALLBACK_CHARS
+    return v.digest('memvane-provider-chunker-v1', {
+        'embedding_fingerprint': v.identifier(embedding_fingerprint),
+        'resplit_fallback': {'rule': 'qmd-first-pass', 'max_chars': max_chars, 'overlap_chars': overlap,
+                             'window_chars': window, 'unit': 'utf16-code-unit'}})
+
+
+def provider_specs(manifest, vector_profile):
+    """``(recipe spec, profile spec)`` of the install provider, or None.
+
+    None when the manifest is not the QMD chunk recipe or a field is not the
+    shape the candidate store accepts; the view then stays lexical.
+    """
+    try:
+        if (manifest.get('recipeId') != PROVIDER_CHUNK_RECIPE
+                or vector_profile.get('metric') != 'cosine'):
+            return None
+        window, overlap, search = QMD_CHUNK_TOKENS
+        recipe = v.recipe({
+            'input_recipe': 'blob-input-v1', 'tokenizer_sha': manifest['modelSha256'],
+            'chunker_sha': chunker_sha(vector_profile['embeddingFingerprint']), 'window_tokens': window,
+            'overlap_tokens': overlap, 'window_search_tokens': search,
+            'offset_unit': 'utf16-code-unit', 'heading_rule': 'qmd-markdown-v1',
+            'document_template': 'title: {title} | text: {text}', 'synthetic_path': 'blobs/{blob_sha}.md'})
+        profile = v.profile({
+            'model_id': vector_profile['modelId'], 'model_sha': manifest['modelSha256'],
+            'embedding_fingerprint': vector_profile['embeddingFingerprint'],
+            'dimension': vector_profile['dimension'], 'metric': 'cosine',
+            'document_input_recipe': 'blob-input-v1', 'query_input_recipe': 'qmd-query-v1',
+            'query_template': 'task: search result | query: {text}'})
+    except (AttributeError, KeyError, TypeError, BlobStoreError):
+        return None
+    if profile['dimension'] > MAX_DIMENSION:
+        return None
+    return recipe, profile
+
+
+def provider_spec(manifest, vector_profile):
+    """The ``{recipe_id, profile_id}`` vector spec of the install provider, or None (no write)."""
+    specs = provider_specs(manifest, vector_profile)
+    if specs is None:
+        return None
+    return {'recipe_id': v.digest('memvane-chunk-recipe-v1', specs[0]),
+            'profile_id': v.digest('memvane-vector-profile-v1', specs[1])}
+
+
+def register_provider_spec(store, manifest, vector_profile):
+    """Register the install provider's recipe/profile in a writable store; returns the spec or None."""
+    specs = provider_specs(manifest, vector_profile)
+    if specs is None:
+        return None
+    value = {'recipe_id': store.register_recipe(specs[0]), 'profile_id': store.register_profile(specs[1])}
+    if value != provider_spec(manifest, vector_profile):
+        v.fail('vector_spec_mismatch')
+    return value
+
+
+# The provider's first chunking pass (laya_qmd_chunking.mjs ``chunkDocument``
+# with the token chunker's 3-chars-per-token sizes), in UTF-16 code units. It
+# needs no tokenizer; the provider then re-splits only a part over 900 model
+# tokens, which this side cannot reproduce, so the caller compares the
+# provider's chunk positions with these and gives a re-split document the
+# recipe's fallback windows (``FALLBACK_CHARS``, same break rules).
+_QMD_WS = '\t\n\v\f\r    -     　﻿'
+_QMD_BREAKS = ((r'\n#(?!#)', 100), (r'\n##(?!#)', 90), (r'\n###(?!#)', 80), (r'\n####(?!#)', 70),
+               (r'\n#####(?!#)', 60), (r'\n######(?!#)', 50), (r'\n```', 80),
+               (r'\n(?:---|\*\*\*|___)[' + _QMD_WS + r']*\n', 60), (r'\n\n+', 20),
+               (r'\n[-*][' + _QMD_WS + r']', 5), (r'\n[0-9]+\.[' + _QMD_WS + r']', 5), (r'\n', 1))
+
+
+def _utf16_offsets(text):
+    """Code point index -> UTF-16 offset (length len(text)+1)."""
+    out, unit = [0], 0
+    for char in text:
+        unit += 2 if ord(char) > 0xFFFF else 1
+        out.append(unit)
+    return out
+
+
+def qmd_first_pass(body, max_chars=2700, overlap_chars=405, window_chars=600):
+    """``[(utf16 position, text)]`` of the provider's first chunking pass."""
+    import re
+    offsets = _utf16_offsets(body)
+    length = offsets[-1]
+    if length <= max_chars:
+        return [(0, body)]
+    index = {unit: i for i, unit in enumerate(offsets)}
+    seen = {}
+    for pattern, score in _QMD_BREAKS:
+        for match in re.finditer(pattern, body):
+            pos = offsets[match.start()]
+            if pos not in seen or score > seen[pos]:
+                seen[pos] = score
+    points = sorted(seen.items())
+    fences, start = [], None
+    for match in re.finditer(r'\n```', body):
+        if start is None:
+            start = offsets[match.start()]
+        else:
+            fences.append((start, offsets[match.start()] + 4))
+            start = None
+    if start is not None:
+        fences.append((start, length))
+
+    def cutoff(target):
+        best_score, best = -1, target
+        for pos, score in points:
+            if pos < target - window_chars:
+                continue
+            if pos > target:
+                break
+            if any(lo < pos < hi for lo, hi in fences):
+                continue
+            distance = (target - pos) / window_chars
+            value = score * (1 - distance * distance * 0.7)
+            if value > best_score:
+                best_score, best = value, pos
+        return best
+
+    def boundary(pos, floor):
+        # A position inside a surrogate pair is not a code point boundary.
+        if pos in index:
+            return pos
+        return pos - 1 if pos - 1 > floor else pos + 1
+    chunks, pos = [], 0
+    while pos < length:
+        target = min(pos + max_chars, length)
+        end = target
+        if end < length:
+            cut = cutoff(target)
+            if pos < cut <= target:
+                end = cut
+        if end <= pos:
+            end = min(pos + max_chars, length)
+        end = boundary(end, pos)
+        chunks.append((pos, body[index[pos]:index[end]]))
+        if end >= length:
+            break
+        following = end - overlap_chars
+        if following <= pos:
+            following = end
+        pos = boundary(following, pos)
+    return chunks
+
+
 def options(limit, work, seconds, prefixes, exclusions):
     """Public exact/hybrid bounds, validated before any pin or SQL use."""
     if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
@@ -208,7 +372,7 @@ class VectorMixin:
         self._observe(entry,deadline=deadline,timeout_reason=DEADLINE_EXCEEDED)
         _left(deadline)
         with self._reading(deadline) as db:
-            generation, seal, original, stage = self._read_generation(db, pin.gen_id, entry['handle'], deadline)
+            generation, seal, original, stage = self._read_pinned(db, pin, deadline)
             if generation['state'] != 'published' or v.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
                 v.fail('view_pin_changed')
             sealed = stage['vector_spec']
@@ -265,7 +429,8 @@ class VectorMixin:
             v.identifier(profile_id)
         query = None if query_vector is None else query_values(query_vector)
         # The pinned record keeps the spec of the verified sealed stage; search
-        # below re-verifies that seal, and exact re-verifies everything again.
+        # below checks that seal, and both reads re-verify the generation after
+        # any commit to the store (_read_pinned).
         sealed = self._pinned(pin)['vector']
         if sealed is not None:
             if profile_id is not None and profile_id != sealed['profile_id']:

@@ -8,6 +8,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sqlite3
+import time
 import unittest
 from unittest import mock
 
@@ -61,6 +62,56 @@ class GenerationCase(helpers.BlobStoreCase):
 
 
 class GenerationChecks(GenerationCase):
+    def test_prepare_deadline_rolls_back_fts_slot_and_can_retry(self):
+        store,_,handle=self.seeded()
+        manifest=self.snapshot(store,handle)
+        head=store.head(handle)
+        calls=[]
+        def slow_capture(*args, **kwargs):
+            calls.append(True)
+            time.sleep(1.1)
+        with mock.patch.object(self.views, '_current_capture', side_effect=slow_capture):
+            with self.assertRaisesRegex(Exception, 'fts_deadline_exceeded'):
+                store.prepare_generation(handle,manifest,expected_head=head,
+                                         deadline=time.monotonic()+1.0)
+        self.assertTrue(calls)
+        self.assertEqual(store._db.execute('SELECT count(*) FROM generation_slots').fetchone()[0],0)
+        self.assertEqual(store.head(handle),head)
+        generation=store.prepare_generation(handle,manifest,expected_head=head)
+        self.assertIsNotNone(generation)
+
+    def test_cached_capture_never_accepts_a_different_forged_admission(self):
+        store,_,h=self.seeded()
+        first=self.snapshot(store,h)['members'][0]['blob_sha']
+        card=self.root/'.memvane/wiki/cards/b.md'
+        card.write_text('# Second\nsynthetic second card\n',encoding='utf8')
+        second=store.ingest_card(h.worktree_id,'cards/b.md')
+        with sqlite3.connect(self.db) as db:
+            trigger=db.execute("SELECT sql FROM sqlite_master WHERE name='blob_admissions_update'").fetchone()[0]
+            row=db.execute('SELECT proof_json FROM blob_admissions WHERE blob_sha=?',(second,)).fetchone()
+            proof=json.loads(row[0]);proof['capture']['checkoutDigest']='0'*64
+            db.execute('DROP TRIGGER blob_admissions_update')
+            db.execute('UPDATE blob_admissions SET proof_json=?,proof_digest=? WHERE blob_sha=?',
+                (self.views.v.canonical(proof),self.views.v.digest('memvane-wiki-admission-v1',proof),second))
+            db.execute(trigger)
+        cache={'blobs':set(),'worktrees':{},'captures':set(),'fingerprints':{}}
+        with store._session():
+            store._blob(first,cache=cache)
+            with self.assertRaisesRegex(Exception,'blob_admission_invalid'):
+                store._blob(second,cache=cache)
+
+    def test_final_capture_deadline_is_not_reported_as_checkout_change(self):
+        checkout=self.views.checkout
+        def bounded_match(*args, **kwargs):
+            if kwargs.get('_raise_timeout'):
+                raise checkout.CheckoutUnavailable('checkout_budget_exhausted')
+            return False
+        with mock.patch.object(self.views, '_worktree_record', return_value={}), \
+             mock.patch.object(self.views, '_worktree_row', return_value=({}, {'capture':'expected'})), \
+             mock.patch.object(checkout, 'capture_matches', side_effect=bounded_match):
+            with self.assertRaisesRegex(checkout.CheckoutUnavailable, 'checkout_budget_exhausted'):
+                self.views._current_capture({'project_root':'synthetic'}, {}, {}, 'expected', deadline=1)
+
     def test_01_prepare_seals_full_binding_before_atomic_publish(self):
         store,_,h=self.seeded();before=store.head(h)
         self.assertEqual((before['gen_id'],before['epoch'],before['view_id']),(None,0,h.view_id))
@@ -154,7 +205,7 @@ class GenerationChecks(GenerationCase):
 
     def test_10_settings_change_invalidates_original_prepared_handle(self):
         store,_,h=self.seeded();gen,base=self.prepared(store,h)
-        p=self.root/'.memvane/settings.json';p.write_text(json.dumps(dict(helpers.SETTINGS,skipPaths=['notes'])))
+        p=self.root/'.memvane/settings.json';p.write_text(json.dumps(dict(helpers.SETTINGS,name='renamed')))
         self.refused(store.publish_generation,h,gen,expected_head=base)
         self.assertEqual(store._db.execute('SELECT COUNT(*) FROM view_heads').fetchone()[0],0)
 
@@ -173,7 +224,9 @@ class GenerationChecks(GenerationCase):
         self.refused(store.publish_generation,h,a,expected_head=base)
         with sqlite3.connect(self.db) as db:
             db.execute('UPDATE view_heads SET gen_id=?,epoch=? WHERE view_id=?',(first,second['epoch']+1,h.view_id))
-        self.assertEqual(store.head(h)['gen_id'],first)
+        # Trigger-legal ABA back to an older published generation is not the
+        # view's highest published ordinal, so the head itself is refused.
+        self.assertEqual(self.refused(store.head,h).reason,'view_head_invalid')
         self.refused(store.publish_generation,h,a,expected_head=base)
 
     def pair(self,name):
@@ -212,6 +265,18 @@ class GenerationChecks(GenerationCase):
         fresh=store.capture_view(h.worktree_id)
         self.assertNotEqual(fresh.view_id,h.view_id)
         self.assertIsNone(store.head(fresh)['gen_id'])
+
+    def test_publish_reproves_git_even_when_fast_observation_is_stale(self):
+        root = self.project('stale-git-cache')
+        for args in [('init', '-q'), ('add', '-A'), ('commit', '-q', '-m', 'fixture')]:
+            self.git(root, *args)
+        store, _, handle = self.seeded(root)
+        generation, base = self.prepared(store, handle, self.snapshot(store, handle, root=root))
+        prior_facts = copy.deepcopy(store._handles[handle.token]['capture']['evidence'])
+        self.git(root, 'commit', '--allow-empty', '-q', '-m', 'later')
+        with mock.patch.object(self.views.checkout, '_capture_facts', return_value=prior_facts):
+            self.refused(store.publish_generation, handle, generation, expected_head=base)
+        self.assertIsNone(store.head(store.capture_view(handle.worktree_id))['gen_id'])
 
     def test_16_seal_fault_leaves_staging_unpublished_and_old_head_unchanged(self):
         store,_,h=self.seeded();first,base=self.prepared(store,h)
@@ -282,14 +347,12 @@ class GenerationChecks(GenerationCase):
     def test_22_tampered_postings_between_build_and_seal_are_rejected(self):
         store,_,h=self.seeded();m=self.snapshot(store,h);base=store.head(h)
         original=store._observe;observed=[]
-        def observe(entry):
-            saved=original(entry);observed.append(True)
+        def observe(entry, **kwargs):
+            saved=original(entry, **kwargs);observed.append(True)
             if len(observed)==3:
                 with sqlite3.connect(self.db) as db:
                     ordinal=db.execute('SELECT MAX(ordinal) FROM generation_slots').fetchone()[0]
-                    name='wiki_fts_'+str(ordinal)+'_data'
-                    row=db.execute('SELECT id,block FROM '+name+' ORDER BY id DESC LIMIT 1').fetchone()
-                    db.execute('UPDATE '+name+' SET block=? WHERE id=?',(row[1][:-1]+bytes([row[1][-1]^1]),row[0]))
+                helpers.corrupt_fts_block(self.db,ordinal)
             return saved
         with mock.patch.object(store,'_observe',side_effect=observe):
             self.refused(store.prepare_generation,h,m,expected_head=base)

@@ -204,7 +204,7 @@ def _process_leased(queue, claim, recover, run):
         result = run(job, token)
     except ReaderWindowBusy as exc:
         if getattr(exc, 'rollback_pending', False) or str(exc) not in ('reader_write_deadline', 'reader_publish_busy',
-                            'reader_mutation_busy', 'reader_lifetime_busy'):
+                            'reader_mutation_busy', 'reader_lifetime_busy', 'reader_physical_busy'):
             raise
         result = 'deferred'
     except (IndexContractError, sqlite3.Error, OSError):

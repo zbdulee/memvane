@@ -232,7 +232,7 @@ class ReaderChecks(helpers.GenerationCase):
         def trace(sql):
             if ' MATCH ' in sql and not changed:
                 changed.append(True)
-                (self.root/'.memvane/settings.json').write_text(json.dumps(dict(helpers.helpers.SETTINGS,skipPaths=['notes'])))
+                (self.root/'.memvane/settings.json').write_text(json.dumps(dict(helpers.helpers.SETTINGS,name='renamed')))
         store._db.set_trace_callback(trace)
         try:self.refused(store.search,pin,'hello',10)
         finally:store._db.set_trace_callback(None)
@@ -254,11 +254,7 @@ class ReaderChecks(helpers.GenerationCase):
     def test_11_physical_tamper_is_rejected_before_match_compilation(self):
         store,_,h,gen=self.published();pin=store.pin_view(h)
         ordinal=store._db.execute('SELECT ordinal FROM generations WHERE gen_id=?',(gen,)).fetchone()[0]
-        name='wiki_fts_'+str(ordinal)
-        with sqlite3.connect(self.db) as db:
-            row=db.execute('SELECT id,block FROM '+name+'_data ORDER BY id DESC LIMIT 1').fetchone()
-            self.assertTrue(row[1]);raw=row[1]
-            db.execute('UPDATE '+name+'_data SET block=? WHERE id=?',(raw[:-1]+bytes([raw[-1]^1]),row[0]))
+        helpers.helpers.corrupt_fts_block(self.db,ordinal)
         matched=[];original=store._fts_guard._authorize
         def auth(action,a,b,d,t):
             if action==sqlite3.SQLITE_FUNCTION and str(b).lower()=='match':matched.append(True)
@@ -338,7 +334,8 @@ class ReaderChecks(helpers.GenerationCase):
         with mock.patch.object(store,'_blob',wraps=store._blob) as blobs, mock.patch.object(store,'_attestation',wraps=store._attestation) as attestations:
             self.assertEqual(len(store.search(pin,'wiki',1)),1)
         self.assertLessEqual(blobs.call_count,4)
-        self.assertEqual(attestations.call_count,1)
+        # The pin verified the generation; an unchanged store reuses it (test_25).
+        self.assertLessEqual(attestations.call_count,1)
 
     def test_17_validation_cache_does_not_outlive_the_read_snapshot(self):
         store,_,h,_=self.published();pin=store.pin_view(h)
@@ -359,6 +356,164 @@ class ReaderChecks(helpers.GenerationCase):
                     self.assertEqual(error.reason,'invalid_relative_path')
         self.assertEqual(len(store.search(pin,'hello',1)),1)
         self.assertEqual(store.search(pin,'hello',1,path_prefixes=['한글']),[])
+
+    # Read-trust contract (U9). These hold under today's whole-generation
+    # re-derivation and must keep holding if the query path is narrowed to
+    # head CAS + seal/slot binding + served-row blob hashes (decision K3).
+    def tamper(self,path,trigger,sql,args=()):
+        db=sqlite3.connect(path)
+        try:
+            ddl=db.execute('SELECT sql FROM sqlite_master WHERE name=?',(trigger,)).fetchone()[0]
+            db.execute('DROP TRIGGER '+trigger);db.execute(sql,args);db.execute(ddl);db.commit()
+        finally:db.close()
+
+    def published_pair(self,name):
+        root=self.project(name);store,repository,h=self.seeded(root)
+        m=self.snapshot(store,h,root=root,body=b'# Alpha\nhello served snapshot\n')
+        p=root/'.memvane/wiki/cards/quiet.md';p.write_bytes(b'# Quiet\nunrelated unserved card\n')
+        blob=store.ingest_card(h.worktree_id,'cards/quiet.md')
+        m['members'].append(dict(m['members'][0],path='cards/quiet.md',blob_sha=blob,display_title='Quiet',
+            trust_digest=store.put_attestation(dict(store.attestation(m['members'][0]['trust_digest']),blob_sha=blob))))
+        gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
+        return store,repository,h,gen,{x['path']:x['blob_sha'] for x in m['members']}
+
+    def never_served(self,store,pin,text):
+        try:rows=store.search(pin,'hello',10)
+        except self.Error as exc:return exc.reason
+        self.assertNotIn(text,[r['body'] for r in rows])
+        return None
+
+    def test_19_tampered_served_blob_bytes_are_excluded_or_refused(self):
+        store,_,h,_,blobs=self.published_pair('served-blob');pin=store.pin_view(h)
+        self.assertEqual([r['path'] for r in store.search(pin,'hello',10)],['cards/a.md'])
+        self.tamper(store._path,'wiki_blobs_update','UPDATE wiki_blobs SET body=? WHERE blob_sha=?',
+                    ('# Alpha\nhello FORGED snapshot\n',blobs['cards/a.md']))
+        # Narrowed scope (K3): the served-row blob hash check.
+        reason=self.never_served(store,pin,'# Alpha\nhello FORGED snapshot\n')
+        self.assertIn(reason,(None,'blob_conflict'))
+        self.assertEqual(self.refused(store.verify_views).reason,'blob_conflict')
+
+    def test_20_unserved_blob_tamper_is_caught_by_verify_views(self):
+        store,_,h,_,blobs=self.published_pair('unserved-blob');pin=store.pin_view(h)
+        self.assertIs(store.verify_views(),True)
+        self.tamper(store._path,'wiki_blobs_update','UPDATE wiki_blobs SET body=? WHERE blob_sha=?',
+                    ('# Quiet\nunrelated FORGED!! card\n',blobs['cards/quiet.md']))
+        # The query may refuse (whole re-derivation) or serve only the intact
+        # row (narrowed scope); it never serves the tampered bytes.
+        self.never_served(store,pin,'# Quiet\nunrelated FORGED!! card\n')
+        self.assertEqual(self.refused(store.verify_views).reason,'blob_conflict')
+
+    def test_21_seal_slot_and_binding_digest_mismatch_refuse(self):
+        # Narrowed scope (K3) keeps each refusal: seal-binding fails _head's seal
+        # JOIN; seal-fts-storage changes the recomputed binding over seal roots;
+        # slot-manifest needs the parsed stage's manifest_digest vs the slot row.
+        cases=[('seal-binding','generation_seals_update',
+                'UPDATE generation_seals SET binding_digest=? WHERE gen_id=?'),
+               ('slot-manifest','generation_slots_update',
+                'UPDATE generation_slots SET manifest_digest=? WHERE ordinal=(SELECT ordinal FROM generations WHERE gen_id=?)'),
+               ('seal-fts-storage','generation_seals_update',
+                'UPDATE generation_seals SET fts_storage_digest=? WHERE gen_id=?')]
+        for name,trigger,sql in cases:
+            with self.subTest(case=name):
+                store,_,h,gen,_=self.published_pair(name);pin=store.pin_view(h)
+                self.tamper(store._path,trigger,sql,('f'*64,gen))
+                self.refused(store.search,pin,'hello',1)
+                self.refused(store.pin_view,h)
+                self.refused(store.verify_views)
+
+    def test_22_head_pointing_at_another_view_generation_is_refused(self):
+        store,main,linked,a,b=self.pair('foreign-head')
+        ga,ea=self.prepared(store,a,self.snapshot(store,a,root=main));store.publish_generation(a,ga,expected_head=ea)
+        gb,eb=self.prepared(store,b,self.snapshot(store,b,root=linked));store.publish_generation(b,gb,expected_head=eb)
+        # Narrowed scope (K3): head CAS check of generations.view_id.
+        self.tamper(store._path,'view_head_update','UPDATE view_heads SET gen_id=? WHERE view_id=?',(ga,b.view_id))
+        self.assertEqual(self.refused(store.pin_view,b).reason,'view_head_invalid')
+        self.refused(store.verify_views)
+
+    def test_23_head_epoch_regression_within_one_reader_is_refused(self):
+        # _head requires the view's highest published ordinal, so a same-UID
+        # rollback of view_heads behind the update trigger is refused in-store.
+        # The journal endpoint record adds a cross-process epoch floor.
+        store,_,h,first=self.published()
+        m=self.snapshot(store,h,scan_id='2'*32,body=b'# Beta\nhello replacement snapshot\n')
+        gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
+        pin=store.pin_view(h);self.assertEqual((pin.gen_id,pin.epoch),(gen,2));store.release(pin)
+        self.tamper(store._path,'view_head_update','UPDATE view_heads SET gen_id=?,epoch=1 WHERE view_id=?',
+                    (first,h.view_id))
+        self.assertEqual(self.refused(store.pin_view,h).reason,'view_head_invalid')
+
+    def test_24_other_incarnation_and_replaced_database_file_refuse(self):
+        # Narrowed scope (K3): the _session boundary (_header incarnation, _db_file identity).
+        store,_,h,_,_=self.published_pair('incarnation');pin=store.pin_view(h)
+        self.tamper(store._path,'store_meta_update','UPDATE store_meta SET incarnation=?',('0'*32,))
+        self.assertEqual(self.refused(store.search,pin,'hello',1).reason,'candidate_binding_changed')
+        self.assertEqual(self.refused(store.pin_view,h).reason,'candidate_binding_changed')
+        store,_,h,_,_=self.published_pair('replaced');pin=store.pin_view(h)
+        copy_path=store._path.with_name(store._path.name+'.copy')
+        source=sqlite3.connect(store._path);target=sqlite3.connect(copy_path)
+        try:source.backup(target)
+        finally:target.close();source.close()
+        copy_path.chmod(0o600);os.replace(copy_path,store._path)
+        self.assertEqual(self.refused(store.search,pin,'hello',1).reason,'candidate_file_changed')
+        self.assertEqual(self.refused(store.pin_view,h).reason,'candidate_file_changed')
+
+    def test_25_pinned_reads_reuse_verification_until_any_commit(self):
+        store,_,h,gen=self.published()
+        with mock.patch.object(store,'_verify_generation',wraps=store._verify_generation) as verified:
+            pin=store.pin_view(h)
+            for _ in range(3):
+                self.assertEqual(len(store.search(pin,'hello',1)),1)
+            self.assertEqual(verified.call_count,1)
+            # Any commit by another connection re-verifies, even one that changes no value.
+            self.tamper(store._path,'generation_seals_update',
+                        'UPDATE generation_seals SET eligible_count=eligible_count WHERE gen_id=?',(gen,))
+            self.assertEqual(len(store.search(pin,'hello',1)),1)
+            self.assertEqual(verified.call_count,2)
+            self.assertEqual(len(store.search(pin,'hello',1)),1)
+            self.assertEqual(verified.call_count,2)
+            # A second pin verifies on its own; releasing one keeps the other's reuse.
+            other=store.pin_view(h);store.release(pin)
+            self.assertEqual(verified.call_count,3)
+            self.assertEqual(len(store.search(other,'hello',1)),1)
+            self.assertEqual(verified.call_count,3)
+
+    def test_26_compiled_line_spans_locate_like_legacy(self):
+        store,_,h=self.seeded()
+        m=self.snapshot(store,h,body=b'# Alpha\nhello compiled snapshot\n')
+        fp=store.fingerprint(m['sources'][0]['fingerprint_id'])
+        span=lambda start,end:dict(kind='lines-v1',path=fp['path'],sourceSha256=fp['source_sha'],
+                                   startLine=start,endLine=end,spanSha256='d'*64)
+        member=m['members'][0]
+        member['trust_digest']=store.put_attestation(dict(blob_sha=member['blob_sha'],
+            verification_kind='compiled',engine_identity='synthetic:codex',policy_digest=h.policy_digest,
+            receipt=dict(schema='memvane-card-evidence-v2',verdict='verified',result_digest='e'*64,
+                         prior_trust=None,verdict_digest='f'*64,verified_mode='cross-engine',
+                         verify_engine='claude'),
+            sources=[dict(fingerprint_id=m['sources'][0]['fingerprint_id'],spans=[span(7,7),span(3,5)])]))
+        gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
+        pin=store.pin_view(h)
+        self.assertEqual([row['path'] for row in store.search(pin,'hello',10)],['cards/a.md'])
+        # Same locator format and order as legacy-lines-v1 spans.
+        self.assertEqual(store.card_locations(pin,['cards/a.md','cards/absent.md']),
+                         {'cards/a.md':['notes/src.md#L3-L5','notes/src.md#L7-L7']})
+
+    def test_27_span_kinds_without_a_line_locator_still_refuse(self):
+        store,_,h,_=self.published();pin=store.pin_view(h)
+        # The default compiled card carries byte spans: no line locator exists.
+        self.assertEqual(self.refused(store.card_locations,pin,['cards/a.md']).reason,
+                         'legacy_card_trust_invalid')
+        reader=sys.modules['laya_view_reader']
+        db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE card_sources(gen_id,wiki_path,ordinal,spans_json)')
+        for ordinal,kind in enumerate(('lines-v2',None,'')):
+            value=dict(kind=kind,path='notes/src.md',sourceSha256='a'*64,startLine=1,endLine=1,spanSha256='d'*64)
+            db.execute('DELETE FROM card_sources')
+            db.execute('INSERT INTO card_sources VALUES(?,?,?,?)',('g','cards/a.md',ordinal,
+                       sys.modules['laya_blob_values'].canonical([value])))
+            with self.subTest(kind=kind):
+                self.assertEqual(self.refused(reader._card_locations,db,'g',['cards/a.md']).reason,
+                                 'legacy_card_trust_invalid')
 
 
 if __name__=='__main__':unittest.main()

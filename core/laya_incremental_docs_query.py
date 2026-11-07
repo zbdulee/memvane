@@ -65,6 +65,40 @@ def _exclusions(db, scope):
             frozenset(value for kind, value in rows if kind == 'hash'))
 
 
+def _lexical_plan(prompt, patterns, *, probe, search, deadline):
+    """Run the shared sidecar term selection and bounded lexical lookups."""
+    from keywords import build_lexical_terms, select_general_terms_explained
+    from laya_host_response import _fts_atom
+    built = build_lexical_terms(prompt, list(patterns))
+    general = built['generalTerms']
+    probe_deadline = min(deadline, time.monotonic() + 1.0)
+    present, probe_matches, probe_complete = set(), [], True
+    for term in general[:6]:
+        atom = _fts_atom(term)
+        if not atom:
+            continue
+        if time.monotonic() >= probe_deadline:
+            probe_complete = False
+            break
+        try:
+            found = probe(atom)
+        except sqlite3.OperationalError as exc:
+            raise IndexContractError('preview_probe_unavailable') from exc
+        if found is not None:
+            present.add(term.lower())
+            probe_matches.append(found)
+    if not probe_complete:
+        present = None
+    selected, mode = select_general_terms_explained(general, present)
+    lexical_paths = []
+    for position, query in enumerate([' '.join(selected), *built['epTerms']]):
+        _check_deadline(deadline)
+        fts = ' AND '.join(atom for term in query.split() if (atom := _fts_atom(term)))
+        if fts:
+            lexical_paths.append((position, search(fts)))
+    return built, present, selected, mode, probe_matches, probe_complete, lexical_paths
+
+
 def query_incremental(prompt: str, decision: dict, proof: dict, provider):
     """Return verified wiki rows, or [] when no document has been published.
 
@@ -76,8 +110,14 @@ def query_incremental(prompt: str, decision: dict, proof: dict, provider):
 
 
 def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provider,
-                               *, base, side, deadline: float, _semantic_status=None):
-    """Query caller-owned pinned readers; the caller proves their shared view."""
+                               *, base, side, deadline: float, _semantic_status=None,
+                               _lexical=None):
+    """Query caller-owned pinned readers; the caller proves their shared view.
+
+    ``_lexical`` (migration parity only) answers the sidecar FTS probe and
+    search with another store's ``probe(atom)``/``search(fts)``; every other
+    step, including row proof and trust, still reads these pinned readers.
+    """
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or deadline <= time.monotonic()):
         _fail('preview_query_deadline_exceeded')
@@ -90,7 +130,8 @@ def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provide
         return [], frozenset(), {}, (), None
     result = _query_incremental(prompt, decision, proof, provider,
                                 pinned_base=base, pinned_side=side, deadline=deadline,
-                                semantic_status=[] if _semantic_status is None else _semantic_status)
+                                semantic_status=[] if _semantic_status is None else _semantic_status,
+                                lexical=_lexical)
     from laya_journal_reader import _sidecar_document_snapshot
     for row in result[0]:
         # Semantic scoring validates each active chunk set before use. Row
@@ -103,12 +144,11 @@ def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provide
 
 
 def _query_incremental(prompt, decision, proof, provider, *, pinned_base=None,
-                       pinned_side=None, deadline=None, semantic_status=None):
-    from laya_host_response import (_PROVIDER_RESULT_KEYS, _fts_atom,
+                       pinned_side=None, deadline=None, semantic_status=None, lexical=None):
+    from laya_host_response import (_PROVIDER_RESULT_KEYS,
                                     _v2_body_evidence,
                                     _verified_wiki_row, _fuse_verified_lists,
                                     _promote_exact_ep)
-    from keywords import build_lexical_terms, select_general_terms_explained
     from laya_incremental_docs import FILE, SCHEMA
     from laya_index_host_route import wiki_index_roots
     from laya_index_source_port import auxiliary_wiki_row
@@ -225,52 +265,23 @@ def _query_incremental(prompt, decision, proof, provider, *, pinned_base=None,
                                     separators=(',', ':'))
             if len(paths_json.encode('utf-8')) > 8_000_000:
                 _fail('preview_document_paths_too_large')
-            built = build_lexical_terms(prompt,
-                                       list(decision['recallSettings']['lexicalPatterns']))
-            general = built['generalTerms']
-            # Match the selected path's six-term presence probe and body gate.
-            # An interrupted or incomplete probe never licenses body injection.
-            probe_deadline = min(deadline, time.monotonic() + 1.0)
-            present = set()
-            probe_matches = []
-            probe_complete = True
-            for term in general[:6]:
-                atom = _fts_atom(term)
-                if not atom:
-                    continue
-                if time.monotonic() >= probe_deadline:
-                    probe_complete = False
-                    break
-                try:
-                    found = side.execute('SELECT d.path FROM docs_fts f '
-                        'JOIN docs d ON d.rowid=f.rowid '
-                        'WHERE docs_fts MATCH ? AND d.path IN '
-                        '(SELECT value FROM json_each(?)) LIMIT 1',
-                        (atom, paths_json)).fetchone()
-                except sqlite3.OperationalError as exc:
-                    raise IndexContractError('preview_probe_unavailable') from exc
-                if found is not None:
-                    present.add(term.lower())
-                    probe_matches.append(found[0])
-            if not probe_complete:
-                present = None
-            selected, mode = select_general_terms_explained(general, present)
-            queries = [' '.join(selected), *built['epTerms']]
-            lexical_paths = []
-            for position, query in enumerate(queries):
-                _check_deadline(deadline)
-                fts = ' AND '.join(atom for term in query.split()
-                                   if (atom := _fts_atom(term)))
-                if not fts:
-                    continue
+            def probe(atom):
+                found = side.execute('SELECT d.path FROM docs_fts f '
+                    'JOIN docs d ON d.rowid=f.rowid WHERE docs_fts MATCH ? AND d.path IN '
+                    '(SELECT value FROM json_each(?)) LIMIT 1', (atom, paths_json)).fetchone()
+                return None if found is None else found[0]
+            def search(fts):
                 matches = side.execute('SELECT d.path FROM docs_fts f '
-                                       'JOIN docs d ON d.rowid=f.rowid '
-                                       'WHERE docs_fts MATCH ? AND d.path IN '
-                                       '(SELECT value FROM json_each(?)) '
-                                       'ORDER BY bm25(docs_fts,1.5,4.0,1.0),'
-                                       'd.path COLLATE BINARY LIMIT ?',
-                                       (fts, paths_json, MAX_FTS)).fetchall()
-                lexical_paths.append((position, [item[0] for item in matches]))
+                    'JOIN docs d ON d.rowid=f.rowid WHERE docs_fts MATCH ? AND d.path IN '
+                    '(SELECT value FROM json_each(?)) '
+                    'ORDER BY bm25(docs_fts,1.5,4.0,1.0),d.path COLLATE BINARY LIMIT ?',
+                    (fts, paths_json, MAX_FTS)).fetchall()
+                return [item[0] for item in matches]
+            if lexical is not None:
+                probe, search = lexical['probe'], lexical['search']
+            (built, present, selected, mode, probe_matches, probe_complete, lexical_paths) = _lexical_plan(
+                prompt, decision['recallSettings']['lexicalPatterns'], probe=probe, search=search,
+                deadline=deadline)
             # No provider call for a valid empty preview. A populated preview
             # uses only the already-running installer-attested provider.
             try:

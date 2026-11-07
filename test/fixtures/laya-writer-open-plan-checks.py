@@ -146,7 +146,9 @@ class WriterOpenPlanChecks(unittest.TestCase):
             except (ValueError, RuntimeError) as exc: reader_error = str(exc)
             emit('writer-vs-reader-proof-baseline', writerProofAccepted=True, readerReason=reader_error)
             self.assertIsNotNone(reader_error)
-            self.assertIn('reader_exclusions_changed', reader_error)
+            # An exclusion committed without a base revision receipt is refused
+            # by the reader; the writer plan below does not depend on it.
+            self.assertIn('reader_base_revision_unproved', reader_error)
             module = self.api()
             with self.traced() as calls:
                 plan = module.capture_writer_plan(self.case.project, executing_root=self.case.plugin)

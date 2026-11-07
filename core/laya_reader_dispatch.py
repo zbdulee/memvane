@@ -60,17 +60,26 @@ def _approved_profile_matches(candidate, proof):
             and isinstance(candidate.get('model_sha'),str))
 
 
+def _persisted_schema3(endpoint):
+    return (type(endpoint) is journal.VerifiedEndpoint and endpoint in journal._issued
+            and endpoint in journal._read_only and endpoint.record.get('store_format')=='schema3')
+
+
 def _vector_proof(authority,snapshot,decision,provider,deadline):
     import laya_reader_open as readers
     import laya_reader_lease as leases
     from laya_local_embed_provider import ReviewedLocalQmdProvider
+    # A persisted schema3 authority has no v6 snapshot; its authority is the
+    # journal-selected endpoint's current installer proof alone.
+    schema3=_persisted_schema3(authority)
     if (type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic()>=deadline
             or type(authority) is not journal.VerifiedEndpoint or authority not in journal._issued
             or type(provider) is not ReviewedLocalQmdProvider
-            or not any(item is snapshot and bound is authority and saved == decision
-                       for item,bound,saved in readers._observations.get())):
+            or (schema3 and snapshot is not None)
+            or (not schema3 and not any(item is snapshot and bound is authority and saved == decision
+                                        for item,bound,saved in readers._observations.get()))):
         raise ValueError('reader_vector_caller_unproved')
-    readers._bound(authority)
+    readers._bound(authority,capability=journal.SCHEMA3_CAPABILITY if schema3 else 'v6-ro-v1')
     selected=leases._reader_selections.get(authority)
     if selected is None or selected.preferred_endpoint!=authority.endpoint_id:
         raise ValueError('reader_vector_caller_unproved')
@@ -191,13 +200,24 @@ def _issue_candidate(path, *, repository, scope_id, worktree_id, checkout, deadl
 
 
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
-                   snapshot=None, decision=None, provider=None, authority=None):
-    """Read a pinned v6 snapshot or a verified inactive candidate checkout."""
+                   snapshot=None, decision=None, provider=None, authority=None, linked=None):
+    """Read a pinned v6 snapshot or a verified inactive candidate checkout.
+
+    ``linked`` (a ``worktree`` route decision) reads that linked worktree's
+    own view of a journal-selected schema3 endpoint; any other endpoint
+    refuses it.
+    """
     from laya_view_store import ViewStore
     if type(endpoint) is not journal.VerifiedEndpoint:
         raise ValueError('reader_endpoint_not_issued')
+    if endpoint in journal._issued and endpoint.record.get('store_format')=='schema3':
+        return _query_persisted_schema3(endpoint,checkout=checkout,prompt=prompt,query_vector=query_vector,
+            deadline=deadline,snapshot=snapshot,decision=decision,provider=provider,authority=authority,
+            linked=linked)
+    if linked is not None:
+        raise ValueError('reader_endpoint_invalid')
     if endpoint in journal._issued:
-        if (snapshot is None or decision is None or query_vector is not None
+        if (endpoint.record.get('store_format')!='v6' or snapshot is None or decision is None or query_vector is not None
                 or Path(checkout)!=Path(endpoint.record['project'])):
             raise ValueError('reader_endpoint_invalid')
         from laya_v6_reader import query_v6_snapshot
@@ -260,3 +280,134 @@ def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
             store.release(pin)
     finally:
         store.close()
+
+
+def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
+                             provider,authority,linked=None):
+    """Read the journal-selected schema3 endpoint at its current view head.
+
+    Rows leave in the recall row shape (``scope, generation, path, hash, body,
+    score``) with ``<wiki collection>/<member path>`` paths, the same FTS
+    term builder and RRF fusion as the v6 hybrid list, and source locators
+    read from the generation's stored card provenance (no source re-read).
+
+    With ``linked`` the pinned view is that linked worktree's own (see
+    ``_schema3_pin``); its wiki collection is the main one rebased onto the
+    worktree project root. A view sealed without vectors answers lexical
+    lists only (``lexical_only``).
+    """
+    import laya_reader_lease as leases
+    import laya_reader_open as readers
+    selected=leases._reader_selections.get(endpoint)
+    if (not _persisted_schema3(endpoint) or selected is None
+            or selected.preferred_endpoint!=endpoint.endpoint_id):
+        raise ValueError('reader_endpoint_not_issued')
+    if (snapshot is not None or type(deadline) not in (int,float) or not math.isfinite(deadline)
+            or Path(checkout)!=Path(endpoint.record['project']) or time.monotonic()>=deadline):
+        raise ValueError('reader_endpoint_invalid')
+    readers._bound(endpoint,capability=journal.SCHEMA3_CAPABILITY)
+    record,_raw,_proof=journal._recheck(endpoint)
+    if (not isinstance(decision,dict) or decision.get('scopeId')!=record['scope']
+            or decision.get('projectRoot')!=record['project']
+            or decision.get('collections')!=record['roots']
+            or not isinstance(decision.get('recallSettings'),dict)):
+        raise ValueError('reader_endpoint_invalid')
+    valid=None
+    if query_vector is not None:
+        from laya_view_vectors import query_values
+        query_values(query_vector)
+        valid=[entry for entry in _approved_vectors.get()
+               if entry[0] is authority and authority is endpoint and entry[1] is None
+               and entry[2]==decision and entry[3] is provider and entry[4]==prompt
+               and entry[5]==tuple(query_vector) and entry[8][0] and time.monotonic()<entry[6]]
+        if not valid:
+            raise ValueError('reader_vector_caller_unproved')
+        deadline=min(deadline,valid[-1][6])
+    from laya_host_response import (HYBRID_LIST_LIMIT, _fuse_verified_lists, _hybrid_fts_queries,
+                                    _fail, merge_incremental_rows)
+    from laya_index_host_route import wiki_index_roots
+    from laya_index_source_port import auxiliary_wiki_row
+    from laya_blob_values import BlobStoreError
+    from laya_view_vectors import DEFERRED
+    queries=[query for query in _hybrid_fts_queries(
+        prompt,tuple(decision['recallSettings'].get('lexicalPatterns',())) ) if query]
+
+    def left():
+        remaining=min(30,deadline-time.monotonic())
+        if remaining<=0:raise ValueError('reader_snapshot_deadline')
+        return remaining
+    with journal._schema3_pin(record,deadline=deadline,linked=linked) as (store,handle,pin):
+        vector=store._pinned(pin)['vector']
+        # A lexical head (vectors pending) answers lexical lists only.
+        semantic=query_vector is not None and vector is not None
+        if semantic:
+            proof=_vector_proof(authority,None,decision,provider,deadline)
+            if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)
+                    or proof!=valid[-1][7]):
+                raise ValueError('reader_vector_caller_unproved')
+        with store._reading(time.monotonic()+left()) as db:
+            saved=db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
+                             (handle.worktree_id,)).fetchone()
+            legacy=store._read_pinned(db,pin,time.monotonic()+left())[3].get('legacy',{})
+        # A migration head imported while a completed v6 sidecar shadowed its
+        # base keeps both sealed FTS corpora (paired); every active card is in
+        # exactly one. Each corpus is fused on its own and the two are merged
+        # by the v6 incremental merge rule (merge_incremental_rows).
+        origins=legacy['fts_sources'] if 'sidecar_corpus' in legacy else None
+        # The migration prepares that head without a vector spec (lexical
+        # only); vectors arrive with the next ordinary schema3 generation.
+        if origins is not None and vector is not None:
+            raise ValueError('migration_vector_spec_invalid')
+
+        def rooted(source):
+            if linked is None:
+                return str(Path(source))
+            try:
+                return str(Path(linked['worktreeProjectRoot'])/Path(source).relative_to(record['project']))
+            except ValueError:
+                return None
+        names=[item['name'] for item in record['roots'] if item.get('role')=='wiki'
+               and saved is not None and rooted(item['sourceRoot'])==saved[0]]
+        if len(names)!=1:
+            _fail('selected_wiki_required')
+        name=names[0]
+        roots=wiki_index_roots(decision['collections'])
+
+        def shaped(rows):
+            answer=[]
+            for row in rows:
+                full=name+'/'+row['path']
+                if auxiliary_wiki_row(full,row['body'],roots):
+                    continue
+                answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
+                               'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
+            return answer
+        lexical={origin:[shaped(store.search(pin,query,HYBRID_LIST_LIMIT,deadline_seconds=left(),
+                                             **({} if origin is None else {'_legacy_origin':origin})))
+                         for query in queries]
+                 for origin in ((None,) if origins is None else ('base','sidecar'))}
+        status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
+        nearest=None
+        if semantic:
+            try:
+                nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
+                                                  profile_id=vector['profile_id'],
+                                                  deadline_seconds=left()))
+            except BlobStoreError as exc:
+                if exc.reason not in DEFERRED:
+                    raise
+                status=DEFERRED[exc.reason]
+
+        def fused(lists):
+            return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
+        rows=(fused(lexical[None]+([] if nearest is None else [nearest])) if origins is None
+              else merge_incremental_rows(fused(lexical['sidecar']),fused(lexical['base'])))
+        spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
+                                   deadline_seconds=left())
+        if time.monotonic()>=deadline:
+            raise ValueError('reader_snapshot_deadline')
+        if semantic and _vector_proof(authority,None,decision,provider,deadline)!=proof:
+            raise ValueError('reader_vector_caller_unproved')
+        locations={name+'/'+path:tuple(found) for path,found in spans.items() if found}
+        return ReaderResult('schema3',endpoint.endpoint_id,selected.epoch,pin.gen_id,
+                            rows,status,frozenset(),locations)

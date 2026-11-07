@@ -23,6 +23,11 @@ _LOADED_SCHEMA = 'memvane-loaded-reader-v1'
 _LOADED_FIELDS = frozenset(('endpoint_id','reader_epoch','store_format','generation',
                             'sentinel_sha256','owner_role','plugin_node'))
 _TTL = 600
+# Hook-issued loaded-reader challenges (U15b/U15c) last up to a day: each
+# receipt counts only while the journal epoch, preferred endpoint and
+# release commit it observed stay selected (``check_loaded_bridge``), so
+# Claude and Codex may arrive hours apart. QA challenges keep ``_TTL``.
+_HOOK_TTL = 86400
 _ISSUED = weakref.WeakKeyDictionary()
 
 
@@ -138,7 +143,7 @@ def _load_challenge(directory):
             or record['challenge_id'] != directory.name
             or not _SHA.fullmatch(record['nonce_sha256'])
             or not COMMIT.fullmatch(record['release_commit'])
-            or not 0 < record['expires_at'] - record['issued_at'] <= _TTL
+            or not 0 < record['expires_at'] - record['issued_at'] <= _ttl(record)
             or not record['issued_at'] <= now < record['expires_at']
             or _hosts(frozenset(record['expected_hosts'])) != record['expected_hosts']):
         _refuse()
@@ -146,6 +151,18 @@ def _load_challenge(directory):
     if [state.st_dev, state.st_ino] != record['state_node']:
         _refuse()
     return record
+
+
+def _hook_issued(record):
+    """The challenge was issued by a recall hook (its nonce is the public commitment)."""
+    try:
+        return record['nonce_sha256'] == _sha(_hook_nonce(record).encode('ascii'))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _ttl(record):
+    return _HOOK_TTL if _hook_issued(record) else _TTL
 
 
 def begin_bridge_preflight(state: Path, *, release_commit: str, expected_hosts: frozenset):
@@ -351,8 +368,12 @@ def check_loaded_bridge(receipts: list, *, release_commit: str, expected_hosts: 
             _refuse()
         observations.append(observed)
     first,second=observations
-    if (any(first[key] != second[key] for key in
-            ('endpoint_id','reader_epoch','store_format','generation','sentinel_sha256','manifest_sha256')) or
+    # A hook-issued pair may read different generations of the same reader
+    # (the hosts arrive hours apart; every publish moves the generation). The
+    # sentinel, endpoint, epoch and bundle stay shared; each host's own read
+    # is checked above. A QA pair is read together and shares the generation.
+    keys = _HOOK_PAIR if _hook_issued(registry) else _HOOK_PAIR + ('generation',)
+    if (any(first[key] != second[key] for key in keys) or
             {first['owner_role'],second['owner_role']} != {'owner','companion'} or
             first['plugin_root'] == second['plugin_root'] or first['session_id'] == second['session_id'] or
             (first['process_pid'],first['process_start']) == (second['process_pid'],second['process_start'])):
@@ -405,6 +426,215 @@ def find_bridge_preflight(state: Path, *, release_commit: str):
     except OSError:
         pass
     _refuse()
+
+
+def find_loaded_bridge(state: Path, *, release_commit: str) -> list:
+    """Receipt paths of a live loaded-reader set (Claude and Codex) for ``state``.
+
+    Scans the private challenge registry like ``find_bridge_preflight`` but
+    only for ``loaded.json`` challenges, and returns the first set that
+    passes ``check_loaded_bridge``: both hosts observed the current reader
+    epoch and preferred endpoint of the journal-selected bundle at
+    ``release_commit``, inside the challenge TTL. Nothing is collected here.
+    """
+    from laya_journal_paths import check_journal_namespace
+    state = _dir(Path(state))
+    check_journal_namespace(state)
+    if type(release_commit) is not str or not COMMIT.fullmatch(release_commit):
+        _refuse()
+    hosts = frozenset(('claude', 'codex'))
+    try:
+        registry = _registry()
+        with os.scandir(registry) as entries:
+            names = sorted(entry.name for entry in entries
+                           if _ID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False))
+    except (OSError, ValueError):
+        _refuse()
+    for name in names:
+        directory = registry / name
+        try:
+            challenge = _load_challenge(directory)
+            if (challenge['state'] != str(state) or challenge['release_commit'] != release_commit
+                    or frozenset(challenge['expected_hosts']) != hosts
+                    or _loaded_config(challenge) is None):
+                continue
+            refs = [directory / (host + '.json') for host in sorted(hosts)]
+            check_loaded_bridge(refs, release_commit=release_commit, expected_hosts=hosts)
+            return refs
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    _refuse()
+
+
+# Operational loaded-reader challenges (U15b, context/u15b-loaded-receipt-design.md).
+# A selected recall hook records its own host's observation, so no collector
+# delivers a secret. The nonce is a public commitment to the challenge id,
+# state root (path and node), release commit and issue time, recomputable from
+# challenge.json; that is what marks a challenge as hook-issued. Endpoint,
+# epoch and sentinel are bound by the observations, which
+# ``check_loaded_bridge`` compares with each other and with the journal; the
+# two hosts' generations may differ (they may arrive up to a day apart).
+_HOOK_KIND = 'memvane-loaded-hook-v1'
+# Fields two hook observations of one challenge share (no generation, see
+# ``check_loaded_bridge``).
+_HOOK_PAIR = ('endpoint_id', 'reader_epoch', 'store_format', 'sentinel_sha256', 'manifest_sha256')
+_HOOK_DROP = 8
+
+
+def _hook_nonce(record):
+    return _sha(_raw({'kind': _HOOK_KIND, 'challenge_id': record['challenge_id'], 'state': record['state'],
+                      'state_node': record['state_node'], 'release_commit': record['release_commit'],
+                      'issued_at': record['issued_at']}))
+
+
+def _hook_challenges(state, release_commit, now):
+    """Hook-issued challenges of ``state``: (live for ``release_commit``, expired)."""
+    live, expired = [], []
+    try:
+        registry = _registry()
+        with os.scandir(registry) as entries:
+            names = sorted(entry.name for entry in entries
+                           if _ID.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False))
+    except FileNotFoundError:
+        return live, expired
+    for name in names:
+        directory = registry / name
+        try:
+            record = _read(directory / 'challenge.json')
+            if (record.get('challenge_id') != name or record.get('state') != str(state)
+                    or record.get('nonce_sha256') != _sha(_hook_nonce(record).encode('ascii'))):
+                continue
+            if not now < record['expires_at']:
+                expired.append(directory)
+            elif (record['release_commit'] == release_commit
+                    and record['expected_hosts'] == ['claude', 'codex']):
+                live.append((record, directory))
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return live, expired
+
+
+def _drop_hook_challenge(directory):
+    """Remove one expired hook challenge; anything unexpected stays in place."""
+    for name in ('claude.json', 'claude.audit', 'codex.json', 'codex.audit', 'loaded.json', 'challenge.json'):
+        try:
+            os.unlink(directory / name)
+        except FileNotFoundError:
+            pass
+    os.rmdir(directory)
+
+
+def hook_receipt_fresh(state: Path, *, release_commit: str, host: str, reader_epoch: int,
+                       endpoint_id: str) -> bool:
+    """``host`` needs no new probe: its receipt stands and no newer challenge waits for it.
+
+    True when a live hook challenge holds ``host``'s receipt of the current
+    reader (``reader_epoch``/``endpoint_id``) for at least half the hook TTL,
+    and no live challenge issued after it holds only the other host's receipt
+    of that reader (one this host could not join, e.g. a moved sentinel).
+    A moved epoch or endpoint, a newer partner, or half a day probes again.
+    """
+    other = 'codex' if host == 'claude' else 'claude'
+    try:
+        live, _expired = _hook_challenges(_dir(Path(state)), release_commit, time.time())
+    except (OSError, ValueError):
+        return False
+    now = time.time()
+    mine, waiting = [], []
+    for record, directory in live:
+        try:
+            if os.path.lexists(directory / (host + '.json')):
+                seen = _read(directory / (host + '.audit'))
+                if (seen.get('reader_epoch') == reader_epoch and seen.get('endpoint_id') == endpoint_id
+                        and record['expires_at'] - now >= _HOOK_TTL / 2):
+                    mine.append(record['issued_at'])
+            elif os.path.lexists(directory / (other + '.json')):
+                seen = _read(directory / (other + '.audit'))
+                if seen.get('reader_epoch') == reader_epoch and seen.get('endpoint_id') == endpoint_id:
+                    waiting.append(record['issued_at'])
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    return bool(mine) and max(mine) >= max(waiting, default=0)
+
+
+def record_hook_observation(state: Path, *, release_commit: str, host: str, observed: dict,
+                            sentinel_path: str) -> str:
+    """Write one host hook's loaded-reader observation into a hook-issued challenge.
+
+    ``observed`` holds every ``_check_observation`` field except the two
+    ``observed_*`` challenge fields. Joins the newest live hook challenge of
+    this state root and release commit where ``host`` is empty and the other
+    host saw the same reader (``_HOOK_PAIR``); otherwise issues one (valid
+    for ``_HOOK_TTL``). Returns ``complete`` when both hosts are now recorded,
+    else ``recorded``, or ``fresh`` when this host's receipt of the same
+    reader is already live for half the hook TTL. The
+    switch gate (``find_loaded_bridge``) remains the only verifier.
+    """
+    from laya_journal_paths import check_journal_namespace
+    state = _dir(Path(state))
+    check_journal_namespace(state)
+    if (host not in ('claude', 'codex') or type(release_commit) is not str
+            or not COMMIT.fullmatch(release_commit) or not isinstance(observed, dict)
+            or not _sentinel(sentinel_path, observed.get('sentinel_sha256'))):
+        _refuse()
+    other = 'codex' if host == 'claude' else 'claude'
+    now = time.time()
+    live, expired = _hook_challenges(state, release_commit, now)
+    for directory in expired[:_HOOK_DROP]:
+        try:
+            _drop_hook_challenge(directory)
+        except OSError:
+            pass  # A later hook retries; an expired challenge is never evidence.
+    # ``partner``: a newer challenge holds only the other host. A standing
+    # receipt older than it is not ``fresh``; a new challenge makes this
+    # host's receipt the newest, so ``hook_receipt_fresh`` stops probing.
+    target, fresh, partner = None, False, False
+    for record, directory in sorted(live, key=lambda item: item[0]['issued_at'], reverse=True):
+        try:
+            own = os.path.lexists(directory / (host + '.audit')) or os.path.lexists(directory / (host + '.json'))
+            if not own and os.path.lexists(directory / (other + '.json')):
+                partner_here = True
+            else:
+                partner_here = False
+            loaded = _loaded_config(record)
+            if loaded is None or loaded['sentinel_path'] != sentinel_path or \
+                    loaded['sentinel_sha256'] != observed['sentinel_sha256']:
+                partner = partner or partner_here
+                continue
+            if own:
+                mine = _read(directory / (host + '.audit'))
+                fresh = fresh or (not partner and record['expires_at'] - now >= _HOOK_TTL / 2
+                                  and all(mine.get(key) == observed[key] for key in _HOOK_PAIR))
+                continue
+            if partner_here:
+                seen = _read(directory / (other + '.audit'))
+                if any(seen.get(key) != observed[key] for key in _HOOK_PAIR):
+                    partner = True
+                    continue
+            if target is None:
+                target = (record, directory)
+        except (OSError, ValueError, TypeError, KeyError):
+            continue
+    if target is None:
+        if fresh:
+            return 'fresh'
+        directory = _registry(create=True) / secrets.token_hex(16)
+        directory.mkdir(mode=0o700)
+        info = state.stat()
+        record = dict(challenge_id=directory.name, issued_at=now, expires_at=now + _HOOK_TTL,
+                      release_commit=release_commit, expected_hosts=['claude', 'codex'],
+                      state=str(state), state_node=[info.st_dev, info.st_ino])
+        record['nonce_sha256'] = _sha(_hook_nonce(record).encode('ascii'))
+        _write(directory / 'challenge.json', record)
+        _write(directory / 'loaded.json', {'schema': _LOADED_SCHEMA, 'sentinel_path': sentinel_path,
+                                           'sentinel_sha256': observed['sentinel_sha256']})
+        target = (_load_challenge(directory), directory)
+    record, directory = target
+    observed = dict(observed, observed_challenge_id=record['challenge_id'],
+                    observed_nonce_sha256=record['nonce_sha256'])
+    _write(directory / (host + '.audit'), observed)
+    _write(directory / (host + '.json'), _receipt(record, observed, host))
+    return 'complete' if os.path.lexists(directory / (other + '.json')) else 'recorded'
 
 
 def ensure_bridge_preflight(state: Path, *, release_commit: str):

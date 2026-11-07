@@ -457,6 +457,98 @@ def _selected_runtime(bound, roots, capacity):
 
 
 @contextmanager
+def _schema3_search(bound, text):
+    """Lexical and vector candidates from the journal-selected schema3 view head.
+
+    The same persisted reader endpoint and row shape as schema3 recall
+    (``resolve_endpoint`` + ``query_endpoint``), held under the sync owner
+    like the v5 runtime path; no v6 component is opened. The view store has
+    no exclusion table. When the head is a vector generation of an approved
+    profile and a warm provider answers (``query_provider``), the same head's
+    exact cosine list (``search_exact``: a card's best chunk, as the v6
+    ``vectorCosines``) adds vector-only candidates and carries the cosine the
+    vector-only relevance rule needs; otherwise the list is lexical only.
+    """
+    import laya_journal_reader as reader
+    import laya_reader_dispatch as dispatch
+    import laya_reader_lease as lease
+    import project_dir
+    from laya_index_host_route import wiki_index_roots
+    from laya_index_sync import sync_owner
+    from laya_product_sync_worker import _owned_selected_proof, _writer_executing_root
+    from resource_deferred import ResourceDeferred
+    decision, proof = bound
+    project = Path(decision['projectRoot'])
+    if project_dir.layout(decision['projectRoot']) == 'split':
+        raise ValueError('project_dir_split')
+    names = tuple(sorted(wiki_index_roots(decision['collections'])))
+    with sync_owner(Path(decision['queuePath'])) as owner:
+        if owner is None:
+            raise ResourceDeferred('owner_busy')
+        if _owned_selected_proof(decision, owner) != proof:
+            raise ValueError('selected_compile_proof_changed')
+        with lease.resolve_endpoint(project, action='recall',
+                                    host_root=_writer_executing_root()) as endpoint:
+            if endpoint.record.get('store_format') != 'schema3':
+                raise ValueError('selected_store_format_changed')
+            _record, _raw, current = reader._recheck(endpoint)
+            if current.get('installId') != proof.get('installId'):
+                raise ValueError('selected_compile_proof_changed')
+            result = dispatch.query_endpoint(
+                endpoint, checkout=project, prompt=text, query_vector=None,
+                deadline=time.monotonic() + QUERY_SECONDS, snapshot=None, decision=decision,
+                provider=None, authority=endpoint)
+            cosines = _schema3_cosines(bound, _record, current, text, result.data_generation)
+        if _owned_selected_proof(decision, owner) != proof:
+            raise ValueError('selected_compile_proof_changed')
+    rows = [(row['path'].split('/', 1)[1], row['hash']) for row in result.rows
+            if row['path'].partition('/')[0] in names]
+    seen = set(rows)
+    found = [(rel, sha, cosines.get((rel, sha))) for rel, sha in rows]
+    found.extend((rel, sha, score) for (rel, sha), score in cosines.items() if (rel, sha) not in seen)
+    yield found, (frozenset(), frozenset()), names[0], 'bound'
+
+
+def _schema3_cosines(bound, record, current, text, generation):
+    """``{(wiki path, blob_sha): cosine}`` of the schema3 head's exact vector list.
+
+    Empty when the head is lexical, its profile is not the install's
+    approved one, the warm provider does not answer, or the head moved from
+    ``generation`` (the lexical rows' generation).
+    """
+    import laya_host_response as response
+    import laya_journal_reader as reader
+    from laya_reader_dispatch import _approved_profile_matches
+    from laya_view_vectors import DEFERRED
+    from laya_blob_values import BlobStoreError
+    decision, _proof = bound
+    if record.get('vector_profile') is None:
+        return {}
+    deadline = time.monotonic() + QUERY_SECONDS
+    with reader._schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+        vector = store._pinned(pin)['vector']
+        if pin.gen_id != generation or vector is None:
+            return {}
+        with store._session():
+            profile = store._profile(vector['profile_id'])
+        if not _approved_profile_matches(profile, current):
+            return {}
+        from laya_index_a import IndexContractError
+        try:
+            answer = query_provider(bound)(text, current['vectorProfile'])
+        except (response._VectorUnavailable, IndexContractError):
+            return {}  # no warm reviewed provider: lexical candidates only
+        try:
+            rows = store.search_exact(pin, answer['vector'], CANDIDATES, profile_id=vector['profile_id'],
+                                      deadline_seconds=max(0.1, min(30, deadline - time.monotonic())))
+        except BlobStoreError as exc:
+            if exc.reason not in DEFERRED:
+                raise
+            return {}
+    return {(row['path'], row['blob_sha']): row['score'] for row in rows}
+
+
+@contextmanager
 def selected_search(bound, text):
     """Open only the capacity path; never fall back to a whole-root scan."""
     from laya_index_runtime import capacity_store_paths
@@ -465,6 +557,12 @@ def selected_search(bound, text):
     from laya_source_catalog import load_exclusions
     import laya_host_response as response
     decision, proof = bound
+    if 'journalPath' in decision:
+        from laya_product_sync_worker import _selected_store_format
+        if _selected_store_format(decision) == 'schema3':
+            with _schema3_search(bound, text) as found:
+                yield found
+            return
     capacity = capacity_store_paths(decision['dbPath'])
     roots = wiki_index_roots(decision['collections'])
     names = tuple(sorted(roots))

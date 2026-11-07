@@ -718,6 +718,59 @@ runtime._handoff_worker(queue,fd)
             self.assertEqual(runtime.request('laya-sync', '/synthetic/b', pull_due=True),
                              {'status': 'queued'})
 
+    def test_a_delayed_reoffer_survives_the_ack_and_a_plain_offer_pulls_it(self):
+        # A handler re-offers its own running wake one interval later (the
+        # shadow migration rewake): the ACK keeps that due, the drain stops.
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
+
+        def rewake(_row):
+            self.assertEqual(self.queue.offer('laya-sync', '/synthetic/a', now=100, delay=30), 'queued')
+            return True
+        self.assertEqual(self.drain(rewake, wall=100, max_runs=8), {'status': 'pending', 'runs': 1})
+        row, = self.rows()
+        self.assertEqual((row['status'], row['due'], row['attempts'], row['reason']),
+                         ('pending', 130, 0, runtime.DELAYED_REASON))
+        # A delayed offer never pushes a pending row back; a plain hook wake
+        # (an edit) pulls a delayed row to now.
+        self.queue.offer('laya-sync', '/synthetic/a', now=110, delay=60)
+        self.assertEqual(self.rows()[0]['due'], 130)
+        self.queue.offer('laya-sync', '/synthetic/a', now=110)
+        self.assertEqual((self.rows()[0]['due'], self.rows()[0]['reason']), (110, None))
+        # A plain re-offer during the same run, after the delayed one, runs it at once.
+
+        def both(_row):
+            self.queue.offer('laya-sync', '/synthetic/a', now=120, delay=30)
+            self.queue.offer('laya-sync', '/synthetic/a', now=121)
+            return True
+        self.assertEqual(self.drain(both, wall=122), {'status': 'pending', 'runs': 1})
+        self.assertEqual((self.rows()[0]['due'], self.rows()[0]['reason']), (122, None))
+        self.assertEqual(self.drain(lambda _r: True, wall=125), {'status': 'drained', 'runs': 1})
+        # A new row offered with a delay is due one interval later.
+        self.queue.offer('laya-sync', '/synthetic/b', now=200, delay=30)
+        self.assertEqual(self.rows()[0]['due'], 230)
+        self.assertEqual(self.drain(lambda _r: True, wall=229), {'status': 'pending', 'runs': 0})
+        self.assertEqual(self.drain(lambda _r: True, wall=230), {'status': 'drained', 'runs': 1})
+        # A future row without the delay mark (as a backed-off one) keeps its due.
+        self.queue.put('laya-sync', '/synthetic/e', now=500)
+        self.queue.offer('laya-sync', '/synthetic/e', now=400)
+        self.assertEqual([r['due'] for r in self.rows() if r['target'] == '/synthetic/e'], [500])
+        self.assertEqual(self.drain(lambda _r: True, wall=500), {'status': 'drained', 'runs': 1})
+        # A backed-off row keeps its backoff on either offer.
+        self.queue.put('laya-sync', '/synthetic/c', now=0)
+        self.drain(self.failing('target_child_failed'), wall=300)
+        backed, = self.rows()
+        self.queue.offer('laya-sync', '/synthetic/c', now=301, delay=30)
+        self.queue.offer('laya-sync', '/synthetic/c', now=301)
+        self.assertEqual(self.rows()[0]['due'], backed['due'])
+        for delay in (-1, float('nan'), float('inf'), 3601, '30'):
+            with self.assertRaises(ValueError):
+                self.queue.offer('laya-sync', '/synthetic/c', now=301, delay=delay)
+        with patch.object(runtime, 'WakeQueue', return_value=self.queue), \
+             patch.object(runtime, 'wake', return_value=True):
+            self.assertEqual(runtime.request('laya-sync', '/synthetic/d', start=False, delay=30),
+                             {'status': 'queued'})
+        self.assertGreater([r for r in self.rows() if r['target'] == '/synthetic/d'][0]['due'], time.time() + 20)
+
     def test_ack_of_a_rerequested_wake_resets_its_retry_history(self):
         self.queue.put('laya-sync', '/synthetic/a', now=0)
         for wall in (100, 200):

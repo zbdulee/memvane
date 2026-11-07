@@ -7,25 +7,40 @@ candidate v1/v2와 운영 v6 파일은 자동 변환하지 않고 읽기 전용 
 `BlobStore`는 내용·provenance API를 소유하고 `laya_view_store.ViewStore`가 같은 형식의
 view generation·FTS·lexical reader를 제공한다. 세대 API는
 [`development-view-candidate.md`](development-view-candidate.md)에 있다.
-운영 hook·route·v6 reader와의 연결 및 migration·activation·GC API는 없다.
+`BlobStore`에는 hook·route·reader 선택·migration·activation·GC API가 없다. 운영 연결은
+호출자가 소유한다: v6 reader가 선택된 설치에서는 shadow migration 후보(`laya_shadow_migration`),
+schema3 reader가 선택된 설치에서는 sync 게시(`laya_product_sync_worker`)와 recall·dedup retrieval
+(`laya_journal_reader`·`laya_reader_dispatch`·`wiki_compile_retrieval`). 어느 store를
+읽고 쓸 권한은 설치 journal의 schema3 endpoint record와 writer scope가 정한다.
 
 ## 소유권과 위키 소속
 
 호출자는 PR1 repository/worktree 등록 JSON과 scope UUID를 제공한다.
 저장소는 common Git dir의 경로·dev/ino와 프로젝트 상대 위치에 묶이며,
-worktree는 checkout·Git admin 정체성과 실제 프로젝트 settings·wiki root를 묶는다.
-등록 worktree들의 normalized settings policy는 같아야 한다. `skipPaths`도
-policy에 포함되며 JSON 공백·키 순서·생략된 기본값과 두 설정 폴더 이름은 정규화한다.
-각 worktree의 실제 settings 바이트 지문은 별도로 고정한다. 설정이나 root가 바뀌면
+worktree는 checkout·Git admin 정체성, settings 정체성, wiki root 디렉터리 노드를 묶는다.
+settings 정체성은 v6 route의 `settings_identity_digest`와 같은 범위다: 프로젝트 root와
+도출한 collection마다 `{name, role, sourceRoot}`. 저장소 policy는 같은 행을 프로젝트
+상대 경로(두 설정 폴더 이름은 정규화)로 다이제스트하므로 등록 worktree들의 policy는 같아야 한다.
+settings 바이트, `skipPaths`와 그 밖의 옵션은 묶지 않는다. `skipPaths`는 쓰는 시점의
+현재 settings에서 읽고 prepare가 세대 stage에 봉인한다. 정체성이나 wiki root가 바뀌면
 기존 binding을 자동 인계하지 않는다.
 
 `ingest_card`는 등록 worktree와 **wiki 상대 Markdown 경로**만 받는다.
 현재 settings에서 도출한 raw/wiki role, FD로 고정한 root·파일 정체성,
-제한된 파일 읽기, 설정 지문과 checkout capture를 전후에 확인한다.
+제한된 파일 읽기, settings 정체성과 checkout capture를 전후에 확인한다.
 commit 직전 파일·설정을 다시 확인하며 변경이 관측되면 transaction을 취소한다.
 이 관측은 파일시스템·Git의 원자적 snapshot을 보장하지 않는다.
 절대 경로·traversal·dot 자식 경로·symlink·다중 hardlink·디렉터리는 거절한다.
 wiki root의 `SCHEMA.md`·`index.md`·`log.md`는 제외하고 하위 디렉터리의 같은 이름은 카드다.
+
+`ingest_attested_card(worktree_id, path, *, decision, provenance_scan)`는 같은 admission에
+카드 신뢰 판정을 더한다. `decision`은 호출자의 선택 route 결정이며 그 `projectRoot`·`scopeId`와
+wiki collection이 이 store의 worktree·scope와 맞아야 한다. 저장소는 읽은 카드 바이트의
+frontmatter를 recall의 신뢰 규칙(`legacy_card_evidence`, shadow migration import와 같은 함수)으로
+직접 판정한다. 통과한 카드에는 각 `sourceRevisions` 항목을 `binding_state='legacy_unbound'`·
+HEAD 없음·`tracked_state='unknown'` 지문으로 기록하고 `legacy_verified` attestation을 붙인다.
+통과하지 못한 카드는 trust 없이 admission만 한다. 현재 HEAD를 과거 compile commit으로 쓰지 않으며
+호출자가 trust 값을 넘기는 인자는 없다. `provenance_scan`은 지문의 scan UUID·관측 시각이다.
 
 blob key는 읽은 정확한 UTF-8 바이트의 SHA256이다. decode/encode가 같아야 하며
 BOM·CRLF·Unicode를 정규화하지 않는다. 같은 digest의 다른 바이트는 conflict다.
@@ -46,6 +61,7 @@ candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인
 | `BlobStore.open(path, *, repository, scope_id)` | 동일한 저장소·scope의 candidate 열기 |
 | `register_worktree(project_root, worktree)` | 같은 repository/project와 호환 policy의 worktree ID |
 | `ingest_card(worktree_id, path)` | wiki 카드 blob SHA |
+| `ingest_attested_card(worktree_id, path, *, decision, provenance_scan)` | `{blob_sha, trust_digest}`. 신뢰 규칙을 통과하지 못하면 `trust_digest`는 null |
 | `document(blob_sha)` | 저장한 wiki `{body,path,title}`. path는 `blobs/<sha>.md` |
 | `register_recipe(spec)` / `register_profile(spec)` | canonical spec의 domain-separated SHA ID |
 | `put_chunk_set(blob_sha, recipe_id, rows)` / `chunks(...)` | 완전한 chunk set의 digest / 행 |
@@ -149,8 +165,9 @@ receipt는 version·verdict·result digest·prior trust만 허용하며 raw body
 SQLite는 PK/FK·형식·타입·불변성·no-REPLACE 구조를 보호하며 API와 `verify`가
 hash·완전성·참조 의미를 검증한다. 내부 connection과 직접 SQL 쓰기는 지원 인터페이스가 아니다.
 **trust digest와 candidate 검증 성공은 compiler 실행 사실·원문 일치·운영 권한의 증명이 아니다.**
-candidate의 generation seal도 같은 구조적 commitment다. 운영 owner의 실제 증명·policy·
-publication 권한 검증은 후속 통합이 소유한다.
+candidate의 generation seal도 같은 구조적 commitment다. 운영 owner의 증명·policy·
+publication 권한은 journal endpoint record와 sync owner의 writer scope
+(`laya_writer_scope`·`laya_writer_open_plan`)가 확인한다.
 
 ## 유한 입력
 

@@ -14,6 +14,7 @@ import hashlib
 import importlib
 import json
 import os
+import shutil
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -32,10 +33,40 @@ APP_ID, FORMAT = 0x4D564231, b'memvane-git-blob-candidate-v3'
 SETTINGS = {'name': 'blobfixture'}
 CARD = b'# Shared Title\n\nA wiki card body.\n'
 BEE = b'# Bee\nsecond card\n'
-API = {'create', 'open', 'register_worktree', 'ingest_card', 'document', 'counts', 'close',
+API = {'create', 'open', 'register_worktree', 'ingest_card', 'ingest_attested_card', 'document', 'counts', 'close',
        'register_recipe', 'register_profile', 'put_chunk_set', 'chunks', 'vector_input_sha', 'embedding_inputs',
        'put_embedding_set', 'vectors', 'put_fingerprint', 'fingerprint', 'put_attestation',
        'attestation', 'verify'}
+
+
+def corrupt_fts_block(path, ordinal, *, remove=False):
+    """Mutate one real FTS shadow block in a disposable test database."""
+    if type(ordinal) is not int or ordinal < 1 or type(remove) is not bool:
+        raise ValueError('invalid synthetic FTS mutation')
+    name='wiki_fts_'+str(ordinal)+'_data'
+    with sqlite3.connect(path) as db:
+        row=db.execute('SELECT id,block FROM '+name+' ORDER BY id DESC LIMIT 1').fetchone()
+        if row is None or not row[1]:
+            raise AssertionError('synthetic FTS block missing')
+        changed=row[1][:-1]+bytes([row[1][-1]^1])
+        action = ('DELETE FROM '+name+' WHERE id=?' if remove else
+                  'UPDATE '+name+' SET block=? WHERE id=?')
+        args = (row[0],) if remove else (changed,row[0])
+        try:
+            db.execute(action,args)
+        except sqlite3.OperationalError as exc:
+            if 'may not be modified' not in str(exc):
+                raise
+            db.rollback()
+            cli=shutil.which('sqlite3')
+            if cli is None:
+                raise
+            sql = ('DELETE FROM '+name+' WHERE id='+str(row[0]) if remove else
+                   'UPDATE '+name+" SET block=X'"+changed.hex()+"' WHERE id="+str(row[0]))
+            subprocess.run([cli,'-batch',str(path),sql],check=True,capture_output=True,timeout=10)
+        actual=db.execute('SELECT block FROM '+name+' WHERE id=?',(row[0],)).fetchone()
+        if (remove and actual is not None) or (not remove and (actual is None or actual[0]!=changed)):
+            raise AssertionError('synthetic FTS mutation did not persist')
 CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith(('GIT_', 'XDG_'))}
 GIT_ENV = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_TERMINAL_PROMPT': '0',
@@ -383,7 +414,7 @@ class BlobStoreChecks(BlobStoreCase):
             result = original(root, path, limit)
             if path == 'cards/a.md':
                 (self.root / '.memvane/settings.json').write_text(
-                    json.dumps(dict(SETTINGS, skipPaths=['notes'])), encoding='utf8')
+                    json.dumps(dict(SETTINGS, name='renamed')), encoding='utf8')
             return result
         with mock.patch.object(self.mod, '_regular', side_effect=read):
             self.refused(store.ingest_card, wid, 'cards/a.md')
@@ -430,14 +461,17 @@ class BlobStoreChecks(BlobStoreCase):
         store, repository, _ = self.create(main)
         return store, repository, linked
 
-    def test_19_different_worktree_skip_policy_is_not_combined(self):
+    def test_19_different_worktree_collections_are_not_combined_but_skip_paths_are(self):
         store, repository, linked = self.pair_for_policy('different-policy')
-        (linked / '.memvane/settings.json').write_text(
-            json.dumps(dict(SETTINGS, skipPaths=['notes'])), encoding='utf8')
+        settings = linked / '.memvane/settings.json'
+        settings.write_text(json.dumps(dict(SETTINGS, name='renamed')), encoding='utf8')
         record = view.register_worktree(str(linked), repository)
         before = store.counts()
         self.refused(store.register_worktree, str(linked), record)
         self.assertEqual(store.counts(), before)
+        # skipPaths is outside the settings identity (as for a v6 route).
+        settings.write_text(json.dumps(dict(SETTINGS, skipPaths=['notes'])), encoding='utf8')
+        self.assertEqual(store.register_worktree(str(linked), record), record['worktreeId'])
 
     def test_20_same_semantic_policy_can_use_different_json_spelling(self):
         store, repository, linked = self.pair_for_policy('same-policy')

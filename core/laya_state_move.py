@@ -12,7 +12,8 @@ rewritten, each from bytes precomputed into ``state-move-intent.json``:
 * the reviewed route, the production attestation (journal and socket paths),
   the selection ledger, the build record and the build pointer,
 * the incremental document store's bound candidate path,
-* the install journal (``cas_relocate_state_root``; ``previous*`` cleared).
+* the install journal (``cas_relocate_state_root``; ``previous*`` cleared) and,
+  in the same image transaction, the selected reader endpoint.
 
 Phases: ``prepare`` (old root, nothing selected changes; a crash discards the
 intent), ``move`` (the rename), ``switch`` (compare-and-replace writes; a
@@ -326,7 +327,10 @@ def _docs_candidate(state):
     path = Path(state) / FILE
     if not path.exists():
         return None
-    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
+    from laya_index_a import _query_only_uri
+    # WAL sidecar: same read rule as its readers (Apple libsqlite3 + mode=ro).
+    with closing(sqlite3.connect(_query_only_uri(path), uri=True, timeout=2)) as db:
+        db.execute('PRAGMA query_only=ON')
         try:
             rows = db.execute('SELECT candidate_db FROM meta').fetchall()
         except sqlite3.OperationalError:

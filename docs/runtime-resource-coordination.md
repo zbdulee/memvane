@@ -27,6 +27,19 @@ development execution guard is separate; see
   `laya_compile` call `laya_runtime_dispatch.run`, which routes the wake into the
   sealed installed bundle with the wake's lease FD; the target process repeats
   the full owner proof before any model or store work.
+- Schema3 reader sync and shadow migration: a schema3-selected `laya-sync` pass
+  takes the same provider activity only when a view's vector fill has content no
+  stored set holds (`_schema3_vectors`); one pass embeds content shared by two
+  views once, and a refused lane or service leaves the lexical generation
+  published and the wake `deferred`. The shadow migration driver
+  (`shadow_pass`) runs after the sync owner is released, inside the same wake,
+  about 10 seconds of steps, at most 32. A pass that can go on re-offers its own
+  wake due 30 seconds later (`WakeQueue.offer(delay=)`); the drain releases the
+  lease and the lease-free timer runs it, so the next pass takes the same sync
+  admission and owner checks. The reader switch step holds the install,
+  initial-build, operation and sync owner locks and
+  `Coordinator().quiesce_provider()` for at most 10 seconds; a busy lock is a
+  retry for a later pass, never a wait.
 - Selected Laya route sync: `laya_product_sync_worker.py` holds a Coordinator
   `activity('provider', EMBED_POLICY)` around embedding work and rechecks the
   policy immediately before the embed service loads its model. `EMBED_POLICY`

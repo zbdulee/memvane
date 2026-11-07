@@ -5,6 +5,8 @@ Source bytes require a separate scan manifest. No live route imports this API.
 """
 from __future__ import annotations
 
+import copy
+import ctypes
 import hashlib
 import json
 import math
@@ -12,9 +14,12 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import stat
 import struct
 import subprocess
+import sys
+import threading
 import time
 import uuid
 
@@ -529,8 +534,250 @@ def register_worktree(project_root, repository, *, deadline=None):
             **{key: facts[key] for key in ('project', 'checkout', 'gitDir')}}
 
 
-def capture_view(project_root, repository, worktree, *, deadline=None):
-    facts = _stable(project_root, _deadline(deadline))
+# This cache is only an observation optimization. It is never persisted and
+# does not confer authority to publish data or to reuse raw file bytes.
+_capture_cache = threading.local()
+
+
+def _cache_filesystem(path):
+    # Native statfs identifies the filesystem without a subprocess. Unknown
+    # timestamp semantics always use the existing full Git path.
+    if sys.platform != 'darwin' or ctypes.sizeof(ctypes.c_void_p) != 8:
+        return None
+    class DarwinStatFS(ctypes.Structure):
+        _fields_ = [('bsize', ctypes.c_uint32), ('iosize', ctypes.c_int32),
+                    ('blocks', ctypes.c_uint64), ('bfree', ctypes.c_uint64),
+                    ('bavail', ctypes.c_uint64), ('files', ctypes.c_uint64),
+                    ('ffree', ctypes.c_uint64), ('fsid', ctypes.c_int32 * 2),
+                    ('owner', ctypes.c_uint32), ('type', ctypes.c_uint32),
+                    ('flags', ctypes.c_uint32), ('subtype', ctypes.c_uint32),
+                    ('fstype', ctypes.c_char * 16), ('mount', ctypes.c_char * 1024),
+                    ('source', ctypes.c_char * 1024), ('flags_ext', ctypes.c_uint32),
+                    ('reserved', ctypes.c_uint32 * 7)]
+    value = DarwinStatFS()
+    libc = ctypes.CDLL(None, use_errno=True)
+    statfs = libc.statfs
+    statfs.argtypes = (ctypes.c_char_p, ctypes.POINTER(DarwinStatFS))
+    statfs.restype = ctypes.c_int
+    if statfs(os.fsencode(path), ctypes.byref(value)) != 0 or value.fstype != b'apfs':
+        return None
+    return (tuple(value.fsid), value.flags, value.subtype, bytes(value.mount), bytes(value.source))
+
+
+def _cache_fingerprint(project_root, repository, worktree, deadline):
+    """Fresh no-follow observations for a conservative direct-ref subset."""
+    try:
+        _remaining(deadline)
+        if (not isinstance(repository, dict) or not isinstance(worktree, dict)
+                or not _identity(repository.get('commonGitDir'))
+                or not all(_identity(worktree.get(k)) for k in ('project', 'checkout', 'gitDir'))):
+            return None
+        project = Path(_directory(project_root)['path'])
+        if str(project) != worktree['project']['path']:
+            return None
+        checkout = Path(worktree['checkout']['path'])
+        admin = Path(worktree['gitDir']['path'])
+        common = Path(repository['commonGitDir']['path'])
+        if (_directory(checkout) != worktree['checkout'] or _directory(admin) != worktree['gitDir']
+                or _directory(common) != repository['commonGitDir']
+                or _dotgit(project) != checkout / '.git'):
+            return None
+        filesystems = tuple(_cache_filesystem(path) for path in (project, checkout, admin, common))
+        if any(value is None for value in filesystems):
+            return None
+        admin_device, common_device = os.stat(admin).st_dev, os.stat(common).st_dev
+        def real_directories(base, relative):
+            current = base
+            for part in relative.parts:
+                current = current / part
+                try:
+                    info = current.lstat()
+                except FileNotFoundError:
+                    return False
+                if not stat.S_ISDIR(info.st_mode):
+                    return False
+            return True
+        if (not real_directories(common, Path('objects/info'))
+                or not real_directories(common, Path('objects/pack'))
+                or not real_directories(common, Path('refs'))):
+            return None
+        head = _file(admin / 'HEAD', 4096, deadline, collect=True)
+        if head is None:
+            return None
+        head_bytes = head[1]
+        branch = None
+        if head_bytes.startswith(b'ref: refs/heads/') and head_bytes.endswith(b'\n'):
+            ref = head_bytes[5:-1]
+            if (not re.fullmatch(rb'refs/heads/[A-Za-z0-9._/-]+', ref)
+                    or b'..' in ref or any(part in (b'', b'.', b'..') for part in ref.split(b'/'))):
+                return None
+            branch = ref.decode('ascii')
+            target = common.joinpath(*branch.split('/'))
+            if not real_directories(common, target.parent.relative_to(common)):
+                return None
+            loose = _file(target, 256, deadline, collect=True)
+            if loose is None:
+                return None  # packed or unborn refs use Git's full path
+            oid_bytes = loose[1]
+        else:
+            target = None
+            oid_bytes = head_bytes
+        if not re.fullmatch(rb'(?:[0-9a-f]{40}|[0-9a-f]{64})\n', oid_bytes):
+            return None
+        oid = oid_bytes[:-1].decode('ascii')
+        for config_path in (common / 'config', admin / 'config.worktree'):
+            value = _file(config_path, 1024 * 1024, deadline, collect=True)
+            if value is not None and (b'include' in value[1].lower() or b'reftable' in value[1].lower()
+                                      or b'refstorage' in value[1].lower()):
+                return None
+        packed = _file(common / 'packed-refs', 1024 * 1024, deadline, collect=True)
+        # A packed replace ref could redirect HEAD to a different object whose
+        # storage is not covered by the direct-HEAD object stat set.
+        if packed is not None and b'refs/replace/' in packed[1]:
+            return None
+        disabled = (common / 'objects/info/alternates', common / 'objects/info/http-alternates',
+                    common / 'info/grafts', common / 'shallow', common / 'reftable')
+        if any(os.path.lexists(path) for path in disabled):
+            return None
+        replace = common / 'refs/replace'
+        try:
+            replace_info = replace.lstat()
+        except FileNotFoundError:
+            replace_info = None
+        if replace_info is not None and (not stat.S_ISDIR(replace_info.st_mode)
+                                         or any(replace.iterdir())):
+            return None
+        git = shutil.which('git', path=_env().get('PATH'))
+        if not git:
+            return None
+        resolved_git = Path(git).resolve(strict=True)
+        env_digest = hashlib.sha256(json.dumps(_env(), sort_keys=True, ensure_ascii=True,
+                                   separators=(',', ':')).encode('ascii')).hexdigest()
+        tool_paths = [Path(git), resolved_git]
+        selection = Path('/private/var/db/xcode_select_link')
+        if sys.platform == 'darwin' and resolved_git == Path('/usr/bin/git'):
+            def tool_stamp(path):
+                try:
+                    info = path.lstat()
+                    return (info.st_mode, info.st_dev, info.st_ino, info.st_size,
+                            info.st_mtime_ns, info.st_ctime_ns,
+                            os.readlink(path) if stat.S_ISLNK(info.st_mode) else None)
+                except FileNotFoundError:
+                    return None
+            tool_key = (os.getpid(), env_digest, tool_stamp(resolved_git), tool_stamp(selection))
+            saved_tool = getattr(_capture_cache, 'tool', None)
+            if saved_tool is None or saved_tool[0] != tool_key:
+                _, exec_path = _git(['--exec-path'], project, deadline)
+                exec_path = Path(exec_path)
+                if (not exec_path.is_absolute() or exec_path.name != 'git-core'
+                        or exec_path.parent.name != 'libexec'):
+                    return None
+                delegated = exec_path.parent.parent / 'bin/git'
+                if not str(delegated).startswith(('/Library/Developer/', '/Applications/')):
+                    return None
+                resolved_delegated = delegated.resolve(strict=True)
+                if (tool_stamp(selection) is None
+                        and delegated != Path('/Library/Developer/CommandLineTools/usr/bin/git')):
+                    return None
+                _capture_cache.tool = (tool_key, delegated, resolved_delegated)
+            else:
+                delegated, resolved_delegated = saved_tool[1:]
+            tool_paths.extend((selection, delegated, resolved_delegated))
+        tool_filesystems = tuple(_cache_filesystem(path) for path in (resolved_git, *tool_paths[-2:]))
+        if any(value is None for value in tool_filesystems):
+            return None
+        paths = {project, checkout, admin, common, checkout / '.git', admin / 'HEAD',
+                 admin / 'index', admin / 'commondir', admin / 'gitdir',
+                 common / 'config', admin / 'config.worktree', common / 'packed-refs',
+                 common / 'packed-refs.lock', common / 'refs/replace', common / 'objects',
+                 common / 'objects/info', common / 'objects/info/packs', common / 'objects/pack',
+                 common / 'objects' / oid[:2], common / 'objects' / oid[:2] / oid[2:],
+                 *disabled, *tool_paths}
+        if target is not None:
+            paths.add(target)
+        paths.update(admin / marker for marker in MARKERS)
+        pack = common / 'objects/pack'
+        try:
+            pack_names = sorted(os.listdir(pack))
+        except FileNotFoundError:
+            pack_names = []
+        if len(pack_names) > 1024:
+            return None
+        paths.update(pack / name for name in pack_names)
+        if any(not stat.S_ISREG((pack / name).lstat().st_mode) for name in pack_names):
+            return None
+        expanded = set(paths)
+        for path in paths:
+            expanded.update(path.parents)
+        if len(expanded) > 4096:
+            return None
+        stamps = []
+        for path in sorted(expanded, key=str):
+            _remaining(deadline)
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                stamps.append((str(path), None))
+                continue
+            if ((path == admin or admin in path.parents) and info.st_dev != admin_device
+                    or (path == common or common in path.parents) and info.st_dev != common_device):
+                return None
+            if stat.S_ISLNK(info.st_mode):
+                if path not in tool_paths:
+                    return None
+                link = os.readlink(path)
+            else:
+                link = None
+            if stat.S_ISDIR(info.st_mode) and path not in paths:
+                # Ancestors prove path identity, not unrelated sibling changes.
+                stamp = (info.st_mode, info.st_dev, info.st_ino, 0, 0, 0, 0, link)
+            else:
+                stamp = (info.st_mode, info.st_dev, info.st_ino, info.st_size,
+                         info.st_mtime_ns, info.st_ctime_ns, info.st_nlink, link)
+            stamps.append((str(path), stamp))
+        return (tuple(stamps), tuple(pack_names), branch, oid, env_digest, filesystems, tool_filesystems)
+    except (CheckoutUnavailable, OSError, ValueError, TypeError, OverflowError, AttributeError, subprocess.SubprocessError):
+        if time.monotonic() >= deadline:
+            _fail('checkout_budget_exhausted')
+        return None
+
+
+def _capture_facts(project_root, repository, worktree, deadline):
+    before = _cache_fingerprint(project_root, repository, worktree, deadline)
+    now_wall, now_mono, pid = time.time_ns(), time.monotonic(), os.getpid()
+    entry = getattr(_capture_cache, 'entry', None)
+    def settled(stamp, verified_wall):
+        return all(info is None or (info[4] // 1000000000 < verified_wall // 1000000000
+                   and info[5] // 1000000000 < verified_wall // 1000000000)
+                   for _, info in stamp[0])
+    if (before is not None and entry is not None and entry[0] == pid
+            and now_wall >= entry[1] and now_mono >= entry[2]
+            and before == entry[3] and settled(before, entry[1])):
+        return copy.deepcopy(entry[4])
+    facts = _stable(project_root, deadline)
+    _repository(repository, facts)
+    _worktree(worktree, repository, facts)
+    after = _cache_fingerprint(project_root, repository, worktree, deadline)
+    verified_wall, verified_mono = time.time_ns(), time.monotonic()
+    if (verified_wall >= now_wall and verified_mono >= now_mono
+            and before is not None and before == after and before[2] is not None
+            and before[2] == facts['branchKey'] and before[3] == facts['headOid']
+            and settled(before, verified_wall)):
+        _capture_cache.entry = (pid, verified_wall, verified_mono, before, copy.deepcopy(facts))
+    else:
+        _capture_cache.entry = None
+    return facts
+
+
+def capture_view(project_root, repository, worktree, *, deadline=None, fresh=False):
+    if type(fresh) is not bool:
+        _fail('invalid_checkout_value')
+    limit = _deadline(deadline)
+    if fresh:
+        _capture_cache.entry = None
+        facts = _stable(project_root, limit)
+    else:
+        facts = _capture_facts(project_root, repository, worktree, limit)
     _repository(repository, facts)
     _worktree(worktree, repository, facts)
     value = {'schema': CAPTURE_SCHEMA, 'projectRoot': facts['project']['path'],
@@ -541,14 +788,14 @@ def capture_view(project_root, repository, worktree, *, deadline=None):
     return {**value, 'checkoutDigest': _digest(value)}
 
 
-def capture_matches(capture, repository, worktree, *, deadline=None, _raise_timeout=False):
+def capture_matches(capture, repository, worktree, *, deadline=None, fresh=False, _raise_timeout=False):
     try:
         if (not _capture_shape(capture)
                 or _digest({key: value for key, value in capture.items()
                             if key != 'checkoutDigest'}) != capture['checkoutDigest']):
             return False
         return capture_view(capture['projectRoot'], repository, worktree,
-                            deadline=deadline) == capture
+                            deadline=deadline, fresh=fresh) == capture
     except CheckoutUnavailable as exc:
         if _raise_timeout and exc.reason == 'checkout_budget_exhausted':
             raise

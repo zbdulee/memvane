@@ -9,6 +9,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
+import time
 
 import laya_blob_values as v
 import laya_index_a as legacy
@@ -28,9 +29,10 @@ SOURCE_FIELDS = ('path', 'fingerprint_id', 'presence')
 MEMBER_FIELDS = ('path', 'blob_sha', 'display_title', 'trust_digest')
 HEAD_FIELDS = ('view_id', 'gen_id', 'epoch', 'incarnation')
 VIEW_FIELDS = ('view_id', 'worktree_id', 'branch_key', 'head_oid', 'checkout_digest', 'policy_digest')
-STAGE_FIELDS = ('schema', 'build_id', 'incarnation', 'view', 'worktree_binding', 'settings_sha',
+STAGE_FIELDS = ('schema', 'build_id', 'incarnation', 'view', 'worktree_binding',
                 'base', 'manifest_digest', 'manifest', 'skip_paths', 'files', 'vector_mode', 'vector_spec')
 STAGE_SCHEMA = 'memvane-generation-stage-v2'
+LEGACY_STAGE_SCHEMA = 'memvane-generation-stage-legacy-v1'
 VECTORS = vectors.coverage_digest(None, [])
 
 
@@ -64,7 +66,7 @@ def manifest(value, policy_digest):
     paths, ids, plain_sources = set(), set(), []
     for source in sources:
         v.exact(source, SOURCE_FIELDS)
-        v.relative(source['path']); v.identifier(source['fingerprint_id'])
+        v.source_path(source['path']); v.identifier(source['fingerprint_id'])
         if not isinstance(source['presence'], str) or source['presence'] not in PRESENCE:
             v.fail('source_presence_invalid')
         if source['path'] in paths or source['fingerprint_id'] in ids:
@@ -128,35 +130,141 @@ def skipped(path, patterns):
     return False
 
 
-def fts_rows(bodies, titles=None):
+def fts_rows(bodies, titles=None, fts_paths=None, *, deadline=None):
     """CJK-spaced view path/title/body; identical inputs retain v6 ranking."""
-    return [dict(filepath=legacy._qmd_fts_text(path),
-                 title=legacy._qmd_fts_text(titles[path] if titles is not None else legacy._qmd_title(body, path)),
-                 body=legacy._qmd_fts_text(body), path_key=path)
-            for path, body in sorted(bodies.items())]
+    if deadline is not None and time.monotonic() >= deadline:
+        v.fail('fts_deadline_exceeded')
+    normalized, rows = {}, []
+    for path, body in sorted(bodies.items()):
+        if deadline is not None and time.monotonic() >= deadline:
+            v.fail('fts_deadline_exceeded')
+        if body not in normalized:
+            normalized[body] = legacy._qmd_fts_text(body, deadline=deadline)
+        rows.append(dict(filepath=legacy._qmd_fts_text(path if fts_paths is None else fts_paths[path], deadline=deadline),
+                         title=legacy._qmd_fts_text(titles[path] if titles is not None else legacy._qmd_title(body, path), deadline=deadline),
+                         body=normalized[body], path_key=path))
+    if deadline is not None and time.monotonic() >= deadline:
+        v.fail('fts_deadline_exceeded')
+    return rows
 
 
 def view_fields(handle):
     return {k: getattr(handle, k) for k in VIEW_FIELDS}
 
 
-def stage(build_id, incarnation, handle, saved, base, value, skips, files, vector_spec=None):
-    return _plain(dict(schema=STAGE_SCHEMA, build_id=build_id, incarnation=incarnation,
-                       view=view_fields(handle), worktree_binding=saved['binding_digest'],
-                       settings_sha=saved['settings_sha'], base=base,
+def stage(build_id, incarnation, handle, saved, base, value, skips, files, vector_spec=None, legacy=None):
+    result = dict(schema=STAGE_SCHEMA if legacy is None else LEGACY_STAGE_SCHEMA,
+                       build_id=build_id, incarnation=incarnation,
+                       view=view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
                        manifest_digest=manifest_digest(value), manifest=value,
                        skip_paths=skips, files=files, vector_mode=vectors.mode(vector_spec),
-                       vector_spec=vector_spec), MAX_MANIFEST_BYTES * 2)
+                       vector_spec=vector_spec)
+    if legacy is not None:
+        result['legacy'] = legacy
+    return _plain(result, MAX_MANIFEST_BYTES * 2)
 
 
 def check_stage(value, handle, incarnation):
-    v.exact(value, STAGE_FIELDS)
-    if (value['schema'] != STAGE_SCHEMA or value['view'] != view_fields(handle)
+    legacy = value.get('legacy') if isinstance(value, dict) else None
+    v.exact(value, STAGE_FIELDS if legacy is None else (*STAGE_FIELDS, 'legacy'))
+    if (value['schema'] != (STAGE_SCHEMA if legacy is None else LEGACY_STAGE_SCHEMA)
+            or value['view'] != view_fields(handle)
             or value['incarnation'] != incarnation
             or manifest(value['manifest'], handle.policy_digest) != value['manifest']
             or manifest_digest(value['manifest']) != value['manifest_digest']
             or skip_patterns({'skipPaths': value['skip_paths']}) != value['skip_paths']):
         v.fail('generation_binding_mismatch')
+    if legacy is not None:
+        if not isinstance(legacy, dict):
+            v.fail('generation_binding_mismatch')
+        base_keys = ('observation', 'paths', 'fts_paths', 'corpus_observation', 'corpus', 'scan', 'active_fts')
+        sidecar = any(key in legacy for key in ('sidecar_corpus', 'sidecar_observation',
+                                                'sidecar_commitment', 'fts_sources'))
+        v.exact(legacy, (*base_keys, 'sidecar_corpus', 'sidecar_observation', 'sidecar_commitment',
+                         'fts_sources')
+                if sidecar else base_keys)
+        v.identifier(legacy['observation'])
+        v.identifier(legacy['corpus_observation'])
+        v.exact(legacy['scan'], ('id', 'observed_ns'))
+        v.identifier(legacy['scan']['id'], v.UUID); v.integer(legacy['scan']['observed_ns'])
+        if legacy['scan']['id'] != value['manifest']['scan_id']:
+            v.fail('generation_binding_mismatch')
+        paths = legacy['paths']
+        if (type(paths) is not list or any(type(path) is not str for path in paths)
+                or paths != sorted(set(paths))
+                or paths != sorted(member['path'] for member in value['manifest']['members'])
+                or value['manifest']['sources'] or value['files'] or value['vector_spec'] is not None
+                or type(legacy['fts_paths']) is not dict or set(legacy['fts_paths']) != set(paths)):
+            v.fail('generation_binding_mismatch')
+        for path, full in legacy['fts_paths'].items():
+            v.relative(full)
+            if '/' not in full or full.split('/', 1)[1] != path:
+                v.fail('generation_binding_mismatch')
+        corpus = legacy['corpus']
+        if type(corpus) is not list or len(corpus) > MAX_MEMBERS:
+            v.fail('generation_binding_mismatch')
+        corpus_paths = []
+        for row in corpus:
+            v.exact(row, ('path', 'hash'))
+            v.relative(row['path']); v.identifier(row['hash'])
+            corpus_paths.append(row['path'])
+        if corpus_paths != sorted(set(corpus_paths)):
+            v.fail('generation_binding_mismatch')
+        corpus_hashes = {row['path']: row['hash'] for row in corpus}
+        sidecar_hashes, sidecar_titles = {}, {}
+        if sidecar:
+            v.identifier(legacy['sidecar_observation'])
+            sources = legacy['fts_sources']
+            if (type(sources) is not dict or set(sources) != set(paths)
+                    or any(source not in ('base', 'sidecar') for source in sources.values())):
+                v.fail('generation_binding_mismatch')
+            entries = legacy['sidecar_corpus']
+            if type(entries) is not list or len(entries) > MAX_MEMBERS:
+                v.fail('generation_binding_mismatch')
+            commitment = legacy['sidecar_commitment']
+            v.exact(commitment, ('rows', 'digest'))
+            v.integer(commitment['rows'], 0, MAX_MEMBERS); v.identifier(commitment['digest'])
+            if commitment['rows'] != len(entries):
+                v.fail('generation_binding_mismatch')
+            side_paths, rowids = [], set()
+            for item in entries:
+                v.exact(item, ('path', 'hash', 'title', 'rowid'))
+                v.relative(item['path']); v.identifier(item['hash'])
+                if (type(item['rowid']) is not int or not -(2**63) <= item['rowid'] < 2**63
+                        or item['rowid'] in rowids):
+                    v.fail('generation_binding_mismatch')
+                rowids.add(item['rowid'])
+                if type(item['title']) is not str:
+                    v.fail('generation_binding_mismatch')
+                try:
+                    if len(item['title'].encode('utf8')) > v.MAX_BODY:
+                        v.fail('generation_binding_mismatch')
+                except UnicodeError:
+                    v.fail('generation_binding_mismatch')
+                side_paths.append(item['path'])
+                sidecar_hashes[item['path']] = item['hash']
+                sidecar_titles[item['path']] = item['title']
+            if side_paths != sorted(set(side_paths)):
+                v.fail('generation_binding_mismatch')
+        active = legacy['active_fts']
+        v.exact(active, ('base', 'sidecar'))
+        if any(type(active[source]) is not dict for source in ('base', 'sidecar')):
+            v.fail('generation_binding_mismatch')
+        if set(active['base']) & set(active['sidecar']) or (not sidecar and active['sidecar']):
+            v.fail('generation_binding_mismatch')
+        for source, available in (('base', corpus_hashes), ('sidecar', sidecar_hashes)):
+            for path, digest in active[source].items():
+                v.relative(path); v.identifier(digest)
+                if available.get(path) != digest:
+                    v.fail('generation_binding_mismatch')
+        if any((sidecar_hashes if sidecar and legacy['fts_sources'][row['path']] == 'sidecar'
+                else corpus_hashes).get(legacy['fts_paths'][row['path']]) != row['blob_sha']
+               or (sidecar and legacy['fts_sources'][row['path']] == 'sidecar'
+                   and sidecar_titles.get(legacy['fts_paths'][row['path']]) != row['display_title'])
+               or legacy['active_fts'][legacy['fts_sources'][row['path']] if sidecar else 'base'].get(
+                   legacy['fts_paths'][row['path']]) != row['blob_sha']
+               for row in value['manifest']['members']):
+            v.fail('generation_binding_mismatch')
     vectors.check_stage(value['vector_mode'], value['vector_spec'])
     expected_head(value['base'], handle.view_id, incarnation)
     v.identifier(value['build_id'], v.UUID)

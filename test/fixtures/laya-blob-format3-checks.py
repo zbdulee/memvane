@@ -18,7 +18,9 @@ class FormatChecks(helpers.BlobStoreCase):
         import laya_blob_schema as schema
         store, repository, _ = self.create(path=self.state / 'seed.db')
         meta = dict(store._db.execute('SELECT * FROM store_meta').fetchone())
-        trees = [dict(row) for row in store._db.execute('SELECT * FROM worktrees')]
+        # The v2 worktree row also carried the settings path and byte digest.
+        trees = [dict(row, settings_path=str(self.root / '.memvane/settings.json'), settings_sha='0' * 64)
+                 for row in store._db.execute('SELECT * FROM worktrees')]
         store.close()
         frozen = json.loads((HERE / 'data/laya-blob-schema-v2.json').read_text('utf8'))
         self.assertEqual(frozen['source_commit'], '9f5421e3420c4f064ec21c0d95ffe909402e6537')

@@ -60,7 +60,7 @@ def _targets(plan):
 def _job(incarnation, handle, entry, saved, manifest, skips, recipe_id, profile_id, targets):
     identity = dict(schema=JOB_SCHEMA, incarnation=incarnation, view=vals.view_fields(handle),
                     capture=v.digest('memvane-fill-capture-v1', entry['capture']),
-                    worktree_binding=saved['binding_digest'], settings_sha=saved['settings_sha'],
+                    worktree_binding=saved['binding_digest'],
                     manifest_digest=vals.manifest_digest(manifest), skip_paths=skips,
                     recipe_id=recipe_id, profile_id=profile_id,
                     targets_digest=v.digest('memvane-fill-targets-v1', targets), target_count=len(targets))

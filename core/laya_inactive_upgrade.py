@@ -84,7 +84,8 @@ def _atomic_expected(path, old, new):
 
 
 def _sqlite_count(path, table):
-    with closing(sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True)) as db:
+    from laya_index_a import _query_only_uri
+    with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
         db.execute('PRAGMA query_only=ON')
         if db.execute('PRAGMA quick_check').fetchone() != ('ok',):
             _fail('inactive_upgrade_store_integrity_failed')
@@ -125,6 +126,7 @@ def _store_counts(identity):
                                      SCHEMA_VERSION as CATALOG_VERSION,
                                      _binding, _check_roots)
     from laya_incremental_docs import FILE as DOCS
+    from laya_index_a import _query_only_uri
     roots = _check_roots(wiki_index_roots(identity['collections']))
     schemas = {}
 
@@ -135,7 +137,9 @@ def _store_counts(identity):
                 info.st_uid != os.getuid() or info.st_nlink != 1 or
                 stat.S_IMODE(info.st_mode) & 0o077):
             _fail('inactive_upgrade_store_unsafe')
-        db = sqlite3.connect(source.as_uri() + '?mode=ro', uri=True,
+        # WAL stores: Apple's libsqlite3 refuses mode=ro once a stock build
+        # closed them without -wal/-shm.
+        db = sqlite3.connect(_query_only_uri(source), uri=True,
                              isolation_level=None, timeout=2)
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
@@ -205,6 +209,7 @@ def _backup(identity, old_record, old_route, old_attestation, counts):
     try:
         dbs = {key: identity[key] for key in _DB_KEYS}
         from laya_incremental_docs import FILE as DOCS
+        from laya_index_a import _query_only_uri
         sidecar = state / DOCS
         if sidecar.exists() or sidecar.is_symlink():
             dbs['incrementalDocs'] = str(sidecar)
@@ -218,7 +223,8 @@ def _backup(identity, old_record, old_route, old_attestation, counts):
                     stat.S_IMODE(info.st_mode) & 0o077):
                 _fail('inactive_upgrade_store_unsafe')
             target = staged / (key + '.sqlite')
-            with closing(sqlite3.connect(src.as_uri() + '?mode=ro', uri=True)) as source:
+            with closing(sqlite3.connect(_query_only_uri(src), uri=True)) as source:
+                source.execute('PRAGMA query_only=ON')
                 with closing(sqlite3.connect(target)) as copy:
                     source.backup(copy)
                     if copy.execute('PRAGMA integrity_check').fetchone() != ('ok',):
@@ -347,6 +353,7 @@ def _verify_backup(intent):
 def _verify_backup_full(intent):
     """Require the complete private snapshot before changing any metadata."""
     from laya_product_install import _read_private
+    from laya_index_a import _query_only_uri
     state = Path(intent['oldRecord']['identity']['stateRoot'])
     backup = Path(intent['backup'])
     if (backup.parent != state or not backup.name.startswith(BACKUP) or
@@ -378,7 +385,9 @@ def _verify_backup_full(intent):
                 info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077 or
                 _hash_private(path) != digest):
             _fail('inactive_upgrade_backup_changed')
-        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as db:
+        # A backup of a WAL store keeps the WAL header without sidecars.
+        with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
+            db.execute('PRAGMA query_only=ON')
             if db.execute('PRAGMA integrity_check').fetchone() != ('ok',):
                 _fail('inactive_upgrade_backup_changed')
     if ('candidateDb' not in receipt['dbSha256'] or

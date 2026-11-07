@@ -529,7 +529,22 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     A project that does not select a Laya route but has a registered
     inactive initial build runs one bounded build step instead
     (``run_initial_build``). Without one, the refusal is unchanged.
+
+    A completed sync (``indexed``/``unchanged``) then gives the private
+    shadow migration one bounded pass (``shadow_pass``). The pass runs after
+    every sync owner is released, and neither its outcome nor its failure
+    changes the returned sync result.
     """
+    result = _run_sync(project, coordinator=coordinator, report=report, start_service=start_service)
+    if isinstance(result, dict) and result.get('state') in ('indexed', 'unchanged'):
+        try:
+            shadow_pass(project)
+        except Exception:
+            pass  # shadow_pass records its own outcome; the sync stays done.
+    return result
+
+
+def _run_sync(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
     try:
         decision, proof = _selected(project)
     except ResourceDeferred as exc:
@@ -547,6 +562,33 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
                                  report=report, start_service=start_service)
     # A malformed route source fails before any model start or index write.
     source_root = _route_source(decision)
+    if _selected_store_format(decision) == 'schema3':
+        # The view store path loads no model and opens no v6 runtime or
+        # capacity store; discovery reads the view head, not the v6 lineage.
+        if qa_sync_barrier(decision) is not None:
+            raise IndexContractError('qa_barrier_schema3_unsupported')
+        grants = None
+        if not isinstance(source_root, str):
+            # Snapshot hook grants before the scan, as on the v6 path.
+            import laya_wiki_discovery
+            grants = laya_wiki_discovery.observe_grants(decision)
+        # One raw scan per pass: the main view's D2 observation is also the
+        # discovery snapshot (laya_wiki_discovery._raw_snapshot, same roots and bounds).
+        raw_scan = {}
+        result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
+                                     start_service=start_service, raw_scan=raw_scan)
+        result = _after_sync(decision, proof, grants, result, store_format='schema3',
+                             raw_snapshot=raw_scan.get('snapshot'))
+        vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
+        waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
+                   or [v for v in vectors if v['state'] in ('pending', 'deferred')])
+        if result.get('state') in ('indexed', 'unchanged') and waiting:
+            # The lexical generations are published and discovery ran; the
+            # wake stays until the views' vector generations are published,
+            # or ends ``blocked`` on a provider defect of the install.
+            state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
+            result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
+        return result
     grants = None
     if not isinstance(source_root, str):
         # v2 only. Snapshot hook grants before the scan; later ones stay live.
@@ -687,8 +729,875 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     return _after_sync(decision, proof, grants, result)
 
 
-def _after_sync(decision, proof, grants, result):
-    """Wiki discovery after a completed sync, on both sync paths.
+# One schema3 pass: wall budget and card ingests (each a Git capture). A
+# large change set stays ``pending`` over several passes. New cards publish
+# as they are ingested; while a published card's new bytes wait for a later
+# pass, the pass only prepares its progress (the head keeps serving the old
+# bytes) and the next pass carries those prepared members instead of
+# ingesting them again. A cold view (no published generation) only prepares.
+SCHEMA3_PASS_SECONDS = 45
+SCHEMA3_MAX_INGEST = 64
+# Ingest stops this long before the pass deadline so prepare/publish of the
+# ingested cards always fits; otherwise an over-budget pass would publish
+# nothing and the next one would redo the same ingests.
+SCHEMA3_PUBLISH_RESERVE = 15
+# The store binds the v6 settings identity (collections, roles, roots) and
+# the wiki root node in an immutable worktree row; a change refuses reads and
+# writes alike, and no in-place rebinding exists. Not transient.
+SCHEMA3_BINDING_REASONS = frozenset(('wiki_binding_changed', 'wiki_settings_changed',
+                                     'worktree_policy_mismatch', 'wiki_root_changed'))
+# A concurrent edit, Git operation or busy store: the next wake retries.
+SCHEMA3_TRANSIENT_REASONS = frozenset(('checkout_changed', 'fts_deadline_exceeded', 'candidate_busy',
+                                       'wiki_admission_changed', 'wiki_card_changed',
+                                       'wiki_member_changed', 'wiki_card_unavailable',
+                                       'source_file_changed', 'reader_snapshot_deadline'))
+_SCHEMA3_ROOT_META = frozenset(('SCHEMA.md', 'index.md', 'log.md'))
+
+
+def _selected_store_format(decision):
+    """Store format of the journal's preferred reader endpoint (v4: ``v6``)."""
+    import laya_install_journal as journal
+    import laya_journal_reader as readers
+    with journal.read_only_journals():
+        if journal.journal_version(decision['journalPath']) != 5:
+            return 'v6'
+        for attempt in range(3):
+            path = readers._journal(decision['journalPath'])
+            try:
+                with readers._readonly(path, path.parent) as db:
+                    return readers._selection(db)[1].get('store_format')
+            except JournalEvidenceError as exc:
+                if str(exc) != 'reader_store_changed' or attempt == 2:
+                    raise
+
+
+def _run_schema3(decision, proof, *, coordinator=None, report=None,
+                 start_service=start_owned_embed_service, raw_scan=None):
+    """One publish pass of the selected schema3 view store (main view, then linked views).
+
+    Admission is the sync owner plus a worker writer scope over the current
+    plan; the plan must still name a schema3 store. No v6 runtime opens. The
+    provider lane is taken only when a view's vector fill has content no
+    store set holds yet (``_schema3_vectors``). Returns ``(result, proof)``:
+    a publish advances the journal epoch, so ``_after_sync`` rechecks
+    against the proof the pass ended with. A pass that published the main
+    view's first vector generation re-seals the selected record so recall
+    asks for query vectors (``resettle_selection``).
+    """
+    from contextlib import ExitStack
+    import laya_install_journal as journal
+    import laya_journal_reader as journal_readers
+    import laya_reader_windows as windows
+    import laya_writer_proof_reader as readers
+    import laya_writer_open_plan as plans
+    import laya_writer_scope as normal
+    from laya_reader_windows import ReaderWindowBusy
+    project = Path(decision['projectRoot'])
+    try:
+        with sync_owner(Path(decision['queuePath'])) as owner:
+            if owner is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}, proof
+            # The owner re-seals the selected reader when only the project's
+            # recall settings changed; recall never does (it refuses until then).
+            try:
+                resettle = journal_readers.resettle_selection(Path(decision['journalPath']).parent, project,
+                                                              _writer_executing_root())
+            except JournalEvidenceError as exc:
+                resettle = str(exc)
+            try:
+                try:
+                    with journal.read_only_journals():
+                        plan = plans.capture_writer_plan(project, executing_root=_writer_executing_root())
+                except JournalEvidenceError as exc:
+                    if str(exc) == 'writer_windows_not_prepared':
+                        raise ResourceDeferred(str(exc)) from exc
+                    raise
+                if plans.plan_store(plan) is None:
+                    raise IndexContractError('selected_store_format_changed')
+                try:
+                    with ExitStack() as lane, \
+                            normal.worker_writer_scope(plan, queue_owner=owner, operation_timeout=2) as writer:
+                        if normal.admission_proof(writer) != proof:
+                            raise IndexContractError('selected_proof_changed')
+                        vectors = _schema3_vector_context(
+                            decision, proof, lane, coordinator=coordinator, report=report,
+                            start_service=start_service)
+                        vectors['rawScan'] = raw_scan
+                        result, proof = _publish_schema3(decision, proof, writer, vectors)
+                    if (result.get('vector') or {}).get('state') == 'published':
+                        # The writer scope is closed; the owner still holds the queue.
+                        try:
+                            adopted = journal_readers.resettle_selection(
+                                Path(decision['journalPath']).parent, project, _writer_executing_root())
+                        except JournalEvidenceError as exc:
+                            adopted = str(exc)
+                        if adopted != 'unchanged':
+                            resettle = adopted
+                    if resettle != 'unchanged':
+                        result = {**result, 'readerResettle': resettle}
+                    return result, proof
+                except ReaderWindowBusy as exc:
+                    if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
+                                    'reader_lifetime_busy'):
+                        raise ResourceDeferred(str(exc)) from exc
+                    raise
+            finally:
+                try:
+                    windows.drain_pending(deadline=time.monotonic()+2)
+                finally:
+                    readers.drain_proof_readers(deadline=time.monotonic()+2)
+                if windows.local_pending_count() or readers.local_pending_proof_readers():
+                    raise ResourceDeferred('writer_cleanup_unsettled')
+    except ResourceDeferred as exc:
+        return _deferred(exc), proof
+
+
+def _schema3_wiki_cards(root):
+    """Sorted card paths under the bound wiki root: regular ``.md`` files only.
+
+    Dot segments, root meta pages and links are not cards; a file the store
+    would refuse to admit (not owned, linked, too large) is counted, not read.
+    """
+    import laya_blob_values as v
+    import laya_view_values as view_values
+    cards, skipped = [], 0
+    for base, dirs, files in os.walk(root, followlinks=False):
+        dirs[:] = sorted(name for name in dirs if not name.startswith('.'))
+        relative = os.path.relpath(base, root)
+        for name in sorted(files):
+            if name.startswith('.') or not name.endswith('.md'):
+                continue
+            path = name if relative == '.' else relative.replace(os.sep, '/') + '/' + name
+            if path in _SCHEMA3_ROOT_META:
+                continue
+            try:
+                info = os.lstat(os.path.join(base, name))
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_size > v.MAX_BODY):
+                skipped += 1
+                continue
+            cards.append(path)
+            if len(cards) > view_values.MAX_MEMBERS:
+                raise IndexContractError('schema3_wiki_too_many_cards')
+    return sorted(cards), skipped
+
+
+# Linked git worktrees whose own views one pass may publish after the main
+# view (``git worktree list`` order). Later ones wait for the next wake.
+SCHEMA3_MAX_LINKED = 16
+# Refusals that hold one linked worktree's view (its row, settings or wiki
+# root no longer match, or registration is refused) without failing the pass.
+SCHEMA3_LINKED_HELD = SCHEMA3_BINDING_REASONS | frozenset(('worktree_binding_conflict',
+                                                           'worktree_missing', 'wiki_binding_invalid',
+                                                           'candidate_io_failed'))
+
+
+def _publish_schema3(decision, proof, writer, vectors=None):
+    """Main view first, then each linked worktree's own view (design 5.2).
+
+    Changed cards only: head members with the same bytes keep their trust. A
+    linked worktree is published only while the main view is complete
+    (``indexed``/``unchanged``); its refusals hold that view alone. One
+    ``vectors`` context (``_schema3_vector_context``) serves every view of
+    the pass, so content two views share is embedded once.
+
+    Returns ``(result, proof)``; ``proof`` is the writer's fresh admission
+    proof once this pass marked its first write.
+    """
+    if vectors is None:
+        vectors = {'spec': None}
+    import laya_blob_values as v
+    import laya_checkout_view as checkout
+    import laya_writer_scope as normal
+    from laya_view_store import ViewStore
+    info = normal.writer_store(writer)
+    deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
+    store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
+    try:
+        if (store._incarnation, store._policy) != (info['incarnation'], info['policy_digest']):
+            raise IndexContractError('schema3_store_changed')
+        marks = {}
+        result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
+                                       info['worktree_binding'], deadline, marks, vectors,
+                                       raw_scan=vectors.get('rawScan'))
+        if result['state'] not in ('indexed', 'unchanged'):
+            return result, marks.get('proof', proof)
+        linked = []
+        for project in _schema3_linked_projects(decision, deadline):
+            if time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE:
+                linked.append({'root': str(project), 'state': 'pending', 'reason': 'schema3_pass_budget'})
+                continue
+            try:
+                linked_decision = _linked_decision(decision, project)
+            except ValueError:
+                linked.append({'root': str(project), 'state': 'held',
+                               'reason': 'linked_root_outside_project'})
+                continue
+            try:
+                worktree_id = _schema3_linked_worktree(store, writer, proof, info, project,
+                                                       deadline, marks)
+                outcome = _publish_schema3_view(store, writer, linked_decision,
+                                                proof, worktree_id, None, deadline, marks, vectors)
+            except checkout.CheckoutUnavailable as exc:
+                outcome = {'state': 'held', 'reason': exc.reason}
+            except v.BlobStoreError as exc:
+                if exc.reason not in SCHEMA3_LINKED_HELD:
+                    raise
+                outcome = {'state': 'held', 'reason': exc.reason}
+            if outcome['state'] == 'deferred' and outcome['reason'] in (
+                    'schema3_binding_changed', 'schema3_mass_removal_held'):
+                # Retrying cannot clear these; that view keeps its last head.
+                outcome = {**outcome, 'state': 'held'}
+            linked.append({'root': str(project), **{k: outcome[k] for k in
+                           ('state', 'reason', 'generation', 'ingested', 'pending', 'vector')
+                           if k in outcome}})
+    finally:
+        store.close()
+    proof = marks.get('proof', proof)
+    if not linked:
+        return result, proof
+    result = {**result, 'worktrees': linked}
+    if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
+        result['state'] = 'indexed'
+    if any(item['state'] in ('pending', 'deferred') for item in linked):
+        result['state'] = 'pending'
+    return result, proof
+
+
+def _schema3_linked_projects(decision, deadline):
+    """Linked worktrees of the main checkout that the route selector serves from it.
+
+    Each listed worktree's project must classify as ``worktree`` of exactly
+    this main project (same common Git dir, no route of its own, same derived
+    settings identity: ``laya_index_host_route._worktree_route``).
+    """
+    import git_branch_safety
+    project = Path(decision['projectRoot'])
+    try:
+        facts = git_branch_safety.repo_facts(project, deadline=deadline)
+        if facts is None or facts['linked']:
+            return []
+        relative = project.relative_to(facts['toplevel'])
+        out = git_branch_safety.run_git(['worktree', 'list', '--porcelain', '-z'], project,
+                                        deadline=deadline)
+    except (git_branch_safety.GitUnavailable, OSError, ValueError):
+        return []
+    listed = [field[len('worktree '):] for field in
+              out.stdout.decode('utf-8', 'surrogateescape').split('\0')
+              if field.startswith('worktree ')]
+    found = []
+    for root in listed[1:]:
+        if len(found) >= SCHEMA3_MAX_LINKED:
+            break
+        try:
+            candidate = Path(root).resolve(strict=True) / relative
+            if not candidate.is_dir():
+                continue
+            route = select_route(str(candidate), action='index')
+        except (OSError, RuntimeError, ValueError):
+            continue
+        main = route.get('mainRoute')
+        if (route.get('state') == 'worktree' and isinstance(main, dict)
+                and main.get('projectRoot') == str(project)
+                and route.get('worktreeProjectRoot') == str(candidate)):
+            found.append(candidate)
+    return found
+
+
+def _schema3_linked_worktree(store, writer, proof, info, project, deadline, marks):
+    """The linked worktree's registered id, registering it on first sight.
+
+    Registration is a store write, so the pass's journal fence comes first.
+    The record is built by ``laya_checkout_view.register_worktree`` and bound
+    by ``ViewStore.register_worktree`` (no rebinding of an existing row).
+    """
+    import laya_checkout_view as checkout
+    with store._session() as db:
+        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                          (str(project),)).fetchall()
+    if len(rows) > 1 or any(row[0] == info['worktree_id'] for row in rows):
+        raise IndexContractError('schema3_worktree_rows_invalid')
+    if rows:
+        return rows[0][0]
+    _mark_schema3_write(writer, proof, marks)
+    record = checkout.register_worktree(str(project), info['repository'], deadline=deadline)
+    return store.register_worktree(str(project), record)
+
+
+def _linked_decision(decision, project):
+    """The main decision with its collection roots rebased onto a linked worktree.
+
+    Same derived settings identity (proved by the selector); only
+    ``projectRoot`` and the roots move, as the store's attested-ingest rule
+    binds the decision to that worktree row's project and wiki root.
+    """
+    main = Path(decision['projectRoot'])
+
+    def rebased(root):
+        return str(project / Path(root).relative_to(main))
+    return {**decision, 'projectRoot': str(project),
+            'collections': [{**item, 'sourceRoot': rebased(item['sourceRoot'])}
+                            for item in decision['collections']],
+            'collectionRoots': {name: rebased(root)
+                                for name, root in decision.get('collectionRoots', {}).items()}}
+
+
+def _mark_schema3_write(writer, proof, marks):
+    """The pass's first store write: one journal fence (idempotent after the first).
+
+    ``proof`` is the pass's admission proof; the fresh one is kept in
+    ``marks['proof']`` for ``_after_sync``.
+    """
+    import laya_writer_scope as normal
+    fresh = normal.mark_new_write(writer)
+    if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
+            or fresh.get('productRouteAllowed') is not True):
+        raise IndexContractError('new_write_proof_unconfirmed')
+    marks['proof'] = fresh
+
+
+def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
+                          vectors=None, *, raw_scan=None):
+    """One view's pass: changed cards ingested, unchanged members keep their trust.
+
+    ``binding`` is the main worktree's journal-recorded binding (None for a
+    linked worktree, whose row the store itself re-observes). A view with no
+    head yet (a first-seen worktree or branch) ingests every card: trust is
+    never reused from another view (``ViewStore._card``: ``foreign_card_trust``).
+
+    The manifest's ``sources`` are this pass's raw source observation
+    (``_schema3_sources``, design D2). With the install provider's vector
+    spec (``vectors``), a complete fill publishes the manifest as a vector
+    generation; otherwise the lexical generation is published and the
+    result's ``vector`` names why the vectors wait. An unchanged lexical head
+    gets its vector generation from the same manifest.
+    """
+    import laya_blob_values as v
+    import laya_writer_scope as normal
+    import wiki_lifecycle
+    from laya_blob_store import _regular
+    import laya_view_values as view_values
+    from laya_view_store import _skip_patterns
+    import uuid
+    if vectors is None:
+        vectors = {'spec': None}
+    try:
+        handle = store.capture_view(worktree_id, deadline=deadline)
+        head = store.head(handle)
+        cold = head['gen_id'] is None
+        with store._session() as db:
+            row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
+            # A cold view publishes nothing until complete; its progress is
+            # the newest generation it prepared and never published.
+            base = (head['gen_id'] if not cold else next(iter(db.execute(
+                "SELECT gen_id FROM generations WHERE view_id=? AND state='prepared' "
+                'ORDER BY ordinal DESC LIMIT 1', (handle.view_id,)).fetchone() or ()), None))
+            old = {} if base is None else {m['path']: m for m in store._stored(db, base)[0]}
+            # Progress of an unfinished change set: the newest generation
+            # prepared over this head. Its members passed prepare's byte check;
+            # one whose bytes are still current is carried, not re-ingested.
+            carry = {}
+            if not cold:
+                staged = db.execute(
+                    "SELECT g.gen_id,s.stage_json FROM generations g JOIN generation_slots s "
+                    "ON s.ordinal=g.ordinal WHERE g.view_id=? AND g.state='prepared' "
+                    'ORDER BY g.ordinal DESC LIMIT 1', (handle.view_id,)).fetchone()
+                over = staged and v.parse_canonical(staged[1]).get('base')
+                if over and (over.get('gen_id'), over.get('epoch')) == (head['gen_id'], head['epoch']):
+                    carry = {m['path']: m for m in store._stored(db, staged[0])[0]}
+        if row is None or (binding is not None and row['binding_digest'] != binding):
+            v.fail('wiki_binding_changed')
+        root = row['wiki_root']
+        found, skipped = _schema3_wiki_cards(root)
+        # skipPaths is read each pass, outside the binding: a card it newly
+        # covers leaves the generation (not a file removal), one it no longer
+        # covers is ingested like a new card.
+        skips = _skip_patterns(dict(row))
+        paths = [p for p in found if not view_values.skipped(p, skips)]
+        removed = sorted(set(old) - set(found))
+        excluded = sorted(set(old) & (set(found) - set(paths)))
+        current = {}
+        for path in paths:
+            try:
+                raw, _node, _root = _regular(root, path, v.MAX_BODY)
+            except OSError:
+                v.fail('wiki_card_unavailable')
+            current[path] = (v.hash_bytes(raw), raw)
+        changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
+        if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
+                and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
+            return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
+                    'storeFormat': 'schema3', 'removed': len(removed)}
+        observed = _schema3_sources(decision, handle, deadline, raw_scan=raw_scan)
+        stored = None if cold else _schema3_stage(store, head['gen_id'])
+        if (not changed and not removed and not excluded and not cold
+                and _schema3_sources_same(store, stored['manifest'], observed, handle)):
+            vector = _schema3_vectors(store, writer, proof, marks, handle, stored['manifest'],
+                                      stored['vector_spec'], vectors, deadline)
+            if vector['state'] != 'complete':
+                return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
+                        'vector': vector}
+            generation = store.prepare_generation(handle, stored['manifest'], expected_head=head,
+                                                  vector_spec=vectors['spec'], deadline=deadline)
+            normal.validate_normal_writer(writer)
+            store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+            return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
+                    'ingested': 0, 'removed': 0, 'pending': 0, 'skipped': skipped,
+                    'sources': len(observed), 'vector': dict(vector, state='published')}
+        # First store write of this pass: the journal fence comes first.
+        _mark_schema3_write(writer, proof, marks)
+        scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
+        members, pending, ingested, held = {}, 0, 0, 0
+        keys = ('path', 'blob_sha', 'display_title', 'trust_digest')
+        for path in paths:
+            sha, raw = current[path]
+            if path not in changed:
+                members[path] = {k: old[path][k] for k in keys}
+                continue
+            if path in carry and carry[path]['blob_sha'] == sha:
+                members[path] = {k: carry[path][k] for k in keys}
+                continue
+            if (pending or ingested >= SCHEMA3_MAX_INGEST
+                    or time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE):
+                # Left for the next wake. No generation may name its old blob
+                # (prepare checks current bytes); while it is in the head, this
+                # pass publishes nothing and the head keeps serving it.
+                pending += 1
+                held += path in old
+                continue
+            admitted = store.ingest_attested_card(worktree_id, path, decision=decision,
+                                                  provenance_scan=scan)
+            ingested += 1
+            body = (raw.decode('utf8') if admitted['blob_sha'] == sha
+                    else store.document(admitted['blob_sha'])['body'])
+            members[path] = dict(path=path, blob_sha=admitted['blob_sha'],
+                                 display_title=v.markdown_title(body, admitted['blob_sha']),
+                                 trust_digest=admitted['trust_digest'])
+        if pending and not ingested and not removed and not excluded:
+            return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
+        sources = _schema3_put_sources(store, handle, scan, observed)
+        manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
+                        complete=True, sources=sources, members=[members[p] for p in sorted(members)])
+        staging = pending and (cold or held)
+        vector = {'state': 'pending', 'reason': 'schema3_view_preparing'}
+        if not staging:
+            vector = _schema3_vectors(store, writer, proof, marks, handle, manifest, None,
+                                      vectors, deadline)
+        spec = vectors['spec'] if vector['state'] == 'complete' else None
+        generation = store.prepare_generation(handle, manifest, expected_head=head,
+                                              vector_spec=spec, deadline=deadline)
+        normal.validate_normal_writer(writer)
+        if cold and pending:
+            # No partial first generation: recall answers view_preparing until complete.
+            return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
+                    'generation': None, 'prepared': generation, 'ingested': ingested,
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped}
+        if staging:
+            # Published cards wait for new bytes: the head stays, the prepared
+            # progress is the next pass's carry.
+            return {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
+                    'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped}
+        store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+    except v.BlobStoreError as exc:
+        if exc.reason in SCHEMA3_BINDING_REASONS:
+            return {'state': 'deferred', 'reason': 'schema3_binding_changed',
+                    'detail': exc.reason, 'storeFormat': 'schema3'}
+        if exc.reason in SCHEMA3_TRANSIENT_REASONS:
+            return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
+        raise
+    if vector['state'] == 'complete':
+        vector = dict(vector, state='published')
+    return {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
+            'generation': generation, 'ingested': ingested, 'removed': len(removed),
+            'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector}
+
+
+def _schema3_stage(store, gen_id):
+    """The sealed stage of a published generation: its manifest and vector spec."""
+    import laya_blob_values as v
+    with store._session() as db:
+        row = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
+                         'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (gen_id,)).fetchone()
+    if row is None:
+        v.fail('generation_missing')
+    stage = v.parse_canonical(row[0])
+    return {'manifest': stage['manifest'], 'vector_spec': stage['vector_spec']}
+
+
+# Raw source observation of one view (design D2): the same bounded raw scan
+# v6 discovery runs (laya_wiki_discovery._raw_snapshot), recorded as observed
+# source fingerprints of this view's worktree, branch and HEAD. Only names,
+# hashes and lengths are kept.
+def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
+    """``{project-relative path: (sha256, byte_length, tracked_state)}`` of the raw roots.
+
+    A completed scan also leaves ``raw_scan['snapshot']`` (``{collection/relative:
+    sha256}``, the discovery snapshot shape); a scan over its bounds leaves
+    none, so discovery scans (and blocks) on its own.
+    """
+    import git_branch_safety
+    from laya_index_source_port import scan_collections
+    from laya_wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
+    project = Path(decision['projectRoot'])
+    roots = {item['name']: item['sourceRoot'] for item in decision['collections'] if item.get('role') == 'raw'}
+    if not roots:
+        return {}
+    try:
+        scan = scan_collections(roots, decision['scopeId'], None, max_files=RAW_SCAN_MAX_FILES,
+                                max_bytes=RAW_SCAN_MAX_BYTES)
+    except (IndexContractError, ValueError, OSError):
+        # Over the scan bounds or unreadable: the generation names no
+        # sources (as before D2) instead of holding the wiki publish.
+        return {}
+    if raw_scan is not None:
+        raw_scan['snapshot'] = {item.path: item.sha256 for item in scan.files if item.eligible}
+    observed = {}
+    for item in scan.files:
+        name, rel = item.path.split('/', 1)
+        try:
+            path = (Path(roots[name]) / rel).relative_to(project).as_posix()
+        except ValueError:
+            continue  # a raw root outside the project names no project-relative source
+        observed[path] = [item.sha256, len(item.data), 'unknown']
+    if handle.branch_key != 'non-git' and observed:
+        try:
+            # Literal pathspecs (git_branch_safety); output is relative to the project.
+            specs = sorted({Path(root).relative_to(project).as_posix() for root in roots.values()
+                            if Path(root) == project or project in Path(root).parents})
+            listed = git_branch_safety.run_git(['ls-files', '-z', '--', *specs], project,
+                                               deadline=deadline)
+            tracked = set(listed.stdout.decode('utf-8', 'surrogateescape').split('\0'))
+            for path, value in observed.items():
+                value[2] = 'tracked' if path in tracked else 'untracked'
+        except (git_branch_safety.GitUnavailable, OSError, ValueError):
+            pass  # unknown tracked state: observed, never deletion authority
+    return {path: tuple(value) for path, value in observed.items()}
+
+
+def _schema3_sources_same(store, manifest, observed, handle):
+    """The stored manifest's sources are exactly this observation at the same HEAD."""
+    if len(manifest['sources']) != len(observed):
+        return False
+    with store._session():
+        for source in manifest['sources']:
+            if source['presence'] != 'present' or source['path'] not in observed:
+                return False
+            spec = store._fingerprint(source['fingerprint_id'])
+            if ((spec['source_sha'], spec['byte_length'], spec['tracked_state']) != observed[source['path']]
+                    or (spec['worktree_id'], spec['branch_key'], spec['head_oid'], spec['binding_state'])
+                    != (handle.worktree_id, handle.branch_key, handle.head_oid, 'observed')):
+                return False
+    return True
+
+
+def _schema3_put_sources(store, handle, scan, observed):
+    """Record this scan's observed fingerprints in one write; returns the manifest sources."""
+    sources = []
+    with store._session(write=True) as db:
+        for path in sorted(observed):
+            sha, length, tracked = observed[path]
+            fingerprint = store._put_fingerprint(db, dict(
+                worktree_id=handle.worktree_id, branch_key=handle.branch_key, path=path,
+                source_sha=sha, byte_length=length, head_oid=handle.head_oid, tracked_state=tracked,
+                binding_state='observed', scan_id=scan['id'], observed_ns=scan['observed_ns']))
+            sources.append({'path': path, 'fingerprint_id': fingerprint, 'presence': 'present'})
+    return sources
+
+
+class _VectorMemberBlocked(Exception):
+    """A document whose provider chunks the view recipe cannot reproduce."""
+
+
+class _VectorProviderBlocked(Exception):
+    """The install's provider cannot be proved (attestation, manifest or profile defect)."""
+
+
+# Provider proof failures retrying cannot clear: the vector wake ends ``blocked``.
+SCHEMA3_PROVIDER_DEFECTS = frozenset(('provider_manifest_invalid', 'selected_provider_profile_mismatch',
+                                      'worker_attestation_invalid', 'worker_attestation_changed',
+                                      'worker_runtime_files_invalid', 'worker_provider_unapproved'))
+
+
+def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start_service):
+    """Per-pass vector state: the install provider's spec and a lazily admitted provider.
+
+    ``acquire()`` takes the provider lane (``controller.activity``) and the
+    warm service on first use and keeps both in ``lane`` until the pass
+    ends; a refusal is remembered for the rest of the pass. The spec is None
+    when the provider recipe has no view recipe (the view stays lexical).
+    """
+    from laya_view_vectors import provider_spec
+    spec = _schema3_vector_spec(proof)
+    context = {'spec': spec, 'provider': None, 'refused': None, 'calls': 0, 'stash': {}}
+    if spec is None:
+        return context
+
+    def acquire(current):
+        if context['refused'] is not None:
+            if context.get('blocked'):
+                raise _VectorProviderBlocked(context['refused'])
+            raise ResourceDeferred(context['refused'])
+        if context['provider'] is not None:
+            return context['provider']
+        try:
+            try:
+                provider = ReviewedLocalQmdProvider(current['providerManifest'])
+            except IndexContractError as exc:
+                raise IndexContractError('provider_manifest_invalid') from exc
+            profile = current['vectorProfile']
+            if (provider.profile['profile_id'] != profile['profileId']
+                    or provider_spec(provider.manifest, profile) != spec):
+                raise IndexContractError('selected_provider_profile_mismatch')
+            manifest = _schema3_worker_manifest(decision, current)
+            if manifest != current['providerManifest']:
+                raise IndexContractError('selected_provider_proof_changed')
+            if start_service is start_owned_embed_service:
+                # Outside the provider lane: adoption is requested, never awaited.
+                from laya_embed_resident import ensure_running
+                ensure_running(decision['projectRoot'], manifest)
+            controller = coordinator or Coordinator()
+            observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
+            lane.enter_context(controller.activity('provider', EMBED_POLICY, observed))
+
+            def admit():
+                fresh = resource_report(EMBED_POLICY, detailed=True)
+                return controller.check(EMBED_POLICY, fresh)['ready']
+            service = _selected_service(decision, manifest, admit, start_service)
+            lane.callback(service.stop)
+        except (IndexContractError, JournalEvidenceError, OSError) as exc:
+            # A provider that cannot be proved or started holds the vectors,
+            # never the lexical publish of this pass. A defect of the install
+            # itself ends the wake as ``blocked`` (bounded by the wake policy,
+            # as v6); anything else is retried by a later wake.
+            context['refused'] = 'vector_provider_' + _code(exc)
+            if _code(exc) in SCHEMA3_PROVIDER_DEFECTS:
+                context['blocked'] = True
+                raise _VectorProviderBlocked(context['refused']) from exc
+            raise ResourceDeferred(context['refused']) from exc
+        except ResourceDeferred as exc:
+            context['refused'] = str(exc)
+            raise
+
+        def call(method, *args):
+            if _higher_priority_wake(controller):
+                raise ResourceDeferred('laya_sync_yield_priority')
+            context['calls'] += 1
+            try:
+                return method(*args)
+            except IndexContractError as exc:
+                if str(exc) == 'provider_member_refused':
+                    raise
+                # Socket, identity or result failures: retried by a later wake.
+                context['refused'] = 'vector_provider_' + _code(exc)
+                raise ResourceDeferred(context['refused']) from exc
+
+        class AdmittedProvider:
+            def embed_document_chunks(self, body, path):
+                return call(_embed_with_budget, provider, body, path)
+
+            def embed_document(self, body, title):
+                return call(provider.embed_document, body, title)
+        context['provider'] = AdmittedProvider()
+        return context['provider']
+    context['acquire'] = acquire
+    return context
+
+
+def _code(exc):
+    text = str(exc)
+    return text if re.fullmatch(r'[a-z0-9_]{1,60}', text) else 'failed'
+
+
+def _schema3_vector_spec(proof):
+    from laya_view_vectors import provider_spec
+    return provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
+
+
+def _schema3_worker_manifest(decision, proof):
+    """The worker attestation's provider manifest for the current proof (closure rehash)."""
+    import laya_install_journal as journal
+    with journal.read_only_journals():
+        if journal.journal_version(decision['journalPath']) != 5:
+            raise IndexContractError('writer_plan_v5_required')
+        return journal._worker_attestation_manifest(proof)
+
+
+def _schema3_chunker(context, current):
+    """View chunker over the provider's own chunking (one provider call per document).
+
+    A document whose provider chunk positions are the provider's first pass
+    (``qmd_first_pass``) has those chunks, and the vectors the call returned
+    are kept for the embedder (v6 inputs and bytes). A document the provider
+    re-split over its token window has no reproducible text here: it gets the
+    recipe's fallback windows (``FALLBACK_CHARS``) and keeps no vector, so the
+    embedder embeds each window alone.
+    """
+    import laya_blob_values as v
+    from laya_view_vectors import FALLBACK_CHARS, qmd_first_pass
+
+    def chunker(document, _recipe):
+        body = document['body']
+        parts = qmd_first_pass(body)
+        try:
+            rows = context['acquire'](current()).embed_document_chunks(body, document['path'])
+        except IndexContractError as exc:
+            if str(exc) == 'provider_member_refused':
+                raise _VectorMemberBlocked('provider_member_refused') from exc
+            raise
+        kept = [row['pos'] for row in rows] == [pos for pos, _text in parts]
+        if not kept:
+            parts = qmd_first_pass(body, *FALLBACK_CHARS)
+        if len(parts) > v.MAX_CHUNKS:
+            # The store refuses the set; only this card's vectors wait.
+            raise _VectorMemberBlocked('chunk_set_too_large')
+        if kept:
+            title = document['title'] or 'none'
+            for (_pos, text), row in zip(parts, rows):
+                context['stash']['title: ' + title + ' | text: ' + text] = row['vector']
+        return [{'seq': seq, 'position': pos, 'text': text, 'text_sha': v.hash_bytes(text.encode('utf8'))}
+                for seq, (pos, text) in enumerate(parts)]
+
+    def embedder(inputs, _profile):
+        vectors = []
+        for text in inputs:
+            vector = context['stash'].pop(text, None)
+            if vector is None:
+                # A chunk set stored without its embedding set: embed each input
+                # whole; the worker formats the same ``title: | text:`` string.
+                title, sep, chunk = text[len('title: '):].partition(' | text: ')
+                if (not text.startswith('title: ') or not sep or not title or not chunk
+                        or 'title: ' + title + ' | text: ' + chunk != text):
+                    raise _VectorMemberBlocked('embedding_input_unparsed')
+                try:
+                    vector = context['acquire'](current()).embed_document(chunk, title)
+                except IndexContractError as exc:
+                    if str(exc) == 'provider_member_refused':
+                        raise _VectorMemberBlocked('provider_member_refused') from exc
+                    raise
+            vectors.append(vector)
+        return vectors
+    return chunker, embedder
+
+
+# One fill call's soft budget inside the pass's vector budget.
+SCHEMA3_FILL_CALL_SECONDS = 30
+# The content filler drops an embedding set finished after its deadline
+# (laya_blob_fill: an expired callback result is never published), while the
+# chunk set stored before the embedder stays. A target whose chunk set is
+# stored without its embedding set therefore had its embeddings dropped by an
+# earlier deadline: it alone gets the large-document embedding budget
+# (``_embed_with_budget``'s 270 s), so a card whose single embeddings outlast
+# one fill call completes on its next pass instead of repeating the same
+# dropped work every wake.
+SCHEMA3_RESUME_SECONDS = 270
+SCHEMA3_FILL_DEADLINES = frozenset(('content_fill_deadline', 'fill_deadline_exceeded'))
+
+
+def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
+    """Index of the first target from ``cursor`` without its embedding set, when its chunk set is stored."""
+    with store._session() as db:
+        for index in range(cursor, len(targets)):
+            blob = targets[index]['blob_sha']
+            if db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                          (blob, recipe_id, profile_id)).fetchone() is None:
+                chunked = db.execute('SELECT 1 FROM chunk_sets WHERE blob_sha=? AND recipe_id=?',
+                                     (blob, recipe_id)).fetchone()
+                return index if chunked is not None else None
+    return None
+
+
+def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline):
+    """Fill this manifest's vectors for the pass's spec; ``state`` says what remains.
+
+    ``complete``: every eligible member has the spec's sets (the caller seals
+    a vector generation). ``current``: ``sealed`` (the head's vector spec)
+    already is the spec. ``off``: no spec. ``pending``: the pass budget ran
+    out or a fill call hit its deadline (cursor kept; committed content sets
+    stay). ``deferred``: the provider lane or service refused (no
+    store write was made for it). ``blocked``: the provider refused a document
+    or its chunk set is over the store's limit; the view stays lexical until
+    that card changes.
+    ``provider_blocked``: the install's provider cannot be proved
+    (``SCHEMA3_PROVIDER_DEFECTS``); the wake ends ``blocked``.
+    """
+    import laya_blob_values as v
+    from laya_view_fill import MAX_FILES
+    spec = vectors.get('spec')
+    if spec is None:
+        return {'state': 'off'}
+    if sealed == spec:
+        return {'state': 'current'}
+    recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
+    current = lambda: marks.get('proof', proof)  # noqa: E731 - the proof after this pass's fence
+    try:
+        with store._session():
+            store._recipe(recipe_id); store._profile(profile_id)
+        registered = True
+    except v.BlobStoreError as exc:
+        if exc.reason not in ('recipe_missing', 'profile_missing'):
+            raise
+        registered = False
+    try:
+        if not registered:
+            vectors['acquire'](current())
+            _mark_schema3_write(writer, proof, marks)
+            from laya_view_vectors import register_provider_spec
+            if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
+                v.fail('vector_spec_mismatch')
+        _entry, _saved, _job, targets, stored = store._fill_plan(handle, manifest, recipe_id, profile_id)
+        cursor = 0 if stored is None else stored
+        with store._session() as db:
+            missing = sum(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? '
+                                     'AND profile_id=?', (t['blob_sha'], recipe_id, profile_id)).fetchone() is None
+                          for t in targets[cursor:])
+        if missing:
+            vectors['acquire'](current())
+        chunker, embedder = _schema3_chunker(vectors, current)
+        status = store.fill_status(handle, manifest, recipe_id, profile_id)
+        filled = hits = 0
+        while not status['complete']:
+            left = deadline - SCHEMA3_PUBLISH_RESERVE - time.monotonic()
+            if left <= 0:
+                return {'state': 'pending', 'reason': 'schema3_vector_budget', 'filled': filled,
+                        'cacheHits': hits, 'remaining': len(targets) - status['cursor']}
+
+            def fence():
+                _mark_schema3_write(writer, proof, marks)
+            files, seconds = 8, min(SCHEMA3_FILL_CALL_SECONDS, left)
+            resume = _schema3_resume(store, targets, status['cursor'], recipe_id, profile_id)
+            if resume is not None and resume - status['cursor'] < MAX_FILES:
+                files, seconds = resume - status['cursor'] + 1, SCHEMA3_RESUME_SECONDS
+            try:
+                step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
+                                       embedder=embedder, write_fence=fence,
+                                       expected_cursor=status['cursor'], max_files=files,
+                                       max_bytes=v.MAX_BODY, deadline_seconds=seconds)
+            except v.BlobStoreError as exc:
+                if exc.reason not in SCHEMA3_FILL_DEADLINES:
+                    raise
+                # Content sets committed before the deadline stay (cache hits
+                # next pass); the lexical publish of this pass goes on.
+                return {'state': 'pending', 'reason': 'schema3_vector_deadline', 'filled': filled,
+                        'cacheHits': hits, 'remaining': len(targets) - status['cursor']}
+            filled += step['filled']; hits += step['cache_hits']
+            if step['status'] == 'deferred':
+                return {'state': 'pending', 'reason': 'schema3_vector_content_busy', 'filled': filled,
+                        'cacheHits': hits, 'remaining': len(targets) - step['cursor']}
+            status = step
+    except ResourceDeferred as exc:
+        return {'state': 'deferred', 'reason': str(exc)}
+    except _VectorMemberBlocked as exc:
+        return {'state': 'blocked', 'reason': str(exc)}
+    except _VectorProviderBlocked as exc:
+        return {'state': 'provider_blocked', 'reason': str(exc)}
+    return {'state': 'complete', 'filled': filled, 'cacheHits': hits, 'targets': len(targets)}
+
+
+def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snapshot=None):
+    """External-edit drain and wiki discovery after a completed sync, on every sync path.
 
     After receipt and ACK, with the model service stopped. A raised error or
     a retry keeps this wake; the published head is not touched. ``proof`` is
@@ -696,9 +1605,14 @@ def _after_sync(decision, proof, grants, result):
     fence). A blocked run, a burst skipped over the pending cap, or a run
     that started the cursor (earlier changes are not discovered) is reported
     as ``wikiDiscovery``.
+
+    A schema3 selection opens no v6 component: discovery takes the view
+    head this pass published or found (``result['generation']``) as its
+    cursor generation instead of the v6 lineage read.
     """
     if result.get('state') not in ('indexed', 'unchanged'):
         return result
+    schema3 = store_format == 'schema3'
 
     import laya_install_journal as journal
     from contextlib import nullcontext
@@ -725,7 +1639,11 @@ def _after_sync(decision, proof, grants, result):
                 if grants is None:
                     return result
                 import laya_wiki_discovery
-                if v5:
+                if schema3:
+                    outcome = laya_wiki_discovery.drain_after_sync(
+                        decision, grants, recheck=recheck, view_generation=result.get('generation'),
+                        raw_snapshot=raw_snapshot)
+                elif v5:
                     with _discovery_base_component(decision,owner,proof) as component:
                         outcome = laya_wiki_discovery.drain_after_sync(
                             decision,grants,recheck=recheck,coordination=component)
@@ -740,6 +1658,471 @@ def _after_sync(decision, proof, grants, result):
             or outcome.get('cursorStarted') is True or 'initialBackfill' in outcome):
         result = {**result, 'wikiDiscovery': outcome}
     return result
+
+
+# Shadow migration driver (design 8.2, U6). After a completed sync of a
+# selected main checkout, one pass advances the private schema3 candidate by
+# at most SHADOW_STEPS_PER_PASS steps: activation record -> candidate store
+# -> begin_migration -> advance_shadow ... -> shadow_verified. After a step
+# re-proves a verified head, ``laya_shadow_migration.advance_reader_ready``
+# (U15, found with getattr) runs once: shadow_verified -> reader_ready ends
+# the pass, and the next pass re-proves the head and runs the one reader CAS
+# (reader_ready -> switched). A switched install skips the driver; a CAS that
+# committed before its intent write is recorded by ``settle_switched``.
+# Every step is crash-safe on its own: a SIGKILL leaves the activation
+# record, the candidate file, the intent or the journal, and the next pass
+# resumes from whichever exists.
+# Bounds (K8, measured by U8b/U20). A pass runs steps until about
+# SHADOW_PASS_SECONDS have passed (no step starts with less than
+# laya_shadow_migration._STEP_SECONDS left), at most SHADOW_STEPS_PER_PASS.
+# Locks are released between steps, so a writer waits at most one step.
+# The lock-free prepare (about 6 s for 3,749 synthetic cards) starts only as
+# the first step of a pass, on its own SHADOW_PREPARE_SECONDS budget; due
+# later in a pass, the pass ends and the next one starts with it.
+SHADOW_STEPS_PER_PASS = 32
+SHADOW_PASS_SECONDS = 10.0
+SHADOW_PREPARE_SECONDS = 60.0
+# ``off`` stops the driver before it reads or writes anything.
+SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
+SHADOW_ACTIVATION = 'shadow-migration-activation.json'
+SHADOW_CANDIDATE = 'shadow-candidate.sqlite'
+# A restart (lost candidate, moved state or project, explicit resume after a
+# rollback) names a fresh candidate; the old store and intent stay (D4).
+_SHADOW_CANDIDATE_NAME = re.compile(r'shadow-candidate(?:-[0-9a-f]{32})?\.sqlite')
+_SHADOW_INTENT_RETIRED = 'shadow-migration-intent.retired-%s.json'
+_ACTIVATION_SCHEMA = 'memvane-shadow-activation-v1'
+# A pass that can go on offers the same laya-sync wake once, due this long
+# after the pass ends; the wake queue's timer runs it (``_shadow_rewake``).
+SHADOW_REWAKE_SECONDS = 30
+# Consecutive error passes after which a pass waits for a natural wake.
+SHADOW_REWAKE_ERRORS = 3
+# The one wait that is no hold: the pass budget ended a migration that can go on.
+_SHADOW_REWAKE_WAITS = frozenset({'pass_deadline'})
+# From here the switch gate waits for bridge receipts (the recall hooks bring
+# them with their own wake); reader_ready and switched offer their own wake.
+_SHADOW_REWAKE_STOP = frozenset({'shadow_verified', 'reader_ready', 'switched'})
+
+
+def _shadow_gate(project, executing_root, *, prove=True):
+    """``(decision, state)`` when the driver may act, else ``(None, reason)``.
+
+    Read-only. Each step reacquires the install and operation locks and
+    reproves route, endpoint (bundle included) and intent itself; this gate
+    only keeps a pass from starting or continuing on a route it must not
+    touch. ``prove=False`` (between steps of one pass) skips the full bundle
+    proof the previous step already repeated.
+    """
+    if os.environ.get(SHADOW_KILL_SWITCH) == 'off':
+        return None, 'disabled'
+    import project_dir
+    if project_dir.layout(project) == 'split':
+        return None, 'project_dir_split'
+    import laya_install_journal as journal
+    with journal.read_only_journals():
+        # A linked worktree classifies as ``worktree``, never ``candidate``.
+        decision = select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            return None, 'route_not_selected'
+        if journal.journal_version(decision['journalPath']) != 5:
+            return None, 'journal_not_v5'
+    # An install that already reads a schema3 store is past this migration;
+    # its intent, candidate and activation record stay as they are.
+    selected = _selected_store_format(decision)
+    if selected != 'v6':
+        return None, 'reader_schema3_selected' if selected == 'schema3' else 'reader_selection_unproved'
+    state = Path(decision['journalPath']).parent
+    # A rollback (U16) holds the driver until an explicit resume names it;
+    # otherwise the next passes would switch the install back (K1).
+    import laya_shadow_migration as migration
+    hold = getattr(migration, 'rollback_hold', None)
+    if callable(hold):
+        try:
+            if hold(state) is not None:
+                return None, 'migration_rollback_retained'
+        except Exception:
+            return None, 'reader_selection_unproved'
+    import laya_ledger_common as ledger
+    if ledger.qmd_ledger_present(state):
+        return None, ledger.QMD_ORIGIN_DETACH_REQUIRED
+    import laya_fresh_wiki_origin as fresh
+    if fresh.upgrade_fenced(str(project)):
+        return None, 'upgrade_fenced'
+    if not prove:
+        return (decision, state), None
+    try:
+        with journal.read_only_journals():
+            proof = journal.verify_selected_route(decision)
+    except Exception as exc:
+        return None, 'bundle_drift' if journal.is_bundle_drift(exc) else 'selected_proof_unavailable'
+    if (proof.get('productRouteAllowed') is not True
+            or proof.get('executingPluginRoot') != str(executing_root)):
+        return None, 'selected_proof_unavailable'
+    return (decision, state), None
+
+
+def _shadow_open(state, project, scope, candidate=None, *, queue=None):
+    """Open the private candidate; its own store_meta and worktrees are the SSOT.
+
+    With ``queue`` (the driver's), a ``-journal`` beside the candidate is first
+    handed to SQLite's own rollback under that queue's sync owner, never
+    waiting: a step killed mid-write leaves a hot journal that the read-only
+    open below refuses on every later pass. A busy owner is a wait
+    (``ResourceDeferred``), never a driver error.
+    """
+    from laya_journal_reader import _readonly
+    from laya_view_store import ViewStore
+    path = state / SHADOW_CANDIDATE if candidate is None else Path(candidate)
+    if queue is not None and os.path.lexists(str(path) + '-journal'):
+        with sync_owner(Path(queue)) as owner:
+            if owner is None:
+                # Another sync holds it; a wait, not a driver error.
+                raise ResourceDeferred('sync_owner_busy')
+            with _readonly(path, state, recover=True) as db:
+                # The first read takes the shared lock; SQLite rolls back there.
+                db.execute('SELECT count(*) FROM sqlite_master').fetchone()
+    with _readonly(path, state) as db:
+        meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                          (str(project),)).fetchall()
+    if meta is None or not isinstance(meta[0], str) or len(rows) != 1:
+        raise IndexContractError('migration_candidate_invalid')
+    return ViewStore.open(path, repository=json.loads(meta[0]), scope_id=scope), rows[0][0]
+
+
+def _shadow_vector_spec(decision):
+    """``(manifest, vector profile)`` of the install provider for this pass (K5), or None.
+
+    One read-only selected-route proof; the view spec is derived from its
+    reviewed provider manifest and vector profile only (no store write).
+    """
+    import laya_install_journal as journal
+    from laya_view_vectors import provider_spec
+    try:
+        with journal.read_only_journals():
+            proof = journal.verify_selected_route(decision)
+    except Exception:
+        return None  # the step itself reproves and refuses; vectors just wait
+    provider = (proof.get('providerManifest'), proof.get('vectorProfile'))
+    return provider if provider_spec(*provider) is not None else None
+
+
+def _activation_record(state, project, *, candidate, resumed_after=None):
+    record = {'schema': _ACTIVATION_SCHEMA, 'project': str(project), 'state': str(state),
+              'candidate': str(candidate), 'activated_ns': time.time_ns()}
+    if resumed_after is not None:
+        record['resumed_after'] = resumed_after
+    return record
+
+
+def _read_activation(state):
+    """The activation record and its candidate path; ``migration_activation_invalid`` if malformed."""
+    import laya_ledger_common as ledger
+    record = ledger._read_json(state / SHADOW_ACTIVATION)
+    if (not isinstance(record, dict) or not isinstance(record.get('project'), str)
+            or not isinstance(record.get('state'), str) or not isinstance(record.get('candidate'), str)
+            or record.get('schema', _ACTIVATION_SCHEMA) != _ACTIVATION_SCHEMA
+            or not isinstance(record.get('resumed_after', ''), str)):
+        raise IndexContractError('migration_activation_invalid')
+    return record, Path(record['candidate'])
+
+
+def _restart_shadow(state, project, record):
+    """Name a fresh candidate, then retire the intent by rename; nothing is deleted.
+
+    The activation goes first: a crash before the rename leaves an intent
+    bound to another candidate, which the next pass retires the same way.
+    Returns the retired intent's file name, or None when there was none.
+    """
+    import uuid
+    import laya_journal_reader as readers
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    candidate = state / ('shadow-candidate-%s.sqlite' % uuid.uuid4().hex)
+    ledger._write(state / SHADOW_ACTIVATION,
+                  _activation_record(state, project, candidate=candidate,
+                                     resumed_after=(record or {}).get('resumed_after')), replace=True)
+    intent = state / migration._INTENT
+    if not os.path.lexists(intent):
+        return None
+    retired = _SHADOW_INTENT_RETIRED % uuid.uuid4().hex
+    os.rename(intent, state / retired)
+    readers._sync(state, True)
+    return retired
+
+
+def _orphaned_intent(state, project, candidate):
+    """True when the intent names another project, state or candidate file (a move or a lost store).
+
+    Read-only and identity-only: an intent that names this candidate but is
+    otherwise invalid is left to advance_shadow (``migration_intent_invalid``),
+    so a defect that recurs in every new intent cannot multiply candidates.
+    """
+    import laya_journal_reader as readers
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    from laya_blob_store import _db_file
+    path = state / migration._INTENT
+    if not os.path.lexists(path):
+        return False
+    try:
+        intent = ledger._read_json(path)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(intent, dict):
+        return False
+    if (intent.get('project') != str(project) or intent.get('state') != str(state)
+            or intent.get('candidate') != str(candidate) or not os.path.lexists(candidate)):
+        return True
+    try:
+        return (intent.get('state_node') != readers._node(state)
+                or intent.get('candidate_node') != _db_file(candidate))
+    except (OSError, ValueError):
+        return False
+
+
+def _shadow_step(decision, state, executing_root, store, deadline, provider=None, prepare=True):
+    """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``.
+
+    With ``provider`` (``_shadow_vector_spec``) the candidate store registers
+    the install provider's recipe/profile and the caught-up head copies
+    compatible legacy vectors into the shared sets (``advance_shadow``).
+    """
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    project = Path(decision['projectRoot'])
+    activation = state / SHADOW_ACTIVATION
+    if not os.path.lexists(activation):
+        ledger._write(activation, _activation_record(state, project, candidate=state / SHADOW_CANDIDATE),
+                      replace=False)
+        return 'activate', None, store
+    record, candidate = _read_activation(state)
+    # A moved state root or project leaves absolute paths that no longer name
+    # this install; a lost candidate leaves an intent bound to nothing.
+    if (record['project'] != str(project) or record['state'] != str(state)
+            or candidate.parent != state or not _SHADOW_CANDIDATE_NAME.fullmatch(candidate.name)
+            or _orphaned_intent(state, project, candidate)):
+        if store is not None:
+            store[0].close()
+        _restart_shadow(state, project, record)
+        return 'restart', None, None
+    if not os.path.lexists(candidate):
+        if any(os.path.lexists(str(candidate) + suffix) for suffix in ('-wal', '-shm', '-journal')):
+            # Leftover journal files of a lost store must never meet a new one.
+            _restart_shadow(state, project, record)
+            return 'restart', None, None
+        import laya_checkout_view as checkout
+        from laya_view_store import ViewStore
+        repository = checkout.register_repository(str(project))
+        worktree = checkout.register_worktree(str(project), repository)
+        ViewStore.create(candidate, project_root=str(project), repository=repository,
+                         worktree=worktree, scope_id=decision['scopeId']).close()
+        return 'create', None, store
+    if store is None:
+        store = _shadow_open(state, project, decision['scopeId'], candidate,
+                             queue=decision['queuePath'])
+    view, worktree_id = store
+    if not os.path.lexists(state / migration._INTENT):
+        intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
+                                           executing_root=executing_root, deadline=deadline)
+        return 'begin', intent['migration_state'], store
+    vector_spec = None
+    if provider is not None:
+        from laya_view_vectors import register_provider_spec
+        vector_spec = register_provider_spec(view, *provider)
+    result = migration.advance_shadow(view, project=project, executing_root=executing_root,
+                                      deadline=deadline, vector_spec=vector_spec, prepare=prepare)
+    return result['stage'], result['migration_state'], store
+
+
+def _shadow_error_streak(state, failed):
+    """Count this pass in the activation record's consecutive error streak; the new count.
+
+    Under the install lock, which an explicit resume holds while it rewrites
+    the record; every other field stays as written. Raises when the record or
+    the lock is unavailable.
+    """
+    import laya_ledger_common as ledger
+    from laya_product_install import _install_lock
+    with _install_lock(state):
+        record, _candidate = _read_activation(state)
+        count = record.get('rewake_errors', 0)
+        count = count if type(count) is int and count >= 0 else 0
+        streak = count + 1 if failed else 0
+        if streak != record.get('rewake_errors', 0):
+            ledger._write(state / SHADOW_ACTIVATION, {**record, 'rewake_errors': streak}, replace=True)
+    return streak
+
+
+def _shadow_rewake(project, state, status):
+    """Offer the next pass when this one can go on by itself; True when a wake was offered.
+
+    A ``progressed`` pass and a ``pass_deadline`` wait rewake. Any other wait
+    (switch gate, space, step retry, guard) does not, nor a pass that ends at
+    shadow_verified or later. An ``error`` rewakes while the consecutive error
+    streak stays below ``SHADOW_REWAKE_ERRORS``; any other pass resets it, and
+    an unrecorded streak never rewakes an error. The offer is the existing
+    laya-sync wake, due ``SHADOW_REWAKE_SECONDS`` later; a sync that does not
+    complete runs no pass, so it offers nothing.
+    """
+    if os.environ.get(SHADOW_KILL_SWITCH) == 'off':
+        return False
+    failed = status['state'] == 'error'
+    try:
+        streak = _shadow_error_streak(state, failed)
+    except Exception:
+        streak = None
+    if failed:
+        if streak is None or streak >= SHADOW_REWAKE_ERRORS:
+            return False
+    elif not (status['state'] == 'progressed'
+              or (status['state'] == 'waiting' and status['reason'] in _SHADOW_REWAKE_WAITS)):
+        return False
+    if status['migration_state'] in _SHADOW_REWAKE_STOP:
+        return False
+    import laya_shadow_migration as migration
+    offered = migration._offer_sync(project, delay=SHADOW_REWAKE_SECONDS)
+    return isinstance(offered, dict) and offered.get('status') in ('queued', 'deferred_queue_capacity_retained')
+
+
+def resume_shadow_migration(project, *, executing_root=None):
+    """Explicitly release a rollback hold: a fresh migration on a new candidate.
+
+    Under the installer, operation and sync owner locks (never waiting): the
+    journal must select v6 and hold the driver (``rollback_hold``). The
+    activation names a new candidate and the rollback it resumes after; the
+    old intent is renamed, the old candidate store stays (D4). The next sync
+    passes start the migration from the beginning. Returns
+    ``{status: 'resumed', candidate, retiredIntent, resumedAfter}``.
+    """
+    from contextlib import ExitStack
+    import laya_fresh_wiki_origin as fresh
+    import laya_install_journal as journal
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    import project_dir
+    from laya_index_sync import _owner_lock
+    from laya_product_install import _install_lock
+    project = Path(project)
+    decision = select_route(str(project), action='recall')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('migration_route_invalid')
+    state = Path(decision['journalPath']).parent
+    with ExitStack() as locks:
+        locks.enter_context(_install_lock(state))
+        locks.enter_context(ledger._operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+            raise IndexContractError('sync_owner_busy')
+        if _selected_store_format(decision) != 'v6':
+            raise IndexContractError('migration_not_held')
+        hold = migration.rollback_hold(state)
+        if hold is None:
+            raise IndexContractError('migration_not_held')
+        record = None
+        if os.path.lexists(state / SHADOW_ACTIVATION):
+            try:
+                record = _read_activation(state)[0]
+            except (OSError, ValueError):
+                record = None  # Replaced below; the old bytes are not needed to resume.
+        retired = _restart_shadow(state, project, {**(record or {}), 'resumed_after': hold['transition_id']})
+    return {'status': 'resumed', 'candidate': _read_activation(state)[0]['candidate'],
+            'retiredIntent': retired, 'resumedAfter': hold['transition_id']}
+
+
+def shadow_pass(project, *, executing_root=None):
+    """One bounded shadow migration pass for a selected main checkout.
+
+    Returns ``{state, reason, steps, stages, migration_state}``. ``skipped``:
+    a guard refused and nothing was read from or written to the migration
+    (a schema3-selected install may only get its ``switched`` record, see
+    ``settle_switched``). ``progressed``: the step cap was reached, a prepare
+    came due after the pass's first step (``reason`` ``prepare_next_pass``), the head
+    is verified and the reader_ready entry is absent, or that entry recorded
+    reader_ready or switched. ``waiting``: a step asked for a later retry
+    (``reason`` is the switch gate code when it has one), the space
+    pre-check deferred it, the pass budget or a guard stopped it. ``error``: a step raised; only its fixed code is
+    kept. A pass past the guard emits one ``migration.driver`` event. ``rewake``
+    is True when the pass offered the next one (``_shadow_rewake``).
+    """
+    import event_log
+    import laya_shadow_migration as migration
+    project = Path(project)
+    executing_root = Path(_writer_executing_root() if executing_root is None else executing_root)
+    bound, reason = _shadow_gate(project, executing_root)
+    status = {'state': 'skipped', 'reason': reason, 'steps': 0, 'stages': [], 'migration_state': None,
+              'rewake': False}
+    if bound is None:
+        settle = getattr(migration, 'settle_switched', None)
+        if reason == 'reader_schema3_selected' and callable(settle):
+            try:
+                settle(project)
+            except Exception:
+                pass  # The journal selection is the fact; the record can wait.
+        return status
+    decision, state = bound
+    started = time.monotonic()
+    deadline = started + SHADOW_PASS_SECONDS
+    provider = _shadow_vector_spec(decision)
+    status['state'], status['reason'] = 'progressed', None
+    store = None
+    try:
+        while status['steps'] < SHADOW_STEPS_PER_PASS:
+            if status['steps']:
+                if deadline - time.monotonic() < migration._STEP_SECONDS:
+                    status.update(state='waiting', reason='pass_deadline')
+                    break
+                again, reason = _shadow_gate(project, executing_root, prove=False)
+                if again != bound:
+                    status.update(state='waiting', reason=reason or 'route_changed')
+                    break
+            ready = getattr(migration, 'advance_reader_ready', None)
+            retry_reason = None
+            if status['migration_state'] in ('shadow_verified', 'reader_ready') and callable(ready):
+                # The head was re-proved by this pass; U15 continues from it,
+                # on its own lock budget whatever is left of the pass.
+                result = ready(store[0], project=Path(decision['projectRoot']),
+                               executing_root=executing_root,
+                               deadline=max(deadline, time.monotonic() + migration._SWITCH_SECONDS))
+                stage, current = result['stage'], result['migration_state']
+                retry_reason = result.get('reason')
+            else:
+                # Only a pass's first step may start the lock-free prepare,
+                # with the whole prepare budget; later it waits for a pass.
+                first = not status['steps']
+                stage, current, store = _shadow_step(
+                    decision, state, executing_root, store,
+                    started + SHADOW_PREPARE_SECONDS if first else deadline, provider, prepare=first)
+                if stage == 'prepare_deferred':
+                    status['reason'] = 'prepare_next_pass'
+                    break
+            status['steps'] += 1
+            status['stages'].append(stage)
+            if current is not None:
+                status['migration_state'] = current
+            if stage == 'retry':
+                status.update(state='waiting', reason=retry_reason or 'step_retry')
+                break
+            if (stage in ('reader_ready', 'switched')
+                    or (current in ('shadow_verified', 'reader_ready') and not callable(ready))):
+                break
+    except Exception as exc:
+        reason = event_log.code(exc)
+        # A space pre-check deferral wrote nothing; a later pass retries it.
+        # So does the candidate's recovery while another sync owns the queue.
+        deferred = (reason in getattr(migration, '_DEFERRED_REASONS', ())
+                    or (isinstance(exc, ResourceDeferred) and reason == 'sync_owner_busy'))
+        status.update(state='waiting' if deferred else 'error', reason=reason)
+    finally:
+        if store is not None:
+            store[0].close()
+        try:
+            status['rewake'] = _shadow_rewake(project, state, status)
+        except Exception:
+            status['rewake'] = False  # The next natural wake runs the next pass.
+        event_log.emit('migration.driver', state_root=state, host='worker', outcome=status['state'],
+                       reason=status['reason'], ms=(time.monotonic() - started) * 1000,
+                       steps=status['steps'], migration_state=status['migration_state'],
+                       rewake=status['rewake'])
+    return status
 
 
 def _checked(result):
@@ -937,7 +2320,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     except ReaderWindowBusy as exc:
         if getattr(exc, 'rollback_pending', False) or str(exc) not in (
                 'reader_write_deadline', 'reader_publish_busy',
-                'reader_mutation_busy', 'reader_lifetime_busy'):
+                'reader_mutation_busy', 'reader_lifetime_busy', 'reader_physical_busy'):
             raise
         return {'state': 'deferred', 'reason': str(exc)}, state['proof']
     return _checked(result), state['proof']

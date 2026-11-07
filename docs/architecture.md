@@ -143,9 +143,19 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | `blocked` or lookup failure | exit 3, no fallback |
 | `upgrading` (recall only) | The selected route is fenced by a bundle upgrade (fresh-wiki ledger `upgrading`). Route selection re-reads it for up to 1.5 s first; still fenced, the hook gives no context and exits 0. A recall the fence interrupts mid-run also exits 0, and so does a route or proof transition error (`selected_route_changed` and similar) within 30 s of a `running` or `complete` worker status; any other error keeps exit 3. Every fenced recall and SessionStart asks the upgrade worker to finish, at most once a minute per install whichever host copy asks. A fence older than 10 minutes, or with a future mtime, is a stopped upgrade: recall answers at once without context (exit 0) and SessionStart names the stop. The worker also finishes an upgrade that stopped after the journal activation but before the fence was released. |
 
-`worktree` is a linked git worktree of a selected main checkout; search serves
-the main checkout's published index read-only, and sync, compile, wiki
-lifecycle and learning run only from the main checkout.
+`worktree` is a linked git worktree of a selected main checkout. What its
+search reads follows the reader format the main checkout's install journal
+selects. With the v6 reader, search serves the main checkout's published index
+read-only and the worktree's hooks record no wake. With the schema3 reader,
+search reads only that worktree's own view in the same view store, labelled as
+such; a view with no published head (a first-seen worktree or branch) answers
+with no context and `view_preparing`, never with another view. The worktree's
+SessionStart, successful edit (`index`) and successful Bash record the main
+checkout's `laya-sync` wake; its owner publishes the main view and then up to 16
+linked worktree views per pass in `git worktree list` order. Recall records no
+wake, so right after `git switch` the view stays `view_preparing` until the next
+SessionStart or edit. With either reader, compile, wiki lifecycle and learning
+run only from the main checkout.
 
 ### Hermes Agent
 
@@ -356,7 +366,8 @@ move runs, recall waits up to 1.5 s and retries once; search keeps serving.
 | `split` | `.auto-context/` has the settings, `.memvane/` does not (an older branch checked out over a moved project) | `.memvane/` wins; index and wiki writers hold with `project_dir_split`, also mid-run (their route proof, `verify_selected_route_for_write`, refuses a split layout); recall and the edit gate continue (the untracked `.memvane/wiki/.memvane-root` keeps the bound wiki directory through the checkout); no second index; SessionStart prints a notice |
 | `conflict` | both hold settings or wiki cards (an older branch merged) | `.memvane/` wins, `.auto-context/` is ignored; the notice says to `git mv` leftover cards |
 
-Linked worktrees on either folder name share the main checkout's index. After
+Linked worktrees on either folder name share the main checkout's index (with
+the schema3 reader, each reads its own view inside that index's store). After
 a move, SessionStart names the owner's commit,
 `git add -A .memvane .auto-context`, and prints `.memvane/...` equivalents of
 any `.auto-context` lines in the project's own `.gitignore`; nothing edits user
@@ -429,6 +440,43 @@ holds (`status: verified`, `createdBy: memvane` or the earlier plugin name
 `sourceRevisions`). It does not reread current source files; after a source
 change, the last completed generation answers until the sync owner publishes a
 new one. Details are in [flow 03](architecture/flows/03-wiki-index-search.md).
+
+#### Reader format and shadow migration
+
+The install journal (v5) records which reader endpoint recall uses. A `v6`
+endpoint reads the v6 memvane-db database; a `schema3` endpoint reads the published
+generation of a view in the private view store (`core/laya_view_store.py`), one
+view per checkout and branch. Recall branches on the selected endpoint
+(`laya_host_response.serve_endpoint_recall`); neither reader rereads source files.
+
+A v6-selected main checkout builds the schema3 copy off-hook. After a selected
+sync ends `indexed` or `unchanged`, `laya_product_sync_worker.shadow_pass` runs at
+about 10 seconds of bounded steps, at most 32 (`core/laya_shadow_migration.py`):
+`copying → caught_up → shadow_verified → reader_ready → switched`. The copy holds
+published wiki bytes and trust only, never raw bodies or raw FTS. A space
+pre-check defers a step without writing. A pass that progressed or ran out of its
+budget before `shadow_verified` re-offers the same `laya-sync` wake, due 30
+seconds later (`_shadow_rewake`), so the copy reaches `shadow_verified` without
+further edits; gate, space and retry waits do not, and an error pass stops
+re-offering from the third in a row until a natural wake. At `shadow_verified` the switch waits for
+its gates: the parity receipt, a catch-up under the sync owner lock, loaded-reader
+receipts from both a Claude Code and a Codex recall hook of the selected release
+(a hook receipt holds while the journal epoch, preferred endpoint and release
+commit it observed stay selected, for at most 24 hours, so the two hosts may
+answer hours apart), the executing bundle equal to the journal-selected one, no
+bundle upgrade, state move or project-folder move intent, a `current` project
+folder layout, and no Hermes copy of the plugin. One pass records
+`reader_ready`; a later pass proves the same gates again and runs one journal CAS
+(`cas_reader`). The driver does nothing for a linked worktree, during an upgrade
+fence or bundle mismatch, for a `split` layout or QMD-origin state root, after a
+rollback, or with `MEMVANE_SHADOW_MIGRATION=off`.
+
+A schema3-selected sync pass publishes changed cards (64 per pass, 45 seconds)
+into the main view and then the linked worktree views, lexical first, and fills
+vectors from the install provider into a later vector generation. Rollback to the
+v6 reader is an explicit setup action (`rollback-index-reader`); it deletes
+nothing, wakes a v6 full-scan sync, and holds the migration until
+`resume-index-reader-migration`, which restarts the copy in a new candidate file.
 
 ### 3. PreToolUse Gate
 
@@ -916,6 +964,10 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 | `learning.state`, `learning.prepare`, `learning.warm` | `core/laya_bundle_upgrade.py` | learning state `moved` / `deferred`; selector heal `started` / `selector_ready` / `selector_prepared` / `failed`, `reason`, `rebound`; selector warm-up `selector_warm` / `selector_warm_busy` / `selector_warm_current` / `failed`, `reason`, `ms` |
 | `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
 | `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
+| `migration.shadow` | `core/laya_shadow_migration.py` | one line per migration step: `op` (closed set `begin` … `parity_seal`, `reader_ready`, `switch`), `stage`, outcome, fixed `reason`, `ms`, opaque `migration` and `attempt`, `needed_bytes` / `free_bytes` / `quiesce_ms` |
+| `migration.driver` | `core/laya_product_sync_worker.py` (`shadow_pass`) | one line per driver pass: `progressed` / `waiting` / `error`, `reason`, `steps`, `migration_state` (`copying` … `switched`), `rewake` (the pass offered the next one) |
+| `migration.bridge` | selected recall hook (`core/laya_host_response.py`) | `recorded` / `complete` when the hook recorded its host's loaded-reader receipt for the switch |
+| `migration.rollback` | `core/laya_shadow_migration.py` (`rollback_reader`) | `rolled_back` / `retained` / `refused`, `reason`, `ms` |
 
 A `recall` event's `reason` is the final outcome (`selected`,
 `no_results_after_filter`, `no_candidates`, or a refusal code) and `notes` lists
@@ -924,7 +976,8 @@ the diagnostic codes on the way (`laya_vector_*`, `laya_selector_*`,
 `laya_selector_selected_zero`, `laya_exclusion_candidate_capped`, ...). It also
 carries `cards` (`[{path, sha}]`, exactly the injected cards), `count`,
 `candidates`, `selection`, `selection_fallback`, `vector_fallback`, `degraded`
-(`bundle_drift` or `worktree`), `drift`, `retry`, `generation`,
+(`bundle_drift`, `worktree`, `reader_endpoint` or `preview`), `store_format` and
+`reader_endpoint` (a recall the schema3 reader served), `drift`, `retry`, `generation`,
 `filtered_count`/`filtered_reasons` and `prompt` (`{sha256, chars}`).
 
 The only code path that reads the log back is the compile worker's

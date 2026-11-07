@@ -343,12 +343,25 @@ def _seal_reader_intent(state, project, intent):
     def commit(db):
         selected, endpoint = reader._selection(db)
         row = journal._row(db)
+        if endpoint['state'] != str(state):
+            # A released state move relocated the journal but not the v6
+            # reader. Re-seal it here only when the move proves the old root.
+            try:
+                reader.relocate_selection(db, path, row['provider_attestation_sha'],
+                                          released=(project, decision, proof))
+            except (ValueError, OSError, KeyError, TypeError):
+                _fail('active_upgrade_reader_changed')
+            selected, endpoint = reader._selection(db)
+        # A v6 endpoint names the selected v6 store; a schema3 endpoint names
+        # its own store incarnation, reproved by the fenced reader evidence.
+        store_ok = ((endpoint['capability'] == 'v6-ro-v1' and
+                     endpoint['incarnation'] == proof['dbIncarnation']) or
+                    endpoint['capability'] == reader.SCHEMA3_CAPABILITY)
         if (_journal_snapshot(journal.inspect_journal(path)) != intent['journalBefore'] or
                 row['epoch'] != proof['selectionEpoch'] or
                 endpoint['scope'] != proof['scopeId'] or endpoint['install_id'] != proof['installId'] or
                 endpoint['project'] != str(project) or endpoint['state'] != str(state) or
-                endpoint['capability'] != 'v6-ro-v1' or
-                endpoint['incarnation'] != proof['dbIncarnation'] or
+                not store_ok or
                 endpoint['profile'] != proof['vectorProfile']['profileId']):
             _fail('active_upgrade_reader_changed')
         previous_sha = _sha(intent['oldAttestation'].encode('utf8'))
@@ -737,9 +750,14 @@ def _fenced_reader_evidence(state, project, root, endpoint_id, stored, attestati
              'readerDecision': decision}
     if target_host:
         proof['providerManifest'] = json.loads(intent['newAttestation'])['providerManifest']
-    current_record, current_att, proof = reader._evidence_stores(state, project, decision, proof,
-                                                                  old, store_info,
-                                                                  sealed_attestation=att)
+    if stored.get('store_format') == 'schema3':
+        current_record, current_att, proof = reader._schema3_record(state, project, decision, proof,
+                                                                     old, store_info, stored,
+                                                                     sealed_attestation=att)
+    else:
+        current_record, current_att, proof = reader._evidence_stores(state, project, decision, proof,
+                                                                      old, store_info,
+                                                                      sealed_attestation=att)
     current_record['attestation_sha256'] = stored['attestation_sha256']
     if 'legacy_sidecar_baseline' in stored:
         current_record['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
@@ -1417,9 +1435,7 @@ def _restore(intent):
     old_sha, new_sha = _sha(old_route), _sha(new_route)
     current = inspect_journal(journal)
     row = ledger.load(state / ledger.name)
-    if (row['phase'] == 'active' and row['routeSha256'] == old_sha and
-            current['state'] == 'restored_old' and
-            current['selectedRouteSha256'] == old_sha and
+    if (_settled_restored(intent, row, current) and
             ledger.classify(project, auto / ledger.marker_name,
                                   auto / ledger.route_name) == 'candidate'):
         return {'status': 'active_upgrade_restored_laya',
@@ -1497,6 +1513,49 @@ def _restore(intent):
             'backup': intent['backup']}
 
 
+def _settled_restored(intent, row, journal):
+    """The intent's old route is selected again after an operator restore.
+
+    A restore that rewound the journal leaves it ``restored_old``. One that
+    found nothing staged only released the fence: the journal still selects
+    the old route and the old ledger is two epochs on (fence, release). An
+    intent that never fenced keeps the old ledger row itself and is not
+    settled; its resume still fences and switches.
+    """
+    old = intent['oldLedger']
+    if (row['phase'] != 'active' or row['routeSha256'] != old['routeSha256'] or
+            journal['state'] not in ('active', 'restored_old') or
+            journal['selectedRouteSha256'] != old['routeSha256']):
+        return False
+    return (journal['state'] == 'restored_old' or
+            row == {**old, 'epoch': old['epoch'] + 2})
+
+
+def restored_away_from(project_root, state_root, plugin_root):
+    """Read-only: the operator restored this install away from ``plugin_root``.
+
+    True when the active upgrade intent is a settled restore whose target is
+    that bundle root with its sealed files unchanged. The SessionStart worker
+    then leaves the install on the old bundle instead of fencing it again for
+    the same bundle; the setup entry point's explicit upgrade archives the
+    receipt and retries. A re-extracted or different bundle is a new target.
+    """
+    try:
+        state = Path(state_root)
+        project = Path(project_root).resolve(strict=True)
+        intent = _load_intent(state, project)
+        if intent is None or intent['schema'] == V2 or \
+                intent['newProof']['pluginRoot'] != str(plugin_root):
+            return False
+        ledger = _intent_ledger(intent)
+        if not _settled_restored(intent, ledger.load(state / ledger.name),
+                                 inspect_journal(state / 'install-journal.sqlite')):
+            return False
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+    return not _reextracted(intent, plugin_root)
+
+
 def _archive_finished_intent(state, project, intent):
     """Retain the old receipt when a later exact bundle is requested."""
     target = finished_intent_receipt(state, project, intent)
@@ -1524,7 +1583,7 @@ def finished_intent_receipt(state, project, intent):
         _fail('active_upgrade_prior_unsettled')
     # The original old route can be active only after an explicit Laya restore.
     if (current == intent['oldLedger']['routeSha256'] and
-            journal['state'] != 'restored_old'):
+            not _settled_restored(intent, row, journal)):
         _fail('active_upgrade_prior_unsettled')
     tag = _sha(_bytes(intent))[:20]
     target = state / ('active-upgrade-' + tag + '-settled.json')
@@ -1740,12 +1799,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
                 return _recover_upgrade(intent, source_root, plugin_root, commit_id,
                                          accepted_provider_sha256, model_path, dimension,
                                          runtime_generation)
-            settled_restored = (
-                current_row['phase'] == 'active' and
-                current_row['routeSha256'] == intent['oldLedger']['routeSha256'] and
-                current_journal['state'] == 'restored_old' and
-                current_journal['selectedRouteSha256'] ==
-                intent['oldLedger']['routeSha256'])
+            settled_restored = _settled_restored(intent, current_row, current_journal)
             settled_forward = (
                 current_row['phase'] == 'active' and
                 current_row['routeSha256'] == intent['newLedger']['routeSha256'] and

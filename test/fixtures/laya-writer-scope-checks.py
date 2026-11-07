@@ -58,8 +58,9 @@ class WriterScopeChecks(unittest.TestCase):
 
     def test_stale_reader_head_does_not_block_separate_normal_admission(self):
         with self.F.warm(), self.seed.authority():
-            # warm() commits an exclusion; current reader sealing cannot repair it.
-            with self.assertRaisesRegex(ValueError, 'reader_exclusions_changed'):
+            # warm() commits an exclusion without a base revision receipt;
+            # current reader sealing refuses it and cannot repair it.
+            with self.assertRaisesRegex(ValueError, 'reader_base_revision_unproved'):
                 self.seed.reader.seal_current_reader(self.case.state, self.case.project,
                     executing_root=self.case.plugin)
             module = self.api(); calls = []

@@ -2,7 +2,13 @@
 
 `core/laya_checkout_view.py`는 Git checkout의 정체성과 상태를 읽는 내부 API다.
 호출자가 보관하는 등록 JSON으로 저장소·워크트리를 식별하고, 관측한 branch에서
-view identity를 계산한다. 현재 hook·route·index·journal은 이 API를 호출하지 않는다.
+view identity를 계산한다. 직접 호출자는 view store(`laya_blob_store`·`laya_view_store`·
+`laya_view_reader`), schema3 sync 게시(`laya_product_sync_worker`, 연결 워크트리 등록 포함)와
+shadow migration이다. schema3 reader가 선택된 설치의 recall은 view pin을 통해 이 capture를
+거친다. 등록 JSON은 store의 `store_meta`·`worktrees` 행이 보관하고, journal endpoint record는
+main worktree의 binding digest를 고정한다.
+shadow migration은 v6 reader가 선택된 설치의 sync wake에서 돈다. v6 recall 경로와 route 분류는
+이 API를 호출하지 않는다.
 
 ## 호출 계약
 

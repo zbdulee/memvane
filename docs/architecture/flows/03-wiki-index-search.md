@@ -2,6 +2,8 @@
 
 binding store가 있는 선택된 Laya v2 route의 recall은 hook 안에서 모델 작업 없이 완료된 index generation 하나를 pin합니다. wiki role만 검색하고 wiki root의 `SCHEMA.md`·`index.md`·`log.md`(이전 릴리스가 만든 파일)를 제외합니다. 검색은 색인 DB에 게시된 위키 본문과 해시·세대·범위·명시 제외를 확인하며, 현재 원문 파일이나 pending refresh 원장을 다시 읽지 않습니다. 원문 변경 뒤 위키 생성·색인 게시가 끝나기 전에는 마지막 완료본이 검색됩니다. 색인 무결성 또는 선택 증명이 실패하면 결과를 줄여서 내보내지 않고 실패합니다.
 
+설치 journal이 schema3 reader를 선택한 설치는 v6 memvane-db 대신 view store에서 그 checkout view의 게시 세대 하나를 pin하고, 같은 설정·신뢰 카드·vector fallback 규칙으로 응답합니다. 아래 그림은 v6 reader 경로입니다. 형식 선택과 전환은 [architecture.md](../../architecture.md#reader-format-and-shadow-migration)에 있습니다.
+
 검색은 각 phase에서 최대 100개 후보를 확인하고, 그중 검증된 카드만으로 순위를 계산합니다. 100개를 모두 확인했는데 검증된 카드가 출력 상한(`topN`)보다 적으면 남은 카드만 반환합니다(0개 포함). 이 경우 설치 이벤트 로그(`events.jsonl`) `recall` 이벤트의 `notes`에 `laya_exclusion_candidate_capped`(필드 `capped_lists`)를 남기며, 검증되지 않은 카드의 본문은 반환하지 않습니다.
 
 Laya의 membership·본문·FTS·vector·검색은 **위키 카드만** 대상으로 합니다. raw source에 대해서는 path·hash cursor만 남고, 이는 freshness 판단과 위키 생성에만 쓰입니다. raw 본문은 색인되지 않습니다. 일반 위키 카드 안의 인용과 source locator 링크는 유효한 출력입니다.

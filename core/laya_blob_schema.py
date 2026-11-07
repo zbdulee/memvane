@@ -44,7 +44,7 @@ TABLES = {
       canonical_root TEXT NOT NULL UNIQUE, git_admin_dir TEXT UNIQUE,
       {_integer('root_dev')}, {_integer('root_ino', 1)}, admin_dev INTEGER, admin_ino INTEGER,
       {_sha('binding_digest')} UNIQUE, {_text('binding_json')}, {_text('project_root')}, {_text('record_json')},
-      {_text('settings_path')}, {_sha('settings_sha')}, {_sha('policy_digest')}, {_text('wiki_root')},
+      {_sha('policy_digest')}, {_text('wiki_root')},
       {_integer('wiki_dev')}, {_integer('wiki_ino', 1)}, {_integer('registered_ns')})''',
     'wiki_blobs': f'''CREATE TABLE wiki_blobs(
       {_sha('blob_sha')} PRIMARY KEY, {_text('body')},

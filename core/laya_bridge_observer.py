@@ -85,6 +85,157 @@ def _probe_loaded_reader(project, root, *, sentinel_path, sentinel_sha256, deadl
             return observation
 
 
+# Ordinary recall hooks (U15b, context/u15b-loaded-receipt-design.md): while a
+# shadow migration waits for the reader switch, a selected recall hook of
+# Claude or Codex records its own loaded-reader receipt in the same registry
+# format the QA collector writes. ``check_loaded_bridge`` stays the verifier;
+# a hook receipt holds while its journal epoch, preferred endpoint and release
+# commit stay selected, for at most ``_HOOK_TTL`` (a day).
+HOOK_RECEIPT_SECONDS = 2.0
+_HOOK_STATES = ('shadow_verified', 'reader_ready')
+_SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'))
+
+
+def _probe_hook_reader(project, *, deadline):
+    """Observe the preferred v6 reader from this hook's verified bundle.
+
+    The sentinel is the first effective wiki member of the pinned snapshot
+    (path and blob hash): two hosts reading the same generation name the same
+    one, and only a read of that snapshot yields it. Not a host receipt.
+    """
+    import laya_install_journal as journal
+    import laya_reader_dispatch as dispatch
+    import laya_reader_lease as lease
+    import laya_reader_open as opens
+    import laya_journal_reader as reader
+    import laya_shadow_migration as migration
+    project = Path(project)
+    if type(deadline) not in (int, float) or not math.isfinite(deadline) or time.monotonic() >= deadline:
+        _refuse()
+    with journal.read_only_journals():
+        decision = journal.select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            _refuse()
+        proof = journal.verify_selected_route(decision)
+        root = Path(proof.get('executingPluginRoot') or '')
+        if (proof.get('productRouteAllowed') is not True or not root.is_absolute()
+                or root.resolve(strict=True) != root):
+            _refuse()
+        info = root.stat()
+        plugin_node = [info.st_dev, info.st_ino]
+        with lease.resolve_endpoint(project, action='recall', host_root=root) as endpoint:
+            _record, _att, selected = reader._recheck(endpoint)
+            if (selected.get('productRouteAllowed') is not True
+                    or selected.get('executingPluginRoot') != str(root)
+                    or endpoint.record.get('store_format') != 'v6'):
+                _refuse()
+            with opens.inspect_warm_snapshot(endpoint, deadline=deadline) as snapshot:
+                page = migration.capture_effective(snapshot, endpoint=endpoint, decision=decision,
+                                                   after=None, deadline=deadline, _page_limit=1)
+                if not page['members']:
+                    _refuse()
+                sentinel = page['members'][0]
+                result = dispatch.query_endpoint(endpoint, checkout=project, prompt=_LOADED_QUERY,
+                    query_vector=None, deadline=deadline, snapshot=snapshot, decision=decision, provider=None)
+                if result.store_format != 'v6' or result.endpoint_id != endpoint.endpoint_id:
+                    _refuse()
+                observation = {'endpoint_id': endpoint.endpoint_id, 'reader_epoch': result.reader_epoch,
+                               'store_format': result.store_format, 'generation': result.data_generation,
+                               'sentinel_sha256': sentinel['hash'], 'plugin_node': plugin_node,
+                               'owner_role': 'owner' if decision['pluginRoot'] == str(root) else 'companion',
+                               'plugin_root': str(root), 'release_commit': selected['sourceCommit'],
+                               'manifest_sha256': selected['bundleManifestSha256']}
+            current_root = root.stat()
+            if (journal.select_route(str(project), action='recall') != decision
+                    or [current_root.st_dev, current_root.st_ino] != plugin_node):
+                _refuse()
+            return observation, sentinel['path']
+
+
+def _hook_host_process():
+    """The host process that ran this hook: the nearest ancestor that is not a shell.
+
+    ``hooks/run-hook`` execs this interpreter, so the parent is the host or the
+    shell it ran the hook command through.
+    """
+    from laya_bridge_process import process_identity
+    pid = os.getppid()
+    for _ in range(4):
+        if pid <= 1:
+            break
+        identity = process_identity(pid)
+        if Path(identity['executable']).name not in _SHELLS:
+            return identity
+        pid = identity['parent']
+    _refuse()
+
+
+def record_hook_receipt(payload, host, decision, *, deadline):
+    """Record this host's loaded-reader receipt from a selected recall hook.
+
+    Returns a short status code and never raises. Before any reader read it
+    needs: Claude or Codex outside a QA challenge, a host session id, a
+    bundle with the schema3 reader capability, a v5 journal whose shadow
+    migration waits at shadow_verified or reader_ready, and no standing
+    receipt of this host for the selected reader (``hook_receipt_fresh``: a
+    host probes again after the journal epoch or preferred endpoint moved,
+    after a partner challenge it could not join, or after half a day).
+    When the write completes the Claude/Codex pair, one existing ``laya-sync``
+    wake is offered so the reader_ready and switch passes follow.
+    """
+    try:
+        if host not in ('claude', 'codex') or 'MEMVANE_BRIDGE_PREFLIGHT' in os.environ:
+            return 'not_host'
+        session = payload.get('session_id') if isinstance(payload, dict) else None
+        if not isinstance(session, str) or not 0 < len(session) <= 256:
+            return 'no_session'
+        if not isinstance(decision, dict) or decision.get('state') != 'candidate':
+            return 'not_selected'
+        import laya_install_journal as journal
+        import laya_journal_reader as reader
+        import laya_ledger_common as ledger
+        import laya_reader_dispatch as dispatch
+        if reader.SCHEMA3_CAPABILITY not in dispatch.reader_capabilities():
+            return 'no_capability'
+        project, state = Path(decision['projectRoot']), Path(decision['journalPath']).parent
+        intent_path = state / 'shadow-migration-intent.json'
+        if not intent_path.exists():
+            return 'not_needed'
+        intent = ledger._read_json(intent_path)
+        if not isinstance(intent, dict) or intent.get('migration_state') not in _HOOK_STATES:
+            return 'not_needed'
+        with journal.read_only_journals():
+            if journal.journal_version(state / 'install-journal.sqlite') != 5:
+                return 'not_needed'
+            selected = journal.inspect_journal(state / 'install-journal.sqlite')['selected']
+            current = reader.read_selection(state / 'install-journal.sqlite')
+        commit = selected['sourceCommit']
+        if B.hook_receipt_fresh(state, release_commit=commit, host=host, reader_epoch=current.epoch,
+                                endpoint_id=current.preferred_endpoint):
+            return 'fresh'
+        deadline = min(deadline, time.monotonic() + HOOK_RECEIPT_SECONDS)
+        observation, sentinel_path = _probe_hook_reader(project, deadline=deadline)
+        from laya_bundle_upgrade import host_layout
+        if (observation['release_commit'] != commit
+                or host_layout(observation['plugin_root'])[0] != host):
+            return 'host_unproved'
+        process = _hook_host_process()
+        observed = dict(observation, session_id=session, process_pid=process['pid'],
+                        process_start=process['start'], executable=process['executable'],
+                        hook_stage='loaded-v5-reader', observed_entrypoint='hooks/run-hook:recall:' + host)
+        if time.monotonic() >= deadline:
+            return 'deadline'
+        status = B.record_hook_observation(state, release_commit=commit, host=host, observed=observed,
+                                           sentinel_path=sentinel_path)
+        if status == 'complete':
+            import runtime_work
+            runtime_work.request('laya-sync', str(project))
+        return status
+    except Exception as exc:
+        reason = str(exc)
+        return reason if re.fullmatch(r'[a-z0-9_]{1,64}', reason) else 'error'
+
+
 @dataclass(frozen=True)
 class HostSpec:
     argv: tuple

@@ -142,7 +142,7 @@ def _qmd_fts_text(text, *, deadline=None):
     """
     if text and deadline is not None and time.monotonic() >= deadline:
         raise IndexContractError('fts_deadline_exceeded')
-    out = _QMD_CJK_RUN.sub(_space_cjk_run, text)
+    out = text if isinstance(text, str) and text.isascii() else _QMD_CJK_RUN.sub(_space_cjk_run, text)
     if len(text) > 4096 and deadline is not None and time.monotonic() >= deadline:
         raise IndexContractError('fts_deadline_exceeded')
     return out
@@ -150,12 +150,16 @@ def _qmd_fts_text(text, *, deadline=None):
 
 def _generation_fts_rows_match(db, gen, table, *, deadline=None):
     expected = []
+    previous_body, previous_normalized = object(), None
     for path, body in db.execute(
             'SELECT m.path,c.body FROM membership m JOIN content c ON c.hash=m.hash '
             'WHERE m.gen=? AND m.eligible=1', (gen,)):
+        if body != previous_body:
+            previous_body = body
+            previous_normalized = _qmd_fts_text(body, deadline=deadline)
         expected.append((path, _qmd_fts_text(path, deadline=deadline),
                          _qmd_fts_text(_qmd_title(body, path), deadline=deadline),
-                         _qmd_fts_text(body, deadline=deadline)))
+                         previous_normalized))
     actual = db.execute(
         f'SELECT path_key,filepath,title,body FROM {table}').fetchall()
     if deadline is not None and time.monotonic() >= deadline:
@@ -822,9 +826,14 @@ class LayaIndexA:
         path = self.path
         if not path.is_file():
             raise IndexContractError('database_missing')
-        uri = path.resolve(strict=True).as_uri()
+        resolved = path.resolve(strict=True)
+        uri = resolved.as_uri()
         try:
-            with closing(sqlite3.connect(uri + '?mode=ro', uri=True, timeout=2)) as check:
+            # Same read classifier as the coordinated open (_connect_owned):
+            # Apple's libsqlite3 refuses mode=ro on a WAL store whose last
+            # close by a stock build removed -wal/-shm.
+            with closing(sqlite3.connect(_query_only_uri(resolved), uri=True, timeout=2)) as check:
+                check.execute('PRAGMA query_only=ON')
                 self._validate_existing(check)
         except sqlite3.Error as exc:
             raise IndexContractError('database_unreadable') from exc

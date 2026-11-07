@@ -18,6 +18,11 @@ selected route already stored for its sealed head generation
 nothing to a provider and makes no paid call; the resolver agent judges every
 queued pair. Only cards whose bytes on disk still hash to the indexed hash are
 compared, so a card edited after the last publish waits for the next one.
+A schema3-selected install reads the pinned main-view head of its selected
+reader endpoint instead (``indexed_cards_schema3``): the head's sealed vector
+spec names each eligible member's shared embedding set, and the centroid and
+cosine rule are the same. A head published lexically (vectors pending) is
+skipped with ``SCHEMA3_VECTORS_UNAVAILABLE``.
 
 Bounds per run: at most ``MAX_CARDS`` indexed cards, at most
 ``MAX_PAGES_PER_SCAN`` changed cards compared against the rest,
@@ -56,6 +61,8 @@ EXCLUDED_STATUSES = {"superseded", "discarded"}
 SNAPSHOT_VERSION = 1
 # Changed cards compared per run. Each is compared against every indexed card.
 MAX_PAGES_PER_SCAN = 50
+# A schema3-selected install whose main view head is lexical (vectors pending).
+SCHEMA3_VECTORS_UNAVAILABLE = "selected_dedup_schema3_vectors_unavailable"
 # Upper bound on chunk rows read from the head generation in one run.
 MAX_VECTOR_ROWS = 50_000
 DEADLINE_SECONDS = 20.0
@@ -218,6 +225,60 @@ def indexed_cards(decision: dict, deadline: float) -> tuple[str, dict[str, _Card
     return generation, cards
 
 
+# One read of a schema3 view head (endpoint recheck, Git capture, pin).
+SCHEMA3_READ_SECONDS = 5.0
+
+
+def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[str, _Card] | None]:
+    """``(generation, cards)`` from the selected schema3 endpoint's main-view head.
+
+    The journal-selected persisted reader endpoint and its pinned head (the
+    recall reader); no v6 database is opened. Each eligible member's chunk
+    vectors are the shared embedding set of the head's sealed spec; the
+    indexed hash is its ``blob_sha`` (the raw-byte sha256, as in v6).
+    ``cards`` is None while the head is lexical.
+    """
+    import struct
+    import laya_journal_reader as reader
+    import laya_reader_lease as lease
+    from laya_product_sync_worker import _writer_executing_root
+    import wiki_source_retire
+    root = Path(decision["projectRoot"])
+    deadline = min(deadline, time.monotonic() + SCHEMA3_READ_SECONDS)
+    with lease.resolve_endpoint(root, action="recall", host_root=_writer_executing_root()) as endpoint:
+        record, _raw, _proof = reader._recheck(endpoint)
+        if record.get("store_format") != "schema3" or record["scope"] != decision["scopeId"]:
+            raise ValueError("selected_dedup_schema3_endpoint_changed")
+        with reader._schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+            generation, vector = pin.gen_id, store._pinned(pin)["vector"]
+            if vector is None:
+                return generation, None
+            with store._session():
+                dimension = store._profile(vector["profile_id"])["dimension"]
+            with store._reading(deadline) as db:
+                rows = db.execute("SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 "
+                                  "ORDER BY path COLLATE BINARY",
+                                  (generation,)).fetchmany(wiki_source_retire.MAX_CARDS + 1)
+            if len(rows) > wiki_source_retire.MAX_CARDS:
+                raise ValueError("selected_dedup_card_capacity")
+            cards, total = {}, 0
+            for path, blob in rows:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("selected_dedup_deadline")
+                stored = store.vectors(blob, vector["recipe_id"], vector["profile_id"])
+                total += len(stored)
+                if total > MAX_VECTOR_ROWS:
+                    raise ValueError("selected_dedup_vector_capacity")
+                try:
+                    vectors = [struct.unpack("<" + "f" * dimension, row["embedding"]) for row in stored]
+                except struct.error as exc:
+                    raise ValueError("selected_dedup_vector_invalid") from exc
+                centroid = _centroid(vectors) if vectors else None
+                if centroid is not None:
+                    cards[path] = _Card(path, blob, centroid)
+    return generation, cards
+
+
 def _current_text(wiki_root: Path, card: _Card) -> str | None:
     """The card's text only while its bytes still hash to the indexed hash.
 
@@ -298,9 +359,19 @@ def run(cwd: str) -> dict:
         log("ABORT: unsafe_compile_path")
         return result
 
+    from laya_product_sync_worker import _selected_store_format
+    try:
+        store_format = (_selected_store_format(decision) if "journalPath" in decision
+                        else "v6")
+    except Exception as exc:  # the journal moved or is busy: next run retries
+        log(f"DEFER: selected store format unreadable ({type(exc).__name__})")
+        result["state"] = "deferred"
+        return result
     deadline = time.monotonic() + DEADLINE_SECONDS
     try:
-        generation, cards = indexed_cards(decision, deadline)
+        # The frozen v6 head is not a schema3 install's index any more.
+        generation, cards = (indexed_cards_schema3(decision, deadline) if store_format == "schema3"
+                             else indexed_cards(decision, deadline))
     except (OSError, ValueError, TimeoutError) as exc:
         log(f"DEFER: memvane-db read failed ({exc})")
         result["state"] = "deferred"
@@ -308,6 +379,11 @@ def run(cwd: str) -> dict:
     except Exception as exc:  # sqlite3 busy/locked under a running sync writer
         log(f"DEFER: memvane-db read failed ({type(exc).__name__})")
         result["state"] = "deferred"
+        return result
+    if cards is None:
+        # A lexical-first view head: its vector generation is still pending.
+        log(f"SKIP: {SCHEMA3_VECTORS_UNAVAILABLE}")
+        result["reason"] = SCHEMA3_VECTORS_UNAVAILABLE
         return result
     wiki_selected_laya.recheck(bound)
     result["cards"] = len(cards)
