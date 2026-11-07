@@ -24,6 +24,7 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" recalls --limit 10   # recent recalls and why they were empty/degraded
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" errors --hours 6     # refusals and failures
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" upgrades             # bundle upgrade / journal conversion
+   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" migration            # private shadow migration steps and outcomes
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki  # one event kind; add --json for raw lines
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.backfill  # finite initial-pass progress
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.card  # cards refused or split for the selector budget
@@ -32,6 +33,20 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
 3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` is `bundle_drift` (read-only after a plugin update) or `worktree`.
 
 Upgrade lines can include an opaque `operation` and `attempt`; matching start and final lines describe one execution. A bridge failure can include its fixed `stage` and `bridgeHost`.
+
+The `migration:` summary line describes the private shadow migration that
+follows a completed sync; the selected reader does not change while it runs.
+`state` is `copying`, `caught_up` or `shadow_verified`; `last` is the latest
+operation (`begin`, `copy`, `verification`, `base_corpus`, `sidecar_corpus`,
+`prepare`, `publish`, `vectors`, `parity`, `parity_seal`) and its outcome;
+`progress` is that operation's position in this order. `deferred` counts steps
+held back with nothing written: `migration_space_deferred` means the disk lacks
+the projected copy space (`needed_bytes` / `free_bytes` on the line), and the
+migration resumes on its own once space returns. `restarts` counts source changes
+that sent the copy back, `retries` passes that stopped for a later retry, and
+`errors` steps that failed with a fixed `reason`
+(`migration_recall_parity_mismatch` and `migration_semantic_parity_mismatch` are
+parity failures).
 
 For `wiki.backfill`, `pending` and `dispatched` are unfinished source revisions;
 `settled` means the compile worker finished a terminal attempt (including no-card

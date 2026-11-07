@@ -2,7 +2,7 @@
 """Read-only view of the current project's MemVane install event log.
 
 usage: logs.py [--cwd DIR | --state-root DIR] [--hours N] [--limit N] [--json]
-               [summary|recalls|errors|upgrades|events] [--event NAME]
+               [summary|recalls|errors|upgrades|migration|events] [--event NAME]
 
 The state root comes from the project's selected route (the install
 journal's directory); ``--state-root`` names one directly. Nothing is
@@ -26,6 +26,12 @@ sys.path.insert(0, str(CORE))
 import event_log  # noqa: E402
 
 FAILED = frozenset(('refused', 'failed', 'error', 'interrupted', 'exited'))
+# Same order as laya_shadow_migration.MIGRATION_OPS (the driver test pins it).
+MIGRATION_OPS = ('begin', 'copy', 'verification', 'base_corpus', 'sidecar_corpus',
+                 'prepare', 'publish', 'vectors', 'parity', 'parity_seal')
+MIGRATION_STATES = ('copying', 'caught_up', 'shadow_verified', 'reader_ready', 'switched')
+_HEX = re.compile(r'[0-9a-f]{32}')
+_STAGE = re.compile(r'[a-z_]{1,32}')
 
 
 def _state_root(args):
@@ -80,7 +86,65 @@ def _short(row):
         bridge_host = row.get('bridgeHost')
         if bridge_host in ('claude', 'codex'):
             parts.append(f'bridgeHost={bridge_host}')
+    elif row.get('event') in ('migration.shadow', 'migration.driver'):
+        parts.extend(_migration_parts(row))
     return ' '.join(str(part) for part in parts)
+
+
+def _count(value):
+    return type(value) is int and 0 <= value <= 1 << 62
+
+
+def _migration_parts(row):
+    """Only closed-set names, opaque ids and counts; never free text."""
+    parts = []
+    if row.get('op') in MIGRATION_OPS:
+        parts.append(f"op={row['op']}")
+    stage = row.get('stage')
+    if isinstance(stage, str) and _STAGE.fullmatch(stage):
+        parts.append(f'stage={stage}')
+    if row.get('migration_state') in MIGRATION_STATES:
+        parts.append(f"state={row['migration_state']}")
+    for key in ('steps', 'needed_bytes', 'free_bytes'):
+        if _count(row.get(key)):
+            parts.append(f'{key}={row[key]}')
+    quiesce = row.get('quiesce_ms')
+    if type(quiesce) in (int, float) and 0 <= quiesce < 1e9:
+        parts.append(f'quiesce_ms={quiesce}')
+    migration = row.get('migration')
+    if isinstance(migration, str) and _HEX.fullmatch(migration):
+        parts.append(f'migration={migration[:8]}')
+    return parts
+
+
+def migration_summary(window):
+    """One line: state, latest operation and reason, progress and counts."""
+    shadow = [row for row in window if row.get('event') == 'migration.shadow'
+              and row.get('outcome') != 'attempt']
+    driver = [row for row in window if row.get('event') == 'migration.driver']
+    if not shadow and not driver:
+        return None
+    states = [row['migration_state'] for row in driver if row.get('migration_state') in MIGRATION_STATES]
+    state = states[-1] if states else '-'
+    parts = [f'state={state}']
+    ops = [row for row in shadow if row.get('op') in MIGRATION_OPS]
+    total = len(MIGRATION_OPS)
+    if ops:
+        last = ops[-1]
+        parts.append(f"last={last['op']} {event_log.code(last.get('outcome')) or '-'}")
+        if last.get('reason'):
+            parts.append(f"reason={event_log.code(last['reason'])}")
+        done = total if state in MIGRATION_STATES[2:] else MIGRATION_OPS.index(last['op']) + 1
+        parts.append(f'progress={done}/{total}')
+    elif state in MIGRATION_STATES[2:]:
+        parts.append(f'progress={total}/{total}')
+    outcomes = Counter(row.get('outcome') for row in shadow)
+    parts.append(f'passes={len(driver)}')
+    parts.append(f"deferred={outcomes['deferred']}")
+    parts.append(f"restarts={outcomes['restarted'] + outcomes['restart_pending']}")
+    parts.append(f"retries={sum(1 for row in driver if row.get('outcome') == 'waiting')}")
+    parts.append(f"errors={outcomes['error']}")
+    return 'migration: ' + ' '.join(parts)
 
 
 def _recall_line(row):
@@ -155,6 +219,9 @@ def summary(rows, args):
             elif row.get('event') == 'index.publish':
                 detail = f" generation={row.get('generation')}"
             print(f'{name}: {_short(row)}{detail}')
+    migration = migration_summary(window)
+    if migration:
+        print(migration)
     dropped = sum(row.get('dropped', 0) for row in window if type(row.get('dropped')) is int)
     if dropped:
         print(f'lines a process could not write before a later one: {dropped}')
@@ -163,7 +230,7 @@ def summary(rows, args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('view', nargs='?', default='summary',
-                        choices=('summary', 'recalls', 'errors', 'upgrades', 'events'))
+                        choices=('summary', 'recalls', 'errors', 'upgrades', 'migration', 'events'))
     parser.add_argument('--cwd', default=os.getcwd())
     parser.add_argument('--state-root')
     parser.add_argument('--hours', type=float)
@@ -196,6 +263,9 @@ def main(argv=None):
                args, lambda row: _short(row) + (f" {row.get('from')} -> {row.get('to')}"
                                                 if row.get('event') == 'bundle.upgrade'
                                                 else ''))
+    elif args.view == 'migration':
+        _print([row for row in rows if row.get('event') in ('migration.shadow', 'migration.driver')
+                and row.get('outcome') != 'attempt'], args)
     else:
         _print([row for row in rows if not args.event or row.get('event') == args.event], args)
     return 0
