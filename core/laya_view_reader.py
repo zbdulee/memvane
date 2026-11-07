@@ -64,6 +64,23 @@ def _query(query, limit, prefixes, exclusions, seconds):
     return time.monotonic() + seconds
 
 
+def _card_locations(db, gen_id, paths):
+    """``{wiki_path: [locator, ...]}`` from one generation's card_sources rows."""
+    import source_spans
+    locations = {}
+    sql = ('SELECT wiki_path,spans_json FROM card_sources WHERE gen_id=? AND wiki_path IN (' +
+           ','.join('?' for _ in paths) + ') ORDER BY wiki_path,ordinal')
+    for source in db.execute(sql, (gen_id, *paths)):
+        for span in v.parse_canonical(source['spans_json']):
+            if span.get('kind') != 'legacy-lines-v1':
+                v.fail('legacy_card_trust_invalid')
+            locations.setdefault(source['wiki_path'], []).append(span)
+    for path, spans in locations.items():
+        spans.sort(key=lambda span: (span['path'], span['startLine'], span['endLine']))
+        locations[path] = [source_spans.locator(span) for span in spans]
+    return locations
+
+
 class ReaderMixin:
     @contextmanager
     def _reading(self, deadline):
@@ -264,18 +281,7 @@ class ReaderMixin:
             state = self._snapshot_state(entry['capture'], original, deadline)
             locations = {}
             if 'legacy' in stage and rows:
-                import source_spans
-                paths = [row['path'] for row in rows]
-                sql = ('SELECT wiki_path,spans_json FROM card_sources WHERE gen_id=? AND wiki_path IN (' +
-                       ','.join('?' for _ in paths) + ') ORDER BY wiki_path,ordinal')
-                for source in db.execute(sql, (pin.gen_id, *paths)):
-                    for span in v.parse_canonical(source['spans_json']):
-                        if span.get('kind') != 'legacy-lines-v1':
-                            v.fail('legacy_card_trust_invalid')
-                        locations.setdefault(source['wiki_path'], []).append(span)
-                for path, spans in locations.items():
-                    spans.sort(key=lambda span: (span['path'], span['startLine'], span['endLine']))
-                    locations[path] = [source_spans.locator(span) for span in spans]
+                locations = _card_locations(db, pin.gen_id, [row['path'] for row in rows])
             answer = [dict(path=r['path'], blob_sha=r['blob_sha'], body=self._blob(r['blob_sha']),
                 display_title=r['display_title'], score=r['score'], view_id=pin.view_id, gen_id=pin.gen_id,
                 evidence='commitment-only', owner_verified=False, snapshot_state=state) for r in rows]
@@ -286,6 +292,28 @@ class ReaderMixin:
         self._observe(entry,deadline=deadline)
         _remaining(deadline)
         return answer
+
+    def card_locations(self, pin, paths, *, deadline_seconds=2):
+        """Source line locators of pinned members, from stored card provenance only.
+
+        Any generation (legacy import or ordinary) answers from its own
+        ``card_sources`` rows; no source file is opened. Only
+        ``legacy-lines-v1`` spans are shown, and any other kind refuses the
+        read. A path without spans is absent from the result.
+        """
+        if (not isinstance(paths, (list, tuple)) or len(paths) > 100
+                or any(type(path) is not str or not path for path in paths)):
+            v.fail('card_locations_invalid')
+        deadline = time.monotonic() + deadline_seconds
+        self._pinned(pin)
+        if not paths:
+            return {}
+        with self._reading(deadline) as db:
+            generation = db.execute('SELECT state,view_id FROM generations WHERE gen_id=?',
+                                    (pin.gen_id,)).fetchone()
+            if generation is None or tuple(generation) != ('published', pin.view_id):
+                v.fail('view_pin_changed')
+            return _card_locations(db, pin.gen_id, list(dict.fromkeys(paths)))
 
     def verify_views(self):
         deadline = time.monotonic() + 30
