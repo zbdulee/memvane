@@ -306,17 +306,73 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         emit('schema3-vector-two-views', mainProviderCalls=len(main_calls), sideProviderCalls=len(side_calls),
              sideIngests=len(ingests), foreignTrust='refused')
 
-    def test_04_unreproducible_chunks_block_vectors_not_the_lexical_publish(self):
+    def long_card(self, relative, token, lines):
+        """A trusted card (as ``card``) whose body adds ``lines`` Korean prose lines."""
+        import yaml_scalars
+        raw = ('Synthetic source for ' + token + '.\n').encode('utf8')
+        source = self.case.project / 'notes' / (token + '.md')
+        source.parent.mkdir(exist_ok=True); source.write_bytes(raw)
+        revision = dict(kind='file', path='notes/' + token + '.md', collection=self.raw_collection,
+                        sha256=hashlib.sha256(raw).hexdigest(), size=len(raw),
+                        mtimeNs=source.stat().st_mtime_ns)
+        line = yaml_scalars.dump_source_revisions([revision])[0]
+        front = (f'title: "{token} card"\nstatus: verified\ncreatedBy: memvane\n'
+                 f'sourceRevisions:\n  - {line}\n')
+        prose = ''.join('%03d 가나다라마바사아자차카타파하 거너더러머버서어저처커터퍼허 %s\n' % (n, token)
+                        for n in range(lines))
+        text = '---\n' + front + '---\n' + f'# {token} card\n{token} verified body\n' + prose
+        text = text.replace('createdBy: memvane\n', 'createdBy: memvane\nverifiedBodyHash: '
+                            + yaml_scalars.card_body_hash(text) + '\n', 1)
+        path = self.wiki / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf8')
+
+    def stored_set(self, path, gen_id=None):
+        """(document body, title, chunk rows, embedding rows) of a member's spec sets."""
+        gen_id = gen_id or self.head()[0]
+        blob = self.members(gen_id)[path][0]
+        store = self.views.ViewStore.open_reader(self.store_path, repository=self.repository,
+                                                 scope_id=self.case.route['scopeId'])
+        try:
+            document = store.document(blob)
+            return (document['body'], document['title'] or 'none', store.chunks(blob, self.spec['recipe_id']),
+                    store.vectors(blob, self.spec['recipe_id'], self.spec['profile_id']))
+        finally:
+            store.close()
+
+    def test_04_resplit_card_falls_back_to_small_windows_and_publishes_vectors(self):
+        import struct
         self.select_schema3()
         self.split.add('splitprobe')
-        self.card('concepts/split-card.md', 'splitprobe')
+        target = 'concepts/split-card.md'
+        self.long_card(target, 'splitprobe', 40)
         result, _ingests, calls = self.run_vector_pass()
-        self.assertEqual((result['state'], result['vector']['state'], result['vector']['reason']),
-                         ('indexed', 'blocked', 'chunk_text_unreconstructable'), result)
-        self.assertEqual(self.stage(result['generation'])[0]['vector_mode'], 'lexical-only')
-        self.assertIn('concepts/split-card.md', self.paths(self.recall('splitprobe')))
-        emit('schema3-vector-blocked', state=result['state'], reason=result['vector']['reason'],
-             providerCalls=len(calls))
+        self.assertEqual((result['state'], result['vector']['state']), ('indexed', 'published'), result)
+        gen = result['generation']
+        self.assertEqual(self.stage(gen)[0]['vector_mode'], 'exact-complete')
+        body, title, chunks, rows = self.stored_set(target, gen)
+        fallback = self.VV.qmd_first_pass(body, 600, 90, 135)
+        self.assertGreater(len(fallback), 2)
+        self.assertNotEqual([p for p, _ in fallback], [p for p, _ in self.VV.qmd_first_pass(body)])
+        # The re-split card's chunk set is the fallback windows, each embedded alone.
+        self.assertEqual([(c['position'], c['text']) for c in chunks], fallback)
+        self.assertEqual([list(struct.unpack('<fff', r['embedding'])) for r in rows],
+                         [list(struct.unpack('<fff', struct.pack('<fff', *text_vector(
+                             'title: ' + title + ' | text: ' + text)))) for _p, text in fallback])
+        # Only the re-split card asks for single embeddings; position-equal cards
+        # keep the one chunked call's vectors (no added provider call).
+        documents = [t for kind, t in calls if kind == 'document']
+        self.assertEqual(documents, [title] * len(fallback))
+        self.assertEqual(sorted(p for kind, p in calls if kind == 'chunks'),
+                         sorted('blobs/' + blob + '.md' for blob in set(self.eligible(gen).values())))
+        # The card is a vector search result: a prompt without a lexical match.
+        piece = text_vector('title: ' + title + ' | text: ' + fallback[1][1])
+        hit = self.hybrid_recall('zzqqxv nomatch', piece)
+        self.assertEqual((hit.data_generation, hit.semantic_status), (gen, 'complete'))
+        self.assertEqual(self.paths(hit)[0], target)
+        self.assertIn(target, self.paths(self.recall('splitprobe')))
+        emit('schema3-vector-resplit-fallback', fallbackChunks=len(fallback), documentCalls=len(documents),
+             chunkCalls=len(calls) - len(documents), topRow=self.paths(hit)[0])
 
     def test_05_raw_sources_are_observed_in_each_generation(self):
         self.select_schema3()
@@ -482,6 +538,67 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertEqual((deferred['state'], deferred['reason']), ('deferred', 'cpu_pressure'), deferred)
         emit('schema3-vector-provider-defect', state=result['state'], reason=result['reason'])
 
+
+    def test_10_card_over_the_fill_deadline_completes_on_a_later_pass(self):
+        """A card whose single embeddings alone outlast one fill call: counts, not wall time.
+
+        ``laya_blob_fill``'s deadline reads a virtual clock that only the stub's
+        single-embedding calls advance (4 virtual seconds each).
+        """
+        fill = importlib.import_module('laya_blob_fill')
+        values = importlib.import_module('laya_blob_values')
+        clock, budgets = [0.0], []
+        real_deadline = fill._deadline
+
+        def deadline(seconds):
+            real_deadline(seconds)  # same validation
+            budgets.append(seconds)
+            return (clock[0], seconds)
+
+        def expire(token):
+            if clock[0] - token[0] >= token[1]:
+                values.fail('content_fill_deadline')
+        real_document = self.worker.ReviewedLocalQmdProvider.embed_document
+
+        def slow_document(provider, body, title):
+            clock[0] += 4.0
+            return real_document(provider, body, title)
+        self.select_schema3()
+        self.split.add('slowprobe')
+        target = 'concepts/slow-card.md'
+        self.long_card(target, 'slowprobe', 130)
+        with mock.patch.object(fill, '_deadline', new=deadline), mock.patch.object(fill, '_expire', new=expire), \
+                mock.patch.object(self.worker.ReviewedLocalQmdProvider, 'embed_document', new=slow_document):
+            first, _ingests, first_calls = self.run_vector_pass()
+            # Lexical publish kept; the vectors wait, the wake stays.
+            self.assertEqual((first['state'], first['vector']['state'], first['vector']['reason']),
+                             ('pending', 'pending', 'schema3_vector_deadline'), first)
+            self.assertEqual(self.stage(first['generation'])[0]['vector_mode'], 'lexical-only')
+            self.assertIn(target, self.paths(self.recall('slowprobe')))
+            second, _ingests, second_calls = self.run_vector_pass()
+        self.assertEqual((second['state'], second['vector']['state']), ('indexed', 'published'), second)
+        body, title, chunks, rows = self.stored_set(target, second['generation'])
+        pieces = len(self.VV.qmd_first_pass(body, 600, 90, 135))
+        self.assertGreater(pieces * 4.0, self.worker.SCHEMA3_FILL_CALL_SECONDS)
+        self.assertEqual((len(chunks), len(rows)), (pieces, pieces))
+
+        def kinds(calls, kind, value=None):
+            return sum(1 for k, v in calls if k == kind and (value is None or v == value))
+        # The stored chunk set is the progress kept: the second pass asks for no
+        # chunked call and embeds the card's windows once more with the resume budget.
+        self.assertEqual((kinds(first_calls, 'document', title), kinds(second_calls, 'document', title)),
+                         (pieces, pieces))
+        slow = 'blobs/' + self.members(second['generation'])[target][0] + '.md'
+        self.assertEqual((kinds(first_calls, 'chunks', slow), kinds(second_calls, 'chunks', slow)), (1, 0))
+        # Every distinct document is chunked once over both passes.
+        self.assertEqual(kinds(first_calls, 'chunks') + kinds(second_calls, 'chunks'),
+                         len(set(self.eligible(second['generation']).values())))
+        # Budgets are what each content fill had left: the first attempts stay
+        # within one fill call, the resumed call carries the resume budget.
+        resumed = [b for b in budgets if b > self.worker.SCHEMA3_FILL_CALL_SECONDS]
+        self.assertTrue(resumed and all(b <= self.worker.SCHEMA3_RESUME_SECONDS for b in resumed), budgets)
+        emit('schema3-vector-deadline-resume', pieces=pieces, firstDocuments=kinds(first_calls, 'document'),
+             secondDocuments=kinds(second_calls, 'document'), secondChunks=kinds(second_calls, 'chunks'))
 
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
