@@ -33,7 +33,10 @@ development execution guard is separate; see
   views once, and a refused lane or service leaves the lexical generation
   published and the wake `deferred`. The shadow migration driver
   (`shadow_pass`) runs after the sync owner is released, inside the same wake,
-  at most four steps in 60 seconds. The reader switch step holds the install,
+  at most four steps in 60 seconds. A pass that can go on re-offers its own
+  wake due 30 seconds later (`WakeQueue.offer(delay=)`); the drain releases the
+  lease and the lease-free timer runs it, so the next pass takes the same sync
+  admission and owner checks. The reader switch step holds the install,
   initial-build, operation and sync owner locks and
   `Coordinator().quiesce_provider()` for at most 10 seconds; a busy lock is a
   retry for a later pass, never a wait.

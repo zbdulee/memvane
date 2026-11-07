@@ -1666,6 +1666,16 @@ SHADOW_CANDIDATE = 'shadow-candidate.sqlite'
 _SHADOW_CANDIDATE_NAME = re.compile(r'shadow-candidate(?:-[0-9a-f]{32})?\.sqlite')
 _SHADOW_INTENT_RETIRED = 'shadow-migration-intent.retired-%s.json'
 _ACTIVATION_SCHEMA = 'memvane-shadow-activation-v1'
+# A pass that can go on offers the same laya-sync wake once, due this long
+# after the pass ends; the wake queue's timer runs it (``_shadow_rewake``).
+SHADOW_REWAKE_SECONDS = 30
+# Consecutive error passes after which a pass waits for a natural wake.
+SHADOW_REWAKE_ERRORS = 3
+# The one wait that is no hold: the pass budget ended a migration that can go on.
+_SHADOW_REWAKE_WAITS = frozenset({'pass_deadline'})
+# From here the switch gate waits for bridge receipts (the recall hooks bring
+# them with their own wake); reader_ready and switched offer their own wake.
+_SHADOW_REWAKE_STOP = frozenset({'shadow_verified', 'reader_ready', 'switched'})
 
 
 def _shadow_gate(project, executing_root, *, prove=True):
@@ -1883,6 +1893,56 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
     return result['stage'], result['migration_state'], store
 
 
+def _shadow_error_streak(state, failed):
+    """Count this pass in the activation record's consecutive error streak; the new count.
+
+    Under the install lock, which an explicit resume holds while it rewrites
+    the record; every other field stays as written. Raises when the record or
+    the lock is unavailable.
+    """
+    import laya_ledger_common as ledger
+    from laya_product_install import _install_lock
+    with _install_lock(state):
+        record, _candidate = _read_activation(state)
+        count = record.get('rewake_errors', 0)
+        count = count if type(count) is int and count >= 0 else 0
+        streak = count + 1 if failed else 0
+        if streak != record.get('rewake_errors', 0):
+            ledger._write(state / SHADOW_ACTIVATION, {**record, 'rewake_errors': streak}, replace=True)
+    return streak
+
+
+def _shadow_rewake(project, state, status):
+    """Offer the next pass when this one can go on by itself; True when a wake was offered.
+
+    A ``progressed`` pass and a ``pass_deadline`` wait rewake. Any other wait
+    (switch gate, space, step retry, guard) does not, nor a pass that ends at
+    shadow_verified or later. An ``error`` rewakes while the consecutive error
+    streak stays below ``SHADOW_REWAKE_ERRORS``; any other pass resets it, and
+    an unrecorded streak never rewakes an error. The offer is the existing
+    laya-sync wake, due ``SHADOW_REWAKE_SECONDS`` later; a sync that does not
+    complete runs no pass, so it offers nothing.
+    """
+    if os.environ.get(SHADOW_KILL_SWITCH) == 'off':
+        return False
+    failed = status['state'] == 'error'
+    try:
+        streak = _shadow_error_streak(state, failed)
+    except Exception:
+        streak = None
+    if failed:
+        if streak is None or streak >= SHADOW_REWAKE_ERRORS:
+            return False
+    elif not (status['state'] == 'progressed'
+              or (status['state'] == 'waiting' and status['reason'] in _SHADOW_REWAKE_WAITS)):
+        return False
+    if status['migration_state'] in _SHADOW_REWAKE_STOP:
+        return False
+    import laya_shadow_migration as migration
+    offered = migration._offer_sync(project, delay=SHADOW_REWAKE_SECONDS)
+    return isinstance(offered, dict) and offered.get('status') in ('queued', 'deferred_queue_capacity_retained')
+
+
 def resume_shadow_migration(project, *, executing_root=None):
     """Explicitly release a rollback hold: a fresh migration on a new candidate.
 
@@ -1939,14 +1999,16 @@ def shadow_pass(project, *, executing_root=None):
     reader_ready or switched. ``waiting``: a step asked for a later retry
     (``reason`` is the switch gate code when it has one), the space
     pre-check deferred it, the pass budget or a guard stopped it. ``error``: a step raised; only its fixed code is
-    kept. A pass past the guard emits one ``migration.driver`` event.
+    kept. A pass past the guard emits one ``migration.driver`` event. ``rewake``
+    is True when the pass offered the next one (``_shadow_rewake``).
     """
     import event_log
     import laya_shadow_migration as migration
     project = Path(project)
     executing_root = Path(_writer_executing_root() if executing_root is None else executing_root)
     bound, reason = _shadow_gate(project, executing_root)
-    status = {'state': 'skipped', 'reason': reason, 'steps': 0, 'stages': [], 'migration_state': None}
+    status = {'state': 'skipped', 'reason': reason, 'steps': 0, 'stages': [], 'migration_state': None,
+              'rewake': False}
     if bound is None:
         settle = getattr(migration, 'settle_switched', None)
         if reason == 'reader_schema3_selected' and callable(settle):
@@ -2009,9 +2071,14 @@ def shadow_pass(project, *, executing_root=None):
     finally:
         if store is not None:
             store[0].close()
+        try:
+            status['rewake'] = _shadow_rewake(project, state, status)
+        except Exception:
+            status['rewake'] = False  # The next natural wake runs the next pass.
         event_log.emit('migration.driver', state_root=state, host='worker', outcome=status['state'],
                        reason=status['reason'], ms=(time.monotonic() - started) * 1000,
-                       steps=status['steps'], migration_state=status['migration_state'])
+                       steps=status['steps'], migration_state=status['migration_state'],
+                       rewake=status['rewake'])
     return status
 
 
