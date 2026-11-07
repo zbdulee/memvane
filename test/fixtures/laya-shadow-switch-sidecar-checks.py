@@ -13,7 +13,7 @@ is checked through ``serve_selected`` and the registered hook entry point.
 Synthetic authority as in U15; the fixture provider is unusable, so both
 readers answer lexically.
 """
-from contextlib import ExitStack, closing, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, closing, contextmanager, redirect_stderr, redirect_stdout
 import hashlib
 import importlib
 import importlib.util
@@ -39,6 +39,9 @@ J = recall_checks.J
 PROBE = 'sidecarprobe'
 CHANGED = 'concepts/heron-route.md'
 PROMPT = 'heron route northern marsh ' + PROBE
+SIDECAR_VECTOR = (0.0, 1.0, 0.0)
+MODEL_SHA = '3' * 64
+RECIPE = 'qmd-regex-token-chunks-candidate-v1'
 
 
 def emit(case, **evidence):
@@ -66,6 +69,15 @@ def changed_sidecar_seed():
                 db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
                            (rowid, path, title, changed))
             self.changed_hash = digest
+            # The completed sidecar row's chunk set, as its publication cached
+            # it; a vector of its own so a semantic query can single it out.
+            import laya_initial_build as build
+            from laya_index_vector import LayaVectorIndex
+            profile = build.read(self.case.state)['identity']['vectorProfileId']
+            with self.case.runtime({self.case.WIKI: str(self.case.auto / 'wiki')}) as runtime:
+                runtime.index.ensure_content(digest, changed)
+                LayaVectorIndex(runtime.index).insert_chunk_set(
+                    digest, title, profile, [{'seq': 0, 'pos': 0, 'vector': list(SIDECAR_VECTOR)}])
     return ChangedSidecarSeed
 
 
@@ -197,6 +209,78 @@ class ShadowSwitchSidecarChecks(unittest.TestCase):
         self.assertEqual(after['event']['outcome'], 'served')
         self.assertEqual(after['results'][-1].data_generation, after_gen)
 
+    # ---- the same head with copied vectors: the semantic branch ------------
+    @contextmanager
+    def provider_spec(self):
+        """The install provider's view spec (U12e): the fixture manifest names no recipe or model digest."""
+        VV = importlib.import_module('laya_view_vectors')
+        real = VV.provider_specs
+
+        def specs(manifest, profile):
+            return real(dict(manifest or {}, recipeId=RECIPE, modelSha256=MODEL_SHA), profile)
+        with mock.patch.object(VV, 'provider_specs', new=specs):
+            yield
+
+    def hybrid_recall(self, prompt, vector):
+        """``query_endpoint`` with the warm provider's query vector injected (U12e ``query_vector``)."""
+        dispatch = self.u11.dispatch
+        R, lease = self.u10.reader, importlib.import_module('laya_reader_lease')
+        provider_module = importlib.import_module('laya_local_embed_provider')
+        real = dispatch._approved_profile_matches
+
+        def approved(candidate, current):
+            manifest = dict(current.get('providerManifest') or {}, modelSha256=MODEL_SHA)
+            return real(candidate, dict(current, providerManifest=manifest))
+        with self.u10.seed.authority(), J.read_only_journals():
+            with lease.resolve_endpoint(self.case.project, action='recall',
+                                        host_root=self.case.plugin) as endpoint:
+                proof = R._recheck(endpoint)[2]
+                decision = dict(proof['readerDecision'], vectorProfile=proof['vectorProfile'])
+                provider = object.__new__(provider_module.ReviewedLocalQmdProvider)
+                profile = proof['vectorProfile']
+                provider.manifest = proof['providerManifest']
+                provider.profile = {'profile_id': profile['profileId'], 'model_id': profile['modelId'],
+                                    'embedding_fingerprint': profile['embeddingFingerprint'],
+                                    'dimension': profile['dimension'], 'metric': profile['metric']}
+                with mock.patch.object(dispatch, '_provider_vector', return_value=list(vector)), \
+                        mock.patch.object(dispatch, '_approved_profile_matches', new=approved), \
+                        dispatch.approved_query_vector(authority=endpoint, snapshot=None, decision=decision,
+                                                       provider=provider, prompt=prompt,
+                                                       deadline=time.monotonic() + 20) as query:
+                    return dispatch.query_endpoint(
+                        endpoint, checkout=self.case.project, prompt=prompt, query_vector=query,
+                        deadline=time.monotonic() + 20, snapshot=None, decision=decision,
+                        provider=provider, authority=endpoint)
+
+    def test_02_paired_head_answers_a_query_vector_lexically_with_the_sidecar_card(self):
+        """With the install provider's spec the migration copies the base vectors, but a
+        sidecar member's chunk set is bound to no base membership row, so the paired head
+        stays lexical (the migration prepares no vector generation): a recall carrying an
+        approved query vector is served lexically from both corpora."""
+        u15 = self.u15
+        with self.provider_spec():
+            self.switched()
+        intent = u15.intent()
+        self.assertEqual(intent['migration_state'], 'switched')
+        gen = intent['published']['generation']
+        self.assertEqual(self.head(), gen)
+        stage = self.stage(gen)
+        self.assertIn('sidecar_corpus', stage['legacy'])
+        record = intent['vectors']
+        name = self.case.WIKI + '/'
+        answer = self.hybrid_recall(PROMPT, SIDECAR_VECTOR)
+        paths = [row['path'] for row in answer.rows]
+        emit('switched-paired-query-vector', vectorSpec=stage['vector_spec'], copied=record['copied'],
+             deferred={k: n for k, n in record['deferred'].items() if n}, status=answer.semantic_status,
+             paths=paths)
+        self.assertTrue(record['complete'])
+        self.assertEqual((record['total'], record['copied'], record['deferred']['vector_rows_absent']), (3, 2, 1))
+        self.assertIsNone(stage['vector_spec'])
+        self.assertEqual((answer.store_format, answer.data_generation), ('schema3', gen))
+        self.assertEqual(answer.semantic_status, 'lexical_only')
+        self.assertIn(name + CHANGED, paths)
+        self.assertEqual(len(paths), len(set(paths)))
+        self.assertIn(PROBE, next(row['body'] for row in answer.rows if row['path'] == name + CHANGED))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

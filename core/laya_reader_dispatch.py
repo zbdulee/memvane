@@ -354,6 +354,10 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         # exactly one. Each corpus is fused on its own and the two are merged
         # by the v6 incremental merge rule (merge_incremental_rows).
         origins=legacy['fts_sources'] if 'sidecar_corpus' in legacy else None
+        # The migration prepares that head without a vector spec (lexical
+        # only); vectors arrive with the next ordinary schema3 generation.
+        if origins is not None and vector is not None:
+            raise ValueError('migration_vector_spec_invalid')
 
         def rooted(source):
             if linked is None:
@@ -394,15 +398,10 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     raise
                 status=DEFERRED[exc.reason]
 
-        def fused(origin):
-            lists=list(lexical[origin])
-            if nearest is not None:
-                lists.append(nearest if origin is None else
-                             [row for row in nearest
-                              if origins.get(row['path'][len(name)+1:],'base')==origin])
+        def fused(lists):
             return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
-        rows=(fused(None) if origins is None
-              else merge_incremental_rows(fused('sidecar'),fused('base')))
+        rows=(fused(lexical[None]+([] if nearest is None else [nearest])) if origins is None
+              else merge_incremental_rows(fused(lexical['sidecar']),fused(lexical['base'])))
         spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
                                    deadline_seconds=left())
         if time.monotonic()>=deadline:

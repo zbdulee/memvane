@@ -23,7 +23,7 @@ test('U15 switch of a paired sidecar migration head keeps recall served', () => 
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.status === null ? JSON.stringify({ signal: result.signal })
       : result.stdout + result.stderr);
-    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 1} tests?\\b`));
+    assert.match(result.stderr, new RegExp(`Ran ${selected.length || 2} tests?\\b`));
     assert.match(result.stderr, /\nOK\n/);
   } finally {
     removeTemp(home);
