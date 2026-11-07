@@ -293,8 +293,8 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
 
     With ``linked`` the pinned view is that linked worktree's own (see
     ``_schema3_pin``); its wiki collection is the main one rebased onto the
-    worktree project root. A linked view sealed without vectors answers
-    lexical lists only (``lexical_only``).
+    worktree project root. A view sealed without vectors answers lexical
+    lists only (``lexical_only``).
     """
     import laya_reader_lease as leases
     import laya_reader_open as readers
@@ -338,7 +338,8 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         return remaining
     with journal._schema3_pin(record,deadline=deadline,linked=linked) as (store,handle,pin):
         vector=store._pinned(pin)['vector']
-        semantic=query_vector is not None and not (linked is not None and vector is None)
+        # A lexical head (vectors pending) answers lexical lists only.
+        semantic=query_vector is not None and vector is not None
         if semantic:
             proof=_vector_proof(authority,None,decision,provider,deadline)
             if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)

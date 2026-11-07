@@ -799,8 +799,8 @@ def _schema3_pin(record, *, deadline, linked=None):
     ``linked`` (a ``worktree`` route decision) pins that linked worktree's own
     view in the same store instead: its registered row is found by project
     root, never the main view. No row or no published head is
-    ``view_preparing``. Its view may be sealed without vectors (lexical-first);
-    a vector profile other than the endpoint's is refused.
+    ``view_preparing``. Any pinned view may be sealed without vectors
+    (lexical-first); a vector profile other than the endpoint's is refused.
     """
     from laya_view_store import ViewStore
     from laya_blob_values import fail
@@ -837,10 +837,14 @@ def _schema3_pin(record, *, deadline, linked=None):
             if floor is not None and pin.view_id == floor['view_id']:
                 _need(pin.epoch >= floor['epoch'], 'reader_head_regressed')
             vector = store._pinned(pin)['vector']
-            if 'vector_profile' in record and not (linked is not None and vector is None):
-                _need((None if vector is None else vector['profile_id']) == record['vector_profile'] and
-                      (None if vector is None else vector['recipe_id']) == record['vector_recipe'],
-                      'reader_endpoint_changed')
+            # A view head may be lexical (vectors pending after a lexical-first
+            # publish); a vector head must carry the endpoint's spec. A record
+            # sealed without one reads any head lexically until the owner
+            # re-seals it with the head's spec (resettle_selection).
+            if ('vector_profile' in record and vector is not None
+                    and record['vector_profile'] is not None):
+                _need(vector['profile_id'] == record['vector_profile'] and
+                      vector['recipe_id'] == record['vector_recipe'], 'reader_endpoint_changed')
             yield store, handle, pin
         finally:
             store.release(pin)
@@ -1391,32 +1395,65 @@ def relocate_selection(db, journal_path, attestation_sha256, *, released=None):
                'WHERE id=1', (epoch, endpoint_id, current.preferred_endpoint, transition))
 
 
-def resettled_pair(old, new):
-    """``new`` is the schema3 ``old`` re-sealed after the project's recall settings changed.
+_RESETTLED = frozenset(('settings', 'vector_profile', 'vector_recipe'))
 
-    Only ``settings`` (the recallSettings digest) differs; store, incarnation,
-    worktree binding, policy, roots and every other field are identical.
+
+def resettled_pair(old, new):
+    """``new`` is the schema3 ``old`` re-sealed by its owner.
+
+    Either the project's recall settings changed (``settings``), or a record
+    sealed without a vector spec adopts the spec of a vector head the owner
+    published (``vector_profile``/``vector_recipe``: both None before, both
+    set after; never changed or cleared). Store, incarnation, worktree
+    binding, policy, roots and every other field are identical.
     """
     try:
-        return (old.get('store_format') == new.get('store_format') == 'schema3'
-                and set(old) == set(new) == _SCHEMA3_KEYS
-                and old['settings'] != new['settings']
-                and all(old[k] == new[k] for k in _SCHEMA3_KEYS - {'settings'}))
+        if not (old.get('store_format') == new.get('store_format') == 'schema3'
+                and set(old) == set(new) == _SCHEMA3_KEYS):
+            return False
+        changed = {k for k in _SCHEMA3_KEYS if old[k] != new[k]}
+        vector = changed & {'vector_profile', 'vector_recipe'}
+        return (bool(changed) and changed <= _RESETTLED
+                and (not vector or (old['vector_profile'] is None and old['vector_recipe'] is None
+                                    and type(new['vector_profile']) is str
+                                    and type(new['vector_recipe']) is str)))
     except (AttributeError, KeyError, TypeError):
         return False
 
 
+def _adopted_vector_spec(record, proof, *, deadline):
+    """The current main head's vector spec when it is the install provider's, else None."""
+    from laya_view_vectors import provider_spec
+    expected = provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
+    if expected is None:
+        return None
+    from laya_blob_values import BlobStoreError
+    try:
+        with _schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+            vector = store._pinned(pin)['vector']
+    except BlobStoreError:
+        # Best effort: a cold view, a moving checkout or a busy store leaves
+        # the record as it is; the owner's next pass adopts the spec.
+        return None
+    if vector is None or {k: vector[k] for k in ('recipe_id', 'profile_id')} != expected:
+        return None
+    return expected
+
+
 def resettle_selection(state, project, executing_root):
-    """Owner re-seal of the selected schema3 endpoint after its recall settings changed.
+    """Owner re-seal of the selected schema3 endpoint (recall settings or vector spec).
 
     The selected record is proved again from the current install (the same
-    full proof a persisted reader needs, no bundle drift). When the result
-    differs from the stored record only in ``settings``, one journal image
-    transaction selects the re-sealed record (``resettled_pair``) with the
-    same attestation. Returns ``'resealed'`` or ``'unchanged'``; any other
+    full proof a persisted reader needs, no bundle drift). A record sealed
+    without a vector spec adopts the main head's spec once the owner has
+    published a vector generation of the install provider's spec. When the
+    result differs from the stored record only as ``resettled_pair`` allows,
+    one journal image transaction selects the re-sealed record with the same
+    attestation. Returns ``'resealed'`` or ``'unchanged'``; any other
     difference is left for the reader to refuse (``reader_endpoint_changed``).
     Recall itself never re-seals.
     """
+    import time
     path = _journal(Path(state) / _JOURNAL)
     with _readonly(path, path.parent) as db:
         selected, stored = _selection(db)
@@ -1427,6 +1464,10 @@ def resettle_selection(state, project, executing_root):
     current, raw, proof = _schema3_evidence(path.parent, project, executing_root, stored, allow_drift=False)
     _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
     current['creation_epoch'] = stored['creation_epoch']
+    if stored['vector_profile'] is None:
+        adopted = _adopted_vector_spec(current, proof, deadline=time.monotonic() + 10)
+        if adopted is not None:
+            current['vector_profile'], current['vector_recipe'] = adopted['profile_id'], adopted['recipe_id']
     if _raw(current) == _raw(stored) or not (raw == attestation and resettled_pair(stored, current)):
         return 'unchanged'
     packed = _raw(current)

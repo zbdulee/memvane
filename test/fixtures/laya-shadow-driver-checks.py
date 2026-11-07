@@ -404,6 +404,52 @@ class DriverChecks(unittest.TestCase):
         self.assertEqual(sorted(p for p in probes if p in raw or p in rendered), [])
         self.assertEqual([row for row in self.events(case) if 'prompt' in row], [])
 
+    def test_install_provider_spec_reaches_the_vector_copy(self):
+        # U12e/K5: the driver registers the install provider's view recipe and
+        # profile in the candidate and passes that spec to advance_shadow, so
+        # the caught-up head copies compatible legacy vectors. The fixture
+        # manifest names no recipe or model digest; both are filled in here.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        views = importlib.import_module('laya_view_vectors')
+        real_specs = views.provider_specs
+
+        def specs(manifest, profile):
+            return real_specs(dict(manifest or {}, recipeId=views.PROVIDER_CHUNK_RECIPE,
+                                   modelSha256='3' * 64), profile)
+        seen, real_advance = [], M.advance_shadow
+
+        def advance(store, **kwargs):
+            seen.append(kwargs.get('vector_spec'))
+            return real_advance(store, **kwargs)
+        stages = []
+        with self.authority(seed, case), mock.patch.object(views, 'provider_specs', new=specs), \
+                mock.patch.object(M, 'advance_shadow', new=advance), \
+                mock.patch.object(M, 'advance_reader_ready', None, create=True):
+            expected = views.provider_spec({}, case.route['vectorProfile'])
+            for _ in range(16):
+                stages.extend(W.shadow_pass(case.project)['stages'])
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        intent = self.intent(case)
+        self.assertEqual(intent['migration_state'], 'shadow_verified', stages)
+        self.assertTrue(seen)
+        self.assertEqual(set(map(json.dumps, seen)), {json.dumps(expected)})
+        self.assertIn('vectors', stages)
+        record = intent['vectors']
+        self.assertEqual((record['recipe_id'], record['profile_id'], record['complete']),
+                         (expected['recipe_id'], expected['profile_id'], True))
+        self.assertEqual(record['copied'] + sum(record['deferred'].values()), record['total'])
+        import sqlite3
+        from contextlib import closing
+        uri = (case.state / W.SHADOW_CANDIDATE).as_uri() + '?mode=ro'
+        with closing(sqlite3.connect(uri, uri=True)) as db:
+            self.assertEqual(db.execute('SELECT recipe_id FROM chunk_recipes').fetchall(),
+                             [(expected['recipe_id'],)])
+            self.assertEqual(db.execute('SELECT profile_id FROM vector_profiles').fetchall(),
+                             [(expected['profile_id'],)])
+        print('vector_copy', record['total'], record['copied'], dict(record['deferred']), flush=True)
+
     def test_driver_failure_never_changes_the_sync_result(self):
         W = self.W
         for result in ({'state': 'indexed', 'generation': 'g'}, {'state': 'unchanged'}):

@@ -458,13 +458,16 @@ def _selected_runtime(bound, roots, capacity):
 
 @contextmanager
 def _schema3_search(bound, text):
-    """Lexical candidates from the journal-selected schema3 view head.
+    """Lexical and vector candidates from the journal-selected schema3 view head.
 
     The same persisted reader endpoint and row shape as schema3 recall
     (``resolve_endpoint`` + ``query_endpoint``), held under the sync owner
     like the v5 runtime path; no v6 component is opened. The view store has
-    no exclusion table. No query vector is asked: the schema3 rows carry an
-    RRF score, not the cosine the vector-only relevance rule needs.
+    no exclusion table. When the head is a vector generation of an approved
+    profile and a warm provider answers (``query_provider``), the same head's
+    exact cosine list (``search_exact``: a card's best chunk, as the v6
+    ``vectorCosines``) adds vector-only candidates and carries the cosine the
+    vector-only relevance rule needs; otherwise the list is lexical only.
     """
     import laya_journal_reader as reader
     import laya_reader_dispatch as dispatch
@@ -495,11 +498,54 @@ def _schema3_search(bound, text):
                 endpoint, checkout=project, prompt=text, query_vector=None,
                 deadline=time.monotonic() + QUERY_SECONDS, snapshot=None, decision=decision,
                 provider=None, authority=endpoint)
+            cosines = _schema3_cosines(bound, _record, current, text, result.data_generation)
         if _owned_selected_proof(decision, owner) != proof:
             raise ValueError('selected_compile_proof_changed')
-    yield ([(row['path'].split('/', 1)[1], row['hash'], None) for row in result.rows
-            if row['path'].partition('/')[0] in names],
-           (frozenset(), frozenset()), names[0], 'bound')
+    rows = [(row['path'].split('/', 1)[1], row['hash']) for row in result.rows
+            if row['path'].partition('/')[0] in names]
+    seen = set(rows)
+    found = [(rel, sha, cosines.get((rel, sha))) for rel, sha in rows]
+    found.extend((rel, sha, score) for (rel, sha), score in cosines.items() if (rel, sha) not in seen)
+    yield found, (frozenset(), frozenset()), names[0], 'bound'
+
+
+def _schema3_cosines(bound, record, current, text, generation):
+    """``{(wiki path, blob_sha): cosine}`` of the schema3 head's exact vector list.
+
+    Empty when the head is lexical, its profile is not the install's
+    approved one, the warm provider does not answer, or the head moved from
+    ``generation`` (the lexical rows' generation).
+    """
+    import laya_host_response as response
+    import laya_journal_reader as reader
+    from laya_reader_dispatch import _approved_profile_matches
+    from laya_view_vectors import DEFERRED
+    from laya_blob_values import BlobStoreError
+    decision, _proof = bound
+    if record.get('vector_profile') is None:
+        return {}
+    deadline = time.monotonic() + QUERY_SECONDS
+    with reader._schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+        vector = store._pinned(pin)['vector']
+        if pin.gen_id != generation or vector is None:
+            return {}
+        with store._session():
+            profile = store._profile(vector['profile_id'])
+        if not _approved_profile_matches(profile, current):
+            return {}
+        from laya_index_a import IndexContractError
+        try:
+            answer = query_provider(bound)(text, current['vectorProfile'])
+        except (response._VectorUnavailable, IndexContractError):
+            return {}  # no warm reviewed provider: lexical candidates only
+        try:
+            rows = store.search_exact(pin, answer['vector'], CANDIDATES, profile_id=vector['profile_id'],
+                                      deadline_seconds=max(0.1, min(30, deadline - time.monotonic())))
+        except BlobStoreError as exc:
+            if exc.reason not in DEFERRED:
+                raise
+            return {}
+    return {(row['path'], row['blob_sha']): row['score'] for row in rows}
 
 
 @contextmanager
