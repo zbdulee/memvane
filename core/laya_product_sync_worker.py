@@ -1015,6 +1015,11 @@ def _shadow_gate(project, executing_root, *, prove=True):
             return None, 'route_not_selected'
         if journal.journal_version(decision['journalPath']) != 5:
             return None, 'journal_not_v5'
+    # An install that already reads a schema3 store is past this migration;
+    # its intent, candidate and activation record stay as they are.
+    selected = _selected_store_format(decision)
+    if selected != 'v6':
+        return None, 'reader_schema3_selected' if selected == 'schema3' else 'reader_selection_unproved'
     state = Path(decision['journalPath']).parent
     import laya_ledger_common as ledger
     if ledger.qmd_ledger_present(state):

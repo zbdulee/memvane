@@ -266,6 +266,34 @@ class DriverChecks(unittest.TestCase):
         self.assertEqual(json.loads(copying)['migration_id'], self.intent(case)['migration_id'])
         self.assertIsNotNone(self.receipt(case))
 
+    def test_schema3_selected_install_is_never_touched(self):
+        spec = importlib.util.spec_from_file_location(
+            'shadow_driver_schema3_seed', HERE / 'laya-schema3-sync-publish-checks.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        seed = module.Schema3SyncPublishChecks('test_04_v6_selection_keeps_the_v6_sync_path')
+        seed.setUp()
+        self.addCleanup(seed.doCleanups)
+        case = seed.case
+        seed.select_schema3()
+        # A leftover intent from before the switch stays byte-identical.
+        leftover = case.state / self.M._INTENT
+        leftover.write_bytes(b'{"leftover":true}')
+        leftover.chmod(0o600)
+        seed.card('concepts/driver-schema3.md', 'driverschemaprobe')
+        before = len(self.events(case))
+        result, _calls = seed.run_pass()
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        self.assertEqual(result['storeFormat'], 'schema3')
+        with seed.seed.authority():
+            status = self.W.shadow_pass(case.project)
+        self.assertEqual((status['state'], status['reason'], status['steps']),
+                         ('skipped', 'reader_schema3_selected', 0))
+        self.assertFalse(os.path.lexists(case.state / self.W.SHADOW_ACTIVATION))
+        self.assertFalse(os.path.lexists(case.state / self.W.SHADOW_CANDIDATE))
+        self.assertEqual(leftover.read_bytes(), b'{"leftover":true}')
+        self.assertEqual([e for e in self.events(case)[before:] if e['event'].startswith('migration.')], [])
+
     def test_driver_failure_never_changes_the_sync_result(self):
         W = self.W
         for result in ({'state': 'indexed', 'generation': 'g'}, {'state': 'unchanged'}):
