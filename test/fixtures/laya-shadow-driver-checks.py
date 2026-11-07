@@ -294,22 +294,28 @@ class DriverChecks(unittest.TestCase):
         @contextmanager
         def busy(_queue, **_kwargs):
             yield None
+        def streak():
+            return json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8')).get('rewake_errors', 0)
         with self.authority(seed, case):
-            # Recovery waits for the queue's sync owner and never takes it busy.
+            # Recovery waits for the queue's sync owner and never takes it busy:
+            # a wait like the gate's, so the error streak never grows.
+            waits = []
             with mock.patch.object(W, 'sync_owner', busy):
-                held = W.shadow_pass(case.project)
+                for _ in range(W.SHADOW_REWAKE_ERRORS):
+                    status = W.shadow_pass(case.project)
+                    waits.append((status['state'], status['reason'], status['steps'], streak()))
             untouched = journal.exists() and candidate.read_bytes() == torn
             resumed = W.shadow_pass(case.project)
         probe = None  # A still-hot journal refuses a ro read.
         if not os.path.lexists(journal):
             with closing(sqlite3.connect(candidate.as_uri() + '?mode=ro', uri=True)) as db:
                 probe = db.execute("SELECT count(*) FROM sqlite_master WHERE name='hot_probe'").fetchone()[0]
-        print(json.dumps(dict(case='shadow-hot-journal', held=[held['state'], held['reason']],
+        print(json.dumps(dict(case='shadow-hot-journal', waits=waits,
                               untouched=untouched, resumed=[resumed['state'], resumed['reason'],
                                                             resumed['stages']],
                               journalLeft=os.path.lexists(journal), probeTable=probe)), flush=True)
-        self.assertEqual((held['state'], held['reason'], held['steps'], untouched),
-                         ('error', 'sync_owner_busy', 0, True), held)
+        self.assertEqual(waits, [('waiting', 'sync_owner_busy', 0, 0)] * W.SHADOW_REWAKE_ERRORS)
+        self.assertTrue(untouched)
         self.assertNotEqual(resumed['state'], 'error', resumed)
         self.assertGreater(resumed['steps'], 0, resumed)
         self.assertFalse(os.path.lexists(journal))
