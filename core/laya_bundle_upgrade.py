@@ -119,7 +119,7 @@ REFUSALS = frozenset((
     'qmd_origin_detach_required', 'installed_bundle_content_changed',
     'laya_embed_runtime_source_unavailable',
     'laya_embed_runtime_source_changed', 'laya_embed_runtime_mismatch',
-    'laya_embed_runtime_source_version_changed'))
+    'laya_embed_runtime_source_version_changed', 'active_upgrade_restored'))
 
 
 class UpgradeRefused(RuntimeError):
@@ -863,6 +863,11 @@ def upgrade_install(project_root, state, root, home=None):
         except Exception:
             pass  # The owner copy is gone: move the install to this root.
     if kind == 'active':
+        # The owner restored this install away from this exact bundle: keep
+        # the old one instead of fencing again. The setup entry point's
+        # explicit upgrade retries once the cause is fixed.
+        if not fenced and laya_active_upgrade.restored_away_from(project_root, state, root):
+            _refuse('active_upgrade_restored')
         # Defer before any review work: the switch would publish a route the
         # earlier plugin id's Hermes copy cannot read.
         from laya_journal_v4 import refuse_while_legacy_hermes
