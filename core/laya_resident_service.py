@@ -858,6 +858,12 @@ def default_prove(project):
         return decision, proof, 'read_only'
 
 
+def _deferral(exc):
+    """A busy queue owner, v5 window or resource gate, never bad evidence."""
+    from resource_deferred import ResourceDeferred
+    return isinstance(exc, ResourceDeferred)
+
+
 def _proof_code(exc):
     """An event-safe reason for a failed proof: its code, else its class."""
     code = str(exc)
@@ -876,13 +882,15 @@ def _route_hint(project):
 def default_attest(decision, proof, mode):
     """Full attestation before a worker starts or an installation binds.
 
-    Selected: the journal-bound record, then every runtime file re-hashed.
+    Selected: the journal-bound record, then every runtime file re-hashed;
+    a v5 journal's re-proofs take the queue owner and the v5 windows of the
+    journal-bound root, and a busy window defers (``ResourceDeferred``).
     Preview: the preview proof validated the record; re-hash its runtime files.
     Read-only proofs never start a worker and attach without re-hashing.
     """
     if mode == 'selected':
-        from laya_install_journal import verify_worker_attestation
-        if verify_worker_attestation(decision) != proof['providerManifest']:
+        from laya_product_sync_worker import service_worker_attestation
+        if service_worker_attestation(decision, proof) != proof['providerManifest']:
             _fail('provider_attestation_invalid')
     elif mode == 'preview':
         from laya_install_journal import verify_preview_worker_attestation
@@ -1558,8 +1566,13 @@ class Service:
             # the path that binds, never on a tick that merely waits.
             try:
                 self.attest(decision, proof, mode)
-            except Exception:
+            except Exception as exc:
                 os.close(owner_fd)
+                if _deferral(exc):
+                    # A busy queue owner or v5 window: not evidence of a bad
+                    # attestation, try again shortly.
+                    self._later(project, 5)
+                    return
                 with suppress(Exception):
                     _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
                 self._later(project, 60)
@@ -1685,10 +1698,13 @@ class Service:
                 # full attestation (model, worker, native closure, runtime files)
                 # proves again; the frozen provider's own check hashes five files.
                 self.attest(decision, proof, mode)
-            except Exception:
+            except Exception as exc:
                 # This installation's evidence failed, not the shared worker.
                 with self.lock:
                     worker.loading = False
+                if _deferral(exc):
+                    self._later(project, 5)  # a busy window, not bad evidence
+                    return
                 with suppress(Exception):
                     _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
                 self._later(project, 60)

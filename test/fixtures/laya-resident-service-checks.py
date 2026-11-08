@@ -759,6 +759,38 @@ class ServiceChecks(Fixture):
         self.assertEqual(resident.probe(bad_manifest), 'absent')
         self.assertFalse(resident.owner_lock_held(bad_manifest))
 
+    def test_busy_window_during_attestation_defers_without_a_terminal_state(self):
+        # A busy queue owner or v5 window is not bad evidence: the install
+        # is retried and binds once the window is free, on both the cold
+        # worker start and the attach to a running worker. (A cold start
+        # retried after "starting" waits the owner state's durable 5 s.)
+        first, first_manifest = self.project('alpha')
+        second, second_manifest = self.project('beta')
+        busy = {first: 1, second: 2}
+        calls = []
+
+        def attest(decision, proof, mode):
+            project = decision['projectRoot']
+            calls.append(project)
+            if busy[project]:
+                busy[project] -= 1
+                raise ResourceDeferred('writer_proof_physical_busy')
+        service = self.service(start=False)
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        svc.register(first, root=self.root)
+        self.wait(lambda: self.ready(first_manifest), timeout=30)
+        svc.register(second, root=self.root)
+        for _ in range(2):
+            self.wait(lambda: not busy[second] or second in service.retry)
+            service.retry.pop(second, None)
+        self.wait(lambda: self.ready(second_manifest))
+        for manifest in (first_manifest, second_manifest):
+            self.assertIsNot((resident.read_owner_state(manifest) or {}).get('terminal'), True)
+        self.assertEqual(len(self.loads), 1)
+        self.assertGreaterEqual(calls.count(first), 2)
+        self.assertGreaterEqual(calls.count(second), 3)
 
 class ServiceBoundsChecks(Fixture):
     def test_read_only_proof_attaches_but_never_starts_a_worker(self):
@@ -1488,19 +1520,22 @@ class ProofChecks(unittest.TestCase):
 
     def test_full_attestation_applies_to_selected_routes_only(self):
         import laya_install_journal as journal
+        import laya_product_sync_worker as worker
         manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
         proof = {'providerManifest': manifest}
         decision = {'journalPath': '/tmp/x/install-journal.sqlite'}
-        with patch.object(journal, 'verify_worker_attestation', return_value=manifest) as verify, \
+        # Selected routes attest through the service's windowed re-proofs.
+        with patch.object(worker, 'service_worker_attestation', return_value=manifest) as verify, \
                 patch.object(journal, 'verify_preview_worker_attestation',
                              return_value=manifest) as preview:
             svc.default_attest(decision, proof, 'selected')
             svc.default_attest(decision, proof, 'preview')
             svc.default_attest(decision, proof, 'read_only')
         self.assertEqual(verify.call_count, 1)
+        self.assertEqual(verify.call_args.args, (decision, proof))
         # A pending build's worker start re-hashes its runtime files too.
         self.assertEqual(preview.call_args.args, (decision['journalPath'], manifest))
-        with patch.object(journal, 'verify_worker_attestation', return_value={**manifest, 'x': 1}):
+        with patch.object(worker, 'service_worker_attestation', return_value={**manifest, 'x': 1}):
             with self.assertRaisesRegex(IndexContractError, 'provider_attestation_invalid'):
                 svc.default_attest({}, proof, 'selected')
 

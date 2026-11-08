@@ -143,6 +143,66 @@ class CompanionResidentChecks(unittest.TestCase):
         self.assertEqual(opened, [], 'content SQLite opened outside the physical window')
 
 
+    @contextmanager
+    def held_elsewhere(self, name):
+        """Another process holds one of this install's reader locks EX."""
+        lock = self.seed.reader._lock_dir(self.seed.install, create=False) / name
+        holder = subprocess.Popen(
+            [sys.executable, '-I', '-c', 'import fcntl,os,sys\n'
+             'fd=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW)\n'
+             'fcntl.flock(fd,fcntl.LOCK_EX)\nprint("HELD",flush=True)\nsys.stdin.read()\n', str(lock)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline(), 'HELD\n')
+            yield
+        finally:
+            holder.stdin.close()
+            holder.wait(timeout=10)
+
+    def test_06_worker_attestation_waits_for_the_v5_windows(self):
+        # The attestation re-proves the journal before and after hashing the
+        # runtime; those re-proofs open the base and queue only inside the
+        # journal-bound root's v5 windows, on the companion and owner copy.
+        from resource_deferred import ResourceDeferred
+        opened, connect = [], sqlite3.connect
+
+        def observe(database, *args, **kwargs):
+            if str(database).startswith((self.case.db.as_uri(), str(self.case.db),
+                                         self.case.queue.as_uri(), str(self.case.queue))):
+                opened.append(str(database))
+            return connect(database, *args, **kwargs)
+        outcomes = {}
+        for label, root in (('companion', self.companion), ('owner', self.case.plugin)):
+            for name in ('base-physical.lock', 'reader-lifetime.lock'):
+                with self.executing(root):
+                    decision, proof, mode = self.S.default_prove(str(self.case.project))
+                    self.assertEqual(mode, 'selected')
+                    del opened[:]
+                    with self.held_elsewhere(name), \
+                            mock.patch.object(sqlite3, 'connect', side_effect=observe):
+                        try:
+                            self.S.default_attest(decision, proof, mode)
+                            outcome = 'attested'
+                        except ResourceDeferred as exc:
+                            outcome = 'deferred:' + str(exc)
+                        except Exception as exc:
+                            outcome = 'error:' + type(exc).__name__ + ':' + str(exc)
+                outcomes[label, name] = (outcome, list(opened))
+        print('attestation_window_outcomes', json.dumps({'%s/%s' % key: value[0]
+                                                         for key, value in outcomes.items()}),
+              flush=True)
+        for key, (outcome, connections) in outcomes.items():
+            self.assertTrue(outcome.startswith('deferred:'), (key, outcome))
+            self.assertEqual(connections, [], key)
+        # With the windows free the same attestation completes.
+        with self.executing(self.companion):
+            decision, proof, mode = self.S.default_prove(str(self.case.project))
+            with mock.patch.object(J, 'validate_production_provider_attestation',
+                                   side_effect=lambda _profile, _proof, record: record['providerManifest']), \
+                    mock.patch.object(J, '_verify_runtime_files'):
+                self.assertIsNone(self.S.default_attest(decision, proof, mode))
+
+
 class SplitInstallsRecoveryChecks(unittest.TestCase):
     """Installs split across both host copies; the service runs from one of them.
 

@@ -58,7 +58,11 @@ development execution guard is separate; see
   that check until the worker is ready, so two loads never pass one check.
   Every new worker start (a restart included) first proves the installation's
   full attestation; a read-only proof (bundle drift) only attaches to a
-  running worker. Client connections are capped service-wide (16) before
+  running worker. A v5 installation's attestation re-proves its journal
+  before and after hashing the runtime files, each time under the queue
+  owner and the v5 lifetime and physical windows of the journal-bound root
+  (the hashing holds neither); a busy owner or window defers the start
+  without marking the attestation invalid. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a
   backlog of 8, and a full backlog refuses the connect (macOS; on Linux the
   connect waits for the client's own timeout), which the provider reads as

@@ -499,6 +499,37 @@ def _companion_v5_selected(project, plugin_root, *, owner_wait=False):
     return decision, proof
 
 
+def service_worker_attestation(decision, expected):
+    """The per-user service's worker attestation for one selected install.
+
+    A v5 journal is re-proved before and after the runtime-file hashing, each
+    time under the queue owner and the v5 lifetime and physical windows of
+    the journal-bound plugin root (the same plan the service's selected or
+    companion proof uses); the hashing itself holds neither, as in
+    ``_owned_worker_attestation``. Other journal versions keep
+    ``verify_worker_attestation``. Returns the attested provider manifest.
+    """
+    import laya_install_journal as journal
+    from laya_worker_journal import worker_journal_access
+    with journal.read_only_journals():
+        version = journal.journal_version(decision['journalPath'])
+    if version != 5:
+        with journal.read_only_journals(), journal.legacy_identity_reads():
+            return verify_worker_attestation(decision)
+    project, plan_root = Path(decision['projectRoot']), Path(decision['pluginRoot'])
+
+    def reprove():
+        with worker_journal_access(project) as access, journal.read_only_journals():
+            return _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
+    selected = reprove()
+    if selected != expected:
+        raise IndexContractError('worker_selection_changed')
+    manifest = journal._worker_attestation_manifest(selected)
+    if reprove() != selected:
+        raise IndexContractError('worker_selection_changed')
+    return manifest
+
+
 def _selected_service(decision, manifest, admit, start_service):
     """Borrow the installed warm owner; retain injectable transient fixtures.
 
