@@ -520,6 +520,58 @@ class DriverChecks(unittest.TestCase):
                              [(expected['profile_id'],)])
         print('vector_copy', record['total'], record['copied'], dict(record['deferred']), flush=True)
 
+    def vector_passes(self, seed, case, fail, limit=16):
+        """Driver passes with the install provider's spec; ``fail(n)`` makes the n-th page out of budget."""
+        W, M = self.W, self.M
+        views = importlib.import_module('laya_view_vectors')
+        real_specs, real_classify, calls = views.provider_specs, M._classify_vectors, []
+
+        def specs(manifest, profile):
+            return real_specs(dict(manifest or {}, recipeId=views.PROVIDER_CHUNK_RECIPE,
+                                   modelSha256='3' * 64), profile)
+
+        def classify(*args, **kwargs):
+            calls.append(1)
+            if fail(len(calls)):
+                # The step's fixed costs spent the member budget.
+                raise M.IndexContractError('reader_snapshot_deadline')
+            return real_classify(*args, **kwargs)
+        passes = []
+        with self.authority(seed, case), mock.patch.object(views, 'provider_specs', new=specs), \
+                mock.patch.object(M, '_classify_vectors', side_effect=classify), \
+                mock.patch.object(M, 'advance_reader_ready', None, create=True):
+            for _ in range(limit):
+                status = W.shadow_pass(case.project)
+                passes.append(status)
+                if status['state'] == 'error' or (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        return passes
+
+    def test_warmed_vectors_step_lets_the_same_pass_run_the_page(self):
+        seed, case = self.seeded()
+        passes = self.vector_passes(seed, case, fail=lambda n: n == 1)
+        stages = [status['stages'] for status in passes]
+        warmed = [s for s in stages if 'warmed' in s]
+        self.assertEqual(len(warmed), 1, stages)
+        at = warmed[0].index('warmed')
+        self.assertEqual(warmed[0][at:at + 2], ['warmed', 'vectors'], stages)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', stages)
+        record = json.loads((case.state / self.W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+        self.assertNotIn('warm_streak', record)
+        self.assertNotEqual(passes[-1]['state'], 'error')
+
+    def test_warmed_steps_without_progress_become_an_error(self):
+        seed, case = self.seeded()
+        passes = self.vector_passes(seed, case, fail=lambda _n: True)
+        last = passes[-1]
+        self.assertEqual((last['state'], last['reason']), ('error', 'migration_vectors_warm_stalled'),
+                         [p['stages'] for p in passes])
+        warmed = sum(status['stages'].count('warmed') for status in passes)
+        self.assertEqual(warmed, self.W.SHADOW_WARM_LIMIT + 1)
+        record = json.loads((case.state / self.W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+        self.assertEqual(record['warm_streak']['count'], self.W.SHADOW_WARM_LIMIT + 1)
+        self.assertIsNone(self.intent(case).get('vectors'))
+
     @contextmanager
     def queued(self):
         """The fixture's private wake queue, a virtual wall clock and a spy on its offers.

@@ -14,6 +14,6 @@ test('compatible legacy vectors are copied and compared without changing the rea
   const calls = result.stdout.match(/^vector_page_calls .*$/m);
   assert.ok(calls, 'vector page call counts missing');
   console.log(calls[0]);
-  assert.match(result.stderr, /Ran 9 tests\b/);
+  assert.match(result.stderr, /Ran 11 tests\b/);
   assert.match(result.stderr, /\nOK\b/);
 });
