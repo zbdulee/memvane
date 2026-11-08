@@ -122,7 +122,7 @@ class WorkerChecks(unittest.TestCase):
         patches=[patch.object(worker,'_selected',return_value=(self.decision,self.proof)),
             # This wiring fixture substitutes the entire runtime/sync boundary.
             # Actual owner/kernel lifetime is covered by the real-store fixture.
-            patch.object(worker,'sync_owner',side_effect=lambda _queue:nullcontext(object())),
+            patch.object(worker,'sync_owner',side_effect=lambda _queue,**_k:nullcontext(object())),
             patch.object(worker,'ReviewedLocalQmdProvider',return_value=provider),
             patch.object(worker,'resource_report',return_value={'ready':True}),
             patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
@@ -432,7 +432,7 @@ class V2WorkerChecks(unittest.TestCase):
             self.batches.append(result)
             return result
         controller=Coordinator();controller.root=self.home
-        patches=[patch.object(worker,'_selected',side_effect=lambda _p:(decision,self.proof())),
+        patches=[patch.object(worker,'_selected',side_effect=lambda _p,**_k:(decision,self.proof())),
             patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
             patch.object(worker,'resource_report',return_value={'ready':True}),
             patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
@@ -944,7 +944,7 @@ class V2CapacityWorkerChecks(unittest.TestCase):
             return service
         controller=Coordinator();controller.root=self.home
         before=len(self.services)
-        patches=[patch.object(worker,'_selected',side_effect=lambda _p:(decision,self.proof())),
+        patches=[patch.object(worker,'_selected',side_effect=lambda _p,**_k:(decision,self.proof())),
             patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
             patch.object(worker,'resource_report',return_value={'ready':True}),
             patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),

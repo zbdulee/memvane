@@ -18,12 +18,13 @@ transactions; the stage itself is one full-corpus A-int transaction.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import os
 from pathlib import Path
 import stat
 import threading
+import time
 import uuid
 
 from laya_index_a import IndexContractError
@@ -356,19 +357,39 @@ def validate_sync_owner(claim, queue_path):
     _check_sync_lease(_lease_record(claim), queue_path)
 
 
+# Off-hook owners (sync worker, shadow driver steps) wait this long for the
+# per-UID owner and queue locks before reporting busy; the resident service
+# holds them for its periodic owner re-proof. Hooks never wait (wait=False).
+SYNC_OWNER_WAIT_SECONDS = 3.0
+_SYNC_OWNER_POLL_SECONDS = 0.05
+
+
 @contextmanager
-def sync_owner(queue_path: Path, *, recheck_queue=None):
-    """Issue a lexical owner after stable UID and legacy queue exclusions."""
+def sync_owner(queue_path: Path, *, recheck_queue=None, wait=False, deadline=None):
+    """Issue a lexical owner after stable UID and legacy queue exclusions.
+
+    ``wait=True`` retries a busy owner or queue lock for at most
+    ``SYNC_OWNER_WAIT_SECONDS`` (never past ``deadline``), then yields None.
+    """
     queue_path = Path(queue_path)
     if not queue_path.is_absolute() or queue_path.is_symlink():
         raise IndexContractError('sync_owner_lock_unavailable')
+    if type(wait) is not bool or (deadline is not None and (
+            type(deadline) not in (int, float) or deadline != deadline)):
+        raise IndexContractError('sync_owner_lock_unavailable')
     _file_identity(queue_path)
-    with _sync_anchor() as anchor:
-        if anchor is None:
-            yield None
-        else:
-            with _queue_sync_owner(queue_path, recheck_queue=recheck_queue, anchor=anchor) as claim:
+    until = time.monotonic() + SYNC_OWNER_WAIT_SECONDS if wait else 0
+    if deadline is not None:
+        until = min(until, deadline)
+    while True:
+        with ExitStack() as held:
+            anchor = held.enter_context(_sync_anchor())
+            claim = None if anchor is None else held.enter_context(
+                _queue_sync_owner(queue_path, recheck_queue=recheck_queue, anchor=anchor))
+            if claim is not None or time.monotonic() + _SYNC_OWNER_POLL_SECONDS > until:
                 yield claim
+                return
+        time.sleep(_SYNC_OWNER_POLL_SECONDS)
 
 
 @contextmanager
@@ -421,9 +442,9 @@ def _queue_sync_owner(queue_path: Path, *, recheck_queue, anchor):
 
 
 @contextmanager
-def _owner_lock(queue_path: Path, *, recheck_queue=None):
+def _owner_lock(queue_path: Path, *, recheck_queue=None, wait=False, deadline=None):
     """Legacy exact-bool adapter; no implicit reentry into a held owner."""
-    with sync_owner(queue_path, recheck_queue=recheck_queue) as claim:
+    with sync_owner(queue_path, recheck_queue=recheck_queue, wait=wait, deadline=deadline) as claim:
         yield claim is not None
 
 

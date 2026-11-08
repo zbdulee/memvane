@@ -1669,12 +1669,12 @@ class SyncFirstProofChecks(unittest.TestCase):
         with self.fixture.F.warm(),self.seed.authority(),self.markerless():
             self.publish_v4();self.crash_hot()
             owner=access.sync_owner;mutated=[];rw=[]
-            def change(queue):
+            def change(queue,**kwargs):
                 # This test actor changes the same named image after its
                 # private preimage was authenticated, before owner acquisition.
                 with self.case.journal.open('ab') as handle:handle.write(b'x')
                 mutated.append(self.case.journal.read_bytes())
-                return owner(queue)
+                return owner(queue,**kwargs)
             with mock.patch.object(access,'sync_owner',side_effect=change),self.journal_connects(rw), \
                     self.assertRaises((ValueError,RuntimeError)):
                 self.selected()

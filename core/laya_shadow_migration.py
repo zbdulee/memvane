@@ -3315,7 +3315,7 @@ def _seal_parity(store, *, project, executing_root, deadline):
     with _migration_trace(state, 'parity_seal', 'parity_seal') as trace, ExitStack() as locks:
         locks.enter_context(_install_lock(state))
         locks.enter_context(ledger._operation_lock(marker))
-        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']), wait=True, deadline=deadline)):
             raise IndexContractError('sync_owner_busy')
         held = time.monotonic()
         quiesce = min(deadline, held + _STEP_SECONDS)
@@ -3610,7 +3610,7 @@ def _switch_step(store, *, project, executing_root, deadline, expected):
             raise IndexContractError('initial_build_busy')
         locks.enter_context(ledger._operation_lock(marker))
         locks.enter_context(Coordinator().quiesce_provider())
-        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']), wait=True, deadline=deadline)):
             raise IndexContractError('sync_owner_busy')
         held = time.monotonic()
         quiesce = min(deadline, held + _SWITCH_SECONDS)

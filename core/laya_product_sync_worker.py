@@ -420,7 +420,7 @@ def _discovery_base_component(decision, owner, proof):
             raise ResourceDeferred('writer_cleanup_unsettled')
 
 
-def _selected(project):
+def _selected(project, *, owner_wait=False):
     project = Path(project)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')
@@ -445,7 +445,7 @@ def _selected(project):
     # Classification/version reads must not recover a legacy hot image. The
     # legacy proof also checks its actual transaction's version, closing the
     # v4-observed/v5-published interval before any raw content connection.
-    with worker_journal_access(project) as access:
+    with worker_journal_access(project, wait=owner_wait) as access:
         for attempt in range(2):
             with journal.read_only_journals():
                 decision = select_route(str(project), action='update')
@@ -546,7 +546,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
 
 def _run_sync(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
     try:
-        decision, proof = _selected(project)
+        decision, proof = _selected(project, owner_wait=True)
     except ResourceDeferred as exc:
         return _deferred(exc)
     except IndexContractError as exc:
@@ -621,7 +621,7 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
                     raise IndexContractError('selected_provider_proof_changed')
             # This short owner admission requests adoption, never waits for
             # the model. Release it before taking the provider lane below.
-            with sync_owner(Path(decision['queuePath'])) as prewarm_owner:
+            with sync_owner(Path(decision['queuePath']), wait=True) as prewarm_owner:
                 if prewarm_owner is None:
                     return {'state': 'deferred', 'reason': 'owner_busy'}
                 with journal.read_only_journals():
@@ -647,7 +647,7 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         return _after_sync(decision, proof, grants, result)
     try:
         with controller.activity('provider', EMBED_POLICY, observed), \
-                sync_owner(Path(decision['queuePath'])) as owner:
+                sync_owner(Path(decision['queuePath']), wait=True) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}
             # The hook's sealed stat receipt is a fast freshness fence. This
@@ -794,7 +794,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     from laya_reader_windows import ReaderWindowBusy
     project = Path(decision['projectRoot'])
     try:
-        with sync_owner(Path(decision['queuePath'])) as owner:
+        with sync_owner(Path(decision['queuePath']), wait=True) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}, proof
             # The owner re-seals the selected reader when only the project's
@@ -1619,7 +1619,7 @@ def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snaps
     with journal.read_only_journals():
         v5 = journal.journal_version(decision['journalPath']) == 5
     try:
-        with (sync_owner(Path(decision['queuePath'])) if v5 else nullcontext(None)) as owner:
+        with (sync_owner(Path(decision['queuePath']), wait=True) if v5 else nullcontext(None)) as owner:
             if v5 and owner is None:
                 return {**result, 'state': 'deferred', 'reason': 'owner_busy'}
 
@@ -1773,7 +1773,7 @@ def _shadow_open(state, project, scope, candidate=None, *, queue=None):
     from laya_view_store import ViewStore
     path = state / SHADOW_CANDIDATE if candidate is None else Path(candidate)
     if queue is not None and os.path.lexists(str(path) + '-journal'):
-        with sync_owner(Path(queue)) as owner:
+        with sync_owner(Path(queue), wait=True) as owner:
             if owner is None:
                 # Another sync holds it; a wait, not a driver error.
                 raise ResourceDeferred('sync_owner_busy')
@@ -2183,7 +2183,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     try:
         with ExitStack() as stack:
             stack.enter_context(controller.activity('provider', EMBED_POLICY, observed))
-            owner = stack.enter_context(sync_owner(Path(decision['queuePath'])))
+            owner = stack.enter_context(sync_owner(Path(decision['queuePath']), wait=True))
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}, state['proof']
 
