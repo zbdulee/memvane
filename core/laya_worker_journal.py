@@ -107,8 +107,9 @@ def _metadata(project, *, legacy=None):
 
 
 class _Access:
-    def __init__(self, project):
+    def __init__(self, project, wait=False):
         self.project = Path(project)
+        self.wait = wait
         self.pid, self.thread = os.getpid(), threading.current_thread()
         self.started = self.finished = False
         self.owner = self.owner_context = self.token = None
@@ -124,7 +125,7 @@ class _Access:
         self.snapshot = _metadata(self.project)
         self.packed = R._raw(self.snapshot)
         self.queue = Path(self.snapshot['decision']['queuePath'])
-        self.owner_context = sync_owner(self.queue)
+        self.owner_context = sync_owner(self.queue, wait=self.wait)
         self.owner = self.owner_context.__enter__()
         if self.owner is None:
             self.owner_context.__exit__(None, None, None)
@@ -171,8 +172,9 @@ class _Access:
         R._need(time.monotonic() < self.deadline, 'worker_journal_deadline')
 
 
-def worker_journal_access(project):
-    return _Access(project)
+def worker_journal_access(project, *, wait=False):
+    """``wait=True`` (off-hook sync worker only) waits briefly for a busy owner."""
+    return _Access(project, wait)
 
 
 def recover_legacy(scope, path):

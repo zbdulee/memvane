@@ -18,7 +18,7 @@ test('checkout registrations and view captures remain bound to their Git checkou
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 34 tests/);
+    assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 35 tests/);
   } finally {
     removeTemp(home);
   }

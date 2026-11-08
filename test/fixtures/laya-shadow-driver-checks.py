@@ -55,6 +55,20 @@ raise SystemExit('driver crash checkpoint not reached')
 '''
 
 
+# Holds the per-UID sync owner until the parent writes RELEASE.
+OWNER_HOLDER = r'''
+import json, signal, sys
+from pathlib import Path
+signal.alarm(60)
+sys.path.insert(0, sys.argv[1])
+from laya_index_sync import sync_owner
+with sync_owner(Path(sys.argv[2])) as owner:
+    print(json.dumps(dict(owned=owner is not None)), flush=True)
+    if owner is not None:
+        assert sys.stdin.readline() == 'RELEASE\n'
+'''
+
+
 class DriverChecks(unittest.TestCase):
     def setUp(self):
         self.W = importlib.import_module('laya_product_sync_worker')
@@ -69,6 +83,7 @@ class DriverChecks(unittest.TestCase):
         normal.setUp()
         self.addCleanup(normal.doCleanups)
         case = normal.case
+        self.queue = normal.queue
         git = ['git', '-C', str(case.project), '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + os.devnull,
                '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']
         subprocess.run(['git', '-c', 'init.defaultBranch=main', 'init', '-q', str(case.project)],
@@ -662,6 +677,68 @@ class DriverChecks(unittest.TestCase):
                     mock.patch.object(W, 'shadow_pass', side_effect=RuntimeError('boom')) as driver:
                 self.assertIs(W.run(Path('/nonexistent-project')), result)
             self.assertEqual(driver.call_count, 1)
+
+    def test_owner_briefly_held_by_another_process_is_awaited_by_seal(self):
+        # Another process (the resident service's owner re-proof) holds the
+        # per-UID sync owner when a locked step starts; it lets go only after
+        # that step saw it busy. The step waits instead of returning a retry.
+        import select
+        import laya_index_sync as sync
+        seed, case = self.seeded()
+        W = self.W
+        absent = mock.patch.object(self.M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        queue = Path(self.queue)
+        attempts, reasons, current = [], [], {}
+        original = sync._sync_anchor
+
+        def release():
+            child = current.pop('child', None)
+            if child is not None:
+                child.stdin.write('RELEASE\n'); child.stdin.flush()
+                try: child.communicate(timeout=6)
+                except subprocess.TimeoutExpired:
+                    child.kill(); child.communicate(); raise
+                self.assertEqual(child.returncode, 0)
+
+        @contextmanager
+        def anchor():
+            with original() as held:
+                attempts.append(held is not None)
+                if held is None and 'child' in current:
+                    child = current['child']
+                    child.stdin.write('RELEASE\n'); child.stdin.flush()
+                    current['released'] = current.pop('child')
+                yield held
+        with self.authority(seed, case, sync={'state': 'indexed'}), \
+                mock.patch.object(sync, '_sync_anchor', anchor):
+            for _ in range(12):
+                child = subprocess.Popen([sys.executable, '-B', '-I', '-c', OWNER_HOLDER, str(ROOT / 'core'),
+                                          str(queue)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, encoding='utf8')
+                current['child'] = child
+                if not select.select([child.stdout], [], [], 6)[0]:
+                    raise RuntimeError('owner readiness timeout')
+                self.assertTrue(json.loads(child.stdout.readline())['owned'])
+                before = len(self.events(case))
+                try:
+                    W.run(case.project)
+                finally:
+                    release()
+                    done = current.pop('released', None)
+                    if done is not None:
+                        done.communicate(timeout=6)
+                reasons += [e.get('reason') for e in self.events(case)[before:]
+                            if e['event'] == 'migration.driver']
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        print(json.dumps(dict(case='shadow-awaits-brief-owner', reasons=reasons,
+                              busyAttempts=attempts.count(False), acquired=attempts.count(True),
+                              state=(self.intent(case) or {}).get('migration_state'))), flush=True)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', reasons)
+        self.assertNotIn('sync_owner_busy', reasons)
+        self.assertGreaterEqual(attempts.count(False), 1)
 
 
 if __name__ == '__main__':

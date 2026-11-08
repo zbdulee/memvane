@@ -1425,7 +1425,10 @@ def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin
         # A candidate lookup past the old reader's probe/lexical deadline
         # would make the old reader degrade differently: unproved, not equal.
         try:
-            return store.search(pin, query, limit, deadline_seconds=seconds(deadline_seconds), **origin)
+            # The page observes the checkout once before and once after its
+            # comparisons (compare_recall_corpus), not per candidate lookup.
+            return store.search(pin, query, limit, deadline_seconds=seconds(deadline_seconds),
+                                _observed=True, **origin)
         except values.BlobStoreError as exc:
             if exc.reason == 'fts_deadline_exceeded':
                 raise IndexContractError('migration_recall_probe_unproved') from exc
@@ -1528,7 +1531,8 @@ _SHADOW_STATES = ('copying', 'caught_up', 'shadow_verified', 'reader_ready', 'sw
 # Source changes proved by a later step; the copy restarts from a fresh scan.
 _SHADOW_RESTART_REASONS = frozenset(('migration_snapshot_changed', 'migration_source_revision_unproved'))
 # Writer races on the reader store itself; the next step re-proves the source.
-_SHADOW_RETRY_REASONS = frozenset(('reader_store_changed', 'migration_space_deferred'))
+_SHADOW_RETRY_REASONS = frozenset(('reader_store_changed', 'migration_space_deferred',
+                                   'migration_checkout_changed'))
 
 
 def _shadow_state(intent):
@@ -1565,7 +1569,7 @@ _MIGRATION_REASONS = frozenset((
     'reader_selection_unproved', 'reader_snapshot_changed', 'reader_store_changed',
     'reader_sidecar_revision_unproved', 'fts_deadline_exceeded'))
 _MIGRATION_REASONS |= frozenset(('sync_owner_busy', 'migration_parity_incomplete',
-                                 'migration_space_deferred'))
+                                 'migration_space_deferred', 'migration_checkout_changed'))
 _MIGRATION_REASONS |= frozenset(('switch_parity_missing', 'switch_catchup_stale', 'switch_bridge_missing',
                                  'switch_hosts_unsupported', 'switch_bundle_mismatch', 'switch_lifecycle_busy',
                                  'switch_layout_not_current', 'switch_selection_changed',
@@ -2986,8 +2990,10 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
             if (endpoint.endpoint_id != intent['endpoint_id']
                     or endpoint.record['install_id'] != intent['install_id']):
                 raise IndexContractError('migration_endpoint_changed')
+        # One checkout observation opens the page (capture_view) and one
+        # closes it below; the lookups in between do not re-observe it.
         handle = store.capture_view(intent['worktree_id'], deadline=deadline)
-        pin = store.pin_view(handle, deadline=deadline)
+        pin = store.pin_view(handle, deadline=deadline, _observed=True)
         try:
             if (pin.gen_id != generation or pin.view_id != receipt['view_id']
                     or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
@@ -3011,6 +3017,15 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
                 if prompts:
                     compare_combined_lexical_prompts(snapshot, endpoint=endpoint, decision=decision,
                         store=store, pin=pin, prompts=tuple(prompts), deadline=step_deadline)
+            # A checkout that moved during the page discards its result; the
+            # cursor stays and a later step compares the same page again.
+            try:
+                store._observe(store._pinned(pin)['entry'], deadline=deadline,
+                               timeout_reason='reader_snapshot_deadline')
+            except values.BlobStoreError as exc:
+                if exc.reason == 'checkout_changed':
+                    raise IndexContractError('migration_checkout_changed') from exc
+                raise
         finally:
             store.release(pin)
         trace['outcome'] = 'compared'
@@ -3315,7 +3330,7 @@ def _seal_parity(store, *, project, executing_root, deadline):
     with _migration_trace(state, 'parity_seal', 'parity_seal') as trace, ExitStack() as locks:
         locks.enter_context(_install_lock(state))
         locks.enter_context(ledger._operation_lock(marker))
-        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']), wait=True, deadline=deadline)):
             raise IndexContractError('sync_owner_busy')
         held = time.monotonic()
         quiesce = min(deadline, held + _STEP_SECONDS)
@@ -3610,7 +3625,7 @@ def _switch_step(store, *, project, executing_root, deadline, expected):
             raise IndexContractError('initial_build_busy')
         locks.enter_context(ledger._operation_lock(marker))
         locks.enter_context(Coordinator().quiesce_provider())
-        if not locks.enter_context(_owner_lock(Path(decision['queuePath']))):
+        if not locks.enter_context(_owner_lock(Path(decision['queuePath']), wait=True, deadline=deadline)):
             raise IndexContractError('sync_owner_busy')
         held = time.monotonic()
         quiesce = min(deadline, held + _SWITCH_SECONDS)

@@ -61,7 +61,7 @@ class WorkerOwnerChecks(unittest.TestCase):
         from contextlib import ExitStack
         stack=ExitStack()
         self.addCleanup(stack.close)
-        patches=[mock.patch.object(worker,'_selected',side_effect=lambda _p:(fixture.decision,fixture.proof())),
+        patches=[mock.patch.object(worker,'_selected',side_effect=lambda _p,**_k:(fixture.decision,fixture.proof())),
             mock.patch.object(worker,'select_route',return_value=fixture.decision),
             mock.patch.object(journal,'journal_version',return_value=4),
             mock.patch.object(worker,'ReviewedLocalQmdProvider',fixture.provider_class()),
@@ -167,6 +167,43 @@ class WorkerOwnerChecks(unittest.TestCase):
         self.assertEqual(result,{'state':'deferred','reason':'laya_service_preparing'})
         self.assertEqual(observed,[False]);self.assertTrue(free)
         self.assertEqual(controller.lanes,[]);constructor.assert_not_called()
+
+    def test_owner_briefly_held_by_another_process_is_awaited_not_deferred(self):
+        # The resident service re-proves its bindings under this per-UID owner
+        # for a second or two; the off-hook worker waits instead of deferring.
+        import select
+        import laya_index_sync as sync
+        fixture=self.fixture(True)
+        child=subprocess.Popen([sys.executable,'-B','-I','-c',HOLDER,str(ROOT/'core'),str(fixture.queue_path)],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
+        attempts=[];original=sync._sync_anchor
+        @contextmanager
+        def anchor():
+            with original() as held:
+                attempts.append(held is not None)
+                if held is None and attempts.count(False)==1:
+                    child.stdin.write('RELEASE\n');child.stdin.flush()  # Holder lets go only now.
+                yield held
+        def drain(_decision,_grants,*,recheck):
+            recheck();return {'state':'complete'}
+        try:
+            if not select.select([child.stdout],[],[],6)[0]:raise RuntimeError('owner readiness timeout')
+            self.assertTrue(json.loads(child.stdout.readline())['owned'])
+            with mock.patch.object(sync,'_sync_anchor',anchor), \
+                 mock.patch.object(discovery,'observe_grants',return_value={'grants':{}}), \
+                 mock.patch.object(discovery,'drain_after_sync',side_effect=drain):
+                result=fixture.run_capacity()[0]
+        finally:
+            if attempts.count(False)==0:child.stdin.write('RELEASE\n');child.stdin.flush()
+            try:_out,err=child.communicate(timeout=6)
+            except subprocess.TimeoutExpired:
+                child.kill();child.communicate();raise
+        print(json.dumps(dict(case='worker-awaits-brief-owner',result=result.get('state'),
+            busyAttempts=attempts.count(False),acquired=attempts.count(True))),flush=True)
+        self.assertEqual(child.returncode,0,err)
+        self.assertEqual(result['state'],'indexed',result)
+        self.assertGreaterEqual(attempts.count(False),1);self.assertGreaterEqual(attempts.count(True),1)
+        self.assertEqual(attempts[0],False)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

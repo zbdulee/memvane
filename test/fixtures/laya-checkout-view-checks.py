@@ -661,6 +661,30 @@ class GitEnvironmentAndBudget(CheckoutCase):
                 view._stable(str(self.root), time.monotonic() + 20)
         self.assertIn('refs/heads/invalid..branch', checked)
 
+    def test_packed_only_branch_reuses_capture_until_its_ref_changes(self):
+        if view._cache_filesystem(str(self.root)) is None:
+            self.skipTest('capture cache needs native APFS timestamps')
+        self.git(self.root, 'pack-refs', '--all')
+        self.assertFalse((self.root / '.git/refs/heads/main').exists())
+        time.sleep(1.1)  # A cache entry needs timestamps older than its proof second.
+        repository, worktree = self.bind(self.root)
+        fingerprint = view._cache_fingerprint(str(self.root), repository, worktree, time.monotonic() + 20)
+        self.assertIsNotNone(fingerprint)
+        self.assertEqual(fingerprint[2:4], ('refs/heads/main', self.out(self.root, 'rev-parse', 'HEAD')))
+        first = self.cap(self.root, repository, worktree)
+        with mock.patch.object(view, '_stable', wraps=view._stable) as stable:
+            again = self.cap(self.root, repository, worktree)
+        self.assertEqual((stable.call_count, again), (0, first))
+        # A commit writes a loose ref over the packed one; repacking rewrites
+        # packed-refs. Each misses the cache once and reads the new HEAD.
+        for change in ('commit', 'repack'):
+            head = (self.commit(self.root, 'b.txt', 'two\n') if change == 'commit'
+                    else self.git(self.root, 'pack-refs', '--all') and self.out(self.root, 'rev-parse', 'HEAD'))
+            with mock.patch.object(view, '_stable', wraps=view._stable) as stable:
+                moved = self.cap(self.root, repository, worktree)
+            self.assertEqual((change, stable.call_count, moved['headOid']), (change, 1, head))
+        self.assertFalse((self.root / '.git/refs/heads/main').exists())
+
     def test_old_git_is_refused_before_repository_queries(self):
         repository, worktree = self.bind(self.root)
         capture = self.cap(self.root, repository, worktree)
