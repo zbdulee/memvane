@@ -717,14 +717,26 @@ class MigrationSnapshotChecks(unittest.TestCase):
                             page_cursor = listed['next']
                             if page_cursor is None:
                                 break
+                        # A branch ref only in packed-refs misses the capture
+                        # cache, so every checkout observation runs Git.
+                        subprocess.run(['git', '-C', str(case.project), 'pack-refs', '--all'],
+                                       check=True, capture_output=True, timeout=10)
+                        self.assertFalse((case.project / '.git/refs/heads/main').exists())
                         corpus = {'pages': 0, 'members': 0, 'prompts': 0, 'max_page_ms': 0.0}
                         corpus_started, cursor, digests = time.monotonic(), None, set()
+                        page_costs = []
                         with mock.patch.object(opens, 'inspect_warm_snapshot',
-                                               wraps=opens.inspect_warm_snapshot) as corpus_snapshots:
+                                               wraps=opens.inspect_warm_snapshot) as corpus_snapshots, \
+                                mock.patch.object(view, '_observe_worktree',
+                                                  wraps=view._observe_worktree) as observations, \
+                                mock.patch.object(view, 'search', wraps=view.search) as lookups, \
+                                mock.patch.object(checkout, '_stable', wraps=checkout._stable) as stable:
                             while True:
                                 page_started = time.monotonic()
+                                observations.reset_mock(); lookups.reset_mock(); stable.reset_mock()
                                 page = migration.compare_recall_corpus(view, gen, project=case.project,
                                     executing_root=case.plugin, after=cursor, deadline=time.monotonic() + 30)
+                                page_costs.append((lookups.call_count, observations.call_count, stable.call_count))
                                 corpus['max_page_ms'] = max(corpus['max_page_ms'],
                                                             (time.monotonic() - page_started) * 1000)
                                 self.assertLessEqual(page['members'], migration._PARITY_MEMBERS)
@@ -738,6 +750,21 @@ class MigrationSnapshotChecks(unittest.TestCase):
                                 if cursor is None:
                                     break
                         self.assertEqual(corpus_snapshots.call_count, corpus['pages'])
+                        print('parity_page_costs (lookups, observations, git_captures)', page_costs, flush=True)
+                        # One observation opens a page and one closes it, however many lookups.
+                        self.assertTrue(any(cost[0] > 2 for cost in page_costs), page_costs)
+                        self.assertEqual({cost[1] for cost in page_costs}, {2}, page_costs)
+                        self.assertTrue(all(cost[2] <= 4 for cost in page_costs), page_costs)
+                        # A checkout that moved during a page discards that page as a retry.
+                        blob_values = importlib.import_module('laya_blob_values')
+                        pins_before = len(view._pins)
+                        with mock.patch.object(view, '_observe',
+                                               side_effect=lambda *_a, **_k: blob_values.fail('checkout_changed')):
+                            with self.assertRaisesRegex(Exception, 'migration_checkout_changed'):
+                                migration.compare_recall_corpus(view, gen, project=case.project,
+                                    executing_root=case.plugin, after=None, deadline=time.monotonic() + 30)
+                        self.assertEqual(len(view._pins), pins_before)
+                        self.assertIn('migration_checkout_changed', migration._SHADOW_RETRY_REASONS)
                         self.assertEqual(corpus['members'], len(inventory))
                         self.assertEqual(len(digests), corpus['pages'])
                         self.assertGreater(corpus['prompts'], corpus['members'])

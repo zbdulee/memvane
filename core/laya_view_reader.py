@@ -178,9 +178,13 @@ class ReaderMixin:
         record['verified'] = dict(stamp=stamp, generation=generation, seal=seal, capture=capture, stage=stage)
         return dict(generation), dict(seal), capture, stage
 
-    def pin_view(self, handle, *, deadline=None):
+    def pin_view(self, handle, *, deadline=None, _observed=False):
+        # ``_observed``: the caller observed this checkout just before and
+        # proves it again after its last read (shadow parity pages only).
         if self._closed:
             v.fail('view_store_closed')
+        if type(_observed) is not bool:
+            v.fail('fts_query_invalid')
         now=time.monotonic()
         if deadline is None:
             deadline=now+30
@@ -190,7 +194,8 @@ class ReaderMixin:
             deadline=min(deadline,now+30)
         _remaining(deadline)
         issued = self._check(handle)
-        self._observe(issued,deadline=deadline)
+        if not _observed:
+            self._observe(issued,deadline=deadline)
         _remaining(deadline)
         if len(self._pins) >= MAX_PINS:
             v.fail('view_pin_limit')
@@ -209,7 +214,8 @@ class ReaderMixin:
             # after any commit to the store (_read_pinned).
             vector = None if sealed is None else dict(
                 sealed, dimension=self._profile(sealed['profile_id'])['dimension'])
-        self._observe(issued,deadline=deadline)
+        if not _observed:
+            self._observe(issued,deadline=deadline)
         _remaining(deadline)
         pin = ViewPin(handle.view_id, head['gen_id'], head['epoch'], self._incarnation, uuid.uuid4().hex)
         # Retain an internal copy rather than a mutable caller-held handle object.
@@ -249,14 +255,17 @@ class ReaderMixin:
         return 'stale_snapshot' if code == 0 else 'lineage_changed'
 
     def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
-               deadline_seconds=2, _legacy_origin=None):
+               deadline_seconds=2, _legacy_origin=None, _observed=False):
         if _legacy_origin is not None and _legacy_origin not in ('base', 'sidecar'):
             v.fail('migration_lexical_origin_invalid')
+        if type(_observed) is not bool:
+            v.fail('fts_query_invalid')
         deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)
         record = self._pinned(pin)
         _remaining(deadline)
         entry = record['entry']
-        self._observe(entry,deadline=deadline)
+        if not _observed:
+            self._observe(entry,deadline=deadline)
         _remaining(deadline)
         with self._reading(deadline) as db:
             generation, seal, original, stage = self._read_pinned(db, pin, deadline)
@@ -342,7 +351,8 @@ class ReaderMixin:
                 for row in answer:
                     row['source_locations'] = locations.get(row['path'], [])
             _remaining(deadline)
-        self._observe(entry,deadline=deadline)
+        if not _observed:
+            self._observe(entry,deadline=deadline)
         _remaining(deadline)
         return answer
 

@@ -17,5 +17,8 @@ test('migration captures proved selected wiki membership', () => {
   const corpus = result.stdout.match(/recall_corpus_pages (\d+) members (\d+) prompts (\d+) total_ms ([0-9.]+) max_page_ms ([0-9.]+)/);
   assert.ok(corpus, 'recall corpus observation missing');
   console.log(`recall corpus pages ${corpus[1]}, members ${corpus[2]}, prompts ${corpus[3]}, total ms ${corpus[4]}, max page ms ${corpus[5]}`);
+  const costs = result.stdout.match(/parity_page_costs .*$/m);
+  assert.ok(costs, 'parity page cost observation missing');
+  console.log(costs[0]);
   assert.match(result.stderr, /\nOK\b/);
 });
