@@ -791,6 +791,41 @@ class ServiceChecks(Fixture):
         self.assertEqual(len(self.loads), 1)
         self.assertGreaterEqual(calls.count(first), 2)
         self.assertGreaterEqual(calls.count(second), 3)
+    def test_repeated_moved_selection_deferrals_back_off_as_start_failures(self):
+        # An attestation that keeps reporting a moved selection is retried
+        # in 5 s only for MOVED_DEFER_LIMIT consecutive times; after that the
+        # owner state counts start failures and the retry backs off.
+        steady, steady_manifest = self.project('alpha')
+        moving, moving_manifest = self.project('beta')
+        moved = [True]
+
+        def attest(decision, proof, mode):
+            if decision['projectRoot'] == moving and moved[0]:
+                raise ResourceDeferred('worker_selection_changed')
+        service = self.service(start=False)
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        svc.register(steady, root=self.root)
+        self.wait(lambda: self.ready(steady_manifest))
+        svc.register(moving, root=self.root)
+        delays = []
+        for _ in range(svc.MOVED_DEFER_LIMIT + 2):
+            self.wait(lambda: moving in service.retry)
+            with service.lock:
+                delays.append(service.retry[moving] - time.monotonic())
+                service.retry.pop(moving, None)
+        state = resident.read_owner_state(moving_manifest)
+        self.assertTrue(all(delay <= 5.1 for delay in delays[:svc.MOVED_DEFER_LIMIT]), delays)
+        self.assertGreater(delays[svc.MOVED_DEFER_LIMIT], 9, delays)
+        self.assertGreater(delays[svc.MOVED_DEFER_LIMIT + 1], 19, delays)
+        self.assertEqual((state['reason'], state['attempts'], state['terminal']),
+                         ('startup_failed', 2, False))
+        moved[0] = False
+        service.retry.pop(moving, None)
+        self.wait(lambda: self.ready(moving_manifest))
+        self.assertNotIn(moving, service.moved)
+
 
 class ServiceBoundsChecks(Fixture):
     def test_read_only_proof_attaches_but_never_starts_a_worker(self):

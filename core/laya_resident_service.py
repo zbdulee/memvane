@@ -859,6 +859,10 @@ def default_prove(project):
         return decision, proof, 'read_only'
 
 
+# Consecutive moved-selection deferrals before they count as start failures.
+MOVED_DEFER_LIMIT = 3
+
+
 def _deferral(exc):
     """A busy queue owner, v5 window or resource gate, never bad evidence."""
     from resource_deferred import ResourceDeferred
@@ -1032,6 +1036,8 @@ class Service:
         self.waiting = {}
         # Codes already reported per installation since its last bind.
         self.unproved = {}
+        # Consecutive moved-selection deferrals per installation (fingerprint, n).
+        self.moved = {}
         self.inflight = 0
         self.inflight_done = threading.Condition(self.lock)
         self.draining = threading.Event()
@@ -1470,9 +1476,36 @@ class Service:
     def _forget(self, project):
         with self.lock:
             self.unproved.pop(project, None)
+            self.moved.pop(project, None)
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
         with suppress(OSError):
             os.unlink(self.root / PROJECTS / name)
+
+    def _deferred_retry(self, project, manifest, exc):
+        """Seconds until a deferred attestation is tried again.
+
+        A busy window retries in 5 s. A moved selection does too for its
+        first ``MOVED_DEFER_LIMIT`` consecutive deferrals of one installation
+        and provider fingerprint; an upgrade settles within them. Past that
+        the deferrals count as transient start failures: the owner state
+        records ``startup_failed`` with growing attempts, so the durable
+        backoff (and the cooldown after the last attempt) bounds the
+        re-hashing instead of a 5 s loop.
+        """
+        from laya_embed_resident import _MAX_FAILURES, _write_state
+        if str(exc) != 'worker_selection_changed':
+            return 5
+        fingerprint = manifest.get('embeddingFingerprint')
+        with self.lock:
+            seen, count = self.moved.get(project, (None, 0))
+            count = count + 1 if seen == fingerprint else 1
+            self.moved[project] = (fingerprint, count)
+        if count <= MOVED_DEFER_LIMIT:
+            return 5
+        attempts = min(_MAX_FAILURES, count - MOVED_DEFER_LIMIT)
+        with suppress(Exception):
+            _write_state(manifest, 'startup_failed', attempts=attempts)
+        return min(300, 5 * 2 ** attempts)
 
     def _later(self, project, seconds):
         with self.lock:
@@ -1570,9 +1603,9 @@ class Service:
             except Exception as exc:
                 os.close(owner_fd)
                 if _deferral(exc):
-                    # A busy queue owner or v5 window: not evidence of a bad
-                    # attestation, try again shortly.
-                    self._later(project, 5)
+                    # A busy queue owner or v5 window, or a moved selection:
+                    # not evidence of a bad attestation, try again.
+                    self._later(project, self._deferred_retry(project, manifest, exc))
                     return
                 with suppress(Exception):
                     _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
@@ -1612,6 +1645,7 @@ class Service:
             self.retry.pop(project, None)
             self.waiting.pop(project, None)
             self.unproved.pop(project, None)
+            self.moved.pop(project, None)
         if binding.events is not None:
             _event([binding.events], 'resident.adopt', 'adopted', mode=mode,
                    attested=attested)
@@ -1704,7 +1738,8 @@ class Service:
                 with self.lock:
                     worker.loading = False
                 if _deferral(exc):
-                    self._later(project, 5)  # a busy window, not bad evidence
+                    # A busy window or a moved selection, not bad evidence.
+                    self._later(project, self._deferred_retry(project, manifest, exc))
                     return
                 with suppress(Exception):
                     _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)

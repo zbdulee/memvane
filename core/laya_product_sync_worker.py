@@ -514,16 +514,17 @@ def service_worker_attestation(decision, expected):
     ``verify_worker_attestation``. Returns the attested provider manifest.
 
     A selection that moved is a deferral (``ResourceDeferred``), never bad
-    evidence: a sync's first write bumps the journal epoch, and a bundle
-    upgrade moves the route and journal to another plugin root, between the
-    service's proof and this attestation or during the hashing. Only the
-    epoch may differ from ``expected`` for the attestation to go on with the
-    fresh proof; the two proofs around the hashing must be identical. A
-    failure while the selection still is the proved one stays an error
-    (``_selection_moved``).
+    evidence. An epoch alone is not a move: a sync's first write bumps it
+    and the fresh proof is used (before the hash) or accepted (after it). A
+    move is the route or the bundle journal row, epoch aside, no longer
+    being what the last accepted step saw: a bundle upgrade to another
+    plugin root, its fence, a restore or another attestation. Each step
+    compares with the latest accepted state, so a failure (a damaged
+    runtime file) on a selection that only gained epochs stays an error.
     """
     import laya_install_journal as journal
     from laya_worker_journal import worker_journal_access
+    accepted = {'view': _journal_view(decision)}
 
     def guarded(call, *args):
         try:
@@ -531,7 +532,7 @@ def service_worker_attestation(decision, expected):
         except ResourceDeferred:
             raise
         except Exception as exc:
-            if _selection_moved(decision, expected):
+            if _selection_moved(decision, accepted['view']):
                 raise ResourceDeferred('worker_selection_changed') from exc
             raise
     with journal.read_only_journals():
@@ -543,12 +544,15 @@ def service_worker_attestation(decision, expected):
 
     def reprove():
         with worker_journal_access(project) as access, journal.read_only_journals():
-            return _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
-    before = guarded(reprove)
+            proof = _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
+        return proof, _journal_view(decision)
+    before, view = guarded(reprove)
     if _without_epoch(before) != _without_epoch(expected):
         raise ResourceDeferred('worker_selection_changed')
+    accepted['view'] = view
     manifest = guarded(_selection_moves_defer, journal._worker_attestation_manifest, before)
-    if guarded(reprove) != before:
+    after, _view = guarded(reprove)
+    if _without_epoch(after) != _without_epoch(before):
         raise ResourceDeferred('worker_selection_changed')
     return manifest
 
@@ -557,32 +561,40 @@ def service_worker_attestation(decision, expected):
 _SELECTION_KEYS = ('state', 'projectRoot', 'pluginRoot', 'installId', 'generation',
                    'journalPath', 'dbPath', 'queuePath', 'dbIncarnation', 'scopeId',
                    'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile')
+# Bundle journal fields a sync's write changes without moving the selection.
+_JOURNAL_EPOCH_FIELDS = ('epoch', 'newWriteSeen')
 
 
-def _selection_moved(decision, expected):
-    """Whether the route or journal no longer selects what ``expected`` proved.
+def _journal_view(decision):
+    """The bundle journal row as a selection, epoch aside; None if unreadable."""
+    import laya_install_journal as journal
+    try:
+        with journal.read_only_journals():
+            info = journal.inspect_journal(decision['journalPath'])
+    except Exception:
+        return None
+    return {key: value for key, value in info.items() if key not in _JOURNAL_EPOCH_FIELDS}
 
-    Read-only: the route classification and the bundle journal row. A route
-    that is now another state (an upgrade fence, a restore), names another
-    plugin root or store, a journal whose epoch, state or selected bundle
-    moved, or either of them unreadable right now, is a moved selection.
+
+def _selection_moved(decision, view):
+    """Whether the route or journal moved away from the accepted selection.
+
+    Read-only: the route classification and the bundle journal row (never a
+    content store). The route must still name ``decision``'s installation,
+    bundle and stores in the same state; the journal row, epoch aside, must
+    equal ``view``. A read that fails is not evidence of a move: the failure
+    stays what it was.
     """
     import laya_install_journal as journal
     try:
         with journal.read_only_journals():
             current = select_route(str(decision['projectRoot']), action='update')
-            if any(current.get(key) != decision.get(key) for key in _SELECTION_KEYS):
-                return True
-            info = journal.inspect_journal(decision['journalPath'])
     except Exception:
+        return False
+    if any(current.get(key) != decision.get(key) for key in _SELECTION_KEYS):
         return True
-    selected = info.get('selected') if isinstance(info.get('selected'), dict) else {}
-    return (info.get('epoch') != expected.get('selectionEpoch')
-            or info.get('state') not in ('active', 'restored_old')
-            or info.get('pending') is not None
-            or any(selected.get(key) != decision.get(key) for key in
-                   ('pluginRoot', 'installId', 'bundleManifestSha256',
-                    'ownershipManifestSha256', 'vectorProfile')))
+    now = _journal_view(decision)
+    return now is not None and view is not None and now != view
 
 
 def _selection_moves_defer(call, argument):

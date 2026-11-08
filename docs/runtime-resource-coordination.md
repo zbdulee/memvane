@@ -63,12 +63,16 @@ development execution guard is separate; see
   owner and the v5 lifetime and physical windows of the journal-bound root
   (the hashing holds neither); a busy owner or window defers the start
   without marking the attestation invalid. A selection that moved is not
-  bad evidence either: an epoch that moved before the attestation (a sync's
-  first write) goes on with the fresh proof; a re-proof that fails or differs
-  while the route or journal no longer selects what the service proved (a
-  bundle upgrade to another plugin root, its fence, another epoch) defers the
-  start for a fresh attempt. A failure on an unmoved selection stays an
-  attestation failure. The
+  bad evidence either. An epoch alone (a sync's first write) is not a move:
+  the attestation goes on with the fresh proof. A step that fails or differs
+  while the route, or the bundle journal row epoch aside, moved from what the
+  last accepted step saw (a bundle upgrade to another plugin root, its
+  fence, a restore, another attestation) defers the start for a fresh
+  attempt. A failure on an unmoved selection, or one whose route or journal
+  cannot be read, stays an attestation failure. After three consecutive
+  moved-selection deferrals of one installation and provider fingerprint,
+  further ones count as transient start failures (``startup_failed`` with
+  growing attempts and the usual backoff and cooldown). The
   read-only proof of a drifted installation takes the same queue owner and
   v5 windows of the journal-bound root. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a

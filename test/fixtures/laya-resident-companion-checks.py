@@ -228,6 +228,37 @@ class CompanionResidentChecks(unittest.TestCase):
             with self.stubbed_record():
                 self.assertIsNone(self.S.default_attest(decision, proof, mode))
 
+    def test_07b_epoch_moved_with_a_damaged_runtime_stays_an_error(self):
+        # A sync write moves the epoch, then the runtime hash finds damage
+        # on the unmoved bundle: that is bad evidence, not a moved selection.
+        with self.executing(self.companion):
+            decision, proof, mode = self.S.default_prove(str(self.case.project))
+            self.bump_epoch()
+
+            def damaged(_record):
+                raise J.JournalEvidenceError('worker_runtime_files_invalid')
+            with mock.patch.object(J, 'validate_production_provider_attestation',
+                                   side_effect=lambda _profile, _proof, record: record['providerManifest']), \
+                    mock.patch.object(J, '_verify_runtime_files', side_effect=damaged):
+                with self.assertRaisesRegex(J.JournalEvidenceError, 'worker_runtime_files_invalid'):
+                    self.S.default_attest(decision, proof, mode)
+
+    def test_07c_an_unreadable_route_or_journal_is_not_a_moved_selection(self):
+        with self.executing(self.companion):
+            decision, _proof, _mode = self.S.default_prove(str(self.case.project))
+            view = self.W._journal_view(decision)
+            self.assertIsNotNone(view)
+            self.assertFalse(self.W._selection_moved(decision, view))
+            with mock.patch.object(self.W, 'select_route', side_effect=OSError('unreadable')):
+                self.assertFalse(self.W._selection_moved(decision, view))
+            with mock.patch.object(J, 'inspect_journal',
+                                   side_effect=J.JournalEvidenceError('journal_unavailable')):
+                self.assertFalse(self.W._selection_moved(decision, view))
+            # An epoch alone is not a move; another route root is.
+            self.bump_epoch()
+            self.assertFalse(self.W._selection_moved(decision, view))
+            self.assertTrue(self.W._selection_moved({**decision, 'pluginRoot': '/elsewhere'}, view))
+
     def test_08_windows_are_taken_again_after_the_runtime_hash(self):
         # The re-proof after the hash takes the windows again: a lock taken
         # while the runtime files are hashed defers before any connection.
@@ -264,24 +295,23 @@ class CompanionResidentChecks(unittest.TestCase):
         self.assertTrue(all(bound for after, bound in identity_calls if not after), identity_calls)
         self.assertEqual([call for call in identity_calls if call[0]], [])
 
-    def test_09_selection_moved_during_the_hash_defers(self):
-        from resource_deferred import ResourceDeferred
+    def test_09_epoch_moved_during_the_hash_is_accepted(self):
+        # A sync write during the hash moves only the epoch: the hash was of
+        # the unmoved bundle, so the attestation stands. (A real move during
+        # the hash, another plugin root, defers: test_12.)
         real_manifest = J._worker_attestation_manifest
+        bumped = []
 
         def hashing(selected):
             result = real_manifest(selected)
-            self.bump_epoch()
+            bumped.append(self.bump_epoch())
             return result
         with self.executing(self.companion):
             decision, proof, mode = self.S.default_prove(str(self.case.project))
             with self.stubbed_record(), \
                     mock.patch.object(J, '_worker_attestation_manifest', side_effect=hashing):
-                with self.assertRaisesRegex(ResourceDeferred, 'worker_selection_changed'):
-                    self.S.default_attest(decision, proof, mode)
-            # The next attempt proves the moved selection and attests.
-            decision, proof, mode = self.S.default_prove(str(self.case.project))
-            with self.stubbed_record():
                 self.assertIsNone(self.S.default_attest(decision, proof, mode))
+        self.assertEqual(bumped, [proof['selectionEpoch'] + 1])
 
     def test_10_read_only_fallback_takes_the_v5_windows(self):
         # An unequal copy proves the install as bundle drift; the read-only
