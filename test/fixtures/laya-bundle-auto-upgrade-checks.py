@@ -313,6 +313,21 @@ class WorkerChecks(WorkerBase):
         self.assertEqual(calls, {})
 
 
+    def test_install_held_by_other_host_copy_of_older_release_moves_here(self):
+        # H8 recovery: an install bound to the other host's copy of the
+        # previous release takes the normal upgrade to this host's copy of
+        # the new release. A later companion seal of the other host's new
+        # copy changes no route, and either copy's service proves it.
+        import laya_product_bundle as bundle
+        self.old_identity = {**self.old_identity, 'pluginRoot': str(self.base / 'codex-0.44.7')}
+        with mock.patch.object(bundle, 'seal_companion_host_copy') as seal:
+            results, calls, _rescan, wake = self.run_worker('active', installed='2' * 40)
+        seal.assert_not_called()
+        self.assertEqual(results[0]['status'], 'active_upgrade_complete')
+        self.assertEqual(calls['active']['plugin_root'], str(self.root))
+        wake.assert_called_once_with(str(self.project))
+
+
 class SameRootReadoptChecks(WorkerBase):
     """A host re-extracted the bound bundle in place: same bytes, new inodes."""
 

@@ -858,6 +858,21 @@ def default_prove(project):
         return decision, proof, 'read_only'
 
 
+def _proof_code(exc):
+    """An event-safe reason for a failed proof: its code, else its class."""
+    code = str(exc)
+    return code if re.fullmatch(r'[a-z0-9_]{1,80}', code) else type(exc).__name__
+
+
+def _route_hint(project):
+    """The route decision naming an install's event log; never a proof."""
+    import laya_install_journal as journal
+    from laya_index_host_route import select_route
+    # Classification must never repair a hot journal image on this path.
+    with journal.read_only_journals():
+        return select_route(str(project), action='update')
+
+
 def default_attest(decision, proof, mode):
     """Full attestation before a worker starts or an installation binds.
 
@@ -1450,11 +1465,13 @@ class Service:
         with self.lock:
             self.retry[project] = time.monotonic() + seconds
 
-    def _report_waiting(self, project, decision, reason):
-        """One ``resident.adopt waiting`` event per installation and reason.
+    def _report_waiting(self, project, decision, reason, outcome='waiting'):
+        """One ``resident.adopt`` event per installation, outcome and reason.
 
         Sync wakes only see ``preparing`` while the service declines to start
         a worker; this names the cause in the installation's own log.
+        ``decision`` may be a callable that finds it, called only on a new
+        episode.
         """
         with self.lock:
             if self.waiting.get(project) == reason:
@@ -1463,10 +1480,12 @@ class Service:
         targets = []
         with suppress(Exception):
             import event_log
+            if callable(decision):
+                decision = decision()
             state_root = event_log.state_root_for_decision(decision)
             if state_root is not None:
                 targets.append((state_root, event_log.install_of(decision)))
-        _event(targets, 'resident.adopt', 'waiting', reason)
+        _event(targets, 'resident.adopt', outcome, reason)
 
     def _adopt(self, project):
         from laya_embed_resident import _owner_identity, _write_state
@@ -1478,9 +1497,14 @@ class Service:
             manifest = proof['providerManifest']
             if decision.get('projectRoot') != project:
                 _fail('provider_owner_identity_invalid')
-        except Exception:
+        except Exception as exc:
             if not os.path.isdir(project):
                 self._forget(project)  # the project is gone: stop re-proving it
+            else:
+                # Without this the install's resident state stays at the
+                # client's "starting" and nothing says why it is never bound.
+                self._report_waiting(project, lambda: _route_hint(project),
+                                     _proof_code(exc), outcome='unproved')
             self._later(project, 5)
             return
         path = manifest['serviceSocketPath']

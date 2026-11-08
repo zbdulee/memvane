@@ -810,6 +810,48 @@ class ServiceBoundsChecks(Fixture):
             self.assertNotIn(drifted, service.waiting)
         self.assertEqual(len(self.loads), 1)
 
+    def test_unproved_install_names_its_code_once_per_episode(self):
+        # A proof that fails outright (not bundle drift) used to retry every
+        # few seconds with no state and no event: the install's resident
+        # state stayed "starting" for days and only sync saw "preparing".
+        project, manifest = self.project('alpha')
+        decision = self.routes[project][0]
+        failures = ['writer_bundle_unavailable']
+        prove = self.prove
+
+        def flaky(name):
+            if name == project and failures:
+                raise ValueError(failures[0])
+            return prove(name)
+        events = []
+        with patch.object(svc, '_event',
+                          side_effect=lambda targets, event, outcome, reason=None, **f:
+                          events.append((event, outcome, reason, list(targets)))), \
+                patch.object(svc, '_route_hint', return_value=decision):
+            service = self.service()
+            service.prove = flaky
+            svc.register(project, root=self.root)
+            self.wait(lambda: events, message='failed proof never reported')
+            for _ in range(5):
+                service.retry.pop(project, None)
+                service.tick()
+            unproved = [e for e in events if e[1] == 'unproved']
+            self.assertEqual(len(unproved), 1, events)
+            event, outcome, reason, targets = unproved[0]
+            self.assertEqual((event, reason), ('resident.adopt', 'writer_bundle_unavailable'))
+            self.assertEqual(len(targets), 1)
+            self.assertFalse(service.status()['readOnlyOnly'])
+            # A code outside the event vocabulary is reported by class only.
+            failures[0] = 'Private /path with spaces'
+            service.retry.pop(project, None)
+            service.tick()
+            unproved = [e for e in events if e[1] == 'unproved']
+            self.assertEqual([e[2] for e in unproved], ['writer_bundle_unavailable', 'ValueError'])
+            failures.clear()
+            service.retry.pop(project, None)
+            self.wait(lambda: self.ready(manifest))
+            self.assertNotIn(project, service.waiting)
+
     def test_every_new_worker_start_attests_first(self):
         project, manifest = self.project('alpha')
         svc.register(project, root=self.root)

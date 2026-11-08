@@ -96,7 +96,10 @@ development execution guard is separate; see
   `wake.sync failed target_preparing_stalled` (streak in the private
   `runtime-wake-preparing.json`). The service logs `resident.adopt waiting
   read_only_no_worker` once when a drifted installation has no worker to
-  attach to.
+  attach to, and `resident.adopt unproved <code>` once per code when an
+  installation's proof fails outright (the code, or only the exception class
+  when it is not a plain code), so a binding that never happens is named in
+  the installation's own log.
 - On the capacity path every sync wake rescans, so the pending fill offers
   each cached member again. A member whose sidecar row is already identical,
   or an unverified card, skips the route proof, the journal write fence and the
@@ -608,8 +611,16 @@ from injected analytical tests; the shared OS reporter always attaches it.
   protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
   A learning client of the same version that needs its trainer interpreter
   replaces the service under that interpreter, which is then remembered.
+  Installs of one release can be bound to either host's copy: the bundle
+  upgrade binds each install to the host that ran it first and seals the
+  other host's copy as its companion. A service running from one copy proves
+  an install bound to the other copy with the hooks' full selected proof
+  (the journal-bound owner copy and the executing copy proven as the same
+  sealed bundle) instead of the v5 writer plan, which pins the owner root
+  and stays the only proof writers take; it then starts or shares that
+  install's worker as for its own installs.
   A same-version service started from a cache the installations' journals do
-  not approve (the other host's copy of one release) proves them only as
+  not approve (an unsealed or unequal copy of one release) proves them only as
   bundle drift: it attaches read-only and starts no model worker, so it
   reports `readOnlyOnly` while no worker runs or loads and an installation
   waits `read_only_no_worker`. A hook or wake whose own code proves that
