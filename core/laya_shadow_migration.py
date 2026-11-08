@@ -4592,19 +4592,29 @@ def _vector_session(store, project, executing_root, *, deadline, observed=False,
                     or endpoint.record['install_id'] != intent['install_id']):
                 raise IndexContractError('migration_endpoint_changed')
             timings = {} if timings is None else timings
+            # Each fixed-cost phase records its elapsed time even when it
+            # fails, so a step that dies before any member names the phase.
             clock = time.monotonic()
-            handle = store.capture_view(intent['worktree_id'], deadline=deadline)
-            timings['capture_ms'] = int((time.monotonic() - clock) * 1000)
+            try:
+                handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+            finally:
+                timings['capture_ms'] = int((time.monotonic() - clock) * 1000)
             clock = time.monotonic()
-            pin = store.pin_view(handle, deadline=deadline, _observed=observed)
-            timings['pin_verify_ms'] = int((time.monotonic() - clock) * 1000)
+            try:
+                pin = store.pin_view(handle, deadline=deadline, _observed=observed)
+            finally:
+                timings['pin_verify_ms'] = int((time.monotonic() - clock) * 1000)
             try:
                 if (pin.gen_id != receipt['generation'] or pin.view_id != receipt['view_id']
                         or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
                     raise IndexContractError('migration_snapshot_changed')
                 clock = time.monotonic()
-                with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as snapshot:
+                try:
+                    opened = readers.inspect_warm_snapshot(endpoint, deadline=deadline)
+                    snapshot = opened.__enter__()
+                finally:
                     timings['inspect_ms'] = int((time.monotonic() - clock) * 1000)
+                with _entered(opened, snapshot):
                     page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
                                              after=None, deadline=deadline)
                     if page['observation'] != intent['observation']:
@@ -4620,6 +4630,19 @@ def _vector_session(store, project, executing_root, *, deadline, observed=False,
                                names=tuple(wiki_index_roots(decision['collections'])))
             finally:
                 store.release(pin)
+
+
+@contextmanager
+def _entered(manager, value):
+    """Hold a context manager the caller already entered; exit it as ``with`` would."""
+    import sys
+    try:
+        yield value
+    except BaseException:
+        if not manager.__exit__(*sys.exc_info()):
+            raise
+    else:
+        manager.__exit__(None, None, None)
 
 
 def _candidate_members(store, generation, after, limit):
@@ -4649,11 +4672,16 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
     _, state, _, _ = _migration_state(project, store)
     # One checkout observation opens the step (capture_view) and one closes
     # it before anything is committed.
-    timings = {}
-    with _migration_trace(state, 'vectors', 'vectors') as trace, \
-            _vector_session(store, project, executing_root, deadline=deadline, observed=True,
-                            timings=timings) as proof:
+    # The trace carries the timings from before the session opens: a step
+    # that fails in a fixed-cost phase still reports the phases it ran and
+    # that no member was finished.
+    from contextlib import ExitStack
+    timings = {'members': 0}
+    with ExitStack() as scope:
+        trace = scope.enter_context(_migration_trace(state, 'vectors', 'vectors'))
         trace['fields'] = timings
+        proof = scope.enter_context(_vector_session(store, project, executing_root, deadline=deadline,
+                                                    observed=True, timings=timings))
         intent, receipt = proof['intent'], proof['intent']['published']
         trace['migration'] = intent['migration_id']
         _migration_event(state, trace, 'attempt')

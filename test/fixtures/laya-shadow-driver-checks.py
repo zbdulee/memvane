@@ -572,6 +572,43 @@ class DriverChecks(unittest.TestCase):
         self.assertEqual(record['warm_streak']['count'], self.W.SHADOW_WARM_LIMIT + 1)
         self.assertIsNone(self.intent(case).get('vectors'))
 
+    def test_a_new_published_head_starts_the_warmed_count_over(self):
+        # Three warmed steps on head G1; a catch-up then publishes G2 while
+        # the vectors record still names G1. G2's first warmed step is a new
+        # target, not the fourth on G1.
+        import laya_ledger_common as ledger
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        with self.authority(seed, case):
+            self.assertEqual(W.shadow_pass(case.project)['stages'][:1], ['activate'])
+        intent_path = case.state / M._INTENT
+        provider = ({'recipeId': 'r' * 64}, {'profileId': 'p' * 64})
+        vectors = {'migration_id': 'm' * 32, 'generation': 'g1' + '0' * 30, 'copied': 7,
+                   'cursor': 'concepts/heron-route.md'}
+
+        def published(generation):
+            ledger._write(intent_path, {'published': {'generation': generation,
+                                                      'candidate_incarnation': 'i' * 32},
+                                        'vectors': vectors}, replace=os.path.lexists(intent_path))
+        import inspect
+        takes_spec = len(inspect.signature(W._shadow_warm_streak).parameters) > 2
+
+        def streak(warmed, spec):
+            # (A driver without the spec argument keys on vectors progress only.)
+            return W._shadow_warm_streak(case.state, warmed, *((spec,) if takes_spec else ()))
+        published(vectors['generation'])
+        counts = [streak(True, provider) for _ in range(3)]
+        self.assertEqual(counts, [1, 2, 3])
+        published('g2' + '0' * 30)
+        self.assertEqual(streak(True, provider), 1)
+        # The same target again counts on; another provider spec is new too.
+        self.assertEqual(streak(True, provider), 2)
+        other = ({'recipeId': 'q' * 64}, {'profileId': 'p' * 64})
+        self.assertEqual(streak(True, other), 1)
+        self.assertEqual(streak(False, other), 0)
+        record = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+        self.assertNotIn('warm_streak', record)
+
     @contextmanager
     def queued(self):
         """The fixture's private wake queue, a virtual wall clock and a spy on its offers.

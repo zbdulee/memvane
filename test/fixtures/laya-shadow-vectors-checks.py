@@ -683,5 +683,29 @@ class ColdStepChecks(VectorStepSetup, unittest.TestCase):
             self.assertEqual(row.get('prewarm'), 'ok')
         self.assertGreater(shadow[1]['members'], 0)
 
+    def test_a_fixed_cost_failure_still_reports_its_phases(self):
+        # The snapshot phase runs out of time: the terminal event still names
+        # the phases that ran (and the one that failed) and that no member
+        # was finished.
+        self.caught_up()
+        migration = self.migration
+        events = self.case.state / 'events.jsonl'
+        mark = len(events.read_text(encoding='utf8').splitlines()) if events.exists() else 0
+
+        def expired(*_args, **_kwargs):
+            raise migration.IndexContractError('reader_snapshot_deadline')
+        with mock.patch.object(migration.readers, 'inspect_warm_snapshot', side_effect=expired):
+            with self.assertRaisesRegex(Exception, 'reader_snapshot_deadline'):
+                self.advance()
+        rows = [json.loads(line) for line in events.read_text(encoding='utf8').splitlines()[mark:]]
+        terminal = [row for row in rows if row.get('event') == 'migration.shadow'
+                    and row.get('op') == 'vectors' and row.get('outcome') == 'error']
+        self.assertEqual(len(terminal), 1, rows)
+        row = terminal[0]
+        self.assertEqual(row['reason'], 'reader_snapshot_deadline')
+        self.assertEqual(row.get('members'), 0)
+        self.assertTrue(all(type(row.get(key)) is int for key in ('capture_ms', 'pin_verify_ms', 'inspect_ms')),
+                        row)
+
 if __name__ == '__main__':
     unittest.main()
