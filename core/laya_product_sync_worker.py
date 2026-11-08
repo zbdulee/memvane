@@ -1881,7 +1881,9 @@ def _orphaned_intent(state, project, candidate):
 
 
 def _shadow_step(decision, state, executing_root, store, deadline, provider=None, prepare=True):
-    """Run one driver step; returns ``(stage, migration_state, store, worktree_id)``.
+    """Run one driver step; returns ``(stage, migration_state, store, reason)``.
+
+    ``reason`` is the code a ``retry`` step reported (the parity seal's), else None.
 
     With ``provider`` (``_shadow_vector_spec``) the candidate store registers
     the install provider's recipe/profile and the caught-up head copies
@@ -1894,7 +1896,7 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
     if not os.path.lexists(activation):
         ledger._write(activation, _activation_record(state, project, candidate=state / SHADOW_CANDIDATE),
                       replace=False)
-        return 'activate', None, store
+        return 'activate', None, store, None
     record, candidate = _read_activation(state)
     # A moved state root or project leaves absolute paths that no longer name
     # this install; a lost candidate leaves an intent bound to nothing.
@@ -1904,19 +1906,19 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
         if store is not None:
             store[0].close()
         _restart_shadow(state, project, record)
-        return 'restart', None, None
+        return 'restart', None, None, None
     if not os.path.lexists(candidate):
         if any(os.path.lexists(str(candidate) + suffix) for suffix in ('-wal', '-shm', '-journal')):
             # Leftover journal files of a lost store must never meet a new one.
             _restart_shadow(state, project, record)
-            return 'restart', None, None
+            return 'restart', None, None, None
         import laya_checkout_view as checkout
         from laya_view_store import ViewStore
         repository = checkout.register_repository(str(project))
         worktree = checkout.register_worktree(str(project), repository)
         ViewStore.create(candidate, project_root=str(project), repository=repository,
                          worktree=worktree, scope_id=decision['scopeId']).close()
-        return 'create', None, store
+        return 'create', None, store, None
     if store is None:
         store = _shadow_open(state, project, decision['scopeId'], candidate,
                              queue=decision['queuePath'])
@@ -1924,14 +1926,14 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
     if not os.path.lexists(state / migration._INTENT):
         intent = migration.begin_migration(view, worktree_id=worktree_id, project=project,
                                            executing_root=executing_root, deadline=deadline)
-        return 'begin', intent['migration_state'], store
+        return 'begin', intent['migration_state'], store, None
     vector_spec = None
     if provider is not None:
         from laya_view_vectors import register_provider_spec
         vector_spec = register_provider_spec(view, *provider)
     result = migration.advance_shadow(view, project=project, executing_root=executing_root,
                                       deadline=deadline, vector_spec=vector_spec, prepare=prepare)
-    return result['stage'], result['migration_state'], store
+    return result['stage'], result['migration_state'], store, result.get('reason')
 
 
 def _shadow_error_streak(state, failed):
@@ -1958,15 +1960,20 @@ def _shadow_rewake(project, state, status):
 
     A ``progressed`` pass and a ``pass_deadline`` wait rewake. Any other wait
     (switch gate, space, step retry, guard) does not, nor a pass that ends at
-    shadow_verified or later. An ``error`` rewakes while the consecutive error
-    streak stays below ``SHADOW_REWAKE_ERRORS``; any other pass resets it, and
-    an unrecorded streak never rewakes an error. The offer is the existing
+    shadow_verified or later. An ``error``, and a wait on a step deadline code
+    (the parity seal's retry, ``_STEP_DEADLINE_REASONS``: nothing was written,
+    as for the same code from a copy step), rewakes while the consecutive
+    error streak stays below ``SHADOW_REWAKE_ERRORS``; any other pass resets
+    it, and an unrecorded streak never rewakes an error. The offer is the existing
     laya-sync wake, due ``SHADOW_REWAKE_SECONDS`` later; a sync that does not
     complete runs no pass, so it offers nothing.
     """
     if os.environ.get(SHADOW_KILL_SWITCH) == 'off':
         return False
-    failed = status['state'] == 'error'
+    import laya_shadow_migration as migration
+    failed = (status['state'] == 'error'
+              or (status['state'] == 'waiting'
+                  and status['reason'] in getattr(migration, '_STEP_DEADLINE_REASONS', ())))
     try:
         streak = _shadow_error_streak(state, failed)
     except Exception:
@@ -1979,7 +1986,6 @@ def _shadow_rewake(project, state, status):
         return False
     if status['migration_state'] in _SHADOW_REWAKE_STOP:
         return False
-    import laya_shadow_migration as migration
     offered = migration._offer_sync(project, delay=SHADOW_REWAKE_SECONDS)
     return isinstance(offered, dict) and offered.get('status') in ('queued', 'deferred_queue_capacity_retained')
 
@@ -2044,6 +2050,7 @@ def shadow_pass(project, *, executing_root=None):
     is True when the pass offered the next one (``_shadow_rewake``).
     """
     import event_log
+    import laya_journal_reader as reader
     import laya_shadow_migration as migration
     project = Path(project)
     executing_root = Path(_writer_executing_root() if executing_root is None else executing_root)
@@ -2064,6 +2071,10 @@ def shadow_pass(project, *, executing_root=None):
     provider = _shadow_vector_spec(decision)
     status['state'], status['reason'] = 'progressed', None
     store = None
+    # The migration steps of this pass share one published-head proof while
+    # the v6 base store's files and head hold (published_proof_reuse); the
+    # reader-switch steps prove on their own.
+    proofs = {}
     try:
         while status['steps'] < SHADOW_STEPS_PER_PASS:
             if status['steps']:
@@ -2088,9 +2099,10 @@ def shadow_pass(project, *, executing_root=None):
                 # Only a pass's first step may start the lock-free prepare,
                 # with the whole prepare budget; later it waits for a pass.
                 first = not status['steps']
-                stage, current, store = _shadow_step(
-                    decision, state, executing_root, store,
-                    started + SHADOW_PREPARE_SECONDS if first else deadline, provider, prepare=first)
+                with reader.published_proof_reuse(proofs):
+                    stage, current, store, retry_reason = _shadow_step(
+                        decision, state, executing_root, store,
+                        started + SHADOW_PREPARE_SECONDS if first else deadline, provider, prepare=first)
                 if stage == 'prepare_deferred':
                     status['reason'] = 'prepare_next_pass'
                     break

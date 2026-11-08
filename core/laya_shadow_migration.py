@@ -41,6 +41,14 @@ MAX_BATCH_BYTES = 8 * 1024 * 1024
 #   quiesces writers: it holds the installer, operation and sync owner locks
 #   (convert_reader_v5 order, without the provider lane) for at most
 #   _STEP_SECONDS, never waits for them, and reports the held time.
+# - The O(generation) published-head proof (laya_journal_reader
+#   _published_snapshot) runs before each step outside both locks on the
+#   wall deadline, interrupted at it (_prove_head_unlocked); its read
+#   transaction ends with the proof and its idle connection closes after the
+#   step. The step's snapshots reuse it while the base store's file identity
+#   and head row hold (published_proof_reuse, shared across one driver pass).
+# - A recall parity page that misses its step deadline is retried from the
+#   same cursor at half the members (_shrink_parity_page), down to one.
 _STEP_SECONDS = 3.0
 # Writer-receipt catch-up (design 8.2-6) replays at most this many changed
 # paths per step; more changes take the full path/SHA recapture instead.
@@ -1579,6 +1587,12 @@ _MIGRATION_REASONS |= frozenset(('switch_parity_missing', 'switch_catchup_stale'
 _MIGRATION_REASONS |= frozenset(('migration_vector_invalid', 'migration_vector_spec_invalid',
                                  'migration_vector_queries_invalid', 'migration_vectors_incomplete',
                                  'migration_semantic_parity_mismatch'))
+# Step-deadline codes of the vector seal proof and the checkout observation:
+# the same grade as ``reader_snapshot_deadline`` (a driver error that rewakes
+# within the error streak; a retry at the parity seal; a smaller parity page).
+_STEP_DEADLINE_REASONS = frozenset(('reader_snapshot_deadline', 'vector_deadline_exceeded',
+                                    'checkout_budget_exhausted'))
+_MIGRATION_REASONS |= _STEP_DEADLINE_REASONS
 
 
 # Operations in shadow order (``op`` of every ``migration.shadow`` event);
@@ -1594,7 +1608,7 @@ _DEFERRED_REASONS = frozenset(('migration_space_deferred',))
 # terminal event outcome is ``waiting``, never ``error``.
 _WAITING_REASONS = frozenset(reason for reason in _MIGRATION_REASONS if reason.startswith('switch_'))
 # Integer diagnostics a terminal event may carry (bounded; never text).
-_EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms')
+_EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms', 'page_members')
 
 # Space pre-check (design 10: old DB + new DB + WAL + reserve, from actual
 # file sizes and the expected copy size; no fixed 2x guarantee is claimed).
@@ -2945,10 +2959,50 @@ def compare_shadow_queries(store, generation, *, project, executing_root, querie
         return result
 
 
-def compare_recall_corpus(store, generation, *, project, executing_root, after, deadline):
+class _ParityPageDeadline(IndexContractError):
+    """A recall parity page that ran out of its step deadline (``reader_snapshot_deadline``)."""
+    def __init__(self):
+        super().__init__('reader_snapshot_deadline')
+
+
+# Timeout codes a parity page can surface: the step deadline codes, the
+# candidate pin/capture/search deadline, and a candidate lookup that the
+# lexical compare reports as ``migration_recall_probe_unproved`` from one.
+_PAGE_TIMEOUT_REASONS = frozenset(('fts_deadline_exceeded',)) | _STEP_DEADLINE_REASONS
+
+
+def _page_deadline_spent(exc, deadline):
+    """True when ``exc`` is a timeout code (itself or an explicit cause) and ``deadline`` has passed.
+
+    A timeout code before the page deadline (a shorter inner budget, such as
+    the old reader's probe deadline) and every proof failure are not spent
+    page budgets. Nor is a checkout observation that failed for another
+    reason: the view store reports every ``CheckoutUnavailable`` as its
+    timeout code, so one whose reason is not ``checkout_budget_exhausted``,
+    found as the cause or the handled exception behind the code, vetoes it.
+    """
+    from laya_checkout_view import CheckoutUnavailable
+    if time.monotonic() < deadline:
+        return False
+    timeout, link, seen = False, exc, 0
+    while link is not None and seen < 8:
+        if str(link) in _PAGE_TIMEOUT_REASONS:
+            timeout = True
+            break
+        link, seen = link.__cause__, seen + 1
+    link, seen = exc, 0
+    while timeout and link is not None and seen < 8:
+        if isinstance(link, CheckoutUnavailable) and link.reason != 'checkout_budget_exhausted':
+            return False
+        link, seen = link.__cause__ or link.__context__, seen + 1
+    return timeout
+
+
+def compare_recall_corpus(store, generation, *, project, executing_root, after, deadline,
+                          page_members=None):
     """Compare one page of the member-derived recall corpus, without a receipt.
 
-    A page is at most ``_PARITY_MEMBERS`` members of the recorded effective
+    A page is at most ``page_members`` (default ``_PARITY_MEMBERS``) members of the recorded effective
     inventory and at most ``_PARITY_PROMPTS`` prompts, compared inside one
     pinned v6 snapshot held for at most ``_STEP_SECONDS``. Pass the returned
     ``next`` cursor until it is None. The digest commits to the compared
@@ -2968,6 +3022,10 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
         raise IndexContractError('reader_snapshot_deadline')
     if not isinstance(generation, str) or not view_values.GEN_ID.fullmatch(generation):
         values.fail('generation_id_invalid')
+    if page_members is None:
+        page_members = _PARITY_MEMBERS
+    if type(page_members) is not int or not 1 <= page_members <= _PARITY_MEMBERS:
+        raise IndexContractError('migration_cursor_invalid')
     project, state, decision, node = _migration_state(project, store)
     marker = project_dir.runtime_file(project, fresh.MARKER)
     path = state / _INTENT
@@ -2990,44 +3048,53 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
             if (endpoint.endpoint_id != intent['endpoint_id']
                     or endpoint.record['install_id'] != intent['install_id']):
                 raise IndexContractError('migration_endpoint_changed')
-        # One checkout observation opens the page (capture_view) and one
-        # closes it below; the lookups in between do not re-observe it.
-        handle = store.capture_view(intent['worktree_id'], deadline=deadline)
-        pin = store.pin_view(handle, deadline=deadline, _observed=True)
+        page_deadline = [deadline]
         try:
-            if (pin.gen_id != generation or pin.view_id != receipt['view_id']
-                    or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
-                raise IndexContractError('migration_snapshot_changed')
-            step_deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
-            with readers.inspect_warm_snapshot(endpoint, deadline=step_deadline) as snapshot:
-                page = capture_wiki_bytes(snapshot, endpoint=endpoint, decision=decision, after=after,
-                    deadline=step_deadline, _expected_observation=intent['observation'],
-                    _page_limit=_PARITY_MEMBERS)
-                if _source_revision(snapshot) != intent['source_revision']:
-                    raise IndexContractError('migration_source_revision_unproved')
-                prompts, seen, committed = [], set(), []
-                for member in page['members']:
-                    own = recall_corpus_prompts(member['path'], member['body'], member['title'])
-                    committed.append([member['path'], member['hash'],
-                        [hashlib.sha256(prompt.encode('utf8')).hexdigest() for prompt in own]])
-                    for prompt in own:
-                        if prompt not in seen:
-                            seen.add(prompt)
-                            prompts.append(prompt)
-                if prompts:
-                    compare_combined_lexical_prompts(snapshot, endpoint=endpoint, decision=decision,
-                        store=store, pin=pin, prompts=tuple(prompts), deadline=step_deadline)
-            # A checkout that moved during the page discards its result; the
-            # cursor stays and a later step compares the same page again.
+            # One checkout observation opens the page (capture_view) and one
+            # closes it below; the lookups in between do not re-observe it.
+            handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+            pin = store.pin_view(handle, deadline=deadline, _observed=True)
             try:
-                store._observe(store._pinned(pin)['entry'], deadline=deadline,
-                               timeout_reason='reader_snapshot_deadline')
-            except values.BlobStoreError as exc:
-                if exc.reason == 'checkout_changed':
-                    raise IndexContractError('migration_checkout_changed') from exc
-                raise
-        finally:
-            store.release(pin)
+                if (pin.gen_id != generation or pin.view_id != receipt['view_id']
+                        or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
+                    raise IndexContractError('migration_snapshot_changed')
+                step_deadline = page_deadline[0] = min(deadline, time.monotonic() + _STEP_SECONDS)
+                with readers.inspect_warm_snapshot(endpoint, deadline=step_deadline) as snapshot:
+                    page = capture_wiki_bytes(snapshot, endpoint=endpoint, decision=decision, after=after,
+                        deadline=step_deadline, _expected_observation=intent['observation'],
+                        _page_limit=page_members)
+                    if _source_revision(snapshot) != intent['source_revision']:
+                        raise IndexContractError('migration_source_revision_unproved')
+                    prompts, seen, committed = [], set(), []
+                    for member in page['members']:
+                        own = recall_corpus_prompts(member['path'], member['body'], member['title'])
+                        committed.append([member['path'], member['hash'],
+                            [hashlib.sha256(prompt.encode('utf8')).hexdigest() for prompt in own]])
+                        for prompt in own:
+                            if prompt not in seen:
+                                seen.add(prompt)
+                                prompts.append(prompt)
+                    if prompts:
+                        compare_combined_lexical_prompts(snapshot, endpoint=endpoint, decision=decision,
+                            store=store, pin=pin, prompts=tuple(prompts), deadline=step_deadline)
+                # A checkout that moved during the page discards its result; the
+                # cursor stays and a later step compares the same page again.
+                try:
+                    store._observe(store._pinned(pin)['entry'], deadline=deadline,
+                                   timeout_reason='reader_snapshot_deadline')
+                except values.BlobStoreError as exc:
+                    if exc.reason == 'checkout_changed':
+                        raise IndexContractError('migration_checkout_changed') from exc
+                    raise
+            finally:
+                store.release(pin)
+        except Exception as exc:
+            # A page whose step deadline ran out is retried smaller
+            # (_shrink_parity_page), wherever the timeout surfaced; any other
+            # failure, including a proof failure, keeps its own code.
+            if _page_deadline_spent(exc, page_deadline[0]):
+                raise _ParityPageDeadline() from exc
+            raise
         trace['outcome'] = 'compared'
         digest = hashlib.sha256(('memvane-recall-corpus-page-v1:' + json.dumps(
             [intent['observation'], generation, committed], ensure_ascii=True,
@@ -3036,7 +3103,51 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
                 'prompts': len(prompts), 'digest': digest, 'next': page['next']}
 
 
+def _prove_head_unlocked(project, stack, deadline):
+    """Prove the selected v6 head before a step, outside both locks, for reuse.
+
+    One query_only snapshot of the base store on the caller's wall deadline
+    (no reader window, installer or operation lock; a WAL reader blocks no
+    writer), interrupted at that deadline; its read transaction ends with the
+    proof (``laya_journal_reader.proved_published``). The idle connection is
+    kept in ``stack`` until the step ends, so its close cannot checkpoint the
+    WAL between this proof and the step. Under ``published_proof_reuse`` the
+    locked step's snapshot reuses this proof while the store's file identity
+    and head row hold, so the O(generation) proof no longer spends the step
+    budget. Best effort: any failure leaves the step to prove and report on
+    its own.
+    """
+    from pathlib import Path
+    try:
+        # Not _migration_state: the step's own dispatch stays its first call.
+        decision = journal.journal.select_route(str(project), action='recall')
+        if decision.get('state') == 'candidate' and decision.get('projectRoot') == str(project):
+            stack.enter_context(journal.proved_published(
+                journal._state(Path(decision['journalPath']).parent),
+                Path(decision['dbPath']), decision, deadline=deadline))
+    except Exception:
+        pass
+
+
 def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None, prepare=True):
+    """Run at most one bounded step of the private shadow state machine per call.
+
+    The published v6 head is first proved outside both locks on the wall
+    ``deadline`` (``_prove_head_unlocked``); the step's own snapshots reuse
+    that proof within one ``published_proof_reuse`` block (the driver shares
+    one across a pass). See ``_advance_shadow_step``.
+    """
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline):
+        raise IndexContractError('reader_snapshot_deadline')
+    from contextlib import ExitStack
+    with journal.published_proof_reuse(), ExitStack() as stack:
+        _prove_head_unlocked(project, stack, deadline)
+        return _advance_shadow_step(store, project=project, executing_root=executing_root,
+                                    deadline=deadline, vector_spec=vector_spec, prepare=prepare)
+
+
+def _advance_shadow_step(store, *, project, executing_root, deadline, vector_spec=None, prepare=True):
     """Run at most one bounded step of the private shadow state machine per call.
 
     copy -> verification -> base/sidecar corpus -> prepare -> publish ->
@@ -3153,6 +3264,12 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
         if stage == 'parity_seal' and reason in _PARITY_SEAL_RETRY_REASONS:
             # The seal released the writer again; nothing was written.
             return {**step('retry', reread()), 'reason': reason}
+        if stage == 'parity' and isinstance(exc, _ParityPageDeadline):
+            shrunk = _shrink_parity_page(store, project, intent,
+                                         min(wall_deadline, time.monotonic() + _STEP_SECONDS), reason)
+            if shrunk is not None:
+                return step('parity_shrunk', shrunk)
+            raise
         if (not isinstance(exc, (IndexContractError, values.BlobStoreError))
                 or reason not in _SHADOW_RESTART_REASONS):
             raise
@@ -3175,15 +3292,24 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
 _PARITY_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'observation',
                   'source_revision', 'vectors', 'cursor', 'pages', 'members', 'prompts',
                   'digest', 'compared', 'seal', 'attempt', 'discarded_pages')
+# A parity page that missed its step deadline is retried at half the members
+# (4 -> 2 -> 1) from the same cursor; the record keeps the smaller size as the
+# optional ``page_members`` (absent means _PARITY_MEMBERS). A page of one
+# member that still misses its deadline is an error, as before.
+_PARITY_PAGE_KEY = 'page_members'
 # Seal outcomes that leave the intent unchanged and only ask for a later step.
-_PARITY_SEAL_RETRY_REASONS = frozenset(('sync_owner_busy', 'reader_snapshot_deadline'))
+_PARITY_SEAL_RETRY_REASONS = frozenset(('sync_owner_busy',)) | _STEP_DEADLINE_REASONS
 
 
 def _check_parity_record(record):
     """Shape only; _bound_parity decides whether a record still applies."""
     import laya_blob_values as values
     import laya_view_values as view_values
-    values.exact(record, _PARITY_RECORD)
+    if _PARITY_PAGE_KEY in record:
+        values.exact(record, _PARITY_RECORD + (_PARITY_PAGE_KEY,))
+        values.integer(record[_PARITY_PAGE_KEY], 1, _PARITY_MEMBERS - 1)
+    else:
+        values.exact(record, _PARITY_RECORD)
     values.identifier(record['migration_id'], values.UUID)
     values.identifier(record['candidate_incarnation'], values.UUID)
     if not isinstance(record['generation'], str) or not view_values.GEN_ID.fullmatch(record['generation']):
@@ -3239,7 +3365,9 @@ def _initial_parity(intent):
     previous, receipt = intent.get('parity'), intent['published']
     again = previous is not None and previous['migration_id'] == intent['migration_id']
     vectors = _complete_vectors(intent)
-    return {'migration_id': intent['migration_id'], 'generation': receipt['generation'],
+    # A restart of the same migration keeps a page size it already learned.
+    page = {_PARITY_PAGE_KEY: previous[_PARITY_PAGE_KEY]} if again and _PARITY_PAGE_KEY in previous else {}
+    return {**page, 'migration_id': intent['migration_id'], 'generation': receipt['generation'],
             'candidate_incarnation': receipt['candidate_incarnation'],
             'observation': intent['observation'], 'source_revision': intent['source_revision'],
             'vectors': vectors, 'cursor': None, 'pages': 0, 'members': 0, 'prompts': 0,
@@ -3282,7 +3410,8 @@ def _advance_parity(store, *, project, executing_root, deadline):
     if record['compared']:
         raise IndexContractError('migration_intent_changed')
     page = compare_recall_corpus(store, record['generation'], project=project,
-        executing_root=executing_root, after=record['cursor'], deadline=deadline)
+        executing_root=executing_root, after=record['cursor'], deadline=deadline,
+        page_members=record.get(_PARITY_PAGE_KEY, _PARITY_MEMBERS))
     updated = _stamp({**intent, 'parity': _fold_parity(record, page)})
     marker = project_dir.runtime_file(project, fresh.MARKER)
     with _migration_trace(state, 'parity', 'parity') as trace, _install_lock(state), ledger._operation_lock(marker):
@@ -3294,10 +3423,47 @@ def _advance_parity(store, *, project, executing_root, deadline):
         if current != intent:
             raise IndexContractError('migration_intent_changed')
         if time.monotonic() >= deadline:
-            raise IndexContractError('reader_snapshot_deadline')
+            # The page compared, but its step deadline ran out before the
+            # cursor write: the same spent page budget as inside the compare.
+            raise _ParityPageDeadline()
         ledger._write(path, updated, replace=True)
         trace['outcome'] = 'parity_page'
     return updated
+
+
+def _shrink_parity_page(store, project, expected, deadline, reason):
+    """Halve the parity page after a page missed its step deadline; None at one member.
+
+    The discarded page wrote nothing and the cursor stays, so the next step
+    compares the same members in smaller pages. Under both locks, on a fresh
+    ``deadline`` (the page's own one is spent).
+    """
+    import laya_fresh_wiki_origin as fresh
+    import laya_ledger_common as ledger
+    import project_dir
+    from laya_product_install import _install_lock
+    project, state, decision, node = _migration_state(project, store)
+    marker = project_dir.runtime_file(project, fresh.MARKER)
+    with _migration_trace(state, 'parity_shrink', 'parity') as trace, _install_lock(state), \
+            ledger._operation_lock(marker):
+        if _migration_state(project, store) != (project, state, decision, node):
+            raise IndexContractError('migration_route_changed')
+        path = state / _INTENT
+        current = _migration_intent(path, project=project, state=state, node=node, store=store)
+        trace['migration'] = current['migration_id']
+        if current != expected or current['migration_state'] != 'caught_up':
+            raise IndexContractError('migration_intent_changed')
+        record = _bound_parity(current) or _initial_parity(current)
+        size = record.get(_PARITY_PAGE_KEY, _PARITY_MEMBERS)
+        if record['compared'] or size <= 1:
+            return None
+        _migration_event(state, trace, 'attempt')
+        if time.monotonic() >= deadline:
+            raise IndexContractError('reader_snapshot_deadline')
+        updated = _stamp({**current, 'parity': {**record, _PARITY_PAGE_KEY: size // 2}})
+        ledger._write(path, updated, replace=True)
+        trace.update(outcome='parity_page_shrunk', reason=reason, fields={'page_members': size // 2})
+        return updated
 
 
 def _parity_seal_digest(intent, record):

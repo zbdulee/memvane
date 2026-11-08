@@ -670,6 +670,399 @@ class DriverChecks(unittest.TestCase):
                              ('waiting', 'switch_bridge_missing', False), status)
             self.assertEqual(len(offers), before)
 
+    def counted_head_proofs(self):
+        """Count full published-head proofs (the FTS recomputation of ``_published_snapshot``)."""
+        import laya_index_a
+        original = laya_index_a.LayaIndexA._generation_fts_matches
+        proofs = []
+
+        def counted(index, gen, *args, **kwargs):
+            if sys._getframe(1).f_code.co_name == '_published_snapshot':
+                proofs.append(gen)
+            return original(index, gen, *args, **kwargs)
+        return proofs, mock.patch.object(laya_index_a.LayaIndexA, '_generation_fts_matches', counted)
+
+    def test_one_pass_proves_the_published_head_once_while_its_files_hold(self):
+        # A pass of several locked steps proves the unchanged v6 head once;
+        # each step used to prove it again inside its own step budget.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        proofs, counting = self.counted_head_proofs()
+        calls, real = [], M.advance_shadow
+
+        def advance(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+        per_pass = []
+        with self.authority(seed, case), counting, mock.patch.object(M, 'advance_shadow', advance):
+            for _ in range(16):
+                proved, stepped = len(proofs), len(calls)
+                W.shadow_pass(case.project)
+                per_pass.append((len(calls) - stepped, len(proofs) - proved))
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        print('head_proofs_per_pass', per_pass, flush=True)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', per_pass)
+        self.assertTrue(any(steps > 1 for steps, _ in per_pass), per_pass)
+        for steps, proved in per_pass:
+            self.assertLessEqual(proved, 1, per_pass)
+            if steps:
+                self.assertEqual(proved, 1, per_pass)
+
+    def test_head_proof_reuse_follows_file_identity_and_scope(self):
+        seed, case = self.seeded()
+        import laya_journal_reader as reader
+        proofs, counting = self.counted_head_proofs()
+        with self.authority(seed, case), counting:
+            decision = reader.journal.select_route(str(case.project), action='recall')
+            state, db = Path(decision['journalPath']).parent, Path(decision['dbPath'])
+            with reader.published_proof_reuse():
+                first = reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                again = reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                self.assertEqual((again, len(proofs)), (first, 1))
+                # Any change of the main file's identity proves again.
+                info = os.stat(db)
+                os.utime(db, ns=(info.st_atime_ns, info.st_mtime_ns + 1000))
+                self.assertEqual(reader._published(state, db, decision, deadline=time.monotonic() + 30), first)
+                self.assertEqual(len(proofs), 2)
+                self.assertEqual(reader._published(state, db, decision, deadline=time.monotonic() + 30), first)
+                self.assertEqual(len(proofs), 2)
+                # A writer commit changes only the WAL: that proves again too.
+                wal = Path(str(db) + '-wal')
+                print('head_proof_wal_present', wal.exists(), flush=True)
+                if wal.exists():
+                    info = os.stat(wal)
+                    os.utime(wal, ns=(info.st_atime_ns, info.st_mtime_ns + 1000))
+                    reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                    self.assertEqual(len(proofs), 3)
+            # Nothing outlives the scope.
+            base = len(proofs)
+            self.assertEqual(reader._published(state, db, decision, deadline=time.monotonic() + 30), first)
+            self.assertEqual(len(proofs), base + 1)
+            with reader.published_proof_reuse():
+                reader._published(state, db, decision, deadline=time.monotonic() + 30)
+            self.assertEqual(len(proofs), base + 2)
+
+    def warm(self, reader, state, db, decision, deadline):
+        """The step pre-proof: ``proved_published``, or before r2 the closed ``_published``."""
+        from contextlib import nullcontext
+        proved = getattr(reader, 'proved_published', None)
+        if proved is not None:
+            return proved(state, db, decision, deadline=deadline)
+        return nullcontext(reader._published(state, db, decision, deadline=deadline))
+
+    def commit_base(self, db, *, close):
+        """One real commit to the v6 base store from another process: a head pin taken and released.
+
+        ``close=False`` exits without closing, so the commit stays in the WAL
+        without a checkpoint (a killed writer).
+        """
+        code = ("import os, sqlite3, sys\n"
+                "db = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=5)\n"
+                "db.execute('PRAGMA wal_autocheckpoint=0')\n"
+                "db.execute('BEGIN IMMEDIATE')\n"
+                "db.execute(\"INSERT INTO pins(token,scope,gen) SELECT 'fixture-pin',scope,gen FROM head\")\n"
+                "db.execute(\"DELETE FROM pins WHERE token='fixture-pin'\")\n"
+                "db.execute('COMMIT')\n"
+                "if sys.argv[2] == 'close':\n"
+                "    db.close()\n"
+                "else:\n"
+                "    os._exit(0)\n")
+        done = subprocess.run([sys.executable, '-I', '-c', code, str(db), 'close' if close else 'exit'],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def files_identity(self, db):
+        out = []
+        for path in (Path(db), Path(str(db) + '-wal')):
+            try:
+                info = os.stat(path)
+                out.append((info.st_ino, info.st_size, info.st_mtime_ns))
+            except FileNotFoundError:
+                out.append(None)
+        return out
+
+    def test_pre_proof_connection_ends_its_read_and_stops_at_its_deadline(self):
+        # Codex r1 #12: the pre-proof had no SQL progress handler (a fetchall
+        # ran past its deadline) and no bound on the read transaction.
+        seed, case = self.seeded()
+        import laya_journal_reader as reader
+        real, seen = reader._published_snapshot, []
+
+        def slow(db, decision, **kwargs):
+            seen.append(db)
+            try:
+                db.execute('WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n '
+                           'WHERE x<20000000) SELECT sum(x) FROM n').fetchall()
+                seen.append('completed')
+            except Exception as exc:
+                seen.append(str(exc))
+                raise
+            return real(db, decision, **kwargs)
+        with self.authority(seed, case):
+            decision = reader.journal.select_route(str(case.project), action='recall')
+            state, db = Path(decision['journalPath']).parent, Path(decision['dbPath'])
+            with mock.patch.object(reader, '_published_snapshot', side_effect=slow):
+                with self.assertRaisesRegex(Exception, 'reader_snapshot_deadline'):
+                    with self.warm(reader, state, db, decision, time.monotonic() + .2):
+                        pass
+            self.assertEqual(seen[1:], ['interrupted'], seen)
+            del seen[:]
+            with reader.published_proof_reuse(), \
+                    mock.patch.object(reader, '_published_snapshot', side_effect=real) as spied:
+                with self.warm(reader, state, db, decision, time.monotonic() + 30):
+                    connection = spied.call_args[0][0]
+                    # The proof's read transaction ended before the step runs.
+                    self.assertFalse(connection.in_transaction)
+
+    def test_pre_proof_reuse_survives_its_own_close_but_not_a_writer_commit(self):
+        # Codex r1 #4: macOS Python 3.9 opens the pre-proof mode=rw, and the
+        # last connection's close checkpoints the WAL, changing the identity
+        # the next step looks the proof up by. Real commits, real closes.
+        seed, case = self.seeded()
+        import laya_journal_reader as reader
+        proofs, counting = self.counted_head_proofs()
+        with self.authority(seed, case), counting:
+            decision = reader.journal.select_route(str(case.project), action='recall')
+            state, db = Path(decision['journalPath']).parent, Path(decision['dbPath'])
+            # A commit left in the WAL with no connection open (a killed writer).
+            self.commit_base(db, close=False)
+            observed = {'left': self.files_identity(db)}
+            with reader.published_proof_reuse():
+                with self.warm(reader, state, db, decision, time.monotonic() + 30):
+                    observed['warm'] = self.files_identity(db)
+                    # The step's own snapshot reuses the pre-proof.
+                    reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                    self.assertEqual(len(proofs), 1, observed)
+                    # A writer commit after the proof is proved again.
+                    self.commit_base(db, close=True)
+                    reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                    self.assertEqual(len(proofs), 2, observed)
+                    held = self.files_identity(db)
+                closed = self.files_identity(db)
+                observed['closed'] = closed
+                reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                # A close that changed the files is proved again, never reused.
+                self.assertEqual(len(proofs), 2 if closed == held else 3, observed)
+        print('pre_proof_wal', sys.version_info[:2], observed, flush=True)
+
+    def parity_limits(self, overflow, error=lambda: IndexContractError('reader_snapshot_deadline'),
+                      spend=True):
+        """Patch the parity page capture: a page above ``overflow`` members fails with ``error()``.
+
+        With ``spend`` the page's own step deadline has run out first (the
+        wait ends at that deadline, nothing is timed); without it the code
+        surfaces while the page still has budget.
+        """
+        M, limits, real = self.M, [], self.M.capture_wiki_bytes
+
+        def capture(*args, **kwargs):
+            limit = kwargs.get('_page_limit')
+            if limit is not None:
+                limits.append(limit)
+                if limit > overflow:
+                    if spend:
+                        while time.monotonic() < kwargs['deadline']:
+                            time.sleep(min(.05, max(0, kwargs['deadline'] - time.monotonic())))
+                    raise error()
+            return real(*args, **kwargs)
+        return limits, mock.patch.object(M, 'capture_wiki_bytes', capture)
+
+    def to_parity(self, seed, case):
+        """Drive passes until the next step is a recall parity page (nothing of it runs)."""
+        W, M = self.W, self.M
+        for _ in range(16):
+            with mock.patch.object(M, '_advance_parity', side_effect=RuntimeError('parity_due')) as due:
+                W.shadow_pass(case.project)
+            if due.called:
+                return
+        self.fail('parity stage not reached')
+
+    def test_parity_page_timeouts_shrink_only_when_the_page_budget_ran_out(self):
+        # Codex r1 #9: a spent page budget surfaces as several codes (the
+        # candidate pin/capture/search ``fts_deadline_exceeded``, a lookup
+        # turned ``migration_recall_probe_unproved``); each shrinks the page.
+        # A proof failure, or a timeout code before the page budget ran out,
+        # keeps its code and shrinks nothing.
+        import laya_blob_values as values
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+
+        def probe_from(cause):
+            try:
+                raise cause
+            except ValueError as exc:
+                try:
+                    raise IndexContractError('migration_recall_probe_unproved') from exc
+                except IndexContractError as outer:
+                    return outer
+        def binding_changed():
+            # The view store reports any CheckoutUnavailable as its timeout code.
+            from laya_checkout_view import CheckoutUnavailable
+            try:
+                raise CheckoutUnavailable('repository_binding_changed')
+            except CheckoutUnavailable:
+                try:
+                    values.fail('fts_deadline_exceeded')
+                except values.BlobStoreError as exc:
+                    return exc
+        cases = (
+            ('proof failure', lambda: IndexContractError('migration_recall_probe_unproved'), True, None),
+            ('budget left', lambda: values.BlobStoreError('fts_deadline_exceeded'), False, None),
+            ('checkout changed', binding_changed, True, None),
+            ('pin timeout', lambda: values.BlobStoreError('fts_deadline_exceeded'), True, 2),
+            ('probe timeout', lambda: probe_from(values.BlobStoreError('fts_deadline_exceeded')), True, 1),
+        )
+        observed = []
+        with self.authority(seed, case):
+            self.to_parity(seed, case)
+            for name, error, spend, size in cases:
+                before = (self.intent(case).get('parity') or {}).get('page_members', M._PARITY_MEMBERS)
+                limits, patched = self.parity_limits(0, error, spend)
+                with patched, mock.patch.object(W, 'SHADOW_STEPS_PER_PASS', 1):
+                    status = W.shadow_pass(case.project)
+                after = (self.intent(case).get('parity') or {}).get('page_members', M._PARITY_MEMBERS)
+                observed.append((name, status['state'], status['reason'], limits, before, after))
+        print('parity_timeout_cases', observed, flush=True)
+        for (name, state, reason, limits, before, after), (_, _, _, size) in zip(observed, cases):
+            self.assertEqual(limits, [before], observed)
+            if size is None:
+                self.assertEqual((state, after), ('error', before), observed)
+                self.assertNotEqual(reason, None, observed)
+            else:
+                self.assertEqual((state, after), ('progressed', size), observed)
+        self.assertEqual([o[2] for o in observed[:3]],
+                         ['migration_recall_probe_unproved', 'fts_deadline_exceeded', 'fts_deadline_exceeded'],
+                         observed)
+
+    def test_parity_page_that_compared_but_ran_out_before_its_cursor_write_retries_smaller(self):
+        # Codex r2: the compare succeeds, then the page's step deadline runs
+        # out in the locked recheck before the cursor write. That spent page
+        # budget shrinks the page like one inside the compare.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        real, sizes = M.compare_recall_corpus, []
+
+        def compared(*args, **kwargs):
+            page = real(*args, **kwargs)
+            size = kwargs.get('page_members') or M._PARITY_MEMBERS
+            sizes.append(size)
+            if size > 1:
+                while time.monotonic() < kwargs['deadline']:
+                    time.sleep(min(.05, max(0, kwargs['deadline'] - time.monotonic())))
+            return page
+        statuses = []
+        with self.authority(seed, case), mock.patch.object(M, 'compare_recall_corpus', compared):
+            for _ in range(16):
+                status = W.shadow_pass(case.project)
+                statuses.append((status['state'], status['reason']))
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        print('parity_after_compare_sizes', sizes, flush=True)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', statuses)
+        self.assertEqual(sizes[:3], [M._PARITY_MEMBERS, 2, 1], sizes)
+        self.assertNotIn('error', [state for state, _ in statuses], statuses)
+        parity = self.intent(case)['parity']
+        self.assertEqual((parity['page_members'], parity['pages']), (1, parity['members']))
+
+    def test_parity_seal_deadline_retry_reports_its_reason_and_rewakes_within_the_streak(self):
+        # Codex r1 #11: a step-deadline retry at the seal reached the driver
+        # as ``step_retry``, reset the error streak and offered no rewake.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        sealed = []
+        with self.authority(seed, case), self.queued() as (_queue, _clock, offers):
+            with mock.patch.object(M, '_seal_parity',
+                                   side_effect=IndexContractError('vector_deadline_exceeded')):
+                for _ in range(16):
+                    status = W.shadow_pass(case.project)
+                    if status['stages'][-1:] == ['retry']:
+                        sealed.append((status['state'], status['reason'], status['rewake']))
+                        if len(sealed) == W.SHADOW_REWAKE_ERRORS + 1:
+                            break
+            print('seal_deadline_retries', sealed, flush=True)
+            self.assertEqual(sealed, [('waiting', 'vector_deadline_exceeded', True)] * (W.SHADOW_REWAKE_ERRORS - 1)
+                             + [('waiting', 'vector_deadline_exceeded', False)] * 2)
+            record = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+            self.assertEqual(record['rewake_errors'], W.SHADOW_REWAKE_ERRORS + 1)
+            # The seal that succeeds ends the streak.
+            status = W.shadow_pass(case.project)
+            self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', status)
+            record = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+            self.assertEqual(record['rewake_errors'], 0)
+
+    def test_parity_page_that_misses_its_deadline_retries_smaller(self):
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        limits, patched = self.parity_limits(1)
+        statuses = []
+        with self.authority(seed, case), patched:
+            for _ in range(16):
+                status = W.shadow_pass(case.project)
+                statuses.append((status['state'], status['reason'], status['stages']))
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        print('parity_page_limits', limits, flush=True)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', statuses)
+        self.assertEqual(limits[:3], [M._PARITY_MEMBERS, 2, 1], limits)
+        self.assertEqual(set(limits[2:]), {1}, limits)
+        self.assertNotIn('error', [state for state, _, _ in statuses], statuses)
+        parity = self.intent(case)['parity']
+        self.assertEqual((parity['page_members'], parity['compared']), (1, True))
+        # Every page after the shrink advanced the cursor: one page per member.
+        self.assertEqual(parity['pages'], parity['members'])
+        self.assertEqual(len(limits) - 2, parity['pages'])
+
+    def test_parity_page_of_one_member_that_misses_its_deadline_stays_an_error(self):
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        limits, patched = self.parity_limits(0)
+        statuses = []
+        with self.authority(seed, case), patched:
+            for _ in range(16):
+                status = W.shadow_pass(case.project)
+                statuses.append((status['state'], status['reason']))
+                if status['state'] == 'error':
+                    break
+        self.assertEqual(statuses[-1], ('error', 'reader_snapshot_deadline'), statuses)
+        self.assertEqual(limits, [M._PARITY_MEMBERS, 2, 1], limits)
+        parity = self.intent(case)['parity']
+        self.assertEqual((parity['page_members'], parity['pages'], parity['cursor']), (1, 0, None))
+
+    def test_vector_and_checkout_deadlines_are_migration_reasons(self):
+        seed, case = self.seeded()
+        M = self.M
+        import laya_blob_values as values
+        for exc in (IndexContractError('vector_deadline_exceeded'),
+                    values.BlobStoreError('checkout_budget_exhausted')):
+            reason = str(exc)
+            self.assertIn(reason, M._MIGRATION_REASONS)
+            self.assertIn(reason, M._PARITY_SEAL_RETRY_REASONS)
+            before = len(self.events(case))
+            with self.assertRaises(ValueError):
+                with M._migration_trace(case.state, 'copy', 'copy'):
+                    raise exc
+            shadow = [e for e in self.events(case)[before:] if e['event'] == 'migration.shadow']
+            self.assertEqual([(e['outcome'], e['reason']) for e in shadow], [('error', reason)])
+
     def test_driver_failure_never_changes_the_sync_result(self):
         W = self.W
         for result in ({'state': 'indexed', 'generation': 'g'}, {'state': 'unchanged'}):
