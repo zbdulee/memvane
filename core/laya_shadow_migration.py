@@ -3186,16 +3186,24 @@ def _warm_candidate_unlocked(store, project, deadline):
     the store since. Best effort: any failure leaves the step to do both on
     its own. Returns ``(code, ms)``.
     """
+    from pathlib import Path
+    import laya_ledger_common as ledger
     started = time.monotonic()
     try:
-        project, state, _decision, node = _migration_state(project, store)
-        intent = _migration_intent(state / _INTENT, project=project, state=state, node=node, store=store)
-        if intent.get('published') is None:
+        # Not _migration_state: the step's own dispatch stays its first call.
+        # The intent only names the worktree and the expected head here; the
+        # step reads and validates it again under both locks.
+        decision = journal.journal.select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            return 'route_not_candidate', int((time.monotonic() - started) * 1000)
+        intent = ledger._read_json(Path(decision['journalPath']).parent / _INTENT)
+        published = intent.get('published') if isinstance(intent, dict) else None
+        if not isinstance(published, dict) or not isinstance(intent.get('worktree_id'), str):
             result = 'no_published_head'
         else:
             handle = store.capture_view(intent['worktree_id'], deadline=deadline)
             gen_id = store._preverify_view(handle, deadline=deadline)
-            result = 'ok' if gen_id == intent['published']['generation'] else 'head_moved'
+            result = 'ok' if gen_id == published.get('generation') else 'head_moved'
     except Exception as exc:
         value = str(exc)
         result = value if re.fullmatch(r'[a-z0-9_]{1,80}', value) else type(exc).__name__
