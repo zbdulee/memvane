@@ -434,6 +434,51 @@ class MigrationSnapshotChecks(unittest.TestCase):
                     self.assertFalse(host._verified_wiki_row(bad, decision, current_source=False))
                     self.assertIsNone(migration.legacy_card_evidence(bad, decision))
 
+    def test_sidecar_pages_prove_pinned_invariants_once_per_page(self):
+        # Every sidecar row of a corpus or wiki-bytes page re-proved the base
+        # header (all of sqlite_master hashed, plus gen_index) inside one
+        # pinned snapshot: 100 times per page on a large base.
+        class ManySidecarRows(seed_module.MoveSealChecks):
+            def before_conversion(self):
+                with sqlite3.connect(self.sidecar) as db:
+                    first, profile, scan = db.execute(
+                        'SELECT path,profile_id,scan_id FROM docs ORDER BY path LIMIT 1').fetchone()
+                    root = first.split('/', 1)[0]
+                    for number in range(120):
+                        path = root + '/many/card-%03d.md' % number
+                        body = '# Card %d\n\nSidecar only row %d.\n' % (number, number)
+                        digest = hashlib.sha256(body.encode()).hexdigest()
+                        cursor = db.execute('INSERT INTO docs(path,hash,title,body,profile_id,chunk_count,scan_id) '
+                                            'VALUES(?,?,?,?,?,?,?)',
+                                            (path, digest, 'Card', body, profile, 1, scan))
+                        db.execute('INSERT INTO docs_fts(rowid,path,title,body) VALUES(?,?,?,?)',
+                                   (cursor.lastrowid, path, 'Card', body))
+        seed = ManySidecarRows('runTest')
+        seed.setUp()
+        self.addCleanup(seed.doCleanups)
+        case, lease = seed.case, seed.lease
+        opens = importlib.import_module('laya_reader_open')
+        migration = importlib.import_module('laya_shadow_migration')
+        from laya_index_a import LayaIndexA
+        with seed.authority():
+            decision = seed.reader.journal.select_route(str(case.project), action='recall')
+            with lease.resolve_endpoint(case.project, action='recall', host_root=case.plugin) as endpoint:
+                with opens.inspect_warm_snapshot(endpoint, deadline=time.monotonic() + 10) as snapshot:
+                    counts = {}
+                    for name, capture in (('corpus', migration.capture_sidecar_fts_corpus),
+                                          ('bytes', migration.capture_wiki_bytes)):
+                        with mock.patch.object(LayaIndexA, '_check_header',
+                                               wraps=LayaIndexA._check_header) as header:
+                            page = capture(snapshot, endpoint=endpoint, decision=decision,
+                                           after=None, deadline=time.monotonic() + 30)
+                        sidecar = [row for row in page['members']
+                                   if name == 'corpus' or row.get('source') == 'sidecar']
+                        counts[name] = (len(sidecar), header.call_count)
+                    print('sidecar_page_header_checks', json.dumps(counts, sort_keys=True), flush=True)
+                    for name, (rows, checks) in counts.items():
+                        self.assertGreaterEqual(rows, 90, name)
+                        self.assertLessEqual(checks, 1, name)
+
     def test_selected_snapshot_imports_effective_wiki_metadata_once(self):
         seed = seed_module.MoveSealChecks('runTest')
         seed.setUp()

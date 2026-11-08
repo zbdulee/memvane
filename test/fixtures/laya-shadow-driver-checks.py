@@ -712,6 +712,45 @@ class DriverChecks(unittest.TestCase):
             if steps:
                 self.assertEqual(proved, 1, per_pass)
 
+    def test_shadow_events_name_the_preproof_and_whether_the_step_reused_it(self):
+        # The unlocked pre-proof swallowed every failure, so a step that
+        # spent its budget proving again looked the same as one whose page
+        # was simply slow.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        import laya_journal_reader as reader
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+
+        def shadow(before):
+            return [e for e in self.events(case)[before:] if e['event'] == 'migration.shadow'
+                    and 'preproof' in e]
+        with self.authority(seed, case):
+            before = len(self.events(case))
+            for _ in range(3):
+                W.shadow_pass(case.project)
+            stepped = shadow(before)
+            self.assertTrue(stepped, self.events(case)[before:])
+            self.assertTrue(all(e['preproof'] == 'ok' and type(e['preproof_ms']) is int
+                                for e in stepped), stepped)
+            self.assertIn(1, [e.get('proof_reused') for e in stepped], stepped)
+            before = len(self.events(case))
+
+            def refused(*_args, **_kwargs):
+                raise reader.journal.JournalEvidenceError('reader_store_changed')
+            with mock.patch.object(reader, 'proved_published', side_effect=refused):
+                W.shadow_pass(case.project)
+            failed = shadow(before)
+            self.assertTrue(failed, self.events(case)[before:])
+            self.assertTrue(all(e['preproof'] == 'reader_store_changed' for e in failed), failed)
+            # A step that had to prove the head again says so.
+            self.assertTrue(all(e.get('proof_reused') in (None, 0) for e in failed), failed)
+            self.assertIn(0, [e.get('proof_reused') for e in failed], failed)
+            text = json.dumps(failed)
+            self.assertNotIn(str(case.project), text)
+            self.assertNotIn(str(case.state), text)
+
     def test_head_proof_reuse_follows_file_identity_and_scope(self):
         seed, case = self.seeded()
         import laya_journal_reader as reader
