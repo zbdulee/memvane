@@ -670,6 +670,63 @@ class DriverChecks(unittest.TestCase):
                              ('waiting', 'switch_bridge_missing', False), status)
             self.assertEqual(len(offers), before)
 
+    def parity_limits(self, overflow):
+        """Patch the parity page capture: a page above ``overflow`` members hits the step deadline."""
+        M, limits, real = self.M, [], self.M.capture_wiki_bytes
+
+        def capture(*args, **kwargs):
+            limit = kwargs.get('_page_limit')
+            if limit is not None:
+                limits.append(limit)
+                if limit > overflow:
+                    raise IndexContractError('reader_snapshot_deadline')
+            return real(*args, **kwargs)
+        return limits, mock.patch.object(M, 'capture_wiki_bytes', capture)
+
+    def test_parity_page_that_misses_its_deadline_retries_smaller(self):
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        limits, patched = self.parity_limits(1)
+        statuses = []
+        with self.authority(seed, case), patched:
+            for _ in range(16):
+                status = W.shadow_pass(case.project)
+                statuses.append((status['state'], status['reason'], status['stages']))
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        print('parity_page_limits', limits, flush=True)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', statuses)
+        self.assertEqual(limits[:3], [M._PARITY_MEMBERS, 2, 1], limits)
+        self.assertEqual(set(limits[2:]), {1}, limits)
+        self.assertNotIn('error', [state for state, _, _ in statuses], statuses)
+        parity = self.intent(case)['parity']
+        self.assertEqual((parity['page_members'], parity['compared']), (1, True))
+        # Every page after the shrink advanced the cursor: one page per member.
+        self.assertEqual(parity['pages'], parity['members'])
+        self.assertEqual(len(limits) - 2, parity['pages'])
+
+    def test_parity_page_of_one_member_that_misses_its_deadline_stays_an_error(self):
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        limits, patched = self.parity_limits(0)
+        statuses = []
+        with self.authority(seed, case), patched:
+            for _ in range(16):
+                status = W.shadow_pass(case.project)
+                statuses.append((status['state'], status['reason']))
+                if status['state'] == 'error':
+                    break
+        self.assertEqual(statuses[-1], ('error', 'reader_snapshot_deadline'), statuses)
+        self.assertEqual(limits, [M._PARITY_MEMBERS, 2, 1], limits)
+        parity = self.intent(case)['parity']
+        self.assertEqual((parity['page_members'], parity['pages'], parity['cursor']), (1, 0, None))
+
     def test_vector_and_checkout_deadlines_are_migration_reasons(self):
         seed, case = self.seeded()
         M = self.M
