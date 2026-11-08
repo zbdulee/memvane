@@ -63,6 +63,10 @@ READ_SECONDS = 10           # whole request read, from accept (5.1MB over a loca
 QUERY_SECONDS = 15          # a query or status request, from accept to answer
 DOCUMENT_SECONDS = 320      # a document request, from accept to answer
 RECLAIM_SECONDS = 60        # an unbound, idle worker is stopped after this long
+# A bound installation's ownership proof takes the per-user sync owner lock, so
+# re-proving it every tick starves the sync pass that holds that lock. Keep it
+# well below the 15s an active upgrade waits for release after its fence.
+OWNER_RECHECK_SECONDS = 5
 # A successor waits this long for the lease, then gives up until a new request.
 SUCCESSOR_WAIT_SECONDS = 600
 # Every drain phase (in-flight requests and learning, a cold load to settle,
@@ -800,6 +804,8 @@ class Binding:
         self.listener = listener
         self.socket_inode = os.lstat(manifest['serviceSocketPath']).st_ino
         self.closed = False
+        # Next monotonic time the ownership proof is due; bind just proved it.
+        self.recheck_at = 0.0
         # Where this installation's events go (its install state root).
         self.events = None
 
@@ -1012,6 +1018,7 @@ class Service:
         self.cold_load = threading.Lock()
         self.connections = threading.BoundedSemaphore(MAX_CONNECTIONS)
         self.reclaim_seconds = RECLAIM_SECONDS
+        self.owner_recheck_seconds = OWNER_RECHECK_SECONDS
         self.attested = set()
         self.lease = None
         self.control = None
@@ -1409,13 +1416,27 @@ class Service:
         if binding is None:
             return
         worker = self.workers.get(_worker_key(binding.manifest))
+        dead = worker is None or not worker.alive()
+        now = time.monotonic()
+        if not dead and now < binding.recheck_at:
+            return
+        binding.recheck_at = now + self.owner_recheck_seconds
+        from resource_deferred import ResourceDeferred
         try:
             decision, proof, _mode = self.prove(project)
             from laya_embed_resident import _owner_identity
             owned = _owner_identity(decision, proof) == binding.identity
+        except ResourceDeferred:
+            # A busy sync owner lock (owner_busy) is contention, not lost
+            # ownership. Releasing here unlinked the socket under the sync
+            # pass that was about to probe it. A route fence or withdrawal
+            # fails before that lock as a contract/evidence error.
+            if not dead:
+                return
+            owned = False
         except Exception:
             owned = False
-        if not owned or worker is None or not worker.alive():
+        if not owned or dead:
             with self.lock:
                 self._release(project, reason='starting' if owned or worker is None
                               or worker.alive() else 'worker_exited')
@@ -1516,6 +1537,7 @@ class Service:
             listener.listen(LISTEN_BACKLOG)
             listener.settimeout(.2)
             binding = Binding(project, manifest, identity, mode, owner_fd, service_fd, listener)
+            binding.recheck_at = time.monotonic() + self.owner_recheck_seconds
             with suppress(Exception):
                 import event_log
                 binding.events = (event_log.state_root_for_decision(decision),

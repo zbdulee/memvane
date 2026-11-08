@@ -140,6 +140,8 @@ class Fixture(unittest.TestCase):
                               start_worker=self.start_worker,
                               admit=lambda: self.admit_value,
                               retire=retire or (lambda *_a: None), tick=.05)
+        # Every tick re-proves ownership here; the throttle has its own check.
+        service.owner_recheck_seconds = 0
         self.services.append(service)
         if start:
             self.assertTrue(service.acquire(wait=5))
@@ -401,6 +403,68 @@ class ServiceChecks(Fixture):
         self.assertEqual(resident.read_owner_state(manifest)['reason'], 'starting')
         self.routes[project] = self.routes.get(project) or self.project_route(project, manifest)
         self.wait(lambda: self.ready(manifest), message='not re-adopted after the upgrade')
+
+    def test_busy_sync_owner_keeps_the_binding_and_its_socket(self):
+        # The recheck proof takes the per-user sync owner lock without waiting.
+        # A sync pass holding it is contention, not lost ownership: releasing
+        # unlinked the socket that pass was about to probe, every time.
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        service = self.service()
+        self.wait(lambda: self.ready(manifest))
+        binding = service.bindings[project]
+        inode = os.lstat(manifest['serviceSocketPath']).st_ino
+        calls = []
+
+        def busy(_project):
+            calls.append(_project)
+            raise ResourceDeferred('owner_busy')
+        with patch.object(resident, '_owned_route', side_effect=busy):
+            service.prove = svc.default_prove
+            for _ in range(20):
+                service.tick()
+            self.assertGreaterEqual(len(calls), 20)
+            self.assertIs(service.bindings.get(project), binding)
+            self.assertFalse(binding.closed)
+            self.assertEqual(resident.read_owner_state(manifest)['reason'], 'ready')
+            self.assertEqual(os.lstat(manifest['serviceSocketPath']).st_ino, inode)
+            self.assertTrue(self.ready(manifest))
+        # Owner released: the same binding still answers the sync probe.
+        service.prove = self.prove
+        self.assertEqual(resident.ensure_running(project, manifest).__class__,
+                         resident.AttachedService)
+        # A real identity change still releases the binding.
+        decision, proof = self.routes[project]
+        self.routes[project] = ({**decision, 'dbIncarnation': 'other'}, proof)
+        self.wait(lambda: binding.closed, message='changed identity kept its binding')
+        self.assertIsNot(service.bindings.get(project), binding)
+
+    def test_ownership_proof_is_throttled_per_binding(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        service = self.service()
+        self.wait(lambda: self.ready(manifest))
+        binding = service.bindings[project]
+        calls = []
+        real = self.prove
+
+        def counted(project_):
+            calls.append(project_)
+            return real(project_)
+        service.owner_recheck_seconds = 3600
+        binding.recheck_at = time.monotonic() + 3600
+        service.prove = counted
+        for _ in range(20):
+            service.tick()
+        self.assertEqual(calls, [])
+        binding.recheck_at = 0.0
+        for _ in range(20):
+            service.tick()
+        self.assertEqual(calls, [project], 'one proof per interval')
+        self.assertIs(service.bindings.get(project), binding)
+        # A dead worker is noticed on the next tick, not after the interval.
+        next(iter(service.workers.values())).handle.process.kill()
+        self.wait(lambda: binding.closed, message='dead worker waited for the interval')
 
     def old_client(self, legacy):
         """One 0.40.3 client request, run by the 0.40.3 code itself (git history)."""

@@ -84,11 +84,10 @@ def _atomic_expected(path, old, new):
 
 
 def _sqlite_count(path, table):
+    """Count rows of a backup copy whose bytes the caller proved by sha256."""
     from laya_index_a import _query_only_uri
     with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
         db.execute('PRAGMA query_only=ON')
-        if db.execute('PRAGMA quick_check').fetchone() != ('ok',):
-            _fail('inactive_upgrade_store_integrity_failed')
         return db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
 
 
@@ -353,7 +352,6 @@ def _verify_backup(intent):
 def _verify_backup_full(intent):
     """Require the complete private snapshot before changing any metadata."""
     from laya_product_install import _read_private
-    from laya_index_a import _query_only_uri
     state = Path(intent['oldRecord']['identity']['stateRoot'])
     backup = Path(intent['backup'])
     if (backup.parent != state or not backup.name.startswith(BACKUP) or
@@ -385,11 +383,8 @@ def _verify_backup_full(intent):
                 info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077 or
                 _hash_private(path) != digest):
             _fail('inactive_upgrade_backup_changed')
-        # A backup of a WAL store keeps the WAL header without sidecars.
-        with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
-            db.execute('PRAGMA query_only=ON')
-            if db.execute('PRAGMA integrity_check').fetchone() != ('ok',):
-                _fail('inactive_upgrade_backup_changed')
+        # No page scan here: _backup hashed these bytes only after they passed
+        # integrity_check, so the matching sha256 already proves them.
     if ('candidateDb' not in receipt['dbSha256'] or
             'journal' not in receipt['dbSha256'] or
             _sqlite_count(backup / 'candidateDb.sqlite', 'vector_chunk_sets') !=

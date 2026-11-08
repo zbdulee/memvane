@@ -233,6 +233,42 @@ class UpgradeCase(unittest.TestCase):
             with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
                 upgrade._verify_backup(intent)
 
+    def test_backup_verify_proves_bytes_by_sha256_without_page_scans(self):
+        # _backup runs integrity_check on each copy before hashing it, so the
+        # manifest sha256 already proves the verified bytes; verification must
+        # not rescan every page (a 12.5 GB candidate DB exceeded the deadline).
+        for key in ('candidateDb', 'queueDb', 'catalogDb', 'bindingStore',
+                    'journalPath'):
+            path = Path(self.old[key])
+            with sqlite3.connect(path) as db:
+                db.execute('CREATE TABLE vector_chunk_sets(id INTEGER PRIMARY KEY)')
+                if key == 'candidateDb':
+                    db.executemany('INSERT INTO vector_chunk_sets VALUES(?)',
+                                   ((n,) for n in range(1574)))
+            path.chmod(0o600)
+        saved = upgrade._backup(self.old, self.original, self.old_route,
+                                self.old_att, self.counts)
+        intent = {**self.intent, 'backup': str(saved)}
+        statements = []
+        real_connect = sqlite3.connect
+
+        def traced(*args, **kwargs):
+            db = real_connect(*args, **kwargs)
+            db.set_trace_callback(statements.append)
+            return db
+        with mock.patch.object(upgrade.sqlite3, 'connect', traced):
+            upgrade._verify_backup_full(intent)
+        scans = [s for s in statements if 'integrity_check' in s or 'quick_check' in s]
+        self.assertEqual(scans, [])
+        self.assertEqual(sum('FROM vector_chunk_sets' in s for s in statements), 1,
+                         statements)
+        candidate = saved / 'candidateDb.sqlite'
+        data = bytearray(candidate.read_bytes())
+        data[-1] ^= 1
+        candidate.write_bytes(bytes(data))
+        with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+            upgrade._verify_backup_full(intent)
+
     def test_wal_stores_closed_without_sidecars_count_back_up_and_verify(self):
         # A stock SQLite build's last close leaves WAL stores with no -wal or
         # -shm, and every SQLite backup of a WAL store carries the WAL header

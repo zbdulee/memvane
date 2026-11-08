@@ -1452,6 +1452,21 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertIsNone(error);self.assertEqual(result,{'state':'deferred','reason':'owner_busy'})
             self.assertEqual(calls,[]);self.assertEqual(starts,[])
 
+    def test_resident_ownership_proof_reads_a_busy_sync_owner_as_deferral(self):
+        """The resident service rechecks a binding through this proof: a held
+        sync owner lock is ResourceDeferred('owner_busy'), not lost ownership."""
+        import laya_resident_service as resident_service
+        from resource_deferred import ResourceDeferred
+        with self.fixture.F.warm(),self.seed.authority():
+            with self.sync.sync_owner(self.queue) as owner:
+                self.assertIsNotNone(owner)
+                with self.assertRaises(ResourceDeferred) as caught:
+                    resident_service.default_prove(str(self.case.project))
+                self.assertEqual(str(caught.exception),'owner_busy')
+            decision,proof,mode=resident_service.default_prove(str(self.case.project))
+            self.assertEqual((decision['projectRoot'],mode),(str(self.case.project),'selected'))
+            self.assertTrue(proof['productRouteAllowed'])
+
     def test_missing_prepared_manifest_defers_without_sqlite_or_namespace_repair(self):
         with self.fixture.F.warm(),self.seed.authority():
             parent=self.fixture.F.fixture.parent
