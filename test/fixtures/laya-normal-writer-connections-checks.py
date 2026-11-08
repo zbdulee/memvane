@@ -583,4 +583,44 @@ class NormalWriterConnectionChecks(unittest.TestCase):
             finally:
                 if queue is not None:queue.close()
 
+    def test_outside_checkpoint_between_ro_proof_and_rw_open_reproves_once(self):
+        # A connection outside the issued windows (recall's base reader) may
+        # checkpoint after the RO proof: main/WAL stat changes, content does not.
+        from laya_index_a import LayaIndexA
+        with self.F.warm(), self.seed.authority(), ExitStack() as owners, \
+                closing(sqlite3.connect(self.case.db, isolation_level=None)) as outside:
+            writer, _context = self.admission(owners)
+            component = self.component(writer, 'base')
+            outside.execute('PRAGMA wal_autocheckpoint=0')
+            # Same-value header write: a WAL frame, no content or schema change.
+            version = outside.execute('PRAGMA user_version').fetchone()[0]
+            outside.execute(f'PRAGMA user_version={int(version)}')
+            self.assertGreater(Path(str(self.case.db)+'-wal').stat().st_size, 0)
+            connect = self.W._connect_owned; checkpoints = []; identities = []
+            def checkpointing(comp, mode):
+                if mode == 'rw' and not checkpoints:
+                    result = outside.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                    checkpoints.append((result[0], Path(str(self.case.db)+'-wal').stat().st_size))
+                return connect(comp, mode)
+            validate = self.N._validate_identity
+            def counted(*args, **kwargs):
+                identities.append(args[1]); return validate(*args, **kwargs)
+            calls = []; index = None; error = None
+            try:
+                with self.fixture.fixture.trace(calls), \
+                        mock.patch.object(self.W, '_connect_owned', side_effect=checkpointing), \
+                        mock.patch.object(self.N, '_validate_identity', side_effect=counted):
+                    try: index = LayaIndexA(self.case.db, coordination=component)
+                    except (ValueError, RuntimeError, sqlite3.Error) as exc: error = str(exc)
+                emit('normal-outside-checkpoint-before-rw', checkpoints=checkpoints,
+                     connects=[c['uri'].rsplit('?', 1)[-1] for c in calls if c['managed']],
+                     identities=identities, error=error, returned=index is not None)
+                self.assertEqual(checkpoints, [(0, 0)])
+                self.assertIsNone(error); self.assertIsNotNone(index)
+                managed = [c['uri'] for c in calls if c['managed']]
+                self.assertEqual([uri.endswith('?mode=rw') for uri in managed], [False, True, False, True])
+                self.assertEqual(identities.count('base'), 4)
+            finally:
+                if index is not None: index.close()
+
 if __name__=='__main__': unittest.main()

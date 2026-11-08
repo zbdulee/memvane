@@ -1155,24 +1155,39 @@ def open_owned(component, *, path, validate, initialize, deadline, preopen=None)
         R._need(current_path == component.path and current_node == node
                 and tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
                 'reader_component_changed')
-        normal_image = (normal._connection_image(installer, component.role, component.path)
-                        if type(installer) is normal.NormalWriter else None)
-        check = _connect_owned(component, 'ro')
-        try:
-            if type(installer) is normal.NormalWriter:
-                normal._validate_identity(installer, component.role, check.db)
-            validate(check.db)
-        finally:
-            check.close_locked()
-        if normal_image is not None:
-            R._need(normal._connection_image(installer, component.role, component.path) == normal_image,
-                    'normal_writer_image_changed')
         state = Path(_endpoint.record['state'])
-        opening_auxiliaries = _auxiliary_nodes(component.path, state)
-        owner = _connect_owned(component, 'rw')
+        # A connection outside these windows (a recall reader) may checkpoint
+        # on close between the RO proof and the RW connect: main/WAL stat
+        # moves, content need not. Repeat the whole RO proof once on the new
+        # image; a second change still refuses.
+        for attempt in (0, 1):
+            normal_image = (normal._connection_image(installer, component.role, component.path)
+                            if type(installer) is normal.NormalWriter else None)
+            check = _connect_owned(component, 'ro')
+            try:
+                if type(installer) is normal.NormalWriter:
+                    normal._validate_identity(installer, component.role, check.db)
+                validate(check.db)
+            finally:
+                check.close_locked()
+            if normal_image is not None:
+                R._need(normal._connection_image(installer, component.role, component.path) == normal_image,
+                        'normal_writer_image_changed')
+            opening_auxiliaries = _auxiliary_nodes(component.path, state)
+            owner = _connect_owned(component, 'rw')
+            try:
+                R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
+                        'reader_component_changed')
+                if (normal_image is None or attempt or normal._connection_image(
+                        installer, component.role, component.path) == normal_image):
+                    break
+            except BaseException:
+                owner.close_locked()
+                raise
+            owner.close_locked()
+            if time.monotonic() >= deadline:
+                raise ReaderWindowBusy('reader_open_deadline')
         try:
-            R._need(tuple(R._file(component.path, Path(_endpoint.record['state']))) == node,
-                    'reader_component_changed')
             if normal_image is not None:
                 R._need(normal._connection_image(installer, component.role, component.path) == normal_image,
                         'normal_writer_image_changed')
