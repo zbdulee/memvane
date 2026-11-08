@@ -21,7 +21,7 @@ test('H8 resident on another host copy of one commit proves the v5 install selec
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.status === null ? JSON.stringify({ signal: result.signal })
       : result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 12 tests\b/);
+    assert.match(result.stderr, /Ran 15 tests\b/);
     assert.match(result.stderr, /\nOK\n/);
   } finally {
     removeTemp(home);

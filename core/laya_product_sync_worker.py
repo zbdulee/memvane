@@ -514,35 +514,75 @@ def service_worker_attestation(decision, expected):
     ``verify_worker_attestation``. Returns the attested provider manifest.
 
     A selection that moved is a deferral (``ResourceDeferred``), never bad
-    evidence: a sync's first write bumps the journal epoch between the
-    service's proof and this attestation, and the next attempt proves the
-    new selection. Only the epoch may differ from ``expected`` for the
-    attestation to go on with the fresh proof; the two proofs around the
-    hashing must be identical.
+    evidence: a sync's first write bumps the journal epoch, and a bundle
+    upgrade moves the route and journal to another plugin root, between the
+    service's proof and this attestation or during the hashing. Only the
+    epoch may differ from ``expected`` for the attestation to go on with the
+    fresh proof; the two proofs around the hashing must be identical. A
+    failure while the selection still is the proved one stays an error
+    (``_selection_moved``).
     """
     import laya_install_journal as journal
     from laya_worker_journal import worker_journal_access
+
+    def guarded(call, *args):
+        try:
+            return call(*args)
+        except ResourceDeferred:
+            raise
+        except Exception as exc:
+            if _selection_moved(decision, expected):
+                raise ResourceDeferred('worker_selection_changed') from exc
+            raise
     with journal.read_only_journals():
         version = journal.journal_version(decision['journalPath'])
     if version != 5:
         with journal.read_only_journals(), journal.legacy_identity_reads():
-            return _selection_moves_defer(verify_worker_attestation, decision)
+            return guarded(_selection_moves_defer, verify_worker_attestation, decision)
     project, plan_root = Path(decision['projectRoot']), Path(decision['pluginRoot'])
 
     def reprove():
         with worker_journal_access(project) as access, journal.read_only_journals():
             return _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
-    before = reprove()
+    before = guarded(reprove)
     if _without_epoch(before) != _without_epoch(expected):
         raise ResourceDeferred('worker_selection_changed')
-    manifest = _selection_moves_defer(journal._worker_attestation_manifest, before)
-    if reprove() != before:
+    manifest = guarded(_selection_moves_defer, journal._worker_attestation_manifest, before)
+    if guarded(reprove) != before:
         raise ResourceDeferred('worker_selection_changed')
     return manifest
 
 
-def _without_epoch(proof):
-    return {key: value for key, value in proof.items() if key != 'selectionEpoch'}
+# Route fields that name one selected installation and its bundle.
+_SELECTION_KEYS = ('state', 'projectRoot', 'pluginRoot', 'installId', 'generation',
+                   'journalPath', 'dbPath', 'queuePath', 'dbIncarnation', 'scopeId',
+                   'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile')
+
+
+def _selection_moved(decision, expected):
+    """Whether the route or journal no longer selects what ``expected`` proved.
+
+    Read-only: the route classification and the bundle journal row. A route
+    that is now another state (an upgrade fence, a restore), names another
+    plugin root or store, a journal whose epoch, state or selected bundle
+    moved, or either of them unreadable right now, is a moved selection.
+    """
+    import laya_install_journal as journal
+    try:
+        with journal.read_only_journals():
+            current = select_route(str(decision['projectRoot']), action='update')
+            if any(current.get(key) != decision.get(key) for key in _SELECTION_KEYS):
+                return True
+            info = journal.inspect_journal(decision['journalPath'])
+    except Exception:
+        return True
+    selected = info.get('selected') if isinstance(info.get('selected'), dict) else {}
+    return (info.get('epoch') != expected.get('selectionEpoch')
+            or info.get('state') not in ('active', 'restored_old')
+            or info.get('pending') is not None
+            or any(selected.get(key) != decision.get(key) for key in
+                   ('pluginRoot', 'installId', 'bundleManifestSha256',
+                    'ownershipManifestSha256', 'vectorProfile')))
 
 
 def _selection_moves_defer(call, argument):
@@ -554,6 +594,10 @@ def _selection_moves_defer(call, argument):
         if str(exc) == 'worker_selection_changed':
             raise ResourceDeferred('worker_selection_changed') from exc
         raise
+
+
+def _without_epoch(proof):
+    return {key: value for key, value in proof.items() if key != 'selectionEpoch'}
 
 
 def service_read_only_proof(project):

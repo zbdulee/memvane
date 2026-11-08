@@ -62,10 +62,13 @@ development execution guard is separate; see
   before and after hashing the runtime files, each time under the queue
   owner and the v5 lifetime and physical windows of the journal-bound root
   (the hashing holds neither); a busy owner or window defers the start
-  without marking the attestation invalid. A selection that moved (a sync's
-  first write bumps the journal epoch) is not bad evidence either: an epoch
-  that moved before the attestation goes on with the fresh proof, and one
-  that moves during the hashing defers the start for a fresh attempt. The
+  without marking the attestation invalid. A selection that moved is not
+  bad evidence either: an epoch that moved before the attestation (a sync's
+  first write) goes on with the fresh proof; a re-proof that fails or differs
+  while the route or journal no longer selects what the service proved (a
+  bundle upgrade to another plugin root, its fence, another epoch) defers the
+  start for a fresh attempt. A failure on an unmoved selection stays an
+  attestation failure. The
   read-only proof of a drifted installation takes the same queue owner and
   v5 windows of the journal-bound root. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a

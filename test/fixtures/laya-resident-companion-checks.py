@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from contextlib import ExitStack, closing, contextmanager
 import fcntl
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -323,6 +324,114 @@ class CompanionResidentChecks(unittest.TestCase):
         self.assertTrue(all(identity_calls), identity_calls)
 
 
+    @contextmanager
+    def upgrade_authority(self, new):
+        """A real active bundle upgrade of the install from copy X to copy B.
+
+        Same synthetic authority as the schema3 lifecycle suite's
+        ``upgrade_authority``: bundle inspection, provider review, adoption
+        and attestation record are synthetic; intent, fence, route, ledger
+        and journal switch are the real ``laya_active_upgrade`` writes.
+        """
+        case, reader = self.case, self.seed.reader
+        upgrade = importlib.import_module('laya_active_upgrade')
+        target = {**case.proof, 'pluginRoot': str(new), 'sourceCommit': 'a' * 40,
+                  'bundleManifestSha256': 'b' * 64, 'ownershipManifestSha256': 'f' * 64}
+        old_att = json.loads((case.state / J.PRODUCTION_ATTESTATION).read_bytes())
+        new_att = {**old_att, 'sourceCommit': target['sourceCommit'],
+                   'bundleManifestSha256': target['bundleManifestSha256'],
+                   'ownershipManifestSha256': target['ownershipManifestSha256'],
+                   'providerManifest': {**old_att['providerManifest'], 'providerPath': str(new / 'p.py')}}
+
+        def lookup(root):
+            return case.proof if str(root) == str(case.plugin) else target
+
+        def identify(att):
+            return [[att['providerManifest']['providerPath'], 1, 2, 3, 4, 5]]
+        review = {'proposalSha256': '9' * 64, 'reviewedProvider': {'vectorProfile': target['vectorProfile']}}
+        with ExitStack() as stack:
+            for patch in (self.seed.authority(),
+                          mock.patch.object(upgrade, 'review_local_provider', return_value=review),
+                          mock.patch.object(upgrade, 'reattest', return_value={'vectorProfile': target['vectorProfile']}),
+                          mock.patch.object(upgrade, 'adopt_host_loaded_plugin', return_value=target),
+                          mock.patch.object(upgrade, 'inspect_full_plugin_candidate', side_effect=lookup),
+                          mock.patch.object(upgrade, 'attestation_record', return_value=new_att),
+                          mock.patch.object(upgrade, 'validate_production_provider_attestation'),
+                          mock.patch.object(upgrade, '_provider_file_identity', side_effect=identify),
+                          mock.patch.object(upgrade, '_wait_for_sockets'),
+                          mock.patch.object(reader.journal, 'inspect_full_plugin_candidate', side_effect=lookup),
+                          mock.patch.object(reader.journal, '_executing_from_candidate'),
+                          mock.patch.object(reader.journal, '_provider_file_identity', side_effect=identify),
+                          mock.patch.object(reader.journal, '_inspect_identity',
+                                            side_effect=lambda identity: lookup(identity['pluginRoot'])),
+                          mock.patch.object(reader.journal, '_bind_attestation', side_effect=lambda path, identity, proof: (
+                              hashlib.sha256(J._canon(new_att if proof == target else old_att).encode()).hexdigest(),
+                              identify(new_att if proof == target else old_att)))):
+                stack.enter_context(patch)
+
+            def switch():
+                intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
+                                          target['sourceCommit'], review['proposalSha256'],
+                                          '/synthetic/model', 3)
+                self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
+            yield switch
+
+    @contextmanager
+    def running_from(self, root):
+        """This process executes ``root``, an equal sealed copy of the selected bundle."""
+        root = Path(root)
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(J, '_verified_executing_root',
+                                                  side_effect=lambda _selected, _owner: str(root)))
+            stack.enter_context(mock.patch.object(J, '_executing_root', return_value=root))
+            stack.enter_context(mock.patch.object(self.W, '_writer_executing_root', return_value=root))
+            yield
+
+    def upgrade_moves_selection(self, when):
+        """X -> B upgrade ``before`` the attestation or ``after`` its hash; then B attests."""
+        from resource_deferred import ResourceDeferred
+        new = (self.case.home / 'claude-cache-next').resolve()
+        new.mkdir(mode=0o700, exist_ok=True)
+        real_manifest = J._worker_attestation_manifest
+        with self.upgrade_authority(new) as switch:
+            with self.running_from(self.case.plugin):
+                decision, proof, mode = self.S.default_prove(str(self.case.project))
+                self.assertEqual((mode, decision['pluginRoot']), ('selected', str(self.case.plugin)))
+                if when == 'before':
+                    switch()
+                    hashing = real_manifest
+                else:
+                    def hashing(selected):
+                        result = real_manifest(selected)
+                        switch()
+                        return result
+                with self.stubbed_record(), \
+                        mock.patch.object(J, '_worker_attestation_manifest', side_effect=hashing):
+                    with self.assertRaisesRegex(ResourceDeferred, 'worker_selection_changed'):
+                        self.S.default_attest(decision, proof, mode)
+            # The next attempt (the host's new copy) proves and attests B.
+            with self.running_from(new):
+                decision, proof, mode = self.S.default_prove(str(self.case.project))
+                self.assertEqual((mode, decision['pluginRoot']), ('selected', str(new)))
+                with self.stubbed_record():
+                    self.assertIsNone(self.S.default_attest(decision, proof, mode))
+            # A failure on a selection that did not move stays an error.
+            with self.running_from(new):
+                decision, proof, mode = self.S.default_prove(str(self.case.project))
+
+                def broken(_selected):
+                    raise J.JournalEvidenceError('worker_attestation_changed')
+                with mock.patch.object(J, '_worker_attestation_manifest', side_effect=broken):
+                    with self.assertRaisesRegex(J.JournalEvidenceError, 'worker_attestation_changed'):
+                        self.S.default_attest(decision, proof, mode)
+
+    def test_11_bundle_upgrade_before_attestation_defers(self):
+        self.upgrade_moves_selection('before')
+
+    def test_12_bundle_upgrade_during_the_hash_defers(self):
+        self.upgrade_moves_selection('after')
+
+
 class SplitInstallsRecoveryChecks(unittest.TestCase):
     """Installs split across both host copies; the service runs from one of them.
 
@@ -502,6 +611,93 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
                             for state in states.values()), states)
         self.assertEqual(len(self.loads), 1)
         self.assertEqual(getattr(service, 'unproved', {}), {})
+
+    def test_bundle_upgrade_during_a_cold_start_binds_the_new_selection(self):
+        # A's cold start proved copy X; before its attestation the bundle
+        # upgrade moves A to copy Y (the service's own copy, same provider).
+        # The start is retried on the new selection: A binds from Y with no
+        # terminal record.
+        upgrade = importlib.import_module('laya_active_upgrade')
+        executing, case = self.b.case.plugin, self.a.case
+        manifest = self.manifest(self.a)
+        Path(manifest['serviceSocketPath']).parent.mkdir(mode=0o700, exist_ok=True)
+        target = self.b.case.proof  # copy Y's own sealed proof (same commit and provider)
+        old_att = json.loads((case.state / J.PRODUCTION_ATTESTATION).read_bytes())
+        new_att = {**old_att, 'ownershipManifestSha256': target['ownershipManifestSha256'],
+                   'providerManifest': {**old_att['providerManifest'],
+                                        'providerPath': str(executing / 'p.py')}}
+
+        def identify(att):
+            return [[att['providerManifest']['providerPath'], 1, 2, 3, 4, 5]]
+        review = {'proposalSha256': '9' * 64, 'reviewedProvider': {'vectorProfile': target['vectorProfile']}}
+        switched, results = [], []
+
+        def attest(decision, proof, mode):
+            if not switched:
+                try:
+                    intent = upgrade._prepare(case.project, case.state, case.journal, case.home,
+                                              executing, target['sourceCommit'],
+                                              review['proposalSha256'], '/synthetic/model', 3)
+                    switched.append(upgrade._switch(intent)['status'])
+                except Exception as exc:
+                    import traceback
+                    switched.append('upgrade_failed:' + type(exc).__name__ + ':' + str(exc) + ':'
+                                    + traceback.format_exc()[-1500:])
+                    raise
+            try:
+                return self.S.default_attest(decision, proof, mode)
+            except Exception as exc:
+                results.append((decision['pluginRoot'], type(exc).__name__, str(exc)))
+                raise
+        with self.authority(executing), ExitStack() as stack:
+            # The upgrade's synthetic authority (provider review, adoption,
+            # attestation record), as in the schema3 lifecycle suite.
+            proofs = {str(self.a.case.plugin): self.a.case.proof, str(executing): target}
+            for patch in (
+                    mock.patch.object(upgrade, 'review_local_provider', return_value=review),
+                    mock.patch.object(upgrade, 'reattest', return_value={'vectorProfile': target['vectorProfile']}),
+                    mock.patch.object(upgrade, 'adopt_host_loaded_plugin', return_value=target),
+                    mock.patch.object(upgrade, 'inspect_full_plugin_candidate',
+                                      side_effect=lambda root: proofs[str(root)]),
+                    mock.patch.object(upgrade, 'attestation_record', return_value=new_att),
+                    mock.patch.object(upgrade, 'validate_production_provider_attestation'),
+                    mock.patch.object(upgrade, '_provider_file_identity', side_effect=identify),
+                    mock.patch.object(upgrade, '_wait_for_sockets'),
+                    mock.patch.object(upgrade, '_executing_from_candidate', create=True),
+                    mock.patch.object(J, '_executing_from_candidate'),
+                    mock.patch.object(J, '_inspect_identity',
+                                      side_effect=lambda identity: proofs[str(identity['pluginRoot'])]),
+                    mock.patch.object(J, '_bind_attestation', side_effect=lambda path, identity, proof: (
+                        hashlib.sha256(J._canon(new_att if proof == target else old_att).encode()).hexdigest(),
+                        identify(new_att if proof == target else old_att)))):
+                stack.enter_context(patch)
+            for module in (self.bundle,):
+                stack.enter_context(mock.patch.object(module, 'inspect_full_plugin_candidate',
+                                                      side_effect=lambda root: proofs[str(root)]))
+            service = self.S.Service(self.root, bundle={'version': '1.0.0', 'digest': 'a'},
+                                     start_worker=self.start_worker, admit=lambda: True,
+                                     retire=lambda *_a: None, tick=.05, attest=attest)
+            self.services.append(service)
+            self.assertTrue(service.acquire(wait=5))
+            service.start()
+            self.S.register(str(case.project), root=self.root)
+            deadline = time.monotonic() + 40
+            while not self.ready(manifest):
+                self.assertLess(time.monotonic(), deadline,
+                                {'switched': switched, 'results': results,
+                                 'unproved': dict(service.unproved),
+                                 'state': self.E.read_owner_state(manifest)})
+                time.sleep(.05)
+            state = self.E.read_owner_state(manifest)
+            selected = J.inspect_journal(case.journal)['selected']['pluginRoot']
+            binding = service.bindings[str(case.project)]
+        self.assertEqual(switched, ['active_upgrade_complete'])
+        self.assertEqual(selected, str(executing))
+        self.assertEqual(results[:1], [(str(self.a.case.plugin), 'ResourceDeferred',
+                                        'worker_selection_changed')])
+        self.assertEqual((state['reason'], state['terminal']), ('ready', False))
+        self.assertEqual(binding.mode, 'selected')
+        self.assertEqual(binding.identity[1], str(executing))
 
     def test_service_on_one_copy_binds_installs_of_both_copies(self):
         executing = self.b.case.plugin
