@@ -4354,9 +4354,35 @@ def _legacy_vector_set(base, *, scope, generation, paths, blob, seal, deadline):
     return title, result
 
 
+# Step time a vectors page leaves for its commit, checkout check and intent write.
+_VECTOR_PAGE_RESERVE = 0.5
+
+
+def _out_of_budget(stop_at):
+    """Whether a vectors page should stop before its next member."""
+    return stop_at is not None and time.monotonic() >= stop_at
+
+
+def _deadline_reached(exc, deadline):
+    """A member that ran out of the step budget, not a member that failed."""
+    if str(exc) == 'reader_snapshot_deadline':
+        return True
+    return (isinstance(exc, sqlite3.OperationalError) and str(exc) == 'interrupted'
+            and time.monotonic() >= deadline)
+
+
 def _classify_vectors(store, base, *, scope, generation, members, names, seal, profile, spec,
-                      deadline, write):
-    """Classify one page of candidate members; copy exact-input sets when ``write``.
+                      deadline, write, stop_at=None):
+    """Classify a page of candidate members; copy exact-input sets when ``write``.
+
+    The page runs in one candidate-store session (``BlobStore.vector_page``):
+    the store header, blob admissions, recipe, profile and each member's
+    inputs are proved once. Each member is its own savepoint. With
+    ``stop_at`` the page stops before a member once that time has passed,
+    and a member that runs out of the step deadline is rolled back alone;
+    the returned rows are then a prefix of ``members`` (at least one row,
+    else ``reader_snapshot_deadline``) and the caller records progress up to
+    the last of them.
 
     Input equality is proved per row against ``BlobStore.vector_input_sha``.
     Without a candidate chunk set the reconstructable v6 inputs are the
@@ -4367,83 +4393,95 @@ def _classify_vectors(store, base, *, scope, generation, members, names, seal, p
     A re-split document (``multi_chunk_unreconstructable``) and anything else
     waits for the new-recipe backfill.
     """
-    import laya_blob_values as values
-    from laya_blob_values import BlobStoreError
-    from laya_view_vectors import qmd_first_pass
     recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
     compatible = all(profile[key] == seal[key] for key in ('model_id', 'embedding_fingerprint', 'dimension'))
     page = []
-    for path, blob in members:
-        if time.monotonic() >= deadline:
-            raise IndexContractError('reader_snapshot_deadline')
-        def defer(reason, page=page, path=path, blob=blob):
-            page.append({'path': path, 'blob_sha': blob, 'status': 'budget-deferred', 'reason': reason,
-                         'embedding_digest': None})
-        if not compatible:
-            defer('profile_incompatible')
-            continue
-        legacy = _legacy_vector_set(base, scope=scope, generation=generation,
-                                    paths=[name + '/' + path for name in names], blob=blob,
-                                    seal=seal, deadline=deadline)
-        if legacy is None:
-            defer('vector_rows_absent')
-            continue
-        title, old = legacy
-        try:
-            chunks = store.chunks(blob, recipe_id)
-        except BlobStoreError as exc:
-            if exc.reason != 'chunk_set_missing':
-                raise
-            chunks = None
-        if chunks is not None:
-            if [row['position'] for row in chunks] != [row['pos'] for row in old]:
-                defer('chunk_positions_differ')
-                continue
-            texts = [row['text'] for row in chunks]
-        else:
-            body = store.document(blob)['body']
-            parts = qmd_first_pass(body)
-            if [row['pos'] for row in old] != [pos for pos, _text in parts]:
-                defer('multi_chunk_unreconstructable')
-                continue
-            if values.markdown_title(body, blob) != title:
-                # Checked before any write: a derived chunk set is stored only
-                # together with the copied set it explains.
-                defer('input_differs')
-                continue
-            texts = [text for _pos, text in parts]
-        expected = [values.hash_bytes(('title: ' + title + ' | text: ' + text).encode('utf8')) for text in texts]
-        if chunks is None:
-            if not write:
-                defer('input_differs')
-                continue
-            store.put_chunk_set(blob, recipe_id, [{'seq': seq, 'position': pos, 'text': text,
-                                                   'text_sha': values.hash_bytes(text.encode('utf8'))}
-                                                  for seq, (pos, text) in enumerate(parts)])
-        actual = [store.vector_input_sha(blob, recipe_id, profile_id, seq) for seq in range(len(expected))]
-        if actual != expected:
-            if chunks is None:
-                raise IndexContractError('migration_vector_invalid')
-            defer('input_differs')
-            continue
-        rows = [{'seq': row['seq'], 'input_sha': sha, 'embedding': row['embedding']}
-                for row, sha in zip(old, expected)]
-        if write:
-            digest = store.put_embedding_set(blob, recipe_id, profile_id, rows)
-        else:
+    with store.vector_page(write=write) as session:
+        for path, blob in members:
+            if time.monotonic() >= deadline or (page and _out_of_budget(stop_at)):
+                if page and stop_at is not None:
+                    break
+                raise IndexContractError('reader_snapshot_deadline')
             try:
-                saved = store.vectors(blob, recipe_id, profile_id)
-            except BlobStoreError as exc:
-                if exc.reason != 'embedding_set_missing':
-                    raise
-                defer('input_differs')
-                continue
-            if saved != rows:
-                raise IndexContractError('migration_vector_invalid')
-            digest = values.embedding_digest(blob, recipe_id, profile_id, rows)
-        page.append({'path': path, 'blob_sha': blob, 'status': 'copied', 'reason': None,
-                     'embedding_digest': digest})
+                with session.member():
+                    row = _classify_member(store, base, scope=scope, generation=generation,
+                                           path=path, blob=blob, names=names, seal=seal,
+                                           compatible=compatible, recipe_id=recipe_id,
+                                           profile_id=profile_id, deadline=deadline, write=write)
+            except Exception as exc:
+                if stop_at is not None and page and _deadline_reached(exc, deadline):
+                    break
+                raise
+            page.append(row)
     return page
+
+
+def _classify_member(store, base, *, scope, generation, path, blob, names, seal, compatible,
+                     recipe_id, profile_id, deadline, write):
+    """One member's classification row; copies its exact-input set when ``write``."""
+    import laya_blob_values as values
+    from laya_blob_values import BlobStoreError
+    from laya_view_vectors import qmd_first_pass
+
+    def defer(reason):
+        return {'path': path, 'blob_sha': blob, 'status': 'budget-deferred', 'reason': reason,
+                'embedding_digest': None}
+    if not compatible:
+        return defer('profile_incompatible')
+    legacy = _legacy_vector_set(base, scope=scope, generation=generation,
+                                paths=[name + '/' + path for name in names], blob=blob,
+                                seal=seal, deadline=deadline)
+    if legacy is None:
+        return defer('vector_rows_absent')
+    title, old = legacy
+    try:
+        chunks = store.chunks(blob, recipe_id)
+    except BlobStoreError as exc:
+        if exc.reason != 'chunk_set_missing':
+            raise
+        chunks = None
+    if chunks is not None:
+        if [row['position'] for row in chunks] != [row['pos'] for row in old]:
+            return defer('chunk_positions_differ')
+        texts = [row['text'] for row in chunks]
+    else:
+        body = store.document(blob)['body']
+        parts = qmd_first_pass(body)
+        if [row['pos'] for row in old] != [pos for pos, _text in parts]:
+            return defer('multi_chunk_unreconstructable')
+        if values.markdown_title(body, blob) != title:
+            # Checked before any write: a derived chunk set is stored only
+            # together with the copied set it explains.
+            return defer('input_differs')
+        texts = [text for _pos, text in parts]
+    expected = [values.hash_bytes(('title: ' + title + ' | text: ' + text).encode('utf8')) for text in texts]
+    if chunks is None:
+        if not write:
+            return defer('input_differs')
+        store.put_chunk_set(blob, recipe_id, [{'seq': seq, 'position': pos, 'text': text,
+                                               'text_sha': values.hash_bytes(text.encode('utf8'))}
+                                              for seq, (pos, text) in enumerate(parts)])
+    actual = [store.vector_input_sha(blob, recipe_id, profile_id, seq) for seq in range(len(expected))]
+    if actual != expected:
+        if chunks is None:
+            raise IndexContractError('migration_vector_invalid')
+        return defer('input_differs')
+    rows = [{'seq': row['seq'], 'input_sha': sha, 'embedding': row['embedding']}
+            for row, sha in zip(old, expected)]
+    if write:
+        digest = store.put_embedding_set(blob, recipe_id, profile_id, rows)
+    else:
+        try:
+            saved = store.vectors(blob, recipe_id, profile_id)
+        except BlobStoreError as exc:
+            if exc.reason != 'embedding_set_missing':
+                raise
+            return defer('input_differs')
+        if saved != rows:
+            raise IndexContractError('migration_vector_invalid')
+        digest = values.embedding_digest(blob, recipe_id, profile_id, rows)
+    return {'path': path, 'blob_sha': blob, 'status': 'copied', 'reason': None,
+            'embedding_digest': digest}
 
 
 @contextmanager
@@ -4473,8 +4511,10 @@ def _vector_session(store, project, executing_root, *, deadline):
             if (endpoint.endpoint_id != intent['endpoint_id']
                     or endpoint.record['install_id'] != intent['install_id']):
                 raise IndexContractError('migration_endpoint_changed')
+            # One checkout observation opens the step (capture_view); the
+            # caller closes it with one more before it records progress.
             handle = store.capture_view(intent['worktree_id'], deadline=deadline)
-            pin = store.pin_view(handle, deadline=deadline)
+            pin = store.pin_view(handle, deadline=deadline, _observed=True)
             try:
                 if (pin.gen_id != receipt['generation'] or pin.view_id != receipt['view_id']
                         or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
@@ -4554,20 +4594,33 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
             with readers._validation_deadline(snapshot.connections, deadline):
                 page = _classify_vectors(store, snapshot.connections[0], scope=proof['decision']['scopeId'],
                     generation=snapshot.published[0], members=members, names=proof['names'],
-                    seal=proof['seal'], profile=profile, spec=spec, deadline=deadline, write=True)
+                    seal=proof['seal'], profile=profile, spec=spec, deadline=deadline, write=True,
+                    stop_at=deadline - _VECTOR_PAGE_RESERVE)
         finally:
             store._db.execute('PRAGMA busy_timeout=' + str(prior_busy))
         deferred = dict(record['deferred'])
         for row in page:
             if row['status'] != 'copied':
                 deferred[row['reason']] += 1
-        cursor = members[-1][0] if len(members) == MAX_BATCH else None
+        if len(page) < len(members):
+            # The step budget ran out inside the page: record progress up
+            # to the last member it finished (its sets are committed).
+            cursor = page[-1]['path']
+        else:
+            cursor = members[-1][0] if len(members) == MAX_BATCH else None
         updated_record = _check_vector_record({**record, 'cursor': cursor, 'complete': cursor is None,
             'copied': record['copied'] + sum(row['status'] == 'copied' for row in page), 'deferred': deferred,
             'digest': values.digest('memvane-shadow-vectors-page-v1', {'previous': record['digest'],
                                                                       'page': page, 'next': cursor})})
         updated = {**intent, 'vectors': updated_record}
         import laya_ledger_common as ledger
+        try:
+            store._observe(store._pinned(proof['pin'])['entry'], deadline=deadline,
+                           timeout_reason='reader_snapshot_deadline')
+        except values.BlobStoreError as exc:
+            if exc.reason == 'checkout_changed':
+                raise IndexContractError('migration_checkout_changed') from exc
+            raise
         if time.monotonic() >= deadline:
             raise IndexContractError('reader_snapshot_deadline')
         if ledger._read_json(proof['path']) != intent:

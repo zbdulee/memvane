@@ -68,6 +68,7 @@ candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인
 | `vector_input_sha(blob_sha, recipe_id, profile_id, seq)` | 실제 provider 문서 입력 문자열의 UTF-8 SHA |
 | `embedding_inputs(blob_sha, recipe_id, profile_id)` | 같은 입력 생성기를 사용하는 순서 있는 문자열 목록 |
 | `put_embedding_set(blob_sha, recipe_id, profile_id, rows)` / `vectors(...)` | 완전한 vector set의 digest / 행 |
+| `vector_page(*, write)` | shadow migration vector page 하나의 session. 안에서 부르는 store 호출은 이 transaction 하나를 쓰고, header·blob admission·recipe·profile·chunk set·입력 목록을 page당 한 번 증명한다. `member()`는 member 하나를 savepoint로 감싸 실패한 member만 되돌린다 |
 | `put_fingerprint(spec)` / `fingerprint(id)` | 원문 **metadata** 지문 ID / 값 |
 | `put_attestation(spec)` / `attestation(id)` | 개별 provenance를 묶은 trust digest / 값 |
 | `verify()` | schema·FK·내용·recipe·set·지문·attestation의 전체 검증, 성공 시 `True` |

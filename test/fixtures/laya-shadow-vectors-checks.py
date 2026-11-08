@@ -257,5 +257,239 @@ class ShadowVectorChecks(unittest.TestCase):
             self.assertFalse(any('heron' in line or 'otter' in line for line in events))
 
 
+
+class VectorStepSetup:
+    """The vectors fixture of ``ShadowVectorChecks``: seed, private store, recipe, profile."""
+
+    def build(self, *, extra_cards=0):
+        published = seed_module.base.published
+        original_card = published.card
+
+        def card(title, body):
+            if title == MULTI:
+                body += '\n' + LONG
+            text = original_card(title, body)
+            return text.replace('## Summary\n', '') if title == TITLE_ONLY else text
+        views_vectors = importlib.import_module('laya_view_vectors')
+
+        def embed(_provider, body, path):
+            positions = [pos for pos, _text in views_vectors.qmd_first_pass(body)]
+            return [{'seq': seq, 'pos': pos, 'vector': synthetic_vector(path, seq)}
+                    for seq, pos in enumerate(positions)]
+
+        class BaseOnly(seed_module.MoveSealChecks):
+            PUBLISH_SIDECAR = False
+        seed = BaseOnly('runTest')
+        with mock.patch.object(published, 'card', new=card), \
+             mock.patch.object(published.FillProvider, 'embed_document_chunks', new=embed):
+            seed.setUp()
+        self.addCleanup(seed.doCleanups)
+        case = seed.case
+        subprocess.run(['git', '-c', 'init.defaultBranch=main', 'init', '-q', str(case.project)],
+                       check=True, capture_output=True, timeout=10)
+        subprocess.run(['git', '-C', str(case.project), '-c', 'commit.gpgsign=false',
+                        '-c', 'core.hooksPath=' + os.devnull, '-c', 'user.name=Fixture',
+                        '-c', 'user.email=fixture@example.invalid', 'commit', '--allow-empty',
+                        '-qm', 'fixture'], check=True, capture_output=True, timeout=10)
+        checkout = importlib.import_module('laya_checkout_view')
+        views = importlib.import_module('laya_view_store')
+        self.migration = importlib.import_module('laya_shadow_migration')
+        self.blobs = importlib.import_module('laya_blob_store')
+        repository = checkout.register_repository(str(case.project))
+        worktree = checkout.register_worktree(str(case.project), repository)
+        store = views.ViewStore.create(case.state / 'vector-shadow.sqlite',
+            project_root=str(case.project), repository=repository, worktree=worktree,
+            scope_id=case.route['scopeId'])
+        self.addCleanup(store.close)
+        time.sleep(1.1)  # Let freshly-created Git metadata leave its timestamp tick.
+        profile = published.vector_profile()
+        recipe_id = store.register_recipe({
+            'input_recipe': 'blob-input-v1', 'tokenizer_sha': '1' * 64, 'chunker_sha': '2' * 64,
+            'window_tokens': 900, 'overlap_tokens': 135, 'window_search_tokens': 200,
+            'offset_unit': 'utf16-code-unit', 'heading_rule': 'qmd-markdown-v1',
+            'document_template': 'title: {title} | text: {text}', 'synthetic_path': 'blobs/{blob_sha}.md'})
+        good = {'recipe_id': recipe_id, 'profile_id': store.register_profile({
+            'model_id': profile['modelId'], 'model_sha': '3' * 64,
+            'embedding_fingerprint': profile['embeddingFingerprint'], 'dimension': profile['dimension'],
+            'metric': 'cosine', 'document_input_recipe': 'blob-input-v1', 'query_input_recipe': 'qmd-query-v1',
+            'query_template': 'task: search result | query: {text}'})}
+        self.seed, self.case, self.store, self.good = seed, case, store, good
+        self.worktree = worktree
+        return seed, case, store, good
+
+    def counts(self):
+        return {table: self.store._db.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0]
+                for table in ('chunk_sets', 'embedding_sets', 'vectors')}
+
+    @staticmethod
+    def counting(target, name):
+        """Record each call's arguments (without ``self`` for a class method)."""
+        real = getattr(target, name)
+        calls, method = [], isinstance(target, type)
+
+        def wrapper(*args, **kwargs):
+            calls.append(args[1:] if method else args)
+            return real(*args, **kwargs)
+        return calls, mock.patch.object(target, name, new=wrapper)
+
+
+class VectorPageChecks(VectorStepSetup, unittest.TestCase):
+    """One vectors page of 100 actual admitted cards in the actual candidate store.
+
+    Only the v6 side (``_legacy_vector_set``) is synthetic: one exact-input
+    chunk per card at position 0, as the provider's first pass gives a short
+    card.
+    """
+    PAGE = 100
+
+    def setUp(self):
+        _seed, case, store, good = self.build()
+        wiki = case.auto / 'wiki' / 'many'
+        wiki.mkdir(parents=True, exist_ok=True)
+        self.members = []
+        for number in range(self.PAGE):
+            rel = 'many/card-%03d.md' % number
+            (case.auto / 'wiki' / rel).write_text('# Card %d\n\nPage row %d of the vectors fixture.\n'
+                                                  % (number, number), encoding='utf8')
+        for number in range(self.PAGE):
+            rel = 'many/card-%03d.md' % number
+            self.members.append((rel, store.ingest_card(self.worktree['worktreeId'], rel)))
+        self.profile = store._profile(good['profile_id'])
+        values = importlib.import_module('laya_blob_values')
+        import struct
+        titles = {blob: values.markdown_title(store.document(blob)['body'], blob)
+                  for _rel, blob in self.members}
+        dimension = self.profile['dimension']
+
+        def legacy(_base, *, blob, **_kwargs):
+            return titles[blob], [{'seq': 0, 'pos': 0,
+                                   'embedding': struct.pack('<' + 'f' * dimension,
+                                                            *([0.5] * dimension))}]
+        patch = mock.patch.object(self.migration, '_legacy_vector_set', side_effect=legacy)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def classify(self, members, **kwargs):
+        return self.migration._classify_vectors(
+            self.store, None, scope=None, generation='0' * 32, members=members,
+            names=[self.case.WIKI], seal=self.profile, profile=self.profile, spec=self.good,
+            deadline=time.monotonic() + 60, write=True, **kwargs)
+
+
+    def test_01_page_proves_store_invariants_once(self):
+        headers, header_patch = self.counting(self.blobs, '_header')
+        blobs, blob_patch = self.counting(self.blobs.BlobStore, '_blob')
+        texts, texts_patch = self.counting(self.blobs.BlobStore, '_input_texts')
+        with header_patch, blob_patch, texts_patch:
+            page = self.classify(self.members)
+        print('vector_page_calls', json.dumps({'header': len(headers), 'blob': len(blobs),
+                                                'input_texts': len(texts)}), flush=True)
+        self.assertEqual([row['status'] for row in page], ['copied'] * self.PAGE)
+        self.assertLessEqual(len(headers), 2)
+        self.assertLessEqual(len(blobs), self.PAGE)
+        self.assertEqual(len(texts), self.PAGE)
+        self.assertEqual(self.counts(), {'chunk_sets': self.PAGE, 'embedding_sets': self.PAGE,
+                                         'vectors': self.PAGE})
+
+    def test_02_budget_stops_after_a_member_and_the_next_page_resumes_after_it(self):
+        puts, put_patch = self.counting(self.blobs.BlobStore, 'put_embedding_set')
+        with put_patch, mock.patch.object(self.migration, '_out_of_budget',
+                                          side_effect=lambda _stop: len(puts) >= 50):
+            page = self.classify(self.members, stop_at=time.monotonic() + 60)
+        self.assertEqual(len(page), 50)
+        self.assertEqual(page[-1]['path'], self.members[49][0])
+        self.assertEqual(self.counts()['embedding_sets'], 50)
+        del puts[:]
+        with put_patch:
+            rest = self.classify(self.members[50:])
+        self.assertEqual(puts[0][0], self.members[50][1])
+        self.assertEqual([row['path'] for row in rest], [rel for rel, _blob in self.members[50:]])
+        self.assertEqual(self.counts()['embedding_sets'], self.PAGE)
+
+    def test_03_member_that_runs_out_of_time_is_rolled_back_alone(self):
+        real_put, calls = self.blobs.BlobStore.put_embedding_set, []
+
+        def put(store, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 51:
+                raise self.migration.IndexContractError('reader_snapshot_deadline')
+            return real_put(store, *args, **kwargs)
+        with mock.patch.object(self.blobs.BlobStore, 'put_embedding_set', new=put):
+            page = self.classify(self.members, stop_at=time.monotonic() + 60)
+        self.assertEqual(len(page), 50)
+        # The 51st member's chunk set (written before its embedding set) is gone too.
+        self.assertEqual(self.counts(), {'chunk_sets': 50, 'embedding_sets': 50, 'vectors': 50})
+        # Without a budget the same failure fails the whole page, as before.
+        calls.clear()
+        with mock.patch.object(self.blobs.BlobStore, 'put_embedding_set', new=put):
+            with self.assertRaisesRegex(Exception, 'reader_snapshot_deadline'):
+                self.classify(self.members[50:] + self.members[:50])
+        self.assertEqual(self.counts(), {'chunk_sets': 50, 'embedding_sets': 50, 'vectors': 50})
+
+    def test_04_partial_sets_left_by_a_failed_page_are_continued(self):
+        # A failed page of an earlier release committed member by member: 26
+        # sets exist, the cursor never moved. The next page verifies those
+        # through the same single session and copies the rest.
+        self.classify(self.members[:26])
+        self.assertEqual(self.counts()['embedding_sets'], 26)
+        headers, header_patch = self.counting(self.blobs, '_header')
+        blobs, blob_patch = self.counting(self.blobs.BlobStore, '_blob')
+        with header_patch, blob_patch:
+            page = self.classify(self.members)
+        self.assertEqual([row['status'] for row in page], ['copied'] * self.PAGE)
+        self.assertLessEqual(len(headers), 2)
+        self.assertLessEqual(len(blobs), self.PAGE)
+        self.assertEqual(self.counts(), {'chunk_sets': self.PAGE, 'embedding_sets': self.PAGE,
+                                         'vectors': self.PAGE})
+
+
+class VectorStepChecks(VectorStepSetup, unittest.TestCase):
+    """``advance_vectors`` records progress at the last finished member."""
+
+    def test_budget_inside_a_page_records_the_last_finished_member(self):
+        seed, case, store, good = self.build()
+        migration = self.migration
+        views = importlib.import_module('laya_view_store')
+        intent_path = case.state / 'shadow-migration-intent.json'
+
+        def step(vector_spec=None):
+            return migration.advance_shadow(store, project=case.project, executing_root=case.plugin,
+                                            deadline=time.monotonic() + 60, vector_spec=vector_spec)
+        with seed.authority(), mock.patch.object(migration, 'MAX_BATCH', 3):
+            migration.begin_migration(store, worktree_id=self.worktree['worktreeId'],
+                project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
+            for _ in range(40):
+                result = step()
+                if result['migration_state'] == 'caught_up':
+                    break
+            self.assertEqual(result['migration_state'], 'caught_up')
+            members = [row[0] for row in store._db.execute(
+                'SELECT path FROM wiki_members WHERE gen_id=? AND eligible=1 ORDER BY path',
+                (result['intent']['published']['generation'],))]
+            self.assertEqual(len(members), 3)
+            puts, put_patch = self.counting(self.blobs.BlobStore, 'put_embedding_set')
+            observes, observe_patch = self.counting(views.ViewStore, '_observe')
+            with put_patch, observe_patch, mock.patch.object(
+                    migration, '_out_of_budget', side_effect=lambda _stop: len(puts) >= 1):
+                first = migration.advance_vectors(store, project=case.project, executing_root=case.plugin,
+                                                  vector_spec=good, deadline=time.monotonic() + 60)
+            record = first['vectors']
+            self.assertEqual((record['cursor'], record['copied'], record['complete']),
+                             (members[0], 1, False))
+            self.assertEqual(json.loads(intent_path.read_text())['vectors'], record)
+            # One closing checkout observation per step (the opening one is capture_view).
+            self.assertLessEqual(len(observes), 1)
+            del puts[:]
+            with put_patch:
+                second = migration.advance_vectors(store, project=case.project, executing_root=case.plugin,
+                                                   vector_spec=good, deadline=time.monotonic() + 60)
+            blobs = dict(store._db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=?',
+                                           (result['intent']['published']['generation'],)).fetchall())
+            self.assertEqual(puts[0][0], blobs[members[1]])
+            final = second['vectors']
+            self.assertTrue(final['complete'])
+            self.assertEqual((final['total'], final['copied'], final['deferred']['input_differs']), (3, 2, 1))
+            self.assertEqual(self.counts()['embedding_sets'], 2)
+
 if __name__ == '__main__':
     unittest.main()
