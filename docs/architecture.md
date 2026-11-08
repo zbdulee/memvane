@@ -467,7 +467,11 @@ answer hours apart), the executing bundle equal to the journal-selected one, no
 bundle upgrade, state move or project-folder move intent, a `current` project
 folder layout, and no Hermes copy of the plugin. One pass records
 `reader_ready`; a later pass proves the same gates again and runs one journal CAS
-(`cas_reader`). The driver does nothing for a linked worktree, during an upgrade
+(`cas_reader`). A re-sealed target that differs only in its endpoint id and the transition id
+derived from it (the record's `creation_epoch` is the install journal epoch, which each
+sync wake's first-write mark bumps) is written to `reader_ready` under the same
+locks before the CAS; any other difference drops the record (`switch_reader_ready_stale`)
+for a fresh proof. The driver does nothing for a linked worktree, during an upgrade
 fence or bundle mismatch, for a `split` layout or QMD-origin state root, after a
 rollback, or with `MEMVANE_SHADOW_MIGRATION=off`.
 
