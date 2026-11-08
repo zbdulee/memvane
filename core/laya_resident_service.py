@@ -1021,6 +1021,8 @@ class Service:
         self.retry = {}
         # Why an installation is not adopted yet, reported once per episode.
         self.waiting = {}
+        # Codes already reported per installation since its last bind.
+        self.unproved = {}
         self.inflight = 0
         self.inflight_done = threading.Condition(self.lock)
         self.draining = threading.Event()
@@ -1457,6 +1459,8 @@ class Service:
                               or worker.alive() else 'worker_exited')
 
     def _forget(self, project):
+        with self.lock:
+            self.unproved.pop(project, None)
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
         with suppress(OSError):
             os.unlink(self.root / PROJECTS / name)
@@ -1469,14 +1473,24 @@ class Service:
         """One ``resident.adopt`` event per installation, outcome and reason.
 
         Sync wakes only see ``preparing`` while the service declines to start
-        a worker; this names the cause in the installation's own log.
+        a worker; this names the cause in the installation's own log. A
+        ``waiting`` reason is reported again when it changes; each
+        ``unproved`` code once until the installation binds (at most 16).
         ``decision`` may be a callable that finds it, called only on a new
         episode.
         """
         with self.lock:
-            if self.waiting.get(project) == reason:
-                return
-            self.waiting[project] = reason
+            if outcome == 'unproved':
+                # One event per code until the installation binds, however
+                # the codes alternate between retries.
+                seen = self.unproved.setdefault(project, set())
+                if reason in seen or len(seen) >= 16:
+                    return
+                seen.add(reason)
+            else:
+                if self.waiting.get(project) == reason:
+                    return
+                self.waiting[project] = reason
         targets = []
         with suppress(Exception):
             import event_log
@@ -1583,6 +1597,7 @@ class Service:
             self.bindings[project] = binding
             self.retry.pop(project, None)
             self.waiting.pop(project, None)
+            self.unproved.pop(project, None)
         if binding.events is not None:
             _event([binding.events], 'resident.adopt', 'adopted', mode=mode,
                    attested=attested)

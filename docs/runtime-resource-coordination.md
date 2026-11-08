@@ -614,11 +614,13 @@ from injected analytical tests; the shared OS reporter always attaches it.
   Installs of one release can be bound to either host's copy: the bundle
   upgrade binds each install to the host that ran it first and seals the
   other host's copy as its companion. A service running from one copy proves
-  an install bound to the other copy with the hooks' full selected proof
-  (the journal-bound owner copy and the executing copy proven as the same
-  sealed bundle) instead of the v5 writer plan, which pins the owner root
-  and stays the only proof writers take; it then starts or shares that
-  install's worker as for its own installs.
+  an install bound to the other copy under the same queue owner and v5
+  lifetime and physical windows as its own installs (the v5 plan captured
+  for the journal-bound root), with the hooks' full selected proof inside
+  them (the journal-bound owner copy and the executing copy proven as the
+  same sealed bundle). Writers keep the plan pinned to the root they
+  execute from. It then starts or shares that install's worker as for its
+  own installs.
   A same-version service started from a cache the installations' journals do
   not approve (an unsealed or unequal copy of one release) proves them only as
   bundle drift: it attaches read-only and starts no model worker, so it

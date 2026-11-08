@@ -300,12 +300,13 @@ def _writer_executing_root():
     return Path(__file__).resolve().parent.parent
 
 
-def _selected_v5_proof(project, decision, owner):
+def _selected_v5_proof(project, decision, owner, *, plan_root=None):
     import laya_install_journal as journal
     import laya_writer_open_plan as plan_module
     from laya_reader_windows import ReaderWindowBusy
     try:
-        plan = plan_module.capture_writer_plan(project, executing_root=_writer_executing_root())
+        plan = plan_module.capture_writer_plan(
+            project, executing_root=_writer_executing_root() if plan_root is None else plan_root)
     except journal.JournalEvidenceError as exc:
         if str(exc) == 'writer_windows_not_prepared':
             raise ResourceDeferred(str(exc)) from exc
@@ -420,8 +421,20 @@ def _discovery_base_component(decision, owner, proof):
             raise ResourceDeferred('writer_cleanup_unsettled')
 
 
-def _selected(project, *, owner_wait=False):
+def _selected(project, *, owner_wait=False, companion_of=None):
+    """(decision, proof) of the selected route under its v5 reader windows.
+
+    ``companion_of`` is only for the per-user embedding service running from
+    another host's sealed copy of the journal's bundle (``laya_embed_resident.
+    _companion_selected``): it names the journal-bound plugin root the v5 plan
+    and its lifetime and physical windows are captured for, and the full
+    selected proof taken inside those windows proves this executing copy as
+    the same sealed bundle. Writers never pass it; their plan pins the root
+    they execute from.
+    """
     project = Path(project)
+    if companion_of is not None:
+        return _companion_v5_selected(project, Path(companion_of), owner_wait=owner_wait)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')
     import laya_install_journal as journal
@@ -463,6 +476,25 @@ def _selected(project, *, owner_wait=False):
                         raise
                 break
     if proof.get('productRouteAllowed') is not True or not isinstance(proof.get('providerManifest'), dict):
+        raise IndexContractError('selected_provider_unavailable')
+    return decision, proof
+
+
+def _companion_v5_selected(project, plugin_root, *, owner_wait=False):
+    import laya_install_journal as journal
+    from laya_worker_journal import worker_journal_access
+    if not project.is_absolute() or project.is_symlink() or not project.is_dir():
+        raise IndexContractError('selected_project_unavailable')
+    with worker_journal_access(project, wait=owner_wait) as access:
+        with journal.read_only_journals():
+            decision = select_route(str(project), action='update')
+            if (decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project)
+                    or decision.get('pluginRoot') != str(plugin_root)
+                    or journal.journal_version(decision['journalPath']) != 5):
+                raise IndexContractError('selected_route_unavailable')
+            proof = _selected_v5_proof(project, decision, access.owner, plan_root=plugin_root)
+    if (proof.get('productRouteAllowed') is not True
+            or not isinstance(proof.get('providerManifest'), dict)):
         raise IndexContractError('selected_provider_unavailable')
     return decision, proof
 

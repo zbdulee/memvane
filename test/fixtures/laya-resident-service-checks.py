@@ -841,16 +841,19 @@ class ServiceBoundsChecks(Fixture):
             self.assertEqual((event, reason), ('resident.adopt', 'writer_bundle_unavailable'))
             self.assertEqual(len(targets), 1)
             self.assertFalse(service.status()['readOnlyOnly'])
-            # A code outside the event vocabulary is reported by class only.
-            failures[0] = 'Private /path with spaces'
-            service.retry.pop(project, None)
-            service.tick()
+            # A code outside the event vocabulary is reported by class only,
+            # and alternating codes are each reported once per episode.
+            for code in ('Private /path with spaces', 'writer_bundle_unavailable') * 3:
+                failures[0] = code
+                service.retry.pop(project, None)
+                service.tick()
             unproved = [e for e in events if e[1] == 'unproved']
             self.assertEqual([e[2] for e in unproved], ['writer_bundle_unavailable', 'ValueError'])
             failures.clear()
             service.retry.pop(project, None)
             self.wait(lambda: self.ready(manifest))
             self.assertNotIn(project, service.waiting)
+            self.assertNotIn(project, service.unproved)
 
     def test_every_new_worker_start_attests_first(self):
         project, manifest = self.project('alpha')
