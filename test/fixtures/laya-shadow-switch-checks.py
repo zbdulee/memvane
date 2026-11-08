@@ -761,5 +761,62 @@ class ShadowSwitchChecks(unittest.TestCase):
              generations=[pair['codex']['generation'], pair['claude']['generation']],
              challenges=len(self.challenges()), passes=len(passes), gate_waits=len(waits), step_errors=errors)
 
+    # ---- a sync wake's first-write mark between reader_ready and the switch --
+    def test_09_journal_epoch_bump_between_passes_still_switches(self):
+        """Every capacity sync marks the first write (install journal epoch +1),
+        which re-seals the target with another endpoint id; the switch pass
+        records that target and switches. Other moved fields stay stale."""
+        case = self.case
+        ledger = importlib.import_module('laya_ledger_common')
+        bumps = []
+
+        def marking_sync(*_args, **_kwargs):
+            epoch = J.inspect_journal(case.journal)['epoch']
+            bumps.append(J.cas_mark_new_write(case.journal, epoch)['epoch'])
+            return {'state': 'unchanged'}
+
+        def tamper(**fields):
+            intent = self.intent()
+            ledger._write(case.state / self.M._INTENT,
+                          self.M._stamp({**intent, 'reader_ready': {**intent['reader_ready'], **fields}}),
+                          replace=True)
+
+        initial = self.selection()
+        with self.driver():
+            self.drive_to('shadow_verified')
+            self.loaded()
+            with mock.patch.object(self.W, '_run_sync', side_effect=marking_sync):
+                stale = []
+                # A moved release commit or head floor is not a re-seal: dropped.
+                for fields in ({'release_commit': 'b' * 40}, 'floor'):
+                    event = self.run_pass()
+                    self.assertEqual((event['outcome'], event['migration_state']), ('progressed', 'reader_ready'))
+                    ready = self.intent()['reader_ready']
+                    if fields == 'floor':
+                        fields = {'floor': {**ready['floor'], 'epoch': ready['floor']['epoch'] + 1}}
+                    tamper(**fields)
+                    event = self.run_pass()
+                    stale.append((event['outcome'], event.get('reason'), event['migration_state']))
+                    self.assertIsNone(self.intent()['reader_ready'])
+                    self.assertEqual(self.selection(), initial)
+                self.assertEqual(stale, [('waiting', 'switch_reader_ready_stale', 'shadow_verified')] * 2)
+                event = self.run_pass()
+                self.assertEqual((event['outcome'], event['migration_state']), ('progressed', 'reader_ready'))
+                ready = self.intent()['reader_ready']
+                marks = len(bumps)
+                event = self.run_pass()
+                self.assertGreater(len(bumps), marks)
+                self.assertEqual((event['outcome'], event['migration_state']), ('progressed', 'switched'))
+        switched = self.intent()
+        after = self.selection()
+        recorded = switched['reader_ready']
+        self.assertNotEqual(recorded['endpoint_id'], ready['endpoint_id'])
+        self.assertEqual({k for k in ready if ready[k] != recorded[k]}, {'endpoint_id', 'transition_id'})
+        self.assertEqual(after, (initial[0] + 1, recorded['endpoint_id'], initial[1], recorded['transition_id']))
+        self.assertEqual(switched['switched']['endpoint_id'], recorded['endpoint_id'])
+        self.assertEqual(self.store_format(), 'schema3')
+        emit('switch-after-epoch-bump', marks=len(bumps), stale=stale)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

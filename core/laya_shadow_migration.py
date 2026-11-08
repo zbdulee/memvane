@@ -3677,6 +3677,11 @@ def _switch_preconditions(project, state):
         raise IndexContractError('switch_hosts_unsupported') from exc
 
 
+# reader_ready fields that follow the sealed target's endpoint id alone. A
+# re-proof that differs only here switches on the new target (``_switch_step``).
+_RESEAL_FIELDS = frozenset(('endpoint_id', 'transition_id'))
+
+
 def _transition_id(expected_endpoint, endpoint_id):
     # Fixed per (base, target): a retry after a committed CAS is its replay.
     return hashlib.sha256(('memvane-shadow-switch-v1\0%s\0%s' % (expected_endpoint, endpoint_id))
@@ -3801,11 +3806,21 @@ def _switch_step(store, *, project, executing_root, deadline, expected):
             ledger._write(path, updated, replace=True)
             trace['outcome'] = 'reader_ready'
             return updated
-        if intent['reader_ready'] != ready:
+        moved = {key for key in ready if ready[key] != intent['reader_ready'].get(key)}
+        if moved - _RESEAL_FIELDS:
             # The base, target or proof moved since reader_ready: prove it again.
             ledger._write(path, _stamp({**intent, 'reader_ready': None}), replace=True)
             trace.update(outcome='reader_ready_stale', reason='switch_reader_ready_stale')
             return None
+        if moved:
+            # Only the re-sealed target id moved (its record carries the
+            # install journal epoch, which every sync wake's first-write mark
+            # bumps). Record the new target before the CAS so crash recovery
+            # (``_cas_landed``) names the committed transition.
+            if ledger._read_json(path) != intent:
+                raise IndexContractError('migration_intent_changed')
+            intent = _stamp({**intent, 'reader_ready': ready})
+            ledger._write(path, intent, replace=True)
         selection = journal.cas_reader(journal_path, expected_epoch=ready['expected_epoch'],
             expected_endpoint=ready['expected_endpoint'], target=target,
             transition_id=ready['transition_id'], loaded_bridge=(receipts, commit), deadline=quiesce)
