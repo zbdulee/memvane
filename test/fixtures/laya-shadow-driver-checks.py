@@ -902,9 +902,20 @@ class DriverChecks(unittest.TestCase):
                     raise IndexContractError('migration_recall_probe_unproved') from exc
                 except IndexContractError as outer:
                     return outer
+        def binding_changed():
+            # The view store reports any CheckoutUnavailable as its timeout code.
+            from laya_checkout_view import CheckoutUnavailable
+            try:
+                raise CheckoutUnavailable('repository_binding_changed')
+            except CheckoutUnavailable:
+                try:
+                    values.fail('fts_deadline_exceeded')
+                except values.BlobStoreError as exc:
+                    return exc
         cases = (
             ('proof failure', lambda: IndexContractError('migration_recall_probe_unproved'), True, None),
             ('budget left', lambda: values.BlobStoreError('fts_deadline_exceeded'), False, None),
+            ('checkout changed', binding_changed, True, None),
             ('pin timeout', lambda: values.BlobStoreError('fts_deadline_exceeded'), True, 2),
             ('probe timeout', lambda: probe_from(values.BlobStoreError('fts_deadline_exceeded')), True, 1),
         )
@@ -926,8 +937,42 @@ class DriverChecks(unittest.TestCase):
                 self.assertNotEqual(reason, None, observed)
             else:
                 self.assertEqual((state, after), ('progressed', size), observed)
-        self.assertEqual([o[2] for o in observed[:2]],
-                         ['migration_recall_probe_unproved', 'fts_deadline_exceeded'], observed)
+        self.assertEqual([o[2] for o in observed[:3]],
+                         ['migration_recall_probe_unproved', 'fts_deadline_exceeded', 'fts_deadline_exceeded'],
+                         observed)
+
+    def test_parity_page_that_compared_but_ran_out_before_its_cursor_write_retries_smaller(self):
+        # Codex r2: the compare succeeds, then the page's step deadline runs
+        # out in the locked recheck before the cursor write. That spent page
+        # budget shrinks the page like one inside the compare.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        real, sizes = M.compare_recall_corpus, []
+
+        def compared(*args, **kwargs):
+            page = real(*args, **kwargs)
+            size = kwargs.get('page_members') or M._PARITY_MEMBERS
+            sizes.append(size)
+            if size > 1:
+                while time.monotonic() < kwargs['deadline']:
+                    time.sleep(min(.05, max(0, kwargs['deadline'] - time.monotonic())))
+            return page
+        statuses = []
+        with self.authority(seed, case), mock.patch.object(M, 'compare_recall_corpus', compared):
+            for _ in range(16):
+                status = W.shadow_pass(case.project)
+                statuses.append((status['state'], status['reason']))
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        print('parity_after_compare_sizes', sizes, flush=True)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', statuses)
+        self.assertEqual(sizes[:3], [M._PARITY_MEMBERS, 2, 1], sizes)
+        self.assertNotIn('error', [state for state, _ in statuses], statuses)
+        parity = self.intent(case)['parity']
+        self.assertEqual((parity['page_members'], parity['pages']), (1, parity['members']))
 
     def test_parity_seal_deadline_retry_reports_its_reason_and_rewakes_within_the_streak(self):
         # Codex r1 #11: a step-deadline retry at the seal reached the driver

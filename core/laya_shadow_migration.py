@@ -2976,16 +2976,26 @@ def _page_deadline_spent(exc, deadline):
 
     A timeout code before the page deadline (a shorter inner budget, such as
     the old reader's probe deadline) and every proof failure are not spent
-    page budgets.
+    page budgets. Nor is a checkout observation that failed for another
+    reason: the view store reports every ``CheckoutUnavailable`` as its
+    timeout code, so one whose reason is not ``checkout_budget_exhausted``,
+    found as the cause or the handled exception behind the code, vetoes it.
     """
+    from laya_checkout_view import CheckoutUnavailable
     if time.monotonic() < deadline:
         return False
-    seen = 0
-    while exc is not None and seen < 8:
-        if str(exc) in _PAGE_TIMEOUT_REASONS:
-            return True
-        exc, seen = exc.__cause__, seen + 1
-    return False
+    timeout, link, seen = False, exc, 0
+    while link is not None and seen < 8:
+        if str(link) in _PAGE_TIMEOUT_REASONS:
+            timeout = True
+            break
+        link, seen = link.__cause__, seen + 1
+    link, seen = exc, 0
+    while timeout and link is not None and seen < 8:
+        if isinstance(link, CheckoutUnavailable) and link.reason != 'checkout_budget_exhausted':
+            return False
+        link, seen = link.__cause__ or link.__context__, seen + 1
+    return timeout
 
 
 def compare_recall_corpus(store, generation, *, project, executing_root, after, deadline,
@@ -3413,7 +3423,9 @@ def _advance_parity(store, *, project, executing_root, deadline):
         if current != intent:
             raise IndexContractError('migration_intent_changed')
         if time.monotonic() >= deadline:
-            raise IndexContractError('reader_snapshot_deadline')
+            # The page compared, but its step deadline ran out before the
+            # cursor write: the same spent page budget as inside the compare.
+            raise _ParityPageDeadline()
         ledger._write(path, updated, replace=True)
         trace['outcome'] = 'parity_page'
     return updated
