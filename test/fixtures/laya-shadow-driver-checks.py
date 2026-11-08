@@ -759,6 +759,35 @@ class DriverChecks(unittest.TestCase):
             return real(*args, **kwargs)
         return limits, mock.patch.object(M, 'capture_wiki_bytes', capture)
 
+    def test_parity_seal_deadline_retry_reports_its_reason_and_rewakes_within_the_streak(self):
+        # Codex r1 #11: a step-deadline retry at the seal reached the driver
+        # as ``step_retry``, reset the error streak and offered no rewake.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        sealed = []
+        with self.authority(seed, case), self.queued() as (_queue, _clock, offers):
+            with mock.patch.object(M, '_seal_parity',
+                                   side_effect=IndexContractError('vector_deadline_exceeded')):
+                for _ in range(16):
+                    status = W.shadow_pass(case.project)
+                    if status['stages'][-1:] == ['retry']:
+                        sealed.append((status['state'], status['reason'], status['rewake']))
+                        if len(sealed) == W.SHADOW_REWAKE_ERRORS + 1:
+                            break
+            print('seal_deadline_retries', sealed, flush=True)
+            self.assertEqual(sealed, [('waiting', 'vector_deadline_exceeded', True)] * (W.SHADOW_REWAKE_ERRORS - 1)
+                             + [('waiting', 'vector_deadline_exceeded', False)] * 2)
+            record = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+            self.assertEqual(record['rewake_errors'], W.SHADOW_REWAKE_ERRORS + 1)
+            # The seal that succeeds ends the streak.
+            status = W.shadow_pass(case.project)
+            self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', status)
+            record = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
+            self.assertEqual(record['rewake_errors'], 0)
+
     def test_parity_page_that_misses_its_deadline_retries_smaller(self):
         seed, case = self.seeded()
         W, M = self.W, self.M
