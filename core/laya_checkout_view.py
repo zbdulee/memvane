@@ -605,6 +605,7 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
         if head is None:
             return None
         head_bytes = head[1]
+        packed = _file(common / 'packed-refs', 1024 * 1024, deadline, collect=True)
         branch = None
         if head_bytes.startswith(b'ref: refs/heads/') and head_bytes.endswith(b'\n'):
             ref = head_bytes[5:-1]
@@ -616,9 +617,18 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
             if not real_directories(common, target.parent.relative_to(common)):
                 return None
             loose = _file(target, 256, deadline, collect=True)
-            if loose is None:
-                return None  # packed or unborn refs use Git's full path
-            oid_bytes = loose[1]
+            if loose is not None:
+                oid_bytes = loose[1]
+            else:
+                # A branch only in packed-refs: its one exact line. The
+                # packed-refs bytes join the fingerprint, and the absent loose
+                # name stays stamped, so either change misses the cache.
+                found = [] if packed is None else [
+                    line for line in packed[1].split(b'\n')
+                    if re.fullmatch(rb'(?:[0-9a-f]{40}|[0-9a-f]{64}) ' + re.escape(ref), line)]
+                if len(found) != 1:
+                    return None  # unborn or ambiguous refs use Git's full path
+                oid_bytes = found[0][:-(len(ref) + 1)] + b'\n'
         else:
             target = None
             oid_bytes = head_bytes
@@ -630,7 +640,6 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
             if value is not None and (b'include' in value[1].lower() or b'reftable' in value[1].lower()
                                       or b'refstorage' in value[1].lower()):
                 return None
-        packed = _file(common / 'packed-refs', 1024 * 1024, deadline, collect=True)
         # A packed replace ref could redirect HEAD to a different object whose
         # storage is not covered by the direct-HEAD object stat set.
         if packed is not None and b'refs/replace/' in packed[1]:
@@ -735,7 +744,8 @@ def _cache_fingerprint(project_root, repository, worktree, deadline):
                 stamp = (info.st_mode, info.st_dev, info.st_ino, info.st_size,
                          info.st_mtime_ns, info.st_ctime_ns, info.st_nlink, link)
             stamps.append((str(path), stamp))
-        return (tuple(stamps), tuple(pack_names), branch, oid, env_digest, filesystems, tool_filesystems)
+        return (tuple(stamps), tuple(pack_names), branch, oid, env_digest, filesystems, tool_filesystems,
+                None if packed is None else packed[0]['sha256'])
     except (CheckoutUnavailable, OSError, ValueError, TypeError, OverflowError, AttributeError, subprocess.SubprocessError):
         if time.monotonic() >= deadline:
             _fail('checkout_budget_exhausted')
