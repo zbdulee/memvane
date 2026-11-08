@@ -11,5 +11,9 @@ test('compatible legacy vectors are copied and compared without changing the rea
   const ratio = result.stdout.match(/compat_ratio (\d+)\/(\d+) ([0-9.]+)/);
   assert.ok(ratio, 'compat ratio measurement missing');
   console.log(`compat_ratio ${ratio[1]}/${ratio[2]} ${ratio[3]}`);
+  const calls = result.stdout.match(/^vector_page_calls .*$/m);
+  assert.ok(calls, 'vector page call counts missing');
+  console.log(calls[0]);
+  assert.match(result.stderr, /Ran 9 tests\b/);
   assert.match(result.stderr, /\nOK\b/);
 });

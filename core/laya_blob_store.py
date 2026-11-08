@@ -338,6 +338,31 @@ def _worktree_record(row, repository, policy_digest):
     return record
 
 
+
+class _VectorPage:
+    """The open transaction and caches of one ``BlobStore._vector_page``."""
+
+    def __init__(self, store, db, write):
+        self.store, self.db, self.write = store, db, write
+        self.cache = {'worktrees': {}, 'captures': set()}
+        self.memo = {}
+
+    @contextmanager
+    def member(self):
+        """One member's work: kept on success, rolled back alone on failure."""
+        self.db.execute('SAVEPOINT vector_member')
+        try:
+            yield
+        except BaseException:
+            # A deadline progress handler would interrupt the rollback too.
+            self.db.set_progress_handler(None, 0)
+            self.db.execute('ROLLBACK TO vector_member')
+            self.db.execute('RELEASE vector_member')
+            # Memos may name rows the rollback removed.
+            self.memo.clear()
+            raise
+        self.db.execute('RELEASE vector_member')
+
 class BlobStore:
     @classmethod
     def create(cls, path, *, project_root, repository, worktree, scope_id):
@@ -474,7 +499,49 @@ class BlobStore:
             v.fail('reader_write_forbidden')
 
     @contextmanager
+    def _vector_page(self, *, write):
+        """One store session for a page of vector-copy work (shadow migration).
+
+        The page's single transaction checks the store header once; every
+        store call made inside it joins that transaction instead of opening
+        its own. Within the page a blob's admission proof, a recipe, a profile,
+        a chunk set and a vector input list are each proved once and reused:
+        they cannot change inside one transaction except through the page's
+        own writes, which never replace an existing row. ``member()`` wraps
+        one member's work in a savepoint, so a member that fails (or runs out
+        of time) leaves nothing behind while earlier members stay; on leaving
+        the page the transaction commits what the members completed.
+        """
+        if write:
+            self._require_write()
+        if getattr(self, '_page', None) is not None:
+            v.fail('vector_page_nested')
+        with self._session(write=write) as db:
+            page = _VectorPage(self, db, write)
+            self._page = page
+            try:
+                yield page
+            finally:
+                self._page = None
+
+    def _page_memo(self, kind, key, compute):
+        page = getattr(self, '_page', None)
+        if page is None:
+            return compute()
+        memo = page.memo.setdefault(kind, {})
+        if key not in memo:
+            memo[key] = compute()
+        return memo[key]
+
+    @contextmanager
     def _session(self, *, write=False):
+        page = getattr(self, '_page', None)
+        if page is not None:
+            # A store call inside a vector page joins its transaction.
+            if write and not page.write:
+                v.fail('reader_write_forbidden')
+            yield self._db
+            return
         if write:
             self._require_write()
         try:
@@ -511,6 +578,13 @@ class BlobStore:
             else:
                 _insert(db, 'worktrees', {**row, 'registered_ns': time.time_ns()})
         return row['worktree_id']
+
+    def _page_blob(self, blob_sha):
+        """``_blob`` once per blob inside a vector page, with its admission caches."""
+        page = getattr(self, '_page', None)
+        if page is None:
+            return self._blob(blob_sha)
+        return self._page_memo('blob', blob_sha, lambda: self._blob(blob_sha, cache=page.cache))
 
     def _blob(self, blob_sha, *, cache=None):
         v.identifier(blob_sha)
@@ -693,7 +767,7 @@ class BlobStore:
 
     def document(self, blob_sha):
         with self._session():
-            body = self._blob(blob_sha)
+            body = self._page_blob(blob_sha)
             path = f'blobs/{blob_sha}.md'
             return {'body': body, 'path': path, 'title': v.markdown_title(body, blob_sha)}
 
@@ -711,6 +785,9 @@ class BlobStore:
         return key
 
     def _recipe(self, key):
+        return self._page_memo('recipe', key, lambda: self._recipe_row(key))
+
+    def _recipe_row(self, key):
         v.identifier(key)
         row = self._db.execute('SELECT canonical_spec FROM chunk_recipes WHERE recipe_id=?', (key,)).fetchone()
         if row is None:
@@ -741,6 +818,9 @@ class BlobStore:
         return key
 
     def _profile(self, key):
+        return self._page_memo('profile', key, lambda: self._profile_row(key))
+
+    def _profile_row(self, key):
         v.identifier(key)
         row = self._db.execute('SELECT * FROM vector_profiles WHERE profile_id=?', (key,)).fetchone()
         if row is None:
@@ -752,7 +832,10 @@ class BlobStore:
         return spec
 
     def _chunks(self, blob, recipe_id):
-        body = self._blob(blob); self._recipe(recipe_id)
+        return self._page_memo('chunks', (blob, recipe_id), lambda: self._chunk_rows(blob, recipe_id))
+
+    def _chunk_rows(self, blob, recipe_id):
+        body = self._page_blob(blob); self._recipe(recipe_id)
         head = self._db.execute('SELECT * FROM chunk_sets WHERE blob_sha=? AND recipe_id=?', (blob, recipe_id)).fetchone()
         if head is None:
             v.fail('chunk_set_missing')
@@ -767,7 +850,7 @@ class BlobStore:
     def put_chunk_set(self, blob_sha, recipe_id, rows):
         self._require_write()
         with self._session(write=True) as db:
-            body = self._blob(blob_sha); self._recipe(recipe_id)
+            body = self._page_blob(blob_sha); self._recipe(recipe_id)
             rows = v.chunks(body, rows); key = v.chunk_digest(blob_sha, recipe_id, rows)
             old = db.execute('SELECT set_digest FROM chunk_sets WHERE blob_sha=? AND recipe_id=?', (blob_sha, recipe_id)).fetchone()
             if old:
@@ -784,14 +867,14 @@ class BlobStore:
             return self._chunks(blob_sha, recipe_id)
 
     def _input_texts(self, blob, recipe_id, profile_id):
-        body = self._blob(blob); self._profile(profile_id)
+        body = self._page_blob(blob); self._profile(profile_id)
         rows = self._chunks(blob, recipe_id)
         title = v.markdown_title(body, blob)
         return [f'title: {title or "none"} | text: {r["text"]}' for r in rows]
 
     def _inputs(self, blob, recipe_id, profile_id):
-        return [v.hash_bytes(text.encode('utf8'))
-                for text in self._input_texts(blob, recipe_id, profile_id)]
+        return self._page_memo('inputs', (blob, recipe_id, profile_id), lambda: [
+            v.hash_bytes(text.encode('utf8')) for text in self._input_texts(blob, recipe_id, profile_id)])
 
     def embedding_inputs(self, blob_sha, recipe_id, profile_id):
         """Exact wiki-only synthetic inputs shared with set hash validation."""

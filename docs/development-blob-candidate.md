@@ -74,6 +74,7 @@ candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인
 | `counts()` / `close()` | 테이블별 행 수 / 연결 종료 |
 
 `BlobStoreError.reason`은 원문을 포함하지 않는 거절 코드다.
+shadow migration의 vector page는 내부 `_vector_page(write=...)`로 store transaction 하나를 쓴다. 안의 store 호출은 그 transaction을 쓰고 header·blob admission·recipe·profile·chunk set·입력 목록을 page당 한 번 증명하며, member마다 savepoint를 둔다. 공개 API가 아니다.
 원문 body를 삽입하거나 읽는 공개 API는 없다. `document`가 반환하는 body는
 위의 wiki admission을 통과한 카드다. 전체 `verify`는 관리 작업이며 검색 경로의 API가 아니다.
 
