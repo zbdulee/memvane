@@ -132,12 +132,14 @@ def query_incremental_snapshot(prompt: str, decision: dict, proof: dict, provide
                                 pinned_base=base, pinned_side=side, deadline=deadline,
                                 semantic_status=[] if _semantic_status is None else _semantic_status,
                                 lexical=_lexical)
-    from laya_journal_reader import _sidecar_document_snapshot
+    from laya_journal_reader import _sidecar_document_snapshot, sidecar_pinned_checks
+    pinned = sidecar_pinned_checks(side, base, decision) if result[0] else None
     for row in result[0]:
         # Semantic scoring validates each active chunk set before use. Row
         # evidence itself needs no vector read, including lexical fallback.
         proved = _sidecar_document_snapshot(side, base, decision, row['path'],
-                                            deadline=deadline, require_vectors=False)
+                                            deadline=deadline, require_vectors=False,
+                                            pinned=pinned)
         if proved['hash'] != row['hash'] or proved['body'] != row['body']:
             _fail('reader_sidecar_document_changed')
     return result

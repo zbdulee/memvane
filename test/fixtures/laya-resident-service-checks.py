@@ -759,6 +759,73 @@ class ServiceChecks(Fixture):
         self.assertEqual(resident.probe(bad_manifest), 'absent')
         self.assertFalse(resident.owner_lock_held(bad_manifest))
 
+    def test_busy_window_during_attestation_defers_without_a_terminal_state(self):
+        # A busy queue owner or v5 window is not bad evidence: the install
+        # is retried and binds once the window is free, on both the cold
+        # worker start and the attach to a running worker. (A cold start
+        # retried after "starting" waits the owner state's durable 5 s.)
+        first, first_manifest = self.project('alpha')
+        second, second_manifest = self.project('beta')
+        busy = {first: 1, second: 2}
+        calls = []
+
+        def attest(decision, proof, mode):
+            project = decision['projectRoot']
+            calls.append(project)
+            if busy[project]:
+                busy[project] -= 1
+                raise ResourceDeferred('writer_proof_physical_busy')
+        service = self.service(start=False)
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        svc.register(first, root=self.root)
+        self.wait(lambda: self.ready(first_manifest), timeout=30)
+        svc.register(second, root=self.root)
+        for _ in range(2):
+            self.wait(lambda: not busy[second] or second in service.retry)
+            service.retry.pop(second, None)
+        self.wait(lambda: self.ready(second_manifest))
+        for manifest in (first_manifest, second_manifest):
+            self.assertIsNot((resident.read_owner_state(manifest) or {}).get('terminal'), True)
+        self.assertEqual(len(self.loads), 1)
+        self.assertGreaterEqual(calls.count(first), 2)
+        self.assertGreaterEqual(calls.count(second), 3)
+    def test_repeated_moved_selection_deferrals_back_off_as_start_failures(self):
+        # An attestation that keeps reporting a moved selection is retried
+        # in 5 s only for MOVED_DEFER_LIMIT consecutive times; after that the
+        # owner state counts start failures and the retry backs off.
+        steady, steady_manifest = self.project('alpha')
+        moving, moving_manifest = self.project('beta')
+        moved = [True]
+
+        def attest(decision, proof, mode):
+            if decision['projectRoot'] == moving and moved[0]:
+                raise ResourceDeferred('worker_selection_changed')
+        service = self.service(start=False)
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        svc.register(steady, root=self.root)
+        self.wait(lambda: self.ready(steady_manifest))
+        svc.register(moving, root=self.root)
+        delays = []
+        for _ in range(svc.MOVED_DEFER_LIMIT + 2):
+            self.wait(lambda: moving in service.retry)
+            with service.lock:
+                delays.append(service.retry[moving] - time.monotonic())
+                service.retry.pop(moving, None)
+        state = resident.read_owner_state(moving_manifest)
+        self.assertTrue(all(delay <= 5.1 for delay in delays[:svc.MOVED_DEFER_LIMIT]), delays)
+        self.assertGreater(delays[svc.MOVED_DEFER_LIMIT], 9, delays)
+        self.assertGreater(delays[svc.MOVED_DEFER_LIMIT + 1], 19, delays)
+        self.assertEqual((state['reason'], state['attempts'], state['terminal']),
+                         ('startup_failed', 2, False))
+        moved[0] = False
+        service.retry.pop(moving, None)
+        self.wait(lambda: self.ready(moving_manifest))
+        self.assertNotIn(moving, service.moved)
+
 
 class ServiceBoundsChecks(Fixture):
     def test_read_only_proof_attaches_but_never_starts_a_worker(self):
@@ -809,6 +876,51 @@ class ServiceBoundsChecks(Fixture):
             self.wait(lambda: self.ready(drifted_manifest), message='read-only never attached')
             self.assertNotIn(drifted, service.waiting)
         self.assertEqual(len(self.loads), 1)
+
+    def test_unproved_install_names_its_code_once_per_episode(self):
+        # A proof that fails outright (not bundle drift) used to retry every
+        # few seconds with no state and no event: the install's resident
+        # state stayed "starting" for days and only sync saw "preparing".
+        project, manifest = self.project('alpha')
+        decision = self.routes[project][0]
+        failures = ['writer_bundle_unavailable']
+        prove = self.prove
+
+        def flaky(name):
+            if name == project and failures:
+                raise ValueError(failures[0])
+            return prove(name)
+        events = []
+        with patch.object(svc, '_event',
+                          side_effect=lambda targets, event, outcome, reason=None, **f:
+                          events.append((event, outcome, reason, list(targets)))), \
+                patch.object(svc, '_route_hint', return_value=decision):
+            service = self.service()
+            service.prove = flaky
+            svc.register(project, root=self.root)
+            self.wait(lambda: events, message='failed proof never reported')
+            for _ in range(5):
+                service.retry.pop(project, None)
+                service.tick()
+            unproved = [e for e in events if e[1] == 'unproved']
+            self.assertEqual(len(unproved), 1, events)
+            event, outcome, reason, targets = unproved[0]
+            self.assertEqual((event, reason), ('resident.adopt', 'writer_bundle_unavailable'))
+            self.assertEqual(len(targets), 1)
+            self.assertFalse(service.status()['readOnlyOnly'])
+            # A code outside the event vocabulary is reported by class only,
+            # and alternating codes are each reported once per episode.
+            for code in ('Private /path with spaces', 'writer_bundle_unavailable') * 3:
+                failures[0] = code
+                service.retry.pop(project, None)
+                service.tick()
+            unproved = [e for e in events if e[1] == 'unproved']
+            self.assertEqual([e[2] for e in unproved], ['writer_bundle_unavailable', 'ValueError'])
+            failures.clear()
+            service.retry.pop(project, None)
+            self.wait(lambda: self.ready(manifest))
+            self.assertNotIn(project, service.waiting)
+            self.assertNotIn(project, service.unproved)
 
     def test_every_new_worker_start_attests_first(self):
         project, manifest = self.project('alpha')
@@ -1418,44 +1530,51 @@ class ReadOnlyHandoverChecks(unittest.TestCase):
 class ProofChecks(unittest.TestCase):
     def test_drifted_bundle_is_served_by_read_only_proof(self):
         import laya_install_journal as journal
-        import laya_index_host_route as route
+        import laya_product_sync_worker as worker
         manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
         decision = {'state': 'candidate', 'projectRoot': '/synthetic/p'}
-        drift = journal.JournalEvidenceError('bundle_drift') if hasattr(
-            journal, 'JournalEvidenceError') else ValueError('bundle_drift')
+        drift = journal.JournalEvidenceError('bundle_drift')
+        proof = {'readOnlyAllowed': True, 'providerManifest': manifest}
+        # The fallback is the windowed read-only proof of the sync worker.
         with patch.object(resident, '_owned_route', side_effect=drift), \
                 patch.object(journal, 'is_bundle_drift', return_value=True), \
-                patch.object(route, 'select_route', return_value=decision), \
-                patch.object(journal, 'verify_selected_route_read_only',
-                             return_value={'readOnlyAllowed': True, 'providerManifest': manifest}):
-            _decision, proof, mode = svc.default_prove('/synthetic/p')
-        self.assertEqual((mode, proof['providerManifest']), ('read_only', manifest))
-        for allowed, drifted, state in ((True, False, 'candidate'), (False, True, 'candidate'),
-                                        (True, True, 'blocked')):
+                patch.object(worker, 'service_read_only_proof',
+                             return_value=(decision, proof)) as fallback:
+            _decision, proved, mode = svc.default_prove('/synthetic/p')
+        self.assertEqual((mode, proved['providerManifest']), ('read_only', manifest))
+        self.assertEqual(fallback.call_args.args, (Path('/synthetic/p'),))
+        # Not drift: no fallback. A refused fallback keeps the drift code; a
+        # busy window defers.
+        for drifted, outcome, expected in (
+                (False, (decision, proof), type(drift)),
+                (True, IndexContractError('selected_provider_unavailable'), type(drift)),
+                (True, ResourceDeferred('writer_proof_physical_busy'), ResourceDeferred)):
             with patch.object(resident, '_owned_route', side_effect=drift), \
                     patch.object(journal, 'is_bundle_drift', return_value=drifted), \
-                    patch.object(route, 'select_route', return_value={**decision, 'state': state}), \
-                    patch.object(journal, 'verify_selected_route_read_only',
-                                 return_value={'readOnlyAllowed': allowed,
-                                               'providerManifest': manifest}):
-                with self.assertRaises(type(drift)):
+                    patch.object(worker, 'service_read_only_proof',
+                                 **({'side_effect': outcome} if isinstance(outcome, Exception)
+                                    else {'return_value': outcome})):
+                with self.assertRaises(expected):
                     svc.default_prove('/synthetic/p')
 
     def test_full_attestation_applies_to_selected_routes_only(self):
         import laya_install_journal as journal
+        import laya_product_sync_worker as worker
         manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
         proof = {'providerManifest': manifest}
         decision = {'journalPath': '/tmp/x/install-journal.sqlite'}
-        with patch.object(journal, 'verify_worker_attestation', return_value=manifest) as verify, \
+        # Selected routes attest through the service's windowed re-proofs.
+        with patch.object(worker, 'service_worker_attestation', return_value=manifest) as verify, \
                 patch.object(journal, 'verify_preview_worker_attestation',
                              return_value=manifest) as preview:
             svc.default_attest(decision, proof, 'selected')
             svc.default_attest(decision, proof, 'preview')
             svc.default_attest(decision, proof, 'read_only')
         self.assertEqual(verify.call_count, 1)
+        self.assertEqual(verify.call_args.args, (decision, proof))
         # A pending build's worker start re-hashes its runtime files too.
         self.assertEqual(preview.call_args.args, (decision['journalPath'], manifest))
-        with patch.object(journal, 'verify_worker_attestation', return_value={**manifest, 'x': 1}):
+        with patch.object(worker, 'service_worker_attestation', return_value={**manifest, 'x': 1}):
             with self.assertRaisesRegex(IndexContractError, 'provider_attestation_invalid'):
                 svc.default_attest({}, proof, 'selected')
 

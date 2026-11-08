@@ -1,6 +1,7 @@
 """Inactive migration capture from an issued, pinned v6 reader snapshot."""
 import hashlib
 from contextlib import contextmanager
+from contextvars import ContextVar
 import errno
 import json
 import math
@@ -333,6 +334,7 @@ def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expect
         raise _MigrationObservationChanged(page['observation'])
     base, _, _, side = snapshot.connections
     result, used = [], 0
+    pinned = None  # checks this pinned snapshot cannot change: once per page
     with readers._validation_deadline(snapshot.connections, deadline):
         for member in page['members']:
             if time.monotonic() >= deadline:
@@ -365,8 +367,11 @@ def capture_wiki_bytes(snapshot, *, endpoint, decision, after, deadline, _expect
                 from laya_index_a import _qmd_title
                 title = _qmd_title(body, member['path'])
             else:
+                if pinned is None:
+                    pinned = journal.sidecar_pinned_checks(side, base, decision)
                 proved = journal._sidecar_document_snapshot(side, base, decision, member['path'],
-                                                             deadline=deadline, require_vectors=False)
+                                                             deadline=deadline, require_vectors=False,
+                                                             pinned=pinned)
                 if proved['hash'] != member['hash']:
                     raise IndexContractError('migration_member_changed')
                 body = proved['body']
@@ -432,6 +437,7 @@ def capture_sidecar_fts_corpus(snapshot, *, endpoint, decision, after, deadline)
                             'ORDER BY path COLLATE BINARY LIMIT ?',
                             (path_after, MAX_BATCH + 1)).fetchall()
         result, used = [], 0
+        pinned = None  # checks this pinned snapshot cannot change: once per page
         for path, size, rowid in rows:
             if len(result) == MAX_BATCH:
                 break
@@ -444,8 +450,10 @@ def capture_sidecar_fts_corpus(snapshot, *, endpoint, decision, after, deadline)
                 raise IndexContractError('migration_body_limit')
             if used + size > MAX_BATCH_BYTES:
                 break
+            if pinned is None:
+                pinned = journal.sidecar_pinned_checks(side, base, decision)
             document = journal._sidecar_document_snapshot(side, base, decision, path,
-                deadline=deadline, require_vectors=False, _for_fts_corpus=True)
+                deadline=deadline, require_vectors=False, _for_fts_corpus=True, pinned=pinned)
             if len(document['body'].encode('utf8')) != size:
                 raise IndexContractError('migration_member_changed')
             if type(rowid) is not int:
@@ -1609,6 +1617,9 @@ _DEFERRED_REASONS = frozenset(('migration_space_deferred',))
 _WAITING_REASONS = frozenset(reason for reason in _MIGRATION_REASONS if reason.startswith('switch_'))
 # Integer diagnostics a terminal event may carry (bounded; never text).
 _EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms', 'page_members')
+# One step's published-proof diagnostics (``advance_shadow``): the unlocked
+# preproof's code and ms, and whether the locked step reused a proof.
+_STEP_PROOF = ContextVar('laya_shadow_step_proof', default=None)
 
 # Space pre-check (design 10: old DB + new DB + WAL + reserve, from actual
 # file sizes and the expected copy size; no fixed 2x guarantee is claimed).
@@ -1660,6 +1671,15 @@ def _migration_event(state, trace, outcome, *, reason=None, ms=None):
         import event_log
         fields = {key: value for key, value in (trace.get('fields') or {}).items()
                   if key in _EVENT_FIELDS and type(value) in (int, float)}
+        proof = _STEP_PROOF.get()
+        if proof is not None:
+            fields['preproof'] = event_log.code(proof['preproof'])
+            if type(proof['preproof_ms']) is int:
+                fields['preproof_ms'] = proof['preproof_ms']
+            lookups = proof['lookups']
+            if lookups['hits'] or lookups['misses']:
+                fields['proof_reused'] = int(lookups['hits'] > 0 and not lookups['misses'])
+                fields['proof_misses'] = lookups['misses']
         event_log.emit('migration.shadow', state_root=state, host='worker',
             outcome=outcome, reason=reason, ms=ms, stage=trace['stage'], op=trace['op'],
             migration=trace['migration'], attempt=trace['attempt'], **fields)
@@ -3118,6 +3138,7 @@ def _prove_head_unlocked(project, stack, deadline):
     its own.
     """
     from pathlib import Path
+    started = time.monotonic()
     try:
         # Not _migration_state: the step's own dispatch stays its first call.
         decision = journal.journal.select_route(str(project), action='recall')
@@ -3125,8 +3146,15 @@ def _prove_head_unlocked(project, stack, deadline):
             stack.enter_context(journal.proved_published(
                 journal._state(Path(decision['journalPath']).parent),
                 Path(decision['dbPath']), decision, deadline=deadline))
-    except Exception:
-        pass
+            result = 'ok'
+        else:
+            result = 'route_not_candidate'
+    except Exception as exc:
+        # The step proves again and reports its own failure; this code only
+        # says why the reuse it hoped for was not prepared.
+        value = str(exc)
+        result = value if re.fullmatch(r'[a-z0-9_]{1,80}', value) else type(exc).__name__
+    return result, int((time.monotonic() - started) * 1000)
 
 
 def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None, prepare=True):
@@ -3142,9 +3170,15 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
         raise IndexContractError('reader_snapshot_deadline')
     from contextlib import ExitStack
     with journal.published_proof_reuse(), ExitStack() as stack:
-        _prove_head_unlocked(project, stack, deadline)
-        return _advance_shadow_step(store, project=project, executing_root=executing_root,
-                                    deadline=deadline, vector_spec=vector_spec, prepare=prepare)
+        preproof, preproof_ms = _prove_head_unlocked(project, stack, deadline)
+        with journal.published_proof_lookups() as lookups:
+            token = _STEP_PROOF.set({'preproof': preproof, 'preproof_ms': preproof_ms,
+                                     'lookups': lookups})
+            try:
+                return _advance_shadow_step(store, project=project, executing_root=executing_root,
+                                            deadline=deadline, vector_spec=vector_spec, prepare=prepare)
+            finally:
+                _STEP_PROOF.reset(token)
 
 
 def _advance_shadow_step(store, *, project, executing_root, deadline, vector_spec=None, prepare=True):

@@ -9,6 +9,6 @@ test('automatic bundle upgrade: source, provider, host and status rules', () => 
     env: {...process.env, QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 29 tests/);
+  assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 30 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

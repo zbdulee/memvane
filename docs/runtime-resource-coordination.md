@@ -58,7 +58,23 @@ development execution guard is separate; see
   that check until the worker is ready, so two loads never pass one check.
   Every new worker start (a restart included) first proves the installation's
   full attestation; a read-only proof (bundle drift) only attaches to a
-  running worker. Client connections are capped service-wide (16) before
+  running worker. A v5 installation's attestation re-proves its journal
+  before and after hashing the runtime files, each time under the queue
+  owner and the v5 lifetime and physical windows of the journal-bound root
+  (the hashing holds neither); a busy owner or window defers the start
+  without marking the attestation invalid. A selection that moved is not
+  bad evidence either. An epoch alone (a sync's first write) is not a move:
+  the attestation goes on with the fresh proof. A step that fails or differs
+  while the route, or the bundle journal row epoch aside, moved from what the
+  last accepted step saw (a bundle upgrade to another plugin root, its
+  fence, a restore, another attestation) defers the start for a fresh
+  attempt. A failure on an unmoved selection, or one whose route or journal
+  cannot be read, stays an attestation failure. After three consecutive
+  moved-selection deferrals of one installation and provider fingerprint,
+  further ones count as transient start failures (``startup_failed`` with
+  growing attempts and the usual backoff and cooldown). The
+  read-only proof of a drifted installation takes the same queue owner and
+  v5 windows of the journal-bound root. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a
   backlog of 8, and a full backlog refuses the connect (macOS; on Linux the
   connect waits for the client's own timeout), which the provider reads as
@@ -96,7 +112,10 @@ development execution guard is separate; see
   `wake.sync failed target_preparing_stalled` (streak in the private
   `runtime-wake-preparing.json`). The service logs `resident.adopt waiting
   read_only_no_worker` once when a drifted installation has no worker to
-  attach to.
+  attach to, and `resident.adopt unproved <code>` once per code when an
+  installation's proof fails outright (the code, or only the exception class
+  when it is not a plain code), so a binding that never happens is named in
+  the installation's own log.
 - On the capacity path every sync wake rescans, so the pending fill offers
   each cached member again. A member whose sidecar row is already identical,
   or an unverified card, skips the route proof, the journal write fence and the
@@ -608,8 +627,18 @@ from injected analytical tests; the shared OS reporter always attaches it.
   protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
   A learning client of the same version that needs its trainer interpreter
   replaces the service under that interpreter, which is then remembered.
+  Installs of one release can be bound to either host's copy: the bundle
+  upgrade binds each install to the host that ran it first and seals the
+  other host's copy as its companion. A service running from one copy proves
+  an install bound to the other copy under the same queue owner and v5
+  lifetime and physical windows as its own installs (the v5 plan captured
+  for the journal-bound root), with the hooks' full selected proof inside
+  them (the journal-bound owner copy and the executing copy proven as the
+  same sealed bundle). Writers keep the plan pinned to the root they
+  execute from. It then starts or shares that install's worker as for its
+  own installs.
   A same-version service started from a cache the installations' journals do
-  not approve (the other host's copy of one release) proves them only as
+  not approve (an unsealed or unequal copy of one release) proves them only as
   bundle drift: it attaches read-only and starts no model worker, so it
   reports `readOnlyOnly` while no worker runs or loads and an installation
   waits `read_only_no_worker`. A hook or wake whose own code proves that

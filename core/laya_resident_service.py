@@ -844,30 +844,58 @@ def default_prove(project):
     try:
         return _owned_route(Path(project))
     except Exception as exc:
-        from laya_install_journal import is_bundle_drift, verify_selected_route_read_only
+        from laya_install_journal import is_bundle_drift
         if not is_bundle_drift(exc):
             raise
-        from laya_index_host_route import select_route
-        decision = select_route(str(project), action='update')
-        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
-            raise
-        proof = verify_selected_route_read_only(decision)
-        if (proof.get('readOnlyAllowed') is not True
-                or not isinstance(proof.get('providerManifest'), dict)):
-            raise
+        # Same queue owner and v5 windows as the selected proof.
+        from laya_product_sync_worker import service_read_only_proof
+        try:
+            decision, proof = service_read_only_proof(Path(project))
+        except Exception as fallback:
+            from resource_deferred import ResourceDeferred
+            if isinstance(fallback, ResourceDeferred):
+                raise
+            raise exc from fallback
         return decision, proof, 'read_only'
+
+
+# Consecutive moved-selection deferrals before they count as start failures.
+MOVED_DEFER_LIMIT = 3
+
+
+def _deferral(exc):
+    """A busy queue owner, v5 window or resource gate, never bad evidence."""
+    from resource_deferred import ResourceDeferred
+    return isinstance(exc, ResourceDeferred)
+
+
+def _proof_code(exc):
+    """An event-safe reason for a failed proof: its code, else its class."""
+    code = str(exc)
+    return code if re.fullmatch(r'[a-z0-9_]{1,80}', code) else type(exc).__name__
+
+
+def _route_hint(project):
+    """The route decision naming an install's event log; never a proof."""
+    import laya_install_journal as journal
+    from laya_index_host_route import select_route
+    # Classification must never repair a hot journal image on this path.
+    with journal.read_only_journals():
+        return select_route(str(project), action='update')
 
 
 def default_attest(decision, proof, mode):
     """Full attestation before a worker starts or an installation binds.
 
-    Selected: the journal-bound record, then every runtime file re-hashed.
+    Selected: the journal-bound record, then every runtime file re-hashed;
+    a v5 journal's re-proofs take the queue owner and the v5 windows of the
+    journal-bound root, and a busy window defers (``ResourceDeferred``).
     Preview: the preview proof validated the record; re-hash its runtime files.
     Read-only proofs never start a worker and attach without re-hashing.
     """
     if mode == 'selected':
-        from laya_install_journal import verify_worker_attestation
-        if verify_worker_attestation(decision) != proof['providerManifest']:
+        from laya_product_sync_worker import service_worker_attestation
+        if service_worker_attestation(decision, proof) != proof['providerManifest']:
             _fail('provider_attestation_invalid')
     elif mode == 'preview':
         from laya_install_journal import verify_preview_worker_attestation
@@ -1006,6 +1034,10 @@ class Service:
         self.retry = {}
         # Why an installation is not adopted yet, reported once per episode.
         self.waiting = {}
+        # Codes already reported per installation since its last bind.
+        self.unproved = {}
+        # Consecutive moved-selection deferrals per installation (fingerprint, n).
+        self.moved = {}
         self.inflight = 0
         self.inflight_done = threading.Condition(self.lock)
         self.draining = threading.Event()
@@ -1442,31 +1474,74 @@ class Service:
                               or worker.alive() else 'worker_exited')
 
     def _forget(self, project):
+        with self.lock:
+            self.unproved.pop(project, None)
+            self.moved.pop(project, None)
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
         with suppress(OSError):
             os.unlink(self.root / PROJECTS / name)
+
+    def _deferred_retry(self, project, manifest, exc):
+        """Seconds until a deferred attestation is tried again.
+
+        A busy window retries in 5 s. A moved selection does too for its
+        first ``MOVED_DEFER_LIMIT`` consecutive deferrals of one installation
+        and provider fingerprint; an upgrade settles within them. Past that
+        the deferrals count as transient start failures: the owner state
+        records ``startup_failed`` with growing attempts, so the durable
+        backoff (and the cooldown after the last attempt) bounds the
+        re-hashing instead of a 5 s loop.
+        """
+        from laya_embed_resident import _MAX_FAILURES, _write_state
+        if str(exc) != 'worker_selection_changed':
+            return 5
+        fingerprint = manifest.get('embeddingFingerprint')
+        with self.lock:
+            seen, count = self.moved.get(project, (None, 0))
+            count = count + 1 if seen == fingerprint else 1
+            self.moved[project] = (fingerprint, count)
+        if count <= MOVED_DEFER_LIMIT:
+            return 5
+        attempts = min(_MAX_FAILURES, count - MOVED_DEFER_LIMIT)
+        with suppress(Exception):
+            _write_state(manifest, 'startup_failed', attempts=attempts)
+        return min(300, 5 * 2 ** attempts)
 
     def _later(self, project, seconds):
         with self.lock:
             self.retry[project] = time.monotonic() + seconds
 
-    def _report_waiting(self, project, decision, reason):
-        """One ``resident.adopt waiting`` event per installation and reason.
+    def _report_waiting(self, project, decision, reason, outcome='waiting'):
+        """One ``resident.adopt`` event per installation, outcome and reason.
 
         Sync wakes only see ``preparing`` while the service declines to start
-        a worker; this names the cause in the installation's own log.
+        a worker; this names the cause in the installation's own log. A
+        ``waiting`` reason is reported again when it changes; each
+        ``unproved`` code once until the installation binds (at most 16).
+        ``decision`` may be a callable that finds it, called only on a new
+        episode.
         """
         with self.lock:
-            if self.waiting.get(project) == reason:
-                return
-            self.waiting[project] = reason
+            if outcome == 'unproved':
+                # One event per code until the installation binds, however
+                # the codes alternate between retries.
+                seen = self.unproved.setdefault(project, set())
+                if reason in seen or len(seen) >= 16:
+                    return
+                seen.add(reason)
+            else:
+                if self.waiting.get(project) == reason:
+                    return
+                self.waiting[project] = reason
         targets = []
         with suppress(Exception):
             import event_log
+            if callable(decision):
+                decision = decision()
             state_root = event_log.state_root_for_decision(decision)
             if state_root is not None:
                 targets.append((state_root, event_log.install_of(decision)))
-        _event(targets, 'resident.adopt', 'waiting', reason)
+        _event(targets, 'resident.adopt', outcome, reason)
 
     def _adopt(self, project):
         from laya_embed_resident import _owner_identity, _write_state
@@ -1478,9 +1553,14 @@ class Service:
             manifest = proof['providerManifest']
             if decision.get('projectRoot') != project:
                 _fail('provider_owner_identity_invalid')
-        except Exception:
+        except Exception as exc:
             if not os.path.isdir(project):
                 self._forget(project)  # the project is gone: stop re-proving it
+            else:
+                # Without this the install's resident state stays at the
+                # client's "starting" and nothing says why it is never bound.
+                self._report_waiting(project, lambda: _route_hint(project),
+                                     _proof_code(exc), outcome='unproved')
             self._later(project, 5)
             return
         path = manifest['serviceSocketPath']
@@ -1520,8 +1600,13 @@ class Service:
             # the path that binds, never on a tick that merely waits.
             try:
                 self.attest(decision, proof, mode)
-            except Exception:
+            except Exception as exc:
                 os.close(owner_fd)
+                if _deferral(exc):
+                    # A busy queue owner or v5 window, or a moved selection:
+                    # not evidence of a bad attestation, try again.
+                    self._later(project, self._deferred_retry(project, manifest, exc))
+                    return
                 with suppress(Exception):
                     _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
                 self._later(project, 60)
@@ -1559,6 +1644,8 @@ class Service:
             self.bindings[project] = binding
             self.retry.pop(project, None)
             self.waiting.pop(project, None)
+            self.unproved.pop(project, None)
+            self.moved.pop(project, None)
         if binding.events is not None:
             _event([binding.events], 'resident.adopt', 'adopted', mode=mode,
                    attested=attested)
@@ -1646,10 +1733,14 @@ class Service:
                 # full attestation (model, worker, native closure, runtime files)
                 # proves again; the frozen provider's own check hashes five files.
                 self.attest(decision, proof, mode)
-            except Exception:
+            except Exception as exc:
                 # This installation's evidence failed, not the shared worker.
                 with self.lock:
                     worker.loading = False
+                if _deferral(exc):
+                    # A busy window or a moved selection, not bad evidence.
+                    self._later(project, self._deferred_retry(project, manifest, exc))
+                    return
                 with suppress(Exception):
                     _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
                 self._later(project, 60)

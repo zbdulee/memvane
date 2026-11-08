@@ -196,6 +196,22 @@ def _readonly(path, state, *, recover=False):
 
 
 _PROOF_REUSE = ContextVar('laya_published_proof_reuse', default=None)
+_PROOF_LOOKUPS = ContextVar('laya_published_proof_lookups', default=None)
+
+
+@contextmanager
+def published_proof_lookups():
+    """Count reuse-cache hits and misses of ``_published_snapshot`` in this block.
+
+    Diagnostics only: ``{'hits': n, 'misses': n}``; a lookup happens only
+    inside ``published_proof_reuse``. Never changes what is proved.
+    """
+    counts = {'hits': 0, 'misses': 0}
+    token = _PROOF_LOOKUPS.set(counts)
+    try:
+        yield counts
+    finally:
+        _PROOF_LOOKUPS.reset(token)
 
 
 @contextmanager
@@ -266,6 +282,9 @@ def _published_snapshot(db, decision, *, deadline=None, allow_exclusion_advance=
         if identity is not None:
             key = (identity, scope, decision['dbIncarnation'], gen, manifest, entries)
             seal = cache.get(key)
+    lookups = _PROOF_LOOKUPS.get() if cache is not None else None
+    if lookups is not None:
+        lookups['hits' if seal is not None else 'misses'] += 1
     if seal is not None:
         _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
         seal = dict(seal)
@@ -626,24 +645,36 @@ def _legacy_sidecar_commitment(db, identity, *, deadline=None, _writer_transacti
     return {'rows':count,'digest':digest.hexdigest()}
 
 
-def _sidecar_document_snapshot(side, base, decision, path, *, deadline, require_vectors=True,
-                               _for_fts_corpus=False):
-    """Check one pinned row; the caller must separately validate the snapshot."""
-    import time
-    from laya_index_a import LayaIndexA, _valid_relative_path
-    from laya_index_host_route import wiki_index_roots
-    from laya_index_vector import _read_chunk_set
-    _need(type(require_vectors) is bool and type(_for_fts_corpus) is bool
-          and (not _for_fts_corpus or not require_vectors), 'reader_snapshot_input_invalid')
+class SidecarPinnedChecks:
+    """Checks one pinned snapshot cannot change, proved once for a page.
+
+    Issued only by ``sidecar_pinned_checks`` for these exact two connections
+    and this exact decision object while both hold their query_only read
+    transaction. A caller creates it inside the same pinned block that walks
+    the page and drops it when that block ends, so it never outlives the read
+    transaction it was proved in. Each row still repeats the pin check and
+    its own row evidence.
+    """
+    __slots__ = ('_side', '_base', '_decision')
+
+    def __init__(self, side, base, decision):
+        self._side, self._base, self._decision = side, base, decision
+
+    def covers(self, side, base, decision):
+        return self._side is side and self._base is base and self._decision is decision
+
+
+def _require_pinned(side, base):
     _need(side.in_transaction and base.in_transaction
           and side.execute('PRAGMA query_only').fetchone() == (1,)
           and base.execute('PRAGMA query_only').fetchone() == (1,),
           'reader_snapshot_unpinned')
-    _need(time.monotonic() < deadline, 'reader_snapshot_deadline')
-    roots=wiki_index_roots(decision['collections'])
-    _need(type(path) is str and _valid_relative_path(path)
-          and any(path.startswith(name+'/') and _valid_relative_path(path[len(name)+1:])
-                  for name in roots), 'reader_sidecar_document_changed')
+
+
+def sidecar_pinned_checks(side, base, decision):
+    """Sidecar identity, base header, incarnation and profile, once per page."""
+    from laya_index_a import LayaIndexA
+    _require_pinned(side, base)
     _sidecar_identity(side,decision)
     LayaIndexA._check_header(base)
     _need(base.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
@@ -653,6 +684,34 @@ def _sidecar_document_snapshot(side, base, decision, path, *, deadline, require_
                        'FROM vector_profiles WHERE profile_id=?', (profile['profileId'],)).fetchone()
           == (profile['modelId'],profile['embeddingFingerprint'],profile['dimension'],profile['metric']),
           'reader_profile_changed')
+    return SidecarPinnedChecks(side, base, decision)
+
+
+def _sidecar_document_snapshot(side, base, decision, path, *, deadline, require_vectors=True,
+                               _for_fts_corpus=False, pinned=None):
+    """Check one pinned row; the caller must separately validate the snapshot.
+
+    ``pinned`` (from ``sidecar_pinned_checks`` on these connections) skips
+    only the checks that cannot change inside the pinned snapshot; without it
+    every call proves them again.
+    """
+    import time
+    from laya_index_a import _valid_relative_path
+    from laya_index_host_route import wiki_index_roots
+    from laya_index_vector import _read_chunk_set
+    _need(type(require_vectors) is bool and type(_for_fts_corpus) is bool
+          and (not _for_fts_corpus or not require_vectors), 'reader_snapshot_input_invalid')
+    _require_pinned(side, base)
+    _need(time.monotonic() < deadline, 'reader_snapshot_deadline')
+    roots=wiki_index_roots(decision['collections'])
+    _need(type(path) is str and _valid_relative_path(path)
+          and any(path.startswith(name+'/') and _valid_relative_path(path[len(name)+1:])
+                  for name in roots), 'reader_sidecar_document_changed')
+    if pinned is None:
+        pinned=sidecar_pinned_checks(side, base, decision)
+    _need(type(pinned) is SidecarPinnedChecks and pinned.covers(side, base, decision),
+          'reader_snapshot_unpinned')
+    profile=decision['vectorProfile']
     row=side.execute('SELECT rowid,hash,title,body,profile_id,chunk_count FROM docs WHERE path=?',
                      (path,)).fetchone()
     _need(row is not None, 'reader_sidecar_document_changed')
