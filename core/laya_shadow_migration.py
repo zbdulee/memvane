@@ -4375,7 +4375,7 @@ def _classify_vectors(store, base, *, scope, generation, members, names, seal, p
                       deadline, write, stop_at=None):
     """Classify a page of candidate members; copy exact-input sets when ``write``.
 
-    The page runs in one candidate-store session (``BlobStore.vector_page``):
+    The page runs in one candidate-store session (``BlobStore._vector_page``):
     the store header, blob admissions, recipe, profile and each member's
     inputs are proved once. Each member is its own savepoint. With
     ``stop_at`` the page stops before a member once that time has passed,
@@ -4396,7 +4396,7 @@ def _classify_vectors(store, base, *, scope, generation, members, names, seal, p
     recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
     compatible = all(profile[key] == seal[key] for key in ('model_id', 'embedding_fingerprint', 'dimension'))
     page = []
-    with store.vector_page(write=write) as session:
+    with store._vector_page(write=write) as session:
         for path, blob in members:
             if time.monotonic() >= deadline or (page and _out_of_budget(stop_at)):
                 if page and stop_at is not None:

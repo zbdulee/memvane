@@ -340,7 +340,7 @@ def _worktree_record(row, repository, policy_digest):
 
 
 class _VectorPage:
-    """The open transaction and caches of one ``BlobStore.vector_page``."""
+    """The open transaction and caches of one ``BlobStore._vector_page``."""
 
     def __init__(self, store, db, write):
         self.store, self.db, self.write = store, db, write
@@ -497,7 +497,7 @@ class BlobStore:
             v.fail('reader_write_forbidden')
 
     @contextmanager
-    def vector_page(self, *, write):
+    def _vector_page(self, *, write):
         """One store session for a page of vector-copy work (shadow migration).
 
         The page's single transaction checks the store header once; every

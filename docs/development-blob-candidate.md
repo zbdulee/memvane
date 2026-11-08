@@ -68,13 +68,13 @@ candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인
 | `vector_input_sha(blob_sha, recipe_id, profile_id, seq)` | 실제 provider 문서 입력 문자열의 UTF-8 SHA |
 | `embedding_inputs(blob_sha, recipe_id, profile_id)` | 같은 입력 생성기를 사용하는 순서 있는 문자열 목록 |
 | `put_embedding_set(blob_sha, recipe_id, profile_id, rows)` / `vectors(...)` | 완전한 vector set의 digest / 행 |
-| `vector_page(*, write)` | shadow migration vector page 하나의 session. 안에서 부르는 store 호출은 이 transaction 하나를 쓰고, header·blob admission·recipe·profile·chunk set·입력 목록을 page당 한 번 증명한다. `member()`는 member 하나를 savepoint로 감싸 실패한 member만 되돌린다 |
 | `put_fingerprint(spec)` / `fingerprint(id)` | 원문 **metadata** 지문 ID / 값 |
 | `put_attestation(spec)` / `attestation(id)` | 개별 provenance를 묶은 trust digest / 값 |
 | `verify()` | schema·FK·내용·recipe·set·지문·attestation의 전체 검증, 성공 시 `True` |
 | `counts()` / `close()` | 테이블별 행 수 / 연결 종료 |
 
 `BlobStoreError.reason`은 원문을 포함하지 않는 거절 코드다.
+shadow migration의 vector page는 내부 `_vector_page(write=...)`로 store transaction 하나를 쓴다. 안의 store 호출은 그 transaction을 쓰고 header·blob admission·recipe·profile·chunk set·입력 목록을 page당 한 번 증명하며, member마다 savepoint를 둔다. 공개 API가 아니다.
 원문 body를 삽입하거나 읽는 공개 API는 없다. `document`가 반환하는 body는
 위의 wiki admission을 통과한 카드다. 전체 `verify`는 관리 작업이며 검색 경로의 API가 아니다.
 
