@@ -2044,6 +2044,7 @@ def shadow_pass(project, *, executing_root=None):
     is True when the pass offered the next one (``_shadow_rewake``).
     """
     import event_log
+    import laya_journal_reader as reader
     import laya_shadow_migration as migration
     project = Path(project)
     executing_root = Path(_writer_executing_root() if executing_root is None else executing_root)
@@ -2064,6 +2065,10 @@ def shadow_pass(project, *, executing_root=None):
     provider = _shadow_vector_spec(decision)
     status['state'], status['reason'] = 'progressed', None
     store = None
+    # The migration steps of this pass share one published-head proof while
+    # the v6 base store's files and head hold (published_proof_reuse); the
+    # reader-switch steps prove on their own.
+    proofs = {}
     try:
         while status['steps'] < SHADOW_STEPS_PER_PASS:
             if status['steps']:
@@ -2088,9 +2093,10 @@ def shadow_pass(project, *, executing_root=None):
                 # Only a pass's first step may start the lock-free prepare,
                 # with the whole prepare budget; later it waits for a pass.
                 first = not status['steps']
-                stage, current, store = _shadow_step(
-                    decision, state, executing_root, store,
-                    started + SHADOW_PREPARE_SECONDS if first else deadline, provider, prepare=first)
+                with reader.published_proof_reuse(proofs):
+                    stage, current, store = _shadow_step(
+                        decision, state, executing_root, store,
+                        started + SHADOW_PREPARE_SECONDS if first else deadline, provider, prepare=first)
                 if stage == 'prepare_deferred':
                     status['reason'] = 'prepare_next_pass'
                     break

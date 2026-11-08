@@ -670,6 +670,82 @@ class DriverChecks(unittest.TestCase):
                              ('waiting', 'switch_bridge_missing', False), status)
             self.assertEqual(len(offers), before)
 
+    def counted_head_proofs(self):
+        """Count full published-head proofs (the FTS recomputation of ``_published_snapshot``)."""
+        import laya_index_a
+        original = laya_index_a.LayaIndexA._generation_fts_matches
+        proofs = []
+
+        def counted(index, gen, *args, **kwargs):
+            if sys._getframe(1).f_code.co_name == '_published_snapshot':
+                proofs.append(gen)
+            return original(index, gen, *args, **kwargs)
+        return proofs, mock.patch.object(laya_index_a.LayaIndexA, '_generation_fts_matches', counted)
+
+    def test_one_pass_proves_the_published_head_once_while_its_files_hold(self):
+        # A pass of several locked steps proves the unchanged v6 head once;
+        # each step used to prove it again inside its own step budget.
+        seed, case = self.seeded()
+        W, M = self.W, self.M
+        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
+        absent.start()
+        self.addCleanup(absent.stop)
+        proofs, counting = self.counted_head_proofs()
+        calls, real = [], M.advance_shadow
+
+        def advance(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+        per_pass = []
+        with self.authority(seed, case), counting, mock.patch.object(M, 'advance_shadow', advance):
+            for _ in range(16):
+                proved, stepped = len(proofs), len(calls)
+                W.shadow_pass(case.project)
+                per_pass.append((len(calls) - stepped, len(proofs) - proved))
+                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
+                    break
+        print('head_proofs_per_pass', per_pass, flush=True)
+        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', per_pass)
+        self.assertTrue(any(steps > 1 for steps, _ in per_pass), per_pass)
+        for steps, proved in per_pass:
+            self.assertLessEqual(proved, 1, per_pass)
+            if steps:
+                self.assertEqual(proved, 1, per_pass)
+
+    def test_head_proof_reuse_follows_file_identity_and_scope(self):
+        seed, case = self.seeded()
+        import laya_journal_reader as reader
+        proofs, counting = self.counted_head_proofs()
+        with self.authority(seed, case), counting:
+            decision = reader.journal.select_route(str(case.project), action='recall')
+            state, db = Path(decision['journalPath']).parent, Path(decision['dbPath'])
+            with reader.published_proof_reuse():
+                first = reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                again = reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                self.assertEqual((again, len(proofs)), (first, 1))
+                # Any change of the main file's identity proves again.
+                info = os.stat(db)
+                os.utime(db, ns=(info.st_atime_ns, info.st_mtime_ns + 1000))
+                self.assertEqual(reader._published(state, db, decision, deadline=time.monotonic() + 30), first)
+                self.assertEqual(len(proofs), 2)
+                self.assertEqual(reader._published(state, db, decision, deadline=time.monotonic() + 30), first)
+                self.assertEqual(len(proofs), 2)
+                # A writer commit changes only the WAL: that proves again too.
+                wal = Path(str(db) + '-wal')
+                print('head_proof_wal_present', wal.exists(), flush=True)
+                if wal.exists():
+                    info = os.stat(wal)
+                    os.utime(wal, ns=(info.st_atime_ns, info.st_mtime_ns + 1000))
+                    reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                    self.assertEqual(len(proofs), 3)
+            # Nothing outlives the scope.
+            base = len(proofs)
+            self.assertEqual(reader._published(state, db, decision, deadline=time.monotonic() + 30), first)
+            self.assertEqual(len(proofs), base + 1)
+            with reader.published_proof_reuse():
+                reader._published(state, db, decision, deadline=time.monotonic() + 30)
+            self.assertEqual(len(proofs), base + 2)
+
     def parity_limits(self, overflow):
         """Patch the parity page capture: a page above ``overflow`` members hits the step deadline."""
         M, limits, real = self.M, [], self.M.capture_wiki_bytes

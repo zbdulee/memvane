@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import closing, contextmanager, ExitStack
+from contextvars import ContextVar
 from dataclasses import dataclass
 import fcntl
 import hashlib
@@ -194,6 +195,45 @@ def _readonly(path, state, *, recover=False):
         raise journal.JournalEvidenceError('reader_store_invalid') from exc
 
 
+_PROOF_REUSE = ContextVar('laya_published_proof_reuse', default=None)
+
+
+@contextmanager
+def published_proof_reuse(cache=None):
+    """Within this block, reuse a published-head proof on an unchanged base store.
+
+    ``_published_snapshot`` proves every member body, the generation FTS and
+    the vector seal, which is O(generation). Inside this block a later
+    snapshot of the same store reuses that proof when the base file identity
+    (main and WAL: device, inode, size, mtime_ns, the ``seal_reuse`` key) and
+    the snapshot's own head row (generation, source manifest, entries digest,
+    scope, incarnation) are unchanged; anything else proves again. The head
+    row and exclusions are still read in every snapshot. ``cache`` lets one
+    caller share a dict across blocks (one shadow pass); nested blocks join
+    the enclosing one. Nothing outlives the dict or crosses processes. Same
+    grade as ``seal_reuse``: a change that keeps the file identity and the
+    head row (an in-place edit of a published generation outside every
+    writer path, with an identical size and mtime) is not seen.
+    """
+    if cache is None:
+        cache = _PROOF_REUSE.get()
+        if cache is None:
+            cache = {}
+    token = _PROOF_REUSE.set(cache)
+    try:
+        yield cache
+    finally:
+        _PROOF_REUSE.reset(token)
+
+
+def _proof_identity(db):
+    from laya_index_vector import _database_identity
+    main = [row[2] for row in db.execute('PRAGMA database_list') if row[1] == 'main']
+    if len(main) != 1 or not main[0]:
+        return None
+    return _database_identity(SimpleNamespace(path=main[0]))
+
+
 def _published_snapshot(db, decision, *, deadline=None, allow_exclusion_advance=False,
                         _proof=None):
     from laya_index_a import LayaIndexA, _StreamDigest, _valid_relative_path
@@ -220,18 +260,31 @@ def _published_snapshot(db, decision, *, deadline=None, allow_exclusion_advance=
                   or (kind=='hash' and isinstance(value,str) and len(value)==64
                       and all(ch in '0123456789abcdef' for ch in value))
                   for kind,value in exclusions), 'reader_exclusions_changed')
-    digest = _StreamDigest(scope)
-    for item, hashed, eligible, body in db.execute("""SELECT m.path,m.hash,m.eligible,c.body
-                FROM membership m LEFT JOIN content c ON c.hash=m.hash
-                WHERE m.gen=? AND m.scope=? ORDER BY m.path COLLATE BINARY""", (gen, scope)):
+    cache, key, seal = _PROOF_REUSE.get(), None, None
+    if cache is not None:
+        identity = _proof_identity(db)
+        if identity is not None:
+            key = (identity, scope, decision['dbIncarnation'], gen, manifest, entries)
+            seal = cache.get(key)
+    if seal is not None:
         _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
-        _need(isinstance(body, str) and _sha(body.encode('utf8')) == hashed,
-                  'reader_member_changed')
-        digest.add(item, hashed, eligible)
-    _need(digest.hexdigest() == entries, 'reader_manifest_changed')
-    index = SimpleNamespace(db=db)
-    _need(LayaIndexA._generation_fts_matches(index, gen, deadline=deadline), 'reader_fts_changed')
-    seal = verify_generation_seal(index, gen, deadline=deadline)
+        seal = dict(seal)
+    else:
+        digest = _StreamDigest(scope)
+        for item, hashed, eligible, body in db.execute("""SELECT m.path,m.hash,m.eligible,c.body
+                    FROM membership m LEFT JOIN content c ON c.hash=m.hash
+                    WHERE m.gen=? AND m.scope=? ORDER BY m.path COLLATE BINARY""", (gen, scope)):
+            _need(deadline is None or time.monotonic() < deadline, 'reader_snapshot_deadline')
+            _need(isinstance(body, str) and _sha(body.encode('utf8')) == hashed,
+                      'reader_member_changed')
+            digest.add(item, hashed, eligible)
+        _need(digest.hexdigest() == entries, 'reader_manifest_changed')
+        index = SimpleNamespace(db=db)
+        _need(LayaIndexA._generation_fts_matches(index, gen, deadline=deadline), 'reader_fts_changed')
+        seal = verify_generation_seal(index, gen, deadline=deadline)
+        # A write between the identity read and the proof: not reused.
+        if key is not None and _proof_identity(db) == key[0]:
+            cache[key] = MappingProxyType(dict(seal))
     profile = decision['vectorProfile']
     for left, right in (('profile_id', 'profileId'), ('model_id', 'modelId'),
                             ('embedding_fingerprint', 'embeddingFingerprint'),
@@ -243,9 +296,9 @@ def _published_snapshot(db, decision, *, deadline=None, allow_exclusion_advance=
     return gen, manifest, entries, seal['rows_digest'], exclusions
 
 
-def _published(state, path, decision):
+def _published(state, path, decision, *, deadline=None):
     with _readonly(path, state) as db:
-        published = _published_snapshot(db, decision, allow_exclusion_advance=True)
+        published = _published_snapshot(db, decision, deadline=deadline, allow_exclusion_advance=True)
         epoch = db.execute('SELECT rev_epoch FROM generations WHERE scope=? AND gen=?',
                            (decision['scopeId'], published[0])).fetchone()
         if epoch is not None and epoch[0] < len(published[4]):
