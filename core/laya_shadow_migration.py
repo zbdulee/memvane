@@ -1579,6 +1579,12 @@ _MIGRATION_REASONS |= frozenset(('switch_parity_missing', 'switch_catchup_stale'
 _MIGRATION_REASONS |= frozenset(('migration_vector_invalid', 'migration_vector_spec_invalid',
                                  'migration_vector_queries_invalid', 'migration_vectors_incomplete',
                                  'migration_semantic_parity_mismatch'))
+# Step-deadline codes of the vector seal proof and the checkout observation:
+# the same grade as ``reader_snapshot_deadline`` (a driver error that rewakes
+# within the error streak; a retry at the parity seal).
+_STEP_DEADLINE_REASONS = frozenset(('reader_snapshot_deadline', 'vector_deadline_exceeded',
+                                    'checkout_budget_exhausted'))
+_MIGRATION_REASONS |= _STEP_DEADLINE_REASONS
 
 
 # Operations in shadow order (``op`` of every ``migration.shadow`` event);
@@ -3176,7 +3182,7 @@ _PARITY_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'observ
                   'source_revision', 'vectors', 'cursor', 'pages', 'members', 'prompts',
                   'digest', 'compared', 'seal', 'attempt', 'discarded_pages')
 # Seal outcomes that leave the intent unchanged and only ask for a later step.
-_PARITY_SEAL_RETRY_REASONS = frozenset(('sync_owner_busy', 'reader_snapshot_deadline'))
+_PARITY_SEAL_RETRY_REASONS = frozenset(('sync_owner_busy',)) | _STEP_DEADLINE_REASONS
 
 
 def _check_parity_record(record):

@@ -670,6 +670,22 @@ class DriverChecks(unittest.TestCase):
                              ('waiting', 'switch_bridge_missing', False), status)
             self.assertEqual(len(offers), before)
 
+    def test_vector_and_checkout_deadlines_are_migration_reasons(self):
+        seed, case = self.seeded()
+        M = self.M
+        import laya_blob_values as values
+        for exc in (IndexContractError('vector_deadline_exceeded'),
+                    values.BlobStoreError('checkout_budget_exhausted')):
+            reason = str(exc)
+            self.assertIn(reason, M._MIGRATION_REASONS)
+            self.assertIn(reason, M._PARITY_SEAL_RETRY_REASONS)
+            before = len(self.events(case))
+            with self.assertRaises(ValueError):
+                with M._migration_trace(case.state, 'copy', 'copy'):
+                    raise exc
+            shadow = [e for e in self.events(case)[before:] if e['event'] == 'migration.shadow']
+            self.assertEqual([(e['outcome'], e['reason']) for e in shadow], [('error', reason)])
+
     def test_driver_failure_never_changes_the_sync_result(self):
         W = self.W
         for result in ({'state': 'indexed', 'generation': 'g'}, {'state': 'unchanged'}):
