@@ -1,4 +1,5 @@
 """Synthetic compatible legacy vector copy and semantic parity for the private shadow."""
+from contextlib import ExitStack
 import hashlib
 import importlib
 import importlib.util
@@ -446,50 +447,131 @@ class VectorPageChecks(VectorStepSetup, unittest.TestCase):
 class VectorStepChecks(VectorStepSetup, unittest.TestCase):
     """``advance_vectors`` records progress at the last finished member."""
 
-    def test_budget_inside_a_page_records_the_last_finished_member(self):
+    def caught_up(self):
+        """The 3-member fixture migration at caught_up; one page holds all three."""
         seed, case, store, good = self.build()
         migration = self.migration
-        views = importlib.import_module('laya_view_store')
-        intent_path = case.state / 'shadow-migration-intent.json'
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(seed.authority())
+        stack.enter_context(mock.patch.object(migration, 'MAX_BATCH', 3))
+        migration.begin_migration(store, worktree_id=self.worktree['worktreeId'],
+            project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
+        for _ in range(40):
+            result = migration.advance_shadow(store, project=case.project, executing_root=case.plugin,
+                                              deadline=time.monotonic() + 60)
+            if result['migration_state'] == 'caught_up':
+                break
+        self.assertEqual(result['migration_state'], 'caught_up')
+        generation = result['intent']['published']['generation']
+        rows = store._db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
+                                 'ORDER BY path', (generation,)).fetchall()
+        self.intent_path = case.state / 'shadow-migration-intent.json'
+        self.assertEqual(len(rows), 3)
+        return [row[0] for row in rows], dict(rows), generation
 
-        def step(vector_spec=None):
-            return migration.advance_shadow(store, project=case.project, executing_root=case.plugin,
-                                            deadline=time.monotonic() + 60, vector_spec=vector_spec)
-        with seed.authority(), mock.patch.object(migration, 'MAX_BATCH', 3):
-            migration.begin_migration(store, worktree_id=self.worktree['worktreeId'],
-                project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
-            for _ in range(40):
-                result = step()
-                if result['migration_state'] == 'caught_up':
-                    break
-            self.assertEqual(result['migration_state'], 'caught_up')
-            members = [row[0] for row in store._db.execute(
-                'SELECT path FROM wiki_members WHERE gen_id=? AND eligible=1 ORDER BY path',
-                (result['intent']['published']['generation'],))]
-            self.assertEqual(len(members), 3)
-            puts, put_patch = self.counting(self.blobs.BlobStore, 'put_embedding_set')
-            observes, observe_patch = self.counting(views.ViewStore, '_observe')
-            with put_patch, observe_patch, mock.patch.object(
-                    migration, '_out_of_budget', side_effect=lambda _stop: len(puts) >= 1):
-                first = migration.advance_vectors(store, project=case.project, executing_root=case.plugin,
-                                                  vector_spec=good, deadline=time.monotonic() + 60)
-            record = first['vectors']
-            self.assertEqual((record['cursor'], record['copied'], record['complete']),
-                             (members[0], 1, False))
-            self.assertEqual(json.loads(intent_path.read_text())['vectors'], record)
-            # One closing checkout observation per step (the opening one is capture_view).
-            self.assertLessEqual(len(observes), 1)
-            del puts[:]
-            with put_patch:
-                second = migration.advance_vectors(store, project=case.project, executing_root=case.plugin,
-                                                   vector_spec=good, deadline=time.monotonic() + 60)
-            blobs = dict(store._db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=?',
-                                           (result['intent']['published']['generation'],)).fetchall())
-            self.assertEqual(puts[0][0], blobs[members[1]])
-            final = second['vectors']
-            self.assertTrue(final['complete'])
-            self.assertEqual((final['total'], final['copied'], final['deferred']['input_differs']), (3, 2, 1))
-            self.assertEqual(self.counts()['embedding_sets'], 2)
+    def advance(self, deadline=60):
+        return self.migration.advance_vectors(self.store, project=self.case.project,
+                                              executing_root=self.case.plugin, vector_spec=self.good,
+                                              deadline=time.monotonic() + deadline)
+
+    def test_budget_inside_a_page_records_the_last_finished_member(self):
+        members, blobs, _generation = self.caught_up()
+        migration, views = self.migration, importlib.import_module('laya_view_store')
+        puts, put_patch = self.counting(self.blobs.BlobStore, 'put_embedding_set')
+        observes, observe_patch = self.counting(views.ViewStore, '_observe')
+        with put_patch, observe_patch, mock.patch.object(
+                migration, '_out_of_budget', side_effect=lambda _stop: len(puts) >= 1):
+            first = self.advance()
+        record = first['vectors']
+        self.assertEqual((record['cursor'], record['copied'], record['complete']), (members[0], 1, False))
+        self.assertEqual(json.loads(self.intent_path.read_text())['vectors'], record)
+        # One closing checkout observation per step (the opening one is capture_view).
+        self.assertLessEqual(len(observes), 1)
+        del puts[:]
+        with put_patch:
+            second = self.advance()
+        self.assertEqual(puts[0][0], blobs[members[1]])
+        final = second['vectors']
+        self.assertTrue(final['complete'])
+        self.assertEqual((final['total'], final['copied'], final['deferred']['input_differs']), (3, 2, 1))
+        self.assertEqual(self.counts()['embedding_sets'], 2)
+
+    def test_member_running_past_the_real_member_deadline_still_records_progress(self):
+        # The second member's v6 read waits out the actual member deadline
+        # (real clock). It is rolled back alone; the finish reserve still
+        # records the first member, so store and intent agree.
+        members, _blobs, _generation = self.caught_up()
+        migration = self.migration
+        budget, real_classify, real_legacy, calls = {}, migration._classify_vectors, migration._legacy_vector_set, []
+
+        def classify(*args, **kwargs):
+            budget['member'] = kwargs['deadline']
+            return real_classify(*args, **kwargs)
+
+        def legacy(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                while time.monotonic() < budget['member']:
+                    time.sleep(.01)
+            return real_legacy(*args, **kwargs)
+        with mock.patch.object(migration, '_classify_vectors', side_effect=classify), \
+                mock.patch.object(migration, '_legacy_vector_set', side_effect=legacy):
+            result = self.advance(deadline=2.5)
+        record = result['vectors']
+        self.assertEqual((record['cursor'], record['copied'], record['complete']), (members[0], 1, False))
+        self.assertEqual(json.loads(self.intent_path.read_text())['vectors'], record)
+        self.assertEqual(self.counts()['embedding_sets'], 1)
+        final = self.advance()['vectors']
+        self.assertEqual((final['complete'], final['copied']), (True, 2))
+        self.assertEqual(self.counts()['embedding_sets'], 2)
+
+    def test_finish_that_does_not_fit_rolls_the_page_back(self):
+        # The closing checkout check runs past the step deadline: nothing of
+        # the page is kept, so the candidate store holds no set the intent
+        # does not record.
+        members, _blobs, _generation = self.caught_up()
+        views = importlib.import_module('laya_view_store')
+        real_observe, deadlines = views.ViewStore._observe, []
+        before = self.intent_path.read_bytes()
+
+        def slow_observe(store, entry, *, deadline=None, **kwargs):
+            deadlines.append(deadline)
+            while time.monotonic() < deadline:
+                time.sleep(.01)
+            return real_observe(store, entry, deadline=deadline, **kwargs)
+        with mock.patch.object(views.ViewStore, '_observe', new=slow_observe):
+            with self.assertRaisesRegex(Exception, 'reader_snapshot_deadline'):
+                self.advance(deadline=2.5)
+        self.assertEqual(len(deadlines), 1)
+        self.assertEqual(self.intent_path.read_bytes(), before)
+        self.assertEqual(self.counts(), {'chunk_sets': 0, 'embedding_sets': 0, 'vectors': 0})
+        final = self.advance()['vectors']
+        if not final['complete']:  # a full page leaves one more (empty) page
+            final = self.advance()['vectors']
+        self.assertEqual((final['complete'], final['copied']), (True, 2))
+
+    def test_compare_pin_keeps_its_own_checkout_observations(self):
+        members, _blobs, generation = self.caught_up()
+        while not self.advance()['vectors']['complete']:
+            pass
+        views = importlib.import_module('laya_view_store')
+        values = importlib.import_module('laya_blob_values')
+        query = dict(project=self.case.project, executing_root=self.case.plugin, vector_spec=self.good,
+                     query_vectors=((1.0, 0.0, 0.0),), limit=2)
+        observes, observe_patch = self.counting(views.ViewStore, '_observe')
+        with observe_patch:
+            compared = self.migration.compare_vector_queries(self.store, generation,
+                                                             deadline=time.monotonic() + 30, **query)
+        self.assertEqual(compared['semantic_status'], 'complete')
+        self.assertGreaterEqual(len(observes), 1)
+
+        def moved(*_args, **_kwargs):
+            raise values.BlobStoreError('checkout_changed')
+        with mock.patch.object(views.ViewStore, '_observe', new=moved):
+            with self.assertRaisesRegex(Exception, 'checkout_changed'):
+                self.migration.compare_vector_queries(self.store, generation,
+                                                      deadline=time.monotonic() + 30, **query)
 
 if __name__ == '__main__':
     unittest.main()

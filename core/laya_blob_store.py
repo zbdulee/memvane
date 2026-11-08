@@ -354,6 +354,8 @@ class _VectorPage:
         try:
             yield
         except BaseException:
+            # A deadline progress handler would interrupt the rollback too.
+            self.db.set_progress_handler(None, 0)
             self.db.execute('ROLLBACK TO vector_member')
             self.db.execute('RELEASE vector_member')
             # Memos may name rows the rollback removed.

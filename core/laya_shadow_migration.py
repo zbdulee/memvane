@@ -4354,8 +4354,9 @@ def _legacy_vector_set(base, *, scope, generation, paths, blob, seal, deadline):
     return title, result
 
 
-# Step time a vectors page leaves for its commit, checkout check and intent write.
-_VECTOR_PAGE_RESERVE = 0.5
+# Step time a vectors page keeps for finishing: the closing checkout check,
+# the intent premise, the page commit and the intent write.
+_VECTOR_FINISH_RESERVE = 0.5
 
 
 def _out_of_budget(stop_at):
@@ -4363,16 +4364,22 @@ def _out_of_budget(stop_at):
     return stop_at is not None and time.monotonic() >= stop_at
 
 
+# Deadline codes of the reads a vectors member makes (v6 snapshot, v6 chunk
+# set, candidate store).
+_MEMBER_DEADLINE_CODES = frozenset(('reader_snapshot_deadline', 'vector_deadline_exceeded',
+                                    'fts_deadline_exceeded'))
+
+
 def _deadline_reached(exc, deadline):
     """A member that ran out of the step budget, not a member that failed."""
-    if str(exc) == 'reader_snapshot_deadline':
+    if str(exc) in _MEMBER_DEADLINE_CODES:
         return True
     return (isinstance(exc, sqlite3.OperationalError) and str(exc) == 'interrupted'
             and time.monotonic() >= deadline)
 
 
 def _classify_vectors(store, base, *, scope, generation, members, names, seal, profile, spec,
-                      deadline, write, stop_at=None):
+                      deadline, write, stop_at=None, session=None):
     """Classify a page of candidate members; copy exact-input sets when ``write``.
 
     The page runs in one candidate-store session (``BlobStore._vector_page``):
@@ -4393,10 +4400,18 @@ def _classify_vectors(store, base, *, scope, generation, members, names, seal, p
     A re-split document (``multi_chunk_unreconstructable``) and anything else
     waits for the new-recipe backfill.
     """
+    if session is None:
+        with store._vector_page(write=write) as own:
+            return _classify_vectors(store, base, scope=scope, generation=generation, members=members,
+                                     names=names, seal=seal, profile=profile, spec=spec,
+                                     deadline=deadline, write=write, stop_at=stop_at, session=own)
     recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
     compatible = all(profile[key] == seal[key] for key in ('model_id', 'embedding_fingerprint', 'dimension'))
     page = []
-    with store._vector_page(write=write) as session:
+    if stop_at is not None:
+        # The candidate store's own SQL also stops at the member deadline.
+        store._db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+    try:
         for path, blob in members:
             if time.monotonic() >= deadline or (page and _out_of_budget(stop_at)):
                 if page and stop_at is not None:
@@ -4409,10 +4424,15 @@ def _classify_vectors(store, base, *, scope, generation, members, names, seal, p
                                            compatible=compatible, recipe_id=recipe_id,
                                            profile_id=profile_id, deadline=deadline, write=write)
             except Exception as exc:
-                if stop_at is not None and page and _deadline_reached(exc, deadline):
-                    break
+                if stop_at is not None and _deadline_reached(exc, deadline):
+                    if page:
+                        break
+                    raise IndexContractError('reader_snapshot_deadline') from exc
                 raise
             page.append(row)
+    finally:
+        if stop_at is not None:
+            store._db.set_progress_handler(None, 0)
     return page
 
 
@@ -4485,11 +4505,14 @@ def _classify_member(store, base, *, scope, generation, path, blob, names, seal,
 
 
 @contextmanager
-def _vector_session(store, project, executing_root, *, deadline):
+def _vector_session(store, project, executing_root, *, deadline, observed=False):
     """Locked intent/endpoint proof, pinned private head and pinned v6 image.
 
     The installer and operation locks are held for the whole bounded step,
     like advance_migration, so the recorded intent cannot move underneath.
+    ``observed`` (``advance_vectors`` only): the pin skips its own checkout
+    observations because the caller observes the checkout once more before
+    it records anything; every other caller keeps the pin's own.
     """
     from pathlib import Path
     import laya_fresh_wiki_origin as fresh
@@ -4511,10 +4534,8 @@ def _vector_session(store, project, executing_root, *, deadline):
             if (endpoint.endpoint_id != intent['endpoint_id']
                     or endpoint.record['install_id'] != intent['install_id']):
                 raise IndexContractError('migration_endpoint_changed')
-            # One checkout observation opens the step (capture_view); the
-            # caller closes it with one more before it records progress.
             handle = store.capture_view(intent['worktree_id'], deadline=deadline)
-            pin = store.pin_view(handle, deadline=deadline, _observed=True)
+            pin = store.pin_view(handle, deadline=deadline, _observed=observed)
             try:
                 if (pin.gen_id != receipt['generation'] or pin.view_id != receipt['view_id']
                         or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
@@ -4562,8 +4583,10 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
     profile = store._profile(spec['profile_id'])
     store._recipe(spec['recipe_id'])
     _, state, _, _ = _migration_state(project, store)
+    # One checkout observation opens the step (capture_view) and one closes
+    # it before anything is committed.
     with _migration_trace(state, 'vectors', 'vectors') as trace, \
-            _vector_session(store, project, executing_root, deadline=deadline) as proof:
+            _vector_session(store, project, executing_root, deadline=deadline, observed=True) as proof:
         intent, receipt = proof['intent'], proof['intent']['published']
         trace['migration'] = intent['migration_id']
         _migration_event(state, trace, 'attempt')
@@ -4585,47 +4608,56 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
                           'recipe_id': spec['recipe_id'], 'profile_id': spec['profile_id']})}
         members = _candidate_members(store, receipt['generation'], record['cursor'], MAX_BATCH)
         snapshot = proof['snapshot']
-        prior_busy = store._db.execute('PRAGMA busy_timeout').fetchone()[0]
-        remaining = max(0, int((deadline - time.monotonic()) * 1000))
-        if remaining == 0:
+        import laya_ledger_common as ledger
+        # Members get the step budget minus a reserve; the reserve finishes
+        # the page (closing checkout check, intent premise) before the page
+        # commits. Anything that does not fit rolls the whole page back, so
+        # the candidate store never holds sets the intent does not record.
+        member_deadline = deadline - _VECTOR_FINISH_RESERVE
+        if time.monotonic() >= member_deadline:
             raise IndexContractError('reader_snapshot_deadline')
-        store._db.execute('PRAGMA busy_timeout=' + str(remaining))
+        prior_busy = store._db.execute('PRAGMA busy_timeout').fetchone()[0]
+        store._db.execute('PRAGMA busy_timeout=' + str(max(1, int((member_deadline - time.monotonic()) * 1000))))
         try:
-            with readers._validation_deadline(snapshot.connections, deadline):
-                page = _classify_vectors(store, snapshot.connections[0], scope=proof['decision']['scopeId'],
-                    generation=snapshot.published[0], members=members, names=proof['names'],
-                    seal=proof['seal'], profile=profile, spec=spec, deadline=deadline, write=True,
-                    stop_at=deadline - _VECTOR_PAGE_RESERVE)
+            with store._vector_page(write=True) as session:
+                with readers._validation_deadline(snapshot.connections, member_deadline):
+                    page = _classify_vectors(store, snapshot.connections[0], scope=proof['decision']['scopeId'],
+                        generation=snapshot.published[0], members=members, names=proof['names'],
+                        seal=proof['seal'], profile=profile, spec=spec, deadline=member_deadline,
+                        write=True, stop_at=member_deadline, session=session)
+                deferred = dict(record['deferred'])
+                for row in page:
+                    if row['status'] != 'copied':
+                        deferred[row['reason']] += 1
+                if len(page) < len(members):
+                    # The member budget ran out inside the page: record
+                    # progress up to the last member it finished.
+                    cursor = page[-1]['path']
+                else:
+                    cursor = members[-1][0] if len(members) == MAX_BATCH else None
+                updated_record = _check_vector_record({**record, 'cursor': cursor, 'complete': cursor is None,
+                    'copied': record['copied'] + sum(row['status'] == 'copied' for row in page),
+                    'deferred': deferred,
+                    'digest': values.digest('memvane-shadow-vectors-page-v1', {'previous': record['digest'],
+                                                                              'page': page, 'next': cursor})})
+                updated = {**intent, 'vectors': updated_record}
+                try:
+                    store._observe(store._pinned(proof['pin'])['entry'], deadline=deadline,
+                                   timeout_reason='reader_snapshot_deadline')
+                except values.BlobStoreError as exc:
+                    if exc.reason == 'checkout_changed':
+                        raise IndexContractError('migration_checkout_changed') from exc
+                    raise
+                if time.monotonic() >= deadline:
+                    raise IndexContractError('reader_snapshot_deadline')
+                if ledger._read_json(proof['path']) != intent:
+                    raise IndexContractError('migration_intent_changed')
+                trace['stage'] = 'intent'
+            # Committed. Only the intent write follows: an I/O failure there
+            # leaves sets the next page re-verifies, never a cursor ahead of
+            # the store.
         finally:
             store._db.execute('PRAGMA busy_timeout=' + str(prior_busy))
-        deferred = dict(record['deferred'])
-        for row in page:
-            if row['status'] != 'copied':
-                deferred[row['reason']] += 1
-        if len(page) < len(members):
-            # The step budget ran out inside the page: record progress up
-            # to the last member it finished (its sets are committed).
-            cursor = page[-1]['path']
-        else:
-            cursor = members[-1][0] if len(members) == MAX_BATCH else None
-        updated_record = _check_vector_record({**record, 'cursor': cursor, 'complete': cursor is None,
-            'copied': record['copied'] + sum(row['status'] == 'copied' for row in page), 'deferred': deferred,
-            'digest': values.digest('memvane-shadow-vectors-page-v1', {'previous': record['digest'],
-                                                                      'page': page, 'next': cursor})})
-        updated = {**intent, 'vectors': updated_record}
-        import laya_ledger_common as ledger
-        try:
-            store._observe(store._pinned(proof['pin'])['entry'], deadline=deadline,
-                           timeout_reason='reader_snapshot_deadline')
-        except values.BlobStoreError as exc:
-            if exc.reason == 'checkout_changed':
-                raise IndexContractError('migration_checkout_changed') from exc
-            raise
-        if time.monotonic() >= deadline:
-            raise IndexContractError('reader_snapshot_deadline')
-        if ledger._read_json(proof['path']) != intent:
-            raise IndexContractError('migration_intent_changed')
-        trace['stage'] = 'intent'
         ledger._write(proof['path'], updated, replace=True)
         trace['outcome'] = 'vectors_complete' if updated_record['complete'] else 'progress'
         return updated
