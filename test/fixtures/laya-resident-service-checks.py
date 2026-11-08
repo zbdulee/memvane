@@ -1495,27 +1495,31 @@ class ReadOnlyHandoverChecks(unittest.TestCase):
 class ProofChecks(unittest.TestCase):
     def test_drifted_bundle_is_served_by_read_only_proof(self):
         import laya_install_journal as journal
-        import laya_index_host_route as route
+        import laya_product_sync_worker as worker
         manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
         decision = {'state': 'candidate', 'projectRoot': '/synthetic/p'}
-        drift = journal.JournalEvidenceError('bundle_drift') if hasattr(
-            journal, 'JournalEvidenceError') else ValueError('bundle_drift')
+        drift = journal.JournalEvidenceError('bundle_drift')
+        proof = {'readOnlyAllowed': True, 'providerManifest': manifest}
+        # The fallback is the windowed read-only proof of the sync worker.
         with patch.object(resident, '_owned_route', side_effect=drift), \
                 patch.object(journal, 'is_bundle_drift', return_value=True), \
-                patch.object(route, 'select_route', return_value=decision), \
-                patch.object(journal, 'verify_selected_route_read_only',
-                             return_value={'readOnlyAllowed': True, 'providerManifest': manifest}):
-            _decision, proof, mode = svc.default_prove('/synthetic/p')
-        self.assertEqual((mode, proof['providerManifest']), ('read_only', manifest))
-        for allowed, drifted, state in ((True, False, 'candidate'), (False, True, 'candidate'),
-                                        (True, True, 'blocked')):
+                patch.object(worker, 'service_read_only_proof',
+                             return_value=(decision, proof)) as fallback:
+            _decision, proved, mode = svc.default_prove('/synthetic/p')
+        self.assertEqual((mode, proved['providerManifest']), ('read_only', manifest))
+        self.assertEqual(fallback.call_args.args, (Path('/synthetic/p'),))
+        # Not drift: no fallback. A refused fallback keeps the drift code; a
+        # busy window defers.
+        for drifted, outcome, expected in (
+                (False, (decision, proof), type(drift)),
+                (True, IndexContractError('selected_provider_unavailable'), type(drift)),
+                (True, ResourceDeferred('writer_proof_physical_busy'), ResourceDeferred)):
             with patch.object(resident, '_owned_route', side_effect=drift), \
                     patch.object(journal, 'is_bundle_drift', return_value=drifted), \
-                    patch.object(route, 'select_route', return_value={**decision, 'state': state}), \
-                    patch.object(journal, 'verify_selected_route_read_only',
-                                 return_value={'readOnlyAllowed': allowed,
-                                               'providerManifest': manifest}):
-                with self.assertRaises(type(drift)):
+                    patch.object(worker, 'service_read_only_proof',
+                                 **({'side_effect': outcome} if isinstance(outcome, Exception)
+                                    else {'return_value': outcome})):
+                with self.assertRaises(expected):
                     svc.default_prove('/synthetic/p')
 
     def test_full_attestation_applies_to_selected_routes_only(self):

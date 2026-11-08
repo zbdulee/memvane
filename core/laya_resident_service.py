@@ -844,17 +844,18 @@ def default_prove(project):
     try:
         return _owned_route(Path(project))
     except Exception as exc:
-        from laya_install_journal import is_bundle_drift, verify_selected_route_read_only
+        from laya_install_journal import is_bundle_drift
         if not is_bundle_drift(exc):
             raise
-        from laya_index_host_route import select_route
-        decision = select_route(str(project), action='update')
-        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
-            raise
-        proof = verify_selected_route_read_only(decision)
-        if (proof.get('readOnlyAllowed') is not True
-                or not isinstance(proof.get('providerManifest'), dict)):
-            raise
+        # Same queue owner and v5 windows as the selected proof.
+        from laya_product_sync_worker import service_read_only_proof
+        try:
+            decision, proof = service_read_only_proof(Path(project))
+        except Exception as fallback:
+            from resource_deferred import ResourceDeferred
+            if isinstance(fallback, ResourceDeferred):
+                raise
+            raise exc from fallback
         return decision, proof, 'read_only'
 
 

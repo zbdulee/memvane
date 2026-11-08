@@ -203,6 +203,126 @@ class CompanionResidentChecks(unittest.TestCase):
                 self.assertIsNone(self.S.default_attest(decision, proof, mode))
 
 
+    def stubbed_record(self):
+        """The fixture's provider record is synthetic: stub record and runtime-file checks only."""
+        stack = ExitStack()
+        stack.enter_context(mock.patch.object(J, 'validate_production_provider_attestation',
+            side_effect=lambda _profile, _proof, record: record['providerManifest']))
+        stack.enter_context(mock.patch.object(J, '_verify_runtime_files'))
+        return stack
+
+    def bump_epoch(self):
+        """What a sync's first write does to the bundle journal: one epoch."""
+        row = J.inspect_journal(self.case.journal)
+        return J.cas_mark_new_write(self.case.journal, row['epoch'])['epoch']
+
+    def test_07_epoch_moved_before_attestation_is_not_bad_evidence(self):
+        # A sync's first write between the service's proof and the worker
+        # attestation bumps the journal epoch. The attestation proves the
+        # new selection; it never reports it as invalid evidence.
+        with self.executing(self.companion):
+            decision, proof, mode = self.S.default_prove(str(self.case.project))
+            epoch = self.bump_epoch()
+            self.assertEqual(epoch, proof['selectionEpoch'] + 1)
+            with self.stubbed_record():
+                self.assertIsNone(self.S.default_attest(decision, proof, mode))
+
+    def test_08_windows_are_taken_again_after_the_runtime_hash(self):
+        # The re-proof after the hash takes the windows again: a lock taken
+        # while the runtime files are hashed defers before any connection.
+        from resource_deferred import ResourceDeferred
+        identity_calls, real_identity = [], J._identity_connection
+        real_manifest = J._worker_attestation_manifest
+        holders = []
+
+        def observe(path, *args, **kwargs):
+            identity_calls.append((holders != [], J._writer_identity_reads.get() is not None))
+            return real_identity(path, *args, **kwargs)
+
+        def hashing(selected):
+            result = real_manifest(selected)
+            holder = self.held_elsewhere('base-physical.lock')
+            holder.__enter__()
+            holders.append(holder)
+            return result
+        try:
+            with self.executing(self.companion):
+                decision, proof, mode = self.S.default_prove(str(self.case.project))
+                with self.stubbed_record(), \
+                        mock.patch.object(J, '_identity_connection', side_effect=observe), \
+                        mock.patch.object(J, '_worker_attestation_manifest', side_effect=hashing):
+                    with self.assertRaisesRegex(ResourceDeferred, 'writer_proof_physical_busy'):
+                        self.S.default_attest(decision, proof, mode)
+        finally:
+            for holder in holders:
+                holder.__exit__(None, None, None)
+        self.assertEqual(len(holders), 1)
+        # Before the hash every identity connection was window-bound; after
+        # it (lock held) none was opened at all.
+        self.assertTrue(identity_calls)
+        self.assertTrue(all(bound for after, bound in identity_calls if not after), identity_calls)
+        self.assertEqual([call for call in identity_calls if call[0]], [])
+
+    def test_09_selection_moved_during_the_hash_defers(self):
+        from resource_deferred import ResourceDeferred
+        real_manifest = J._worker_attestation_manifest
+
+        def hashing(selected):
+            result = real_manifest(selected)
+            self.bump_epoch()
+            return result
+        with self.executing(self.companion):
+            decision, proof, mode = self.S.default_prove(str(self.case.project))
+            with self.stubbed_record(), \
+                    mock.patch.object(J, '_worker_attestation_manifest', side_effect=hashing):
+                with self.assertRaisesRegex(ResourceDeferred, 'worker_selection_changed'):
+                    self.S.default_attest(decision, proof, mode)
+            # The next attempt proves the moved selection and attests.
+            decision, proof, mode = self.S.default_prove(str(self.case.project))
+            with self.stubbed_record():
+                self.assertIsNone(self.S.default_attest(decision, proof, mode))
+
+    def test_10_read_only_fallback_takes_the_v5_windows(self):
+        # An unequal copy proves the install as bundle drift; the read-only
+        # fallback that follows opens the base and queue only through the
+        # journal-bound root's windows, and defers while one is held.
+        from resource_deferred import ResourceDeferred
+        identity_calls, real_identity = [], J._identity_connection
+
+        def observe(path, *args, **kwargs):
+            identity_calls.append(J._writer_identity_reads.get() is not None)
+            return real_identity(path, *args, **kwargs)
+        with self.executing(self.companion, equal_copy=False), \
+                mock.patch.object(J, '_identity_connection', side_effect=observe):
+            decision, proof, mode = self.S.default_prove(str(self.case.project))
+        self.assertEqual(mode, 'read_only')
+        self.assertTrue(proof['readOnlyAllowed'])
+        self.assertTrue(identity_calls)
+        self.assertTrue(all(identity_calls), identity_calls)
+        real_owned, holders = self.E._owned_route, []
+
+        def owned_then_locked(project):
+            try:
+                return real_owned(project)
+            finally:
+                # The full proof's windows are closed: a writer takes the lock.
+                holder = self.held_elsewhere('base-physical.lock')
+                holder.__enter__()
+                holders.append(holder)
+        del identity_calls[:]
+        try:
+            with self.executing(self.companion, equal_copy=False), \
+                    mock.patch.object(J, '_identity_connection', side_effect=observe), \
+                    mock.patch.object(self.E, '_owned_route', side_effect=owned_then_locked):
+                with self.assertRaisesRegex(ResourceDeferred, 'writer_proof_physical_busy'):
+                    self.S.default_prove(str(self.case.project))
+        finally:
+            for holder in holders:
+                holder.__exit__(None, None, None)
+        self.assertEqual(len(holders), 1)
+        self.assertTrue(all(identity_calls), identity_calls)
+
+
 class SplitInstallsRecoveryChecks(unittest.TestCase):
     """Installs split across both host copies; the service runs from one of them.
 
@@ -335,6 +455,53 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
             return self.E.probe(manifest) == 'ready'
         except Exception:
             return False
+
+    def run_service(self, manifests, *, attest=None):
+        service = self.S.Service(self.root, bundle={'version': '1.0.0', 'digest': 'a'},
+                                 start_worker=self.start_worker, admit=lambda: True,
+                                 retire=lambda *_a: None, tick=.05,
+                                 **({} if attest is None else {'attest': attest}))
+        self.services.append(service)
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        for seed in (self.a, self.b):
+            self.S.register(str(seed.case.project), root=self.root)
+        deadline = time.monotonic() + 40
+        while not all(self.ready(m) for m in manifests.values()):
+            self.assertLess(time.monotonic(), deadline,
+                            {'ready': {name: self.ready(m) for name, m in manifests.items()},
+                             'waiting': dict(service.waiting),
+                             'unproved': dict(getattr(service, 'unproved', {})),
+                             'states': {name: self.E.read_owner_state(m) for name, m in manifests.items()}})
+            time.sleep(.05)
+        return service
+
+    def test_epoch_moved_by_a_sync_before_attestation_still_binds(self):
+        # A sync's first write lands between the service's proof and the
+        # cold worker's attestation: the start is retried with the new
+        # selection, never recorded as a terminal attestation failure.
+        executing = self.b.case.plugin
+        manifests = {name: self.manifest(seed) for name, seed in (('a', self.a), ('b', self.b))}
+        for manifest in manifests.values():
+            Path(manifest['serviceSocketPath']).parent.mkdir(mode=0o700, exist_ok=True)
+        bumped = {}
+
+        def attest(decision, proof, mode):
+            # Each install's first attestation follows a sync write (both
+            # installs, so no other install's worker can heal a refusal).
+            if decision['projectRoot'] not in bumped:
+                journal = Path(decision['journalPath'])
+                row = J.inspect_journal(journal)
+                bumped[decision['projectRoot']] = J.cas_mark_new_write(journal, row['epoch'])['epoch']
+            return self.S.default_attest(decision, proof, mode)
+        with self.authority(executing):
+            service = self.run_service(manifests, attest=attest)
+            states = {name: self.E.read_owner_state(m) for name, m in manifests.items()}
+        self.assertEqual(len(bumped), 2)
+        self.assertTrue(all(state['reason'] == 'ready' and not state['terminal']
+                            for state in states.values()), states)
+        self.assertEqual(len(self.loads), 1)
+        self.assertEqual(getattr(service, 'unproved', {}), {})
 
     def test_service_on_one_copy_binds_installs_of_both_copies(self):
         executing = self.b.case.plugin

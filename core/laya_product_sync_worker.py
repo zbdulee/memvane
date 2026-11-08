@@ -300,7 +300,11 @@ def _writer_executing_root():
     return Path(__file__).resolve().parent.parent
 
 
-def _selected_v5_proof(project, decision, owner, *, plan_root=None):
+def _selected_v5_proof(project, decision, owner, *, plan_root=None, verify=None):
+    """``verify`` (default ``verify_selected_route``) inside the v5 windows.
+
+    A busy lifetime or physical window, or unprepared windows, defer.
+    """
     import laya_install_journal as journal
     import laya_writer_open_plan as plan_module
     from laya_reader_windows import ReaderWindowBusy
@@ -315,7 +319,7 @@ def _selected_v5_proof(project, decision, owner, *, plan_root=None):
         with plan_module.writer_proof_windows(plan, queue_owner=owner,
                                               deadline=time.monotonic()+2) as window:
             with journal.writer_identity_reads(window):
-                return verify_selected_route(decision)
+                return (verify_selected_route if verify is None else verify)(decision)
     except ReaderWindowBusy as exc:
         if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
                         'reader_lifetime_busy'):
@@ -508,6 +512,13 @@ def service_worker_attestation(decision, expected):
     companion proof uses); the hashing itself holds neither, as in
     ``_owned_worker_attestation``. Other journal versions keep
     ``verify_worker_attestation``. Returns the attested provider manifest.
+
+    A selection that moved is a deferral (``ResourceDeferred``), never bad
+    evidence: a sync's first write bumps the journal epoch between the
+    service's proof and this attestation, and the next attempt proves the
+    new selection. Only the epoch may differ from ``expected`` for the
+    attestation to go on with the fresh proof; the two proofs around the
+    hashing must be identical.
     """
     import laya_install_journal as journal
     from laya_worker_journal import worker_journal_access
@@ -515,19 +526,67 @@ def service_worker_attestation(decision, expected):
         version = journal.journal_version(decision['journalPath'])
     if version != 5:
         with journal.read_only_journals(), journal.legacy_identity_reads():
-            return verify_worker_attestation(decision)
+            return _selection_moves_defer(verify_worker_attestation, decision)
     project, plan_root = Path(decision['projectRoot']), Path(decision['pluginRoot'])
 
     def reprove():
         with worker_journal_access(project) as access, journal.read_only_journals():
             return _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
-    selected = reprove()
-    if selected != expected:
-        raise IndexContractError('worker_selection_changed')
-    manifest = journal._worker_attestation_manifest(selected)
-    if reprove() != selected:
-        raise IndexContractError('worker_selection_changed')
+    before = reprove()
+    if _without_epoch(before) != _without_epoch(expected):
+        raise ResourceDeferred('worker_selection_changed')
+    manifest = _selection_moves_defer(journal._worker_attestation_manifest, before)
+    if reprove() != before:
+        raise ResourceDeferred('worker_selection_changed')
     return manifest
+
+
+def _without_epoch(proof):
+    return {key: value for key, value in proof.items() if key != 'selectionEpoch'}
+
+
+def _selection_moves_defer(call, argument):
+    """``worker_selection_changed`` from the journal is a moved selection: defer."""
+    import laya_install_journal as journal
+    try:
+        return call(argument)
+    except (journal.JournalEvidenceError, IndexContractError) as exc:
+        if str(exc) == 'worker_selection_changed':
+            raise ResourceDeferred('worker_selection_changed') from exc
+        raise
+
+
+def service_read_only_proof(project):
+    """(decision, proof) of a drifted install for a read-only service attach.
+
+    The bundle-drift fallback of the service's proof. A v5 journal is proved
+    read-only under the queue owner and the v5 lifetime and physical windows
+    of the journal-bound root, like the selected proof; a busy window defers.
+    If that root's cache is gone the plan cannot be captured and the install
+    is not attached until its bundle upgrade binds it again. Other journal
+    versions keep the legacy read-only proof.
+    """
+    import laya_install_journal as journal
+    from laya_worker_journal import worker_journal_access
+    project = Path(project)
+    with journal.read_only_journals():
+        decision = select_route(str(project), action='update')
+        if (decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project)
+                or type(decision.get('pluginRoot')) is not str):
+            raise IndexContractError('selected_route_unavailable')
+        version = journal.journal_version(decision['journalPath'])
+    if version != 5:
+        with journal.read_only_journals(), journal.legacy_identity_reads():
+            proof = journal.verify_selected_route_read_only(decision)
+    else:
+        with worker_journal_access(project) as access, journal.read_only_journals():
+            proof = _selected_v5_proof(project, decision, access.owner,
+                                       plan_root=Path(decision['pluginRoot']),
+                                       verify=journal.verify_selected_route_read_only)
+    if (proof.get('readOnlyAllowed') is not True
+            or not isinstance(proof.get('providerManifest'), dict)):
+        raise IndexContractError('selected_provider_unavailable')
+    return decision, proof
 
 
 def _selected_service(decision, manifest, admit, start_service):

@@ -62,7 +62,12 @@ development execution guard is separate; see
   before and after hashing the runtime files, each time under the queue
   owner and the v5 lifetime and physical windows of the journal-bound root
   (the hashing holds neither); a busy owner or window defers the start
-  without marking the attestation invalid. Client connections are capped service-wide (16) before
+  without marking the attestation invalid. A selection that moved (a sync's
+  first write bumps the journal epoch) is not bad evidence either: an epoch
+  that moved before the attestation goes on with the fresh proof, and one
+  that moves during the hashing defers the start for a fresh attempt. The
+  read-only proof of a drifted installation takes the same queue owner and
+  v5 windows of the journal-bound root. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a
   backlog of 8, and a full backlog refuses the connect (macOS; on Linux the
   connect waits for the client's own timeout), which the provider reads as
