@@ -2958,6 +2958,35 @@ def compare_shadow_queries(store, generation, *, project, executing_root, querie
         return result
 
 
+class _ParityPageDeadline(IndexContractError):
+    """A recall parity page that ran out of its step deadline (``reader_snapshot_deadline``)."""
+    def __init__(self):
+        super().__init__('reader_snapshot_deadline')
+
+
+# Timeout codes a parity page can surface: the step deadline codes, the
+# candidate pin/capture/search deadline, and a candidate lookup that the
+# lexical compare reports as ``migration_recall_probe_unproved`` from one.
+_PAGE_TIMEOUT_REASONS = frozenset(('fts_deadline_exceeded',)) | _STEP_DEADLINE_REASONS
+
+
+def _page_deadline_spent(exc, deadline):
+    """True when ``exc`` is a timeout code (itself or an explicit cause) and ``deadline`` has passed.
+
+    A timeout code before the page deadline (a shorter inner budget, such as
+    the old reader's probe deadline) and every proof failure are not spent
+    page budgets.
+    """
+    if time.monotonic() < deadline:
+        return False
+    seen = 0
+    while exc is not None and seen < 8:
+        if str(exc) in _PAGE_TIMEOUT_REASONS:
+            return True
+        exc, seen = exc.__cause__, seen + 1
+    return False
+
+
 def compare_recall_corpus(store, generation, *, project, executing_root, after, deadline,
                           page_members=None):
     """Compare one page of the member-derived recall corpus, without a receipt.
@@ -3008,44 +3037,53 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
             if (endpoint.endpoint_id != intent['endpoint_id']
                     or endpoint.record['install_id'] != intent['install_id']):
                 raise IndexContractError('migration_endpoint_changed')
-        # One checkout observation opens the page (capture_view) and one
-        # closes it below; the lookups in between do not re-observe it.
-        handle = store.capture_view(intent['worktree_id'], deadline=deadline)
-        pin = store.pin_view(handle, deadline=deadline, _observed=True)
+        page_deadline = [deadline]
         try:
-            if (pin.gen_id != generation or pin.view_id != receipt['view_id']
-                    or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
-                raise IndexContractError('migration_snapshot_changed')
-            step_deadline = min(deadline, time.monotonic() + _STEP_SECONDS)
-            with readers.inspect_warm_snapshot(endpoint, deadline=step_deadline) as snapshot:
-                page = capture_wiki_bytes(snapshot, endpoint=endpoint, decision=decision, after=after,
-                    deadline=step_deadline, _expected_observation=intent['observation'],
-                    _page_limit=page_members)
-                if _source_revision(snapshot) != intent['source_revision']:
-                    raise IndexContractError('migration_source_revision_unproved')
-                prompts, seen, committed = [], set(), []
-                for member in page['members']:
-                    own = recall_corpus_prompts(member['path'], member['body'], member['title'])
-                    committed.append([member['path'], member['hash'],
-                        [hashlib.sha256(prompt.encode('utf8')).hexdigest() for prompt in own]])
-                    for prompt in own:
-                        if prompt not in seen:
-                            seen.add(prompt)
-                            prompts.append(prompt)
-                if prompts:
-                    compare_combined_lexical_prompts(snapshot, endpoint=endpoint, decision=decision,
-                        store=store, pin=pin, prompts=tuple(prompts), deadline=step_deadline)
-            # A checkout that moved during the page discards its result; the
-            # cursor stays and a later step compares the same page again.
+            # One checkout observation opens the page (capture_view) and one
+            # closes it below; the lookups in between do not re-observe it.
+            handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+            pin = store.pin_view(handle, deadline=deadline, _observed=True)
             try:
-                store._observe(store._pinned(pin)['entry'], deadline=deadline,
-                               timeout_reason='reader_snapshot_deadline')
-            except values.BlobStoreError as exc:
-                if exc.reason == 'checkout_changed':
-                    raise IndexContractError('migration_checkout_changed') from exc
-                raise
-        finally:
-            store.release(pin)
+                if (pin.gen_id != generation or pin.view_id != receipt['view_id']
+                        or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
+                    raise IndexContractError('migration_snapshot_changed')
+                step_deadline = page_deadline[0] = min(deadline, time.monotonic() + _STEP_SECONDS)
+                with readers.inspect_warm_snapshot(endpoint, deadline=step_deadline) as snapshot:
+                    page = capture_wiki_bytes(snapshot, endpoint=endpoint, decision=decision, after=after,
+                        deadline=step_deadline, _expected_observation=intent['observation'],
+                        _page_limit=page_members)
+                    if _source_revision(snapshot) != intent['source_revision']:
+                        raise IndexContractError('migration_source_revision_unproved')
+                    prompts, seen, committed = [], set(), []
+                    for member in page['members']:
+                        own = recall_corpus_prompts(member['path'], member['body'], member['title'])
+                        committed.append([member['path'], member['hash'],
+                            [hashlib.sha256(prompt.encode('utf8')).hexdigest() for prompt in own]])
+                        for prompt in own:
+                            if prompt not in seen:
+                                seen.add(prompt)
+                                prompts.append(prompt)
+                    if prompts:
+                        compare_combined_lexical_prompts(snapshot, endpoint=endpoint, decision=decision,
+                            store=store, pin=pin, prompts=tuple(prompts), deadline=step_deadline)
+                # A checkout that moved during the page discards its result; the
+                # cursor stays and a later step compares the same page again.
+                try:
+                    store._observe(store._pinned(pin)['entry'], deadline=deadline,
+                                   timeout_reason='reader_snapshot_deadline')
+                except values.BlobStoreError as exc:
+                    if exc.reason == 'checkout_changed':
+                        raise IndexContractError('migration_checkout_changed') from exc
+                    raise
+            finally:
+                store.release(pin)
+        except Exception as exc:
+            # A page whose step deadline ran out is retried smaller
+            # (_shrink_parity_page), wherever the timeout surfaced; any other
+            # failure, including a proof failure, keeps its own code.
+            if _page_deadline_spent(exc, page_deadline[0]):
+                raise _ParityPageDeadline() from exc
+            raise
         trace['outcome'] = 'compared'
         digest = hashlib.sha256(('memvane-recall-corpus-page-v1:' + json.dumps(
             [intent['observation'], generation, committed], ensure_ascii=True,
@@ -3209,7 +3247,7 @@ def _advance_shadow_step(store, *, project, executing_root, deadline, vector_spe
         if stage == 'parity_seal' and reason in _PARITY_SEAL_RETRY_REASONS:
             # The seal released the writer again; nothing was written.
             return {**step('retry', reread()), 'reason': reason}
-        if stage == 'parity' and reason in _STEP_DEADLINE_REASONS:
+        if stage == 'parity' and isinstance(exc, _ParityPageDeadline):
             shrunk = _shrink_parity_page(store, project, intent,
                                          min(wall_deadline, time.monotonic() + _STEP_SECONDS), reason)
             if shrunk is not None:

@@ -8,8 +8,8 @@ test('a completed selected sync pass advances the private shadow migration by bo
     env: {...process.env, QMD_SANDBOX: '1', QMD_RECALL_LOG: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   // Measurement only: per-pass driver steps and wall time after the sync.
-  console.log(result.stdout.split('\n').filter((line) => /^(per_pass|pass_ms|head_proofs_per_pass|head_proof_wal_present|parity_page_limits|seal_deadline_retries) |^\{"case": "shadow-hot-journal"/.test(line)).join('\n'));
+  console.log(result.stdout.split('\n').filter((line) => /^(per_pass|pass_ms|head_proofs_per_pass|head_proof_wal_present|parity_page_limits|parity_timeout_cases|seal_deadline_retries) |^\{"case": "shadow-hot-journal"/.test(line)).join('\n'));
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 17 tests/);
+  assert.match(result.stderr, /Ran 18 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });
