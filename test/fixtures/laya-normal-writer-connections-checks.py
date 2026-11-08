@@ -596,8 +596,9 @@ class NormalWriterConnectionChecks(unittest.TestCase):
             version = outside.execute('PRAGMA user_version').fetchone()[0]
             outside.execute(f'PRAGMA user_version={int(version)}')
             self.assertGreater(Path(str(self.case.db)+'-wal').stat().st_size, 0)
-            connect = self.W._connect_owned; checkpoints = []; identities = []
+            connect = self.W._connect_owned; checkpoints = []; identities = []; modes = []
             def checkpointing(comp, mode):
+                modes.append(mode)
                 if mode == 'rw' and not checkpoints:
                     result = outside.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
                     checkpoints.append((result[0], Path(str(self.case.db)+'-wal').stat().st_size))
@@ -617,8 +618,10 @@ class NormalWriterConnectionChecks(unittest.TestCase):
                      identities=identities, error=error, returned=index is not None)
                 self.assertEqual(checkpoints, [(0, 0)])
                 self.assertIsNone(error); self.assertIsNotNone(index)
-                managed = [c['uri'] for c in calls if c['managed']]
-                self.assertEqual([uri.endswith('?mode=rw') for uri in managed], [False, True, False, True])
+                # Owned connect modes, not URIs: Apple's libsqlite3 opens the
+                # RO proof as mode=rw + query_only (laya_index_a._query_only_uri).
+                self.assertEqual(modes, ['ro', 'rw', 'ro', 'rw'])
+                self.assertEqual(len([c for c in calls if c['managed']]), 4)
                 self.assertEqual(identities.count('base'), 4)
             finally:
                 if index is not None: index.close()
