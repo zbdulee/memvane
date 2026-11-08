@@ -1,4 +1,4 @@
-"""Fixed one-work-item bootstrap; imports workers only from the sealed target."""
+"""Fixed one-work-item bootstrap of the sealed target bundle it belongs to."""
 from __future__ import annotations
 
 import json
@@ -46,8 +46,9 @@ def main(argv):
         if os.getpgrp() != os.getpid() or not stat.S_ISFIFO(os.fstat(0).st_mode):
             return 3
         threading.Thread(target=_watch_owner_pipe, daemon=True).start()
-    # This bootstrap belongs to the invoking dispatcher. Verify target bytes
-    # with its already trusted inspector before target Python can execute.
+    # The dispatcher started the target bundle's own copy of this file after
+    # its inspector proved the sealed bytes. Repeat that proof against the
+    # argv identity before importing any worker.
     from laya_product_bundle import inspect_full_plugin_candidate
     proof = inspect_full_plugin_candidate(target)
     if (proof['sourceCommit'] != commit or

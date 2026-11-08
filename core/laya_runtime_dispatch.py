@@ -50,6 +50,11 @@ def _project(value):
     return path
 
 
+def _bootstrap(root):
+    """The target bundle's own one-wake bootstrap, sealed with its manifest."""
+    return Path(root) / 'core' / 'laya_wake_entry.py'
+
+
 def resolve(kind, value):
     """Verify an active route or registered inactive build without executing it."""
     if kind not in KINDS:
@@ -118,13 +123,14 @@ def resolve(kind, value):
     root = Path(root)
     worker = root / 'core' / ('laya_product_sync_worker.py' if kind == 'laya-sync'
                             else 'wiki_selected_laya.py')
-    try:
-        info = worker.lstat()
-    except OSError as exc:
-        raise DispatchFailure('target_entry_unavailable', commit, bundle_sha) from exc
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_mode & 0o022 or worker.is_symlink()):
-        raise DispatchFailure('target_entry_invalid', commit, bundle_sha)
+    for entry in (_bootstrap(root), worker):
+        try:
+            info = entry.lstat()
+        except OSError as exc:
+            raise DispatchFailure('target_entry_unavailable', commit, bundle_sha) from exc
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o022):
+            raise DispatchFailure('target_entry_invalid', commit, bundle_sha)
     return {'terminal': False, 'project': str(project), 'root': str(root),
             'sourceCommit': commit, 'bundleManifestSha256': bundle_sha,
             'ownershipManifestSha256': owner_sha, **stable, **progress}
@@ -360,7 +366,11 @@ def run(kind, value, *, owner_fd=None):
 def _run_target(kind, value, target, owner_fd):
     commit = target['sourceCommit']
     bundle_sha = target['bundleManifestSha256']
-    argv = [sys.executable, '-B', str(Path(__file__).with_name('laya_wake_entry.py')),
+    # The UID queue is shared by every installed bundle. A bootstrap from this
+    # (dispatcher) bundle would leave its own modules loaded in the target
+    # child, whose executing-root proof then refuses the mix. resolve() has
+    # already re-inspected the target's sealed bytes, this file included.
+    argv = [sys.executable, '-B', str(_bootstrap(target['root'])),
             kind, target['project'], target['root'], commit,
             target['bundleManifestSha256'], target['ownershipManifestSha256']]
     try:
