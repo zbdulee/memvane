@@ -43,9 +43,10 @@ MAX_BATCH_BYTES = 8 * 1024 * 1024
 #   _STEP_SECONDS, never waits for them, and reports the held time.
 # - The O(generation) published-head proof (laya_journal_reader
 #   _published_snapshot) runs before each step outside both locks on the
-#   wall deadline (_prove_head_unlocked); the step's snapshots reuse it while
-#   the base store's file identity and head row hold (published_proof_reuse,
-#   shared across one driver pass).
+#   wall deadline, interrupted at it (_prove_head_unlocked); its read
+#   transaction ends with the proof and its idle connection closes after the
+#   step. The step's snapshots reuse it while the base store's file identity
+#   and head row hold (published_proof_reuse, shared across one driver pass).
 # - A recall parity page that misses its step deadline is retried from the
 #   same cursor at half the members (_shrink_parity_page), down to one.
 _STEP_SECONDS = 3.0
@@ -3092,23 +3093,28 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
                 'prompts': len(prompts), 'digest': digest, 'next': page['next']}
 
 
-def _prove_head_unlocked(project, store, deadline):
+def _prove_head_unlocked(project, stack, deadline):
     """Prove the selected v6 head before a step, outside both locks, for reuse.
 
     One query_only snapshot of the base store on the caller's wall deadline
     (no reader window, installer or operation lock; a WAL reader blocks no
-    writer). Under ``published_proof_reuse`` the locked step's snapshot reuses
-    this proof while the store's file identity and head row hold, so the
-    O(generation) proof no longer spends the step budget. Best effort: any
-    failure leaves the step to prove and report on its own.
+    writer), interrupted at that deadline; its read transaction ends with the
+    proof (``laya_journal_reader.proved_published``). The idle connection is
+    kept in ``stack`` until the step ends, so its close cannot checkpoint the
+    WAL between this proof and the step. Under ``published_proof_reuse`` the
+    locked step's snapshot reuses this proof while the store's file identity
+    and head row hold, so the O(generation) proof no longer spends the step
+    budget. Best effort: any failure leaves the step to prove and report on
+    its own.
     """
     from pathlib import Path
     try:
         # Not _migration_state: the step's own dispatch stays its first call.
         decision = journal.journal.select_route(str(project), action='recall')
         if decision.get('state') == 'candidate' and decision.get('projectRoot') == str(project):
-            journal._published(journal._state(Path(decision['journalPath']).parent),
-                               Path(decision['dbPath']), decision, deadline=deadline)
+            stack.enter_context(journal.proved_published(
+                journal._state(Path(decision['journalPath']).parent),
+                Path(decision['dbPath']), decision, deadline=deadline))
     except Exception:
         pass
 
@@ -3124,8 +3130,9 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline):
         raise IndexContractError('reader_snapshot_deadline')
-    with journal.published_proof_reuse():
-        _prove_head_unlocked(project, store, deadline)
+    from contextlib import ExitStack
+    with journal.published_proof_reuse(), ExitStack() as stack:
+        _prove_head_unlocked(project, stack, deadline)
         return _advance_shadow_step(store, project=project, executing_root=executing_root,
                                     deadline=deadline, vector_spec=vector_spec, prepare=prepare)
 

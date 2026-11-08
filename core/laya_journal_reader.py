@@ -296,6 +296,53 @@ def _published_snapshot(db, decision, *, deadline=None, allow_exclusion_advance=
     return gen, manifest, entries, seal['rows_digest'], exclusions
 
 
+@contextmanager
+def proved_published(state, path, decision, *, deadline):
+    """Prove the published head of ``path`` once, for ``published_proof_reuse``.
+
+    One query_only connection; the read transaction ends as soon as the proof
+    does, and a progress handler interrupts SQLite work (a ``fetchall``
+    included) at ``deadline`` (``reader_snapshot_deadline``). The connection
+    stays open, without a transaction, until the block exits: macOS Python
+    3.9 opens it ``mode=rw`` (``_query_only_uri``), and the last connection's
+    close checkpoints the WAL, which changes the main/WAL identity the
+    proof is keyed on. Kept open, it cannot be that last connection while
+    the caller's own snapshots look the proof up; a writer commit in between
+    still changes the WAL and is proved again. Yields the published tuple.
+    """
+    import time
+    _need(type(deadline) in (int, float) and time.monotonic() < deadline, 'reader_snapshot_deadline')
+    before = _file(path, state)
+    for suffix in ('-wal', '-shm', '-journal'):
+        side = Path(str(path) + suffix)
+        if os.path.lexists(side):
+            _file(side, state)
+    from laya_index_a import _query_only_uri
+    try:
+        db = sqlite3.connect(_query_only_uri(path), uri=True, timeout=2, isolation_level=None)
+    except sqlite3.Error as exc:
+        raise journal.JournalEvidenceError('reader_store_invalid') from exc
+    with closing(db):
+        try:
+            db.execute('PRAGMA query_only=ON')
+            db.execute('PRAGMA trusted_schema=OFF')
+            db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+            try:
+                db.execute('BEGIN')
+                published = _published_snapshot(db, decision, deadline=deadline,
+                                                allow_exclusion_advance=True)
+            finally:
+                db.set_progress_handler(None, 0)
+                if db.in_transaction:
+                    db.execute('ROLLBACK')
+        except sqlite3.Error as exc:
+            if str(exc) == 'interrupted' and time.monotonic() >= deadline:
+                raise journal.JournalEvidenceError('reader_snapshot_deadline') from exc
+            raise journal.JournalEvidenceError('reader_store_invalid') from exc
+        _need(before == _file(path, state), 'reader_store_changed')
+        yield published
+
+
 def _published(state, path, decision, *, deadline=None):
     with _readonly(path, state) as db:
         published = _published_snapshot(db, decision, deadline=deadline, allow_exclusion_advance=True)

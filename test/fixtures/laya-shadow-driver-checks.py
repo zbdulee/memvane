@@ -746,6 +746,109 @@ class DriverChecks(unittest.TestCase):
                 reader._published(state, db, decision, deadline=time.monotonic() + 30)
             self.assertEqual(len(proofs), base + 2)
 
+    def warm(self, reader, state, db, decision, deadline):
+        """The step pre-proof: ``proved_published``, or before r2 the closed ``_published``."""
+        from contextlib import nullcontext
+        proved = getattr(reader, 'proved_published', None)
+        if proved is not None:
+            return proved(state, db, decision, deadline=deadline)
+        return nullcontext(reader._published(state, db, decision, deadline=deadline))
+
+    def commit_base(self, db, *, close):
+        """One real commit to the v6 base store from another process: a head pin taken and released.
+
+        ``close=False`` exits without closing, so the commit stays in the WAL
+        without a checkpoint (a killed writer).
+        """
+        code = ("import os, sqlite3, sys\n"
+                "db = sqlite3.connect(sys.argv[1], isolation_level=None, timeout=5)\n"
+                "db.execute('PRAGMA wal_autocheckpoint=0')\n"
+                "db.execute('BEGIN IMMEDIATE')\n"
+                "db.execute(\"INSERT INTO pins(token,scope,gen) SELECT 'fixture-pin',scope,gen FROM head\")\n"
+                "db.execute(\"DELETE FROM pins WHERE token='fixture-pin'\")\n"
+                "db.execute('COMMIT')\n"
+                "if sys.argv[2] == 'close':\n"
+                "    db.close()\n"
+                "else:\n"
+                "    os._exit(0)\n")
+        done = subprocess.run([sys.executable, '-I', '-c', code, str(db), 'close' if close else 'exit'],
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def files_identity(self, db):
+        out = []
+        for path in (Path(db), Path(str(db) + '-wal')):
+            try:
+                info = os.stat(path)
+                out.append((info.st_ino, info.st_size, info.st_mtime_ns))
+            except FileNotFoundError:
+                out.append(None)
+        return out
+
+    def test_pre_proof_connection_ends_its_read_and_stops_at_its_deadline(self):
+        # Codex r1 #12: the pre-proof had no SQL progress handler (a fetchall
+        # ran past its deadline) and no bound on the read transaction.
+        seed, case = self.seeded()
+        import laya_journal_reader as reader
+        real, seen = reader._published_snapshot, []
+
+        def slow(db, decision, **kwargs):
+            seen.append(db)
+            try:
+                db.execute('WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n '
+                           'WHERE x<20000000) SELECT sum(x) FROM n').fetchall()
+                seen.append('completed')
+            except Exception as exc:
+                seen.append(str(exc))
+                raise
+            return real(db, decision, **kwargs)
+        with self.authority(seed, case):
+            decision = reader.journal.select_route(str(case.project), action='recall')
+            state, db = Path(decision['journalPath']).parent, Path(decision['dbPath'])
+            with mock.patch.object(reader, '_published_snapshot', side_effect=slow):
+                with self.assertRaisesRegex(Exception, 'reader_snapshot_deadline'):
+                    with self.warm(reader, state, db, decision, time.monotonic() + .2):
+                        pass
+            self.assertEqual(seen[1:], ['interrupted'], seen)
+            del seen[:]
+            with reader.published_proof_reuse(), \
+                    mock.patch.object(reader, '_published_snapshot', side_effect=real) as spied:
+                with self.warm(reader, state, db, decision, time.monotonic() + 30):
+                    connection = spied.call_args[0][0]
+                    # The proof's read transaction ended before the step runs.
+                    self.assertFalse(connection.in_transaction)
+
+    def test_pre_proof_reuse_survives_its_own_close_but_not_a_writer_commit(self):
+        # Codex r1 #4: macOS Python 3.9 opens the pre-proof mode=rw, and the
+        # last connection's close checkpoints the WAL, changing the identity
+        # the next step looks the proof up by. Real commits, real closes.
+        seed, case = self.seeded()
+        import laya_journal_reader as reader
+        proofs, counting = self.counted_head_proofs()
+        with self.authority(seed, case), counting:
+            decision = reader.journal.select_route(str(case.project), action='recall')
+            state, db = Path(decision['journalPath']).parent, Path(decision['dbPath'])
+            # A commit left in the WAL with no connection open (a killed writer).
+            self.commit_base(db, close=False)
+            observed = {'left': self.files_identity(db)}
+            with reader.published_proof_reuse():
+                with self.warm(reader, state, db, decision, time.monotonic() + 30):
+                    observed['warm'] = self.files_identity(db)
+                    # The step's own snapshot reuses the pre-proof.
+                    reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                    self.assertEqual(len(proofs), 1, observed)
+                    # A writer commit after the proof is proved again.
+                    self.commit_base(db, close=True)
+                    reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                    self.assertEqual(len(proofs), 2, observed)
+                    held = self.files_identity(db)
+                closed = self.files_identity(db)
+                observed['closed'] = closed
+                reader._published(state, db, decision, deadline=time.monotonic() + 30)
+                # A close that changed the files is proved again, never reused.
+                self.assertEqual(len(proofs), 2 if closed == held else 3, observed)
+        print('pre_proof_wal', sys.version_info[:2], observed, flush=True)
+
     def parity_limits(self, overflow, error=lambda: IndexContractError('reader_snapshot_deadline'),
                       spend=True):
         """Patch the parity page capture: a page above ``overflow`` members fails with ``error()``.
