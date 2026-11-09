@@ -4,14 +4,15 @@ The registry names the installs whose diagnostic logs the owner wants to read
 together. It stores nothing but a canonical project root and the install ID
 that was bound to it at registration time; it never holds event content.
 
-File: ``$XDG_CONFIG_HOME/memvane/diagnostic-targets.jsonl`` (``~/.config`` when
+File: ``$XDG_CONFIG_HOME/memvane/log-targets.json`` (``~/.config`` when
 unset). Each line is a bounded UTF-8 JSON object::
 
     {"version": 1, "op": "upsert"|"remove", "root": "/abs", "install_id": "..."}
 
 Safety contract:
 
-* Every directory from ``/`` down is opened with ``O_NOFOLLOW|O_DIRECTORY``;
+* Directories are opened with ``O_NOFOLLOW|O_DIRECTORY``, except root-owned
+  system symlinks above the private config directory;
   ancestors must be owned by the user or root and not group/world writable
   (unless sticky); the ``memvane`` directory must be user-owned with no group
   or other bits. The file is opened relative to that fd with ``O_NOFOLLOW``
@@ -25,7 +26,7 @@ Safety contract:
 * Reads re-verify each target against the current route: the install ID must
   still match, else ``stale_route``.
 
-All failures are fixed refusal strings; no exception text, path content or
+All failures are fixed refusal strings; no exception text or
 event body is returned.
 """
 from __future__ import annotations
