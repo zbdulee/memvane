@@ -1616,7 +1616,8 @@ _DEFERRED_REASONS = frozenset(('migration_space_deferred',))
 # terminal event outcome is ``waiting``, never ``error``.
 _WAITING_REASONS = frozenset(reason for reason in _MIGRATION_REASONS if reason.startswith('switch_'))
 # Integer diagnostics a terminal event may carry (bounded; never text).
-_EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms', 'page_members')
+_EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms', 'page_members',
+                 'capture_ms', 'pin_verify_ms', 'inspect_ms', 'members')
 # One step's published-proof diagnostics (``advance_shadow``): the unlocked
 # preproof's code and ms, and whether the locked step reused a proof.
 _STEP_PROOF = ContextVar('laya_shadow_step_proof', default=None)
@@ -1676,6 +1677,10 @@ def _migration_event(state, trace, outcome, *, reason=None, ms=None):
             fields['preproof'] = event_log.code(proof['preproof'])
             if type(proof['preproof_ms']) is int:
                 fields['preproof_ms'] = proof['preproof_ms']
+            if proof.get('prewarm') is not None:
+                fields['prewarm'] = event_log.code(proof['prewarm'])
+                if type(proof.get('prewarm_ms')) is int:
+                    fields['prewarm_ms'] = proof['prewarm_ms']
             lookups = proof['lookups']
             if lookups['hits'] or lookups['misses']:
                 fields['proof_reused'] = int(lookups['hits'] > 0 and not lookups['misses'])
@@ -1685,6 +1690,13 @@ def _migration_event(state, trace, outcome, *, reason=None, ms=None):
             migration=trace['migration'], attempt=trace['attempt'], **fields)
     except Exception:
         pass
+
+
+class _VectorsWarmed(IndexContractError):
+    """A vectors step whose fixed costs spent the member budget: no member, nothing written."""
+
+    def __init__(self):
+        super().__init__('reader_snapshot_deadline')
 
 
 @contextmanager
@@ -1698,6 +1710,11 @@ def _migration_trace(state, stage, op):
     reason = None
     try:
         yield trace
+    except _VectorsWarmed:
+        # Not a failure: the step's fixed costs are now warm and the next
+        # step of the pass runs the page (the driver bounds repeats).
+        trace['outcome'], reason = 'warmed', 'reader_snapshot_deadline'
+        raise
     except Exception as exc:
         trace['outcome'] = 'error'
         value = str(exc)
@@ -3157,6 +3174,42 @@ def _prove_head_unlocked(project, stack, deadline):
     return result, int((time.monotonic() - started) * 1000)
 
 
+def _warm_candidate_unlocked(store, project, deadline):
+    """Warm the candidate's checkout capture and pre-verify its head, outside both locks.
+
+    Like ``_prove_head_unlocked``: on the caller's wall deadline, before the
+    step's own budget starts, with no installer or operation lock. Once the
+    intent records a published private head, one checkout capture fills the
+    process capture cache (the step's capture then reuses it while the
+    checkout fingerprint holds) and ``ViewStore._preverify_view`` verifies
+    that head generation, which the step's pin reuses while no commit reached
+    the store since. Best effort: any failure leaves the step to do both on
+    its own. Returns ``(code, ms)``.
+    """
+    from pathlib import Path
+    import laya_ledger_common as ledger
+    started = time.monotonic()
+    try:
+        # Not _migration_state: the step's own dispatch stays its first call.
+        # The intent only names the worktree and the expected head here; the
+        # step reads and validates it again under both locks.
+        decision = journal.journal.select_route(str(project), action='recall')
+        if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+            return 'route_not_candidate', int((time.monotonic() - started) * 1000)
+        intent = ledger._read_json(Path(decision['journalPath']).parent / _INTENT)
+        published = intent.get('published') if isinstance(intent, dict) else None
+        if not isinstance(published, dict) or not isinstance(intent.get('worktree_id'), str):
+            result = 'no_published_head'
+        else:
+            handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+            gen_id = store._preverify_view(handle, deadline=deadline)
+            result = 'ok' if gen_id == published.get('generation') else 'head_moved'
+    except Exception as exc:
+        value = str(exc)
+        result = value if re.fullmatch(r'[a-z0-9_]{1,80}', value) else type(exc).__name__
+    return result, int((time.monotonic() - started) * 1000)
+
+
 def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None, prepare=True):
     """Run at most one bounded step of the private shadow state machine per call.
 
@@ -3171,8 +3224,10 @@ def advance_shadow(store, *, project, executing_root, deadline, vector_spec=None
     from contextlib import ExitStack
     with journal.published_proof_reuse(), ExitStack() as stack:
         preproof, preproof_ms = _prove_head_unlocked(project, stack, deadline)
+        prewarm, prewarm_ms = _warm_candidate_unlocked(store, project, deadline)
         with journal.published_proof_lookups() as lookups:
             token = _STEP_PROOF.set({'preproof': preproof, 'preproof_ms': preproof_ms,
+                                     'prewarm': prewarm, 'prewarm_ms': prewarm_ms,
                                      'lookups': lookups})
             try:
                 return _advance_shadow_step(store, project=project, executing_root=executing_root,
@@ -3293,6 +3348,8 @@ def _advance_shadow_step(store, *, project, executing_root, deadline, vector_spe
             stage = 'publish'
     try:
         return {**retryable(stage, run), **extra}
+    except _VectorsWarmed:
+        return step('warmed', reread())
     except ValueError as exc:
         reason = str(exc)
         if stage == 'parity_seal' and reason in _PARITY_SEAL_RETRY_REASONS:
@@ -4505,7 +4562,7 @@ def _classify_member(store, base, *, scope, generation, path, blob, names, seal,
 
 
 @contextmanager
-def _vector_session(store, project, executing_root, *, deadline, observed=False):
+def _vector_session(store, project, executing_root, *, deadline, observed=False, timings=None):
     """Locked intent/endpoint proof, pinned private head and pinned v6 image.
 
     The installer and operation locks are held for the whole bounded step,
@@ -4534,13 +4591,30 @@ def _vector_session(store, project, executing_root, *, deadline, observed=False)
             if (endpoint.endpoint_id != intent['endpoint_id']
                     or endpoint.record['install_id'] != intent['install_id']):
                 raise IndexContractError('migration_endpoint_changed')
-            handle = store.capture_view(intent['worktree_id'], deadline=deadline)
-            pin = store.pin_view(handle, deadline=deadline, _observed=observed)
+            timings = {} if timings is None else timings
+            # Each fixed-cost phase records its elapsed time even when it
+            # fails, so a step that dies before any member names the phase.
+            clock = time.monotonic()
+            try:
+                handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+            finally:
+                timings['capture_ms'] = int((time.monotonic() - clock) * 1000)
+            clock = time.monotonic()
+            try:
+                pin = store.pin_view(handle, deadline=deadline, _observed=observed)
+            finally:
+                timings['pin_verify_ms'] = int((time.monotonic() - clock) * 1000)
             try:
                 if (pin.gen_id != receipt['generation'] or pin.view_id != receipt['view_id']
                         or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
                     raise IndexContractError('migration_snapshot_changed')
-                with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as snapshot:
+                clock = time.monotonic()
+                try:
+                    opened = readers.inspect_warm_snapshot(endpoint, deadline=deadline)
+                    snapshot = opened.__enter__()
+                finally:
+                    timings['inspect_ms'] = int((time.monotonic() - clock) * 1000)
+                with _entered(opened, snapshot):
                     page = capture_effective(snapshot, endpoint=endpoint, decision=decision,
                                              after=None, deadline=deadline)
                     if page['observation'] != intent['observation']:
@@ -4556,6 +4630,19 @@ def _vector_session(store, project, executing_root, *, deadline, observed=False)
                                names=tuple(wiki_index_roots(decision['collections'])))
             finally:
                 store.release(pin)
+
+
+@contextmanager
+def _entered(manager, value):
+    """Hold a context manager the caller already entered; exit it as ``with`` would."""
+    import sys
+    try:
+        yield value
+    except BaseException:
+        if not manager.__exit__(*sys.exc_info()):
+            raise
+    else:
+        manager.__exit__(None, None, None)
 
 
 def _candidate_members(store, generation, after, limit):
@@ -4585,8 +4672,16 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
     _, state, _, _ = _migration_state(project, store)
     # One checkout observation opens the step (capture_view) and one closes
     # it before anything is committed.
-    with _migration_trace(state, 'vectors', 'vectors') as trace, \
-            _vector_session(store, project, executing_root, deadline=deadline, observed=True) as proof:
+    # The trace carries the timings from before the session opens: a step
+    # that fails in a fixed-cost phase still reports the phases it ran and
+    # that no member was finished.
+    from contextlib import ExitStack
+    timings = {'members': 0}
+    with ExitStack() as scope:
+        trace = scope.enter_context(_migration_trace(state, 'vectors', 'vectors'))
+        trace['fields'] = timings
+        proof = scope.enter_context(_vector_session(store, project, executing_root, deadline=deadline,
+                                                    observed=True, timings=timings))
         intent, receipt = proof['intent'], proof['intent']['published']
         trace['migration'] = intent['migration_id']
         _migration_event(state, trace, 'attempt')
@@ -4614,17 +4709,27 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
         # commits. Anything that does not fit rolls the whole page back, so
         # the candidate store never holds sets the intent does not record.
         member_deadline = deadline - _VECTOR_FINISH_RESERVE
+        timings['members'] = 0
         if time.monotonic() >= member_deadline:
-            raise IndexContractError('reader_snapshot_deadline')
+            raise _VectorsWarmed()
         prior_busy = store._db.execute('PRAGMA busy_timeout').fetchone()[0]
         store._db.execute('PRAGMA busy_timeout=' + str(max(1, int((member_deadline - time.monotonic()) * 1000))))
         try:
             with store._vector_page(write=True) as session:
-                with readers._validation_deadline(snapshot.connections, member_deadline):
-                    page = _classify_vectors(store, snapshot.connections[0], scope=proof['decision']['scopeId'],
-                        generation=snapshot.published[0], members=members, names=proof['names'],
-                        seal=proof['seal'], profile=profile, spec=spec, deadline=member_deadline,
-                        write=True, stop_at=member_deadline, session=session)
+                try:
+                    with readers._validation_deadline(snapshot.connections, member_deadline):
+                        page = _classify_vectors(store, snapshot.connections[0],
+                            scope=proof['decision']['scopeId'], generation=snapshot.published[0],
+                            members=members, names=proof['names'], seal=proof['seal'], profile=profile,
+                            spec=spec, deadline=member_deadline, write=True, stop_at=member_deadline,
+                            session=session)
+                except ValueError as exc:
+                    if members and _deadline_reached(exc, member_deadline):
+                        # Not one member fit after the step's fixed costs: the
+                        # page rolls back; the pass's next step runs it warm.
+                        raise _VectorsWarmed() from exc
+                    raise
+                timings['members'] = len(page)
                 deferred = dict(record['deferred'])
                 for row in page:
                     if row['status'] != 'copied':

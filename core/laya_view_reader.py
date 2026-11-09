@@ -178,6 +178,43 @@ class ReaderMixin:
         record['verified'] = dict(stamp=stamp, generation=generation, seal=seal, capture=capture, stage=stage)
         return dict(generation), dict(seal), capture, stage
 
+    def _preverify_view(self, handle, *, deadline):
+        """Verify the view's head generation ahead of a pin (shadow pre-step).
+
+        Lock-free and outside any step budget, like the published-head
+        preproof. ``pin_view`` reuses the result only while no commit at all
+        reached the store since (the same commit stamp as ``_read_pinned``),
+        for the same generation and seal rows and the same view, worktree and
+        branch; anything else verifies again. Returns the head generation id,
+        or None when the view has no head.
+        """
+        self._check(handle)
+        self._preverified = None
+        with self._reading(deadline) as db:
+            stamp = self._commit_stamp(db)
+            head = self._head(db, handle)
+            if head['gen_id'] is None:
+                return None
+            generation, seal, capture, stage = self._read_generation(db, head['gen_id'], handle, deadline)
+            self._preverified = dict(stamp=stamp, gen_id=head['gen_id'], generation=generation, seal=seal,
+                                     capture=capture, stage=stage,
+                                     view=(handle.view_id, handle.worktree_id, handle.branch_key))
+        return head['gen_id']
+
+    def _generation_for_pin(self, db, gen_id, handle, deadline):
+        """``_read_generation`` for ``pin_view``, reusing a matching pre-verification."""
+        cached = getattr(self, '_preverified', None)
+        if (cached is not None and cached['gen_id'] == gen_id
+                and cached['view'] == (handle.view_id, handle.worktree_id, handle.branch_key)
+                and cached['stamp'] == self._commit_stamp(db)):
+            generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
+            seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (gen_id,)).fetchone()
+            if (generation is not None and seal is not None and dict(generation) == cached['generation']
+                    and dict(seal) == cached['seal']):
+                return dict(generation), dict(seal), cached['capture'], cached['stage']
+        self._preverified = None
+        return self._read_generation(db, gen_id, handle, deadline)
+
     def pin_view(self, handle, *, deadline=None, _observed=False):
         # ``_observed``: the caller observed this checkout just before and
         # proves it again after its last read (shadow parity pages only).
@@ -203,7 +240,7 @@ class ReaderMixin:
             head = self._head(db, handle)
             if head['gen_id'] is None:
                 v.fail('view_preparing')
-            generation, seal, capture, stage = self._read_generation(db, head['gen_id'], handle, deadline)
+            generation, seal, capture, stage = self._generation_for_pin(db, head['gen_id'], handle, deadline)
             if generation['state'] != 'published':
                 v.fail('view_head_invalid')
             verified = dict(stamp=self._commit_stamp(db), generation=dict(generation), seal=dict(seal),

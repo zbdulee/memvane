@@ -322,6 +322,34 @@ class VectorStepSetup:
         return {table: self.store._db.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0]
                 for table in ('chunk_sets', 'embedding_sets', 'vectors')}
 
+    def caught_up(self):
+        """The 3-member fixture migration at caught_up; one page holds all three."""
+        seed, case, store, good = self.build()
+        migration = self.migration
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(seed.authority())
+        stack.enter_context(mock.patch.object(migration, 'MAX_BATCH', 3))
+        migration.begin_migration(store, worktree_id=self.worktree['worktreeId'],
+            project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
+        for _ in range(40):
+            result = migration.advance_shadow(store, project=case.project, executing_root=case.plugin,
+                                              deadline=time.monotonic() + 60)
+            if result['migration_state'] == 'caught_up':
+                break
+        self.assertEqual(result['migration_state'], 'caught_up')
+        generation = result['intent']['published']['generation']
+        rows = store._db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
+                                 'ORDER BY path', (generation,)).fetchall()
+        self.intent_path = case.state / 'shadow-migration-intent.json'
+        self.assertEqual(len(rows), 3)
+        return [row[0] for row in rows], dict(rows), generation
+
+    def advance(self, deadline=60):
+        return self.migration.advance_vectors(self.store, project=self.case.project,
+                                              executing_root=self.case.plugin, vector_spec=self.good,
+                                              deadline=time.monotonic() + deadline)
+
     @staticmethod
     def counting(target, name):
         """Record each call's arguments (without ``self`` for a class method)."""
@@ -447,34 +475,6 @@ class VectorPageChecks(VectorStepSetup, unittest.TestCase):
 class VectorStepChecks(VectorStepSetup, unittest.TestCase):
     """``advance_vectors`` records progress at the last finished member."""
 
-    def caught_up(self):
-        """The 3-member fixture migration at caught_up; one page holds all three."""
-        seed, case, store, good = self.build()
-        migration = self.migration
-        stack = ExitStack()
-        self.addCleanup(stack.close)
-        stack.enter_context(seed.authority())
-        stack.enter_context(mock.patch.object(migration, 'MAX_BATCH', 3))
-        migration.begin_migration(store, worktree_id=self.worktree['worktreeId'],
-            project=case.project, executing_root=case.plugin, deadline=time.monotonic() + 30)
-        for _ in range(40):
-            result = migration.advance_shadow(store, project=case.project, executing_root=case.plugin,
-                                              deadline=time.monotonic() + 60)
-            if result['migration_state'] == 'caught_up':
-                break
-        self.assertEqual(result['migration_state'], 'caught_up')
-        generation = result['intent']['published']['generation']
-        rows = store._db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
-                                 'ORDER BY path', (generation,)).fetchall()
-        self.intent_path = case.state / 'shadow-migration-intent.json'
-        self.assertEqual(len(rows), 3)
-        return [row[0] for row in rows], dict(rows), generation
-
-    def advance(self, deadline=60):
-        return self.migration.advance_vectors(self.store, project=self.case.project,
-                                              executing_root=self.case.plugin, vector_spec=self.good,
-                                              deadline=time.monotonic() + deadline)
-
     def test_budget_inside_a_page_records_the_last_finished_member(self):
         members, blobs, _generation = self.caught_up()
         migration, views = self.migration, importlib.import_module('laya_view_store')
@@ -572,6 +572,140 @@ class VectorStepChecks(VectorStepSetup, unittest.TestCase):
             with self.assertRaisesRegex(Exception, 'checkout_changed'):
                 self.migration.compare_vector_queries(self.store, generation,
                                                       deadline=time.monotonic() + 30, **query)
+
+
+class ColdStepChecks(VectorStepSetup, unittest.TestCase):
+    """The pass's first vectors step: fixed costs moved before the step, and a bounded 'warmed'."""
+
+    def shadow_step(self):
+        return self.migration.advance_shadow(self.store, project=self.case.project,
+                                             executing_root=self.case.plugin,
+                                             deadline=time.monotonic() + 60, vector_spec=self.good)
+
+    def test_prestep_verification_and_capture_are_reused_inside_the_step(self):
+        members, _blobs, _generation = self.caught_up()
+        migration = self.migration
+        checkout = importlib.import_module('laya_checkout_view')
+        views = importlib.import_module('laya_view_store')
+        inside, counts = [False], {'verify': 0, 'stable': 0}
+        real_step, real_verify, real_stable = (migration._advance_shadow_step,
+                                               views.ViewStore._verify_generation, checkout._stable)
+        real_warm = getattr(migration, '_warm_candidate_unlocked', None)
+        between = [None]
+
+        def step(*args, **kwargs):
+            inside[0] = True
+            try:
+                return real_step(*args, **kwargs)
+            finally:
+                inside[0] = False
+
+        def verify(store, *args, **kwargs):
+            counts['verify'] += inside[0]
+            return real_verify(store, *args, **kwargs)
+
+        def stable(*args, **kwargs):
+            counts['stable'] += inside[0]
+            return real_stable(*args, **kwargs)
+
+        def warm(*args, **kwargs):
+            result = real_warm(*args, **kwargs) if real_warm else None
+            if between[0] is not None:
+                between[0]()
+            return result
+        observed = []
+
+        def run(action=None):
+            between[0], counts['verify'], counts['stable'] = action, 0, 0
+            checkout._capture_cache.entry = None  # a new pass: nothing cached yet
+            result = self.shadow_step()
+            observed.append((result['stage'], dict(counts)))
+            self.assertEqual(result['stage'], 'vectors')
+            return dict(counts)
+
+        def write_store():
+            # An actual commit to the candidate store: a new recipe row.
+            self.store.register_recipe({
+                'input_recipe': 'blob-input-v1', 'tokenizer_sha': '4' * 64, 'chunker_sha': '5' * 64,
+                'window_tokens': 900, 'overlap_tokens': 135, 'window_search_tokens': 200,
+                'offset_unit': 'utf16-code-unit', 'heading_rule': 'qmd-markdown-v1',
+                'document_template': 'title: {title} | text: {text}',
+                'synthetic_path': 'blobs/{blob_sha}.md'})
+
+        def rewrite_index():
+            subprocess.run(['git', '-C', str(self.case.project), 'update-index', '--index-version', '4'],
+                           check=True, capture_output=True, timeout=10)
+        with mock.patch.object(migration, '_advance_shadow_step', side_effect=step), \
+                mock.patch.object(views.ViewStore, '_verify_generation', new=verify), \
+                mock.patch.object(checkout, '_stable', side_effect=stable), \
+                mock.patch.object(migration, '_warm_candidate_unlocked', side_effect=warm, create=True), \
+                mock.patch.object(migration, '_out_of_budget', side_effect=lambda _stop: True):
+            unchanged = run()
+            written = run(write_store)
+            moved = run(rewrite_index)
+        print('cold_step_counts', json.dumps(observed), flush=True)
+        self.assertEqual(unchanged, {'verify': 0, 'stable': 0})
+        self.assertEqual(written['verify'], 1)
+        self.assertGreaterEqual(moved['stable'], 1)
+        # One member per step: the third step finished the last page.
+        record = json.loads(self.intent_path.read_text())['vectors']
+        self.assertEqual((record['complete'], record['copied'], record['total']), (True, 2, len(members)))
+
+    def test_a_step_whose_fixed_costs_spend_the_member_budget_is_warmed(self):
+        _members, _blobs, _generation = self.caught_up()
+        migration = self.migration
+        real_classify, calls = migration._classify_vectors, []
+
+        def classify(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise migration.IndexContractError('reader_snapshot_deadline')
+            return real_classify(*args, **kwargs)
+        before, counts = self.intent_path.read_bytes(), self.counts()
+        events = self.case.state / 'events.jsonl'
+        mark = len(events.read_text(encoding='utf8').splitlines()) if events.exists() else 0
+        with mock.patch.object(migration, '_classify_vectors', side_effect=classify):
+            warmed = self.shadow_step()
+            self.assertEqual(warmed['stage'], 'warmed')
+            self.assertEqual(self.intent_path.read_bytes(), before)
+            self.assertEqual(self.counts(), counts)
+            ran = self.shadow_step()
+        self.assertEqual(ran['stage'], 'vectors')
+        rows = [json.loads(line) for line in events.read_text(encoding='utf8').splitlines()[mark:]]
+        shadow = [row for row in rows if row.get('event') == 'migration.shadow' and row.get('op') == 'vectors'
+                  and row.get('outcome') in ('warmed', 'progress', 'vectors_complete')]
+        self.assertEqual([row['outcome'] for row in shadow][:1], ['warmed'])
+        self.assertEqual(shadow[0]['members'], 0)
+        self.assertEqual(shadow[0]['reason'], 'reader_snapshot_deadline')
+        for row in shadow:
+            self.assertTrue(all(type(row.get(key)) is int for key in ('capture_ms', 'pin_verify_ms', 'inspect_ms')),
+                            row)
+            self.assertEqual(row.get('prewarm'), 'ok')
+        self.assertGreater(shadow[1]['members'], 0)
+
+    def test_a_fixed_cost_failure_still_reports_its_phases(self):
+        # The snapshot phase runs out of time: the terminal event still names
+        # the phases that ran (and the one that failed) and that no member
+        # was finished.
+        self.caught_up()
+        migration = self.migration
+        events = self.case.state / 'events.jsonl'
+        mark = len(events.read_text(encoding='utf8').splitlines()) if events.exists() else 0
+
+        def expired(*_args, **_kwargs):
+            raise migration.IndexContractError('reader_snapshot_deadline')
+        with mock.patch.object(migration.readers, 'inspect_warm_snapshot', side_effect=expired):
+            with self.assertRaisesRegex(Exception, 'reader_snapshot_deadline'):
+                self.advance()
+        rows = [json.loads(line) for line in events.read_text(encoding='utf8').splitlines()[mark:]]
+        terminal = [row for row in rows if row.get('event') == 'migration.shadow'
+                    and row.get('op') == 'vectors' and row.get('outcome') == 'error']
+        self.assertEqual(len(terminal), 1, rows)
+        row = terminal[0]
+        self.assertEqual(row['reason'], 'reader_snapshot_deadline')
+        self.assertEqual(row.get('members'), 0)
+        self.assertTrue(all(type(row.get(key)) is int for key in ('capture_ms', 'pin_verify_ms', 'inspect_ms')),
+                        row)
 
 if __name__ == '__main__':
     unittest.main()

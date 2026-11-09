@@ -1874,6 +1874,9 @@ _ACTIVATION_SCHEMA = 'memvane-shadow-activation-v1'
 SHADOW_REWAKE_SECONDS = 30
 # Consecutive error passes after which a pass waits for a natural wake.
 SHADOW_REWAKE_ERRORS = 3
+# Consecutive ``warmed`` vectors steps on an unmoved vectors record before
+# the pass reports an error (``_shadow_warm_streak``).
+SHADOW_WARM_LIMIT = 3
 # The one wait that is no hold: the pass budget ended a migration that can go on.
 _SHADOW_REWAKE_WAITS = frozenset({'pass_deadline'})
 # From here the switch gate waits for bridge receipts (the recall hooks bring
@@ -2133,6 +2136,68 @@ def _shadow_error_streak(state, failed):
     return streak
 
 
+def _shadow_warm_key(state, spec):
+    """What a run of ``warmed`` steps is stuck on: the target and its progress.
+
+    The target is the published private head (generation, candidate
+    incarnation) and the vector spec; the progress is the vectors record's
+    (migration, copied, cursor) when it belongs to that head. A catch-up that
+    publishes a new head, or another spec, is a new target and starts over.
+    """
+    import laya_ledger_common as ledger
+    import laya_shadow_migration as migration
+    try:
+        intent = ledger._read_json(state / migration._INTENT)
+    except Exception:
+        return None
+    if not isinstance(intent, dict):
+        return None
+    published = intent.get('published') if isinstance(intent.get('published'), dict) else {}
+    vectors = intent.get('vectors') if isinstance(intent.get('vectors'), dict) else {}
+    # ``spec`` is the pass's provider (``_shadow_vector_spec``: manifest, vector profile).
+    manifest, profile = spec if isinstance(spec, (tuple, list)) and len(spec) == 2 else ({}, {})
+    target = [published.get('generation'), published.get('candidate_incarnation'),
+              manifest.get('recipeId') if isinstance(manifest, dict) else None,
+              profile.get('profileId') if isinstance(profile, dict) else None]
+    progress = ([vectors.get('migration_id'), vectors.get('copied'), vectors.get('cursor')]
+                if vectors and vectors.get('generation') == published.get('generation') else None)
+    return {'target': target, 'progress': progress}
+
+
+def _shadow_warm_streak(state, warmed, spec=None):
+    """Count consecutive ``warmed`` vectors steps on one unmoved target and progress.
+
+    A ``warmed`` step wrote nothing; the pass's next step runs the page warm.
+    When no step gets that far, pass after pass, the same head, spec and
+    vectors progress keep coming back warmed: past ``SHADOW_WARM_LIMIT`` in a
+    row this raises ``migration_vectors_warm_stalled``, an error the rewake
+    streak bounds like any other. Any vectors step that runs resets it, and
+    so does a new published head or spec (``_shadow_warm_key``). The count
+    lives in the activation record, under the install lock.
+    """
+    import laya_ledger_common as ledger
+    from laya_product_install import _install_lock
+    key = _shadow_warm_key(state, spec)
+    with _install_lock(state):
+        record, _candidate = _read_activation(state)
+        saved = record.get('warm_streak')
+        count = 0
+        if warmed:
+            if (isinstance(saved, dict) and saved.get('key') == key and type(saved.get('count')) is int
+                    and saved['count'] >= 0):
+                count = saved['count'] + 1
+            else:
+                count = 1
+        value = {'key': key, 'count': count} if count else None
+        if value != saved:
+            updated = {**record, 'warm_streak': value} if value else {
+                k: v for k, v in record.items() if k != 'warm_streak'}
+            ledger._write(state / SHADOW_ACTIVATION, updated, replace=True)
+    if count > SHADOW_WARM_LIMIT:
+        raise IndexContractError('migration_vectors_warm_stalled')
+    return count
+
+
 def _shadow_rewake(project, state, status):
     """Offer the next pass when this one can go on by itself; True when a wake was offered.
 
@@ -2288,6 +2353,8 @@ def shadow_pass(project, *, executing_root=None):
             status['stages'].append(stage)
             if current is not None:
                 status['migration_state'] = current
+            if stage in ('warmed', 'vectors'):
+                _shadow_warm_streak(state, stage == 'warmed', provider)
             if stage == 'retry':
                 status.update(state='waiting', reason=retry_reason or 'step_retry')
                 break
