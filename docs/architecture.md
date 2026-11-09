@@ -47,7 +47,8 @@ The main architectural rule is:
 - **Queue first, work later.** Hooks record durable wakes and queue rows; off-hook
   workers do embedding, sync, compile and verify.
 - **Current state only.** This document describes the code paths that are
-  true now. Plans under `docs/plans/` describe direction, not shipped behavior.
+  true now. The design under `docs/plans/` (the memvane-db Git-blob model, with
+  PR8–PR10 still open) describes remaining work, not shipped behavior.
 
 ## Repository Map
 
@@ -286,7 +287,7 @@ the same store basenames. If the worker dies inside that window, a recall gets
 no context, names `state_root_move_pending` and requests the worker: a
 `running` status whose worker no longer holds `bundle-auto-upgrade.lock` is due
 at once (`laya_bundle_upgrade.worker_holds`), so the next prompt starts the
-resume. A sealed provider manifest the provider cannot load no longer fails a
+resume. A sealed provider manifest the provider cannot load does not fail a
 recall: it serves the lexical lists with
 `selected_provider_manifest_<reason>`. The resident service re-proves each bound project, so it releases the
 old socket binding and adopts the moved one; recall serves lexical results for
@@ -527,7 +528,7 @@ hooks/run-hook compile <engine>
 - engine;
 - trigger.
 
-It only accepts Markdown files in `raw` or `session` role collections. Any path
+It only accepts Markdown files in `raw`, `session` or `source` role collections. Any path
 with a hidden segment such as `.agents`, `.claude`, `.codex`, `.github`, or
 `.memvane` is excluded.
 
@@ -575,21 +576,23 @@ equivalent persistence-off flag.
 - enqueues successful generated writes to the auto-verify queue;
 - logs merge-needed or rejected candidates under `.memvane/compile`.
 
-Compiler create/update, verifier stamp/delete, and the offline legacy-state
-migration share one project `CARD_WRITE_LOCK`. Each holds it from the card state
-read through the decision and atomic replace/unlink, so their individually
-atomic writes cannot be composed from stale revisions.
+Compiler create/update, verifier stamp/delete, source retirement, dedup merge
+and the project-folder move share one project `CARD_WRITE_LOCK`. Each holds it
+from the card state read through the decision and atomic replace/unlink, so
+their individually atomic writes cannot be composed from stale revisions.
 
 The verify worker is the automatic second filter for generated cards, not a
 human approval step. It rechecks the generated card against its source through
 the configured host extractor:
 
-- `pass` patches the card to `status: verified` with `verifiedBy` and
-  `verifiedAt`;
+- `pass` patches the card to `status: verified` with `verifiedBy`,
+  `verifiedAt`, `verifiedMode` and `verifiedBodyHash`;
 - `fail` applies `compile.verify.onFail` (`delete` by default, or `contested` /
   `none`);
-- missing CLIs, timeouts, stale jobs, or inconclusive verdicts preserve the
-  queue item or leave the card as `generated` according to the worker contract.
+- `inconclusive` applies `compile.verify.onInconclusive` (same values, `delete`
+  by default);
+- missing CLIs, timeouts or stale jobs preserve the queue item or leave the card
+  as `generated` according to the worker contract.
 
 Recall admits a wiki card only when it is `status: verified`, was created by
 the plugin (`createdBy: memvane`, or the earlier plugin name `qmd-auto-context`), and has non-empty compiler-owned `sourceRevisions`. Source
@@ -598,20 +601,16 @@ and regeneration, and publishes each document atomically; recall reads only
 the published generation.
 
 `generated`, `tentative`, `contested`, `discarded`, and `superseded` remain
-excluded. A provenance-free legacy `verified` is `unknown` and drops. Explicit
-offline release maintenance normalizes qmd-created legacy `reviewed`·`canon`·
-`manual` cards, or cards with missing/invalid provenance, to `generated` and
-removes `reviewed:` plus every verification proof field. It preserves foreign
-cards byte-for-byte; they are never trusted or injected, even with
-`recallVerifiedOnly: false`. There is no human wiki lifecycle: automatic cards
+excluded. A provenance-free legacy `verified` is `unknown` and drops. Foreign
+cards are never trusted or injected, even with `recallVerifiedOnly: false`.
+There is no human wiki lifecycle: automatic cards
 do not use `reviewed:` or human statuses, and no `wiki-review` UI, skill, or
 agent exists. The `merge-needed.jsonl` ledger is only a bounded non-trusted
 collision diagnostic: no candidate is auto-merged, trusted, or queued for human
 approval.
 
-P0 deliberately does not register `.env` as a source. Until a P1 structured-
-evidence adapter exists, wiki output makes no repository-config claim from
-`prod.env` and no runtime-current claim.
+`.env` files are not registered as a source. Wiki output makes no
+repository-config claim from `prod.env` and no runtime-current claim.
 
 Verify and dedup workers are maintenance paths around this generated wiki state.
 They are intentionally fail-open so wiki maintenance does not break normal agent
@@ -680,7 +679,7 @@ ledger is created or touched, so a read-only project can be checked. The paid
 duplicate judge and the selected-route pending-replacement checks do not run in a
 check. Longer cards are not split
 retroactively; their updates follow the same best-effort rule, and verify stamps
-and retirement apply as before. The `wiki-compile` skill makes the split itself
+and retirement apply unchanged. The `wiki-compile` skill makes the split itself
 and then runs once more with `--budget-final` (its wrapper's only pass-through
 flag). The verify worker and source retirement patch frontmatter only, and
 pending replacement publishes a page this gate already measured.
@@ -837,7 +836,7 @@ protocol itself requires different handling.
 | Surface | Owner | Purpose |
 |---|---|---|
 | runtime worker lease | `core/runtime_work.py` (`runtime-worker.lock`) | One UID-global wake dispatcher; it holds only its dispatch lease while waiting. |
-| card write lock | `CARD_WRITE_LOCK` (`core/compile_paths.py`) | Serializes compiler writes, verifier stamp/delete and offline card migration per project. |
+| card write lock | `CARD_WRITE_LOCK` (`core/compile_paths.py`) | Serializes compiler writes, verifier stamp/delete, source retirement, dedup merge and the project-folder move per project. |
 | installer operation lock | `laya-qmd-cutover-operation.lock` (`core/laya_ledger_common.py`) | Serializes installer ledger operations; older installed bundles lock the same file. |
 
 A failed or deferred sync attempt leaves its wake for the dispatcher to retry

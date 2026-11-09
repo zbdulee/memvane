@@ -64,7 +64,7 @@ flowchart TD
 
 ## Implementation and evidence
 
-### 현재 구현 (개발 브랜치, 미게시)
+### 현재 구현
 
 - [`core/laya_host_response.py:735-743`](../../../core/laya_host_response.py#L735-L743): 한 pin에서 검증된 위키 카드만 반환합니다. hook 안에서는 모델 작업을 하지 않습니다. `source_locations`에는 반환된 wiki 행의 검증된 span locator만 담깁니다.
 - [`core/laya_host_response.py:744-751`](../../../core/laya_host_response.py#L744-L751): provider 준비를 확인한 뒤 `wiki_index_roots`로 루트를 정합니다. wiki role이 없거나 `hierarchical`이 아니면 실패합니다.
@@ -85,5 +85,5 @@ flowchart TD
 
 ### QA 증거와 미검증
 
-- 현재 수정의 합성 회귀는 실제 운영 선택 경로나 recall 주입 통과를 뜻하지 않습니다. 기존 운영 선택본의 source query는 실패했고, 새 구현의 실제 재확인은 미실행입니다.
+- 합성 회귀는 실제 운영 선택 경로나 recall 주입 통과를 뜻하지 않습니다. 실제 호스트에서의 recall 주입은 검증되지 않았습니다. 열린 QA 항목은 [TODO](../../TODO.md)에 있습니다.
 - sync worker가 generation을 게시하는 내부 단계와, 위키 카드가 바뀔 때 wake를 보내는 주체는 발췌로 일부만 확인했습니다. 그래서 도표에서는 일반 노드로 표시했습니다.

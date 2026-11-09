@@ -9,8 +9,7 @@ scenario captures objective evidence. Record each run with
 [release checklist](release.md) links here.
 
 Open QA items, including the user-deferred assertions, are tracked in
-[TODO.md](TODO.md). Dated notes in this document record past runs; they are
-not the current QA verdict.
+[TODO.md](TODO.md).
 The [architecture flow charts](architecture/flows/README.md) explain the
 implemented paths and boundaries; they are not L1 verdicts.
 
@@ -46,331 +45,6 @@ the exact installed identity/core smoke and only the affected scenario
 assertions under section 11. Do not launch a separate model turn for each ID
 when one trace proves several. No data-safety row is waived by this economy:
 LI-MIG, LI-RECOVER, LI-COEXIST and RQA-INST-04 remain mandatory.
-
-## Status of this document
-
-**2026-10-20 `40e500c` Claude 프로젝트 설치 smoke (L1 PASS 아님):**
-사용자가 승인한 기존 합성 QA 프로젝트에 후보
-`40e500cb44e32ab62e05f14d75113dd4d59d3534`를 Claude 공식 CLI로
-project scope 설치했다. 별도 `qmd-laya-40e500c-qa` marketplace를 등록하고
-이전 `4dde371` project entry를 비활성화했다. 사용자 전역 설치는 유지되며
-이 QA 프로젝트에서만 비활성 상태다. 설치 cache와 **실제 Claude가 실행한
-marketplace source 경로** 모두 Git tree의 915/915 파일 내용·실행 권한과
-일치했다(guard `7f6478a5e78c46d688429660aaf961e7`,
-`239e566a186e4966affbc7f4b3d9b20e`, 각각 passed/settled).
-새 Claude Opus 세션에서 SessionStart의 `topical-reconcile`·`update-queued`,
-UserPromptSubmit의 `recall`, Stop의 `topical-stop`이 모두 그 source의
-`hooks/run-hook`에서 exit 0으로 실행됐다. 이전 entry의 hook 실행은
-관측되지 않았다(guard `1d6759402beb4a66bfe2366cdb1aff4e`,
-passed/settled). 응답은 합성 표식 `QA_LOAD_40E500C`였고, 실제
-`claude-opus-5-5` 사용량은 input 2, output 14, cache create 65,787,
-cache read 0, thinking 0 token, web 0회였다. 증거는
-`laya-l1-gate-4dde371-qa/evidence-40e500c/`의
-`installed-identity.json`, `loaded-identity.json`,
-`claude-load-evidence.json`, `claude-load-debug.log`에 있다.
-합성 프로젝트에는 `.auto-context` 설정이 없어 setup notice
-`settings_not_ready`가 정상 표시됐고, 새 hook trust를 승인하거나
-provider를 활성화하지 않았다. 이 smoke는 전용 OS 계정/VM의 정식 L1,
-설치 소유 journal·DB/queue incarnation, 실제 QMD 이관·검색·학습,
-Codex hook 검증을 충족하지 않는다. 해당 행은 `NOT RUN`이다.
-현재 exact head의 Node 22/24/26 CI는
-[run 39448832807](https://github.com/zbdulee/memvane/actions/runs/39448832807)에서 성공했다.
-이 기록을 소스에 반영하면 Git tree가 바뀌므로, 위 설치의 exact identity와
-CI는 계속 **커밋 `40e500c`에만** 귀속된다.
-
-**2026-10-20 설치 후 읽기 전용·합성 게이트 추적:** 실제 로드된
-marketplace source에서 `select_route()`는 `legacy/no_route_record`를 반환했다.
-이 합성 프로젝트에는 Laya route, 설치 journal, index DB, claim queue가
-없다. `update-queued` hook 자체는 exit 0이었으나, 비설정 프로젝트의
-background update status는 `failed`이고 등록 안내를 남겼다. 따라서
-hook 로드는 확인했지만 검색·설치·큐의 제품 동작으로 세지 않는다.
-package/journal/DB/queue 및 두 후보의 중단·복구 합성 검사는 2/2 통과했다
-(guard `669202a15e1545a69a18cf0475d4b165`, passed/settled).
-fixture 자체는 `FORMAL_RELEASE_L1=NOT_RUN`으로 표시한다.
-
-**2026-10-21 후속 제품 연결 (새 릴리스 후보 아직 미확정):**
-기존 selected shared QMD의 `bootstrap-proof.json` 부재를 사실대로
-유지하면서, 별도 비활성 replacement 세대의 실제 QMD 검색·벡터
-증명을 Laya 후보 모델의 입력으로 연결했다. 읽기 전용
-`replacement_model_evidence()`는 journal·GGUF 경로/SHA/크기·768차원·
-managed QMD runtime·선택된 옛 포인터의 inode와 SHA·원본 DB 경로·
-프로젝트 설정 SHA를 다시 검증한다. Provider proposal과 초기 빌드
-기록, v3 cutover ledger는 이 evidence digest를 결속한다. 설치 준비와
-cutover 직전에는 현재 증거와 QMD 원문·위키 백업, 새 세대 seal,
-provider attestation을 재검사한다. 이전 QMD 벡터를 새 모델에서
-나온 것으로 주장하거나 복사하지 않는다. 옛 QMD와 별도 global
-QMD 및 백업은 보존한다. 선택된 old QMD의 setup readiness는
-여전히 proof-required다.
-
-Claude Opus의 좁은 설계 검토는 guard
-`42267a987e194d438610cd09195ea2fa` (`passed/settled:true`,
-`claude-opus-5-5` modelUsage input 2/output 5,468/cache create 1,533/
-cache read 2,061/thinking 3,214/web 0)에서 공유 QMD 포인터를 또
-바꾸는 두 번째 cutover를 피하고, 기존 QMD→Laya v3 프로젝트 전환에
-비활성 모델 증거를 묶도록 제안했다. 첫 합성 focused run
-`7ea7ddb0fa6b48708f99ac382e684d0d`는 shared QMD 45건과
-v3 bound 검사는 통과했으나 새 fixture의 오류명 기대와 기존
-initial-build fixture mock 연결 두 곳이 실패했다. 이를 수정한
-재검사 `1b7d8cfebfdd473b86ad1378bf10c88d`에서 initial-build
-21건과 새 replacement/v3 증거 10건이 모두 PASS,
-`passed/settled:true`였다. 추가 합성 15건을 포함한 focused run
-`5f1c75ac27ba418ab391be8635d38685`도 PASS,
-`passed/settled:true`였다. 첫 전체 suite는 시스템 Python에
-PyYAML이 없어 wiki 두 건이 실패했다. 기존 venv의 PyYAML
-site-packages만 `PYTHONPATH`에 더한 별도 47건 검사는
-`5ff1d58e922f408684255dd8e3140231`에서 PASS했고, 전체
-재검사 `a0d0ecbf89784b50bcd52346cebc91da`는 1,650건 중
-1,641 PASS·9 SKIP·0 FAIL (`passed/settled:true`)이었다.
-이는 이후 리뷰 수정 이전 소스이므로 최종 전체 회귀는 다시 필요하다.
-이전 head `753bc2f`의 CI [39514146609](https://github.com/zbdulee/memvane/actions/runs/39514146609)는
-Node 22·24·26 모두 성공했지만 이 변경의 CI가 아니다.
-Claude Opus는 `bb1087dd4ee942408fd681016387ba91`와
-`cc61044ea0a94c829ec29b36dd83770e`에서 replacement 증거와
-cutover를 독립 검토했다. 이어 `a0003238320e48a186ec56dbfa5a461d`
-(`model-test`, `passed/settled:true`, modelUsage input 2/output 8,705/
-cache create 6,323/read 2,061/thinking 6,303/web 0)은
-prepared 결속의 증명 상실 뒤 철회, drift 철회의 CAS→record
-중단 재생, 직접 route 변경 호출의 직렬화, sealed build pointer의
-마무리를 지적했다. 이를 고친 후 `9826a1c547d449718baa15f84ac700a1`
-(`model-test`, `passed/settled:true`, modelUsage input 2/output 11,494/
-cache create 8,333/read 2,061/thinking 9,531/web 0)은 앞선
-세 경계의 수정을 확인하고, 동일 digest의 QMD inode 교체와
-terminal 은퇴 뒤 나중 설치가 진행된 경우의 재생을 추가 지적했다.
-마지막 수정은 `source_identity_changed`를 ledger/receipt에 남기고,
-이미 terminal인 ledger의 record·marker 정리를 이전 journal이나
-나중 route에 종속시키지 않는다. 자체 marker와 route가 동시에
-있으면 불확실성으로 거부한다. 이 마지막 변경의 합성 22건은
-`ffc328d95e774d65b1d5f05fc82ec33a`에서 PASS,
-`passed/settled:true`였다. 앞선 focused run
-`f8bcd376898643dda30180e5df9d665f`는 새 fixture가 나중 marker를
-비정규 JSON으로 써서 1건 실패했으며 제품은 올바르게 거부했다.
-fixture만 canonical 형식으로 고쳐 재실행했다. 최종 전체 suite는
-기존 venv의 PyYAML import 경로만 제공해 guard
-`6d5361a6a0234ca4ba1ebe5607e770c5`에서 1,650건 중
-1,641 PASS·9 SKIP·0 FAIL (`passed/settled:true`)였다.
-새 exact-head CI, installed-candidate LI-MIG/LI-RECOVER/LI-RECALL은
-별도로 기록해야 한다. 실제 운영 이관·provider 활성화·main 병합·
-Mini 설치는 이 합성 결과로 수행하지 않았다.
-
-최종 코드 응답에서 Claude Opus는 추가 P1/P2를 찾지 않았다
-(`claude-opus-5-5` modelUsage input 2/output 8,379/cache create 9,078/
-read 2,061/thinking 6,918/web 0). 다만 결과 파일이 작성된 직후
-도구 대기가 중단되어 해당 실행의 원래 checkpoint는
-`running/settled:false`였다. 기록된 supervisor·자식 PID 4개와
-프로세스 그룹의 부재를 읽기 전용으로 확인한 뒤, 해당 가드 실행
-`5eace2009a9847478d4e73784f0f0382`만 `stopped/settled:true`,
-`completed:false`로 정리했다. 이를 `passed` 검증으로 기록하지 않는다.
-소스의 최종 전체 회귀와 CI는 별도로 확인한다.
-
-원래 328,576,992바이트 GGUF가 필요한 기술적 이유는 **기존 검색
-행태와 동일 모델이라는 주장 및 parity 분석**이다. 같은 이름이나
-다른 크기의 GGUF는 동일 모델 증거가 아니다. 더구나 원래 파일을
-찾더라도 QMD의 이전 벡터 fingerprint만으로 그 파일에서 각 벡터가
-나왔음을 암호학적으로 증명할 수 없으므로 기존 벡터를 이관하지
-않는다. 별도로 정확히 검토·승인된 GGUF는 그 자체의 SHA/크기로
-새 Laya 문서·질의 벡터를 만들 수 있지만, 이전 모델로 취급하거나
-미실행 retrieval parity를 PASS로 기록하지 않는다.
-
-선택된 플러그인 shared QMD 세대의 읽기 전용 선택은 성공했지만
-`bootstrap-proof.json`, `bootstrap-journal.json`, `scope-policy.json`이
-없고 현재 선택된 cache에서 GGUF를 찾지 못했다. 실제 Claude 로드 경로와
-canonical private state 경로로 provider 검토를 재시도한 결과, 세대의
-`bootstrap-proof.json`을 읽는 지점에서 차단되어 proposal digest는 없다
-(guard `6b6ba2132b6b41cea09e3331c696fed5`, passed/settled;
-검토 결과는 **blocked**). `qmd_model_reason()`도
-`qmd_embedding_model_proof_required`를 반환한다. 이전 smoke의
-328,576,992바이트 모델과 별도로 발견된 333,590,944바이트 GGUF의
-동일성은 입증되지 않아 대체하지 않았다. 기존 선택 세대에 증명 파일을
-임의 생성하는 것은 정상 복구가 아니다. 새 `plan-replacement-store`와
-`prepare-replacement-store`는 선택된 pointer·managed runtime·설정된
-모델 이름·프로젝트 scope의 입력 동일성을 확인하고, 사용자가 명시한 GGUF
-경로·SHA256·크기와 승인한 계획 digest에 결속된 별도 journal에 빈 비활성
-세대의 실제 QMD vector/search 증명을 남긴다. 합성 fixture에서는 기존
-선택 세대와 원본 journal·DB·설정의 보존, 빠진/다른 모델의 차단,
-pointer 변경·세대 ID 충돌·중단 뒤 재개를 확인했다. Claude Opus의
-독립 리뷰가 짚은 replacement journal supersession과 runtime wrapper
-결속을 보강한 뒤 합성 검사는 43/43 PASS
-(guard `84594f6be1c64d9d8c2a9f7e5414c42f`, `passed/settled:true`)였다.
-보강 후 인접 설치·공유 저장소·cutover 검사는
-39/39 PASS (guard `904dc9f6a4144aa88ec1bad525857fc9`,
-`passed/settled:true`)였다. 같은 요청의 실패 journal 재시작과 runtime
-pointer 직접 결속을 추가한 뒤 합성 검사는 45/45 PASS
-(guard `eba1930e922e48c78de2aa667c489361`, `passed/settled:true`)였다.
-이 마지막 좁은 변경 뒤 인접 39건은 재실행하지 않았으며, 전체 exact-commit
-CI가 아직 필요하다. 이 경로는 운영
-세대의 proof를 위조하지 않으며 새 세대를 선택하거나 기존 QMD 자료를
-이관하지 않는다. 현재 설치된 `40e500c`에는 이 새 경로가 없고, 이
-문서의 기존 설치 smoke와 CI는 새 후보를 검증하지 않는다. 동일성이
-확인된 원래 모델의 명시 경로, 실제 데이터 백업·이관·복구 검증 및
-그 준비 경로 자체에는 당시 product cutover가 없었고, 위의 후속
-제품 연결이 기존 QMD→Laya v3 project route를 활용한다.
-명시 모델 경로만으로 provider 제안을 얻어도 shared QMD의 setup readiness
-증명 누락은 별개로 남는다.
-
-Claude Opus 구현 제안은 guard `cc546f5e31c04cd4b3e2d55fddce037f`
-(`passed/settled:true`, modelUsage input 2/output 7,332/cache create 1,582/
-cache read 2,061/thinking 1,778/web 0)에서 받았다. 첫 코드 리뷰는 guard
-`7831210978c54262ac574c86c05ebaa0`
-(`passed/settled:true`, modelUsage input 2/output 12,635/cache create 15,340/
-cache read 2,061/thinking 9,920/web 0)에서 journal liveness와 runtime
-결속 결함을 찾았다. 전체 diff 후속 리뷰는 guard
-`3b23e22c5593415a8d37f5206ae8cd42`에서 180초 시간초과로
-`failed/settled:true`이며 검토 결론이 없다. 좁힌 후속 리뷰는 guard
-`df9cceae50434068bab568a945529863` (`passed/settled:true`, input 2/
-output 6,439/cache create 5,756/cache read 2,061/thinking 4,406/web 0)에서
-같은 요청의 실패 checkpoint 재시작 결함을 찾았다. 수정 후 마지막 좁힌
-리뷰는 guard `8c1dd37a30be42e789544c925a4fe124` (`passed/settled:true`,
-input 2/output 4,554/cache create 4,665/cache read 2,061/thinking 3,707/
-web 0)에서 **보여 준 수정 범위에 P1/P2가 없다고** 판정했다. 이는 전체
-릴리스 후보의 독립 승인이나 설치 QA가 아니다.
-
-첫 후속 PR head `e1fc313`의 CI run `39511702028`에서 Node 22가 실패했다.
-`shared-install-resilience`의 설치 중단 fixture가 기존 두 인자 `_save`
-호출을 모의하는데, 새 공통 `_build`가 legacy 경로까지 세 인자로 호출한
-회귀였다. Legacy 호출 형태를 복원하고 replacement 경로에만 journal 이름을
-추가했다. 정확한 실패 케이스와 shared QMD 45건은 단일 가드
-`4408de69e3fe44cf8927e212d60772dc`에서 Node 5/5 PASS,
-`passed/settled:true`로 재검증했다. 이 수정은 `e1fc313` 뒤의 소스
-변경이므로 새 exact-commit CI가 필요하다.
-
-이 복구 변경은 기존 `RQA-RES-02`의 별도 안전 범위 학습 검증을 바꾸지
-않는다. 다중 PC 시험이나 검색·embedding의 별도 부하 큐는 새 필수
-릴리스 게이트로 추가하지 않았다.
-
-| 분류 | `40e500c` 현재 결과 |
-|---|---|
-| 완료 | exact head CI Node 22/24/26, Claude project-scope 설치·실제 로드 identity 915/915, 위의 합성 검사·읽기 전용 상태 확인. |
-| 실패/차단 | 비설정 합성 프로젝트의 update worker status `failed`(예상된 등록 안내); 실제 provider 검토는 proof 부재로 차단, digest 없음. 운영 전환 실패를 의미하지는 않는다. |
-| 미실행 | 전용 환경의 정식 L1, Codex 설치 훅·신뢰·RQA-HOOK-02, 설치 소유 journal/DB/queue incarnation, 실제 QMD 이관·검색 동등성, 자원 압력 아래 학습 재개, main 병합·정식 릴리스·Mini 설치·운영 활성화. |
-| 사용자 한시 면제 | 이번 후보의 Mini 관리자 로그인 필요 QA만 `USER_WAIVED/NOT RUN`; 다른 필수 행은 면제되지 않았다. |
-
-합성 자료만 전달한 Claude Opus 독립 검토는 guard
-`365569afbaa54a568d2c02a1e9da000d`에서 passed/settled였고 실제
-`modelUsage`는 input 2, output 2,947, cache create 2,805, cache read 649,
-thinking 1,405 token, web 0회였다. 검토의 “정식 릴리스 승인이 없었다”는
-판정은 이전 사용자 승인 기록과 맞지 않아 채택하지 않았다. 출처·상태 요약은
-합성 QA 폴더의 `evidence-40e500c/read-only-gate-inventory.json`에 남겼다.
-
-**2026-10-18 설치 후보 중간 기록:** draft PR #12의 `c18067edcc02057efe26956aa5ea8a210a646c7e`를
-전체 Git tree 862개 파일 그대로 별도 Claude/Codex 로컬 marketplace에 설치했다.
-두 설치 cache와 commit의 blob/mode가 862/862 일치했고, manifest SHA256은
-`670f6fc8c6d514287964003308b7449ad2854f996c0f9c57f22f5643f18bf1e0`이다.
-새 Claude 세션은 HOME 하위 합성 pending 프로젝트에서 Edit를 거부했다
-(`1de3da85dab74392a047852c010a09dc`, passed/settled). 같은 조건의
-Codex `exec -s workspace-write` 세션은 `apply_patch`를 실행해 합성 README를
-바꿨으므로 **RQA-HOOK-02 실패**다. 직접 호출한 제품 gate는 deny를 반환했고,
-후보의 Codex hook trust 기록은 없었다. 이후 `CODEX_SANDBOX`가 gate까지
-조기 종료시키던 코드도 수정해 합성 gate 회귀 30/30을 통과했다
-(`710dfa04a08649c1bfe2f893ddc45466`). 이 수정은 `c18067e`에 포함되지
-않으므로 새 후보의 실제 Codex hook 실행 및 신뢰 확인이 필요하다. 신규 hook
-신뢰를 우회하거나 승인하지 않았다.
-
-같은 설치 후보에서 기존 로컬 328,576,992바이트 모델과 QMD 2.5.3/
-node-llama-cpp 3.18.1의 native closure 7개를 **추론 없이** 검토해
-`review_required` 제안 digest
-`30faa6d37df0eee1bbb6aa4d456a39ff522abd31316517b38885237f5f63ed05`를
-생성했다(guard `c7d7a6d4b8544cc79f0b01b54a537aaa`, passed/settled).
-이것은 provider 승인·선택·최종 후보의 모델 QA가 아니다. 현 L1 상태는
-**부분 실행·미완료**이며, 실제 QMD 이관/복구, 선택된 검색, 학습 중
-압력 증가와 재개, 최종 exact 후보의 Claude/Codex 실행이 남았다.
-따라서 main merge와 Mini 설치는 보류한다.
-
-This spec was written on 2026-10-17 on the local, unpushed branch
-`feat/same-session-worktree-freshness`. The synthetic fixture helper passed
-its L0 guarded test, which ran Git only inside disposable test directories.
-No installed-candidate host scenario, QMD, model, hook or installer was run.
-The host scenarios are `NOT RUN`, apart from the documented `BLOCKED` race
-barrier and learning conditions. This paragraph does not record L1 QA.
-
-2026-10-18 Laya v4 추가 기록: 임시 Git 후보를 복사한 **L0 개발 fixture**에서는
-제품 hook의 차단, 별도 개발 전용 합성 벡터의 edit→sync→query 및 rollback
-거부를 확인했다(가드 `1e2bdde46fe94d1eb62449a3ed998bc9`, Node 1·Python 2,
-`passed/settled:true`). 정식 marketplace 설치나 새 실제 host 세션은 아니므로
-아래 L1 행은 모두 `NOT RUN`이다. 이 fixture에서는 모델 추론을 실행하지 않았다.
-별도 제한된 임베딩 기능 smoke는 가드
-`af90592d823d482ba8318de9016a010b`가 `passed/settled`로 끝났고 합성 입력
-2회, 결과 차원 768을 관측했다. backend는 Metal로 표시됐지만
-`gpuLayers=0`이므로 모델 GPU offload 증거는 없다. 5초 간격 샘플링으로 peak
-RSS도 측정되지 않았다. 이 기능 smoke는 제품 provider 승인이나 L1 설치 검증이
-아니다. 원시 실행 로그가 별도 보존됐다는 주장은 하지 않는다.
-
-### memvane-db 전환 후보 추가 필수 행 (2026-10-18, 전부 NOT RUN)
-
-**통합 작업 체크포인트 (L0, 설치 후보 아님):** 제품 승인 항목의 자기참조를
-제거하고, exact Git tree 복사본과 설치 소유 journal에 외부 provider attestation
-digest를 묶었다. 선택된 hook의 질의는 예열된 소유 worker를 사용하고 update/index는
-durable sync wake를 남긴다. QMD 원본·백업을 보존하는 cutover/복구 상태도
-합성 fixture에 연결했다. 집중 회귀 14/14는 guard
-`36d1092013a04de59b034f787a3cd2f9`에서 통과했다. 전체 회귀의 첫 실행은
-시스템 Python의 PyYAML 부재로 실패했고, 같은 Python에 기존 테스트 venv의
-PyYAML import 경로만 더한 집중 재검사는 47/47 통과했다(guard
-`dc86865c203243f98c49a35f6c2dac2e`). 아래 모든 L1 행은 계속 `NOT RUN`이다.
-후속 제목 결속 v5는 동일 본문·다른 QMD 제목을 별도 벡터로 보관하고,
-완전한 청크 집합을 원자 봉인해 재시도에서 재사용한다. 검증된 집합 밖의 청크와
-불연속 sequence는 세대 seal이 거부한다. QMD RRF의 첫 유효 목록 가중치·상위
-순위 보너스·`1/rank` 점수 의미도 반영했다. 통합 집중 검사는 8/8 통과했다
-(guard `1af84e0c7e56489fa24a1429c88d62b7`). 독립 Opus v5 리뷰는
-`claude-opus-5-5`를 사용했고 실제 `modelUsage`는 output 8,545 token,
-cache read 1,960 token, cache create 23,131 token이었다(guard
-`b414d9b1defa4071af9f67921ea2a14b`, passed/settled). 코드·합성 자료만
-전달했고 모델 추론/다운로드는 하지 않았다.
-최종 모델 제외 전체 회귀는 기존 venv의 PyYAML import 경로만 시스템 Python에
-더해 실행했고 guard `d372c3eda9844b3ba3f516f7e34e5e62`에서
-`passed/settled:true`, exit 0으로 끝났다. 전환 fixture의 v5 제목·청크 집합
-계약 누락은 각각 집중 가드 `1cb5df21e4ee45db8193faab97a0f21f`와
-`b78ecfa76cb64a3cb4143bb4d3b8f11a`에서 수정 후 통과했다.
-
-후속 L0 통합에서는 두 QMD 컬렉션(raw·wiki)의 read-only inventory·백업·후보
-봉인·전환 복구, selected wiki compile, QMD 형식 FTS 및 계층 recall, 짧은 소유
-상태 경로의 설치·worker 준비를 합성 fixture로 연결했다. 모델/native closure 검토
-자료 생성기도 구현했지만 실제 설치·선택·모델 실행 증거를 대신하지 않는다. 전체
-회귀는 1,621건 중 1,612 PASS·9 SKIP·0 FAIL, guard
-`95a30e34baed4d6abe090ad0f52bd06f` `passed/settled:true`였다. 이 결과는
-L0 소스 검사이며 최종 후보의 L1 행은 여전히 모두 `NOT RUN`이다.
-QMD 전환 복구만 대상으로 한 Opus 소스 리뷰는 guard
-`ead1e6624d634cadbed8b47fcafbc4ec`에서 `passed/settled:true`였고
-`claude-opus-5-5`의 실제 `modelUsage`는 output 6,614, cache read 1,960,
-cache create 4,779 token이었다. 설정 변경 뒤 switching 고착, pending route digest
-재확인 등 지적을 합성 사례로 수정했고 전환·설치 집중 3/3은 guard
-`9be9f9657a674b5aa6402e8c66fc487a`에서 통과했다. 실제 QMD 데이터와
-모델은 이 리뷰에 제공하지 않았으며 L1 상태를 바꾸지 않는다.
-
-memvane-db로 QMD backend를 교체하는 릴리스에는 기존 L1 행에 더해 **설치된 정확한 후보**에서 다음을 필수로 기록한다. 임시 Git full-plugin 복사본과 합성 attestation·이관 리허설은 marketplace 설치 후보의 fresh-host 증거가 아니다. 실제 설치 후보의 provider 승인과 선택은 아직 수행되지 않았다. 아래 행은 모두 `NOT RUN`이며 L0 통과로 대체할 수 없다.
-
-| 행 | 설치 후보에서 확인할 실제 결과 |
-|---|---|
-| LI-INST | exact-commit bundle·설치 소유 journal·현재 파일 identity·DB/queue incarnation을 새 Claude/Codex 세션이 검증하고, 일치하지 않으면 QMD로 fallback하지 않고 차단한다. |
-| LI-MIG | minimal settings(`{name, skipPaths}`) 프로젝트의 fresh-wiki 온보딩(`plan-fresh-wiki-origin` → `review-index-provider` → `prepare-fresh-wiki-origin` → `finalize-index-origin` → `activate-index-origin`)이 **위키 문서만** membership·본문·FTS·벡터로 색인하고 원본 원문은 출처·최신성 증거로만 확인한다. settings 파일은 다시 쓰지 않는다. 불일치/중단 시 이전 선택이 유지되고, QMD-origin ledger(`qmd-cutover.json`)가 남은 state root는 `qmd_origin_detach_required`로 거부된다. |
-| LI-SCOPE | 미온보딩 프로젝트 무작업, linked worktree 읽기 전용, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
-| LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
-| LI-COEXIST | 사용자 QMD 자료(`~/.cache/qmd`, `~/.config/qmd`)와 별도 global QMD를 보존한다. 소유자 1회 정리의 `plan-legacy-cleanup`은 읽기 전용이고, `apply-legacy-cleanup --approve-legacy-cleanup`은 검증된 플러그인 QMD daemon, `managed-by: qmd-auto-context` LaunchAgent, 플러그인 QMD runtime·shared store·backend 트리만 제거한다. 사용자 QMD 자료는 `--include-user-qmd-data`일 때만 제거한다. install attestation이 대상 안 파일을 가리키거나(`attestation_references_legacy_path`) `~/.local/state/memvane/*/reviewed-route.json`의 `pluginRoot`가 `core/backend_manager.sh`를 가진 옛 번들이면(`older_host_bundle_bound`) 정리는 거부된다. 따라서 Claude·Codex 두 host cache가 이 릴리스를 로드하고 모든 설치가 SessionStart 번들 업그레이드로 옮겨져 Laya 임베딩 runtime으로 재증명된 뒤에만 실행한다. |
-| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
-| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
-
-모델/벡터 재생성이 필요한 경우 provenance 또는 명시 승인·자원/비용 gate를 함께 기록한다. 필수 행의 `NOT RUN`/`BLOCKED`/`FAIL`은 전환 릴리스를 막는다.
-
-현재 코드의 직접 blocker와 누락된 설치 후보 QA (L0 상태는 제품 합격 판정이
-아니다):
-
-| 행 | 현재 경계와 필요한 증거 |
-|---|---|
-| LI-INST/LI-VECTOR | 자기참조 없는 attestation, 실제 설치 cache의 0755 파일 검증, 소유 journal·private socket, 모델/native closure 검토 자료 생성은 합성 구현됐다. 정확한 최종 commit을 실제 marketplace가 로드한 위치에서 검토·승인하고, 선택된 모델의 tokenizer/청킹·자원 동작을 확인해야 한다. 기존 2회 기능 smoke는 소진됐으며 이 행의 L1 증거가 아니다. |
-| LI-MIG/LI-RECOVER | 위키 후보 봉인과 route/journal 중단점 복구를 합성 구현했다. 설치 후보에서 변경·중단점 재시작·전진 복구가 필요하다. 원문·위키·settings는 보존한다. |
-| LI-RECALL | 선택된 hook의 warm provider, QMD 형식 FTS, 위키 계층·EP·DF 정책은 소스 및 합성 fixture에 연결됐다. 희귀 CJK Script 경계와 반복 DF 탐색의 시간 제한·부분 결과 폐기는 합성으로 확인했다. 실제 최대 규모 corpus의 훅 지연과 같은 corpus의 fresh Claude/Codex 검색 결과는 측정하지 않았다. |
-| RQA-RES-02 | durable learning queue의 중복 방지·재시작·부하 대기/재시도는 합성 검사했다. 실제 설치 후보에서 OS 압력 증가 시 중지·회복 후 재개는 별도 안전 범위의 실제 head 학습 검증이 필요하다. |
-
-
-독립 Opus QA 후속 확인 대상 (2026-10-18, 제품 출시 전 해결 또는 실측 필요):
-
-| 코드 경계 | 필요한 수정·검사 |
-|---|---|
-| `core/laya_product_bundle.py`의 production approval | 자기참조는 installer-owned attestation으로 제거했다. 이제 실제 host가 로드한 exact commit의 파일·모델·native closure를 검토해 journal에 봉인하고, 설치 뒤 source와 바이트가 같은지 확인해야 한다. |
-| `core/laya_host_response.py`의 selected route | 선택된 recall은 warm provider를 호출하고 update/index는 durable wake로 보낸다. 최종 설치 후보의 승인된 provider, 실제 fresh Claude/Codex 세션, QMD 대비 검색 정책을 검증해야 한다. |
-
-Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선택 검토 항목이다.
-학습 작업의 운영 부하 큐와 admission·중지/재개 검증은 아래 `RQA-RES-02`의
-필수 조건이다. 이 구분은 검색·임베딩 기능 자체를 제품 범위에서 제외하지
-않는다.
 
 ## 1. Source verification and installed-candidate QA are separate
 
@@ -508,8 +182,8 @@ observed before the preflight was `READY`:
 - An untrusted hook is an approval blocker. A trusted hook that fails to fire
   on a supported event after a `READY` preflight is a product failure. A
   missing deny or injection is never `PASS`.
-- This preflight does not change any status that is already recorded in this
-  document.
+- This preflight does not change any status that is already recorded in the
+  run record.
 
 **Codex trust scope.** The installed `hooks/hooks-codex.json` holds six
 commands of the form `"<INSTALL_PATH>/hooks/run-hook" <name> codex`, where
@@ -1150,8 +824,7 @@ memvane-db owns search and indexing in this release. Part B therefore runs on
 a fixture whose route was selected through setup onboarding (LI-MIG in the
 same fixture).
 
-How the selected engine enforces the invariant, and why the order differs
-from the old wording:
+How the selected engine enforces the invariant:
 
 - One runtime dispatcher per OS UID runs `laya-sync` wakes
   (`core/runtime_work.py` `drain`, `runtime-worker.lock`). A wake re-put while
@@ -1459,6 +1132,27 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture; restore the account state.
 
+### memvane-db 전환 필수 행 (LI-*)
+
+memvane-db로 QMD backend를 교체하는 릴리스에는 위 RQA 행에 더해 **설치된 정확한 후보**에서 다음을 필수로 기록한다. 임시 Git full-plugin 복사본과 합성 attestation·이관 리허설은 marketplace 설치 후보의 fresh-host 증거가 아니다. L0 통과로 이 행을 대체할 수 없다.
+
+| 행 | 설치 후보에서 확인할 실제 결과 |
+|---|---|
+| LI-INST | exact-commit bundle·설치 소유 journal·현재 파일 identity·DB/queue incarnation을 새 Claude/Codex 세션이 검증하고, 일치하지 않으면 QMD로 fallback하지 않고 차단한다. |
+| LI-MIG | minimal settings(`{name, skipPaths}`) 프로젝트의 fresh-wiki 온보딩(`plan-fresh-wiki-origin` → `review-index-provider` → `prepare-fresh-wiki-origin` → `finalize-index-origin` → `activate-index-origin`)이 **위키 문서만** membership·본문·FTS·벡터로 색인하고 원본 원문은 출처·최신성 증거로만 확인한다. settings 파일은 다시 쓰지 않는다. 불일치/중단 시 이전 선택이 유지되고, QMD-origin ledger(`qmd-cutover.json`)가 남은 state root는 `qmd_origin_detach_required`로 거부된다. |
+| LI-SCOPE | 미온보딩 프로젝트 무작업, linked worktree 읽기 전용, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
+| LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
+| LI-COEXIST | 사용자 QMD 자료(`~/.cache/qmd`, `~/.config/qmd`)와 별도 global QMD를 보존한다. 소유자 1회 정리의 `plan-legacy-cleanup`은 읽기 전용이고, `apply-legacy-cleanup --approve-legacy-cleanup`은 검증된 플러그인 QMD daemon, `managed-by: qmd-auto-context` LaunchAgent, 플러그인 QMD runtime·shared store·backend 트리만 제거한다. 사용자 QMD 자료는 `--include-user-qmd-data`일 때만 제거한다. install attestation이 대상 안 파일을 가리키거나(`attestation_references_legacy_path`) `~/.local/state/memvane/*/reviewed-route.json`의 `pluginRoot`가 `core/backend_manager.sh`를 가진 옛 번들이면(`older_host_bundle_bound`) 정리는 거부된다. 따라서 Claude·Codex 두 host cache가 이 릴리스를 로드하고 모든 설치가 SessionStart 번들 업그레이드로 옮겨져 Laya 임베딩 runtime으로 재증명된 뒤에만 실행한다. |
+| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
+| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
+
+모델/벡터 재생성이 필요한 경우 provenance 또는 명시 승인·자원/비용 gate를 함께 기록한다. 필수 행의 `NOT RUN`/`BLOCKED`/`FAIL`은 전환 릴리스를 막는다.
+
+Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선택 검토 항목이다.
+학습 작업의 운영 부하 큐와 admission·중지/재개 검증은 `RQA-RES-02`의
+필수 조건이다. 이 구분은 검색·임베딩 기능 자체를 제품 범위에서 제외하지
+않는다.
+
 ## 10. Domain ownership
 
 Scenarios respect domain ownership. Two rules apply:
@@ -1526,12 +1220,3 @@ Scenarios respect domain ownership. Two rules apply:
   - Record `FAIL`, or `BLOCKED` if the QA harness caused it.
   - Resolve it only through the documented skill flows. Never delete journals,
     reservations or pointers to continue.
-
-## 13. Authoring-pass status (2026-10-17)
-
-| Scenario | Status | Note |
-|---|---|---|
-| RQA-ID-00, RQA-INST-01..04, RQA-HOOK-01..02, RQA-SYNC-01, RQA-GIT-01..03, RQA-WIKI-01..03, RQA-RES-01, RQA-PLAT-01 | `NOT RUN` | Specification only. No installed host, QMD, hook, install, model or network execution in this pass. The synthetic fixture helper was tested separately at L0. |
-| RQA-RACE-01 | `BLOCKED` | Part B now targets the selected memvane-db engine. It has a QA-only fixture-scoped barrier and L0 late-attempt and dead-claim source tests (2026-10-18; guarded run pending). The installed-host scenario has not run. |
-| RQA-RES-02 | `BLOCKED` | Needs separate learning approval, safe synthetic installed-candidate resources, and observed OS-pressure stop/resume. L0 queue tests do not satisfy this row. |
-| LI-INST, LI-MIG, LI-SCOPE, LI-RECOVER, LI-COEXIST, LI-VECTOR, LI-RECALL | `NOT RUN` | Exact marketplace install and fresh-host scenarios have not run. Production provider approval, onboarding activation, and retrieval parity remain unresolved. |

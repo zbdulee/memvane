@@ -7,7 +7,7 @@
 
 명시적으로 등록된 프로젝트에 한해, 한 번에 제한된 양만 실행합니다. 설정·준비·자원·동의·quota 중 하나라도 불확실하면 학습을 시작하지 않습니다. 대신 `disabled`·`setup_in_progress`·`busy`·`deferred_*`·`consent_required` 같은 상태를 반환합니다. 진행 중이던 학습은 두 head slot cursor로 재개합니다.
 
-아래 내용은 구현된 코드 경로를 설명합니다. 학습 실행이 검증되었다는 뜻은 아닙니다. 실제 학습은 QA에서 실행하지 않았습니다.
+아래 내용은 구현된 코드 경로를 설명합니다. 학습 실행이 검증되었다는 뜻은 아닙니다. 실제 학습 실행은 검증되지 않았습니다.
 
 ```mermaid
 flowchart TD
@@ -71,6 +71,6 @@ flowchart TD
 
 ### QA 증거와 미검증
 
-- QA 기록은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 실제 학습은 실행하지 않았으므로, 학습 training이 통과했다고 볼 수 없습니다. 학습 결과가 recall에 반영되는지도 검증하지 않았습니다.
-- checkpoint 선택 pointer(`live_select`) 코드는 발췌 범위 밖입니다. 그래서 도표의 해당 노드는 아키텍처 지도를 근거로 표기했습니다.
+- 학습 자원 QA 계약(`RQA-RES-02`)은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 실제 학습 실행은 검증되지 않았고, 학습 결과가 recall에 반영되는지도 검증되지 않았습니다. 열린 항목은 [TODO](../../TODO.md)의 「학습 runtime」 절에 있습니다.
+- checkpoint 선택 pointer(`live_select`) 코드는 이 문서의 설명 범위 밖이라 도표에서 노드 하나로 표시했습니다.
 - learning profile action과 `project-learning-setup.json`이 어떻게 연결되는지는 발췌로 확인하지 못했습니다. 그래서 도표에서 점선으로 표시했습니다.
