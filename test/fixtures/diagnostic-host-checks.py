@@ -84,6 +84,20 @@ class HostRecall(unittest.TestCase):
                              for r in self.rows()))
         self.assertNotIn(SENTINEL.encode(), self.raw())
 
+    def test_each_host_keeps_its_identity_in_diagnostics(self):
+        for name in ('claude', 'codex', 'hermes'):
+            with self.subTest(host=name):
+                with self.assertRaises(ValueError):
+                    with host._event_scope('recall', name, self.decision, self.payload):
+                        raise ValueError(SENTINEL)
+                row = self.recall_rows()[-1]
+                linked = [item for item in self.rows()
+                          if item.get('diagnostic_id') == row.get('diagnostic_id')]
+                self.assertTrue(linked)
+                self.assertTrue(all(item.get('host') == name for item in linked))
+                self.assertEqual(diag.reassemble(self.rows(), row['diagnostic_id'])['status'],
+                                 'complete')
+
     def test_logging_failure_keeps_original_exception(self):
         def boom(*args, **kwargs):
             raise OSError('synthetic logging failure')
