@@ -172,9 +172,9 @@ def _write_or_verify_private(path, raw):
         os.close(directory)
 
 
-# One synchronous port scan (laya_index_source_port defaults). This is the
-# work bound of the in-process origin path only, never a corpus admission: a
-# source above it is planned as a background initial build instead.
+# Origin planning reads settings only. The source inventory is the durable wiki
+# catalog scan of the registered inactive initial build (_register_initial_build);
+# no source scan runs in this process.
 def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     """Review a new wiki-only Laya generation from minimal project settings.
 
