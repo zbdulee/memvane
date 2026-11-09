@@ -1,10 +1,10 @@
-# Laya vector capacity path: design (2026-10-19)
+# Laya vector capacity path
 
 `core/laya_vector_capacity.py` implements the fill steps, and
 `sync_step(require_vector=True)` seals the generation before publish. The
 product sync worker and the selected host response use this capacity path
 when both capacity stores exist next to the A-int DB
-(`laya_index_runtime.capacity_store_paths`). Without them the worker keeps the
+(`laya_index_runtime.capacity_store_paths`). Without them the worker uses the
 full-batch path below (`sync_full` with `prepare_candidate_batch_off_hook`).
 
 ## Full-batch vector path (no capacity stores)
@@ -24,7 +24,7 @@ The cost is O(N + B) reads twice, all vectors in memory, and a model run
 whose length is set by the corpus in one admission. The capacity path below
 avoids this.
 
-## Facts the design rests on
+## Store facts the path relies on
 
 * `LayaVectorIndex.insert_chunk_set` (`laya_index_vector.py`) commits
   one `(hash, title, profile)` chunk set and its completeness seal in one
@@ -42,15 +42,15 @@ avoids this.
 * A `vector_chunks` row requires its `content` row (trigger in
   `laya_index_a.py`, `NOT EXISTS (SELECT 1 FROM content WHERE hash=...)`).
   Content is normally written by stage, so the fill writes it first with
-  the new `LayaIndexA.ensure_content`. Stage accepts an existing row with
+  `LayaIndexA.ensure_content`. Stage accepts an existing row with
   the same body (`hash_content_conflict` otherwise), so nothing a later
   stage writes changes. A content row with no membership is served by no
   view. Content is immutable and has no GC, so a file that changes before
-  it is staged leaves its old content row, as old generations already do.
+  it is staged leaves its earlier content row, as superseded generations do.
 
-## Design
+## Fill and seal
 
-Split the vector work into a model-bound **fill** step and a model-free
+The vector work is split into a model-bound **fill** step and a model-free
 **seal** step.
 
 ### 1. `vector_fill_step` (model calls, bounded)
@@ -70,10 +70,10 @@ vector_fill_step(runtime, provider, *, max_files, max_bytes,
   resumes from a durable cursor in the catalog DB keyed by
   `(snapshot seq, profile_id)` (`vector_fill`/`set_vector_fill`). The
   table is created on first write with `CREATE TABLE IF NOT EXISTS`; the
-  catalog checks only `application_id`/`user_version`, so the schema
-  version is unchanged and an older catalog file reads as no progress. A
-  write drops rows of other snapshots. A new snapshot or profile restarts
-  the cursor.
+  catalog checks only `application_id`/`user_version`, so the table does
+  not change the schema version and a catalog file without it reads as no
+  progress. A write drops rows of other snapshots. A new snapshot or
+  profile restarts the cursor.
 * For each eligible member with no `cached_chunk_set` for
   `(sha256, qmd_markdown_title(text, path), profile_id)`:
   `read_verified(snapshot, path, sha256)` (one body in memory), compute the
@@ -95,7 +95,7 @@ per step by `max_bytes`) but embeds only changed content.
 
 ### 2. Seal inside `sync_step(require_vector=True)`
 
-`sync_step` keeps its order (claims, capture, stage, publish). With
+`sync_step` runs in order: claims, capture, stage, publish. With
 `require_vector=True`:
 
 * Before capture, check the fill state for the snapshot. If it is not
@@ -150,7 +150,7 @@ new content loads no model.
   and the full-plugin required files; the A-int package carries the two the
   flow needs.
 
-## Limits that remain
+## Limits
 
 * `seal_generation` walks the whole generation in one transaction. It
   streams rows (`MAX_GENERATION_SEAL_ROWS = None`), so it has no
@@ -158,13 +158,9 @@ new content loads no model.
   document's chunk set and explicit query budgets.
 * `search_exact` still scores every scoped chunk per query, bounded by the
   hook deadline and any explicit caller budget.
-* `laya_qmd_cutover` v1/v2 ledgers bind a candidate published by a full port
-  scan. A v3 binding (an initial build sealed on the capacity path) is proved
-  from the stored binding, catalog snapshot and vector seal without scanning
-  the source tree.
 * The first fill pass reads every eligible file once to get titles.
 
-## Implementation defaults
+## Defaults
 
 * Fill cursor: catalog DB (same scope as the snapshot).
 * A changed member stops the step and requests a rescan at once

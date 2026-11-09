@@ -40,7 +40,7 @@ Approvals recorded before the run (reference, date, scope, cap):
 | Candidate clean (`candidate-dirty.txt` empty) | yes / no |
 | `artifactManifestSha256` (`candidate-blobs.txt`) | |
 | `git archive` tar SHA-256 (informational) + `git --version` | |
-| Version consistency across all manifests + `test/probe-manifest.test.mjs` | yes / no (list mismatches) |
+| Version consistency across all manifests + `test/plugin-manifest.test.mjs` | yes / no (list mismatches) |
 | L0 source verification reference (command, commit, summary, log hash) | |
 
 ## 3. Installed identity (per host)
@@ -67,17 +67,16 @@ Approvals recorded before the run (reference, date, scope, cap):
 | Claude Code version | |
 | Codex version | |
 | Host model IDs used in sessions | |
-| Node (managed QMD) | |
+| Node (embedding runtime) | |
 | Hook `python3` path and version | |
 | Git version | |
-| QMD version / entry (from `setup` status) | |
+| Embedding runtime `runtimeId` / generation (from `setup` status) | |
 | Embedding model file SHA-256 | |
 | Laya state (deferred / reviewed identity) | |
-| QMD bootstrap evidence (version, path, model hash, index) | |
 | Laya readiness evidence, independent of QMD | |
 | Selected store generation | |
 | Network state (online / restricted) | |
-| Forbidden test env vars absent (`QMD_SKIP_BACKGROUND_WORKER`, `QMD_FORCE_DEAD_PIDS`, `QMD_QUERY_FIXTURE`, `QMD_FAKE_PLATFORMS`) | yes / no |
+| Forbidden test env vars absent (`QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE`, `QMD_SANDBOX`; `LAYA_QA_SYNC_BARRIER` outside the RQA-RACE-01 Part B session) | yes / no |
 
 ### Preflight (spec section 3, before functional QA)
 
@@ -139,6 +138,16 @@ Exact trust scope (one row per host; no wildcard or "trust all"):
 | RQA-RES-01 | Codex | NOT RUN | | | 45 min | | |
 | RQA-RES-02 | Claude | NOT RUN | | | 60 min | | BLOCKED until learning approval + safe resources are recorded |
 | RQA-PLAT-01 | (cell) | NOT RUN | | | 45 min | | |
+| LI-INST | Claude | NOT RUN | | | | | |
+| LI-INST | Codex | NOT RUN | | | | | |
+| LI-MIG | (install) | NOT RUN | | | | | |
+| LI-SCOPE | Claude | NOT RUN | | | | | |
+| LI-SCOPE | Codex | NOT RUN | | | | | |
+| LI-RECOVER | (install) | NOT RUN | | | | | |
+| LI-COEXIST | (install) | NOT RUN | | | | | |
+| LI-VECTOR | (install) | NOT RUN | | | | | |
+| LI-RECALL | Claude | NOT RUN | | | | | |
+| LI-RECALL | Codex | NOT RUN | | | | | |
 
 ## 6. Per-scenario detail (repeat for each executed scenario)
 

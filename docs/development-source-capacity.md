@@ -1,4 +1,4 @@
-# Laya source capacity: durable step-bounded source catalog (2026-10-19)
+# Laya source capacity: durable step-bounded source catalog
 
 `core/laya_source_catalog.py` (durable step-bounded catalog, `CandidateQuery`,
 audit oracle) and `core/laya_index_capacity.py` (durable binding sidecar)
@@ -7,7 +7,7 @@ them, the product sync worker uses that path when both capacity stores exist
 next to the A-int DB (`laya_index_runtime.capacity_store_paths`), the selected
 host response opens one pinned candidate query per user query, and both
 modules ship in the product bundle. Without the capacity stores the worker
-and host keep the full port-scan path (`core/laya_index_source_port.py`).
+and host use the full port-scan path (`core/laya_index_source_port.py`).
 
 ## Two separate correctness claims
 
@@ -125,7 +125,7 @@ here claims the live tree still equals the snapshot.
   path never opens the catalog and never uses "the latest snapshot" for an
   older pinned generation. Construction validates syntax only. Filesystem
   identity is checked by each query.
-* **Storage.** No A-int schema migration is made. A standalone SQLite
+* **Storage.** The binding needs no A-int schema change. A standalone SQLite
   sidecar (`GenerationBindingStore`, below) is the durable owner, and the
   generation name `g-<uuid32>-b<digest64>` commits to the binding.
   `sync_step`, `query_bound` and the selected host response use both.
@@ -258,7 +258,7 @@ exc.detail == {'reason': 'candidates_unverified', 'scope', 'generation',
 `finish()` returns query stats: `candidates`, `memo_hits`, `files_opened`,
 `bytes_read`, `rounds`, and `dropped`, which counts occurrences per reason.
 
-**What this does not fix.** Candidate verification leaves these A-int costs
+**What this does not bound.** Candidate verification leaves these A-int costs
 in place; see "A-int and query costs" below:
 
 * `LayaIndexA.search_many` re-tokenizes every eligible body of the
@@ -409,7 +409,7 @@ bindings(scope, generation, db_incarnation, binding_digest, record,
 * **Insert-only.** An identical re-put returns `exists` with no write.
   A binding whose name does not commit to it raises
   `generation_name_unbound` or `generation_name_mismatch` before any write.
-  `binding_conflict` remains as a defensive check.
+  `binding_conflict` is a defensive check.
 * **Safe creation.** The schema and metadata are built in an `O_EXCL`
   temp file, which is fsynced, published with a no-clobber `link`, and the
   directory is fsynced (both through the `F_FULLFSYNC`-aware `_fsync`).
@@ -483,7 +483,7 @@ rows or the whole file loses bindings, and that only fails closed.
 
 ## Product-path integration
 
-### What is wired
+### Runtime API
 
 ```python
 runtime = LayaIndexRuntime(source_root={...}, scope=..., db_path=..., queue_path=...,
@@ -587,10 +587,10 @@ runtime.capacity_status()                       # catalog.status(): durable back
   in A-int; nothing removes it. It affects no answer; it only keeps its
   generation listed as active in the read-only `gc_plan` census (no
   deletion path exists).
-* **Compatibility.** `stage`, `sync_full`, `process_one`, `query` and
-  `enqueue_claim` keep their signatures and behaviour; a runtime without the
-  new paths is unchanged, and `sync_step`/`query_bound` on it raise
-  `capacity_not_configured`.
+* **Without capacity paths.** `stage`, `sync_full`, `process_one`, `query`
+  and `enqueue_claim` do not use the catalog or binding store. On a runtime
+  without `catalog_path`/`binding_store_path`, `sync_step`/`query_bound`
+  raise `capacity_not_configured`.
 
 ### Streaming A-int stage (`LayaIndexA.stage_stream`, `stage_bound_streaming`)
 
@@ -614,7 +614,7 @@ runtime.capacity_status()                       # catalog.status(): durable back
   growth per generation, no incremental stage, and other A-int writers wait
   (readers continue under WAL; `query_bound`'s pin/release are writers and
   answer `pending`/`index_busy` after 2 s). Streaming only removes the O(B) Python
-  memory of the old document list.
+  memory of the `documents` list that `stage_from_catalog` builds.
 * **Candidate current-byte checks do not prove whole-corpus ranking.**
   `query_bound` proves each *returned* body is the file's current bytes. It
   does not prove the ranking, BM25 statistics or "which rows exist" match
@@ -660,16 +660,17 @@ The oracle's sequence is:
 Unlike the candidate path, the oracle also treats a pending or blocked
 newer scan as `index_stale`.
 
-## Problem
+## Port scan and capacity catalog
 
 `core/laya_index_source_port.py` proves source state by one synchronous full
 scan per operation and holds every file's bytes in memory, with a per-call
 `max_files=200` / `max_bytes=5_000_000` bound. On the capacity path indexing
 runs over a per-step work budget on a durable catalog instead (`sync_step`
 uses the same numbers as step budgets, not as a corpus cap), and the
-installer gives a source above one scan's bound a background build plan
-rather than a refusal. The selected path without capacity stores still runs
-a full port scan per query.
+installer registers a new project as a durable inactive initial build
+(`laya_initial_build`) that the `laya-sync` wake advances in bounded steps.
+The selected path without capacity stores still runs a full port scan per
+query.
 
 ## Catalog API (indexing side)
 
@@ -780,19 +781,19 @@ bound stage/publish (see "Bound indexing rule").
 * **Full-corpus FTS check per query.** Every `LayaIndexA.search` /
   `search_many` call runs `_generation_fts_rows_match`, which re-tokenizes
   every eligible body of the generation: O(N + B) CPU and memory per query.
-  Candidate verification does **not** fix this.
+  Candidate verification does **not** bound this.
 * **Exact vector scan.** `search_exact` scores every scoped chunk per query,
   bounded by the deadline and explicit caller budgets. Candidate
-  verification does **not** fix this.
+  verification does **not** bound this.
 * **Candidate query (re-read mode).** Each query reads at most `max_query_files` files
   and `max_query_bytes` bytes (+1 growth-detection byte per file). It holds
   only those buffers.
 * **Audit oracle.** Holds all proven bytes (≤ `max_proof_bytes`) per call.
-* **Install.** `core/laya_product_install.py` tries one source scan within
-  `SYNC_ORIGIN_MAX_FILES = 200` files; a larger source gets a background
-  build plan on the capacity path.
+* **Install.** `core/laya_product_install.py` registers a new project as a
+  durable inactive initial build (`laya_initial_build`); the `laya-sync`
+  wake advances it in bounded steps on the capacity path.
 
-## Honest limitations
+## Limitations
 
 * Ranking freshness is **not** claimed. New or changed files lag until async
   sync. A dropped top candidate can let a lower-ranked one through, and

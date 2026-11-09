@@ -74,7 +74,7 @@ flowchart TD
 
 ### QA 증거와 미검증
 
-- f89b141에서 통과가 확인된 것은 source-level CI입니다. synthetic QA 증거는 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. 다만 synthetic 증거가 있다고 해서 실제 호스트의 route 선택이 통과한 것은 아닙니다.
-- `candidate` 경로를 실제 Claude·Codex·Gemini 호스트에서 확인하는 QA는 통과하지 않았습니다.
+- 설치 후보 QA 계약은 [release-agent-qa.md](../../release-agent-qa.md)에 있습니다. synthetic 시험 통과는 실제 호스트의 route 선택이 통과했다는 뜻이 아닙니다. 열린 QA 항목은 [TODO](../../TODO.md)에 있습니다.
+- `candidate` 경로를 실제 Claude·Codex·Gemini 호스트에서 확인하는 QA는 검증되지 않았습니다. 열린 QA 항목은 [TODO](../../TODO.md)에 있습니다.
 - 공식 Antigravity 자동 경로는 payload adapter가 생기기 전까지 구현 범위 밖입니다.
 - 설치자 action을 호출하는 실제 명령 형태(래퍼와 인자 조합)는 발췌에 없어 표기하지 않았습니다.

@@ -653,8 +653,7 @@ from injected analytical tests; the shared OS reporter always attaches it.
   installation's `laya_embed_resident.py serve <project> <socket>` owner,
   re-verified by UID, executable and argv just before SIGTERM.
 - Learning: the hosted inference service refuses the socket `shutdown`
-  command; an idle learning-only service of an earlier bundle is retired as
-  before.
+  command; an idle learning-only service of an earlier bundle is retired.
 - Embedding runtime: the embedding worker runs the Laya embedding runtime under
   `~/.local/state/memvane/embed-runtime` (`active.json`, `previous.json`,
   content-addressed `generations/g-<id>/`). The bundle upgrade worker fills it

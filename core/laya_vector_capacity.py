@@ -10,7 +10,7 @@ cache is keyed by content hash and title, not by generation.
 The seal of a generation is separate and needs no model:
 ``sync_step(require_vector=True)`` stages only after the fill is complete,
 then ``seal_generation`` builds the seal from those cached chunk sets before
-publish. Design: ``docs/plans/2026-10-19-laya-vector-capacity-design.md``.
+publish. Design: ``docs/development-vector-capacity.md``.
 
 This module loads nothing by itself. The provider is passed in by the
 admitted owner worker and is never called from a host hook.
