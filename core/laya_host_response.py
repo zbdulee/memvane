@@ -445,8 +445,13 @@ def _trace_capture(trace, reason, *, exc=None, warning=False):
         if not diag['enabled']:
             return None
         diag['count'] += 1
-        return diagnostic_trace.capture(diag['decision'], event=diag['action'],
-                                        reason=reason, exc=exc, warning=warning)
+        token = event_log.bind(decision=diag['decision'], host=diag['host'],
+                               session=diag['session'])
+        try:
+            return diagnostic_trace.capture(diag['decision'], event=diag['action'],
+                                            reason=reason, exc=exc, warning=warning)
+        finally:
+            event_log.unbind(token)
     except Exception:  # noqa: BLE001 - diagnostics never alter the hook result
         return None
 
@@ -484,7 +489,8 @@ def _event_scope(action: str, host: str, decision, payload):
         yield outer
         return
     trace = {'notes': [], 'fields': {}, 'final': None, 'outcome': None, 'reason': None,
-             'diag': {'decision': decision, 'action': action, 'enabled': None, 'count': 0}}
+             'diag': {'decision': decision, 'action': action, 'host': host,
+                      'session': event_log.session_id(payload), 'enabled': None, 'count': 0}}
     token = _TRACE.set(trace)
     started = time.monotonic()
     try:

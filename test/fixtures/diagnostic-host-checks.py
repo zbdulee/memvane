@@ -65,6 +65,10 @@ class HostRecall(unittest.TestCase):
         self.assertRegex(diagnostic_id or '', r'^[0-9a-f]{32}$')
         record = diag.reassemble(self.rows(), diagnostic_id)
         self.assertEqual(record['status'], 'complete')
+        linked = [item for item in self.rows() if item.get('diagnostic_id') == diagnostic_id]
+        self.assertTrue(linked)
+        self.assertTrue(all(item.get('host') == 'claude' for item in linked))
+        self.assertTrue(all(item.get('session') == 'synthetic-session' for item in linked))
         self.assertEqual(record['kind'], 'exception')
         self.assertIn('Traceback', record['text'])
         self.assertIn(SENTINEL, record['text'])
