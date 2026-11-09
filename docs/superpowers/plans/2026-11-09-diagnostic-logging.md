@@ -73,7 +73,7 @@
 
 - [ ] RED: 임시 HOME의 9개 합성 설치 등록, alias 동일 install 중복 제거, 요청별 stale·미온보딩·누락·64개 초과를 단정한다. 한 설치가 실패해도 다른 설치는 반환한다.
 - [ ] RED: `XDG_CONFIG_HOME` 경로·owner·mode·symlink·hardlink·변경 경쟁을 주입한다. registry에는 프로젝트 root와 expected install ID 외 메시지·본문이 없다.
-- [ ] registry 쓰기는 owner-only·0600, no-follow, 유계·원자적 업데이트로 구현하고 읽을 때 현재 route와 install binding을 재검증한다. 손상·부분 등록은 명시한다. 소유자 registry 파일 자체의 안정된 inode에 flock을 잡고 같은 inode에 유계 갱신한다. 동시 등록과 프로세스 중단 때 기존 항목이 손실되지 않는 기록 형식과 복구 계약을 합성 fixture로 먼저 고정한다. 별도 lock 파일은 만들지 않는다.
+- [ ] registry 쓰기는 owner-only·0600, no-follow, 유계·원자적 업데이트로 구현하고 읽을 때 현재 route와 install binding을 재검증한다. 손상·부분 등록은 명시한다. registry는 각 행이 version·upsert/remove·canonical root·install ID를 담는 유계 UTF-8 JSONL이다. registry 파일 자체의 안정된 inode에 flock을 잡고 유효 행을 append·fsync하며 별도 lock 파일이나 inode 교체는 하지 않는다. 중단으로 마지막 행이 불완전하면 lock 아래 그 꼬리만 제거하고 이전 완전 행을 보존한다. 중간 손상·한도 초과는 fail-closed로 표시하고, 9개 등록은 항목별 결과를 보고해 부분 등록을 숨기지 않는다. 동시 등록과 중단 복구를 합성 fixture로 고정한다.
 - [ ] `npm run test:focused -- test/diagnostic-targets.test.mjs`를 양 Python에서 실행 후 commit한다.
 
 ## Task 5: 통합 조회·원문 공개 경계
