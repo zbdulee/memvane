@@ -52,7 +52,7 @@ class Capture(unittest.TestCase):
                             exc=exc, warning=warning)
 
     def test_exception_chain_and_origin_warning(self):
-        marker = 'synthetic-message-012345'
+        marker = 'synthetic-message-012345 /Users/synthetic/example'
         private_local = 'synthetic-local-never-recorded'
         diagnostic_id = self.capture(self.thrown(marker))
         self.assertRegex(diagnostic_id, r'^[0-9a-f]{32}$')
@@ -61,6 +61,7 @@ class Capture(unittest.TestCase):
         self.assertIn(marker, result['text'])
         self.assertIn('inner synthetic failure', result['text'])
         self.assertIn('diagnostic-capture-checks.py', result['text'])
+        self.assertNotIn(str(Path(__file__).resolve()), result['text'])
         self.assertIn('thrown', result['text'])
         self.assertNotIn(private_local, result['text'])
         warning_id = self.capture(warning=True)

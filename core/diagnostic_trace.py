@@ -156,16 +156,38 @@ def enabled(decision) -> bool:
 
 # ------------------------------------------------------------------ capture
 
+def _shorten_frames(frames):
+    """Keep useful source location without exposing an absolute home path."""
+    for frame in frames:
+        if os.path.isabs(frame.filename):
+            parts = Path(frame.filename).parts
+            frame.filename = '.../' + '/'.join(parts[-3:])
+
+
+def _shorten_exception_frames(item, seen=None):
+    seen = set() if seen is None else seen
+    if item is None or id(item) in seen:
+        return
+    seen.add(id(item))
+    _shorten_frames(item.stack)
+    _shorten_exception_frames(item.__cause__, seen)
+    _shorten_exception_frames(item.__context__, seen)
+    for child in getattr(item, 'exceptions', None) or ():
+        _shorten_exception_frames(child, seen)
+
+
 def _format(exc, warning: bool) -> tuple[str, str] | None:
     """(kind, text): an exception chain, or the caller's origin stack. No locals."""
     if exc is not None and isinstance(exc, BaseException):
-        lines = traceback.format_exception(type(exc), exc, exc.__traceback__,
-                                           limit=STACK_LIMIT)
-        return "exception", "".join(lines)
+        item = traceback.TracebackException(type(exc), exc, exc.__traceback__,
+                                            limit=STACK_LIMIT, capture_locals=False)
+        _shorten_exception_frames(item)
+        return "exception", "".join(item.format(chain=True))
     if warning:
         # Drop this module's own frames (capture/_format) from the origin stack.
         frames = [frame for frame in traceback.extract_stack(limit=STACK_LIMIT + 4)
                   if os.path.abspath(frame.filename) != os.path.abspath(__file__)]
+        _shorten_frames(frames)
         return "origin_stack", ("Origin stack (most recent call last):\n"
                                 + "".join(traceback.format_list(frames[-STACK_LIMIT:])))
     return None
