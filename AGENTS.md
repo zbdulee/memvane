@@ -66,7 +66,7 @@ hooks/     ← Claude/Codex/Gemini run-hook 디스패처 + hooks.json/hooks-code
 hermes_adapter/ ← Hermes Agent plugin hook adapter(pre_llm_call/on_session_start/pre_tool_call/post_tool_call) → core로 패스스루
 ```
 
-프로젝트 밖 원문 편집은 `core/laya_external_edits.py`가 소유 설치의 journal·route·번들 메타데이터만 증명해 private blob 알림과 `laya-sync` wake를 전달한다. 외부 색인·claim DB는 훅에서 열지 않는다. 소유 sync 워커가 전체 write 증명·현재 blob·설정·compile 동의를 다시 확인한 뒤 기존 source 큐와 삭제 수명 주기로 넘긴다. recall과 로컬 compile 범위는 세션 프로젝트를 따른다. 범위·상한은 `docs/plans/2026-10-28-out-of-project-edit-routing.md`에 있다.
+프로젝트 밖 원문 편집은 `core/laya_external_edits.py`가 소유 설치의 journal·route·번들 메타데이터만 증명해 private blob 알림과 `laya-sync` wake를 전달한다. 외부 색인·claim DB는 훅에서 열지 않는다. 소유 sync 워커가 전체 write 증명·현재 blob·설정·compile 동의를 다시 확인한 뒤 기존 source 큐와 삭제 수명 주기로 넘긴다. recall과 로컬 compile 범위는 세션 프로젝트를 따른다. 범위·상한은 `docs/out-of-project-edit-routing.md`에 있다.
 
 편집 후 자동 인덱싱: 선택된 route의 PostToolUse `index` action이 Laya full-scan sync owner를 깨운다(`laya_host_response.py`). 성공한 agent Bash(`file-change-event`)도 같은 full-scan wake를 낸다. 실제 인덱싱은 hook 밖의 durable worker가 한다.
 

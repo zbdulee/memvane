@@ -9,13 +9,23 @@
 
 ## recall 품질
 
-[recall 효용 회복 계획](plans/2026-08-19-recall-utility-recovery-plan.md)의 열린 항목 세 개다.
-
-- verify defer 루프의 종점.
-- PostToolUse recall 경로를 유지할지.
-- subagent(sidechain)·하네스 기계 프롬프트에도 주입할지.
+- **verify defer 루프의 종점.** `wiki_verify_worker`는 검수 직전 원문 freshness가 `FRESH`가 아니면 잡을 `deferred / source_changed_before_verify`로 남기고 큐에 그대로 둔다. 재시도 카운터도 종점도 없어 `recallVerifiedOnly` 아래에서 그 카드는 계속 주입되지 않는다.
+  - `content_hash_mismatch`는 검수가 아니라 재컴파일이 필요하다. N회 defer 뒤 compile source 큐로 넘기는 방안이 있다. 단 같은 원문의 compile이 `extractor_failed/source_unreadable`이나 `skipped/verify_inconclusive_suppressed`로 막혀 있으면 루프가 끝나지 않고, `wiki_compile_worker.recover_pending_refreshes`가 매 run 재큐잉하므로 중복 enqueue(이중 과금)가 될 수 있다. `source_unreadable`의 원인부터 진단한다.
+  - "N회 defer"를 표현할 상태가 없다. `requeue_lines`는 raw 행을 그대로 다시 쓰고 `_requeue_count`는 compile worker의 orphan claim 경로에만 있다.
+  - `missing`은 신선해질 수 없어 영구 대기다. 이 분기가 `record_source_missing`보다 앞에 있다. `wiki_freshness.check_card`는 첫 비-fresh 원문에서 반환하므로 일부 원문만 사라진 경우일 수 있고, 그때 `record_source_missing`은 `all_sources_missing` 가드로 아무것도 쓰지 않는다. 전멸·일부·그 외 세 갈래로 나눈다.
+  - 적용 뒤 `verify-queue.jsonl`이 줄고 `verify-log.jsonl`에 `deferred`가 아닌 결과가 나오는지 확인한다.
+- **PostToolUse recall 주입을 유지할지.** 편집 hook 주입은 방금 편집한 파일 문맥이라 모델이 이미 쥐고 있고, 연속 편집마다 반복된다. 선택지는 유지, 링크·제목만 남기는 게이트, 폐지다. 판단 전에 집계 단위(프로젝트 전체·단일 세션, 기간)를 통일해 건수와 분량을 다시 잰다.
+- **subagent·하네스 프롬프트 주입.** subagent(sidechain) 세션에는 recall 주입이 닿지 않는다. 닿게 할지 정한다. `<task-notification>` 같은 하네스 생성 프롬프트에도 UserPromptSubmit 주입이 발화한다. 거를 기준(태그, 발신 주체)을 정한다.
 
 주입 품질 로드맵이 범위 밖으로 둔 기능을 다시 다룰지도 정한다. 대상은 카드 유효 구간(bitemporal), 카드 간 모순 탐지 lint, 카드 간 관계(그래프), 근거 카드 변경의 stale 전파, 주입이 답변을 개선했는지 재는 평가 지표다.
+
+## git-blob 모델 rollout
+
+[git-blob 설계](plans/2026-11-01-memvane-db-git-blob-model.md) §12의 PR8(DB provenance compile/lifecycle), PR9(frontmatter-free 카드 writer), PR10(retention/GC·운영 확대)이 남았다. 사용자 결정은 같은 문서 §14에 있다.
+
+## 프로젝트 밖 원문 편집
+
+- 대기 큐(64경로)를 넘는 개별 compile 알림은 큐에 추가되지 않고 대상 프로젝트의 full-scan wake만 offer된다. 초과분을 보존할지 정한다. 전체 원문 compile 권한으로 넓히지 않는다. 현재 계약은 [프로젝트 밖 원문 편집 라우팅](out-of-project-edit-routing.md)에 있다.
 
 ## 연결 git worktree의 카드 수명 주기
 
@@ -37,6 +47,12 @@ PR10까지는 하지 않는다. 그 뒤 설계 문서를 먼저 쓰고 리뷰를
 
 - **사용자가 유예한 assertion 5개는 PASS가 아니다**: `RQA-GIT-01`, `RQA-GIT-03`, `RQA-WIKI-01`의 유료 중복 호출 부분, `RQA-WIKI-03`, `RQA-RES-02`. 정식 릴리스 전에 [QA 계약](release-agent-qa.md)대로 실행한다. `RQA-WIKI-01`의 나머지 assertion은 유예 대상이 아니다.
 - `docs/templates/release-agent-qa-run.md` §5에 `LI-*` 7행이 없고, 상태값에 `DEFERRED BY USER`가 없다.
+
+## 학습 runtime
+
+- 설치 후보에서 학습 중지·재개(stop pipe, `training_cursor.py`의 head slot·그룹 계획·RNG receipt)의 end-to-end 증거가 없다. 실행 중인 학습 자식과 index/update 작업이 OS 자원을 두고 겹칠 때의 부하도 측정하지 않았다.
+- 첫 한정 학습 시험을 제안하기 전에 고정할 것: 설치 후보의 adapter·체크포인트·모델 파일 해시, 승인된 합성 입력, 동의·v2 grant와 만료, base artifact와 후보 출력의 소유 경로, OS별 device·메모리 프로필. 시험은 명시적 opt-in으로 `--kind model-test` 개발 가드와 제품 runtime admission을 함께 적용한 짧은 합성 한 그룹 trial이다. 프로세스 전체 CPU/RSS peak, MPS 사용량, swap·pressure·load, 소유 child 정리, stop 지연, 재시작 cursor, 최종 receipt를 관측한다. 가드의 5초 샘플링은 peak를 놓칠 수 있으므로 자식 내 계측 없이 자원 상한 검증으로 승격하지 않는다.
+- 정식 릴리스 전 설치 후보에서 `RQA-RES-02`를 통과해야 한다(아래 릴리스 QA).
 
 ## 설치
 

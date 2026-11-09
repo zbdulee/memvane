@@ -34,7 +34,7 @@ step's ``work.undecodable_skipped``); a wiki-only catalog blocks on it. Every
 other violation on a source-text file blocks the scan.
 
 Two correctness claims are kept apart
-(see docs/plans/2026-10-19-laya-source-batched-scan.md):
+(see docs/development-source-capacity.md):
   * Generation correctness (immutable). A complete multi-step scan is
     scan-time evidence. It lets a full-membership generation be staged and
     published. ``capture_generation_binding`` records which complete snapshot,

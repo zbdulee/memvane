@@ -48,8 +48,7 @@ onboarding never/skip은 안내만 숨기므로 이미 선택된 프로젝트를
 - 알림: 대기 64경로, 최근 처리 256경로. owner drain은 3초와 기존 enqueue 상한을 따른다.
   혼합 편집의 비원문 경로는 대기 상한을 차지하지 않는다.
 - 대기 큐가 가득 차면 새 개별 알림을 추가하지 않고 B의 full-scan wake는 offer한다.
-  초과한 개별 compile 알림의 durable spill은 후속 범위다. 전체 원문 compile 권한으로
-  확대하지 않는다.
+  개별 compile 알림을 전체 원문 compile 권한으로 확대하지 않는다.
 - 미온보딩 A 세션, Bash의 임의 외부 편집 경로 추론, 비원문·wiki 편집 라우팅은
   이 경로에 포함하지 않는다. B의 일반 동기화·온보딩 정책을 따른다.
 

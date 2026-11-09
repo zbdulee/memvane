@@ -1,6 +1,6 @@
 """Durable SQLite sidecar for ``GenerationSourceBinding`` records.
 
-Standalone capacity slice (see docs/plans/2026-10-19-laya-source-batched-scan.md,
+Standalone capacity slice (see docs/development-source-capacity.md,
 "Durable binding sidecar"). It gives the candidate query path a durable binding
 owner without any A-int schema change:
 
