@@ -292,11 +292,10 @@ binding store가 없는 구형 Laya 선택 경로도 직접 RRF 결과를 주입
 이 점을 알고 하십시오(고유 사실을 `qmd:auto:end` 밖에 두라는 권고는 **소스 변경에 의한
 재생성으로부터 보존**하기 위한 것이지, 그 내용이 검증된다는 뜻이 아닙니다).
 
-provenance 없는 legacy `verified`는 `unknown`으로 fail-closed drop됩니다. 릴리스 유지보수의
-명시적 offline migration은 이런 qmd 생성 카드와 `reviewed`·`canon`·`manual` 상태 카드를
-`generated`으로 정규화하고 `reviewed:` 및 검수 proof 필드를 제거합니다. 다음 source edit와
-compile, 성공적인 verification이 끝날 때까지 이 카드는 recall에 나오지 않습니다. foreign
-카드는 변경하지 않지만 `recallVerifiedOnly: false`여도 절대 주입하지 않습니다.
+provenance 없는 legacy `verified`는 `unknown`으로 fail-closed drop됩니다. `reviewed`·`canon`·
+`manual` 상태 카드도 `status: verified`가 아니라 자동 신뢰를 받지 못합니다. 자동 재검증은
+없으므로 원문이 편집되어 다시 compile되고 verification을 통과할 때까지 이 카드는 recall에 나오지 않습니다. foreign
+카드는 `recallVerifiedOnly: false`여도 절대 주입하지 않습니다.
 
 사람 검수 lifecycle은 없습니다. 새 자동 카드에 `reviewed:`나 `reviewed`·`canon`·`manual`
 status를 쓰지 않으며, `wiki-review` UI·skill·agent도 제공하지 않습니다. `merge-needed.jsonl`은
