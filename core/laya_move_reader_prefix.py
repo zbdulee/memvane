@@ -32,8 +32,9 @@ def _capacity_prefix(data, intent, route, *, moved):
     state, stage = Path(data['state']), Path(data['stage'])
     source, ledger = data['source_record'], intent['oldLedger']
     catalog, binding = Path(source['catalog_path']), Path(source['binding_path'])
-    R._need(str(catalog) == ledger['catalogDb'] and R._file(catalog, state)
-            == source['catalog_node'] == ledger['catalogIdentity']
+    R._need(str(catalog) == ledger['catalogDb']
+            and source['catalog_node'] == ledger['catalogIdentity']
+            and R.persistent_node_equal(source['catalog_node'], R._file(catalog, state))
             and str(binding) == ledger['bindingStore'], 'reader_move_prefix_unproved')
     with R._readonly(catalog, state) as db:
         meta = dict(db.execute('SELECT key,value FROM meta'))
@@ -53,7 +54,7 @@ def _capacity_prefix(data, intent, route, *, moved):
                 'reader_move_material_changed')
     new_route = R.journal._route(intent['newRoute'].encode('utf8'), state / R._JOURNAL)[0]
     new_roots = wiki_index_roots(new_route['collections'])
-    if node == old_node:
+    if R.persistent_node_equal(old_node, node):
         M._binding(binding, state, wiki_index_roots(route['collections']), route, data['old_generation'])
         R._need(R._file(temporary, state) == intent['store']['identity'], 'reader_move_prefix_unproved')
         matches(temporary, state, 'new-binding.sqlite')
@@ -71,7 +72,7 @@ def _capacity_prefix(data, intent, route, *, moved):
         matches(catalog, state, 'new-catalog.sqlite')
         with R._readonly(catalog, state) as db:
             M._catalog_scan(db, bound)
-    return node != old_node
+    return not R.persistent_node_equal(old_node, node)
 
 
 def fenced_project(data, attestation, root):
@@ -136,13 +137,12 @@ def fenced_project(data, attestation, root):
                 and [dev, ino] == [new_dev, new_ino], 'reader_move_alias_changed')
         wiki = Path(old_path if folder == old else new_path)
         R._need(wiki.resolve(strict=True) == wiki and wiki.is_dir()
-                and list(mover._wiki_node(wiki)) == [dev, ino], 'reader_move_alias_changed')
+                and R.persistent_node_equal([dev, ino], list(mover._wiki_node(wiki))), 'reader_move_alias_changed')
     row = bundle_row(state)
     R._need(row == data['bundle_row'] and row['state'] in ('active', 'restored_old')
             and row['pending'] is None and row['selected_route_sha'] == route_sha
             and row['scope_id'] == historical['scope']
-            and (row['project_root'], row['project_dev'], row['project_ino'])
-                == (str(project), *historical['project_node'])
+            and R.journal._project_matches(route, row)
             and row['selected']['installId'] == historical['install_id']
             and row['selected']['bundleKind'] == 'full_plugin', 'reader_move_bundle_changed')
     owner = R.journal._inspect_identity(row['selected'])
@@ -151,14 +151,15 @@ def fenced_project(data, attestation, root):
     R._need(executing == str(root) and R._raw(observed) == attestation
             and sha == row['provider_attestation_sha'] == historical['attestation_sha256']
             and row['provider_file_identity'] is not None
-            and R.journal._provider_file_identity(observed) == row['provider_file_identity']
+            and R.journal._provider_identity_equal(row['provider_file_identity'], R.journal._provider_file_identity(observed))
             and all(observed.get(k) == owner.get(k) for k in
                 ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile')),
             'reader_move_bundle_changed')
     ledger = intent['oldLedger']
     path = Path(historical['db_path'])
-    R._need(str(path) == ledger['candidateDb'] and R._file(path, state)
-            == ledger['candidateIdentity'] == historical['db_node'], 'reader_move_prefix_unproved')
+    R._need(str(path) == ledger['candidateDb']
+            and ledger['candidateIdentity'] == historical['db_node']
+            and R.persistent_node_equal(ledger['candidateIdentity'], R._file(path, state)), 'reader_move_prefix_unproved')
     stores_swapped = _capacity_prefix(data, intent, route, moved=folder == new)
     R._need(route['dbPath'] == historical['db_path'] and route['scopeId'] == historical['scope']
             and route['dbIncarnation'] == historical['incarnation'], 'reader_move_source_changed')

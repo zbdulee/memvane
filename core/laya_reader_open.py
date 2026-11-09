@@ -210,7 +210,7 @@ def open_warm_component(endpoint, role, *, deadline):
         before,auxiliary=_files(path,state)
         expected=record.get(_FIELDS[role]+'_node')
         if expected is not None:
-            R._need(before == tuple(expected), 'reader_component_changed')
+            R._need(R.persistent_node_equal(expected, before), 'reader_component_changed')
         R._need(auxiliary['-journal'] is None, 'reader_recovery_unproved')
         R._need(time.monotonic() < deadline, 'reader_open_deadline')
         from laya_index_a import _query_only_uri

@@ -11,6 +11,7 @@ import time
 
 import laya_install_journal as J
 import laya_journal_reader as R
+from persistent_identity import persistent_node_equal
 from laya_index_a import IndexContractError
 from laya_index_sync import sync_owner, validate_sync_owner
 from resource_deferred import ResourceDeferred
@@ -33,7 +34,7 @@ def _legacy_binding(project, decision, journal, row, digest, route):
     selected = row['selected']
     R._need(row['_version'] in (3, 4) and row['state'] in ('active', 'restored_old')
             and selected is not None and row['selected_route_sha'] == digest
-            and J._project(route) == (row['project_root'], row['project_dev'], row['project_ino'])
+            and J._project_matches(route, row)
             and row['project_root'] == str(project) and row['scope_id'] == decision['scopeId']
             and all(selected.get(key) == decision.get(key) for key in
                     ('pluginRoot', 'installId', 'generation', 'bundleManifestSha256',
@@ -46,7 +47,7 @@ def _legacy_binding(project, decision, journal, row, digest, route):
     J._verified_executing_root(selected, proof)
     attestation, digest = J._attestation(journal)
     R._need(attestation is not None and digest == row['provider_attestation_sha']
-            and J._provider_file_identity(attestation) == row['provider_file_identity']
+            and J._provider_identity_equal(row['provider_file_identity'], J._provider_file_identity(attestation))
             and all(attestation.get(key) == selected.get(key) == proof.get(key) for key in
                 ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile')),
             'worker_journal_binding_changed')
@@ -92,7 +93,8 @@ def _metadata(project, *, legacy=None):
             and ledger['candidateDb'] == decision['dbPath']
             and ledger['queueDb'] == decision['queuePath'], 'worker_journal_binding_changed')
     for field, identity in (('candidateDb', 'candidateIdentity'), ('queueDb', 'queueIdentity')):
-        R._need(R._file(Path(ledger[field]), state) == ledger[identity], 'worker_journal_binding_changed')
+        R._need(persistent_node_equal(ledger[identity], R._file(Path(ledger[field]), state)),
+                'worker_journal_binding_changed')
     built = build.read(state)
     if built is not None:
         identity = built['identity']

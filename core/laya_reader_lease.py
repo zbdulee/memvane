@@ -184,7 +184,7 @@ def _move_identity(state, project, intent):
         selected = row['selected']
         _need(row['state'] in ('active', 'restored_old') and row['pending'] is None
               and isinstance(selected, dict) and row['project_root'] == str(project)
-              and [row['project_dev'], row['project_ino']] == reader._node(project)
+              and reader.persistent_node_equal([row['project_dev'], row['project_ino']], reader._node(project))
               and isinstance(selected.get('vectorProfile'), dict),
               'reader_move_selection_unproved')
         install_id = selected['installId']
@@ -203,8 +203,8 @@ def _move_identity(state, project, intent):
                 _need(intent.get('stateRoot') == str(state), 'reader_move_state_invalid')
         _need(record['install_id'] == install_id and record['scope'] == row['scope_id']
               and record['project'] == str(project) and record['state'] in states
-              and record['state_node'] == reader._node(state)
-              and record['project_node'] == reader._node(project)
+              and reader.persistent_node_equal(record['state_node'], reader._node(state))
+              and reader.persistent_node_equal(record['project_node'], reader._node(project))
               and record['profile'] == selected['vectorProfile']['profileId'],
               'reader_install_changed')
         return install_id, row, selection, record

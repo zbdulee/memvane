@@ -441,6 +441,11 @@ def _repository_fields(facts):
             'gitObjectFormat': facts['gitObjectFormat']}
 
 
+def _persistent_directory_equal(stored, live):
+    from persistent_identity import persistent_identity_equal
+    return stored is None and live is None or persistent_identity_equal(stored, live)
+
+
 def _repository(value, facts):
     if (not isinstance(value, dict) or len(value) != len(REPOSITORY_FIELDS)
             or set(value) != REPOSITORY_FIELDS
@@ -453,7 +458,9 @@ def _repository(value, facts):
                 or value['commonGitDir'] is not None or value['gitObjectFormat'] is not None))
             or value['kind'] not in ('git', 'non-git')):
         _fail('invalid_repository_binding')
-    if {key: value[key] for key in _repository_fields(facts)} != _repository_fields(facts):
+    if any(not _persistent_directory_equal(value[key], live)
+           if key in ('commonGitDir', 'projectRoot') else value[key] != live
+           for key, live in _repository_fields(facts).items()):
         _fail('repository_binding_changed')
 
 
@@ -468,7 +475,8 @@ def _worktree(value, repository, facts):
             or (value['gitDir'] is not None and not _identity(value['gitDir']))):
         _fail('invalid_worktree_binding')
     if (value['repoId'] != repository['repoId'] or value['repositoryDigest'] != _digest(repository)
-            or any(value[key] != facts[key] for key in ('project', 'checkout', 'gitDir'))):
+            or any(not _persistent_directory_equal(value[key], facts[key])
+                   for key in ('project', 'checkout', 'gitDir'))):
         _fail('worktree_binding_changed')
 
 
