@@ -913,7 +913,7 @@ class NoActivation(CheckoutCase):
                 '_schema3_wiki_cards', '_schema3_stage', '_schema3_vector_context',
                 '_schema3_vector_spec', '_schema3_chunker', '_schema3_vectors',
                 'shadow_pass', '_shadow_gate', '_shadow_open', '_shadow_step',
-                '_shadow_vector_spec', '_restart_shadow', '_orphaned_intent',
+                '_shadow_vector_spec', '_shadow_warm_key', '_restart_shadow', '_orphaned_intent',
                 '_shadow_rewake', 'resume_shadow_migration'},
             # Recall hook receipt while the shadow migration waits at
             # shadow_verified/reader_ready on a v5 journal: reads one page of

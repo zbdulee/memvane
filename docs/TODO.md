@@ -9,6 +9,7 @@
 
 ## recall 품질
 
+- **대형 설치의 recall provider 준비 및 거절 진단.** 선택된 v6 reader에서 `resident.adopt`가 `adopted`인 뒤에도 `selected_provider_preparing`으로 벡터 검색을 건너뛰는 recall과 `selected_proof_or_query_failed` 거절이 반복된다. 긴 프롬프트의 `laya_selector_invalid_pool`도 함께 관측된다. 서비스 listener 바인딩은 개별 임베딩 요청 성공을 증명하지 않으며, 거절 코드는 원래 예외를 구분하지 않는다. provider 요청 실패·timeout, selector 입력 조건과 거절 원인을 각각 분리해 진단하고, 정상 벡터 recall과 거절 해소를 실제 설치에서 검증한다.
 - **verify defer 루프의 종점.** `wiki_verify_worker`는 검수 직전 원문 freshness가 `FRESH`가 아니면 잡을 `deferred / source_changed_before_verify`로 남기고 큐에 그대로 둔다. 재시도 카운터도 종점도 없어 `recallVerifiedOnly` 아래에서 그 카드는 계속 주입되지 않는다.
   - `content_hash_mismatch`는 검수가 아니라 재컴파일이 필요하다. N회 defer 뒤 compile source 큐로 넘기는 방안이 있다. 단 같은 원문의 compile이 `extractor_failed/source_unreadable`이나 `skipped/verify_inconclusive_suppressed`로 막혀 있으면 루프가 끝나지 않고, `wiki_compile_worker.recover_pending_refreshes`가 매 run 재큐잉하므로 중복 enqueue(이중 과금)가 될 수 있다. `source_unreadable`의 원인부터 진단한다.
   - "N회 defer"를 표현할 상태가 없다. `requeue_lines`는 raw 행을 그대로 다시 쓰고 `_requeue_count`는 compile worker의 orphan claim 경로에만 있다.
