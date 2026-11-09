@@ -1081,6 +1081,34 @@ def _project_states(project, home):
     return found
 
 
+def _failure_trace(project, state, reason, exc):
+    """Fields linking a failed bundle step to an opt-in detailed diagnostic.
+
+    Only a candidate route of this exact project whose journal lives in this
+    exact install may carry the diagnostic; anything else (unproved, blocked,
+    another install, or a route lookup failure) is ``trace_unavailable`` and
+    records nothing. Never raises and never changes the upgrade result.
+    """
+    try:
+        from laya_index_host_route import select_route
+        decision = select_route(str(project), action='update')
+        journal = decision.get('journalPath') if isinstance(decision, dict) else None
+        if (not isinstance(decision, dict) or decision.get('state') != 'candidate'
+                or decision.get('projectRoot') != str(project)
+                or not isinstance(journal, str)
+                or Path(journal).parent != Path(state)):
+            return {'trace_unavailable': True}
+    except Exception:
+        return {'trace_unavailable': True}
+    try:
+        import diagnostic_trace
+        diagnostic_id = diagnostic_trace.capture(decision, event='bundle.upgrade',
+                                                 reason=reason, exc=exc)
+    except Exception:
+        diagnostic_id = None
+    return {'diagnostic_id': diagnostic_id} if diagnostic_id else {}
+
+
 def run(project_root, *, root=None, home=None):
     """Worker: upgrade every install of one project, one state root at a time.
 
@@ -1208,6 +1236,7 @@ def run(project_root, *, root=None, home=None):
                                   status='refused' if reason in REFUSALS else 'failed',
                                   executingRoot=str(root), attempts=attempts,
                                   reason=reason, **extra)
+                    diagnostic.update(_failure_trace(project, state, reason, exc))
             _event(state, 'bundle.upgrade', result.get('status'), result.get('reason'),
                    ms=(time.monotonic() - started) * 1000, kind=result.get('kind'),
                    attempt=attempts, operation=operation,
