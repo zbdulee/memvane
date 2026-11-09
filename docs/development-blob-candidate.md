@@ -15,7 +15,7 @@ schema3 reader가 선택된 설치에서는 sync 게시(`laya_product_sync_worke
 
 ## 소유권과 위키 소속
 
-호출자는 PR1 repository/worktree 등록 JSON과 scope UUID를 제공한다.
+호출자는 `laya_checkout_view`의 repository/worktree 등록 JSON과 scope UUID를 제공한다.
 저장소는 common Git dir의 경로·dev/ino와 프로젝트 상대 위치에 묶이며,
 worktree는 checkout·Git admin 정체성, settings 정체성, wiki root 디렉터리 노드를 묶는다.
 settings 정체성은 v6 route의 `settings_identity_digest`와 같은 범위다: 프로젝트 root와
@@ -180,6 +180,6 @@ publication 권한은 journal endpoint record와 sync owner의 writer scope
 | recipe token window | 1–8,192, overlap은 window 미만 |
 | attestation source / source별 spans | 64개 / 256개 |
 | SQL busy | 2초 |
-| Git capture | PR1의 유한 예산·버전 조건 |
+| Git capture | `laya_checkout_view`의 유한 예산·버전 조건 |
 
 schema·등록 정체성·수명 주기·운영 데이터의 자동 전환이나 삭제는 이 인터페이스에 없다.

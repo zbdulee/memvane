@@ -28,12 +28,8 @@
    expansion is an optional decision after v2 opens; search and embedding
    product functionality still needs its own Laya gate.
    For a memvane-db replacement release, require every `LI-*` row in the
-   [agent QA gate](release-agent-qa.md) on the exact installed plugin. The
-   host-loaded installer path and raw+wiki route have source and synthetic
-   coverage; their installed-candidate behaviour, production provider/model
-   closure, migration cutover and fresh-host retrieval parity remain
-   unverified. The corresponding rows stay `NOT RUN` until the installed
-   candidate supplies evidence.
+   [agent QA gate](release-agent-qa.md) on the exact installed plugin.
+   Source and synthetic coverage cannot satisfy these rows.
 7. Publish a GitHub Release with compatibility notes, user-visible changes,
    upgrade notes, and known limitations. Name every OS or host that was not
    verified in this release.
@@ -45,6 +41,6 @@
 
 Retain the completed run record. It covers the commit SHA,
 `artifactManifestSha256`, installed and deployed identity, host, OS, Node,
-Python, QMD and model versions, search-result proofs, blockers, and any checks
+Python, embedding runtime and model versions, search-result proofs, blockers, and any checks
 that were intentionally not run or blocked. Keep transcripts and logs in the
 private evidence store. Release notes carry summaries and hashes only.

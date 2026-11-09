@@ -247,10 +247,12 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 
 ### compile.mode
 
-compile의 활성 여부와 쓰기 정책을 **한 값**으로 정합니다. 예전에는 `enabled`(bool) +
-`mode` + `autoWrite`(bool)가 같은 사실을 세 곳에서 표현했고, 게이트마다 보는 값이 달라
-"켜졌는데 절반만 도는" 상태가 관측되지 않은 채 존재했습니다. 지금은 `mode != "off"`가
-곧 활성입니다.
+compile의 활성 여부와 쓰기 정책을 **한 값**으로 정합니다. `mode != "off"`가 곧 활성입니다.
+
+`compile.enabled`(bool)와 `compile.autoWrite`(bool)는 이 값으로 합쳐진 deprecated 키입니다.
+값은 끄는 방향으로만 존중하고 켜는 방향은 무시합니다: `enabled: false`는 `mode`를 `off`로,
+`autoWrite: false`는 `auto-wiki`·`guarded`를 `candidates`로 낮춥니다. 원하는 동작은 `mode`
+하나로 다시 적으십시오.
 
 | 값 | 동작 |
 |---|---|
@@ -310,9 +312,9 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 ### compile.budget — 한 run의 유료 호출 총량
 
 `compile.budget`은 **사용자 계정에 청구되는 host CLI 호출 수**를 정하는 값만 모은
-블록입니다. 예전에는 `batch.maxPerRun`·`maxCardsPerSource`·`verify.maxPerRun`·
-`semanticDedup.judge.maxPairsPer*`로 네 서브트리에 흩어져 있어, 어느 값이 비용을
-정하는지 읽어서는 알 수 없었습니다.
+블록입니다. `batch.maxPerRun`·`maxCardsPerSource`·`verify.maxPerRun`·
+`semanticDedup.judge.maxPairsPer*`는 이 블록으로 옮겨간 deprecated 키입니다(값 처리는 아래
+[설정할 수 없는 값](#설정할-수-없는-값) 끝의 예외를 보십시오).
 
 > **⚠ 총량은 이 값들의 합이 아니라 일부의 곱입니다.** 한 run이 쓰는 카드 수는
 > `budget.extractorPerRun × budget.cardsPerSource`이고 dedup judge는 카드당 1회이므로,
@@ -327,13 +329,12 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 
 - **산출물 경로 9종** — `candidates.jsonl`·`source-queue.jsonl`·`tombstones.jsonl`·
   `generated-manifest.jsonl`·`merge-needed.jsonl`·`verify-{queue,log,skipped,deleted}.jsonl`은
-  프로젝트 폴더의 `compile/` 아래 고정 상수입니다(`core/compile_paths.py`). 실제 산출물
-  26종 중 9종만 설정 가능했고 sidecar(`*.lock`·`*.compact-stamp`)는 원본 파일명에서
-  파생되어 애초에 설정 대상이 아니었습니다 — 반쪽 추상화였고, 오타 하나가 과금 루프를
-  만든 실패 클래스(`verify_skipped_path`)도 여기서 사라집니다.
+  프로젝트 폴더의 `compile/` 아래 고정 상수입니다(`core/compile_paths.py`). sidecar
+  (`*.lock`·`*.compact-stamp`)는 원본 파일명에서 파생됩니다. 경로가 상수라 경로 오타로
+  억제 마커가 다른 곳에 쓰여 과금 루프가 생기는 일이 없습니다.
 - **dedup score 레버 4종** — `threshold`·`autoMergeThreshold`·`topK`·`similarPageMaxChars`는
-  상수가 됐습니다. 검색 score가 유사도가 아니라 **RRF 순위의 함수**라 어떤 임계도
-  "두 카드가 같은 사실을 말한다"를 표현할 수 없었습니다([Semantic Dedup](#semantic-dedup)).
+  상수입니다. 검색 score가 유사도가 아니라 **RRF 순위의 함수**라 어떤 임계도
+  "두 카드가 같은 사실을 말한다"를 표현할 수 없습니다([Semantic Dedup](#semantic-dedup)).
 - **`compile.sourceMissingPath`** — 위 "산출물 경로 9종"과 같은 경로 키입니다. 읽는 소비자가
   없으므로 적어 두어도 읽히지 않습니다.
   (`compile.sourceScan.enabled`·`maxCardsPerScan`은 경로 키가 아니라 수명 주기 동작 값이라
@@ -351,10 +352,9 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 (같은 50 클램프를 통과합니다), 새 키를 적으면 새 키가 이깁니다. 잠정 반영이지 스키마가
 아니니 새 위치로 옮겨 적으십시오. **옮겨간 나머지 4키
 (`batch.maxPerRun`·`verify.maxPerRun`·`semanticDedup.judge.maxPairsPer*`)는 반영되지
-않습니다**. 이 비대칭은 의도된 것입니다: 그 4키를 반영하면 라이브 프로젝트의
+않습니다**. 이 비대칭은 의도된 것입니다: 그 4키를 반영하면 그 키를 적어 둔 프로젝트의
 **유료 호출 예산이 플러그인 업그레이드만으로 올라가는데**,
-`maxCardsPerSource`는 라이브 사용이 0건이라 반영해도 지금 예산이 바뀌는 프로젝트가 없고,
-이 키를 적는 동기 자체가 카드 수를 **줄이는** 것(비용 감소 방향)입니다.
+`maxCardsPerSource`는 이 키를 적는 동기 자체가 카드 수를 **줄이는** 것(비용 감소 방향)입니다.
 
 ---
 
@@ -381,8 +381,6 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 lex·vector 질의 배치는 각각 2초, DF 좁히기 프로브는 **패스 전체**가 1초입니다(term 당 질의는
 최대 6개) → [lex term 선택](#lex-term-선택--코퍼스에-있는-단어만-and-에-넣습니다).
 
-> 이 문서를 읽는 사람과 도구를 위해 못박습니다: **"queryTimeout 3초 예산"이라는 글로벌 판정 기준은 존재하지 않습니다.** 글로벌 기본값은 일관되게 5초입니다. **3초를 기본값이나 글로벌 판정 기준으로 인용하지 마십시오.**
-
 ## Collection Roles
 
 `collectionRoles`는 같은 collection이라도 검색과 compile에서 다르게 취급하기 위한
@@ -406,7 +404,7 @@ lex·vector 질의 배치는 각각 2초, DF 좁히기 프로브는 **패스 전
 
 | 상태 | 처리 | 이유 |
 |---|---|---|
-| `collectionRoles`에 키가 없음 | `raw` (fail-open) | role 도입 전 프로젝트입니다. 하위호환이 맞습니다. |
+| `collectionRoles`에 키가 없음 | `raw` (fail-open) | role을 적지 않은 프로젝트의 하위호환 기본값입니다. |
 | 키가 있는데 값이 미지 (`"sourse"`, `"Source"`, `5` 등) | 색인·recall·compile에서 **전부 제외** (fail-closed) | 사용자가 무언가를 의도했는데 읽지 못한 것입니다. 여기서 `raw`로 넘기면 오타 하나가 "색인 제외"를 실제 색인으로 뒤집어, 의도하지 않은 문서가 인덱싱됩니다. |
 
 ### role `source` — 인덱싱하지 않고 카드만 만든다
@@ -470,10 +468,8 @@ fence·HTML 블록을 담을 수 있는데, CommonMark의 모든 블록 개시(f
 납니다. 접두는 본문을 재작성하지 않으므로(접두를 붙이고 후행 공백만 지웁니다) 축자 보존이
 유지되고, 모델은 접두 하나만 벗기면 원문을 복원합니다.
 
-**`injectSummaryMaxChars` 상한은 접두를 제외한 본문 문자 수입니다.** 접두 비용은 실측
-849장(본문 줄 수 median 1 / p95 1 / max 10)에서 순증 median 4자 / p95 4자 / **max 29자**
-입니다 — 기본 상한 600자를 적용한 **실제 주입 본문** 기준이며, 상한을 적용하지 않은 원본
-본문 기준으로는 max 49자입니다. `topN: 3` 프레임 오버헤드는 typical 12자 + 안내문 129자 =
+**`injectSummaryMaxChars` 상한은 접두를 제외한 본문 문자 수입니다.** 접두는 본문 한 줄당
+최대 4자를 더합니다. `topN: 3` 프레임 오버헤드는 typical 12자 + 안내문 129자 =
 **141자**, 최악 87자 + 129자 = **216자**입니다.
 
 불릿 한 줄에 들어가는 title·경로는 공백류·제어문자·zero-width를 공백으로 접어 **한 줄로
@@ -481,14 +477,8 @@ fence·HTML 블록을 담을 수 있는데, CommonMark의 모든 블록 개시(f
 
 ### injectSummaryMaxChars 기본값 600의 근거
 
-dogfooding 두 코퍼스(카드 849장)의 주입 대상 본문 길이 분포입니다.
-
-| 코퍼스 | 카드 | median | p90 | p95 | max |
-|---|---:|---:|---:|---:|---:|
-| service-engineering | 731 | 261 | 516 | 595 | 1574 |
-| novel | 118 | 206 | 383 | 483 | 608 |
-
-`600`이면 카드의 95% 이상이 **절단 없이** 들어가므로 절단은 예외 경로입니다. 동시에
+주입 대상 카드 본문은 대부분 600자 안이라 `600`이면 대부분의 카드가 **절단 없이**
+들어가고 절단은 예외 경로입니다. 동시에
 `topN` 기본값 3에서 주입 본문은 최악 1800자로 유계입니다(원문 소스는 흔히 수십 KB).
 상한을 넘으면 문장 경계에서 자르고 `… (이하 생략)`을 붙입니다 — 문장 중간에서 자르면
 모델이 잘린 절을 완결된 사실로 읽을 수 있기 때문입니다.
@@ -540,7 +530,7 @@ dogfooding 두 코퍼스(카드 849장)의 주입 대상 본문 길이 분포입
 |---|---|
 | `kind`가 `file`인가 | `{kind: "url", path: "docs/x.md"}`처럼 로컬 경로 모양의 비파일 소스가 원문으로 주입되는 것을 막습니다. 반대로 실제 url/slack 소스가 `missing`으로 집계되면 **사유가 틀립니다** — 원문 소실 판정이 그 신호를 근거로 삼기 때문입니다. `wiki_verify_worker`가 검증에 쓰는 kind 집합과 같습니다. |
 | `path`가 비어 있지 않은 문자열인가 | `{"path": false}`가 표기 `path: false`로 나가면 되읽어 문자열 `"false"`가 되고, 그런 이름의 파일이 있으면 원문으로 주입됩니다. 쓰기 쪽에서 그 항목을 아예 쓰지 않고(`wiki_compile.source_flow_entries`), 읽기 쪽에서도 검사합니다. |
-| 길이가 상한(200자) 이하인가 | title(160)·본문(600)에는 상한이 있는데 경로만 무제한이면 토큰 목표에 구멍이 남습니다(822자 경로가 축자 주입된 사례). **자르지 않고 버립니다** — 잘린 경로는 열 수 없어 없는 파일을 열게 만듭니다. 판정은 실제 주입되는 표시 문자열 기준이라, 같은 카드가 하위 cwd(절대 표시)에서는 상한을 넘어 빠질 수 있습니다. |
+| 길이가 상한(200자) 이하인가 | title(160)·본문(600)에는 상한이 있는데 경로만 무제한이면 토큰 목표에 구멍이 남습니다. **자르지 않고 버립니다** — 잘린 경로는 열 수 없어 없는 파일을 열게 만듭니다. 판정은 실제 주입되는 표시 문자열 기준이라, 같은 카드가 하위 cwd(절대 표시)에서는 상한을 넘어 빠질 수 있습니다. |
 | project root(또는 `allowRoots`) 안으로 해석되는가 | `../../../etc/passwd`를 "이 프로젝트 파일"로 제시하지 않기 위함입니다. `resolve()` **후** 판정하므로 밖을 가리키는 심볼릭 링크도 걸립니다. `collectionPaths` 검증과 같은 함수(`resolve_paths.contained_path`)를 씁니다. |
 | 실제 파일로 존재하는가 | 없는 경로를 주면 모델이 Read에 실패하고 헛돕니다(stale 링크). |
 | 한 줄로 표시 가능한가 | 개행·탭·zero-width가 들어가면 주입 프레임의 새 줄을 만들 수 있고, 접은 문자열은 실제 파일을 가리키지 않습니다. |
@@ -568,7 +558,7 @@ dogfooding 두 코퍼스(카드 849장)의 주입 대상 본문 길이 분포입
 `inline_sequence`입니다.
 
 지원하지 않는 형태를 **파싱하지 않고 사유만 남기는** 이유는 파서를 두 벌로 만들지 않기
-위함입니다(이 저장소는 emit/parse가 갈려 두 번 깨졌습니다). 사유 값이 곧 "flow mapping으로
+위함입니다(emit/parse가 갈리면 조용히 깨집니다). 사유 값이 곧 "flow mapping으로
 다시 쓰라"는 지시이며, 어떤 형태도 **흔적 없이** 사라지지 않습니다.
 
 > **알려진 한계.** 미지원 표기(block mapping·inline sequence·여러 줄 flow)로 쓰인 카드는
@@ -590,17 +580,8 @@ POSIX 경로로 기록되므로(`wiki_compile_enqueue`), 하위 디렉터리 세
 
 ### `injectSourcePathsPerCard` 기본값 3의 근거와 "켜 두는" 이유
 
-dogfooding 849장 전수의 `sources` path 개수 분포입니다.
-
-| path 개수 | 카드 수 |
-|---:|---:|
-| 1 | 830 (97.8%) |
-| 2 | 12 |
-| 3 | 6 |
-| 4 | 1 |
-
-median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들어가고, `topN`
-기본값 3에서 최악 9줄(경로 길이 median 55자 / max 94자)로 유계입니다. 카드 사이 중복
+카드 대부분은 `sources` path가 1개이고 2개 이상인 카드는 드뭅니다. `3`이면 거의 모든
+카드가 절단 없이 들어가고, `topN` 기본값 3에서 최악 9줄로 유계입니다. 카드 사이 중복
 경로는 제거되므로(같은 원문에서 여러 카드가 나오는 것이 정상입니다) 실제 줄 수는 더
 줄어듭니다. 상한은 `10`으로 clamp됩니다 — 이 값이 카드당 `stat()` 호출 수이자 주입 줄
 수의 상한이고 UserPromptSubmit은 blocking hook입니다. 항목 조사 자체도 상한의 2배까지만
@@ -616,8 +597,7 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
 아키텍처는 **"wiki는 중요하고 틀리지 않은 정보만 recall하고, 나머지는 에이전트가 raw를
 검색해 추출한다"** 이고, `recallStrategy: "wikiOnly"`는 그 전반부(자동 주입 범위)만 좁히는
 설정입니다. 원문 경로 주입은 그 **후반부로 넘어가는 통로**입니다 — 카드가 답이 아닐 때
-에이전트가 어디를 열어야 하는지 알려 줍니다. 비용은 카드당 보통 한 줄(median 55자 ≈
-20토큰)이고, 원문을 불필요하게 여는 위험은 위 우선순위 지시로 억제합니다. 토큰을 더 줄여야
+에이전트가 어디를 열어야 하는지 알려 줍니다. 비용은 카드당 보통 한 줄(약 20토큰)이고, 원문을 불필요하게 여는 위험은 위 우선순위 지시로 억제합니다. 토큰을 더 줄여야
 하는 프로젝트는 `0`으로 끄면 됩니다.
 
 > **raw 검색은 불필요한 것이 아니라 설계된 폴백 경로입니다.** `wikiOnly`는 "raw를 검색하지
@@ -636,19 +616,19 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
 
 ### lex 게이트 — 무관 주입 차단
 
-무관한 프롬프트에도 매번 주입이 일어났습니다(실측 4/4, 550~790자). 원인은
+게이트가 없으면 무관한 프롬프트에도 매번 카드가 주입됩니다. 원인은
 [minScore가 유사도가 아니라 순위](#minscore는-유사도가-아니라-순위입니다)라는 것입니다 —
 검색 score가 BM25 점수도 코사인 거리도 아닌 RRF 순위이므로, "관련 없으면 넣지
 않기"를 점수로 표현할 방법이 없습니다.
 
-무관/관련을 가르는 신호는 하나였습니다: **lex(전문 검색) 히트 수**.
+무관/관련을 가르는 신호는 하나입니다: **lex(전문 검색) 히트 수**. 예:
 
 | 프롬프트 | lex 히트 |
 |---|---:|
 | "오늘 점심 뭐 먹을까" / "python list comprehension" / "리액트 useEffect" | 0 / 0 / 0 |
 | "sendbird 장애 원인" / "중복 판정" / "VN 콜백 이벤트" | 8 / 8 / 7 |
 
-무관 카드는 전부 **vec만으로** 뽑혔습니다(vec은 코사인이 아무리 멀어도 상위 N개를 냅니다).
+무관 카드는 **vec만으로** 뽑힙니다(vec은 코사인이 아무리 멀어도 상위 N개를 냅니다).
 그래서 recall은 lex 단독 질의를 **실행당 최대 1회** 더 보내 히트 수를 확인하고, 0건이면
 그 결과를 **링크 + title만**으로 줄입니다(본문 인용과 `↳` 원문 경로를 뺍니다).
 
@@ -657,7 +637,7 @@ median 1 / p95 1 / max 4입니다. `3`이면 848/849(99.9%)가 절단 없이 들
   모델이 보고 판단해 필요할 때 열 수 있습니다.
 - **원문 경로를 빼는 이유**: 무관 가능성이 높은 카드에 수십 KB 원문의 주소까지 주면
   모델이 그것을 여는 유혹만 커집니다(토큰 목표와 정반대 방향).
-- **프로브가 실패하면 게이트를 엽니다**(기존 동작 유지). 정밀도 최적화가 본 흐름을
+- **프로브가 실패하면 게이트를 엽니다**. 정밀도 최적화가 본 흐름을
   막으면 안 되기 때문입니다.
 - **끄는 설정 키는 없습니다.** 쓰이지 않을 레버를 미리 만들지 않는다는 원칙입니다.
 
@@ -674,7 +654,7 @@ lex 질의는 한 문자열 안의 term 을 **AND** 로 결합합니다. 그래�
 
 **앞에서 3개**만 남기는 위치 컷은 이 문제를 줄입니다(활용형 어미는 문장 끝에 오므로
 구조적으로 밀려납니다). 하지만 위치 컷만 쓰면 **문장 앞의 군더더기가 실제 내용어를
-밀어냅니다** — 라이브 실측:
+밀어냅니다** — 예:
 
 | 프롬프트 | 앞 3개 | 히트 |
 |---|---|---:|
@@ -682,7 +662,7 @@ lex 질의는 한 문자열 안의 term 을 **AND** 로 결합합니다. 그래�
 | `이 부분 관련해서 sendbird 장애 원인 알려줘` | `부분 관련해서 sendbird` | **0** |
 | `아까 말한 그거 있잖아 VN 콜백 이벤트` | `아까 말한 있잖아` | **0** |
 
-같은 질문을 구어체로 묻는 것만으로 카드 본문(838자)이 링크만(134자)으로 줄어듭니다.
+위치 컷만 쓰면 같은 질문을 구어체로 묻는 것만으로 카드 본문 인용이 링크로 줄어듭니다.
 
 그래서 recall 은 term 당 lex 단독 질의(`limit 1`)를 보내 **코퍼스에 존재하는 term** 만
 남기고, 그 뒤에 3개 상한을 적용합니다. 이것은 질의를 넓히는 것이 아니라 **만족 불가능이
@@ -692,11 +672,11 @@ lex 질의는 한 문자열 안의 term 을 **AND** 로 결합합니다. 그래�
 - **변별력은 유지됩니다.** 개별 토큰이 존재해도(`list`·`의존성`·`규칙`) 그 AND 결합은
   여전히 0건입니다. 무관 프롬프트 4/4 는 그대로 차단됩니다.
 - **남는 term 이 2개 미만이면 채택하지 않습니다.** 1개짜리 질의는 연접이 아니라 "이 토큰을
-  가진 아무 문서"라 거의 항상 만족됩니다(실측: `오늘 점심 뭐 먹을까` → `오늘` 하나만 남고
-  871장 중 1장에 걸려 무관 프롬프트에 게이트가 열렸습니다). 이때는 원래 질의를 그대로 써서
-  도입 전과 동일하게 동작합니다.
+  가진 아무 문서"라 거의 항상 만족됩니다(`오늘 점심 뭐 먹을까`에서 `오늘` 하나만 남으면
+  그 토큰을 가진 카드에 걸려 무관 프롬프트에 게이트가 열립니다). 이때는 원래 질의를 그대로
+  씁니다.
 - **3개 상한은 남습니다.** DF 필터 뒤에도 AND 가 과하게 길어지는 것을 막고, 조회가
-  실패했을 때의 폴백이 상한 도입 전 상태로 되돌아가지 않게 하는 안전망입니다.
+  실패해 위치 컷으로 폴백할 때도 AND 길이를 묶는 안전망입니다.
 - **조회에 실패하면 위치 컷으로 폴백합니다**(fail-open). 조회 term 은 6개, 패스 전체 시간은
   1초로 유계입니다.
 
@@ -704,7 +684,7 @@ lex 질의는 한 문자열 안의 term 을 **AND** 로 결합합니다. 그래�
 
 카드 본문이 `injectSummaryMaxChars`를 넘고 검색 결과의 `line`이 `qmd:auto` 블록 **안**을
 가리키면, 카드 서두가 아니라 **그 문단부터** 인용합니다(앞을 건너뛴 사실은
-`… (앞부분 생략)` 표식으로 남습니다). `line`이 frontmatter나 블록 밖이면 기존대로 서두를
+`… (앞부분 생략)` 표식으로 남습니다). `line`이 frontmatter나 블록 밖이면 서두를
 인용합니다 — 그쪽 매칭은 title이 이미 주입돼 있어 본문으로 반복할 가치가 없습니다.
 상한은 그대로 600입니다(토큰 절감이 아니라 정확도 변경입니다). 상한 안에 들어가는
 카드는 어차피 전문이 주입되므로 재배치하지 않습니다.
@@ -799,10 +779,8 @@ PostToolUse 훅을 타지 않는 경로)을 compile 큐에 넣게 합니다. 하
 
 ### 처리량과 유료 호출 예산
 
-두 종류의 값이 섞이기 쉬우므로 분리했습니다. **시작 조건**은 `compile.batch`(언제
+두 종류의 값이 섞이기 쉬우므로 블록이 다릅니다. **시작 조건**은 `compile.batch`(언제
 돌릴 것인가)이고 **상한**은 `compile.budget`(한 번에 얼마나 돌릴 것인가 = 청구액)입니다.
-예전에는 `batch.maxItems`(시작 조건)와 `batch.maxPerRun`(상한)이 같은 블록에 있어
-이 구분이 보이지 않았습니다.
 
 한 run의 유료 host CLI 호출 총량은 **extractor(≤ `budget.extractorPerRun`) + dedup
 judge(≤ 쓰인 카드 수) + verify(아래 예산)**입니다. 세 항목이 각각 유계여야 총량이
@@ -818,7 +796,7 @@ dedup judge 1회 + verify 1회가 붙으므로, 상한이 없으면 **모델이 
 > 기본값(10 × 10)에서 한 run 최악 유료 호출은 **10 + 100 + 31 = 141회**입니다. 두 값을
 > 각각 클램프 상한까지 올리면(50 × 50 = 카드 2,500장) **50 + 2,500 + 31 = 2,581회**가
 > 가능합니다. 어떤 클램프도 이 **곱**을 막지 않습니다 — 두 값을 함께 올리는 것은 명시적
-> 선택이므로 허용하되, 올릴 때는 곱을 계산해 보십시오. 실측:
+> 선택이므로 허용하되, 올릴 때는 곱을 계산해 보십시오. 예:
 > `budget.extractorPerRun 10` × `budget.cardsPerSource 50` → **10 + 500 + 31 = 541회**.
 >
 > **verify 항의 `+1`은 backlog 기아 방지 예약입니다.** verify 예산은
@@ -826,10 +804,10 @@ dedup judge 1회 + verify 1회가 붙으므로, 상한이 없으면 **모델이 
 > **전부** 소진되면 backlog에 1건을 **추가로** 처리합니다(아래 [Verify](#verify) 참고).
 > 즉 verify 호출 수의 상한은 `예산`이 아니라 `예산 + 1`입니다. 기본값에서 verify 항은
 > `30 + 1 = 31`이고(`max(3, min(100, 30)) = 30`), 위 세 셈은 모두 이 `+1`을 포함합니다.
-> 라이브 최악(프로젝트별 설정 기준, 셈을 그대로 적습니다):
-> service-engineering `10 + 100 + (max(15, 30) + 1) = ` **141**,
-> 귀신은 약효가 돌 때 보인다 `10 + 100 + (max(min(60, 50), 30) + 1) = ` **161**
-> (`budget.verifyPerRun: 60`이 50으로 클램프됩니다), 무림 **0**(`compile.mode: "off"`).
+> 설정별 최악 예시(셈을 그대로 적습니다, 나머지 값은 기본값):
+> `budget.verifyPerRun: 15` `10 + 100 + (max(15, 30) + 1) = ` **141**,
+> `budget.verifyPerRun: 60` `10 + 100 + (max(min(60, 50), 30) + 1) = ` **161**
+> (60이 50으로 클램프됩니다), `compile.mode: "off"` **0**.
 >
 > 세 항의 정의는 extractor = `budget.extractorPerRun`, dedup judge = 쓰인 카드 수 ×
 > `budget.dedupPairsPerCompile`(기본 1 → 카드당 1회),
@@ -840,9 +818,9 @@ dedup judge 1회 + verify 1회가 붙으므로, 상한이 없으면 **모델이 
 > **⚠ 고아 claim 회수(리퍼)의 재추출 승수.** 비정상 종료 등으로 중단된 `*.claimed.*` 잡을 회수(reclaim)할 때 재추출 억제가 없어 회수 1회당 배치 전량이 다시 extractor로 재호출됩니다. `MAX_REQUEUE_COUNT`(3) 제한으로 한 잡은 최초 실행 1회 + 최대 3회 회수 = 최대 **4배**까지 재추출 승수가 적용될 수 있습니다. `MAX_REQUEUE_COUNT` 초과분은 큐에서 폐기되고 원장(`discard-ledger.jsonl`) 기록으로 종료됩니다.
 
 
-`batch.maxItems`와 `budget.extractorPerRun`을 혼동하지 마십시오. 예전에는 상한이 아예
-없어 `maxItems`를 넘겨 처리가 시작되면 **큐에 든 전량**을 한 워커 프로세스가 순차
-실행했습니다. 큐가 수백 건이면(대량 `git pull` 뒤 sync는 한 번에 최대 50건을 넣습니다)
+`batch.maxItems`와 `budget.extractorPerRun`을 혼동하지 마십시오. `maxItems`는 시작
+조건일 뿐이라, run 상한이 없으면 처리가 시작될 때 **큐에 든 전량**을 한 워커 프로세스가
+순차 실행합니다. 큐가 수백 건이면(대량 `git pull` 뒤 sync는 한 번에 최대 50건을 넣습니다)
 단일 one-shot 워커가 유료 host CLI 호출을 수십~수백 회 직렬로 돌립니다.
 `budget.extractorPerRun`은 그 실행 시간과 비용을 run 단위로 유계로 만들며, 넘친 항목은
 버리지 않고 큐에 남기므로 조용히 유실되지 않습니다(sync의 `QMD_SYNC_COMPILE_MAX`와 같은 성질).
@@ -856,7 +834,7 @@ dedup judge 1회 + verify 1회가 붙으므로, 상한이 없으면 **모델이 
 **대조에 쓰는 원문은 컴파일 잡이 아는 실제 소스입니다.** 카드의 `sources`에는 extractor
 (모델)가 낸 항목이 섞여 있고 verifier는 그 목록에서 최대 3개만 읽으므로, 모델 항목이 앞에
 있으면 카드가 **실제 원문 없이** 검증되어 `verified`(= `recallVerifiedOnly` 기본값에서 인용
-가능한 캐논)가 될 수 있었습니다. 지금은 실제 소스가 목록 맨 앞이고, 그 사실이 검수 잡에
+가능한 캐논)가 될 수 있습니다. 그래서 실제 소스가 목록 맨 앞이고, 그 사실이 검수 잡에
 별도 필드로 기록되어 3개 상한과 무관하게 반드시 읽힙니다. 총 읽기 수는 그대로 유계입니다.
 
 **검수 예산은 고정값이 아닙니다.** 실제 예산은
@@ -887,20 +865,18 @@ backlog에 예산을 다 쓰고 새 카드는 `generated`로 남습니다. 그�
 이 플러그인은 **사람 검수를 전제하지 않습니다.** 사람의 개입은 승인이 아니라 삭제이고,
 불변식은 "살아있는 카드 = 기계 검수를 통과한 카드"입니다. `recallVerifiedOnly` 기본값이
 `true`이므로 `generated`로 남은 카드는 recall에서 영구 제외되고, 사람 검수가 없으면
-그 상태를 벗어날 경로는 소스 변경뿐입니다. 실측(service-engineering)에서 verify 판정의
-**21%가 inconclusive**였고 전부 이 사장 상태였습니다. 그래서 `onFail`과 같이 삭제합니다.
+그 상태를 벗어날 경로는 소스 변경뿐입니다. inconclusive로 남긴 카드는 전부 이 상태에
+머뭅니다. 그래서 `onFail`과 같이 삭제합니다.
 
-**이 기본값은 기존 사용자에게 파괴적 변경입니다** — 0.x에서 `generated`로 남던 카드가
-업그레이드 후 삭제됩니다. 기존 동작을 유지하려면 `"onInconclusive": "none"`을 명시하십시오.
+inconclusive 카드를 `generated`로 남기려면 `"onInconclusive": "none"`을 명시하십시오.
 
 #### 검수 엔진 분리 (`crossEngine`)
 
 LLM 자기 검수는 성능을 떨어뜨립니다(Huang et al. ICLR'24: GPT-4 GSM8K 95.5% → 91.5% →
 89.0%, self-preference bias −38%~+90%). 문헌이 제시한 완화법은 **생성 모델과 판정 모델의
-분리**입니다. 0.x에서는 verifier가 카드를 만든 엔진을 그대로 재사용했고, 라이브 실측에서
-verified 카드 688장 중 **655장(95%)이 `verifiedBy: "claude"`** — 같은 엔진의 자기검증이었습니다.
-`recallVerifiedOnly` 기본값이 `true`이므로 이 카드들이 "인용 가능한 캐논"이고, 캐논 판정의
-근거가 self-preference bias에 그대로 노출돼 있었습니다.
+분리**입니다. `recallVerifiedOnly` 기본값이 `true`이므로 `verified` 카드가 "인용 가능한
+캐논"이고, 같은 엔진이 만들고 검수하면 캐논 판정의 근거가 self-preference bias에 그대로
+노출됩니다.
 
 기본값 `prefer`는 카드를 만든 엔진을 후보 목록의 **마지막**으로 밉니다. 제외하지 않는
 이유는 degrade가 파괴적이기 때문입니다 — 다른 엔진 CLI가 없는 머신에서 "반드시 다른 엔진"을
@@ -914,9 +890,9 @@ recall에서 사라집니다.** 사람 검수를 전제하지 않으므로 복�
 | `verifiedMode: cross-engine` | 카드를 만든 엔진과 **다른** 엔진이 검수했습니다. |
 | `verifiedMode: self` | 다른 엔진 CLI가 없어 같은 엔진이 검수했습니다(약한 근거). |
 | `verifiedMode: unknown` | 엔진 귀속이 불가합니다 — 카드를 만든 엔진이 기록되지 않은 잡이거나, 풀에서 엔진별 argv로 해석되지 않는 라벨입니다. |
-| 필드 없음 | 이 기능 이전에 검수된 카드입니다. **자기검증일 가능성이 높습니다**(실측 655/688). 없음은 `cross-engine`을 뜻하지 않습니다. |
+| 필드 없음 | 검수 엔진 관계가 기록되지 않은 카드입니다. **자기검증일 수 있습니다.** 없음은 `cross-engine`을 뜻하지 않습니다. |
 
-**dedup judge도 분리됩니다(write-time 한정).** 중복 판정(`wiki_dedup_judge`)은 이제 신규
+**dedup judge도 분리됩니다(write-time 한정).** 중복 판정(`wiki_dedup_judge`)은 신규
 후보를 만든 엔진을 **피할 대상**으로 받습니다(`compile.semanticDedup.judge.crossEngine`,
 아래 dedup 절 참고). `plan_verify_attempts`를 그대로 재사용하지는 않습니다 — dedup은 카드
 **두 장**을 비교하고 그 둘의 생산자가 다르거나 불명일 수 있어 무엇이 자기검증인지 확정되지
@@ -948,17 +924,17 @@ recall에서 내리지 않기로 한 카드에 하향 표식을 붙이는 것은
 **실패 분류 경계**: 후보 엔진 사이를 넘어가는 조건은 **exit 127(host CLI 부재)뿐**입니다.
 127은 CLI를 실행하지도 못한 상태라 토큰이 들지 않으므로 다음 후보 시도가 공짜입니다.
 timeout·비127 실패는 이미 CLI를 호출한 것이므로 다음 엔진으로 넘기지 않습니다(같은 카드에
-대한 이중 과금) — 기존대로 cooldown + 큐 보존입니다. 어느 경로도 verdict를 만들지 않으므로
+대한 이중 과금) — cooldown + 큐 보존입니다. 어느 경로도 verdict를 만들지 않으므로
 **transient가 `inconclusive`(=삭제)로 흐를 수 없다**는 계약이 유지됩니다.
 `crossEngine: "require"`에서 다른 엔진이 없으면 잡을 **보존**합니다(카드는 `generated`로
 남고 삭제되지 않으며, 두 번째 CLI가 설치되면 검수됩니다).
 
-**기존 카드는 자동으로 재검증되지 않습니다.** 655장 재검증은 host CLI 호출 655회 =
+**기존 카드는 자동으로 재검증되지 않습니다.** 재검증은 카드 1장당 host CLI 호출 1회 =
 사용자 계정 청구입니다(카드 1장당 카드 본문 + 소스 최대 3개 × `maxSourceChars` 12,000자
-≈ 입력 9K 토큰 → 합계 대략 6M 입력 토큰). 새로 컴파일되는 카드부터 교차 검증됩니다.
+≈ 입력 9K 토큰). 새로 컴파일되는 카드부터 교차 검증됩니다.
 전량 재검증을 원하면 명시적 opt-in으로만 하십시오 — `verify-queue.jsonl`에 대상 카드의
 `{targetPath, sources, sourceHash, engine}` 행을 직접 append하고 `status`를 `generated`로
-되돌린 뒤 worker가 `maxPerRun`씩 드레인하게 하는 방식입니다.
+되돌린 뒤 worker가 verify 예산씩 드레인하게 하는 방식입니다.
 
 #### 교차검증 주장의 조건 (귀속)
 
@@ -977,8 +953,8 @@ enqueue가 쓰는 값)이나 풀 밖 라벨 — 어떤 후보도 "생성 엔진�
 **한 카드에 대한 유료 호출은 run 당 1회**입니다. 그래서 다음 후보로 넘어가는 조건은
 exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run 에서 다른 엔진을 부르지
 않습니다. 그런데 그것만으로는 **선호 엔진이 계속 같은 이유로 실패하면(인증 안 된 CLI, verdict
-미출력, timeout) 검수가 영구 정지**합니다 — 0.x의 전역 `verify-cooldown`이 그 상태였고,
-`recallVerifiedOnly` 기본값 아래에서 그것은 wiki가 recall에서 사라지는 것과 같습니다.
+미출력, timeout) 검수가 영구 정지**합니다 — 실패를 전역 cooldown 하나로만 기억하면 그
+상태가 되고, `recallVerifiedOnly` 기본값 아래에서 그것은 wiki가 recall에서 사라지는 것과 같습니다.
 
 그래서 실패는 **후보 단위로 기억**합니다: 실패한 후보를 `cooldownSeconds` 동안
 `.memvane/compile/verify-engine-cooldown.json`에 기록하고, 다음 run 의 후보 선정에서
@@ -997,8 +973,8 @@ exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run �
 항목은 식힘으로 보지 않습니다).
 
 읽기 실패·손상은 fail-open(식힘 없음)입니다: 식힘 기록을 못 읽는 것이 검수를 막는 이유가 되면
-안 되고, 최악은 한 번 더 시도하는 것입니다. 0.x의 전역 `verify-cooldown` 파일은 이제 쓰이지
-않으므로 worker가 발견 시 정리합니다.
+안 되고, 최악은 한 번 더 시도하는 것입니다. 전역 `verify-cooldown` 파일은 읽지 않으며
+worker가 발견하면 지웁니다.
 
 #### 실패 유형과 결과
 
@@ -1023,14 +999,13 @@ exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run �
 #### 증명 필드 위생
 
 `status: verified`/`contested`는 `verifiedBy`·`verifiedAt`·`verifiedMode`와 **한 쓰기로
-함께** 나갑니다(`wiki_compile.stamp_verification`이 유일한 경로). 라이브에는 `verified`인데
-`verifiedAt`이 없는 카드가 27장 있는데 전부 `verifiedBy: agent-full-source` — 이 코드베이스가
-쓰지 않는 값이고 과거 수동/에이전트 백필의 잔재입니다. **이 27장은 소급 수정하지 않습니다**:
-결측은 거짓이 아니고, 지금 타임스탬프를 채우면 없던 사실을 만들어 내는 것입니다("기존 데이터를 건드리지 않는다" 기조).
+함께** 나갑니다(`wiki_compile.stamp_verification`이 유일한 경로). `verified`인데
+`verifiedAt`이 없는 카드(예: 이 코드가 쓰지 않는 `verifiedBy: agent-full-source` 값을 가진
+수동 백필 카드)는 **소급 수정하지 않습니다**: 결측은 거짓이 아니고, 지금 타임스탬프를 채우면
+없던 사실을 만들어 내는 것입니다("기존 데이터를 건드리지 않는다" 기조).
 
 반대로 카드가 갱신돼 `generated`로 리셋될 때는 증명 필드를 **키째로 제거**합니다. 값만
-비우면(`verifiedBy: ""`) "한 번 기계 검수를 통과한 카드"로 읽히는 잔재가 남습니다
-(라이브 5장이 그 형태였습니다).
+비우면(`verifiedBy: ""`) "한 번 기계 검수를 통과한 카드"로 읽히는 잔재가 남습니다.
 
 #### 억제 마커 (`verify-skipped.jsonl`)
 
@@ -1067,7 +1042,7 @@ fail-closed만으로는 "판정(유료) → 기록 실패 → 잡 보존 → 재
 기계 삭제는 `generated-manifest.jsonl`에 `action: "verify-deleted"` 행으로 남습니다.
 이것이 없으면 다음 compile의 삭제 감지가 파일 부재를 **사용자의 의도적 삭제**로 읽어
 tombstone(영구 억제)을 세우고, "소스를 고치면 재생성된다"는 전제가 깨집니다.
-사람이 직접 지운 카드는 이 마커가 없으므로 기존대로 tombstone 처리됩니다.
+사람이 직접 지운 카드는 이 마커가 없으므로 tombstone 처리됩니다.
 
 verifier의 자동 삭제 대상은 플러그인이 만든 `status: generated` 카드뿐입니다. recall trust는
 `status: verified` + `createdBy: memvane`(또는 이전 플러그인 이름 `qmd-auto-context`) + 비어 있지 않은 compiler-owned
@@ -1153,11 +1128,11 @@ agent의 Bash 명령이 성공했을 때 수명 주기 요청이 하나 남고 �
 
 **판정은 score가 아니라 LLM이 합니다.** 검색 score는 유사도가 아니라 **RRF 순위의
 함수**입니다 — `rerank`를 켜도 `blendedScore = w·(1/rrfRank) + (1-w)·rerankScore`로 순위가
-섞여 점수 상한이 순위로 고정됩니다(실측 125카드 wiki: rank1 {0.88, 0.93} / rank2
+섞여 점수 상한이 순위로 고정됩니다(예: 카드 125장 wiki에서 rank1 {0.88, 0.93} / rank2
 {0.55, 0.56} / rank3 [0.40, 0.44]). 자기 본문은 항상 rank1 self-match이므로 진짜 중복은
-rank ≥ 2에만 올 수 있고, 거기서는 옛 `autoMergeThreshold` 기본값 0.9가 **수학적으로 도달
-불가**였습니다. 그래서 임계 레버 4종(`threshold`·`topK`·`autoMergeThreshold`·
-`similarPageMaxChars`)은 설정에서 사라지고 상수가 됐습니다. score는
+rank ≥ 2에만 올 수 있고, 거기서는 0.9 같은 임계에 **도달할 수 없습니다**. 그래서 임계
+레버 4종(`threshold`·`topK`·`autoMergeThreshold`·`similarPageMaxChars`)은 설정 키가 아니라
+상수입니다(파일에 적어 두면 deprecated 키로 무시됩니다). score는
 `semanticDedup.candidateMinScore`(후보 retrieval floor)로만 남고, "두 카드가 같은 사실을
 말하는가"는 judge가 본문 대 본문으로 판정합니다.
 
@@ -1196,8 +1171,8 @@ scan을 실행합니다. scan은 선택된 route의 memvane-db sealed head에 �
 **degrade의 종점.** 다른 엔진 CLI가 없으면(127) 생산 엔진으로 내려와 `self`로 기록합니다.
 선호 후보가 **유료로** 실패하면(비127·timeout) 같은 run에서 다른 엔진을 부르지 않고(이중 과금)
 그 후보만 `dedup-judge-engine-cooldown.json`에 엔진 단위로 식혀 **다음 run이 다음 후보로
-degrade**하게 합니다. 후보가 소진되면 전역 `dedup-judge-cooldown`으로 judge 전체를 식힙니다
-(0.x 동작). 두 기록이 모두 실패하면 그 사실을 `cooldownWriteFailed`로 표면화합니다 —
+degrade**하게 합니다. 후보가 소진되면 전역 `dedup-judge-cooldown`으로 judge 전체를 식힙니다.
+두 기록이 모두 실패하면 그 사실을 `cooldownWriteFailed`로 표면화합니다 —
 식힘 기록이 degrade의 유일한 메커니즘이므로 조용히 삼키면 판정이 영구 정지합니다.
 
 **그 표면화의 종점은 `candidates.jsonl` 행의 `judge` 필드입니다.** `outcome`·`reason`·`engine`·

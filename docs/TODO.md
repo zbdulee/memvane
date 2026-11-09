@@ -46,7 +46,7 @@ PR10까지는 하지 않는다. 그 뒤 설계 문서를 먼저 쓰고 리뷰를
 ## 릴리스 QA
 
 - **사용자가 유예한 assertion 5개는 PASS가 아니다**: `RQA-GIT-01`, `RQA-GIT-03`, `RQA-WIKI-01`의 유료 중복 호출 부분, `RQA-WIKI-03`, `RQA-RES-02`. 정식 릴리스 전에 [QA 계약](release-agent-qa.md)대로 실행한다. `RQA-WIKI-01`의 나머지 assertion은 유예 대상이 아니다.
-- `docs/templates/release-agent-qa-run.md` §5에 `LI-*` 7행이 없고, 상태값에 `DEFERRED BY USER`가 없다.
+- 사용자 유예를 기록할 상태값이 없다. [QA 계약](release-agent-qa.md) §2와 `docs/templates/release-agent-qa-run.md`에 `DEFERRED BY USER`를 정의할지 정한다.
 
 ## 학습 runtime
 
