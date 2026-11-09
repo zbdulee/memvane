@@ -84,6 +84,9 @@
         "timeout": 120
       }
     },
+    "diagnostics": {
+      "enabled": false
+    },
     "events": [
       "sessionStart",
       "userPromptSubmit",
@@ -191,6 +194,9 @@
         "onInconclusive": "delete",
         "timeout": 120
       }
+    },
+    "diagnostics": {
+      "enabled": false
     },
     "events": [
       "sessionStart",
@@ -307,6 +313,9 @@
         "onInconclusive": "delete",
         "timeout": 120
       }
+    },
+    "diagnostics": {
+      "enabled": false
     },
     "events": [
       "sessionStart",
@@ -433,6 +442,9 @@
         "timeout": 120
       }
     },
+    "diagnostics": {
+      "enabled": false
+    },
     "events": [
       "sessionStart",
       "userPromptSubmit",
@@ -543,6 +555,9 @@
         "timeout": 120
       }
     },
+    "diagnostics": {
+      "enabled": false
+    },
     "events": [
       "sessionStart",
       "userPromptSubmit",
@@ -649,6 +664,9 @@
         "timeout": 120
       }
     },
+    "diagnostics": {
+      "enabled": false
+    },
     "events": [
       "sessionStart",
       "userPromptSubmit",
@@ -746,6 +764,9 @@
         "onInconclusive": "delete",
         "timeout": 120
       }
+    },
+    "diagnostics": {
+      "enabled": false
     },
     "events": [
       "sessionStart",
@@ -870,6 +891,9 @@
         "timeout": 120
       }
     },
+    "diagnostics": {
+      "enabled": false
+    },
     "events": [
       "sessionStart",
       "userPromptSubmit",
@@ -975,6 +999,9 @@
         "onInconclusive": "delete",
         "timeout": 120
       }
+    },
+    "diagnostics": {
+      "enabled": false
     },
     "events": [
       "sessionStart",

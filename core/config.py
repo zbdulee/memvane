@@ -326,7 +326,11 @@ DEFAULT_REASONING_EFFORT = {
 # 플러그인이 결정적으로 유도한다. 다른 키가 하나라도 있으면 legacy 파일이며 지금까지와
 # 똑같이 정규화한다(부분 유도 없음). 이미 선택된 memvane-db route는 settings 바이트 해시에
 # 묶여 있으므로 legacy 파일의 해석은 이 모델 때문에 바뀌지 않는다.
-MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths"})
+# `diagnostics`는 상세 진단 동의(opt-in)일 뿐 collection·경로·role·recall·compile을
+# 정하지 않는다. 그래서 이 키가 있어도 minimal 모델이 유지되고(값이 무엇이든) 유도되는
+# identity가 바뀌지 않는다 — 값 오타 하나가 프로젝트를 legacy(pending, collection 없음)로
+# 떨어뜨리면 안 된다.
+MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths", "diagnostics"})
 MINIMAL_SETTINGS_MODEL = "minimal"
 MINIMAL_RAW_COLLECTION_PATH = "."
 MINIMAL_WIKI_COLLECTION_PATH = ".memvane/wiki"
@@ -392,7 +396,7 @@ def expand_minimal_settings(raw, folder=None):
         return raw
     name = raw["name"]
     raw_name, wiki_name = minimal_collection_names(name)
-    return {
+    expanded = {
         "name": name,
         "indexing": True,
         "collections": [raw_name, wiki_name],
@@ -408,6 +412,11 @@ def expand_minimal_settings(raw, folder=None):
         },
         "contextLearning": {"capture": True, "autoCycle": True},
     }
+    # 진단 동의는 그대로 전달만 한다(해석은 `diagnostics_config`). 키가 없으면 펼친
+    # 모양도 예전과 바이트 단위로 같다.
+    if "diagnostics" in raw:
+        expanded["diagnostics"] = raw["diagnostics"]
+    return expanded
 
 
 def _wiki_rel(folder):
@@ -1117,6 +1126,18 @@ def deprecated_key_notice(input_config):
     )
 
 
+def diagnostics_config(value):
+    """`diagnostics` 블록 → `{"enabled": bool}`. **JSON boolean `true`만 켠다.**
+
+    키 없음·`false`·문자열 `"true"`·`1`·`1.0`·블록이 dict가 아님 등 나머지는 전부 off다.
+    상세 진단은 예외 원문(민감 정보 가능)을 기록하므로 모호한 값을 켜는 쪽으로 읽지 않는다.
+    `1 == True`이므로 `== True`가 아니라 `is True`로 판정한다. 항상 새 dict를 반환해
+    입력을 변경하거나 공유하지 않는다.
+    """
+    enabled = isinstance(value, dict) and value.get("enabled") is True
+    return {"enabled": enabled}
+
+
 def invalid_session_start_sync(input_config):
     """A present non-boolean opt-out is invalid and must not become default-on."""
     return (isinstance(input_config, dict) and "sessionStartSync" in input_config
@@ -1219,6 +1240,7 @@ def _normalize_expanded_config(input_config):
     config["wikiPath"] = input_config.get("wikiPath") if isinstance(input_config.get("wikiPath"), str) else DEFAULT_CONFIG["wikiPath"]
     config["compile"] = compile_config(input_config.get("compile"))
     config["maintenance"] = maintenance_config(input_config.get("maintenance"))
+    config["diagnostics"] = diagnostics_config(input_config.get("diagnostics"))
     if "events" in input_config and isinstance(input_config.get("events"), list):
         config["events"] = [
             canonical_event_name(event)
