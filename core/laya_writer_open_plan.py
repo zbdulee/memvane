@@ -96,7 +96,7 @@ def _schema3_store(record, state, decision):
     path = Path(record['db_path'])
     R._need(path.is_absolute() and str(path) != decision['dbPath'], 'writer_plan_store_changed')
     node = R._file(path, state)
-    R._need(node == record['db_node'], 'writer_plan_store_changed')
+    R._need(R.persistent_node_equal(record['db_node'], node), 'writer_plan_store_changed')
     # Plans are captured and validated under the queue owner: this read may
     # let SQLite roll back a hot journal (``recover``). Reader opens stay ro.
     with R._readonly(path, state, recover=True) as db:
@@ -166,9 +166,9 @@ def _snapshot(project, executing_root):
                 and record['profile'] == decision['vectorProfile']['profileId'],
                 'writer_plan_binding_changed')
         R._need(record['project'] == bundle['project_root'] == str(project)
-                and record['project_node'] == R._node(project)
-                and record['project_node'] == [bundle['project_dev'], bundle['project_ino']]
-                and record['state'] == str(state) and record['state_node'] == R._node(state),
+                and R.persistent_node_equal(record['project_node'], R._node(project))
+                and R.persistent_node_equal([bundle['project_dev'], bundle['project_ino']], R._node(project))
+                and record['state'] == str(state) and R.persistent_node_equal(record['state_node'], R._node(state)),
                 'writer_plan_binding_changed')
         raw = J._observed_route(bundle, None)
         route, digest = J._route(raw, path)
@@ -212,7 +212,7 @@ def _snapshot(project, executing_root):
         for role, field, node_field in fields:
             location = Path(ledger[field])
             node = R._file(location, state)
-            R._need(node == ledger[node_field], 'writer_plan_component_changed')
+            R._need(R.persistent_node_equal(ledger[node_field], node), 'writer_plan_component_changed')
             components[role] = dict(path=str(location), node=node)
         from laya_incremental_docs import FILE
         # A schema3 record names no v6 sidecar; the install's own path is it.
@@ -367,7 +367,7 @@ class _WriterProofContext:
                 W._named(self.plan.install_id, lifetime.parent, lifetime.parent_fd,
                          lifetime.parent_info, name, fd)
                 info = os.fstat(fd)
-                R._need(nodes[name] == [info.st_dev, info.st_ino], 'writer_proof_windows_changed')
+                R._need(R.persistent_node_equal(nodes[name], [info.st_dev, info.st_ino]), 'writer_proof_windows_changed')
                 physical[role] = fd
             self.window = window = object.__new__(WriterProofWindow)
             record = dict(pid=os.getpid(), thread=threading.current_thread(), plan=self.plan,

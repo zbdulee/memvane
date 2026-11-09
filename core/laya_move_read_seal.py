@@ -325,7 +325,7 @@ def stage_move_reader(intent, *, installer):
                 'reader_move_alias_changed')
         materialized = Path(old_path if intent['mode'] == 'rename' else new_path)
         R._need(materialized.resolve(strict=True) == materialized
-                and R._node(materialized) == [new_dev, new_ino], 'reader_move_alias_changed')
+                and R.persistent_node_equal([new_dev, new_ino], R._node(materialized)), 'reader_move_alias_changed')
         aliases.append((old_path, new_path, dev, ino, new_dev, new_ino))
     identity = build.read(state)['identity']
     side = Path(old_record['sidecar_path'])

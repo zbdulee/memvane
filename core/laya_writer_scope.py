@@ -302,8 +302,10 @@ class _NormalWriterContext:
                 object.__setattr__(writer, 'incarnation', snapshot['decision']['dbIncarnation'])
                 self.writer = writer
                 self.project, self.state = Path(snapshot['project']), Path(snapshot['endpoint']['state'])
-                self.project_node = snapshot['endpoint']['project_node']
-                self.state_node = snapshot['endpoint']['state_node']
+                # The plan proves the persisted nodes; retain live nodes for
+                # this process's subsequent owner/race checks.
+                self.project_node = R._node(self.project)
+                self.state_node = R._node(self.state)
                 self.endpoint = _Endpoint(writer, snapshot)
                 self.entered = True
                 _issued[writer] = dict(context=self, snapshot=snapshot, proof=proof)

@@ -4,6 +4,11 @@
 
 ## 코드
 
+- **진행 중 작업의 재부팅 경계 identity 복구(A9~A15).** 장치 번호를 포함한 중간 기록의 재개 증명과 회귀 검사를 마련한다.
+  대상은 A9 shadow migration intent(`migration_intent_invalid`, sync의 후보 재시작 판정), A10 초기 v5 변환 intent(`initial_conversion_evidence_invalid`), A11 reader image staging note(`reader_image_changed`),
+  A12 이동 seal·재료·layout(`reader_move_material_changed`, `reader_move_layout_changed`, `reader_move_source_changed`, `project_dir_move_store_changed`), A13 bridge challenge·receipt(`reader_hosts_pending`),
+  A14 설치 proposal(`reviewed_origin_plan_changed`, scopeId seed 유지), A15 legacy probe owner(`legacy_probe_unowned_scratch`)다.
+  진행 중 업그레이드의 provider identity가 SHA로만 봉인된 경우(`active_upgrade_new_provider_changed`)도 원본 hash를 유지하는 별도 복구 증명이 필요하다.
 - **`core/laya_initial_build.py`의 `retired` 단계 설명이 코드와 다르다.** docstring은 `retired`를 아무 작업도 하지 않은(`registered`) 빌드의 abandon으로만 설명하고 `abandon_unused_initial_build`만 가리킨다. `abandon_inactive_initial_build`는 일부 빌드된 미선택 후보도 retire한다. docstring을 두 경로에 맞춘다.
 - **`core/laya_host_response.py` `_render_context`의 raw 분기.** 위키 전용 색인에서 비위키 행은 계약 위반인데, else 분기가 이를 `Path(path).stem` 제목으로 렌더링해 위반을 숨긴다. 도달 가능성을 확인하고, 도달하면 `_fail('raw_row_in_selected_index')`로 바꾼다. 같은 파일의 header 문구 "verified source documents"를 "wiki cards"로 고친다.
 

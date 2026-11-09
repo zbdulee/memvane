@@ -17,6 +17,7 @@ import weakref
 
 import laya_install_journal as journal
 from laya_product_install import _install_lock, _read_private
+from persistent_identity import persistent_node_equal
 
 _JOURNAL = 'install-journal.sqlite'
 _MAX_IMAGE = 16 * 1024 * 1024
@@ -126,6 +127,14 @@ def _raw(obj):
 
 def _sha(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def _preserve_node_devices(stored, current):
+    # Compare live observations, but keep the committed endpoint bytes/ID.
+    for key in ('project_node', 'state_node', 'db_node', 'catalog_node', 'binding_node'):
+        if key in stored and key in current and persistent_node_equal(stored[key], current[key]):
+            current[key] = list(stored[key])
+    return current
 
 
 def _node(path):
@@ -396,7 +405,7 @@ def _binding_snapshot(db, binding, decision, published):
     for _name, root, dev, ino in bound.roots:
         base = Path(root)
         _need(base.resolve(strict=True) == base and base.is_dir()
-              and _node(base) == [dev, ino], 'reader_root_changed')
+              and persistent_node_equal([dev, ino], _node(base)), 'reader_root_changed')
     return bound,roots
 
 
@@ -818,9 +827,9 @@ def _evidence_stores(state, project, decision, proof, ledger, info, *,
     # Staging in T1 changes only the read-only base image. Neither root files
     # nor arbitrary other capacity/sidecar data may confer a new identity.
     _need(str(catalog) == ledger['catalogDb'] and str(binding) == ledger['bindingStore']
-          and _file(catalog, state) == ledger['catalogIdentity']
-          and _file(binding, state) == ledger['bindingStoreIdentity']
-          and _file(live, state) == ledger['candidateIdentity'], 'reader_capacity_changed')
+          and persistent_node_equal(ledger['catalogIdentity'], _file(catalog, state))
+          and persistent_node_equal(ledger['bindingStoreIdentity'], _file(binding, state))
+          and persistent_node_equal(ledger['candidateIdentity'], _file(live, state)), 'reader_capacity_changed')
     sidecar = state / incremental.FILE
     _need(side is None or Path(side) == sidecar, 'reader_sidecar_changed')
     expected = _published(state, live, decision)
@@ -960,7 +969,7 @@ def _schema3_record(state, project, decision, proof, ledger, info, stored, *, se
                   store_format='schema3', capability=SCHEMA3_CAPABILITY, checkout_policy=SCHEMA3_POLICY,
                   vector_profile=stored['vector_profile'], vector_recipe=stored['vector_recipe'],
                   head_floor=_plain(stored['head_floor']), parity=_plain(stored['parity']), **store)
-    return record, raw, proof
+    return _preserve_node_devices(stored, record), raw, proof
 
 
 @contextmanager
@@ -1005,7 +1014,7 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
     try:
         _need(store._incarnation == record['incarnation']
               and store._policy == record['settings_policy_digest']
-              and _file(path, state) == list(record['db_node']), 'reader_store_changed')
+              and persistent_node_equal(record['db_node'], _file(path, state)), 'reader_store_changed')
         handle = store.capture_view(target, deadline=deadline)
         _need(store._handles[handle.token]['capture']['projectRoot'] == project,
               'reader_checkout_changed')
@@ -1296,6 +1305,7 @@ def _attestation_step(db, endpoint_id, stored, raw):
 
 
 def _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof):
+    _preserve_node_devices(stored, current)
     if 'legacy_sidecar_baseline' in stored:
         current['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
     _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
@@ -1579,8 +1589,8 @@ def relocate_selection(db, journal_path, attestation_sha256, *, released=None):
     _need(moved['attestation_sha256'] == attestation_sha256
           and relocated_pair(record, moved)
           and (record['store_format'] != 'schema3' or _schema3_shape(moved))
-          and _node(state) == list(record['state_node'])
-          and all(_file(Path(moved[k]), state) == list(record[n]) for k, n in nodes)
+          and persistent_node_equal(record['state_node'], _node(state))
+          and all(persistent_node_equal(record[n], _file(Path(moved[k]), state)) for k, n in nodes)
           and (observed is None or observed == moved), 'reader_relocation_unproved')
     packed = _raw(moved)
     endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
@@ -1835,6 +1845,7 @@ def _released_move(db, current, record, state, raw, project, decision, proof):
     if 'legacy_sidecar_baseline' in record:
         observed['legacy_sidecar_baseline'] = record['legacy_sidecar_baseline']
     observed['creation_epoch'] = record['creation_epoch']
+    _preserve_node_devices(record, observed)
     _need(live == raw and relocated_pair(record, observed), 'reader_relocation_unproved')
     return observed
 

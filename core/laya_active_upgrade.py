@@ -1166,8 +1166,7 @@ def _verify_recovery_project(journal, original):
     try:
         connection.execute('BEGIN')
         bound = installer_journal._row(connection)
-        if (installer_journal._project(original) != (
-                bound['project_root'], bound['project_dev'], bound['project_ino']) or
+        if (not installer_journal._project_matches(original, bound) or
                 bound['scope_id'] != original['scopeId']):
             raise installer_journal.JournalEvidenceError('recovery_project_identity_changed')
     finally:

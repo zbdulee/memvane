@@ -23,6 +23,7 @@ from laya_install_journal import (cas_activate, cas_restore_fresh,
 from laya_ledger_common import (_fsync_dir, _identity, _ledger_lock,
                                 _operation_lock, _preflight_multi_settings,
                                 _private_file, _read_json, _write)
+from persistent_identity import persistent_node_equal
 
 SCHEMA = 'laya-fresh-wiki-cutover-v1'
 MARKER_SCHEMA = 'laya-fresh-wiki-selection-marker-v1'
@@ -307,7 +308,7 @@ def _proof(row, route_bytes, *, restore=False):
     if not restore:
         _preflight_multi_settings(route, row['projectRoot'])
     for name, field in FILES:
-        if _identity(row[name]) != row[field]:
+        if not persistent_node_equal(row[field], _identity(row[name])):
             _fail('fresh_wiki_store_replaced')
     if capacity_store_paths(row['candidateDb']) != (row['catalogDb'], row['bindingStore']):
         _fail('fresh_wiki_capacity_mismatch')

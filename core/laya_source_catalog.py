@@ -258,6 +258,22 @@ def _sig_text(st: os.stat_result) -> str:
     return ':'.join(str(value) for value in _sig(st))
 
 
+def _sig_text_matches(stored: str, live: os.stat_result) -> bool:
+    from persistent_identity import persistent_identity_equal
+    try:
+        return persistent_identity_equal(tuple(map(int, stored.split(':'))), _sig(live), device_index=0)
+    except (ValueError, AttributeError):
+        return False
+
+
+def _node_text_matches(stored: str, live: os.stat_result) -> bool:
+    from persistent_identity import persistent_node_equal
+    try:
+        return persistent_node_equal(tuple(map(int, stored.split(':'))), _node(live))
+    except (ValueError, AttributeError):
+        return False
+
+
 def _node_text(st: os.stat_result) -> str:
     return f'{st.st_dev}:{st.st_ino}'
 
@@ -311,7 +327,7 @@ def _hash_entry(dfd: int, name: str, rel: str, size: int, sig: str,
     fd = os.open(name, _FILE_FLAGS, dir_fd=dfd)
     try:
         before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode) or _sig_text(before) != sig:
+        if not stat.S_ISREG(before.st_mode) or not _sig_text_matches(sig, before):
             raise _Blocked('source_changed', f'changed before read: {rel}')
         digest = hashlib.sha256()
         decoder = codecs.getincrementaldecoder('utf-8')()
@@ -338,7 +354,7 @@ def _hash_entry(dfd: int, name: str, rel: str, size: int, sig: str,
         after = os.fstat(fd)
     finally:
         os.close(fd)
-    if _sig_text(after) != sig or total != size:
+    if _sig(after) != _sig(before) or not _sig_text_matches(sig, after) or total != size:
         raise _Blocked('source_changed', f'changed during read: {rel}')
     if not decoded:
         if strict_utf8:
@@ -399,7 +415,7 @@ class _DirOpener:
         except IndexContractError as exc:
             raise _Blocked('source_changed', _detail(exc)) from None
         expected = self._expected(collection + '/')
-        if expected is not None and expected != _node_text(os.fstat(fd)):
+        if expected is not None and not _node_text_matches(expected, os.fstat(fd)):
             os.close(fd)
             raise _Blocked('source_changed', f'collection root replaced: {collection}')
         self._root_fds[collection] = fd
@@ -421,7 +437,7 @@ class _DirOpener:
                 child = os.open(part, _DIR_FLAGS, dir_fd=fd)
                 os.close(fd)
                 fd = child
-                if self._expected(prefix) != _node_text(os.fstat(fd)):
+                if not _node_text_matches(self._expected(prefix), os.fstat(fd)):
                     raise _Blocked('source_changed', f'directory replaced: {prefix}')
         except BaseException:
             os.close(fd)
@@ -1026,7 +1042,7 @@ class LayaSourceCatalog:
         if not work.stat():
             return 'pending'
         rel, sig = row
-        if _sig_text(os.fstat(opener.open_dir(rel))) != sig:
+        if not _sig_text_matches(sig, os.fstat(opener.open_dir(rel))):
             raise _Blocked('source_changed', f'directory changed after listing: {rel}')
         state['cursor'] = rel
         return None
@@ -1042,7 +1058,7 @@ class LayaSourceCatalog:
             return 'pending'
         path, dir_rel, name, sig = row
         st = os.stat(name, dir_fd=opener.open_dir(dir_rel), follow_symlinks=False)
-        if _sig_text(st) != sig:
+        if not _sig_text_matches(sig, st):
             raise _Blocked('source_changed', f'file changed after hashing: {path}')
         state['cursor'] = path
         return None
@@ -1428,12 +1444,12 @@ class LayaSourceCatalog:
             opener = _DirOpener(self.db, self.roots, snapshot.seq)
             try:
                 for rel, sig in dirs:
-                    if _sig_text(os.fstat(opener.open_dir(rel))) != sig:
+                    if not _sig_text_matches(sig, os.fstat(opener.open_dir(rel))):
                         return f'directory changed since scan: {rel}'
                 for path, dir_rel, name, sig in files:
                     st = os.stat(name, dir_fd=opener.open_dir(dir_rel),
                                  follow_symlinks=False)
-                    if _sig_text(st) != sig:
+                    if not _sig_text_matches(sig, st):
                         return f'file changed since scan: {path}'
             except _Blocked as blocked:
                 return f'{blocked.reason}: {blocked.detail}'
@@ -1865,7 +1881,8 @@ def _open_bound_root(collection: str, root: str, node: Tuple[int, int]) -> int:
         fd = _open_root_fd(root)
     except OSError as exc:
         _raise_stale(f'collection root unavailable: {collection}', exc)
-    if _node(os.fstat(fd)) != node:
+    from persistent_identity import persistent_node_equal
+    if not persistent_node_equal(node, _node(os.fstat(fd))):
         os.close(fd)
         _raise_stale(f'collection root replaced: {collection}')
     return fd
@@ -2012,7 +2029,7 @@ class CandidateQuery:
             self._exclusions = load_exclusions(index, scope)
             for name, root, dev, ino in binding.roots:
                 self._root_fds[name] = _open_bound_root(name, root, (dev, ino))
-                self._root_devs[name] = dev
+                self._root_devs[name] = os.fstat(self._root_fds[name]).st_dev
         except BaseException:
             self.close()
             raise

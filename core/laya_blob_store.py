@@ -271,8 +271,17 @@ BINDING_COLUMNS = ('policy_digest', 'wiki_root', 'wiki_dev', 'wiki_ino')
 BINDING_FIELDS = ('project_root', *BINDING_COLUMNS, 'collections', 'record')
 
 
-def _worktree_row(project_root, repository, worktree, *, deadline=None):
+def _worktree_row(project_root, repository, worktree, *, deadline=None, saved=None):
     observation = _observation(project_root, repository, worktree, deadline=deadline)
+    if saved is not None:
+        from persistent_identity import persistent_identity_equal
+        if not persistent_identity_equal(
+                {'path': saved['wiki_root'], 'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']},
+                {'path': observation['wiki_root'], 'dev': observation['wiki_dev'], 'ino': observation['wiki_ino']}):
+            v.fail('wiki_binding_changed')
+        # Recompute the commitment with its original device field in memory.
+        # The stored binding JSON/digest and worktree row remain immutable.
+        observation['wiki_dev'] = saved['wiki_dev']
     evidence = {k: val for k, val in observation.items() if k != 'capture'}
     evidence['record'] = worktree
     row = {'worktree_id': worktree['worktreeId'],
@@ -567,7 +576,10 @@ class BlobStore:
 
     def register_worktree(self, project_root, worktree):
         self._require_write()
-        row, _ = _worktree_row(project_root, self._repository, worktree)
+        with self._session() as db:
+            old = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree['worktreeId'],)).fetchone()
+            saved = None if old is None else dict(old)
+        row, _ = _worktree_row(project_root, self._repository, worktree, saved=saved)
         with self._session(write=True) as db:
             if row['policy_digest'] != self._policy:
                 v.fail('worktree_policy_mismatch')
@@ -632,13 +644,15 @@ class BlobStore:
                 and capture['repoId'] == self._repository['repoId']
                 and capture['worktreeId'] == saved['worktree_id']
                 and capture['checkoutDigest'] == checkout._digest({k: val for k, val in capture.items() if k != 'checkoutDigest'})
-                and all(capture['evidence'][k] == worktree[k] for k in ('project', 'checkout', 'gitDir')))
+                and all(checkout._persistent_directory_equal(worktree[k], capture['evidence'][k])
+                        for k in ('project', 'checkout', 'gitDir')))
             if capture_valid and cache is not None:
                 cache['captures'].add(capture_key)
         if (proof.get('blob_sha') != blob_sha or proof['worktree_id'] != saved['worktree_id']
                 or proof['binding_digest'] != saved['binding_digest']
                 or proof['wiki_root'] != saved['wiki_root']
-                or proof['wiki_identity'] != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
+                or not checkout._persistent_directory_equal(
+                    {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}, proof['wiki_identity'])
                 or proof['repository_digest'] != worktree['repositoryDigest']
                 or not capture_valid
                 or v.digest('memvane-v6-wiki-admission-v1' if legacy else 'memvane-wiki-admission-v1', proof)
@@ -717,7 +731,7 @@ class BlobStore:
                                for item in collections)):
                 v.fail('attestation_decision_mismatch')
         worktree = v.parse_canonical(saved['record_json'])
-        row, before = _worktree_row(saved['project_root'], self._repository, worktree)
+        row, before = _worktree_row(saved['project_root'], self._repository, worktree, saved=saved)
         if any(saved[k] != val for k, val in row.items()):
             v.fail('wiki_binding_changed')
         try:
@@ -726,8 +740,9 @@ class BlobStore:
             if body.encode('utf8') != raw:
                 v.fail('wiki_utf8_invalid')
             sha = v.hash_bytes(raw)
-            after, observation = _worktree_row(saved['project_root'], self._repository, worktree)
-            if (after != row or rootnode != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
+            after, observation = _worktree_row(saved['project_root'], self._repository, worktree, saved=saved)
+            if (after != row or not checkout._persistent_directory_equal(
+                    {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}, rootnode)
                     or not checkout.capture_matches(before['capture'], self._repository, worktree)):
                 v.fail('wiki_admission_changed')
             proof = dict(blob_sha=sha, worktree_id=worktree_id, path=path, file=node,
