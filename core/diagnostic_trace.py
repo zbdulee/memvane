@@ -51,7 +51,9 @@ MAX_PARTS = 96
 STACK_LIMIT = 64
 HEADER_EVENT = "diagnostic.header"
 PART_EVENT = "diagnostic.part"
-_KINDS = frozenset({"exception", "origin_stack"})
+CHILD_TAIL_LIMIT = 4096  # bytes of a child's stderr tail (not its full stack)
+CHILD_KIND = "child_stderr_tail"
+_KINDS = frozenset({"exception", "origin_stack", CHILD_KIND})
 _ID = re.compile(r"[0-9a-f]{32}\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -201,9 +203,25 @@ def _bounded(text: str) -> tuple[bytes, bool]:
     return raw[:TEXT_LIMIT].decode("utf-8", "ignore").encode("utf-8"), True
 
 
-def capture(decision, *, event, reason, exc=None, warning=False) -> str | None:
+def _child_tail(text) -> tuple[bytes, bool] | None:
+    """The last CHILD_TAIL_LIMIT UTF-8 bytes of a child's stderr detail.
+
+    Only a bounded tail; never presented as the child's complete stack.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    raw = text.encode("utf-8", "replace")
+    if len(raw) <= CHILD_TAIL_LIMIT:
+        return raw, False
+    return raw[-CHILD_TAIL_LIMIT:].decode("utf-8", "ignore").encode("utf-8"), True
+
+
+def capture(decision, *, event, reason, exc=None, warning=False,
+            child_stderr=None) -> str | None:
     """Record one detailed diagnostic; return its 32-hex ID, or None.
 
+    ``child_stderr`` (explicit opt-in) records kind ``child_stderr_tail``: at
+    most CHILD_TAIL_LIMIT bytes of a child's failure detail, not its stack.
     None when consent is off (checked before formatting and again right before
     the first write), nothing is capturable, or any write fails. Never raises
     and never alters the caller's outcome.
@@ -211,11 +229,18 @@ def capture(decision, *, event, reason, exc=None, warning=False) -> str | None:
     try:
         if enabled(decision) is not True:
             return None
-        formatted = _format(exc, bool(warning))
-        if formatted is None:
-            return None
-        kind, text = formatted
-        raw, truncated = _bounded(text)
+        if child_stderr is not None:
+            tail = _child_tail(child_stderr)
+            if tail is None:
+                return None
+            kind = CHILD_KIND
+            raw, truncated = tail
+        else:
+            formatted = _format(exc, bool(warning))
+            if formatted is None:
+                return None
+            kind, text = formatted
+            raw, truncated = _bounded(text)
         chunks = [raw[i:i + PART_RAW] for i in range(0, len(raw), PART_RAW)] or [b""]
         if len(chunks) > MAX_PARTS:
             return None
@@ -276,6 +301,7 @@ def reassemble(rows, diagnostic_id) -> dict:
                 or type(size) is not int or not 0 <= size <= TEXT_LIMIT
                 or not isinstance(digest, str) or not _SHA.fullmatch(digest)
                 or kind not in _KINDS or type(truncated) is not bool
+                or (kind == CHILD_KIND and size > CHILD_TAIL_LIMIT)
                 or sorted(parts) != list(range(count))):
             return incomplete
         chunks = []

@@ -1666,7 +1666,34 @@ def _run_verify_pass(
         frames = traceback.extract_tb(exc.__traceback__)[-1:]
         event_log.emit('compile.verify_pass', outcome='error', reason=type(exc).__name__,
                        where=(f"{os.path.basename(frames[0].filename)}:{frames[0].lineno}"
-                              if frames else None))
+                              if frames else None),
+                       diagnostic_id=_verify_diagnostic(root, exc))
+
+
+def _verify_diagnostic(root: Path, exc: BaseException) -> str | None:
+    """Opt-in detailed diagnostic of a swallowed verify exception, else None.
+
+    Recorded only when a freshly selected compile route names the same install
+    and journal state root this worker's event log is bound to; anything not
+    provable (no binding, other install, lookup failure) records nothing. The
+    exception stays swallowed and the verify outcome is unchanged either way.
+    """
+    try:
+        import diagnostic_trace
+        import event_log
+        import laya_index_host_route
+        bound = event_log.bound()
+        if not isinstance(bound, dict) or bound.get('stateRoot') is None:
+            return None
+        route = laya_index_host_route.select_route(str(root), action='compile')
+        if (event_log.state_root_for_decision(route) != Path(bound['stateRoot'])
+                or event_log.install_of(route) is None
+                or event_log.install_of(route) != bound.get('install')):
+            return None
+        return diagnostic_trace.capture(route, event='compile.verify_pass',
+                                        reason=type(exc).__name__, exc=exc)
+    except Exception:  # noqa: BLE001 - a diagnostic never alters the outcome
+        return None
 
 
 COMPILE_RUN_LOCK = cp.COMPILE_RUN_LOCK

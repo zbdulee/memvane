@@ -46,7 +46,7 @@ PART_EVENT = 'diagnostic.part'
 HEADER_EVENT = 'diagnostic.header'
 _DIAG_ID = re.compile(r'[0-9a-f]{32}\Z')
 _SHA = re.compile(r'[0-9a-f]{64}\Z')
-_KINDS = ('exception', 'origin_stack')
+_KINDS = ('exception', 'origin_stack', 'child_stderr_tail')
 # Only these header fields are shown without --details.
 _HEADER_KEYS = ('ts', 'v', 'install', 'host', 'session', 'event', 'outcome', 'reason',
                 'ms', 'dropped')
@@ -256,6 +256,8 @@ def _short(row):
              row.get('outcome') or '-']
     if row.get('reason'):
         parts.append(f"reason={row['reason']}")
+    if row.get('severity') == 'warning':
+        parts.append('severity=warning')
     if row.get('ms') is not None:
         parts.append(f"{row['ms']}ms")
     if row.get('event') == 'bundle.upgrade':
@@ -439,8 +441,8 @@ def summary(rows, args):
     for name, test in (('last upgrade', lambda row: row.get('event') == 'bundle.upgrade'
                         and row.get('outcome') != 'started'),
                        ('last publish', lambda row: row.get('event') == 'index.publish'),
-                       ('last error', lambda row: row.get('outcome') in FAILED
-                        or row.get('event') == 'hook.error')):
+                       ('last error', lambda row: row.get('severity') != 'warning' and
+                        (row.get('outcome') in FAILED or row.get('event') == 'hook.error'))):
         found = [row for row in rows if test(row)]
         if found:
             row = _display(found[-1])
@@ -469,8 +471,9 @@ def _show(rows, args, view):
     if args.view == 'recalls':
         _print([row for row in rows if row.get('event') == 'recall'], args, _recall_line, view)
     elif args.view == 'errors':
-        _print([row for row in rows if row.get('outcome') in FAILED
-                or row.get('event') == 'hook.error'], args, _short, view)
+        _print([row for row in rows if row.get('severity') != 'warning' and
+                (row.get('outcome') in FAILED or row.get('event') == 'hook.error')],
+               args, _short, view)
     elif args.view == 'upgrades':
         _print([row for row in rows if row.get('event') in ('bundle.upgrade', 'journal.v4')],
                args, lambda row: _short(row) + (f" {row.get('from')} -> {row.get('to')}"
