@@ -585,6 +585,10 @@ class RecoveryChecks(unittest.TestCase):
             alternate = target if same else helper.alternate(case, reader, installer, 'race-target-c.sqlite')
             before = self.snapshot(helper, case)
             old_node = physical(case.journal)['inode']
+            # Two successive image replacements can reuse the original inode
+            # once unlinked. Keep it allocated while checking the final image.
+            old_image_fd = os.open(case.journal, os.O_RDONLY)
+            self.addCleanup(os.close, old_image_fd)
             lock_path = reader._lock_dir(case.route['installId'], create=False) / 'journal-transition.lock'
             stable_lock = [lock_path.stat().st_dev, lock_path.stat().st_ino]
             first_args = dict(expected_epoch=1, expected_endpoint=initial.preferred_endpoint,
