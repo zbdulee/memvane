@@ -262,14 +262,54 @@ def admit_query(*, coordinator=None, report=None):
         raise ResourceDeferred('laya_query_resource_deferred')
 
 
+def _lock_held(lock_path):
+    """True/False for a private lock file's holder, None when it is not ours."""
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    try:
+        lock = os.fstat(fd)
+        named = os.lstat(lock_path)
+        if (not stat.S_ISREG(lock.st_mode) or lock.st_uid != os.getuid()
+                or lock.st_nlink != 1 or lock.st_mode & 0o077
+                or (lock.st_dev, lock.st_ino) != (named.st_dev, named.st_ino)):
+            return None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        return False
+    finally:
+        os.close(fd)
+
+
+def _refuses_connections(socket_path):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.2)
+        try:
+            probe.connect(str(socket_path))
+        except (ConnectionRefusedError, FileNotFoundError):
+            return True
+        except OSError:
+            return False
+    return False
+
+
 def wait_for_release(socket_path, timeout=3):
     """Observe the exact installation socket after a settled QMD restore.
 
     Only the owner may stop or unlink it. An unverified or still-live socket
     remains visible to the caller as pending cleanup, never force-removed.
+    A socket left by an owner that died with the host (a reboot or crash)
+    holds neither owner lock and refuses connections; it is released, and
+    the next owner removes it under its own lock.
     """
     deadline = time.monotonic() + timeout
     lock_path = str(socket_path) + '.resident.lock'
+    service_lock_path = str(socket_path) + '.lock'
     while True:
         try:
             info = os.lstat(socket_path)
@@ -279,34 +319,28 @@ def wait_for_release(socket_path, timeout=3):
                                  or info.st_uid != os.getuid()
                                  or info.st_mode & 0o077):
             return False
-        try:
-            fd = os.open(lock_path, os.O_RDWR | os.O_NOFOLLOW)
-        except FileNotFoundError:
-            locked = False
-        except OSError:
+        locked = _lock_held(lock_path)
+        if locked is None:
             return False
-        else:
-            try:
-                lock = os.fstat(fd)
-                named = os.lstat(lock_path)
-                if (not stat.S_ISREG(lock.st_mode) or lock.st_uid != os.getuid()
-                        or lock.st_nlink != 1 or lock.st_mode & 0o077
-                        or (lock.st_dev, lock.st_ino) != (named.st_dev, named.st_ino)):
-                    return False
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    locked = True
-                else:
-                    locked = False
-            finally:
-                os.close(fd)
         if info is None and not locked:
             # Both signals must agree. An owner loading its model owns the
             # lock before its socket exists, so socket absence alone is not
             # completion evidence.
             if not os.path.lexists(socket_path):
                 return True
+        if info is not None and not locked:
+            # Every live owner holds the service lock while its socket exists.
+            service_locked = _lock_held(service_lock_path)
+            if service_locked is None:
+                return False
+            if (not service_locked and _refuses_connections(socket_path) and
+                    _lock_held(lock_path) is False):
+                try:
+                    unchanged = os.lstat(socket_path).st_ino == info.st_ino
+                except FileNotFoundError:
+                    unchanged = True
+                if unchanged:
+                    return True
         if time.monotonic() >= deadline:
             return False
         time.sleep(.05)

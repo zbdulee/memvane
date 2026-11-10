@@ -62,11 +62,16 @@ class ResidentChecks(unittest.TestCase):
     def test_restore_observes_owner_socket_without_removing_it(self):
         with tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp') as root:
             path = Path(root) / 'laya-embed.sock'
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-                server.bind(str(path))
-                path.chmod(0o600)
-                self.assertFalse(wait_for_release(path, timeout=0))
-                self.assertTrue(path.exists())
+            service_lock = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(service_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                    server.bind(str(path))
+                    path.chmod(0o600)
+                    self.assertFalse(wait_for_release(path, timeout=0))
+                    self.assertTrue(path.exists())
+            finally:
+                os.close(service_lock)
             path.unlink()
             self.assertTrue(wait_for_release(path, timeout=0))
             lock = Path(str(path) + '.resident.lock')
@@ -78,6 +83,28 @@ class ResidentChecks(unittest.TestCase):
             finally:
                 os.close(fd)
             self.assertTrue(wait_for_release(path, timeout=0))
+
+    def test_socket_left_by_a_dead_owner_is_released_but_kept(self):
+        with tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp') as root:
+            path = Path(root) / 'laya-embed.sock'
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                server.bind(str(path))
+                path.chmod(0o600)
+                server.listen(1)
+                self.assertFalse(wait_for_release(path, timeout=0),
+                                 'a listening socket is a live owner')
+            # The owner process died with the host: the file stays, no lock
+            # is held and connections are refused.
+            self.assertTrue(path.exists())
+            self.assertTrue(wait_for_release(path, timeout=0))
+            self.assertTrue(path.exists(), 'only the next owner removes it')
+            lock = os.open(str(path) + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertFalse(wait_for_release(path, timeout=0),
+                                 'a service lock holder still owns the socket')
+            finally:
+                os.close(lock)
 
     def test_same_identity_failure_has_backoff_then_terminal_refusal(self):
         with tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp') as root:
