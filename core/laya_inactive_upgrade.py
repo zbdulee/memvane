@@ -547,8 +547,9 @@ def _pin_mismatch(intent):
 def _verify_store_pins(intent):
     """Fail closed unless every pinned store is the one the backup pinned.
 
-    Called by restores after they rebound the metadata, while the upgrade
-    fence still stands. A full-copy backup of an older bundle has no pins;
+    Called by restores before they rewind any metadata, so a changed store
+    refuses with nothing rewound, and again after the rewind while the
+    upgrade fence still stands. A full-copy backup of an older bundle has no pins;
     its restore keeps the counts recheck alone.
     """
     if _pin_mismatch(intent):
