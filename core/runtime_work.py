@@ -169,6 +169,18 @@ class WakeQueue:
                 'kind':kind,'key':key,'at':now,'limit':MAX_WAKES,'retained':retained})
             return 'retained' if retained else 'dropped'
 
+    def pull_first(self,kind,target):
+        """Make an existing pending row due at 0 (first within its kind class); never create one.
+
+        Its attempt count and last reason stay as recorded. True when it moved.
+        """
+        wake_policy.validate_wake(kind,target)
+        key=wake_policy.wake_key(kind,target)
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            return db.execute("UPDATE wakes SET due=0 WHERE id=? AND status='pending' AND due>0",
+                              (key,)).rowcount==1
+
     def put(self,kind,target,*,now=None):
         key=wake_policy.wake_key(kind,target)
         return key if self.offer(kind,target,now=now)=='queued' else None
