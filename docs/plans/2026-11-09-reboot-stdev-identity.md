@@ -2,7 +2,7 @@
 
 - 작성일: 2026-11-09
 - 대상: 이 레포 (MemVane 0.44.11 → 0.44.12)
-- 상태: 0.44.12 머지·설치 완료 (PR #166, 머지 커밋 `4ef2529b`)
+- 상태: 0.44.12(PR #166, 식별 비교) + 0.44.13(고아 embed 소켓) 머지
 
 ## 증상
 
@@ -78,6 +78,19 @@ recall·gate·posttool·index·compile·update-queued·file-change-event가 모�
 - 열려 있는 Claude·Codex 세션은 재시작해야 0.44.12 훅을 쓴다 (재시작 전 세션은 0.44.10/0.44.11 훅이라 계속 거부)
 - 나머지 8개 설치는 각 프로젝트에서 세션을 처음 열 때 SessionStart 번들 업그레이드로 넘어간다
 - 개발 가드는 재부팅으로 죽은 실행을 스스로 정리하지 못한다(`previous_job_unsettled_review_checkpoint`). 재부팅 후 테스트가 exit 75로 막히면 `~/Library/Logs/qmd-development-guard/active.json`의 pid·시작 시각을 부팅 시각과 대조한다
+
+## 두 번째 재부팅 잔재: 고아 embed 소켓 (0.44.13)
+
+0.44.12 설치 뒤에도 9개 설치 모두 번들 업그레이드가 끝나지 않았다. 2026-11-09 19:23부터 약 14시간 동안 service-engineering에서만 `bundle.upgrade started` 85회, `deferred / active_upgrade_resident_busy` 85회가 반복됐다.
+
+- 업그레이드 펜스(`laya_active_upgrade._wait_for_sockets`)는 `laya_embed_resident.wait_for_release`로 설치의 `runtime/laya-embed.sock`이 사라지고 `.resident.lock`이 풀리기를 15초 기다린다.
+- 재부팅으로 상주 서비스가 죽으면서 소켓 파일(11-09 13:28 생성)이 디스크에 남았다. 두 lock(`.resident.lock`, `.lock`)을 잡은 프로세스는 없다(`lsof` 0건).
+- 소켓은 lock을 잡은 소유자만 지울 수 있는데 소유자가 없으니 파일이 계속 남고, 업그레이드는 매번 미뤄진다.
+- 9개 설치 모두 같은 상태였다.
+
+수정: 소켓 파일이 남아 있어도 두 lock이 모두 비어 있고 연결이 거부되면(`ECONNREFUSED`) 해제로 본다. 파일은 지우지 않고, 다음 소유자가 자기 lock 아래에서 `_remove_stale_socket`으로 지운다. 살아 있는 소유자는 소켓이 있는 동안 `.lock`을 잡고 있으므로 계속 기다린다.
+
+검증: `test/laya-embed-resident.test.mjs` 12케이스 통과(고아 소켓 해제, listen 중인 소켓·`.lock` 보유자 대기).
 
 ## 참고 자료
 
