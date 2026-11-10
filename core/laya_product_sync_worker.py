@@ -247,19 +247,31 @@ def _higher_priority_wake(controller):
 
 # An initial build is small and bounded, but it takes the same per-user sync
 # owner as every selected sync. A selected sync yields to another project's
-# initial build only while that build is retrying and its last attempt found
-# the owner busy, recently: a build failing for any other reason, or an old
-# record no wake retries, never holds a long sync back.
+# initial build only while that build is retrying and its last attempt ended
+# normally deferred on a busy owner, recently. A build whose last attempt
+# raised (the record then keeps its earlier reason and adds
+# ``lastAttemptReason``), a build failing for any other reason, or an old
+# record no wake retries never holds a long sync back.
 INITIAL_BUILD_YIELD_PHASES = ('registered', 'building')
 INITIAL_BUILD_YIELD_RECENT_SECONDS = 600
 
 
-def _initial_build_waiting(controller, project):
-    """Another project's initial build is due-or-waiting and blocked on the owner.
+def _owner_blocked(progress, now_ns):
+    attempted = progress.get('lastAttemptNs')
+    return (progress.get('state') == 'deferred' and progress.get('reason') == 'owner_busy'
+            and progress.get('lastAttemptClass') == 'other'
+            and 'lastAttemptReason' not in progress
+            and type(attempted) is int
+            and 0 <= now_ns - attempted <= INITIAL_BUILD_YIELD_RECENT_SECONDS * 1_000_000_000)
 
-    On True the waiting build's wake is pulled to now, so the yielded owner
-    goes to it rather than to whichever row is due next. Selected syncs only:
-    initial builds never yield to each other.
+
+def _initial_build_waiting(controller, project):
+    """Another project's initial build is waiting and blocked on the owner.
+
+    On True the waiting build's existing wake is pulled before every due row
+    (never re-created), so the yielded owner goes to it rather than to
+    whichever row is due next. Selected syncs only, between rounds: initial
+    builds never yield to each other.
     """
     import laya_initial_build as initial_build
     from runtime_work import WakeQueue
@@ -281,14 +293,12 @@ def _initial_build_waiting(controller, project):
             continue
         if not isinstance(record, dict) or record.get('phase') not in INITIAL_BUILD_YIELD_PHASES:
             continue
-        progress = record.get('progress') or {}
-        attempted = progress.get('lastAttemptNs')
-        if (progress.get('reason') == 'owner_busy' and type(attempted) is int and
-                0 <= now_ns - attempted <= INITIAL_BUILD_YIELD_RECENT_SECONDS * 1_000_000_000):
+        progress = record.get('progress')
+        if isinstance(progress, dict) and _owner_blocked(progress, now_ns):
             waiting.append(target)
     for target in waiting:
         try:
-            queue.offer('laya-sync', target, pull_due=True)
+            queue.pull_first('laya-sync', target)
         except (OSError, ValueError, sqlite3.Error):
             pass
     return bool(waiting)
@@ -2705,13 +2715,15 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
     profile_id = provider_profile_id(provider)
 
     def should_yield():
-        return (_higher_priority_wake(controller) or
-                (project is not None and _initial_build_waiting(controller, project)))
+        return _higher_priority_wake(controller)
     if runtime.request_scan().get('status') == 'busy':
         return {'state': 'deferred', 'reason': 'catalog_busy'}
     result = None
     for _ in range(MAX_CAPACITY_ROUNDS):
-        if should_yield():
+        # The initial-build probe reads build records; it runs between rounds
+        # only (no build attempt changes them while this wake holds the lease).
+        if should_yield() or (project is not None and
+                              _initial_build_waiting(controller, project)):
             raise ResourceDeferred('laya_sync_yield_priority')
         if proof_changed():
             raise IndexContractError('selected_proof_changed')

@@ -62,11 +62,32 @@ class Base(unittest.TestCase):
 
 
 class Waiting(Base):
-    def test_blocked_build_of_another_project_is_waited_for_and_pulled_due(self):
+    def test_blocked_build_of_another_project_is_waited_for_and_pulled_first(self):
         self.queue.put('laya-sync', NEW, now=time.time() + 3600)
-        self.queue.put('laya-sync', BIG, now=0)
+        self.queue.put('laya-sync', BIG, now=5)
+        self.queue.put('laya-compile', '/projects/other', now=1)
         self.assertTrue(self.waiting({NEW: record()}))
-        self.assertLessEqual(self.row(NEW)['due'], time.time())
+        self.assertEqual(self.row(NEW)['due'], 0)
+        self.assertEqual(self.queue.pending()[0]['target'], NEW)
+
+    def test_a_vanished_row_is_never_recreated(self):
+        ghost = {'id': 'x', 'kind': 'laya-sync', 'target': NEW, 'revision': 1,
+                 'status': 'pending', 'due': 0, 'attempts': 0, 'reason': None}
+        with mock.patch.object(runtime_work.WakeQueue, 'pending', return_value=[ghost]):
+            self.assertTrue(self.waiting({NEW: record()}))
+        self.assertIsNone(self.row(NEW))
+
+    def test_pull_first_moves_only_an_existing_pending_row(self):
+        self.assertFalse(self.queue.pull_first('laya-sync', NEW))
+        self.assertIsNone(self.row(NEW))
+        self.queue.put('laya-sync', NEW, now=time.time() + 60)
+        before = self.row(NEW)
+        self.assertTrue(self.queue.pull_first('laya-sync', NEW))
+        after = self.row(NEW)
+        self.assertEqual(after['due'], 0)
+        self.assertEqual((after['attempts'], after['reason'], after['revision']),
+                         (before['attempts'], before['reason'], before['revision']))
+        self.assertFalse(self.queue.pull_first('laya-sync', NEW))
 
     def test_no_yield_otherwise(self):
         later = time.time() + 3600
@@ -76,6 +97,12 @@ class Waiting(Base):
             'sealed build': ({NEW: record(phase='sealed')}, BIG),
             'blocked build': ({NEW: record(phase='blocked')}, BIG),
             'other reason': ({NEW: record(reason='provider_error')}, BIG),
+            # A raising attempt keeps the earlier reason and adds lastAttemptReason.
+            'raised after owner_busy': ({NEW: {**record(), 'progress': {
+                **record()['progress'], 'lastAttemptClass': 'provider_error',
+                'lastAttemptReason': 'provider_start_failed'}}}, BIG),
+            'raised, same class': ({NEW: {**record(), 'progress': {
+                **record()['progress'], 'lastAttemptReason': 'other_error'}}}, BIG),
             'stale attempt': ({NEW: record(age=worker.INITIAL_BUILD_YIELD_RECENT_SECONDS + 60)},
                               BIG),
             'no build': ({}, BIG),

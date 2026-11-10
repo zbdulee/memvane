@@ -9,6 +9,6 @@ test('initial build waits for the sync owner and selected syncs yield to it', ()
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 9 tests/);
+  assert.match(result.stderr, /Ran 11 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });
