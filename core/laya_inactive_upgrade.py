@@ -839,6 +839,11 @@ def _restore(intent, old_proof, new_proof):
     record = build.read(state)
     if record['phase'] != 'upgrading' or record['identity'] not in (old, new):
         _fail('inactive_upgrade_restore_state_changed')
+    # A changed store refuses before anything is rewound; the same checks
+    # repeat once the metadata is old again.
+    if not _counts_match(old, intent['counts']):
+        _fail('inactive_upgrade_restore_recheck_failed')
+    _verify_store_pins(intent)
     old_route, new_route = (intent[key].encode('utf-8') for key in
                             ('oldRoute', 'newRoute'))
     old_att, new_att = (intent[key].encode('utf-8') for key in
@@ -857,7 +862,7 @@ def _restore(intent, old_proof, new_proof):
             approval['pendingRouteSha256'] != old['routeSha256'] or
             not _counts_match(old, intent['counts'])):
         _fail('inactive_upgrade_restore_recheck_failed')
-    # The metadata is old again; the fence stands until the pins match.
+    # Recheck with the metadata old again; the fence stands until they match.
     _verify_store_pins(intent)
     original = intent['oldRecord']
     record = build.advance(record, phase=original['phase'],

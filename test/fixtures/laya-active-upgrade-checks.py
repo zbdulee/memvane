@@ -193,14 +193,17 @@ class ActiveUpgradeCase(unittest.TestCase):
             changed = mock.patch.object(
                 inactive, '_verify_store_pins',
                 side_effect=InstallBlocked('inactive_upgrade_backup_changed'))
+            before = (self.state / fresh.LEDGER).read_bytes()
             with changed:
                 for _attempt in range(2):
                     with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
                         upgrade._restore(self.intent)
-                    self.assertEqual(self.journal['state'], 'restored_old')
-                    self.assertEqual((self.auto / fresh.ROUTE).read_bytes(), self.old_route)
-                    self.assertEqual(json.loads((self.state / fresh.LEDGER).read_bytes())
-                                     ['phase'], 'upgrading')
+                    # Refused before anything is rewound.
+                    self.assertEqual(self.journal['state'], 'active')
+                    self.assertEqual(self.journal['selectedRouteSha256'], self.new['routeSha256'])
+                    self.assertEqual((self.auto / fresh.ROUTE).read_bytes(), self.new_route)
+                    self.assertEqual((self.auto / fresh.MARKER).read_bytes(), self.new_marker)
+                    self.assertEqual((self.state / fresh.LEDGER).read_bytes(), before)
             self.assertEqual(upgrade._restore(self.intent)['status'],
                              'active_upgrade_restored_laya')
             self.assertEqual(json.loads((self.state / fresh.LEDGER).read_bytes())['phase'],

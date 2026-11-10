@@ -364,8 +364,11 @@ class RestoreTests(PinCase):
                 db.commit()
             with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
                 upgrade._restore(intent, {}, {})
-            # Metadata is back on the old bundle but the fence and intent stay.
-            self.assertEqual(self.route.read_bytes(), self.old_route)
+            # Nothing is rewound: the fence, the new metadata and the intent stay.
+            self.assertEqual(self.route.read_bytes(), self.new_route)
+            self.assertEqual(self.attestation.read_bytes(), self.new_att)
+            self.assertEqual(self.rows['pendingRouteSha256'], self.new['routeSha256'])
+            self.assertEqual(build.read(self.state)['identity'], self.new)
             self.assertEqual(build.read(self.state)['phase'], 'upgrading')
             self.assertTrue((self.state / upgrade.INTENT).exists())
             self.assertTrue(saved.is_dir())

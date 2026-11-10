@@ -1502,6 +1502,11 @@ def _restore(intent):
         _fail('active_upgrade_previous_bundle_changed')
     if row['phase'] not in ('active','upgrading') or row['routeSha256'] not in (old_sha, new_sha):
         _fail('active_upgrade_restore_phase_changed')
+    # A changed store refuses before anything is rewound; the same checks
+    # repeat once the metadata is old again.
+    if not inactive._counts_match(intent['oldRecord']['identity'], intent['counts']):
+        _fail('active_upgrade_restore_store_changed')
+    inactive._verify_store_pins(intent)
     _seal_restore(intent)
     if row['phase'] == 'active' and row['routeSha256'] == new_sha:
         row = ledger.change(state / ledger.name, row['epoch'], 'active',
@@ -1537,7 +1542,7 @@ def _restore(intent):
             ledger.write(state / ledger.name, old_row)
     if not inactive._counts_match(intent['oldRecord']['identity'], intent['counts']):
         _fail('active_upgrade_restore_store_changed')
-    # The metadata is old again; the fence stands until the pins match.
+    # Recheck with the metadata old again; the fence stands until they match.
     inactive._verify_store_pins(intent)
     row = ledger.change(state / ledger.name, old_row['epoch'], 'upgrading',
                         'active')
@@ -1771,8 +1776,11 @@ def _prepare_v4_bridge(project, state, marker, ledger, *, source_root, plugin_ro
                                    intent['reviewSha256'] != accepted_provider_sha256):
             # A previous completed upgrade is a receipt, not the intent for
             # this bridge. The existing proof refuses unsettled transitions.
-            _backup_proof(intent, verify_new=False)
-            if intent['schema'] == V1 and ledger.load(state / ledger.name) == intent['oldLedger']:
+            reuse = (intent['schema'] == V1 and
+                     ledger.load(state / ledger.name) == intent['oldLedger'])
+            # A receipt archived here drops its backup in the same step.
+            _backup_proof(intent, verify_new=False, archive=not reuse)
+            if reuse:
                 intent = _prepare(project, state, path, source_root, plugin_root, commit_id,
                                   accepted_provider_sha256, model_path, dimension, ledger,
                                   prior_intent=intent, runtime_generation=runtime_generation,
