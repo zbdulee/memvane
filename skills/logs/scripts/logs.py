@@ -33,8 +33,24 @@ MIGRATION_STATES = ('copying', 'caught_up', 'shadow_verified', 'reader_ready', '
 # laya_shadow_migration.rollback_reader outcomes (event ``migration.rollback``).
 ROLLBACK_OUTCOMES = ('rolled_back', 'retained', 'refused')
 MIGRATION_EVENTS = ('migration.shadow', 'migration.driver', 'migration.rollback')
+# bundle.upgrade progress rows (laya_inactive_upgrade._stage); the started row
+# and the final result row carry no dot in their outcome.
+UPGRADE_STAGES = ('backup.', 'verify.', 'activate.', 'store_check.')
+UPGRADE_FIELDS = ('kind', 'copies', 'pins', 'files', 'bytes', 'bytesDone', 'bytesTotal')
 _HEX = re.compile(r'[0-9a-f]{32}')
 _STAGE = re.compile(r'[a-z_]{1,32}')
+
+
+def _upgrade_stage(row):
+    outcome = row.get('outcome')
+    return (row.get('event') == 'bundle.upgrade' and isinstance(outcome, str) and
+            outcome.startswith(UPGRADE_STAGES))
+
+
+def _moves(row):
+    if row.get('event') != 'bundle.upgrade' or _upgrade_stage(row):
+        return ''
+    return f" {row.get('from')} -> {row.get('to')}"
 
 
 def _state_root(args):
@@ -89,6 +105,12 @@ def _short(row):
         bridge_host = row.get('bridgeHost')
         if bridge_host in ('claude', 'codex'):
             parts.append(f'bridgeHost={bridge_host}')
+        if _upgrade_stage(row):
+            for key in UPGRADE_FIELDS:
+                value = row.get(key)
+                if (type(value) is int and 0 <= value) or (
+                        key == 'kind' and value in ('inactive', 'bound', 'active')):
+                    parts.append(f'{key}={value}')
     elif row.get('event') in ('migration.shadow', 'migration.driver'):
         parts.extend(_migration_parts(row))
     return ' '.join(str(part) for part in parts)
@@ -215,7 +237,7 @@ def summary(rows, args):
         if degraded:
             print('degraded recalls: ' + ', '.join(f'{k} {v}' for k, v in degraded.items()))
     for name, test in (('last upgrade', lambda row: row.get('event') == 'bundle.upgrade'
-                        and row.get('outcome') != 'started'),
+                        and row.get('outcome') != 'started' and not _upgrade_stage(row)),
                        ('last publish', lambda row: row.get('event') == 'index.publish'),
                        ('last error', lambda row: row.get('outcome') in FAILED
                         or row.get('event') == 'hook.error')):
@@ -269,9 +291,7 @@ def main(argv=None):
                 or row.get('event') == 'hook.error'], args)
     elif args.view == 'upgrades':
         _print([row for row in rows if row.get('event') in ('bundle.upgrade', 'journal.v4')],
-               args, lambda row: _short(row) + (f" {row.get('from')} -> {row.get('to')}"
-                                                if row.get('event') == 'bundle.upgrade'
-                                                else ''))
+               args, lambda row: _short(row) + _moves(row))
     elif args.view == 'migration':
         _print([row for row in rows if row.get('event') in MIGRATION_EVENTS
                 and row.get('outcome') != 'attempt'], args)

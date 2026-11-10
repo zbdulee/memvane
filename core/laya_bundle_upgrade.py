@@ -896,21 +896,24 @@ def upgrade_install(project_root, state, root, home=None):
                    accepted_provider_sha256=review['proposalSha256'],
                    model_path=None, dimension=manifest.get('dimension'),
                    runtime_generation=runtime_generation)
+    from laya_inactive_upgrade import upgrade_events
     if kind == 'active':
         import laya_active_upgrade
         from laya_inactive_upgrade import backup_proof_scope
-        with backup_proof_scope():
+        with backup_proof_scope(), upgrade_events(kind=kind):
             result = laya_active_upgrade.upgrade(**options)
         from laya_product_install import _request_build_wake
         result['syncWake'] = _request_build_wake(str(project_root))
     elif kind == 'bound':
         import laya_bound_upgrade
-        result = laya_bound_upgrade.upgrade(**options)
+        with upgrade_events(kind=kind):
+            result = laya_bound_upgrade.upgrade(**options)
     else:
         _mark_sealed_for_rescan(state)
         import laya_inactive_upgrade
-        result = laya_inactive_upgrade.upgrade(**{**options,
-                                                  'state_root': Path(state)})
+        with upgrade_events(kind='inactive'):
+            result = laya_inactive_upgrade.upgrade(**{**options,
+                                                      'state_root': Path(state)})
     return {**result, 'kind': kind}
 
 
@@ -1127,7 +1130,11 @@ def run(project_root, *, root=None, home=None):
                     except Exception as exc:
                         status, reason = _move_outcome(exc)
                         raise _DirMoveStopped(status, reason) from exc
-                result = _upgrade_with_backoff(project, state, root, home)
+                from laya_inactive_upgrade import backup_proof_scope, upgrade_events
+                # Stage events of this upgrade carry the same operation id;
+                # retries reuse backup proofs whose file stamps did not move.
+                with upgrade_events(operation=operation), backup_proof_scope():
+                    result = _upgrade_with_backoff(project, state, root, home)
                 result = {**result, **_convert_journal(project, state, root, home)}
                 status = ('current' if result.get('status') == 'current'
                           else 'complete')

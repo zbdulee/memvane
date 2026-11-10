@@ -9,6 +9,6 @@ test('fresh-wiki bound and selected laya-db builds move to a new plugin bundle',
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 27 tests/);
+  assert.match(result.stderr, /Ran 28 tests/);
   assert.match(result.stderr, /\nOK\b/);
 });

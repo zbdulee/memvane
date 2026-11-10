@@ -121,6 +121,8 @@ class ActiveUpgradeCase(unittest.TestCase):
                 mock.patch('laya_install_journal.journal_version', return_value=4),
                 mock.patch.object(inactive, '_store_counts',
                                   lambda *_: self.intent['counts']),
+                # The synthetic backup path holds no receipt to compare pins with.
+                mock.patch.object(inactive, '_verify_store_pins', lambda _intent: None),
                 mock.patch('laya_embed_resident.wait_for_release',
                            return_value=True),
                 mock.patch.object(upgrade, 'inspect_full_plugin_candidate',
@@ -174,6 +176,36 @@ class ActiveUpgradeCase(unittest.TestCase):
                                  'active_upgrade_restored_laya')
             self.assertEqual((self.auto / fresh.ROUTE).read_bytes(), self.old_route)
             self.assertEqual(self.journal['state'], 'restored_old')
+            self.assertEqual(json.loads((self.state / fresh.LEDGER).read_bytes())['phase'],
+                             'active')
+
+    def test_pin_mismatch_keeps_the_restore_fenced_on_every_attempt(self):
+        from contextlib import ExitStack
+        from laya_product_install import InstallBlocked
+        with ExitStack() as stack:
+            for patch in self.patches():
+                stack.enter_context(patch)
+            upgrade._switch(self.intent)
+            self.journal['previous'].update(sourceCommit='c'*40,
+                                             bundleManifestSha256='d'*64,
+                                             ownershipManifestSha256='e'*64,
+                                             vectorProfile={'profileId': 'f'*64})
+            changed = mock.patch.object(
+                inactive, '_verify_store_pins',
+                side_effect=InstallBlocked('inactive_upgrade_backup_changed'))
+            before = (self.state / fresh.LEDGER).read_bytes()
+            with changed:
+                for _attempt in range(2):
+                    with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+                        upgrade._restore(self.intent)
+                    # Refused before anything is rewound.
+                    self.assertEqual(self.journal['state'], 'active')
+                    self.assertEqual(self.journal['selectedRouteSha256'], self.new['routeSha256'])
+                    self.assertEqual((self.auto / fresh.ROUTE).read_bytes(), self.new_route)
+                    self.assertEqual((self.auto / fresh.MARKER).read_bytes(), self.new_marker)
+                    self.assertEqual((self.state / fresh.LEDGER).read_bytes(), before)
+            self.assertEqual(upgrade._restore(self.intent)['status'],
+                             'active_upgrade_restored_laya')
             self.assertEqual(json.loads((self.state / fresh.LEDGER).read_bytes())['phase'],
                              'active')
 
