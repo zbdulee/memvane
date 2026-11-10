@@ -305,6 +305,36 @@ contention may still affect latency. Compatibility requires all
 participating installed copies to use the same Coordinator. Explicit operator
 tools outside these plugin paths are not intercepted.
 
+## Bundle upgrade I/O
+
+A bundle upgrade (inactive, bound or selected) holds the install lock, the
+build owner or operation lock and, for a selected index, the per-user
+provider lane. Under those locks its work is O(metadata):
+
+- The backup (`inactive-upgrade-backup-*`, receipt
+  `laya-inactive-upgrade-backup-v2`) copies only the install journal with an
+  online SQLite backup. The candidate DB, claim queue, catalog, binding store
+  and incremental-docs sidecar are pinned, not copied: inode plus logical
+  evidence from one read snapshot (application id, user version, page size,
+  DDL digest, small identity tables row for row, largest rowid per rowid
+  table). No restore reads store bytes from a backup; restores rebind the
+  metadata from the intent and rewind the journal by CAS, then compare the
+  pins while the upgrade fence still stands.
+- The store check reads schema, binding rows and largest rowids; it runs no
+  `quick_check`, `integrity_check` or full `COUNT`. Only an unfinished intent
+  written by a bundle up to 0.44.15 (exact row counts) resumes through the
+  earlier full inspection, and its full-copy backup is re-hashed once before
+  its receipt is archived.
+- The worker keeps one backup-proof scope across its busy retries, so a proof
+  is reused while the backup files' stamps are unchanged.
+- An upgrade deletes its own backup right after its receipt is durable; a
+  backup that a live intent names is kept, and older backups stay for the
+  owner.
+- Stage lines (`bundle.upgrade` with outcomes `backup.*`, `verify.*`,
+  `activate.done`, `store_check.done`) carry the worker's `operation` and
+  `kind`; a copy or hash longer than 30 seconds adds `*.progress` lines with
+  `bytesDone`/`bytesTotal`.
+
 ## Additional entry points
 
 | Entry point | Ownership and admission | Bounded refusal/fallback |

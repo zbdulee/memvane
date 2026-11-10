@@ -121,6 +121,8 @@ class ActiveUpgradeCase(unittest.TestCase):
                 mock.patch('laya_install_journal.journal_version', return_value=4),
                 mock.patch.object(inactive, '_store_counts',
                                   lambda *_: self.intent['counts']),
+                # The synthetic backup path holds no receipt to compare pins with.
+                mock.patch.object(inactive, '_verify_store_pins', lambda _intent: None),
                 mock.patch('laya_embed_resident.wait_for_release',
                            return_value=True),
                 mock.patch.object(upgrade, 'inspect_full_plugin_candidate',

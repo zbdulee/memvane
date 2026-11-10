@@ -17,6 +17,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_initial_build as build
 import laya_install_journal as journal
 import laya_inactive_upgrade as upgrade
+import runpy
+
+# The 0.44.15 full-copy writer: backups older bundles left behind.
+legacy_backup = runpy.run_path(str(Path(__file__).resolve().parent /
+                                   'laya-upgrade-backup-pin-checks.py'))['legacy_backup']
 
 
 def raw(value):
@@ -116,10 +121,13 @@ class UpgradeCase(unittest.TestCase):
         return (mock.patch.object(upgrade, 'inspect_journal', lambda _p: self.rows),
                 mock.patch.object(upgrade, 'cas_replace_inactive_candidate', cas),
                 mock.patch.object(upgrade, 'preflight_product_candidate', preflight),
-                mock.patch.object(upgrade, '_store_counts', lambda _i: self.counts))
+                mock.patch.object(upgrade, '_store_counts', lambda _i: self.counts),
+                mock.patch.object(upgrade, '_counts_match',
+                                  lambda i, expected: upgrade._store_counts(i) == expected))
 
     def test_forward_and_restore_keep_build_identity_and_cache(self):
-        with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3]:
+        with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3], \
+                self.patches()[4]:
             switched = upgrade._switch(self.intent, {}, {})
             self.assertEqual((switched['identity'], switched['phase']),
                              (self.new, self.original['phase']))
@@ -138,7 +146,8 @@ class UpgradeCase(unittest.TestCase):
             real(path, old, new)
             if len(calls) == 1:
                 raise RuntimeError('synthetic process interruption')
-        with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3]:
+        with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3], \
+                self.patches()[4]:
             with mock.patch.object(upgrade, '_atomic_expected', interrupted):
                 with self.assertRaisesRegex(RuntimeError, 'synthetic process interruption'):
                     upgrade._switch(self.intent, {}, {})
@@ -147,7 +156,19 @@ class UpgradeCase(unittest.TestCase):
             self.assertEqual(upgrade._switch(self.intent, {}, {})['identity'], self.new)
 
     def test_failed_switch_restores_original_phase_and_metadata(self):
-        with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3]:
+        # Restore compares the stores with the backup's pins; take a real one.
+        for key in ('candidateDb', 'queueDb', 'catalogDb', 'bindingStore', 'journalPath'):
+            with sqlite3.connect(self.old[key]) as db:
+                db.execute('CREATE TABLE fixture(id INTEGER PRIMARY KEY)')
+            Path(self.old[key]).chmod(0o600)
+        saved = upgrade._backup(self.old, self.original, self.old_route, self.old_att,
+                                self.counts)
+        (self.state / upgrade.INTENT).unlink()
+        self.intent = {**self.intent, 'backup': str(saved)}
+        build._write_json(self.state / upgrade.INTENT, self.intent,
+                          replace=False, max_bytes=upgrade.INTENT_LIMIT)
+        with self.patches()[0], self.patches()[1], self.patches()[2], self.patches()[3], \
+                self.patches()[4]:
             with mock.patch.object(upgrade, '_store_counts', return_value={**self.counts,
                                                                           'vectorChunkSets': 0}):
                 with self.assertRaisesRegex(Exception, 'inactive_upgrade_recheck_failed'):
@@ -158,6 +179,7 @@ class UpgradeCase(unittest.TestCase):
                              (self.old, self.original['phase']))
             self.assertEqual(self.route.read_bytes(), self.old_route)
             self.assertEqual(self.attestation.read_bytes(), self.old_att)
+            self.assertFalse(saved.exists(), 'the retired intent drops its backup')
 
     def test_rebind_rejects_store_or_model_change(self):
         upgrading = build.advance(self.original, phase='upgrading')
@@ -169,6 +191,7 @@ class UpgradeCase(unittest.TestCase):
                 build.rebind_inactive_upgrade(upgrading, {**self.new, **changed})
 
     def test_consistent_backup_keeps_all_vector_rows(self):
+        # A full-copy backup an older bundle wrote still verifies here.
         for key in ('candidateDb', 'queueDb', 'catalogDb', 'bindingStore',
                     'journalPath'):
             path = Path(self.old[key])
@@ -178,8 +201,8 @@ class UpgradeCase(unittest.TestCase):
                     db.executemany('INSERT INTO vector_chunk_sets VALUES(?)',
                                    ((n,) for n in range(1574)))
             path.chmod(0o600)
-        saved = upgrade._backup(self.old, self.original, self.old_route,
-                                self.old_att, self.counts)
+        saved = legacy_backup(self.old, self.original, self.old_route,
+                              self.old_att, self.counts)
         intent = {**self.intent, 'backup': str(saved)}
         with mock.patch.object(upgrade, '_hash_private', wraps=upgrade._hash_private) as hashed:
             with upgrade.backup_proof_scope():
@@ -237,6 +260,7 @@ class UpgradeCase(unittest.TestCase):
         # _backup runs integrity_check on each copy before hashing it, so the
         # manifest sha256 already proves the verified bytes; verification must
         # not rescan every page (a 12.5 GB candidate DB exceeded the deadline).
+        # Full copies are what older bundles left behind.
         for key in ('candidateDb', 'queueDb', 'catalogDb', 'bindingStore',
                     'journalPath'):
             path = Path(self.old[key])
@@ -246,8 +270,8 @@ class UpgradeCase(unittest.TestCase):
                     db.executemany('INSERT INTO vector_chunk_sets VALUES(?)',
                                    ((n,) for n in range(1574)))
             path.chmod(0o600)
-        saved = upgrade._backup(self.old, self.original, self.old_route,
-                                self.old_att, self.counts)
+        saved = legacy_backup(self.old, self.original, self.old_route,
+                              self.old_att, self.counts)
         intent = {**self.intent, 'backup': str(saved)}
         statements = []
         real_connect = sqlite3.connect
@@ -303,16 +327,29 @@ class UpgradeCase(unittest.TestCase):
                 cold.append(key)
         self.assertEqual(cold[:3], ['candidateDb', 'queueDb', 'catalogDb'])
         counts = upgrade._store_counts(identity)
-        self.assertEqual((counts['vectorChunkSets'], counts['publishedDocuments']), (0, 0))
+        self.assertEqual((counts['vectorChunkSetsTail'], counts['publishedDocumentsTail']),
+                         (0, 0))
         record = {'identity': identity, 'phase': 'fixture'}
         saved = upgrade._backup(identity, record, self.old_route, self.old_att, counts)
-        candidate = saved / 'candidateDb.sqlite'
-        self.assertEqual(tuple(candidate.read_bytes()[18:20]), (2, 2))
+        self.assertFalse((saved / 'candidateDb.sqlite').exists())
         for path in saved.iterdir():
             if path.name.endswith('.sqlite') and Path(str(path) + '-wal').exists():
                 strip_closed_wal_sidecars(self, path)
         intent = {**self.intent, 'backup': str(saved), 'oldRecord': record, 'counts': counts}
         upgrade._verify_backup(intent)
+        # Pins of cold WAL stores verify after the stores were read again.
+        self.assertEqual(upgrade._store_counts(identity), counts)
+        upgrade._verify_store_pins(intent)
+        # Full copies of older bundles pair with their exact row counts.
+        legacy_counts = upgrade._legacy_store_counts(identity)
+        legacy = legacy_backup(identity, record, self.old_route, self.old_att, legacy_counts)
+        candidate = legacy / 'candidateDb.sqlite'
+        self.assertEqual(tuple(candidate.read_bytes()[18:20]), (2, 2))
+        for path in legacy.iterdir():
+            if path.name.endswith('.sqlite') and Path(str(path) + '-wal').exists():
+                strip_closed_wal_sidecars(self, path)
+        upgrade._verify_backup({**intent, 'backup': str(legacy), 'counts': legacy_counts})
+        self.assertTrue(upgrade._counts_match(identity, legacy_counts))
         self.assertEqual(upgrade._sqlite_count(candidate, 'vector_chunk_sets'), 0)
 
 

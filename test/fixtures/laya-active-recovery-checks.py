@@ -208,7 +208,7 @@ class RecoveryTests(unittest.TestCase):
                 elif corruption == 'settings':
                     case.settings.write_text('{"name":"other","skipPaths":[]}')
                 else:
-                    intent['counts']['vectorChunkSets'] += 1
+                    intent['counts']['vectorChunkSetsTail'] += 1
                     active.build._write_json(case.state / active.INTENT, intent,
                                              replace=True, max_bytes=active.LIMIT)
                 before = case.route.read_bytes()

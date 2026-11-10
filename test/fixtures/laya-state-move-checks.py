@@ -37,7 +37,8 @@ import laya_initial_build as build  # noqa: E402
 import laya_install_journal as journal_mod  # noqa: E402
 
 INSTALL = '3' * 32
-COUNTS = {'vectorChunkSets': 1, 'vectorChunks': 1, 'publishedDocuments': 1}
+COUNTS = {'countsSchema': 'laya-store-tails-v1', 'vectorChunkSetsTail': 1,
+          'vectorChunksTail': 1, 'publishedDocumentsTail': 1}
 REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 REAL_STATE = [REAL_HOME / '.local' / 'state' / name for name in ('laya', 'memvane')]
 
@@ -117,7 +118,7 @@ class MoveCase(SelectedProject):
             if not Path(identity[key]).is_file():
                 raise RuntimeError('store_missing')
         if self.fail_new_counts and identity['stateRoot'] == str(self.target):
-            return {**COUNTS, 'vectorChunks': 2}
+            return {**COUNTS, 'vectorChunksTail': 2}
         return dict(COUNTS)
 
     def run_worker(self):

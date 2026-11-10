@@ -295,9 +295,18 @@ def _prepare(project, state, journal, source_root, plugin_root, commit_id,
         if row[key] != new_row[key]:
             _fail('active_upgrade_store_identity_changed')
     counts = inactive._store_counts(record['identity'])
+    if prior_intent is not None and inactive._counts_match(record['identity'],
+                                                           prior_intent['counts']):
+        # Same stores, in the form the prior intent (maybe an older bundle's)
+        # recorded them; the reused backup's receipt names that form.
+        counts = prior_intent['counts']
     if prior_intent is None or (unfenced and (
             counts != prior_intent['counts'] or
-            _journal_snapshot(selected) != prior_intent['journalBefore'])):
+            _journal_snapshot(selected) != prior_intent['journalBefore'])) or (
+            (unfenced or unfenced_v4) and counts == prior_intent['counts'] and
+            inactive._pins_stale(prior_intent)):
+        # Before its fence the old route kept syncing; pins that no longer
+        # match would fail a later restore, so this intent gets a new backup.
         backup = inactive._backup(record['identity'], record, old_route, old_att,
                                   counts)
     else:
@@ -1199,7 +1208,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
     _backup_proof(intent, verify_new=False)
     if build.read(state) != intent['oldRecord']:
         _fail('active_upgrade_build_binding_changed')
-    if inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']:
+    if not inactive._counts_match(intent['oldRecord']['identity'], intent['counts']):
         _fail('active_upgrade_restore_store_changed')
     original = json.loads(intent['oldRoute'])
     _verify_recovery_scope(journal, original)
@@ -1284,7 +1293,7 @@ def _recover_upgrade(intent, source_root, plugin_root, commit_id,
         _fail('active_upgrade_recovery_journal_changed')
     if (_metadata(intent) != descriptor['after'] or
             _journal_snapshot(inspect_journal(journal)) != activated or
-            inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']):
+            not inactive._counts_match(intent['oldRecord']['identity'], intent['counts'])):
         _fail('active_upgrade_recheck_failed')
     _verify_recovery_scope(journal, original)
     row = _intent_ledger(intent).change(state / fresh.LEDGER,
@@ -1422,8 +1431,8 @@ def _switch(intent):
             intent['newLedger']['attestationSha256'] or
             current['providerFileIdentitySha256'] !=
             intent['newLedger']['providerFileIdentitySha256'] or
-            inactive._store_counts(intent['oldRecord']['identity']) !=
-            intent['counts']):
+            not inactive._counts_match(intent['oldRecord']['identity'],
+                                       intent['counts'])):
         _fail('active_upgrade_recheck_failed')
     row = ledger.load(state / ledger.name)
     if row['phase'] == 'upgrading' and row == intent['newLedger']:
@@ -1433,6 +1442,7 @@ def _switch(intent):
             ledger.classify(project, auto / ledger.marker_name,
                                   auto / ledger.route_name) != 'candidate'):
         _fail('active_upgrade_selection_unconfirmed')
+    inactive._stage(state, 'activate.done', journalEpoch=current['epoch'])
     return {'status': 'active_upgrade_complete',
             'routeSha256': new_sha, 'vectorCounts': intent['counts'],
             'backup': intent['backup'], 'journalEpoch': current['epoch']}
@@ -1516,8 +1526,10 @@ def _restore(intent):
                                            'phase': 'upgrading'}
         if not already_old:
             ledger.write(state / ledger.name, old_row)
-    if inactive._store_counts(intent['oldRecord']['identity']) != intent['counts']:
+    if not inactive._counts_match(intent['oldRecord']['identity'], intent['counts']):
         _fail('active_upgrade_restore_store_changed')
+    # The metadata is old again; the fence stands until the pins match.
+    inactive._verify_store_pins(intent)
     row = ledger.change(state / ledger.name, old_row['epoch'], 'upgrading',
                         'active')
     if (row['routeSha256'] != old_sha or
@@ -1599,6 +1611,8 @@ def _archive_finished_intent(state, project, intent):
     target = finished_intent_receipt(state, project, intent)
     os.rename(_intent_path(state), target)
     inactive._fsync(state)
+    # The receipt is durable and no live intent names the backup any more.
+    inactive._drop_backup(state, intent['backup'])
 
 
 def finished_intent_receipt(state, project, intent):
