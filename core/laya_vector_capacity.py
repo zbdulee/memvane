@@ -116,7 +116,8 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
     ``before_write`` (a selected project's journal fence) runs once, before
     the first candidate write of the step (profile registration, content or
     chunk rows). A step over cached members only writes nothing there and
-    does not call it.
+    does not call it. A fill that completes with zero chunk rows (no eligible
+    member) registers the profile, so the zero-row seal can read it.
 
     Answers:
 
@@ -221,6 +222,10 @@ def vector_fill_step(runtime: Any, provider: Any, *, max_files: int = DEFAULT_FI
         page = catalog.members(snapshot, exclusions, after=cursor, limit=_PAGE,
                                allow_pending=True)
         if not page:
+            if not rows_total:
+                # No member chunk set registered the profile: a zero-row seal
+                # still reads it, so an empty snapshot registers it here.
+                prepare_write()
             return record(True) or answer('complete', cursor=cursor)
         for path, sha, eligible in page:
             if not eligible:
