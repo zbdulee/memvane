@@ -674,7 +674,7 @@ def _profile_donor(reviewed_provider, *, plugin_root, state):
                 continue
             if sealed is not None and approved['vectorProfile'] != sealed:
                 continue
-            found.setdefault(approved['vectorProfile']['profileId'],
+            found.setdefault(json.dumps(approved['vectorProfile'], sort_keys=True),
                              (approved, str(install)))
     if len(found) > 1:
         _fail('fresh_profile_donor_ambiguous')
