@@ -162,18 +162,53 @@ class Donor(EMBED['Base']):
         plant(install, changed)
         self.assertEqual(self.resolve(), (self.reviewed, None))
 
-    def test_unsafe_or_own_attestation_is_not_a_donor(self):
+    def test_unsafe_or_unreadable_attestation_is_not_a_donor(self):
         install, record = self.donor('a')
-        plant(install, record, mode=0o644)
+        path = plant(install, record, mode=0o644)
         self.assertEqual(self.resolve(), (self.reviewed, None))
-        install.joinpath('production-provider-attestation.json').unlink()
-        plant(install, record)
-        with mock.patch.object(product, '_state_bases', return_value=(install.parent,)):
-            self.assertEqual(product._profile_donor(self.reviewed, plugin_root=self.plugin,
-                                                    state=install),
-                             (self.reviewed, None))
+        path.unlink()
+        # A symlinked record is not followed.
+        target = plant(self.base / 'elsewhere', record)
+        path.symlink_to(target)
+        self.assertEqual(self.resolve(), (self.reviewed, None))
+        path.unlink()
         plant(self.installs / 'not-an-install', record)
-        install.joinpath('production-provider-attestation.json').write_bytes(b'{')
+        for raw in (b'{', b'[' * 100000 + b']' * 100000, b'[]'):
+            path.write_bytes(raw)
+            path.chmod(0o600)
+            self.assertEqual(self.resolve(), (self.reviewed, None))
+
+    def test_interrupted_prepare_resumes_under_its_own_staged_profile(self):
+        # The first run sealed the bundle with the donor profile and staged
+        # this install's attestation; the donor is gone before the rerun.
+        own, record = self.donor('a')
+        plant(own, record)
+        with mock.patch.object(product, '_state_bases', return_value=(own.parent,)):
+            provider, donor = self.resolve(sealed=record['vectorProfile'])
+        self.assertEqual(donor, str(own))
+        self.assert_joined(provider, record)
+
+    def test_review_profile_held_by_an_install_counts_toward_ambiguity(self):
+        donor, record = self.donor('a')
+        plant(donor, record)
+        current = self.installs / ('b' * 32)
+        plant(current, {**record, 'vectorProfile': self.reviewed['vectorProfile'],
+                        'providerManifest': self.reviewed['providerManifest'],
+                        'dependencyClosure': self.reviewed['dependencyClosure'],
+                        'journalPath': str(current / 'install-journal.sqlite'),
+                        bundle.PROFILE_CLOSURE_FIELD: None})
+        current_path = current / 'production-provider-attestation.json'
+        held = json.loads(current_path.read_bytes())
+        del held[bundle.PROFILE_CLOSURE_FIELD]
+        current_path.write_bytes(json.dumps(held).encode())
+        with self.assertRaisesRegex(product.InstallBlocked, 'fresh_profile_donor_ambiguous'):
+            self.resolve()
+        # A sealed bundle decides: only its profile is a candidate.
+        provider, joined = self.resolve(sealed=record['vectorProfile'])
+        self.assertEqual(joined, str(donor))
+        self.assert_joined(provider, record)
+        # Only the review's own profile held: nothing to join.
+        donor.joinpath('production-provider-attestation.json').unlink()
         self.assertEqual(self.resolve(), (self.reviewed, None))
 
     def test_two_equivalent_profiles_are_ambiguous(self):

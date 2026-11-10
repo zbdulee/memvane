@@ -605,15 +605,24 @@ def _donor_attestation(install):
     """Another install's attestation, read only when owner-private; else None."""
     path = install / 'production-provider-attestation.json'
     try:
-        for item in (install, path):
-            info = item.lstat()
-            if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077 or
-                    (item is install and not stat.S_ISDIR(info.st_mode)) or
-                    (item is path and (not stat.S_ISREG(info.st_mode) or
-                                       info.st_size > DONOR_ATTESTATION_LIMIT))):
+        info = install.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) & 0o077):
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                    stat.S_IMODE(info.st_mode) & 0o077 or
+                    info.st_size > DONOR_ATTESTATION_LIMIT):
                 return None
-        value = json.loads(path.read_bytes())
-    except (OSError, UnicodeError, ValueError):
+            raw = os.read(fd, DONOR_ATTESTATION_LIMIT + 1)
+        finally:
+            os.close(fd)
+        if len(raw) > DONOR_ATTESTATION_LIMIT:
+            return None
+        value = json.loads(raw)
+    except (OSError, UnicodeError, ValueError, RecursionError):
         return None
     return value if isinstance(value, dict) else None
 
@@ -629,11 +638,14 @@ def _profile_donor(reviewed_provider, *, plugin_root, state):
     it (``installed_candidate_already_owned``), and an unsealed one is sealed
     with a profile no existing install can upgrade into.
 
-    Each other install's owner-private attestation is a donor candidate; only
-    ``reattest`` (same content, same layout, the profile's fingerprint
-    reproduced) accepts one, and donors are only read. A sealed bundle accepts
-    only its own profile. Two different equivalent profiles refuse. With no
-    equivalent donor the review is used unchanged.
+    Every install's owner-private attestation is a donor candidate, this
+    install's own staged one included, so a prepare interrupted after it
+    sealed an unsealed bundle with a donor's profile resumes under that
+    profile. Only ``reattest`` (same content, same layout, the profile's
+    fingerprint reproduced) accepts a donor, and donors are only read. A
+    sealed bundle accepts only its own profile. On an unsealed bundle two
+    different equivalent profiles (the review's own among them) refuse. With
+    no other equivalent profile the review is used unchanged.
     """
     from laya_provider_reproof import reattest
     own = reviewed_provider['vectorProfile']
@@ -643,7 +655,6 @@ def _profile_donor(reviewed_provider, *, plugin_root, state):
         sealed = None
     if sealed == own:
         return reviewed_provider, None
-    own_state = Path(state)
     found = {}
     for base in _state_bases():
         try:
@@ -652,8 +663,6 @@ def _profile_donor(reviewed_provider, *, plugin_root, state):
         except OSError:
             continue
         for install in installs:
-            if install == own_state:
-                continue
             attestation = _donor_attestation(install)
             if attestation is None:
                 continue
@@ -661,16 +670,16 @@ def _profile_donor(reviewed_provider, *, plugin_root, state):
                 approved = reattest(attestation, reviewed_provider)
             except Exception:  # A malformed donor is only a missing donor.
                 approved = None
-            if approved is None or approved['vectorProfile'] == own:
+            if approved is None:
                 continue
             if sealed is not None and approved['vectorProfile'] != sealed:
                 continue
             found.setdefault(approved['vectorProfile']['profileId'],
                              (approved, str(install)))
-    if not found:
-        return reviewed_provider, None
     if len(found) > 1:
         _fail('fresh_profile_donor_ambiguous')
+    if not found or next(iter(found.values()))[0]['vectorProfile'] == own:
+        return reviewed_provider, None
     approved, donor = next(iter(found.values()))
     provider = {'vectorProfile': approved['vectorProfile'],
                 'providerManifest': approved['providerManifest'],
