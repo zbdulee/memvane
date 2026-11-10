@@ -54,6 +54,13 @@ PROGRESS_SECONDS = 30
 # WAL or a recall adds and drops its read lease row; they are recorded only.
 _PIN_COMPARED = ('ino', 'applicationId', 'userVersion', 'pageSize', 'ddlSha256',
                  'contentSha256', 'tailSha256')
+# A selected sync pass scans the source catalog and claims work before it
+# marks the journal's first new write (``before_publish``), so after a settled
+# upgrade those two stores move while a restore is still authorized. Their
+# bindings are rechecked by ``_store_counts``; the pin compares the file and
+# its schema only.
+_PIN_BOOKKEEPING = frozenset(('catalogDb', 'queueDb'))
+_PIN_IDENTITY_ONLY = ('ino', 'applicationId', 'userVersion', 'pageSize', 'ddlSha256')
 _PIN_INTS = ('dev', 'ino', 'size', 'mtimeNs', 'applicationId', 'userVersion',
              'pageSize', 'pageCount', 'freelistCount')
 # Small binding/identity tables pinned row for row.
@@ -531,7 +538,8 @@ def _pin_mismatch(intent):
         if pins[key]['path'] != str(path):
             return True
         live = _store_pin(path)
-        if any(live[field] != pins[key][field] for field in _PIN_COMPARED):
+        fields = _PIN_IDENTITY_ONLY if key in _PIN_BOOKKEEPING else _PIN_COMPARED
+        if any(live[field] != pins[key][field] for field in fields):
             return True
     return False
 
@@ -684,6 +692,27 @@ def _verify_backup(intent):
     if before != after:
         _fail('inactive_upgrade_backup_changed')
     cache[key] = (backup, paths, tuple(monitors), after)
+
+
+def _verify_backup_receipt(intent):
+    """The backup's receipt matches the intent and its copies are private files.
+
+    For a settled intent archived in the same step that deletes its backup:
+    no copy is re-hashed.
+    """
+    receipt = _read_receipt(intent)
+    backup = Path(intent['backup'])
+    for key in receipt['dbSha256']:
+        path = backup / (key + '.sqlite')
+        try:
+            info = path.lstat()
+        except OSError:
+            _fail('inactive_upgrade_backup_changed')
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+            _fail('inactive_upgrade_backup_changed')
+    _stage(intent['oldRecord']['identity']['stateRoot'], 'verify.receipt',
+           backup=backup.name, files=len(receipt['dbSha256']))
 
 
 def _verify_backup_full(intent):

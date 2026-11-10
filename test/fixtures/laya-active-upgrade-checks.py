@@ -179,6 +179,33 @@ class ActiveUpgradeCase(unittest.TestCase):
             self.assertEqual(json.loads((self.state / fresh.LEDGER).read_bytes())['phase'],
                              'active')
 
+    def test_pin_mismatch_keeps_the_restore_fenced_on_every_attempt(self):
+        from contextlib import ExitStack
+        from laya_product_install import InstallBlocked
+        with ExitStack() as stack:
+            for patch in self.patches():
+                stack.enter_context(patch)
+            upgrade._switch(self.intent)
+            self.journal['previous'].update(sourceCommit='c'*40,
+                                             bundleManifestSha256='d'*64,
+                                             ownershipManifestSha256='e'*64,
+                                             vectorProfile={'profileId': 'f'*64})
+            changed = mock.patch.object(
+                inactive, '_verify_store_pins',
+                side_effect=InstallBlocked('inactive_upgrade_backup_changed'))
+            with changed:
+                for _attempt in range(2):
+                    with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+                        upgrade._restore(self.intent)
+                    self.assertEqual(self.journal['state'], 'restored_old')
+                    self.assertEqual((self.auto / fresh.ROUTE).read_bytes(), self.old_route)
+                    self.assertEqual(json.loads((self.state / fresh.LEDGER).read_bytes())
+                                     ['phase'], 'upgrading')
+            self.assertEqual(upgrade._restore(self.intent)['status'],
+                             'active_upgrade_restored_laya')
+            self.assertEqual(json.loads((self.state / fresh.LEDGER).read_bytes())['phase'],
+                             'active')
+
     def test_new_write_blocks_old_laya_restore(self):
         from contextlib import ExitStack
         with ExitStack() as stack:

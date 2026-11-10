@@ -322,9 +322,14 @@ provider lane. Under those locks its work is O(metadata):
   pins while the upgrade fence still stands.
 - The store check reads schema, binding rows and largest rowids; it runs no
   `quick_check`, `integrity_check` or full `COUNT`. Only an unfinished intent
-  written by a bundle up to 0.44.15 (exact row counts) resumes through the
-  earlier full inspection, and its full-copy backup is re-hashed once before
-  its receipt is archived.
+  written by a bundle up to 0.44.15 (exact row counts, full-copy backup)
+  resumes through the earlier full inspection and copy hashes. A settled
+  intent is archived with a receipt check alone, because the same step
+  deletes its backup.
+- The claim queue and source catalog pins compare the file and schema only:
+  after a settled upgrade a sync pass scans the catalog and claims work before
+  it marks the journal's first new write. Their bindings are rechecked with
+  the other store bindings.
 - The worker keeps one backup-proof scope across its busy retries, so a proof
   is reused while the backup files' stamps are unchanged.
 - An upgrade deletes its own backup right after its receipt is durable; a

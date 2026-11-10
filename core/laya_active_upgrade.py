@@ -855,8 +855,17 @@ def _commit_reader_successor(db, path, before, values):
                (epoch, digest, selected.preferred_endpoint, journal_canon(successor)))
 
 
-def _backup_proof(intent, *, verify_new=True):
-    inactive._verify_backup(intent)
+def _backup_proof(intent, *, verify_new=True, archive=False):
+    """Prove the intent and its backup; ``archive`` for a receipt about to settle.
+
+    Archiving deletes the backup in the same step and nothing reads it after,
+    so its receipt is checked against the intent without re-hashing copies
+    (an older bundle's full copy is the size of every store).
+    """
+    if archive:
+        inactive._verify_backup_receipt(intent)
+    else:
+        inactive._verify_backup(intent)
     ledger = _intent_ledger(intent)
     old, new = intent['oldLedger'], intent['newLedger']
     old_route = json.loads(intent['oldRoute'])
@@ -1896,7 +1905,7 @@ def upgrade(*, project_root, state_root, source_root, plugin_root, commit_id,
             # intent is a receipt: its new bundle is now the bound one, which
             # its host may already have replaced or removed, so its files are
             # not re-proved here; ``_old_state`` proves the selection next.
-            _backup_proof(intent, verify_new=False)
+            _backup_proof(intent, verify_new=False, archive=True)
             _archive_finished_intent(state, project, intent)
             intent = None
         if intent is None:

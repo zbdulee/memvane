@@ -239,8 +239,23 @@ class BackupFormatTests(PinCase):
         self.assertTrue(upgrade._pins_stale(intent))
         # An update in a fully pinned identity table changes the pin.
         saved, intent = self.take()
-        with closing(sqlite3.connect(Path(self.old['queueDb']))) as db:
+        with closing(sqlite3.connect(Path(self.old['bindingStore']))) as db:
             db.execute("UPDATE schema_meta SET value='other'")
+            db.commit()
+        with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+            upgrade._verify_store_pins(intent)
+        # A sync pass after a settled upgrade scans the catalog and claims
+        # work before it marks a new write; those bookkeeping stores keep only
+        # their file and schema pinned.
+        saved, intent = self.take()
+        for key in ('catalogDb', 'queueDb'):
+            with closing(sqlite3.connect(Path(self.old[key]))) as db:
+                db.execute("INSERT INTO vector_chunk_sets(body) VALUES('scan')")
+                db.execute("UPDATE schema_meta SET value='seq 2'")
+                db.commit()
+        upgrade._verify_store_pins(intent)
+        with closing(sqlite3.connect(Path(self.old['catalogDb']))) as db:
+            db.execute('CREATE TABLE added(id INTEGER PRIMARY KEY)')
             db.commit()
         with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
             upgrade._verify_store_pins(intent)
@@ -316,6 +331,20 @@ class BackupFormatTests(PinCase):
         self.assertEqual(restored['identity'], self.old)
         self.assertFalse((self.state / upgrade.INTENT).exists())
         self.assertFalse(saved.exists(), 'a retired intent drops its own backup')
+
+    def test_archiving_a_settled_full_copy_checks_its_receipt_without_hashing(self):
+        saved = legacy_backup(self.old, self.original, self.old_route, self.old_att,
+                              self.counts)
+        intent = self.intent(saved)
+        with mock.patch.object(upgrade, '_hash_private',
+                               side_effect=AssertionError('copy re-hashed')):
+            upgrade._verify_backup_receipt(intent)
+        with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_invalid'):
+            upgrade._verify_backup_receipt({**intent, 'counts': {**self.counts,
+                                                                 'vectorChunks': 0}})
+        (saved / 'queueDb.sqlite').unlink()
+        with self.assertRaisesRegex(Exception, 'inactive_upgrade_backup_changed'):
+            upgrade._verify_backup_receipt(intent)
 
 
 class RestoreTests(PinCase):

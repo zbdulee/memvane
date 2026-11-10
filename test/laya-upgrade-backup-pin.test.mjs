@@ -11,6 +11,6 @@ test('bundle upgrade backups: journal copy, store pins, retention and stage even
         PYTHONDONTWRITEBYTECODE: '1'},
     });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 14 tests\b/);
+  assert.match(result.stderr, selected ? /Ran 1 test\b/ : /Ran 15 tests\b/);
   assert.match(result.stderr, /\nOK\b/);
 });
