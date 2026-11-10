@@ -32,8 +32,8 @@ from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FI
 import laya_package  # noqa: F401
 from laya_product_bundle import (BundleEvidenceError, COMMIT, inspect_product_candidate,
                                  inspect_full_plugin_candidate,
-                                 PRODUCTION_ATTESTATION_SCHEMA, RUNTIME_FILES_FIELD,
-                                 production_provider_approved,
+                                 PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
+                                 RUNTIME_FILES_FIELD, production_provider_approved,
                                  validate_production_provider_attestation,
                                  validate_vector_profile)
 
@@ -179,11 +179,14 @@ def _attestation(path):
 
 
 def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
-                                 dependency_closure):
+                                 dependency_closure, profile_dependency_closure=None):
     """No-clobber installer record, validated before journal CAS can bind it.
 
     Repeating an identical, complete staging operation is safe. A partial or
     different file is retained for explicit recovery instead of overwritten.
+    ``profile_dependency_closure`` is the reviewed closure of a re-attested
+    provider (``laya_provider_reproof.reattest``): the profile was derived
+    from those rows while the live rows are the same files elsewhere.
     """
     journal = _private_parent(journal_path)
     proof = inspect_full_plugin_candidate(bundle_proof.get('pluginRoot'))
@@ -197,6 +200,8 @@ def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
               'vectorProfile': proof['vectorProfile'],
               'providerManifest': provider_manifest,
               'dependencyClosure': dependency_closure}
+    if profile_dependency_closure is not None:
+        record[PROFILE_CLOSURE_FIELD] = profile_dependency_closure
     try:
         from laya_embed_runtime import RuntimeUnavailable, sealed_files_sha256
         files = sealed_files_sha256(provider_manifest.get('moduleEntryPath')

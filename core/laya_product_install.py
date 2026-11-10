@@ -34,9 +34,9 @@ import project_dir
 from laya_install_journal import (create_journal, inspect_journal,
                                   preflight_product_candidate,
                                   stage_production_attestation)
-from laya_product_bundle import (adopt_host_loaded_plugin,
+from laya_product_bundle import (adopt_host_loaded_plugin, BundleEvidenceError,
                                  inspect_full_plugin_candidate,
-                                 PRODUCTION_ATTESTATION_SCHEMA,
+                                 PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
                                  validate_production_provider_attestation)
 
 
@@ -585,12 +585,99 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             model_path=model_path, dimension=dimension)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
-        return _register_initial_build(
-            plan=plan, reviewed_provider=review['reviewedProvider'],
+        provider, donor = _profile_donor(review['reviewedProvider'],
+                                         plugin_root=plugin_root, state=state)
+        result = _register_initial_build(
+            plan=plan, reviewed_provider=provider,
             provider_proposal_sha256=accepted_provider_sha256,
             source_root=source_root, plugin_root=plugin_root, state=state,
             journal=journal, socket=socket, commit_id=commit_id,
             install_id=install_id)
+        if donor is not None:
+            result['profileDonor'] = donor
+        return result
+
+
+DONOR_ATTESTATION_LIMIT = 1024 * 1024
+
+
+def _donor_attestation(install):
+    """Another install's attestation, read only when owner-private; else None."""
+    path = install / 'production-provider-attestation.json'
+    try:
+        for item in (install, path):
+            info = item.lstat()
+            if (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077 or
+                    (item is install and not stat.S_ISDIR(info.st_mode)) or
+                    (item is path and (not stat.S_ISREG(info.st_mode) or
+                                       info.st_size > DONOR_ATTESTATION_LIMIT))):
+                return None
+        value = json.loads(path.read_bytes())
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _profile_donor(reviewed_provider, *, plugin_root, state):
+    """The existing installs' vector profile when a fresh review is the same content.
+
+    The review derives its profile from absolute runtime paths, so content an
+    existing install already attested under an earlier location reviews to a
+    different profile. A bundle carries a single sealed profile, and existing
+    installs keep theirs across moves (``laya_provider_reproof.reattest``), so
+    a fresh install must join that profile: otherwise a sealed bundle refuses
+    it (``installed_candidate_already_owned``), and an unsealed one is sealed
+    with a profile no existing install can upgrade into.
+
+    Each other install's owner-private attestation is a donor candidate; only
+    ``reattest`` (same content, same layout, the profile's fingerprint
+    reproduced) accepts one, and donors are only read. A sealed bundle accepts
+    only its own profile. Two different equivalent profiles refuse. With no
+    equivalent donor the review is used unchanged.
+    """
+    from laya_provider_reproof import reattest
+    own = reviewed_provider['vectorProfile']
+    try:
+        sealed = inspect_full_plugin_candidate(Path(plugin_root))['vectorProfile']
+    except (BundleEvidenceError, OSError):
+        sealed = None
+    if sealed == own:
+        return reviewed_provider, None
+    own_state = Path(state)
+    found = {}
+    for base in _state_bases():
+        try:
+            installs = sorted(path for path in base.iterdir()
+                              if re.fullmatch(r'[0-9a-f]{32}', path.name))
+        except OSError:
+            continue
+        for install in installs:
+            if install == own_state:
+                continue
+            attestation = _donor_attestation(install)
+            if attestation is None:
+                continue
+            try:
+                approved = reattest(attestation, reviewed_provider)
+            except Exception:  # A malformed donor is only a missing donor.
+                approved = None
+            if approved is None or approved['vectorProfile'] == own:
+                continue
+            if sealed is not None and approved['vectorProfile'] != sealed:
+                continue
+            found.setdefault(approved['vectorProfile']['profileId'],
+                             (approved, str(install)))
+    if not found:
+        return reviewed_provider, None
+    if len(found) > 1:
+        _fail('fresh_profile_donor_ambiguous')
+    approved, donor = next(iter(found.values()))
+    provider = {'vectorProfile': approved['vectorProfile'],
+                'providerManifest': approved['providerManifest'],
+                'dependencyClosure': approved['dependencyClosure']}
+    if PROFILE_CLOSURE_FIELD in approved:
+        provider[PROFILE_CLOSURE_FIELD] = approved[PROFILE_CLOSURE_FIELD]
+    return provider, donor
 
 
 def _adopt_and_attest(*, source_root, plugin_root, commit_id, reviewed_provider,
@@ -607,6 +694,7 @@ def _adopt_and_attest(*, source_root, plugin_root, commit_id, reviewed_provider,
     if not runtime.exists() and not runtime.is_symlink():
         os.mkdir(runtime, 0o700)
     _private_parent(runtime)
+    profile_closure = reviewed_provider.get(PROFILE_CLOSURE_FIELD)
     attestation = {'schema': PRODUCTION_ATTESTATION_SCHEMA,
                    'sourceCommit': proof['sourceCommit'],
                    'bundleManifestSha256': proof['bundleManifestSha256'],
@@ -614,9 +702,12 @@ def _adopt_and_attest(*, source_root, plugin_root, commit_id, reviewed_provider,
                    'journalPath': str(journal), 'vectorProfile': profile,
                    'providerManifest': manifest,
                    'dependencyClosure': reviewed_provider['dependencyClosure']}
+    if profile_closure is not None:
+        attestation[PROFILE_CLOSURE_FIELD] = profile_closure
     validate_production_provider_attestation(profile, proof, attestation)
     stage_production_attestation(journal, proof, manifest,
-                                 reviewed_provider['dependencyClosure'])
+                                 reviewed_provider['dependencyClosure'],
+                                 profile_closure)
     return proof, profile, manifest
 
 
@@ -1572,8 +1663,8 @@ def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_
             route_hint.get('journalPath') != str(parent / 'install-journal.sqlite') or
             route_hint.get('pluginRoot') != str(root) or
             not isinstance(reviewed_provider, dict) or
-            set(reviewed_provider) != {'vectorProfile', 'providerManifest',
-                                       'dependencyClosure'}):
+            set(reviewed_provider) - {PROFILE_CLOSURE_FIELD} !=
+            {'vectorProfile', 'providerManifest', 'dependencyClosure'}):
         _fail('invalid_install_request')
     journal = parent / 'install-journal.sqlite'
     with (nullcontext() if _already_locked else _install_lock(parent)):
@@ -1589,7 +1680,8 @@ def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_
             _fail('unsafe_runtime_directory')
         receipt = stage_production_attestation(
             journal, proof, reviewed_provider['providerManifest'],
-            reviewed_provider['dependencyClosure'])
+            reviewed_provider['dependencyClosure'],
+            reviewed_provider.get(PROFILE_CLOSURE_FIELD))
         if journal.exists() or journal.is_symlink():
             observed = inspect_journal(journal)
             if (observed['state'] != 'candidate_ready' or
