@@ -278,8 +278,9 @@ def _initial_build_waiting(controller, project):
     try:
         queue = WakeQueue(controller.root)
         rows = queue.pending()
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        raise ResourceDeferred('laya_sync_priority_probe_unavailable') from exc
+    except (OSError, ValueError, sqlite3.Error):
+        # Only an optimization: an unreadable queue never defers the sync.
+        return False
     now_ns = time.time_ns()
     waiting = []
     for row in rows:

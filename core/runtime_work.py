@@ -170,7 +170,7 @@ class WakeQueue:
             return 'retained' if retained else 'dropped'
 
     def pull_first(self,kind,target):
-        """Make an existing pending row due before every due row; never create one.
+        """Make an existing pending row due at 0 (first within its kind class); never create one.
 
         Its attempt count and last reason stay as recorded. True when it moved.
         """

@@ -121,13 +121,10 @@ class Waiting(Base):
         self.queue.put('laya-sync', NEW, now=0)
         self.assertTrue(self.waiting({NEW: record()}))
 
-    def test_unavailable_queue_is_a_distinct_deferral(self):
-        broken = types.SimpleNamespace(root=self.root / 'missing' / 'nested')
+    def test_unavailable_queue_never_defers_the_sync(self):
         with mock.patch.object(runtime_work.WakeQueue, 'pending',
                                side_effect=OSError('unavailable')):
-            with self.assertRaisesRegex(ResourceDeferred,
-                                        'laya_sync_priority_probe_unavailable'):
-                worker._initial_build_waiting(broken, BIG)
+            self.assertFalse(worker._initial_build_waiting(self.controller, BIG))
 
 
 class Runtime:

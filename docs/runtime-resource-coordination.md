@@ -148,9 +148,13 @@ development execution guard is separate; see
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
-- A selected sync yields (`laya_sync_yield_priority`) only to a due `index` or
-  `update` wake that has failed fewer than 3 times. Those retired kinds are
-  acknowledged on dispatch without work.
+- A selected sync yields (`laya_sync_yield_priority`) to a due `index` or
+  `update` wake that has failed fewer than 3 times (those retired kinds are
+  acknowledged on dispatch without work), and, between rounds, to another
+  project's initial build whose recent attempt ended deferred on a busy sync
+  owner (`_initial_build_waiting`); that build's existing wake is pulled to
+  due 0 first. An initial build waits up to `SYNC_OWNER_WAIT_SECONDS` for the
+  owner on each round.
 - Selected Laya route queries: `laya_embed_resident.admit_query` checks
   `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
   budget and acquires no compute lease. Refusal reports
