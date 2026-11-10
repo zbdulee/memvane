@@ -24,6 +24,8 @@ import laya_host_response as response  # noqa: E402
 import laya_index_host_route as host_route  # noqa: E402
 import laya_install_journal as journal_mod  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
+import laya_incremental_docs as incremental  # noqa: E402
+from laya_index_runtime import LayaIndexRuntime  # noqa: E402
 import laya_product_install as product  # noqa: E402
 import laya_product_sync_worker as worker  # noqa: E402
 
@@ -128,13 +130,21 @@ class EmptyWikiOnboarding(E2E['FreshOnboarding']):
         card.unlink()
         self.assertEqual(self.finalize()['status'], 'freshness_pending')
         self.settle_sealed()
-        # The rebuilt head is the empty sealed generation. Recall is not
-        # checked: the initial build never retires its per-document sidecar
-        # row; the first selected sync (not run here) does.
         decision = self.bind_and_activate(route_bytes)
-        self.assertTrue(journal_mod.verify_selected_route_read_only(decision)
-                        ['readOnlyAllowed'])
-
+        # The initial build publishes per-document sidecar rows but never
+        # retires them; the selected sync does after an indexed/unchanged
+        # step (_sync_capacity). Run that retire step, then recall is empty.
+        identity = self.record()['identity']
+        with LayaIndexRuntime(source_root=worker.wiki_index_roots(identity['collections']),
+                              scope=identity['scopeId'], db_path=identity['candidateDb'],
+                              queue_path=identity['queueDb'],
+                              db_incarnation=identity['dbIncarnation'],
+                              catalog_path=identity['catalogDb'],
+                              binding_store_path=identity['bindingStore'],
+                              wiki_only=True) as runtime:
+            self.assertEqual(incremental.retire_missing_documents(
+                runtime, identity, before_write=lambda: None), 1)
+        self.assert_empty_recall(decision)
 
 if __name__ == '__main__':
     unittest.main()
