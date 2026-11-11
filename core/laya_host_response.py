@@ -2353,8 +2353,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action == "gate":
             if host == "hermes":
                 return {"action": "continue"}
-            return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                           "permissionDecision": "allow"}}
+            return {}
         return {}  # Explicit observer/no-hint PostToolUse; index owns durable sync.
     if action in ("update", "update-queued", "index", "file-change-event"):
         # A successful agent Bash (git switch/pull, rm, mv) may change any
@@ -2631,8 +2630,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
             _fail('selected_proof_changed')
         if host == 'hermes':
             return {'action': 'continue'}
-        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                                       'permissionDecision': 'allow'}}
+        return {}
     # posttool/compile/index/file-change-event: nothing is
     # queued while the bundle is pending. The post-upgrade full scan covers it.
     if verify_selected_route_read_only(decision) != proof:
@@ -2777,8 +2775,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     if action == 'gate':
         if host == 'hermes':
             return {'action': 'continue'}
-        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                                       'permissionDecision': 'allow'}}
+        return {}
     # posttool/compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.
     return {}

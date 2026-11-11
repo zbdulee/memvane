@@ -354,7 +354,10 @@ class WorktreeRecallReadOnly(unittest.TestCase):
                 self.assertEqual(response.serve_selected(action, 'claude', decision, edit), {})
             gate = response.serve_selected('gate', 'claude', decision,
                                            {**edit, 'hook_event_name': 'PreToolUse'})
-            self.assertEqual(gate['hookSpecificOutput']['permissionDecision'], 'allow')
+            self.assertEqual(gate, {})
+            codex_gate = response.serve_selected('gate', 'codex', decision,
+                                                 {**edit, 'hook_event_name': 'PreToolUse'})
+            self.assertEqual(codex_gate, {})
 
     def test_unproven_identity_keeps_todays_classification(self):
         changed = self.add_worktree(self.selected.home / 'changed')
