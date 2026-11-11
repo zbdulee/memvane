@@ -626,6 +626,21 @@ class MigrationSnapshotChecks(unittest.TestCase):
                              'provenance_scan': intent['provenance_scan']}
                     mapped = migration.verify_generation_members(view, worktree_id=worktree['worktreeId'],
                         **proof, deadline=time.monotonic() + 30)
+                    # Effective membership includes non-card rows; the candidate
+                    # member set only includes cards accepted by the existing
+                    # legacy recall trust rule. Capture both from the same pin.
+                    inventory, cursor = [], None
+                    while True:
+                        batch = migration.capture_effective(snapshot, endpoint=endpoint,
+                            decision=decision, after=cursor, deadline=time.monotonic() + 30)
+                        inventory.extend(batch['members'])
+                        cursor = batch['next']
+                        if cursor is None:
+                            break
+                    self.assertEqual(len(inventory), 103)
+                    self.assertEqual(len(mapped['members']), 3)
+                    print('same_snapshot_effective_count=%d candidate_trusted_count=%d' %
+                          (len(inventory), len(mapped['members'])), flush=True)
                     relative = seed.changed_path.split('/', 1)[1]
                     self.assertTrue(any(row['path'] == relative and row['blob_sha'] == seed.changed_hash
                                         for row in mapped['members']))
