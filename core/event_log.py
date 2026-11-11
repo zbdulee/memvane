@@ -591,11 +591,15 @@ def _read_file(dfd, name: str, window: int | None = None) -> bytes:
     return _read_counted(dfd, name, window)[0]
 
 
-def _read_counted(dfd, name: str, window: int | None = None) -> tuple[bytes, int]:
+def _read_counted(dfd, name: str, window: int | None = None, *, strict=False) -> tuple[bytes, int]:
     """``_read_file`` plus the bytes actually read (charged to a read budget)."""
     try:
         fd, info = _open_private(dfd, name, os.O_RDONLY)
+    except FileNotFoundError:
+        return b'', 0
     except (OSError, ValueError):
+        if strict:
+            raise
         return b'', 0
     consumed = 0
     try:
@@ -616,6 +620,8 @@ def _read_counted(dfd, name: str, window: int | None = None) -> tuple[bytes, int
             data = data[cut + 1:] if cut >= 0 else b''
         return data, consumed
     except OSError:
+        if strict:
+            raise
         return b'', consumed
     finally:
         os.close(fd)
@@ -646,15 +652,18 @@ def _parse(data: bytes) -> list[dict]:
     return rows
 
 
-def read(state_root, *, generations: bool = True, max_bytes=_UNRESOLVED) -> list[dict]:
+def read(state_root, *, generations: bool = True, max_bytes=_UNRESOLVED, strict=False) -> list[dict]:
     """Events oldest first (rotated generations first). Read-only.
 
     At most ``max_bytes`` are read, newest first: the live file's tail, then
     older generations while budget remains. Malformed lines are skipped.
+    Strict reads report inaccessible state or existing files to the caller.
     """
     try:
         dfd = open_state_dir(state_root)
     except (OSError, ValueError):
+        if strict:
+            raise
         return []
     try:
         names = [NAME] + (list(GENERATIONS) if generations else [])
@@ -663,7 +672,7 @@ def read(state_root, *, generations: bool = True, max_bytes=_UNRESOLVED) -> list
         for name in names:
             if left is not None and left <= 0:
                 break
-            data, consumed = _read_counted(dfd, name, left)
+            data, consumed = _read_counted(dfd, name, left, strict=strict)
             if left is not None:
                 left -= max(consumed, 1)
             chunks.append(_parse(data))

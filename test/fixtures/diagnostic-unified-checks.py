@@ -167,6 +167,56 @@ class Base(unittest.TestCase):
 
 
 class UnifiedChecks(Base):
+    def test_unreadable_current_log_is_not_hidden_by_readable_rotation(self):
+        target = self.targets[0]
+        healthy = self.targets[1]
+        path = Path(target['state_root']) / event_log.NAME
+        rotated = path.with_name(path.name + '.1')
+        rotated.write_bytes(self.files[path])
+        os.chmod(rotated, 0o600)
+        os.chmod(path, 0)
+        try:
+            # Exercise the actual same-UID OS permission boundary, not a mock
+            # of event_log.read; a readable rotated file remains present.
+            with self.assertRaises(PermissionError):
+                os.open(path, os.O_RDONLY)
+            self.assertTrue(rotated.read_bytes())
+            self.assertTrue(event_log.read(target['state_root']))  # default remains fail-soft
+            self.targets = [target]
+            code, out, err = self.run_logs('events', '--all', '--json', extra=False)
+            statuses = [row['target'] for row in self.json_rows(out) if 'target' in row]
+            self.assertEqual(len(statuses), 1, out)
+            self.assertEqual(statuses[0]['status'], 'read_failed', out)
+            self.assertEqual(code, 1, err)
+            self.targets = [target, healthy]
+            code, out, err = self.run_logs('events', '--all', '--json', extra=False)
+            statuses = [row['target'] for row in self.json_rows(out) if 'target' in row]
+            self.assertEqual([item['status'] for item in statuses], ['read_failed', 'ok'], out)
+            self.assertIn('first1', out)
+            self.assertEqual(code, 0, err)
+        finally:
+            os.chmod(path, 0o600)
+
+    def test_strict_read_propagates_state_and_io_failures_but_allows_absence(self):
+        state = self.targets[0]['state_root']
+        with patch.object(event_log, 'open_state_dir', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError):
+                event_log.read(state, strict=True)
+        for syscall in ('lseek', 'read'):
+            with self.subTest(syscall=syscall), \
+                    patch.object(event_log.os, syscall, side_effect=OSError('synthetic I/O')):
+                with self.assertRaises(OSError):
+                    event_log.read(state, strict=True)
+        empty = self.tmp / 'empty-state'
+        empty.mkdir(mode=0o700)
+        self.assertEqual(event_log.read(empty, strict=True), [])
+        # Rotation can remove the current name before opening it. An absent
+        # generation remains normal, and a readable older generation survives.
+        rotated = empty / (event_log.NAME + '.1')
+        rotated.write_bytes(self.files[Path(state) / event_log.NAME])
+        os.chmod(rotated, 0o600)
+        self.assertTrue(event_log.read(empty, strict=True))
+
     def test_unified_upgrades_preserves_stage_and_transition_display(self):
         path = Path(self.targets[0]['state_root']) / event_log.NAME
         rows = [

@@ -596,7 +596,7 @@ def _collect_all(details):
     merged = []
     for index, (status, state_root) in enumerate(ready):
         try:
-            raw = event_log.read(state_root, max_bytes=share)
+            raw = event_log.read(state_root, max_bytes=share, strict=True)
             if not isinstance(raw, list):
                 raise TypeError('read result')
         except Exception as exc:  # noqa: BLE001 - per-target failure, others continue
