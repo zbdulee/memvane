@@ -81,17 +81,21 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
   - 등록: 온보딩 activate가 성공하면 프로젝트 root를 등록한다. 연결 worktree view가 처음 게시되면 그 worktree root를 같은 install의 하위 항목으로 등록한다.
   - 해제: uninstall(선택 해제)이 끝나면 그 install의 프로젝트·worktree 항목을 지운다. worktree는 `git worktree remove`·prune이 관측되면 해제한다.
   - 이동: 프로젝트 디렉터리 이동·이름 변경(`laya_project_dir_move`, state move)은 항목을 원자적으로 갱신한다.
+  - 프로젝트 폴더 삭제: 등록된 프로젝트·worktree root가 사라지면 그 항목을 해제 대상으로 표시한다. uninstall과 같은 정리 범위를 적용하되, state 디렉터리·저장소·학습 상태 삭제는 uninstall의 승인 규칙을 따른다. 폴더가 다시 나타나면(같은 경로 재생성, 볼륨 재연결) 자동으로 다시 선택하지 않는다. 같은 install로 되살릴지 새 온보딩으로 볼지 정한다.
+  - reconcile 시점: 상주 서비스(`laya_resident_service`)가 시작할 때 레지스트리 항목을 실제 폴더와 맞춘다. root 존재 여부, `.memvane` 존재 여부, inode 변경, journal 선택 상태, worktree 등록 상태(`git worktree list`)를 본다. 서비스가 오래 떠 있으면 주기적으로도 맞춘다. 맞추는 동안 공유 lock을 쥐지 않고(`context/pr10-decision-draft.md` §6 원칙), 항목마다 짧게 끝낸다.
+  - 외장·네트워크 볼륨처럼 잠시 사라지는 경로는 즉시 해제하지 않는다. 유예 기간(또는 연속 관측 횟수)을 둔다.
 - **먼저 정할 계약.**
   - 권한: 레지스트리는 조회 색인일 뿐 권한을 주지 않는다. 조회한 뒤 기존 selected route 증명(journal·route·attestation)을 그대로 통과해야 한다. 항목과 증명이 어긋나면 그 항목을 건너뛰고 백그라운드 reconcile이 고친다.
   - uninstall의 정의와 단일 진입점: 지금은 `restore-index-origin`, `retire-index-origin`, `abandon-*`로 흩어져 있다. 진입점을 하나로 모을지, uninstall이 지우는 범위(route 파일, state 디렉터리, wiki 카드, 학습 상태)와 owner 승인 단계도 정한다.
   - 동시성과 호환: Claude·Codex·Hermes의 서로 다른 번들 버전이 같은 레지스트리를 읽고 쓴다. schema 버전, 잠금, 구 번들이 레지스트리 없이 동작할 때의 fallback(지금의 훑기)을 정한다.
   - 기존 설치 이전: 첫 실행 때 state base를 한 번 훑어 레지스트리를 채운다(backfill).
-  - 오래된 항목: 경로 소실, inode 변경, journal 미선택을 판정하는 규칙과 정리 주기를 정한다.
+  - 오래된 항목: 경로 소실, inode 변경, journal 미선택을 판정하는 규칙, 일시적 소실의 유예 기간, 서비스 시작·주기 reconcile의 예산을 정한다.
   - 연결 worktree: 등록 단위와 main 항목과의 관계를 정한다. 「연결 git worktree의 카드 수명 주기」의 계약과 맞춘다.
 - **검증 기준.**
   - 프로젝트 해석과 프로젝트 밖 편집 라우팅이 state base 훑기 없이 레지스트리 조회로 끝난다.
   - uninstall 뒤 그 경로의 세션은 미온보딩과 같이 동작하고, 레지스트리와 훑기 대상에서 빠진다.
   - worktree 제거 뒤 그 worktree 항목이 해제된다.
+  - 프로젝트 폴더를 지우고 서비스를 다시 시작하면 그 항목이 해제 대상이 되고, 훑기·라우팅·recall 대상에서 빠진다. 잠시 분리된 볼륨은 유예 기간 동안 해제되지 않는다.
   - 레지스트리가 손상되거나 없어도 기존 증명 경로로 안전하게 동작하거나 거절한다.
 - 새 hook action·wake kind·lock이 필요한지는 설계 단계에서 판단한다.
 
