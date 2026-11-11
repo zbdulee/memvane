@@ -1298,12 +1298,16 @@ class CatchupChecks(unittest.TestCase):
             def verify_then_record(*args, **kwargs):
                 result = original_verify(*args, **kwargs)
                 verified.append(True)
+                # The source proof is complete but the publication cut has
+                # not started its deadline. Commit a real competing writer.
+                self.assertEqual(captured.call_count, 1)
+                self.assertFalse(injected)
+                injected.append(exclude_with_fresh_writer(case.WIKI + '/concepts/otter-ledger.md'))
                 return result
             @contextmanager
             def writer_before_cut(*args, **kwargs):
                 # Only the publication cut after the full candidate proof.
-                if verified and not injected:
-                    injected.append(exclude_with_fresh_writer(case.WIKI + '/concepts/otter-ledger.md'))
+                self.assertEqual(injected, ['excluded'])
                 cuts.append(len(verified))
                 with original_cut(*args, **kwargs):
                     yield
