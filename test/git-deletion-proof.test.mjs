@@ -18,7 +18,7 @@ test('git deletion proof: same-worktree ancestor committed deletion only', () =>
     });
     assert.equal(result.signal, null, result.stdout + result.stderr);
     assert.equal(result.status, 0, result.stdout + result.stderr);
-    assert.match(result.stderr, /Ran 29 tests/);
+    assert.match(result.stderr, /Ran 31 tests/);
     assert.match(result.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

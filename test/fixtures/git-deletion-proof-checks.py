@@ -451,6 +451,34 @@ class HoldMatrix(Repo):
 
 class RecheckAndEnvironment(Repo):
 
+    def test_public_recheck_detects_changes_after_retire_proof(self):
+        fp = self.fingerprint()
+        self.commit_delete()
+        self.write('wiki/card.md', b'card v1\n')
+        card = {'path': 'wiki/card.md', 'sha256': hashlib.sha256(b'card v1\n').hexdigest()}
+        scan = self.scan()
+        prover = gbs.DeletionProof.open(self.root, self.worktree)
+        spec = prover.prove(fp, scan, view_id='view-1', base_gen='gen-1', expected_card=card)
+        self.assertEqual(spec['decision'], 'retire')
+        self.assertTrue(prover.recheck(fp, scan, card))
+        self.write('wiki/card.md', b'card v2\n')
+        self.assertFalse(prover.recheck(fp, scan, card))
+        self.write('wiki/card.md', b'card v1\n')
+        self.write(SOURCE, b'restored\n')
+        self.assertFalse(prover.recheck(fp, scan, card))
+        git(self.root, 'add', SOURCE)
+        (self.root / SOURCE).unlink()
+        self.assertFalse(prover.recheck(fp, scan, card))
+
+    def test_prefetch_uses_protected_git_environment(self):
+        prover = gbs.DeletionProof.open(self.root, self.worktree)
+        polluted = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'invalid',
+                    'GIT_CONFIG_VALUE_0': 'value'}
+        with mock.patch.dict(os.environ, polluted):
+            prover.prefetch(['docs/keep.md', 'docs/missing.md'])
+        self.assertTrue(prover._in_index('docs/keep.md'))
+        self.assertFalse(prover._in_index('docs/missing.md'))
+
     def test_head_moving_before_the_final_recheck_holds(self):
         fp = self.fingerprint()
         self.commit_delete()
