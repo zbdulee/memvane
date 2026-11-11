@@ -6,13 +6,22 @@ path, title, reason) to ``<install state root>/events.jsonl`` through
 ``event_log``. A project without a verified selected route logs nothing.
 The compile worker reads the recent ``wiki`` events back as the extractor
 payload's ``wiki.logTail`` (``tail``); no other event kind reaches it.
+
+``REASON_CODES`` lists, per diagnostic stage, the fixed reason codes a wiki
+diagnostic event may carry. A stage owner adds its own entry; every code
+matches ``event_log.code`` so the log keeps it verbatim.
 """
 from __future__ import annotations
 
 import event_log
+import wiki_card_budget
 
 TAIL_CHARS = event_log.WIKI_TAIL_CHARS
 _UNRESOLVED = event_log._UNRESOLVED
+
+REASON_CODES = {
+    'card_measure': wiki_card_budget.MEASURE_REASONS,
+}
 
 
 def append(root, action: str, rel: str, title: str, bound=_UNRESOLVED, *,

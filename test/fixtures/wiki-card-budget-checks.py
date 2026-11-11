@@ -28,6 +28,8 @@ LONG_SUMMARY = ' '.join(f'Rule {i}: `compile.budget.cardsPerSource` caps cards p
                         for i in range(120))
 SHORT_SUMMARY = 'Generated wiki pages cite source markdown instead of copying raw source.'
 RARE = '뷁똠쀍햏'
+STDERR_MARKER = 'STDERR-MARKER-91f3'
+BODY_MARKER = 'BODYMARKER-c7e2'
 FAKE_TOKENIZER = f"""#!{sys.executable}
 import json, math, sys
 RARE = {RARE!r}
@@ -192,6 +194,75 @@ class MeasureChecks(unittest.TestCase):
                          (False, budget.METHOD_FAILED, 'measure_failed'),
                          'a runtime that exists but fails is not "no tokenizer"')
 
+    def failing_runtimes(self):
+        """One runtime per count failure, keyed by the reason code it must yield."""
+        def script(name, body):
+            path = self.p.home / f'fail-{name}'
+            path.write_text(body)
+            path.chmod(0o700)
+            return (str(path), self.p.tokenizer[1])
+        not_exec = self.p.home / 'fail-spawn'
+        not_exec.write_text('#!/bin/sh\nexit 0\n')
+        not_exec.chmod(0o600)
+        return {
+            'runtime_spawn_failed': (str(not_exec), self.p.tokenizer[1]),
+            'runtime_timeout': script('timeout', '#!/bin/sh\nexec sleep 5\n'),
+            'runtime_exit': script('exit', f'#!/bin/sh\necho "{STDERR_MARKER}" >&2\nexit 3\n'),
+            'output_undecodable': script('decode', "#!/bin/sh\nprintf '\\377\\376'\n"),
+            'output_not_json': script('json', f'#!/bin/sh\necho "{STDERR_MARKER}"\n'),
+            'output_shape_invalid': script('shape', '#!/bin/sh\necho \'["x"]\'\n'),
+            'count_mismatch': script('count', '#!/bin/sh\necho \'[1, 2]\'\n'),
+        }
+
+    def test_each_count_failure_has_its_own_reason_code(self):
+        runtimes = self.failing_runtimes()
+        text = card_text('\nshort body\n')
+        seen = {}
+        with patch.object(budget, 'EXACT_TIMEOUT_SECONDS', 0.5):
+            for expected, pair in runtimes.items():
+                measured = budget.measure_card(text, pair)
+                self.assertEqual((measured['method'], measured['reason']),
+                                 (budget.METHOD_FAILED, 'measure_failed'), expected)
+                self.assertEqual(measured['failure'], expected)
+                self.assertEqual([a['reason'] for a in measured['attempts']], [expected])
+                seen[expected] = measured['attempts'][0]
+        self.assertEqual(seen['runtime_exit']['exit'], 3)
+        with patch.object(budget.subprocess, 'run', side_effect=subprocess.SubprocessError('x')):
+            self.assertEqual(budget.measure_card(text, self.p.tokenizer)['failure'],
+                             'runtime_error')
+        working = budget.measure_card(text, self.p.tokenizer)
+        self.assertTrue(working['fits'], 'a working runtime still measures')
+        self.assertNotIn('failure', working, 'a measured card carries no failure')
+        self.assertEqual(len(set(seen) | {'runtime_error'}), 8)
+
+    def test_unencodable_input_is_its_own_code(self):
+        counts, method, diagnostic = budget.measure_bodies_detailed(
+            ['lone \ud800 surrogate'], self.p.tokenizer)
+        self.assertEqual((counts, method, diagnostic['attemptsTotal'], diagnostic['failure']),
+                         (None, budget.METHOD_FAILED, 1, 'input_unencodable'))
+        self.assertEqual([a['reason'] for a in diagnostic['attempts']], ['input_unencodable'])
+
+    def test_reason_codes_survive_the_event_log(self):
+        import event_log
+        import wiki_activity_log
+        self.assertEqual(wiki_activity_log.REASON_CODES['card_measure'], budget.MEASURE_REASONS)
+        self.assertEqual(len(set(budget.MEASURE_REASONS)), len(budget.MEASURE_REASONS))
+        for codes in wiki_activity_log.REASON_CODES.values():
+            for code in codes:
+                self.assertEqual(event_log.code(code), code)
+
+    def test_attempts_stay_bounded_and_counted(self):
+        runtimes = self.failing_runtimes()
+        broken = runtimes['runtime_exit']
+        pairs = [(broken[0], f'{broken[1]}.{i}') for i in range(budget.MAX_ATTEMPTS_LOGGED + 5)]
+        pairs.append(runtimes['count_mismatch'])
+        measured = budget.measure_card(card_text('\nx\n'), pairs)
+        self.assertEqual(measured['failure'], 'count_mismatch', 'the last failure, even unlogged')
+        self.assertEqual(len(measured['attempts']), budget.MAX_ATTEMPTS_LOGGED)
+        self.assertEqual(measured['attemptsTotal'], budget.MAX_ATTEMPTS_LOGGED + 6)
+        self.assertEqual([a['attempt'] for a in measured['attempts']],
+                         list(range(1, budget.MAX_ATTEMPTS_LOGGED + 1)))
+
     def test_a_failing_runtime_yields_to_the_next_selector(self):
         home = self.p.home
         broken = install_selector(home, name='0' * 64, broken=True)
@@ -303,6 +374,81 @@ class CompileChecks(unittest.TestCase):
         self.assertFalse(refused)
         self.assertEqual([(e['event'], e['outcome'], e['method']) for e in bare.events(state)],
                          [('wiki.card', 'unmeasured', 'unavailable')])
+
+    def test_measure_failure_logs_codes_and_attempts_without_raw_text(self):
+        import wiki_compile as wc
+        python = Path(self.p.tokenizer[0])
+        python.write_text(f'#!/bin/sh\necho "{STDERR_MARKER} $0" >&2\nexit 7\n')
+        second = install_selector(self.p.home, name='b' * 64)
+        Path(second[0]).write_text(f'#!/bin/sh\necho "{STDERR_MARKER}"\n')
+        state = self.p.state_root()
+        bound = ({'journalPath': str(state / 'install-journal.sqlite'), 'installId': 'i1'}, {})
+        record = {'title': 'Measured Card', 'targetPath': 'x', 'canonicalKey': 'm'}
+        refused = wc.budget_refused(self.p.root, {}, bound, self.p.wiki,
+                                    self.p.wiki / 'concepts' / 'm.md', record,
+                                    self.p.base / 'c.jsonl',
+                                    card_text(f'\n{BODY_MARKER} {SHORT_SUMMARY}\n'))
+        self.assertFalse(refused, 'a card no runtime can count is still written')
+        events = self.p.events(state)
+        self.assertEqual([(e['event'], e['outcome'], e['reason'], e['failure']) for e in events],
+                         [('wiki.card', 'measure_failed', 'measure_failed', 'output_not_json')])
+        event = events[0]
+        self.assertEqual([(a['attempt'], a['reason'], a.get('exit')) for a in event['attempts']],
+                         [(1, 'runtime_exit', 7), (2, 'output_not_json', None)])
+        self.assertEqual((event['attemptsTotal'], event['runtimes']), (2, 2))
+        self.assertRegex(event['measureId'], r'^[0-9a-f]{16}$')
+        self.assertEqual(record['cardBudget']['measureId'], event['measureId'],
+                         'the candidate ledger row links to the event')
+        self.assertEqual(record['cardBudget']['failure'], 'output_not_json')
+        raw = (state / 'events.jsonl').read_text()
+        for needle in (STDERR_MARKER, BODY_MARKER, SHORT_SUMMARY[:30], str(self.p.home),
+                       str(python), self.p.tokenizer[1], 'tokenizer.json', 'Traceback'):
+            self.assertEqual(raw.count(needle), 0, needle)
+
+    def test_a_fallback_runtime_keeps_the_failed_attempt_on_every_outcome(self):
+        import wiki_compile as wc
+        state = self.p.state_root()
+        bound = ({'journalPath': str(state / 'install-journal.sqlite'), 'installId': 'i1'}, {})
+
+        def refuse(name, body, **extra):
+            record = {'title': name, 'targetPath': 'x', 'canonicalKey': name.lower()}
+            with patch('sys.stdout'):
+                refused = wc.budget_refused(self.p.root, {}, bound, self.p.wiki,
+                                            self.p.wiki / 'concepts' / f'{name.lower()}.md',
+                                            record, self.p.base / 'c.jsonl', card_text(body),
+                                            **extra)
+            return refused, record
+
+        self.assertFalse(refuse('Quiet', f'\n{SHORT_SUMMARY}\n')[0])
+        self.assertEqual(self.p.events(state), [], 'no failure, no event for a card that fits')
+        python = Path(self.p.tokenizer[0])
+        python.write_text(f'#!/bin/sh\necho "{STDERR_MARKER} $0" >&2\nexit 5\n')
+        install_selector(self.p.home, name='b' * 64)
+        fits, _ = refuse('Fits', f'\n{BODY_MARKER} {SHORT_SUMMARY}\n')
+        split, split_record = refuse('Split', f'\n{BODY_MARKER} {LONG_SUMMARY}\n')
+        written, written_record = refuse('Written', f'\n{BODY_MARKER} {LONG_SUMMARY}\n',
+                                         final_reason='split_part_over_budget')
+        self.assertEqual((fits, split, written), (False, True, False))
+        events = self.p.events(state)
+        self.assertEqual([(e['outcome'], e['reason'], e['method'], e['failure'])
+                          for e in events],
+                         [('measured_after_failure', 'runtime_fallback', 'tokenizer',
+                           'runtime_exit'),
+                          ('over_budget', 'over_budget', 'tokenizer', 'runtime_exit'),
+                          ('over_budget_written', 'split_part_over_budget', 'tokenizer',
+                           'runtime_exit')])
+        for event in events:
+            self.assertEqual([(a['attempt'], a['reason'], a['exit']) for a in event['attempts']],
+                             [(1, 'runtime_exit', 5)])
+            self.assertEqual(event['attemptsTotal'], 1)
+            self.assertRegex(event['measureId'], r'^[0-9a-f]{16}$')
+        self.assertLessEqual(events[0]['size'], 700)
+        self.assertEqual(len({e['measureId'] for e in events}), 3, 'one id per measurement')
+        self.assertEqual(split_record['cardBudget']['measureId'], events[1]['measureId'])
+        self.assertEqual(written_record['cardBudget']['measureId'], events[2]['measureId'])
+        raw = (state / 'events.jsonl').read_text()
+        for needle in (STDERR_MARKER, BODY_MARKER, str(self.p.home), 'tokenizer.json'):
+            self.assertEqual(raw.count(needle), 0, needle)
 
     def test_the_final_pass_writes_an_over_budget_card_and_logs_it(self):
         import wiki_compile as wc
