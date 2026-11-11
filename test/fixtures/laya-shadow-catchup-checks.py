@@ -611,6 +611,22 @@ class CatchupChecks(unittest.TestCase):
                                 db.execute('DROP TRIGGER schema_meta_delete_seal')
                                 self.assertEqual(db.execute('DELETE FROM schema_meta WHERE key=?', (key,)).rowcount, 1)
                                 db.execute(trigger)
+                        with original_inspect(endpoint, deadline=time.monotonic() + 10) as latest:
+                            latest_revision = migration._source_revision(latest)
+                        self.assertNotEqual(latest_revision, recorded_intent['source_revision'])
+                        # The sealed candidate is sampled despite a later writer;
+                        # only the final seal rechecks the current source.
+                        for _ in range(12):
+                            sampled = migration.advance_shadow(view, project=case.project,
+                                executing_root=case.plugin, deadline=time.monotonic() + 30)
+                            self.assertEqual(sampled['stage'], 'parity')
+                            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+                            self.assertIsNone(sampled['intent']['parity']['seal'])
+                            if sampled['intent']['parity']['compared']:
+                                break
+                        self.assertTrue(sampled['intent']['parity']['compared'])
+                        self.assertEqual(sampled['intent']['parity']['source_revision'],
+                                         recorded_intent['source_revision'])
                         pending = migration.advance_shadow(view, project=case.project,
                             executing_root=case.plugin, deadline=time.monotonic() + 30)
                         self.assertEqual(pending['stage'], 'restart_pending')
@@ -631,6 +647,15 @@ class CatchupChecks(unittest.TestCase):
                             self.assertEqual([event for event in events if event.get('event') == 'migration.shadow'
                                               and event.get('outcome') == 'restarted'][-1]['reason'],
                                              'revision_gap')
+                        for _ in range(100):
+                            final = migration.advance_shadow(view, project=case.project,
+                                executing_root=case.plugin, deadline=time.monotonic() + 30)
+                            self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
+                            if final['migration_state'] == 'shadow_verified':
+                                break
+                        self.assertEqual(final['migration_state'], 'shadow_verified')
+                        self.assertEqual(final['intent']['source_revision'], latest_revision)
+                        self.assertIsNotNone(final['intent']['parity']['seal'])
                         return
                     self.assertEqual(seed.selection.preferred_endpoint, started['endpoint_id'])
                 before_mapping = store.counts()
@@ -1108,11 +1133,10 @@ class CatchupChecks(unittest.TestCase):
                 return migration.shadow_parity_receipt(case.state, candidate=candidate,
                                                        candidate_incarnation=store._incarnation)
 
-            # caught_up is not parity. A recall difference on a corpus page
+            # caught_up is not parity. An empty candidate search result
             # raises and is never recorded, so no receipt can be sealed.
             self.assertIsNone(receipt())
-            with mock.patch.object(migration, 'compare_combined_lexical_prompts',
-                                   side_effect=migration.IndexContractError('migration_recall_parity_mismatch')):
+            with mock.patch.object(store, 'search', return_value=[]):
                 with self.assertRaisesRegex(Exception, 'migration_recall_parity_mismatch'):
                     step()
             self.assertEqual(intent_path.read_bytes(), caught)
