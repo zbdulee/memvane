@@ -3490,16 +3490,17 @@ def _candidate_sample(store, intent, record, deadline):
                 raise IndexContractError('migration_recall_parity_mismatch')
             path, blob, title = member
             prompts = recall_corpus_prompts(path, store._blob(blob), title)
-            queries = _hybrid_fts_queries(prompts[0], ()) if prompts else []
-            if not queries:
+            query = next((query for prompt in prompts
+                          for query in _hybrid_fts_queries(prompt, ()) if query), None)
+            if query is None:
                 raise IndexContractError('migration_recall_parity_mismatch')
-            prompt_hash = hashlib.sha256(queries[0].encode('utf8')).hexdigest()
+            prompt_hash = hashlib.sha256(query.encode('utf8')).hexdigest()
             ranked = {}
             for origin in (('base', 'sidecar') if paired else (None,)):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise IndexContractError('reader_snapshot_deadline')
-                found = store.search(pin, queries[0], 10, deadline_seconds=min(remaining, 30),
+                found = store.search(pin, query, 10, deadline_seconds=min(remaining, 30),
                                      _legacy_origin=origin, _observed=True)
                 ranked[origin] = [{**row, 'score': 1 / rank}
                                   for rank, row in enumerate(found, 1)]
