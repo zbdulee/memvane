@@ -159,6 +159,13 @@ def _stamps(manifest):
             for key, value in manifest.items()}
 
 
+def _persistent_snapshot_equal(stored, live):
+    from persistent_identity import persistent_identity_equal
+    return (stored.keys() == live.keys()
+            and all(persistent_identity_equal(stored[path][0], live[path][0], device_index=0)
+                    and stored[path][1] == live[path][1] for path in stored))
+
+
 def _write(path, row):
     from .local_cycle import _atomic_json
     _atomic_json(path, row)
@@ -260,11 +267,11 @@ class IdentityCache:
             manifest = read_private_json(Path(state)/MANIFEST)
             if _sha(manifest) != key: raise ValueError('inference_identity_changed')
             current = snapshot(roots, content=True)
-            if current != manifest: raise ValueError('inference_identity_changed')
+            if not _persistent_snapshot_equal(manifest, current): raise ValueError('inference_identity_changed')
             # Failed changes never adopt a new identity implicitly.
             self.content[key] = manifest
             self.generation = key
-        elif snapshot(roots) != _stamps(manifest):
+        elif not _persistent_snapshot_equal(_stamps(manifest), snapshot(roots)):
             self.content.pop(key, None)
             raise ValueError('inference_identity_changed')
         # Manifest deletion/replacement/revocation remains visible on warm

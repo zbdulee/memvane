@@ -585,7 +585,7 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
                 or store._scope != endpoint.record['scope']):
             values.fail('migration_endpoint_changed')
         row, observed = blobs._worktree_row(saved['project_root'], store._repository,
-                                             worktree, deadline=deadline)
+                                             worktree, deadline=deadline, saved=saved)
         if any(saved[key] != value for key, value in row.items()):
             values.fail('wiki_binding_changed')
         capture = (capture_base_fts_corpus if base_fts_corpus else
@@ -657,7 +657,7 @@ def import_wiki_batch(store, *, worktree_id, snapshot, endpoint, decision, after
                 wiki_node = blobs._node(os.fstat(wiki_fd))
             finally:
                 os.close(wiki_fd)
-            if (wiki_node != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}
+            if (not checkout._persistent_directory_equal({'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}, wiki_node)
                     or not checkout.capture_matches(observed['capture'], store._repository,
                                                     worktree, deadline=deadline)
                     or time.monotonic() >= deadline):
@@ -928,7 +928,7 @@ def reuse_committed_members(store, *, worktree_id, endpoint, decision, provenanc
     if saved['project_root'] != endpoint.record['project'] or store._scope != endpoint.record['scope']:
         values.fail('migration_endpoint_changed')
     row, observed = blobs._worktree_row(saved['project_root'], store._repository,
-                                         worktree, deadline=deadline)
+                                         worktree, deadline=deadline, saved=saved)
     if any(saved[key] != value for key, value in row.items()):
         values.fail('wiki_binding_changed')
     roots = {item['name']: item['sourceRoot'] for item in decision['collections']

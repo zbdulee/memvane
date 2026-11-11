@@ -608,7 +608,7 @@ def _verify(intent):
     proof = verify_selected_route_read_only(decision)
     if proof.get('readOnlyAllowed') is not True:
         _fail('state_move_unverified')
-    if inactive._store_counts(intent['newBuild']['identity']) != intent['counts']:
+    if not inactive._counts_match(intent['newBuild']['identity'], intent['counts']):
         _fail('state_move_store_changed')
     return proof
 

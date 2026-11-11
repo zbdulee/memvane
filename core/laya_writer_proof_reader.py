@@ -134,8 +134,8 @@ class _Owner:
         lifetime.check()
         W._named(record['plan'].install_id, lifetime.parent, lifetime.parent_fd,
                  lifetime.parent_info, self.role + '-physical.lock', record['physical'][self.role])
-        R._need(R._node(Path(self.snapshot['project'])) == self.snapshot['endpoint']['project_node']
-                and R._node(self.state) == self.snapshot['endpoint']['state_node']
+        R._need(R.persistent_node_equal(self.snapshot['endpoint']['project_node'], R._node(Path(self.snapshot['project'])))
+                and R.persistent_node_equal(self.snapshot['endpoint']['state_node'], R._node(self.state))
                 and _same_main_and_journal(self.before, _files(self.path, self.state)),
                 'writer_proof_component_changed')
 

@@ -66,7 +66,7 @@ def _wiki_files(saved, members):
             raw, node, rootnode = _regular(saved['wiki_root'], member['path'], v.MAX_BODY)
         except OSError:
             v.fail('wiki_member_unavailable')
-        if rootnode != {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}:
+        if not checkout._persistent_directory_equal({'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}, rootnode):
             v.fail('wiki_root_changed')
         if v.hash_bytes(raw) != member['blob_sha']:
             v.fail('wiki_member_changed')
@@ -94,7 +94,7 @@ def _live(db, saved, files):
 def _current_capture(saved, repository, policy, expected, *, deadline=None):
     """Re-observe Git/config identity before commit without a nested DB session."""
     record = _worktree_record(saved, repository, policy)
-    current, observation = _worktree_row(saved['project_root'], repository, record, deadline=deadline)
+    current, observation = _worktree_row(saved['project_root'], repository, record, deadline=deadline, saved=saved)
     if (any(saved[k] != value for k, value in current.items())
             or observation['capture'] != expected
             or not checkout.capture_matches(expected, repository, record, fresh=True, deadline=deadline,
@@ -136,7 +136,7 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
                 v.fail('worktree_missing')
             saved = dict(row)
             record = _worktree_record(row, self._repository, self._policy)
-        current, observation = _worktree_row(saved['project_root'], self._repository, record, deadline=deadline)
+        current, observation = _worktree_row(saved['project_root'], self._repository, record, deadline=deadline, saved=saved)
         if any(saved[k] != val for k, val in current.items()):
             v.fail('wiki_binding_changed')
         capture = observation['capture']

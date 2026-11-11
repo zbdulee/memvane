@@ -239,7 +239,10 @@ def _prepare(project, state, journal_path, ledger, source_root, plugin_root,
             marker != prior_intent['oldMarker'].encode('utf-8')):
         _fail('bound_upgrade_intent_changed')
     counts = inactive._store_counts(identity)
-    if prior_intent is not None and counts == prior_intent['counts']:
+    if prior_intent is not None and inactive._counts_match(identity, prior_intent['counts']):
+        counts = prior_intent['counts']
+    if (prior_intent is not None and counts == prior_intent['counts'] and
+            not inactive._pins_stale(prior_intent)):
         backup = prior_intent['backup']
     else:
         backup = inactive._backup(identity, record, old_route, old_att, counts)
@@ -307,7 +310,7 @@ def _switch(intent):
             approval['pendingRouteSha256'] != intent['newLedger']['routeSha256'] or
             approval['providerFileIdentitySha256'] !=
             intent['newLedger']['providerFileIdentitySha256'] or
-            inactive._store_counts(identity) != intent['counts'] or
+            not inactive._counts_match(identity, intent['counts']) or
             ledger.classify(project, auto / ledger.marker_name,
                             auto / ledger.route_name) != 'legacy'):
         _fail('bound_upgrade_recheck_failed')
@@ -317,6 +320,9 @@ def _switch(intent):
         _fail('bound_upgrade_receipt_exists')
     os.rename(state / INTENT, target)
     inactive._fsync(state)
+    # The receipt is durable and no live intent names the backup any more.
+    inactive._drop_backup(state, intent['backup'])
+    inactive._stage(state, 'activate.done')
     return {'status': 'bound_upgrade_complete',
             'routeSha256': intent['newLedger']['routeSha256'],
             'vectorCounts': intent['counts'], 'backup': intent['backup']}

@@ -406,7 +406,8 @@ class BoundUpgradeTests(UpgradeCase):
         self.assertEqual(self.fj.pending['pluginRoot'], self.new_root)
         self.assertEqual(self.selection(), 'legacy')
         self.assertFalse((self.state / bound_upgrade.INTENT).exists())
-        self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 1)
+        # The completed upgrade's receipt is durable, so its backup is gone.
+        self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 0)
         self.kept()
         # The reviewed activation still proves and selects the same generation.
         self.route_bytes = (self.state / 'reviewed-route.json').read_bytes()
@@ -479,7 +480,7 @@ class BoundUpgradeTests(UpgradeCase):
         result = self.run_upgrade(bound_upgrade, root, commit)
         self.assertEqual(result['status'], 'bound_upgrade_complete', result)
         self.assertEqual(result['backup'], before['backup'])
-        self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 1)
+        self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 0)
         self.assertEqual(self.fj.pending['pluginRoot'], root)
         self.assertEqual(json.loads((self.state / 'reviewed-route.json').read_bytes())
                          ['pluginRoot'], root)
@@ -529,9 +530,9 @@ class ActiveUpgradeTests(UpgradeCase):
         self.assertEqual(self.fj.calls[-2:], ['stage', 'activate'])
         self.assertEqual(self.fj.selected['pluginRoot'], self.new_root)
         self.assertEqual(self.selection(), 'candidate')
-        self.assertEqual(result['vectorCounts']['vectorChunkSets'],
+        self.assertEqual(result['vectorCounts']['vectorChunkSetsTail'],
                          active.inactive._store_counts(self.record()['identity'])
-                         ['vectorChunkSets'])
+                         ['vectorChunkSetsTail'])
         self.kept()
 
     def test_interrupted_selected_switch_fences_readers_then_resumes(self):
@@ -668,7 +669,7 @@ class ActiveUpgradeTests(UpgradeCase):
 
         def moved(identity):
             counts = real(identity)
-            return {**counts, 'publishedDocuments': counts['publishedDocuments'] + 1}
+            return {**counts, 'publishedDocumentsTail': counts['publishedDocumentsTail'] + 1}
         with mock.patch.object(active.inactive, '_store_counts', moved):
             result = self.run_upgrade(active, root, commit)
         self.assertEqual(result['status'], 'active_upgrade_complete', result)
@@ -676,11 +677,25 @@ class ActiveUpgradeTests(UpgradeCase):
         self.assertNotEqual(after['backup'], before['backup'])
         self.assertTrue(Path(before['backup']).is_dir())  # never deleted
         self.assertEqual(len(list(self.state.glob('inactive-upgrade-backup-*'))), 2)
-        self.assertEqual(after['counts']['publishedDocuments'],
-                         before['counts']['publishedDocuments'] + 1)
+        self.assertEqual(after['counts']['publishedDocumentsTail'],
+                         before['counts']['publishedDocumentsTail'] + 1)
         self.assertTrue(after['journalBefore']['newWriteSeen'])
         self.assertEqual(self.fj.selected['pluginRoot'], root)
         self.assertEqual(self.selection(), 'candidate')
+
+    def test_prefence_intent_takes_a_new_backup_when_its_store_pins_moved(self):
+        before, root, commit = self.prefence_intent()
+        # Same counts, but a pinned store no longer matches: a later restore
+        # would fail closed on those pins, so the retarget pins afresh.
+        with mock.patch.object(active.inactive, '_pins_stale', return_value=True):
+            result = self.run_upgrade(active, root, commit)
+        self.assertEqual(result['status'], 'active_upgrade_complete', result)
+        after = json.loads((self.state / active.INTENT).read_bytes())
+        self.assertNotEqual(after['backup'], before['backup'])
+        self.assertEqual(after['counts'], before['counts'])
+        self.assertTrue(Path(before['backup']).is_dir())  # never deleted
+        receipt = json.loads((Path(after['backup']) / 'manifest.json').read_bytes())
+        self.assertEqual(receipt['schema'], active.inactive.RECEIPT_V2)
 
     def test_pending_fence_retargets_a_fresh_host_after_both_caches_disappear(self):
         self.fence()

@@ -9,5 +9,5 @@ test('selected Laya bundle switch is recoverable without index replacement', () 
       PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 5 tests/);
+  assert.match(result.stderr, /Ran 6 tests/);
 });

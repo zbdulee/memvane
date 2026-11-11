@@ -32,8 +32,8 @@ from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FI
 import laya_package  # noqa: F401
 from laya_product_bundle import (BundleEvidenceError, COMMIT, inspect_product_candidate,
                                  inspect_full_plugin_candidate,
-                                 PRODUCTION_ATTESTATION_SCHEMA, RUNTIME_FILES_FIELD,
-                                 production_provider_approved,
+                                 PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
+                                 RUNTIME_FILES_FIELD, production_provider_approved,
                                  validate_production_provider_attestation,
                                  validate_vector_profile)
 
@@ -179,11 +179,14 @@ def _attestation(path):
 
 
 def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
-                                 dependency_closure):
+                                 dependency_closure, profile_dependency_closure=None):
     """No-clobber installer record, validated before journal CAS can bind it.
 
     Repeating an identical, complete staging operation is safe. A partial or
     different file is retained for explicit recovery instead of overwritten.
+    ``profile_dependency_closure`` is the reviewed closure of a re-attested
+    provider (``laya_provider_reproof.reattest``): the profile was derived
+    from those rows while the live rows are the same files elsewhere.
     """
     journal = _private_parent(journal_path)
     proof = inspect_full_plugin_candidate(bundle_proof.get('pluginRoot'))
@@ -197,6 +200,8 @@ def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
               'vectorProfile': proof['vectorProfile'],
               'providerManifest': provider_manifest,
               'dependencyClosure': dependency_closure}
+    if profile_dependency_closure is not None:
+        record[PROFILE_CLOSURE_FIELD] = profile_dependency_closure
     try:
         from laya_embed_runtime import RuntimeUnavailable, sealed_files_sha256
         files = sealed_files_sha256(provider_manifest.get('moduleEntryPath')
@@ -430,6 +435,18 @@ def _verified_executing_root(selected, owner_proof):
             _fail('executing_bundle_not_selected')
     _executing_from_candidate(root)
     return str(root)
+
+
+def _project_matches(route, row):
+    from persistent_identity import persistent_identity_equal
+    return persistent_identity_equal(
+        (row['project_root'], row['project_dev'], row['project_ino']),
+        _project(route), device_index=1)
+
+
+def _provider_identity_equal(stored, live):
+    from persistent_identity import persistent_provider_equal
+    return persistent_provider_equal(stored, live)
 
 
 def _project(route):
@@ -1062,7 +1079,7 @@ def cas_stage_update(journal_path, expected_epoch, next_bundle_proof, proposed_r
             _fail('journal_not_active')
         route, digest = _route(proposed_route_raw, path)
         identity = _identity(next_bundle_proof, route, path)
-        if (_project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
+        if (not _project_matches(route, row) or
                 route['scopeId'] != row['scope_id'] or identity == row['selected']):
             _fail('update_identity_mismatch')
         return {'state': 'pending', 'previous': _canon(row['selected']),
@@ -1120,11 +1137,10 @@ def cas_retarget_pending(journal_path, expected_epoch, current_route_raw,
         replaceable = {'schema', 'pluginRoot', 'bundleManifestSha256',
                        'ownershipManifestSha256'}
         fixed_identity = ('installId', 'generation', 'vectorProfile')
-        project_identity = (row['project_root'], row['project_dev'], row['project_ino'])
         if (set(before) != set(after) or
                 after['schema'] != written_schema(before['schema']) or
                 any(before[key] != after[key] for key in set(before) - replaceable) or
-                _project(before) != project_identity or _project(after) != project_identity or
+                not _project_matches(before, row) or not _project_matches(after, row) or
                 before['scopeId'] != row['scope_id'] or after['scopeId'] != row['scope_id'] or
                 any(row['selected'][key] != row['pending'][key] or
                     after[key] != row['selected'][key] for key in fixed_identity)):
@@ -1176,8 +1192,7 @@ def cas_replace_inactive_candidate(journal_path, expected_epoch,
                         'vectorProfile'))
                 or any(row['pending'][key] != next_identity[key] for key in
                        ('installId', 'generation', 'vectorProfile'))
-                or _project(after) != (row['project_root'], row['project_dev'],
-                                       row['project_ino'])
+                or not _project_matches(after, row)
                 or after['scopeId'] != row['scope_id']):
             _fail('inactive_candidate_identity_mismatch')
         return {'pending': _canon(next_identity), 'pending_route_sha': after_sha}
@@ -1190,7 +1205,7 @@ def cas_recover(journal_path, expected_epoch, observed_route_raw):
         if row['state'] not in ('candidate_ready', 'pending') or row['pending'] is None:
             _fail('journal_not_pending')
         route, digest = _route(_observed_route(row, observed_route_raw), path)
-        if (_project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
+        if (not _project_matches(route, row) or
                 route['scopeId'] != row['scope_id']):
             _fail('recovery_project_mismatch')
         if digest == row['pending_route_sha']:
@@ -1225,7 +1240,7 @@ def cas_activate(journal_path, expected_epoch, observed_route_raw):
         route, digest = _route(_observed_route(row, observed_route_raw), path)
         if digest != row['pending_route_sha']:
             _fail('activation_not_selected')
-        if (_project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
+        if (not _project_matches(route, row) or
                 route['scopeId'] != row['scope_id'] or
                 any(route.get(k) != row['pending'].get(k) for k in
                     ('pluginRoot', 'installId', 'generation', 'bundleManifestSha256',
@@ -1312,8 +1327,7 @@ def cas_relocate_state_root(journal_path, expected_epoch, old_route_raw, new_rou
                 any(rebased(old_route[key], old_root, new_root) != new_route[key]
                     for key in RELOCATED_ROUTE_FIELDS)):
             _fail('relocation_route_mismatch')
-        if (_project(new_route) != (row['project_root'], row['project_dev'],
-                                    row['project_ino']) or
+        if (not _project_matches(new_route, row) or
                 new_route['scopeId'] != row['scope_id'] or
                 any(new_route.get(k) != row['selected'].get(k) for k in
                     ('pluginRoot', 'installId', 'generation', 'bundleManifestSha256',
@@ -1337,7 +1351,7 @@ def cas_relocate_state_root(journal_path, expected_epoch, old_route_raw, new_rou
         record, digest = _attestation(path)
         if (record != relocated_attestation(sealed, old_root, new_root) or
                 row['provider_file_identity'] is None or
-                _provider_file_identity(record) != row['provider_file_identity']):
+                not _provider_identity_equal(row['provider_file_identity'], _provider_file_identity(record))):
             _fail('relocation_attestation_mismatch')
         return {**cleared, 'provider_attestation_sha': digest}
 
@@ -1385,8 +1399,7 @@ def cas_rebind_project_dir(journal_path, expected_epoch, old_route_raw, new_rout
         if old_sha != row['selected_route_sha']:
             _fail('project_dir_route_mismatch')
         if (new_route != rebound_project_dir_route(old_route, row['project_root']) or
-                _project(new_route) != (row['project_root'], row['project_dev'],
-                                        row['project_ino']) or
+                not _project_matches(new_route, row) or
                 new_route['scopeId'] != row['scope_id']):
             _fail('project_dir_route_mismatch')
         return {'selected_route_sha': new_sha, 'previous': None,
@@ -1510,7 +1523,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
                 _fail('writer_plan_v5_required')
             if (row['state'] not in ('active', 'restored_old') or
                     row['selected'] is None or row['selected_route_sha'] not in allowed or
-                    _project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
+                    not _project_matches(route, row) or
                     route['scopeId'] != row['scope_id'] or
                     any(route.get(k) != row['selected'].get(k) for k in
                         ('pluginRoot', 'installId', 'generation',
@@ -1578,7 +1591,7 @@ def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
     provider_manifest = None
     if sealed_sha is not None:
         if (row['provider_file_identity'] is None or
-                _provider_file_identity(attestation) != row['provider_file_identity'] or
+                not _provider_identity_equal(row['provider_file_identity'], _provider_file_identity(attestation)) or
                 attestation.get('vectorProfile') != proof.get('vectorProfile') or
                 any(attestation.get(key) != proof.get(key) for key in
                     ('sourceCommit', 'bundleManifestSha256',
@@ -1731,7 +1744,7 @@ def verify_notification_target(decision):
             raise
     if (row['state'] not in ('active', 'restored_old') or
             row['selected'] is None or row['selected_route_sha'] != digest or
-            _project(route) != (row['project_root'], row['project_dev'], row['project_ino']) or
+            not _project_matches(route, row) or
             route['scopeId'] != row['scope_id'] or
             any(route.get(k) != row['selected'].get(k) for k in
                 ('pluginRoot', 'installId', 'generation',

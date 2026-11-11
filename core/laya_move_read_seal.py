@@ -325,7 +325,7 @@ def stage_move_reader(intent, *, installer):
                 'reader_move_alias_changed')
         materialized = Path(old_path if intent['mode'] == 'rename' else new_path)
         R._need(materialized.resolve(strict=True) == materialized
-                and R._node(materialized) == [new_dev, new_ino], 'reader_move_alias_changed')
+                and R.persistent_node_equal([new_dev, new_ino], R._node(materialized)), 'reader_move_alias_changed')
         aliases.append((old_path, new_path, dev, ino, new_dev, new_ino))
     identity = build.read(state)['identity']
     side = Path(old_record['sidecar_path'])
@@ -514,7 +514,9 @@ def _stage_state(intent, installer, scope):
         newMarker=R._raw(fresh._marker(new_ledger)).decode('utf8'),
         oldPointer=old_pointer, newPointer={**old_pointer, 'stateRoot':str(target)},
         docs=[old_record['db_path'], new_identity['candidateDb']] if has_side else None,
-        counts=inactive._store_counts(old_identity))
+        counts=(intent.get('counts') if isinstance(intent, dict) and
+                inactive._counts_match(old_identity, intent.get('counts'))
+                else inactive._store_counts(old_identity)))
     R._need(intent == expected and new_decision == new_route
             and _read_private(state / 'reviewed-route.json', 8192) == intent['oldRoute'].encode('utf8')
             and _read_private(project_dir.folder(project) / fresh.MARKER, 8192)

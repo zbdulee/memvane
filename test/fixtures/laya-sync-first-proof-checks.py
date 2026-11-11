@@ -785,7 +785,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             identity = {'projectRoot': decision['projectRoot'], 'collections': decision['collections']}
             self.assertTrue(laya_incremental_docs._verified(identity,
                 self.case.WIKI+'/capacity-new-card.md', body))
-            controller = SimpleNamespace(activity=lambda *_args: nullcontext())
+            controller = SimpleNamespace(root=self.case.home, activity=lambda *_args: nullcontext())
             service = mock.Mock()
             original = LayaIndexRuntime.request_scan
             marks, calls, baselines, spans = [], [], [], []
@@ -1457,7 +1457,8 @@ class SyncFirstProofChecks(unittest.TestCase):
         sync owner lock is ResourceDeferred('owner_busy'), not lost ownership."""
         import laya_resident_service as resident_service
         from resource_deferred import ResourceDeferred
-        with self.fixture.F.warm(),self.seed.authority():
+        with self.fixture.F.warm(),self.seed.authority(), \
+                mock.patch.object(self.J, '_executing_root', return_value=self.case.plugin):
             with self.sync.sync_owner(self.queue) as owner:
                 self.assertIsNotNone(owner)
                 with self.assertRaises(ResourceDeferred) as caught:

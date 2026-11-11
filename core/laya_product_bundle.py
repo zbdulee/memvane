@@ -18,6 +18,7 @@ import subprocess
 import unicodedata
 
 from laya_package import require_no_lazy_fetch
+from persistent_identity import persistent_identity_equal
 
 
 SCHEMA = 'laya-product-bundle-v1'
@@ -48,6 +49,7 @@ ARTIFACTS = (
     'laya_package.py',
     'laya_product_bundle.py',
     'laya_install_journal.py',
+    'persistent_identity.py',
 )
 MAX_FILE = 4 * 1024 * 1024
 MAX_JSON = 1024 * 1024
@@ -510,8 +512,12 @@ def prepare_product_candidate(source_root, engine_root, *, commit_id):
 def inspect_product_candidate(engine_root):
     """Recheck file bytes and owner inode evidence without selecting a route."""
     root = _private(engine_root)
-    if (set(os.listdir(root)) != {'core', 'manifest.json', 'ownership-manifest.json'} or
-            set(os.listdir(root / 'core')) != set(ARTIFACTS)):
+    if set(os.listdir(root)) != {'core', 'manifest.json', 'ownership-manifest.json'}:
+        _fail('unexpected_bundle_entry')
+    files = set(os.listdir(root / 'core'))
+    # Both fixed dependency closures have immutable historical manifests.
+    legacy_files = set(ARTIFACTS) - {'persistent_identity.py'}
+    if files not in (set(ARTIFACTS), legacy_files):
         _fail('unexpected_bundle_entry')
     manifest, manifest_file = _json(root / 'manifest.json')
     ownership, ownership_file = _json(root / 'ownership-manifest.json')
@@ -521,14 +527,16 @@ def inspect_product_candidate(engine_root):
             type(manifest.get('sourceCommit')) is not str or
             not COMMIT.fullmatch(manifest['sourceCommit']) or
             not isinstance(manifest.get('artifacts'), dict) or
-            set(manifest['artifacts']) != set(ARTIFACTS) or
+            set(manifest['artifacts']) != files or
             not isinstance(ownership, dict) or ownership.get('schema') != OWNER_SCHEMA or
             ownership.get('engineRoot') != str(root) or
             ownership.get('bundleManifestSha256') != manifest_file['sha256'] or
             not isinstance(ownership.get('entries'), dict) or
-            set(ownership['entries']) != set(ARTIFACTS)):
+            set(ownership['entries']) != files):
         _fail('bundle_manifest_mismatch')
     for name in ARTIFACTS:
+        if name not in files:
+            continue
         raw, live = _read(root / 'core' / name, MAX_FILE)
         expected = manifest['artifacts'][name]
         owner = ownership['entries'][name]
@@ -538,13 +546,13 @@ def inspect_product_candidate(engine_root):
                 not isinstance(owner, dict) or
                 any(type(owner.get(key)) is not int for key in
                     ('bytes', 'dev', 'ino', 'nlink', 'mode', 'mtimeNs', 'ctimeNs')) or
-                type(owner.get('sha256')) is not str or owner != live):
+                type(owner.get('sha256')) is not str or not persistent_identity_equal(owner, live)):
             _fail('bundle_file_identity_changed')
     return {'status': 'exact_commit_candidate_consistent', 'engineRoot': str(root),
             'sourceCommit': manifest['sourceCommit'],
             'bundleManifestSha256': manifest_file['sha256'],
             'ownershipManifestSha256': ownership_file['sha256'],
-            'includedModules': list(ARTIFACTS), 'exactCommitVerifiedAtPackaging': True,
+            'includedModules': [name for name in ARTIFACTS if name in files], 'exactCommitVerifiedAtPackaging': True,
             'productRouteAllowed': False}
 
 
@@ -1075,7 +1083,7 @@ def inspect_full_plugin_candidate(plugin_root):
                 not isinstance(owned, dict) or
                 any(type(owned.get(key)) is not int for key in
                     ('bytes', 'dev', 'ino', 'nlink', 'mode', 'mtimeNs', 'ctimeNs')) or
-                type(owned.get('sha256')) is not str or owned != live):
+                type(owned.get('sha256')) is not str or not persistent_identity_equal(owned, live)):
             _fail('bundle_file_identity_changed')
     return {'status': 'exact_commit_full_plugin_candidate_consistent',
             'pluginRoot': str(root), 'sourceCommit': manifest['sourceCommit'],

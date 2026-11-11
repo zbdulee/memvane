@@ -148,9 +148,13 @@ development execution guard is separate; see
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
-- A selected sync yields (`laya_sync_yield_priority`) only to a due `index` or
-  `update` wake that has failed fewer than 3 times. Those retired kinds are
-  acknowledged on dispatch without work.
+- A selected sync yields (`laya_sync_yield_priority`) to a due `index` or
+  `update` wake that has failed fewer than 3 times (those retired kinds are
+  acknowledged on dispatch without work), and, between rounds, to another
+  project's initial build whose recent attempt ended deferred on a busy sync
+  owner (`_initial_build_waiting`); that build's existing wake is pulled to
+  due 0 first. An initial build waits up to `SYNC_OWNER_WAIT_SECONDS` for the
+  owner on each round.
 - Selected Laya route queries: `laya_embed_resident.admit_query` checks
   `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
   budget and acquires no compute lease. Refusal reports
@@ -300,6 +304,41 @@ cannot preempt an already running atomic embedding or model operation; SQLite
 contention may still affect latency. Compatibility requires all
 participating installed copies to use the same Coordinator. Explicit operator
 tools outside these plugin paths are not intercepted.
+
+## Bundle upgrade I/O
+
+A bundle upgrade (inactive, bound or selected) holds the install lock, the
+build owner or operation lock and, for a selected index, the per-user
+provider lane. Under those locks its work is O(metadata):
+
+- The backup (`inactive-upgrade-backup-*`, receipt
+  `laya-inactive-upgrade-backup-v2`) copies only the install journal with an
+  online SQLite backup. The candidate DB, claim queue, catalog, binding store
+  and incremental-docs sidecar are pinned, not copied: inode plus logical
+  evidence from one read snapshot (application id, user version, page size,
+  DDL digest, small identity tables row for row, largest rowid per rowid
+  table). No restore reads store bytes from a backup; restores rebind the
+  metadata from the intent and rewind the journal by CAS, then compare the
+  pins while the upgrade fence still stands.
+- The store check reads schema, binding rows and largest rowids; it runs no
+  `quick_check`, `integrity_check` or full `COUNT`. Only an unfinished intent
+  written by a bundle up to 0.44.15 (exact row counts, full-copy backup)
+  resumes through the earlier full inspection and copy hashes. A settled
+  intent is archived with a receipt check alone, because the same step
+  deletes its backup.
+- The claim queue and source catalog pins compare the file and schema only:
+  after a settled upgrade a sync pass scans the catalog and claims work before
+  it marks the journal's first new write. Their bindings are rechecked with
+  the other store bindings.
+- The worker keeps one backup-proof scope across its busy retries, so a proof
+  is reused while the backup files' stamps are unchanged.
+- An upgrade deletes its own backup right after its receipt is durable; a
+  backup that a live intent names is kept, and older backups stay for the
+  owner.
+- Stage lines (`bundle.upgrade` with outcomes `backup.*`, `verify.*`,
+  `activate.done`, `store_check.done`) carry the worker's `operation` and
+  `kind`; a copy or hash longer than 30 seconds adds `*.progress` lines with
+  `bytesDone`/`bytesTotal`.
 
 ## Additional entry points
 

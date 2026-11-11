@@ -167,6 +167,23 @@ class Base(unittest.TestCase):
 
 
 class UnifiedChecks(Base):
+    def test_unified_upgrades_preserves_stage_and_transition_display(self):
+        path = Path(self.targets[0]['state_root']) / event_log.NAME
+        rows = [
+            {'v': 1, 'ts': '2026-11-09T00:02:00Z', 'event': 'bundle.upgrade',
+             'outcome': 'backup.done', 'bytesDone': 5, 'bytesTotal': 9},
+            {'v': 1, 'ts': '2026-11-09T00:03:00Z', 'event': 'bundle.upgrade',
+             'outcome': 'complete', 'from': 'old-root', 'to': 'new-root'},
+        ]
+        with path.open('ab') as stream:
+            for row in rows:
+                stream.write(json.dumps(row).encode() + b'\n')
+        code, out, err = self.run_logs('upgrades', '--all', extra=False)
+        self.assertEqual(code, 0, err)
+        self.assertIn('backup.done', out)
+        self.assertIn('old-root -> new-root', out)
+        self.assertNotIn('None -> None', out)
+
     def test_partial_registration_is_not_hidden_by_successful_view(self):
         failed = {'results': [{'requested': 'synthetic', 'status': 'missing'}], 'partial': True}
         with patch.object(log_targets, 'register', return_value=failed):

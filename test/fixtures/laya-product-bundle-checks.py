@@ -58,7 +58,7 @@ class ProductBundleChecks(unittest.TestCase):
                  'laya_source_catalog.py', 'laya_index_capacity.py',
                  'laya_vector_capacity.py',
                  'laya_package.py', 'laya_product_bundle.py',
-                 'laya_install_journal.py', 'laya_product_install.py',
+                 'laya_install_journal.py', 'persistent_identity.py', 'laya_product_install.py',
                  'laya_host_response.py',
                  'laya_initial_build.py', 'laya_fresh_wiki_origin.py',
                  'laya_ledger_common.py', 'project_dir.py')
@@ -904,6 +904,10 @@ print(json.dumps(result))'''
             # the next release before its reader baseline can be prepared.
             receipt_path = active_upgrade.finished_intent_receipt(self.install, self.project, intent)
             self.assertEqual(journal.journal_version(self.journal_path), 4)
+            # Archiving drops the settled intent's backup; keep a copy so the
+            # receipt can be revived below as a live intent to restore.
+            kept_backup = self.install / '.kept-upgrade-backup'
+            shutil.copytree(intent['backup'], kept_backup)
             with mock.patch.object(bridge, '_issued', return_value=(None, 'c' * 40,
                     frozenset(('claude', 'codex')), str(self.install))), \
                  mock.patch.object(v4, 'refuse_while_legacy_hermes'), \
@@ -916,7 +920,9 @@ print(json.dumps(result))'''
                         model_path=self.model, dimension=3, runtime_generation=None, readiness=object())
             self.assertTrue(receipt_path.is_file())
             self.assertFalse(active_upgrade._intent_path(self.install).exists())
+            self.assertFalse(Path(intent['backup']).exists())
             receipt_path.rename(active_upgrade._intent_path(self.install))
+            kept_backup.rename(intent['backup'])
             with mock.patch.object(active_upgrade, '_locked_provider', nullcontext):
                 self.assertEqual(active_upgrade.upgrade(
                     project_root=str(self.project), state_root=str(self.install),

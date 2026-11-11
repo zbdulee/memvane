@@ -71,8 +71,8 @@ def _owner(installer):
     R._need(record['capability'] == 'v6-ro-v1' and record['store_format'] == 'v6'
             and str(owner.project) == record['project']
             and str(owner.state) == record['state']
-            and list(owner.project_node) == list(record['project_node'])
-            and list(owner.state_node) == list(record['state_node']),
+            and R.persistent_node_equal(record['project_node'], owner.project_node)
+            and R.persistent_node_equal(record['state_node'], owner.state_node),
             'reader_component_owner_changed')
     return endpoint, owner
 
@@ -121,7 +121,7 @@ def _manifest(install_id, parent, parent_fd, parent_info, *, links=1):
             try:
                 _named(install_id, parent, parent_fd, parent_info, name, lock)
                 info = os.fstat(lock)
-                R._need(node == [info.st_dev, info.st_ino], 'reader_window_changed')
+                R._need(R.persistent_node_equal(node, [info.st_dev, info.st_ino]), 'reader_window_changed')
             finally:
                 os.close(lock)
         _named(install_id, parent, parent_fd, parent_info, _MANIFEST, fd, links=links)
@@ -273,7 +273,10 @@ def _location(endpoint, role):
     path = Path(record[key + '_path'])
     node = record.get(key + '_node')
     R._need(node is not None, 'reader_component_identity_missing')
-    return path, tuple(node)
+    live = R._file(path, Path(record['state']))
+    R._need(R.persistent_node_equal(node, live), 'reader_component_changed')
+    # The issued handle uses a current-process identity for later race checks.
+    return path, tuple(live)
 
 
 def component_for(installer, role):
@@ -390,7 +393,7 @@ def _window(component, kind, *, exclusive, deadline, closing=False, proof_role=N
             sealed = json.loads(binding[4])['locks']
             for required, opened in (('reader-lifetime.lock', lifetime.fd), (name, fd)):
                 info = os.fstat(opened)
-                R._need(sealed[required] == [info.st_dev, info.st_ino], 'reader_window_changed')
+                R._need(R.persistent_node_equal(sealed[required], [info.st_dev, info.st_ino]), 'reader_window_changed')
         else:
             R._need(_manifest(component.install_id, lifetime.parent, lifetime.parent_fd,
                               lifetime.parent_info) == binding[4], 'reader_windows_changed')

@@ -245,6 +245,66 @@ def _higher_priority_wake(controller):
         raise ResourceDeferred('laya_sync_priority_probe_unavailable') from exc
 
 
+# An initial build is small and bounded, but it takes the same per-user sync
+# owner as every selected sync. A selected sync yields to another project's
+# initial build only while that build is retrying and its last attempt ended
+# normally deferred on a busy owner, recently. A build whose last attempt
+# raised (the record then keeps its earlier reason and adds
+# ``lastAttemptReason``), a build failing for any other reason, or an old
+# record no wake retries never holds a long sync back.
+INITIAL_BUILD_YIELD_PHASES = ('registered', 'building')
+INITIAL_BUILD_YIELD_RECENT_SECONDS = 600
+
+
+def _owner_blocked(progress, now_ns):
+    attempted = progress.get('lastAttemptNs')
+    return (progress.get('state') == 'deferred' and progress.get('reason') == 'owner_busy'
+            and progress.get('lastAttemptClass') == 'other'
+            and 'lastAttemptReason' not in progress
+            and type(attempted) is int
+            and 0 <= now_ns - attempted <= INITIAL_BUILD_YIELD_RECENT_SECONDS * 1_000_000_000)
+
+
+def _initial_build_waiting(controller, project):
+    """Another project's initial build is waiting and blocked on the owner.
+
+    On True the waiting build's existing wake is pulled before every due row
+    (never re-created), so the yielded owner goes to it rather than to
+    whichever row is due next. Selected syncs only, between rounds: initial
+    builds never yield to each other.
+    """
+    import laya_initial_build as initial_build
+    from runtime_work import WakeQueue
+    try:
+        queue = WakeQueue(controller.root)
+        rows = queue.pending()
+    except (OSError, ValueError, sqlite3.Error):
+        # Only an optimization: an unreadable queue never defers the sync.
+        return False
+    now_ns = time.time_ns()
+    waiting = []
+    for row in rows:
+        target = row.get('target')
+        if (row.get('kind') != 'laya-sync' or row.get('status') != 'pending' or
+                not isinstance(target, str) or not target or target == str(project)):
+            continue
+        try:
+            record = initial_build.lookup(target)
+        except Exception:  # An unreadable pointer is no reason to yield.
+            continue
+        if not isinstance(record, dict) or record.get('phase') not in INITIAL_BUILD_YIELD_PHASES:
+            continue
+        progress = record.get('progress')
+        if isinstance(progress, dict) and _owner_blocked(progress, now_ns):
+            waiting.append(target)
+    for target in waiting:
+        try:
+            queue.pull_first('laya-sync', target)
+        except (OSError, ValueError, sqlite3.Error):
+            pass
+    return bool(waiting)
+
+
 def _build_attempt_class(result=None, error=None):
     """Non-sensitive outcome for this project's build record, never queue data."""
     if error is not None:
@@ -2562,7 +2622,7 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
                 result = _sync_capacity(runtime, AdmittedProvider(), before_publish,
                                         controller, lambda: not proof_ok(),
                                         diagnose=_member_diagnosis(decision, provider),
-                                        owner=owner,
+                                        owner=owner, project=decision.get('projectRoot'),
                                         on_document_complete=publish_complete,
                                         before_head_publish=preserve_previous,
                                         retire_missing=(
@@ -2639,7 +2699,7 @@ def _member_diagnosis(decision, provider):
 
 def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
                    on_document_complete=None, before_head_publish=None,
-                   retire_missing=None, diagnose=None, owner=None):
+                   retire_missing=None, diagnose=None, owner=None, project=None):
     """Bounded scan, per-document fill, and full-generation rounds for one wake.
 
     The wake is the change signal (edits, Bash and SessionStart request it),
@@ -2647,7 +2707,9 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
     once more. ``sync_step`` never loads a model; it asks for
     ``vector_backlog`` until the fill has cached every member, then seals and
     publishes. Individually hashed members are also published while the scan
-    is pending; those cached chunk sets are reused by the full seal.
+    is pending; those cached chunk sets are reused by the full seal. Between
+    rounds it yields to due QMD work and, given its ``project``, to another
+    project's initial build blocked on the owner (``_initial_build_waiting``).
     """
     from laya_vector_capacity import (provider_profile_id, vector_fill_step,
                                       pending_vector_fill_step)
@@ -2659,7 +2721,10 @@ def _sync_capacity(runtime, provider, before_publish, controller, proof_changed,
         return {'state': 'deferred', 'reason': 'catalog_busy'}
     result = None
     for _ in range(MAX_CAPACITY_ROUNDS):
-        if should_yield():
+        # The initial-build probe reads build records; it runs between rounds
+        # only (no build attempt changes them while this wake holds the lease).
+        if should_yield() or (project is not None and
+                              _initial_build_waiting(controller, project)):
             raise ResourceDeferred('laya_sync_yield_priority')
         if proof_changed():
             raise IndexContractError('selected_proof_changed')
@@ -2962,8 +3027,14 @@ def _build_rounds(runtime, provider, before_publish, controller, proof_changed, 
             if not admitted():
                 raise ResourceDeferred('laya_build_resource_pressure')
             budget, large = {'max_files': 1, 'max_bytes': large}, None
-        result = sync_step(runtime, before_publish=before_publish, require_vector=True,
-                           vector_profile_id=profile_id, **budget)
+        # Wait briefly for the per-user owner like a selected sync does: the
+        # resident service's periodic ownership proofs and other syncs hold it
+        # in short bursts, and a non-blocking try loses every such race.
+        with sync_owner(Path(runtime.queue.path), wait=True) as claim:
+            if claim is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}
+            result = sync_step(runtime, before_publish=before_publish, require_vector=True,
+                               vector_profile_id=profile_id, owner=claim, **budget)
         if result.get('reason') == 'scan_pending' and on_document_complete is not None:
             partial = pending_vector_fill_step(runtime, provider,
                                                should_yield=should_yield,
