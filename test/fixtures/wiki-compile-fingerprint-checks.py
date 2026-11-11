@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -327,6 +328,97 @@ class FingerprintChecks(unittest.TestCase):
         self.model_extra = {'sourceFingerprints': DECOY}
         self.assertEqual(self.run_job(project, None), (True, False, []))
         self.assertNotIn('sourceFingerprints', self.candidates[-1])
+
+    def test_batch_passes_selected_checkout_to_the_real_job(self):
+        import laya_wiki_backfill
+        project = Project(self.base, 'batch-selected', git_repo=True)
+        queue = project.root / '.auto-context' / 'compile' / 'source-queue.jsonl'
+        queue.write_text(json.dumps(project.job()) + '\n', encoding='utf8')
+        checkout = project.binding()
+        with mock.patch.object(wiki_selected_laya, 'schema3_checkout', return_value=checkout), \
+                mock.patch.object(laya_wiki_backfill, 'reconcile_discards'), \
+                mock.patch.object(laya_wiki_backfill, 'settle_job'), \
+                mock.patch.object(worker, 'recover_pending_refreshes'), \
+                mock.patch.object(worker, '_run_verify_pass'), \
+                mock.patch.object(worker, 'compile_candidate', side_effect=self.fake_compile):
+            self.assertEqual(worker._main_locked(SimpleNamespace(json=False, flush_all=True),
+                             project.root, project.config, project.config['compile'], queue,
+                             ('selected', 'proof')), 0)
+        self.assertEqual(len(self.candidates), 1)
+        row = self.candidates[0]['sourceFingerprints']['fingerprints'][0]
+        self.assertEqual((row['path'], row['source_sha']),
+                         (SOURCE, self.candidates[0]['sourceRevisions'][0]['sha256']))
+
+    def test_batch_reader_error_defers_without_paid_extraction(self):
+        import laya_wiki_backfill
+        project = Project(self.base, 'batch-reader-busy', git_repo=True)
+        queue = project.root / '.auto-context' / 'compile' / 'source-queue.jsonl'
+        queue.write_text(json.dumps(project.job()) + '\n', encoding='utf8')
+        with mock.patch.object(wiki_selected_laya, 'schema3_checkout',
+                               side_effect=sqlite3.OperationalError('fixture reader busy')), \
+                mock.patch.object(laya_wiki_backfill, 'reconcile_discards'), \
+                mock.patch.object(worker, 'recover_pending_refreshes'), \
+                mock.patch.object(worker, '_run_verify_pass'):
+            self.assertEqual(worker._main_locked(SimpleNamespace(json=False, flush_all=True),
+                             project.root, project.config, project.config['compile'], queue,
+                             ('selected', 'proof')), 0)
+        self.assertEqual(self.extractor_calls, 0)
+        self.assertTrue(queue.read_text(encoding='utf8').strip())
+        self.assertEqual(project.rows()[-1]['reason'], 'checkout_unavailable')
+
+    def test_schema3_writer_enqueues_observed_fingerprints(self):
+        import contextlib
+        import io
+        import laya_host_response
+        import wiki_activity_log
+        import wiki_compile
+        project = Project(self.base, 'schema3-queue', git_repo=True)
+        self.assertEqual(self.run_job(project, project.binding()), (True, False, []))
+        candidate = self.candidates[-1]
+        decision = {'recallSettings': {'skipPaths': []}, 'collections': [
+            {'name': 'proj-docs', 'role': 'raw', 'sourceRoot': str(project.docs)},
+            {'name': 'proj-wiki', 'role': 'wiki', 'sourceRoot': str(project.wiki)}]}
+        with mock.patch.object(wiki_selected_laya, 'selected', return_value=(decision, {})), \
+                mock.patch.object(wiki_selected_laya, 'request_sync'), \
+                mock.patch.object(wiki_selected_laya, 'wiki_matches', return_value=[]), \
+                mock.patch.object(wiki_activity_log, 'append'), \
+                mock.patch.object(laya_host_response, '_selected_store_format', return_value='schema3'), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = wiki_compile._compile_locked(project.root, project.config,
+                project.config['compile'], 'guarded', project.wiki, candidate, False)
+        self.assertEqual(code, 0)
+        queue = project.root / '.auto-context' / 'compile' / 'verify-queue.jsonl'
+        job = json.loads(queue.read_text(encoding='utf8').strip())
+        spec = job['sourceFingerprints']
+        self.assertEqual(spec['viewId'], candidate['sourceFingerprints']['viewId'])
+        self.assertEqual(spec['fingerprints'], candidate['sourceFingerprints']['fingerprints'])
+        self.assertEqual(spec['scanId'], spec['fingerprints'][0]['scan_id'])
+        self.assertEqual(spec['observedNs'], spec['fingerprints'][0]['observed_ns'])
+
+    def test_writer_reader_error_preserves_verify_queue(self):
+        import contextlib
+        import io
+        import laya_host_response
+        import wiki_activity_log
+        import wiki_compile
+        project = Project(self.base, 'writer-reader-busy', git_repo=True)
+        self.assertEqual(self.run_job(project, project.binding()), (True, False, []))
+        decision = {'recallSettings': {'skipPaths': []}, 'collections': [
+            {'name': 'proj-docs', 'role': 'raw', 'sourceRoot': str(project.docs)},
+            {'name': 'proj-wiki', 'role': 'wiki', 'sourceRoot': str(project.wiki)}]}
+        with mock.patch.object(wiki_selected_laya, 'selected', return_value=(decision, {})), \
+                mock.patch.object(wiki_selected_laya, 'request_sync'), \
+                mock.patch.object(wiki_selected_laya, 'wiki_matches', return_value=[]), \
+                mock.patch.object(wiki_activity_log, 'append'), \
+                mock.patch.object(laya_host_response, '_selected_store_format',
+                                  side_effect=sqlite3.OperationalError('fixture reader busy')), \
+                contextlib.redirect_stdout(io.StringIO()):
+            code = wiki_compile._compile_locked(project.root, project.config,
+                project.config['compile'], 'guarded', project.wiki, self.candidates[-1], False)
+        self.assertEqual(code, 0)
+        queue = project.root / '.auto-context' / 'compile' / 'verify-queue.jsonl'
+        job = json.loads(queue.read_text(encoding='utf8').strip())
+        self.assertNotIn('sourceFingerprints', job)
 
     def test_scan_id_is_per_observation(self):
         project = Project(self.base, 'scan', git_repo=True)

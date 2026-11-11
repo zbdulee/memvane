@@ -48,6 +48,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import stat
 import sys
 from datetime import datetime, timezone
@@ -750,12 +751,125 @@ def card_changed_during_verify(
     )
 
 
+def _provenance_gate(job, checkout):
+    """Fresh checkout identity only; source content was separately rechecked."""
+    spec = job.get('sourceFingerprints')
+    if checkout is None or not isinstance(spec, dict):
+        return None, None
+    try:
+        capture = checkout.capture()
+    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+        return None, 'provenance_checkout_unavailable'
+    rows = spec.get('fingerprints')
+    if (not isinstance(rows, list) or not rows
+            or spec.get('viewId') != capture['viewId']
+            or any(not isinstance(row, dict)
+                   or row.get('worktree_id') != capture['worktreeId']
+                   or row.get('branch_key') != capture['branchKey'] for row in rows)):
+        return None, 'provenance_checkout_changed'
+    return capture, None
+
+
+def _compile_intent_id(result):
+    import laya_blob_values as values
+    return values.digest('memvane-compile-intent-id-v1', [
+        'compile', result['viewId'], result['targetPath'], result['cardSha'],
+        result['sourceFingerprints']['scanId']])
+
+
+def _write_compile_intent(checkout, result, verdict_digest, result_digest):
+    import laya_journal_reader as reader
+    import laya_ledger_common as ledger
+    state = reader._state(Path(checkout.decision['journalPath']).parent)
+    directory = state / 'provenance-intents'
+    try:
+        directory.mkdir(mode=0o700)
+        ledger._fsync_dir(state)
+    except FileExistsError:
+        pass
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError('provenance_intent_directory_unsafe')
+    identity = _compile_intent_id(result)
+    path = directory / ('compile-' + identity + '.json')
+    intent = {'kind': 'compile', **result, 'verdict_digest': verdict_digest,
+              'result_digest': result_digest}
+    try:
+        ledger._write(path, intent, replace=False)
+    except ledger.CutoverBlocked as exc:
+        if str(exc) != 'cutover_record_exists' or ledger._private_file(path) != ledger._canon(intent):
+            raise
+    return path
+
+
+def _supersede_job_intent(root, config, job, target, decision):
+    """Settle only the intent naming this exact stamped pending/live image."""
+    spec = job.get('sourceFingerprints')
+    if decision is None or not isinstance(spec, dict):
+        return
+    import laya_journal_reader as reader
+    import laya_ledger_common as ledger
+    try:
+        wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
+        from laya_blob_store import _regular
+        from laya_blob_values import MAX_BODY
+        card, _, _ = _regular(wiki_root, target.relative_to(wiki_root).as_posix(), MAX_BODY)
+        card_sha = hashlib.sha256(card).hexdigest()
+        path = (root / job['targetPath']).resolve().relative_to(wiki_root).as_posix()
+        identity = _compile_intent_id(dict(viewId=spec['viewId'], targetPath=path,
+                                           cardSha=card_sha, sourceFingerprints=spec))
+        state = reader._state(Path(decision['journalPath']).parent)
+        directory = state / 'provenance-intents'
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError('provenance_intent_directory_unsafe')
+        intent_path = directory / ('compile-' + identity + '.json')
+        if not os.path.lexists(intent_path):
+            return
+        intent = ledger._read_json(intent_path)
+        if (intent.get('kind') != 'compile' or intent.get('cardSha') != card_sha
+                or intent.get('targetPath') != path or intent.get('viewId') != spec['viewId']
+                or intent.get('sourceFingerprints') != spec):
+            raise ValueError('provenance_intent_changed')
+        _supersede_compile_intent(intent_path)
+    except FileNotFoundError:
+        return
+
+
+def _supersede_compile_intent(path):
+    if path is None:
+        return
+    parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)
+                        | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            before = os.fstat(fd)
+            current = path.lstat()
+            parent = os.fstat(parent_fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o077
+                    or (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino)
+                    or not os.path.samestat(parent, path.parent.lstat())):
+                raise ValueError('provenance_intent_changed')
+            from laya_sidecar_create import _rename_noreplace
+            _rename_noreplace(parent_fd, path.name, path.stem + '.superseded.json')
+            os.fsync(parent_fd)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
 def apply_verify_verdict_locked(
     root: Path, config: dict, compile_cfg: dict, vcfg: dict, job: dict,
     target: Path, job_hash: str, payload_text: str | None,
     engine: str, verified_mode: str,
     provenance: dict, verdict: str, claims: list, reasons: list[str],
     sources: list[dict], log_path: Path, *, spans: list[dict], snapshots: dict | None = None,
+    checkout=None,
 ) -> tuple[bool, bool]:
     """Re-read, decide, and mutate one card while CARD_WRITE_LOCK is held.
 
@@ -790,9 +904,45 @@ def apply_verify_verdict_locked(
         # 디스크와 같은 값이지만, 출처를 "검증된 텍스트"로 고정해 둔다.
         # 줄 span 은 위치할 수 있는 인용만 담는다. 비면 키 없이 기존 파일 단위 verified 다.
         bound = source_spans.bind_to_card(spans, fresh_text) if spans else []
-        if not wc.stamp_verification(target, "verified", engine, verified_mode,
-                                     yaml_scalars.card_body_hash(payload_text),
-                                     source_spans=bound or None):
+        intent_path = None
+        rendered = None
+        if checkout is not None and isinstance(job.get('sourceFingerprints'), dict):
+            rendered = wc.render_verification(target, 'verified', engine, verified_mode,
+                                               yaml_scalars.card_body_hash(payload_text),
+                                               bound or None, datetime.now(timezone.utc))
+            if rendered is not None:
+                capture, gate_reason = _provenance_gate(job, checkout)
+                if capture is not None:
+                    import laya_blob_values as values
+                    wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
+                    live_target = (root / job['targetPath']).resolve()
+                    result = dict(cardSha=hashlib.sha256(rendered.encode('utf8')).hexdigest(),
+                                  viewId=capture['viewId'],
+                                  targetPath=live_target.relative_to(wiki_root).as_posix(),
+                                  expectedTargetHash=job.get('expectedTargetHash'),
+                                  sourceFingerprints=job['sourceFingerprints'], sourceSpans=bound,
+                                  verifiedMode=verified_mode, verifyEngine=engine,
+                                  producingEngine=job.get('engine', ''))
+                    digests = values.provenance_digests(
+                        {'verdict': verdict, 'claims': claims, 'reasons': reasons}, result)
+                    if digests is not None:
+                        try:
+                            intent_path = _write_compile_intent(checkout, result, *digests)
+                        except (OSError, RuntimeError, ValueError):
+                            log_verdict(log_path, {**record, 'result': 'deferred',
+                                                   'reason': 'provenance_intent_write_failed'})
+                            return False, True
+                    else:
+                        gate_reason = 'provenance_value_invalid'
+                if gate_reason:
+                    log_verdict(log_path, {**base_record(job), 'result': 'skipped', 'reason': gate_reason})
+        stamped = (wc.stamp_verification(target, 'verified', engine, verified_mode,
+                                         yaml_scalars.card_body_hash(payload_text), source_spans=bound or None)
+                   if rendered is None and (checkout is None or not isinstance(job.get('sourceFingerprints'), dict)) else
+                   rendered is not None and wc.write_rendered_verification(target, rendered, fresh_text))
+        if not stamped:
+            if intent_path is not None:
+                _supersede_compile_intent(intent_path)
             log_verdict(log_path, {**record, "result": "stamp_failed", "stampStatus": "verified"})
             return False, True
         pending = job.get('pendingPath')
@@ -802,6 +952,8 @@ def apply_verify_verdict_locked(
             outcome = publish_pending_replacement(root, config, job, target,
                                                   live_target, expected)
             if outcome == 'stale':
+                if intent_path is not None:
+                    _supersede_compile_intent(intent_path)
                 return finish_stale_pending(root, target, job, log_path, snapshots, stamped=True)
             if outcome != 'published':
                 log_verdict(log_path, {**record, 'result': 'publish_pending',
@@ -831,6 +983,13 @@ def process_verify_job(
     import wiki_selected_laya
     job = rebased_job(root, job)
     selected_route = wiki_selected_laya.selected(root)
+    checkout = None
+    if selected_route is not None and isinstance(job.get('sourceFingerprints'), dict):
+        try:
+            checkout = wiki_selected_laya.schema3_checkout(selected_route)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error):
+            log_verdict(log_path, {**base_record(job), 'result': 'skipped',
+                                   'reason': 'provenance_checkout_unavailable'})
     rel = job.get("targetPath")
     if not isinstance(rel, str) or not rel:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "missing_target_path"})
@@ -864,6 +1023,16 @@ def process_verify_job(
                     and live_hash == job.get('sourceHash')
                     and live_meta.get('verifiedBodyHash') ==
                         yaml_scalars.card_body_hash(live_text)):
+                if checkout is not None:
+                    try:
+                        with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+                            current_text, _, _, _ = card_state(live_target)
+                            if current_text == live_text:
+                                _, gate_reason = _provenance_gate(job, checkout)
+                                if gate_reason == 'provenance_checkout_changed':
+                                    _supersede_job_intent(root, config, job, live_target, selected_route[0])
+                    except (OSError, RuntimeError, ValueError):
+                        return False, True
                 reindex_wiki(root, config)
                 wake_pending_retirement(root)
                 log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
@@ -879,6 +1048,9 @@ def process_verify_job(
         if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
             try:
                 with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+                    _, gate_reason = _provenance_gate(job, checkout)
+                    if gate_reason == 'provenance_checkout_changed':
+                        _supersede_job_intent(root, config, job, target, selected_route[0])
                     outcome = publish_pending_replacement(
                         root, config, job, target, live_target, expected)
                     if outcome == 'published':
@@ -886,8 +1058,10 @@ def process_verify_job(
                         log_verdict(log_path, {**base_record(job), 'result': 'verified_replay'})
                         return True, False
                     if outcome == 'stale':
+                        if selected_route is not None:
+                            _supersede_job_intent(root, config, job, target, selected_route[0])
                         return finish_stale_pending(root, target, job, log_path, snapshots)
-            except OSError:
+            except (OSError, RuntimeError, ValueError):
                 pass
             return False, True
 
@@ -1088,7 +1262,7 @@ def process_verify_job(
                 # 이 텍스트에서 파생한 본문 지문이 카드에 찍힌다.
                 text,
                 engine, verified_mode, provenance, verdict, claims, reasons,
-                sources, log_path, spans=spans, snapshots=snapshots,
+                sources, log_path, spans=spans, snapshots=snapshots, checkout=checkout,
             )
     except OSError:
         log_verdict(log_path, {

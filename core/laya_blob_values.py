@@ -42,6 +42,77 @@ def digest(domain, value):
         fail('invalid_canonical_value')
 
 
+def verification_verdict_digest(verdict):
+    try:
+        exact(verdict, ('verdict', 'claims', 'reasons'))
+        if (verdict['verdict'] not in ('pass', 'fail', 'inconclusive')
+                or type(verdict['claims']) is not list or type(verdict['reasons']) is not list):
+            fail('invalid_verdict')
+        return digest('memvane-verify-verdict-v1', verdict)
+    except (BlobStoreError, TypeError, ValueError, RecursionError):
+        return None
+
+
+def compile_result_digest(result, verdict_digest):
+    try:
+        identifier(verdict_digest)
+        exact(result, ('cardSha', 'viewId', 'targetPath', 'expectedTargetHash',
+                       'sourceFingerprints', 'sourceSpans', 'verifiedMode',
+                       'verifyEngine', 'producingEngine'))
+        identifier(result['cardSha']); identifier(result['viewId']); relative(result['targetPath'])
+        if result['expectedTargetHash'] is not None:
+            identifier(result['expectedTargetHash'])
+        import config
+        if (type(result['sourceFingerprints']) is not dict
+                or type(result['sourceFingerprints'].get('fingerprints')) is not list
+                or type(result['sourceSpans']) is not list
+                or result['verifiedMode'] not in config.VERIFIED_MODES):
+            fail('invalid_compile_result')
+        text(result['verifyEngine']); text(result['producingEngine'])
+        observed = result['sourceFingerprints']
+        exact(observed, ('schema', 'viewId', 'checkoutDigest', 'gitObjectFormat',
+                         'scanId', 'observedNs', 'fingerprints'))
+        if (observed['schema'] != 'memvane-compile-source-fingerprints-v1'
+                or observed['viewId'] != result['viewId']
+                or observed['gitObjectFormat'] not in (None, 'sha1', 'sha256')
+                or not observed['fingerprints'] or len(observed['fingerprints']) > 64):
+            fail('invalid_compile_result')
+        identifier(observed['checkoutDigest']); identifier(observed['scanId'], UUID)
+        integer(observed['observedNs'])
+        paths, identity = {}, None
+        for row in observed['fingerprints']:
+            fingerprint(row, observed['gitObjectFormat'])
+            if (row['binding_state'] != 'observed' or row['scan_id'] != observed['scanId']
+                    or row['observed_ns'] != observed['observedNs'] or row['path'] in paths):
+                fail('invalid_compile_result')
+            current = (row['worktree_id'], row['branch_key'])
+            if identity is not None and identity != current:
+                fail('invalid_compile_result')
+            identity = current
+            paths[row['path']] = row['source_sha']
+        import yaml_scalars
+        seen = set()
+        if len(result['sourceSpans']) > yaml_scalars.MAX_SOURCE_SPANS:
+            fail('invalid_compile_result')
+        for span in result['sourceSpans']:
+            if yaml_scalars.normalize_source_span(span) != span:
+                fail('invalid_compile_result')
+            key = (span['path'], span['startLine'], span['endLine'])
+            if key in seen or paths.get(span['path']) != span['sourceSha256']:
+                fail('invalid_compile_result')
+            seen.add(key)
+        return digest('memvane-compile-result-v1', {**result, 'verdict_digest': verdict_digest})
+    except (BlobStoreError, TypeError, ValueError, RecursionError):
+        return None
+
+
+def provenance_digests(verdict, result):
+    """Commit observed verification and publication facts with separate domains."""
+    verdict_digest = verification_verdict_digest(verdict)
+    result_digest = compile_result_digest(result, verdict_digest)
+    return (verdict_digest, result_digest) if result_digest is not None else None
+
+
 def hash_bytes(raw):
     return hashlib.sha256(raw).hexdigest()
 

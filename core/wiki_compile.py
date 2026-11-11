@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import shutil
 import sys
 import tempfile
@@ -1144,18 +1145,23 @@ def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = No
     `expected_text` refuses the write when the file differs from what the caller
     validated.
     """
-    blocks = dict(blocks or {})
-    if "status" in updates:
-        blocks.setdefault(yaml_scalars.SOURCE_SPANS_KEY, None)
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return False
     if expected_text is not None and text != expected_text:
         return False
+    patched = _render_frontmatter_fields(text, updates, blocks)
+    return patched is not None and write_text_atomic(path, patched)
+
+
+def _render_frontmatter_fields(text: str, updates: dict, blocks: dict | None = None) -> str | None:
+    blocks = dict(blocks or {})
+    if "status" in updates:
+        blocks.setdefault(yaml_scalars.SOURCE_SPANS_KEY, None)
     match = FRONTMATTER_RE.match(text)
     if not match:
-        return False
+        return None
     lines = match.group(1).splitlines()
     seen = set()
     new_lines = []
@@ -1187,9 +1193,7 @@ def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = No
             new_lines.append(f"{key}:")
             new_lines.extend(f"  - {entry}" for entry in entries)
     new_frontmatter = "\n".join(new_lines)
-    patched = text[: match.start(1)] + new_frontmatter + text[match.end(1) :]
-    # 원자적 쓰기 — 실패해도 카드는 원본 그대로다(자동 경로라 절단되면 아무도 모른다).
-    return write_text_atomic(path, patched)
+    return text[: match.start(1)] + new_frontmatter + text[match.end(1) :]
 
 
 @wiki_mutation_lock.guard_path
@@ -1217,28 +1221,51 @@ def stamp_verification(path: Path, status: str, engine: str, mode: str,
     complete and bound to this card's own `sourceRevisions`; otherwise nothing is
     written (no partial proof).
     """
-    emitted = None
     expected_text = None
     if source_spans:
-        emitted = yaml_scalars.dump_source_spans(source_spans)
-        if status != "verified" or not emitted:
-            return False
         try:
             expected_text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             return False
+    rendered = render_verification(path, status, engine, mode, body_hash, source_spans,
+                                   datetime.now(timezone.utc))
+    if expected_text is not None:
+        try:
+            if path.read_text(encoding="utf-8") != expected_text:
+                return False
+        except (OSError, UnicodeError):
+            return False
+    return rendered is not None and write_text_atomic(path, rendered)
+
+
+def render_verification(path: Path, status: str, engine: str, mode: str,
+                        body_hash: str | None, source_spans: list | None, now: datetime) -> str | None:
+    """Render one verification stamp without mutating the card."""
+    try:
+        expected_text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    except UnicodeError:
+        if source_spans:
+            return None
+        raise
+    emitted = None
+    if source_spans:
+        emitted = yaml_scalars.dump_source_spans(source_spans)
+        if status != "verified" or not emitted:
+            return None
         import source_spans as spans_module
         if not spans_module.bound_to_revisions(
                 yaml_scalars.load_source_spans(emitted) or [],
                 spans_module.card_revisions(expected_text)):
-            return False
-    return patch_frontmatter_fields(path, {
+            return None
+    return _render_frontmatter_fields(expected_text, {
         "status": status,
         "verifiedBy": str(engine or "unknown"),
         # Pending-refresh events retain microseconds. Verification stamps need
         # the same precision so the index worker can distinguish a completed
         # card from a sibling written during an unfinished event.
-        "verifiedAt": datetime.now(timezone.utc).isoformat(
+        "verifiedAt": now.isoformat(
             timespec="microseconds").replace("+00:00", "Z"),
         "verifiedMode": mode if mode in qmd_config.VERIFIED_MODES else qmd_config.VERIFIED_MODE_UNKNOWN,
         # 검증기가 실제로 읽은 본문의 지문. **호출자가 넘긴다** — 여기서 파일을 다시 읽어
@@ -1247,7 +1274,17 @@ def stamp_verification(path: Path, status: str, engine: str, mode: str,
         # None 이면 키를 쓰지 않는다(`patch_frontmatter_fields` 규약) = 결속 없는 legacy
         # 형태이고, 그것이 필요한 경로는 지금 없다(양 호출부 모두 값을 넘긴다).
         "verifiedBodyHash": body_hash,
-    }, blocks={yaml_scalars.SOURCE_SPANS_KEY: emitted}, expected_text=expected_text)
+    }, blocks={yaml_scalars.SOURCE_SPANS_KEY: emitted})
+
+
+def write_rendered_verification(path: Path, rendered: str, expected_text: str) -> bool:
+    """Write the previously rendered stamp only while its input remains current."""
+    try:
+        if path.read_text(encoding='utf8') != expected_text:
+            return False
+    except (OSError, UnicodeError):
+        return False
+    return write_text_atomic(path, rendered)
 
 
 def find_wiki_collection(config: dict) -> tuple[str | None, str | None]:
@@ -1878,6 +1915,24 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
             # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
             # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
             authoritative = authoritative_sources(candidate)
+            observed = candidate.get('sourceFingerprints')
+            fingerprints = None
+            if selected is not None and isinstance(observed, dict):
+                import laya_host_response
+                try:
+                    schema3 = laya_host_response._selected_store_format(selected[0]) == 'schema3'
+                except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                    schema3 = False
+                if schema3:
+                    rows = observed.get('fingerprints')
+                    if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
+                        first = rows[0]
+                        if (all(row.get('scan_id') == first.get('scan_id')
+                                and row.get('observed_ns') == first.get('observed_ns') for row in rows)
+                                and isinstance(first.get('scan_id'), str)
+                                and type(first.get('observed_ns')) is int):
+                            fingerprints = {**observed, 'scanId': first['scan_id'],
+                                            'observedNs': first['observed_ns']}
             from wiki_compile_enqueue import _append_jsonl
             _append_jsonl(verify_queue_path, [{
                 "ts": now_iso(),
@@ -1887,6 +1942,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                    if pending_path is not None else {}),
                 "sources": record["sources"],
                 "sourceRevisions": record["sourceRevisions"],
+                **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
                 **({"authoritativeSources": authoritative} if authoritative else {}),
                 "sourceHash": h,
                 "engine": candidate.get("engine") if isinstance(candidate.get("engine"), str) else "",

@@ -93,6 +93,103 @@ def route_identity(bound):
                                            'scopeId', 'dbIncarnation')}
 
 
+def schema3_checkout(bound):
+    """Capture the worktree registered by the selected schema3 endpoint."""
+    if bound is None:
+        return None
+    decision = bound[0]
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    path = decision.get('journalPath')
+    if not isinstance(path, str) or journal.journal_version(path) != 5:
+        return None
+    with journal.read_only_journals():
+        journal_path = reader._journal(path)
+        with reader._readonly(journal_path, journal_path.parent) as db:
+            selection, record = reader._selection(db)
+        if record.get('store_format') != 'schema3':
+            return None
+        recheck(bound)
+        reader._need(record['install_id'] == decision['installId']
+                     and record['scope'] == decision['scopeId']
+                     and record['project'] == decision['projectRoot']
+                     and record['state'] == str(journal_path.parent), 'reader_install_changed')
+        state = Path(record['state'])
+        actual = reader._schema3_store(state, Path(record['project']),
+                                       {'scopeId': record['scope']}, decision,
+                                       record['db_path'], record['worktree_id'])
+        for key in ('db_path', 'incarnation', 'repository_digest', 'worktree_id',
+                    'worktree_binding', 'settings_policy_digest'):
+            reader._need(actual[key] == record[key], 'reader_store_changed')
+        reader._need(reader.persistent_node_equal(actual['db_node'], record['db_node']),
+                     'reader_store_changed')
+        with reader._readonly(Path(record['db_path']), state) as db:
+            row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+        reader._need(row is not None and reader._repository_digest(row[0]) == record['repository_digest'],
+                     'reader_store_changed')
+        from laya_view_store import ViewStore
+        store = ViewStore.open_reader(record['db_path'], repository=json.loads(row[0]), scope_id=record['scope'])
+        try:
+            saved, _capture = store._observe_worktree(record['worktree_id'])
+            reader._need(saved['binding_digest'] == record['worktree_binding'], 'reader_store_changed')
+            from laya_blob_store import _worktree_record
+            repository = store._repository
+            worktree = _worktree_record(saved, repository, store._policy)
+        finally:
+            store.close()
+        issued = _Schema3Checkout(decision, selection.preferred_endpoint, selection.epoch,
+                                  repository, worktree)
+        if not issued._selection_current():
+            raise ValueError('reader_selection_changed')
+        return issued
+
+
+class _Schema3Checkout:
+    def __init__(self, decision, endpoint, epoch, repository, worktree):
+        self.decision = decision
+        self.endpoint = endpoint
+        self.epoch = epoch
+        self.repository = repository
+        self.worktree = worktree
+
+    def _selection_current(self):
+        import laya_install_journal as journal
+        import laya_journal_reader as reader
+        from laya_index_host_route import select_route
+        if select_route(self.decision['projectRoot'], action='compile') != self.decision:
+            return False
+        with journal.read_only_journals():
+            path = reader._journal(self.decision['journalPath'])
+            with reader._readonly(path, path.parent) as db:
+                selection, record = reader._selection(db)
+            if (selection.preferred_endpoint != self.endpoint or selection.epoch != self.epoch
+                    or record.get('store_format') != 'schema3'):
+                return False
+            current = reader._schema3_store(Path(record['state']), Path(record['project']),
+                                            {'scopeId': record['scope']}, self.decision,
+                                            record['db_path'], record['worktree_id'])
+            return (all(current[key] == record[key] for key in
+                        ('db_path', 'incarnation', 'repository_digest', 'worktree_id',
+                         'worktree_binding', 'settings_policy_digest'))
+                    and reader.persistent_node_equal(current['db_node'], record['db_node']))
+
+    def capture(self):
+        import laya_checkout_view as checkout
+        if not self._selection_current():
+            raise ValueError('reader_selection_changed')
+        capture = checkout.capture_view(self.decision['projectRoot'], self.repository,
+                                        self.worktree, fresh=True)
+        if not self._selection_current():
+            raise ValueError('reader_selection_changed')
+        return capture
+
+    def matches(self, capture):
+        import laya_checkout_view as checkout
+        return (self._selection_current()
+                and checkout.capture_matches(capture, self.repository, self.worktree, fresh=True)
+                and self._selection_current())
+
+
 def request_compile(root: Path, bound, *, owner=None):
     if bound is None:
         return

@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -1960,7 +1961,16 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
             try:
                 budget_token = _EXTRACTOR_BUDGET.set(attempt_budget)
                 try:
-                    processed, preserve, queued = process_job(root, config, compile_cfg, job)
+                    import wiki_selected_laya
+                    try:
+                        checkout = wiki_selected_laya.schema3_checkout(selected_route)
+                    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+                        append_jsonl(candidate_path(root, compile_cfg),
+                                     bounded_failure('deferred', job, 'checkout_unavailable'))
+                        processed, preserve, queued = False, True, []
+                    else:
+                        processed, preserve, queued = process_job(
+                            root, config, compile_cfg, job, checkout=checkout)
                 finally:
                     _EXTRACTOR_BUDGET.reset(budget_token)
                 if processed and not preserve:
