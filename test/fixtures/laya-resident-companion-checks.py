@@ -723,11 +723,63 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
             binding = service.bindings[str(case.project)]
         self.assertEqual(switched, ['active_upgrade_complete'])
         self.assertEqual(selected, str(executing))
-        self.assertEqual(results[:1], [(str(self.a.case.plugin), 'ResourceDeferred',
-                                        'worker_selection_changed')])
+        self.assertTrue(results)
+        self.assertEqual(results[0][:2], (str(self.a.case.plugin), 'ResourceDeferred'))
+        self.assertIn(results[0][2], ('worker_selection_changed', 'owner_busy'))
         self.assertEqual((state['reason'], state['terminal']), ('ready', False))
         self.assertEqual(binding.mode, 'selected')
         self.assertEqual(binding.identity[1], str(executing))
+
+    @contextmanager
+    def _serial_real_anchor(self):
+        """Serialize this fixture's actual anchor windows, preserving flock."""
+        sync = importlib.import_module('laya_index_sync')
+        original, serial = sync._sync_anchor, threading.RLock()
+
+        @contextmanager
+        def serialized():
+            with serial:
+                with original() as value:
+                    yield value
+
+        with mock.patch.object(sync, '_sync_anchor', serialized):
+            yield sync
+
+    def test_cold_upgrade_lock_free_selection_changed_and_ready(self):
+        # All fixture-owned anchor calls use the real lock but cannot overlap.
+        original, observations = self.S.default_attest, []
+        def capture(decision, proof, mode):
+            try:
+                return original(decision, proof, mode)
+            except Exception as exc:
+                observations.append((type(exc).__name__, str(exc)))
+                raise
+        with self._serial_real_anchor():
+            with mock.patch.object(self.S, 'default_attest', side_effect=capture):
+                self.test_bundle_upgrade_during_a_cold_start_binds_the_new_selection()
+        self.assertEqual(observations[:1], [('ResourceDeferred', 'worker_selection_changed')])
+
+    def test_cold_upgrade_busy_defers_before_worker_and_retries_to_ready(self):
+        """An actually held UID anchor defers, then the selected Y binds."""
+        original = self.S.default_attest
+        observations = []
+        with self._serial_real_anchor() as sync:
+            def compete(decision, proof, mode):
+                if observations:
+                    return original(decision, proof, mode)
+                before = list(self.loads)
+                with sync._sync_anchor() as anchor:
+                    self.assertIsNotNone(anchor, 'fixture must really own anchor')
+                    try:
+                        return original(decision, proof, mode)
+                    except Exception as exc:
+                        observations.append((type(exc).__name__, str(exc), before,
+                                             list(self.loads)))
+                        raise
+
+            with mock.patch.object(self.S, 'default_attest', side_effect=compete):
+                self.test_bundle_upgrade_during_a_cold_start_binds_the_new_selection()
+        self.assertEqual(observations, [('ResourceDeferred', 'owner_busy', [], [])])
 
     def test_service_on_one_copy_binds_installs_of_both_copies(self):
         executing = self.b.case.plugin
