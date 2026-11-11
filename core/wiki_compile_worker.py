@@ -988,6 +988,59 @@ def batch_wake_after_seconds(kept: list, idle_seconds: int, max_items: int, flus
     return max(1, int(math.ceil(idle_seconds - oldest_age)))
 
 
+SOURCE_FINGERPRINTS_KEY = "sourceFingerprints"
+SOURCE_FINGERPRINTS_SCHEMA = "memvane-compile-source-fingerprints-v1"
+
+
+class CheckoutChanged(RuntimeError):
+    """The checkout observed before the source read differs after it."""
+
+
+def source_fingerprints(root: Path, checkout, capture: dict, revisions: list[dict],
+                        observed_ns: int) -> dict:
+    """Observed ``source_fingerprints`` spec for the bytes this job just read.
+
+    ``revisions`` are the compiler-owned ``sourceRevisions`` of the same
+    ``snapshot_bytes`` read, so every row's path/sha/size equals its revision.
+    Each row has exactly the memvane-db ``source_fingerprints`` columns
+    (``fingerprint_id`` aside, which the store derives). ``scan_id`` names this
+    compile observation only; it is not a sync manifest ``scan_id``.
+
+    ``capture`` was taken before the read and ``checkout.matches(capture)``
+    re-observes branch, HEAD, index and operations after it: any change raises
+    ``CheckoutChanged`` and the caller keeps the job. Tracked state is read
+    against the captured HEAD; a non-git checkout has no tracking (untracked)
+    and a git failure or timeout answers ``unknown`` per path.
+    """
+    import git_branch_safety
+    paths = [revision["path"] for revision in revisions]
+    if capture["branchKey"] == "non-git":
+        tracked = {path: git_branch_safety.UNTRACKED for path in paths}
+    else:
+        tracked = git_branch_safety.tracked_states(root, paths, capture["headOid"])
+    if checkout.matches(capture) is not True:
+        raise CheckoutChanged("checkout_changed_during_read")
+    scan_id = uuid.uuid4().hex
+    return {
+        "schema": SOURCE_FINGERPRINTS_SCHEMA,
+        "viewId": capture["viewId"],
+        "checkoutDigest": capture["checkoutDigest"],
+        "gitObjectFormat": capture["gitObjectFormat"],
+        "fingerprints": [{
+            "worktree_id": capture["worktreeId"],
+            "branch_key": capture["branchKey"],
+            "path": revision["path"],
+            "source_sha": revision["sha256"],
+            "byte_length": revision["size"],
+            "head_oid": capture["headOid"],
+            "tracked_state": tracked[revision["path"]],
+            "binding_state": "observed",
+            "scan_id": scan_id,
+            "observed_ns": observed_ns,
+        } for revision in revisions],
+    }
+
+
 def is_same_file_source(item, rel: str) -> bool:
     """모델이 준 `sources` 항목이 큐 잡의 실제 소스와 같은 파일을 가리키는가.
 
@@ -999,8 +1052,15 @@ def is_same_file_source(item, rel: str) -> bool:
     return item.get("path") == rel
 
 
-def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple[bool, bool, list[str]]:
+def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
+                checkout=None) -> tuple[bool, bool, list[str]]:
     """Return (processed, preserve_job, verify_target_paths).
+
+    ``checkout``: an optional bound checkout exposing ``capture()`` (a checkout
+    capture dict) and ``matches(capture)``. With it, the single source read is
+    bracketed by two checkout observations and the candidate carries the
+    observed ``sourceFingerprints`` spec; a checkout that changed during the
+    read keeps the job before any paid extraction. Without it nothing changes.
 
     The third element lists the cards this job handed to the verify queue
     (wiki_compile reports each one). main() collects them and gives the LIST — not
@@ -1128,11 +1188,21 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         return (True, False, []) if state in ('retired', 'source_reappeared',
                                               'held_branch') \
             else (False, True, [])
+    checkout_capture = None
+    if checkout is not None:
+        try:
+            checkout_capture = checkout.capture()
+        except (OSError, RuntimeError, ValueError):
+            # Unobservable checkout: no spec can bind this read. Keep the job
+            # for a later pass instead of compiling without provenance.
+            append_jsonl(cpath, bounded_failure("deferred", job, "checkout_unavailable"))
+            return False, True, []
     # Bind the ledger's latest unresolved event immediately before the stable
     # source capture.  A queue token is only transport metadata and may be stale
     # after a crash/replay; it never decides which edit this compile resolves.
     bound_pending = wiki_freshness.latest_unresolved_pending(root, rel)
     stable_source = wiki_freshness.snapshot_bytes(src)
+    observed_ns = time.time_ns()
     if stable_source is None:
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "source_unreadable"))
         return True, False, []
@@ -1143,6 +1213,19 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
         "collection": source.get("collection", ""),
         **revision_snapshot,
     }
+    fingerprint_spec = None
+    if checkout_capture is not None:
+        # Same read as `sourceRevisions`: frontmatter and memvane-db provenance
+        # describe one byte image. Settled before any paid extractor call.
+        try:
+            fingerprint_spec = source_fingerprints(
+                root, checkout, checkout_capture, [source_revision], observed_ns)
+        except CheckoutChanged:
+            append_jsonl(cpath, bounded_failure("deferred", job, "checkout_changed_during_read"))
+            return False, True, []
+        except (OSError, RuntimeError, ValueError):
+            append_jsonl(cpath, bounded_failure("deferred", job, "checkout_unavailable"))
+            return False, True, []
     job['_processedContentRevision'] = source_revision['sha256']
     if (job.get('initialBackfill') is not None
             and job.get('contentRevision') != source_revision['sha256']):
@@ -1427,6 +1510,11 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict) -> tuple
             # 수 있었던 것과 같은 클래스다. trigger도 큐 잡이 SSOT다.
             candidate["trigger"] = job.get("trigger", "post_tool_source")
             candidate["engine"] = job.get("engine", "")
+            # Observed fingerprints are a worker fact like `engine`/`trigger`: the
+            # model's field is always dropped and only this run's read is assigned.
+            candidate.pop(SOURCE_FINGERPRINTS_KEY, None)
+            if fingerprint_spec is not None:
+                candidate[SOURCE_FINGERPRINTS_KEY] = json.loads(json.dumps(fingerprint_spec))
             candidate["_qmd"] = {
                 "reasoningEffort": qmd_config.reasoning_effort_audit(
                     extracted_qmd.get("reasoningEffort") if isinstance(extracted_qmd, dict) else {},

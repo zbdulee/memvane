@@ -165,6 +165,72 @@ def _z_paths(raw: bytes) -> set[str]:
     return {_nfc(item.decode('utf-8', 'surrogateescape')) for item in raw.split(b'\0') if item}
 
 
+def _chunks(paths):
+    ordered = sorted(paths)
+    for start in range(0, len(ordered), MAX_PATHSPECS_PER_CALL):
+        yield ordered[start:start + MAX_PATHSPECS_PER_CALL]
+
+
+def _git_relative(root: Path, top: Path, path) -> str | None:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        return _nfc(candidate.resolve().relative_to(top).as_posix())
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _index_paths(top: Path, paths, deadline: float | None) -> set[str]:
+    """Paths of ``paths`` present in the index, ``MAX_PATHSPECS_PER_CALL`` per git call."""
+    found: set[str] = set()
+    for chunk in _chunks(paths):
+        found |= _z_paths(run_git(['ls-files', '-z', '--cached', '--', *chunk], top,
+                                  deadline=deadline).stdout)
+    return found
+
+
+TRACKED = 'tracked'
+UNTRACKED = 'untracked'
+UNKNOWN = 'unknown'
+
+
+def tracked_states(root, paths, head_oid: str | None, *,
+                   budget: float = GIT_TIMEOUT_SECONDS) -> dict:
+    """``{path: 'tracked'|'untracked'|'unknown'}`` for project-relative ``paths``.
+
+    The same index/HEAD facts ``LineageJudge`` rule 1 reads: a path in the
+    index (a staged new file included) or in ``head_oid``'s tree is tracked;
+    in neither it is untracked. ``head_oid`` is the commit the caller already
+    observed, so the tree read here is that commit's even if HEAD moves; the
+    caller re-checks the index and HEAD it captured after this returns.
+    ``None`` (unborn branch) has no tree. A path outside the repository, a
+    non-git project and any git failure or timeout answer ``unknown``. Git
+    calls are 1 + 2 per ``MAX_PATHSPECS_PER_CALL`` paths.
+    """
+    paths = list(paths)
+    unknown = {path: UNKNOWN for path in paths}
+    deadline = time.monotonic() + budget
+    root = Path(root).resolve()
+    try:
+        facts = repo_facts(root, deadline=deadline)
+        if facts is None:
+            return unknown
+        top = facts['toplevel']
+        names = {path: _git_relative(root, top, path) for path in paths}
+        wanted = {name for name in names.values() if name is not None}
+        tracked = _index_paths(top, wanted, deadline)
+        if head_oid is not None:
+            for chunk in _chunks(wanted - tracked):
+                tracked |= _z_paths(run_git(
+                    ['ls-tree', '-r', '--name-only', '-z', head_oid, '--', *chunk], top,
+                    deadline=deadline).stdout)
+    except (GitUnavailable, OSError, RuntimeError, ValueError):
+        return unknown
+    return {path: UNKNOWN if name is None else TRACKED if name in tracked else UNTRACKED
+            for path, name in names.items()}
+
+
 class LineageJudge:
     """Per-run judgement of missing wiki sources against HEAD's lineage.
 
@@ -235,18 +301,10 @@ class LineageJudge:
             return False
 
     def git_path(self, path) -> str | None:
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = self.root / candidate
-        try:
-            return _nfc(candidate.resolve().relative_to(self.top).as_posix())
-        except (OSError, RuntimeError, ValueError):
-            return None
+        return _git_relative(self.root, self.top, path)
 
     def _chunks(self, paths):
-        ordered = sorted(paths)
-        for start in range(0, len(ordered), MAX_PATHSPECS_PER_CALL):
-            yield ordered[start:start + MAX_PATHSPECS_PER_CALL]
+        return _chunks(paths)
 
     def prefetch(self, paths) -> None:
         """Batch the index and branch-tip lookups for every path of a run."""
@@ -669,6 +727,19 @@ class DeletionProof(LineageJudge):
         if repo_path in self._index_lookup([repo_path]):
             return False
         return expected_card is None or self._card_matches(expected_card)
+
+    def recheck(self, fingerprint, scan, expected_card) -> bool:
+        """Recheck a proved deletion immediately before removing its card."""
+        if not _fingerprint_ok(fingerprint):
+            return False
+        path = fingerprint['path']
+        repo_path = self._repo_path(path)
+        if repo_path is None:
+            return False
+        try:
+            return self._recheck(scan, path, repo_path, expected_card)
+        except (GitUnavailable, OSError, KeyError, TypeError, ValueError):
+            return False
 
     # -- proof --------------------------------------------------------------
 
