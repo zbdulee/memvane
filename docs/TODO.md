@@ -64,6 +64,37 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
   - 다중 프로젝트 질의가 hook 예산 안에 끝나고, 한 프로젝트 실패가 다른 프로젝트 주입을 막지 않는다.
 - 새 hook action·wake kind·lock이 필요한지는 설계 단계에서 판단한다.
 
+## 선택 프로젝트 레지스트리: 등록 경로를 DB로 관리한다
+
+「세션 위치와 무관한 recall」과 「연결 git worktree의 카드 수명 주기」가 이 레지스트리에 기댄다. 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다.
+
+- **현재 동작.**
+  - 세션 프로젝트는 hook payload `cwd`에서 위로 올라가며 `.memvane/settings.json`을 찾아 정한다(`config._project_search_dirs`).
+  - 프로젝트 밖 원문 편집 라우팅(`laya_external_edits`)은 편집 hook마다 state base(`~/.local/state/memvane/<install>`)를 최대 128개(`MAX_INSTALLS`)까지 훑는다. 각 install의 journal 메타데이터를 읽고 가장 긴 원문 root 접두사로 대상을 고른다(2초 예산).
+  - 초기 빌드 pointer(`initial-builds/<projectRoot 해시>.json`), 설치별 state 디렉터리, 연결 worktree view가 따로 흩어져 있다. 사용자 단위 단일 색인은 없다.
+  - uninstall 뒤 정리 단계가 없다. retire·abandon·restore는 저장소와 journal을 남기고, 거절된 prepare도 state 디렉터리를 남긴다(2026-11-10 관측: 잠금 파일만 있는 `efb6dee9…`). 이런 디렉터리도 계속 훑기 대상이다.
+- **목표.**
+  - 사용자 단위 레지스트리 DB(state base 아래 SQLite)가 등록 경로를 가진다. 항목은 프로젝트 root, worktree root, install id, state root, 종류(main·worktree), 상태다.
+  - hook은 cwd·편집 경로·세션 작업 집합을 레지스트리의 최장 접두사 조회로 프로젝트에 대응시킨다. 파일시스템을 훑지 않는다.
+  - install·uninstall이 등록 lifecycle을 결정한다.
+- **lifecycle.**
+  - 등록: 온보딩 activate가 성공하면 프로젝트 root를 등록한다. 연결 worktree view가 처음 게시되면 그 worktree root를 같은 install의 하위 항목으로 등록한다.
+  - 해제: uninstall(선택 해제)이 끝나면 그 install의 프로젝트·worktree 항목을 지운다. worktree는 `git worktree remove`·prune이 관측되면 해제한다.
+  - 이동: 프로젝트 디렉터리 이동·이름 변경(`laya_project_dir_move`, state move)은 항목을 원자적으로 갱신한다.
+- **먼저 정할 계약.**
+  - 권한: 레지스트리는 조회 색인일 뿐 권한을 주지 않는다. 조회한 뒤 기존 selected route 증명(journal·route·attestation)을 그대로 통과해야 한다. 항목과 증명이 어긋나면 그 항목을 건너뛰고 백그라운드 reconcile이 고친다.
+  - uninstall의 정의와 단일 진입점: 지금은 `restore-index-origin`, `retire-index-origin`, `abandon-*`로 흩어져 있다. 진입점을 하나로 모을지, uninstall이 지우는 범위(route 파일, state 디렉터리, wiki 카드, 학습 상태)와 owner 승인 단계도 정한다.
+  - 동시성과 호환: Claude·Codex·Hermes의 서로 다른 번들 버전이 같은 레지스트리를 읽고 쓴다. schema 버전, 잠금, 구 번들이 레지스트리 없이 동작할 때의 fallback(지금의 훑기)을 정한다.
+  - 기존 설치 이전: 첫 실행 때 state base를 한 번 훑어 레지스트리를 채운다(backfill).
+  - 오래된 항목: 경로 소실, inode 변경, journal 미선택을 판정하는 규칙과 정리 주기를 정한다.
+  - 연결 worktree: 등록 단위와 main 항목과의 관계를 정한다. 「연결 git worktree의 카드 수명 주기」의 계약과 맞춘다.
+- **검증 기준.**
+  - 프로젝트 해석과 프로젝트 밖 편집 라우팅이 state base 훑기 없이 레지스트리 조회로 끝난다.
+  - uninstall 뒤 그 경로의 세션은 미온보딩과 같이 동작하고, 레지스트리와 훑기 대상에서 빠진다.
+  - worktree 제거 뒤 그 worktree 항목이 해제된다.
+  - 레지스트리가 손상되거나 없어도 기존 증명 경로로 안전하게 동작하거나 거절한다.
+- 새 hook action·wake kind·lock이 필요한지는 설계 단계에서 판단한다.
+
 ## 세대 저장 구조: 전체 사본에서 행 단위 버전으로
 
 PR10 GC 뒤에 진행한다. 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다. 저장 스키마·recall 읽기 경로·봉인 증명이 함께 바뀐다.
