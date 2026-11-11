@@ -47,7 +47,11 @@ the next pass re-proves them and updates the journal) or `switched` (recall read
 the new format). `last` is the latest operation (`begin`, `copy`, `verification`,
 `base_corpus`, `sidecar_corpus`, `prepare`, `publish`, `vectors`, `parity`,
 `parity_seal`, `reader_ready`, `switch`) and its outcome; `progress` is that
-operation's position in this order. `passes` counts driver passes. `deferred`
+operation's position in this order. A completed parity sample reports `sampled`,
+`top_hits` and `hit_rate_bp` (basis points). A hit means the sampled card appears
+within the top 10 after merging its single lexical query's candidate base and
+sidecar rankings. This diagnostic does not measure full hybrid recall and does
+not gate the switch. `passes` counts driver passes. `deferred`
 counts steps held back with nothing written: `migration_space_deferred` means the
 disk lacks the projected copy space (`needed_bytes` / `free_bytes` on the line),
 and the migration resumes on its own once space returns. `restarts` counts source

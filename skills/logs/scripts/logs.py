@@ -328,7 +328,7 @@ def _migration_parts(row):
         parts.append(f'stage={stage}')
     if row.get('migration_state') in MIGRATION_STATES:
         parts.append(f"state={row['migration_state']}")
-    for key in ('steps', 'needed_bytes', 'free_bytes'):
+    for key in ('steps', 'needed_bytes', 'free_bytes', 'sampled', 'top_hits', 'hit_rate_bp'):
         if _count(row.get(key)):
             parts.append(f'{key}={row[key]}')
     quiesce = row.get('quiesce_ms')
