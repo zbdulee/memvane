@@ -199,16 +199,24 @@ class RegistryTargets(Routing):
                 self.assertEqual(self.notify()['owners'], 0)
                 self.assertFalse(self.routed())
 
-    def test_owner_choice_ignores_settings_folders_as_the_base_release_does(self):
-        # The registry changes where candidates come from, not owner choice:
-        # an unselected settings folder inside B is B's source in both modes.
+    def test_nested_project_folders_hold_out_a_registered_owner_only(self):
+        # Registry lookup lists registered owners only, so a project folder
+        # between the file and the owner root holds the edit back. The scan
+        # (incomplete backfill) keeps the base release's owner choice.
         self.backfill()
-        nested = self.b.project / 'nested'
-        (nested / '.memvane').mkdir(parents=True)
-        (nested / '.memvane' / 'settings.json').write_text('{"name": "nested", "skipPaths": []}\n')
-        path = nested / 'note.md'
-        path.write_text('nested\n')
-        self.assertEqual(self.notify(path)['owners'], 1)
+        for folder in ('.memvane', '.auto-context'):
+            with self.subTest(folder=folder):
+                nested = self.b.project / ('nested' + folder.replace('.', '-'))
+                (nested / folder).mkdir(parents=True)
+                (nested / folder / 'settings.json').write_text(
+                    '{"name": "nested", "skipPaths": []}\n')
+                path = nested / 'note.md'
+                path.write_text('nested\n')
+                self.wake.reset_mock()
+                self.assertEqual(self.notify(path)['owners'], 0)
+                self.assertFalse(self.routed())
+        self.wake.reset_mock()
+        self.assertEqual(self.notify()['owners'], 1)  # B's own file still routes
         with contextlib.closing(sqlite3.connect(str(self.db))) as db:
             db.execute('UPDATE scans SET complete_at=NULL')
             db.commit()

@@ -109,6 +109,8 @@ _FIELDS = {'install_id': 'installId', 'state_root': 'stateRoot', 'project_root':
 
 # The busy wait of every connection of the current call (hooks lower it).
 _busy_ms = BUSY_MS
+# Linked worktree discovery runs git; a hook's reconcile turns it off.
+_worktrees = True
 
 # Test seam: called as ``_before_store(target_root, expected_version)`` after
 # a row was observed and proved, immediately before its compare-and-set.
@@ -135,6 +137,16 @@ def _busy(ms):
         yield
     finally:
         _busy_ms = saved
+
+
+@contextmanager
+def _worktree_discovery(enabled):
+    global _worktrees
+    saved, _worktrees = _worktrees, enabled
+    try:
+        yield
+    finally:
+        _worktrees = saved
 
 
 def _fixture_live_home(home):
@@ -362,9 +374,14 @@ def _journal_state(state_root):
 
 
 def _prove_main(project, state=None):
-    """The selected route proof of ``project``: candidate, its journal selected."""
+    """The selected route proof of ``project``: candidate, its journal selected.
+
+    A main checkout is classified by its own route record only
+    (``_select_route``): the linked-worktree fallback of ``select_route``
+    runs git and never classifies a selected main checkout.
+    """
     import laya_index_host_route as routes
-    decision = routes.select_route(str(project), action='index')
+    decision = routes._select_route(str(project), action='index')
     if decision.get('state') != 'candidate':
         raise _Unproved('route_' + str(decision.get('state')))
     journal_path = decision.get('journalPath')
@@ -388,7 +405,7 @@ def _released(project, state):
     """A proved release: no route of this install, and its journal is not selected."""
     import laya_index_host_route as routes
     try:
-        decision = routes.select_route(str(project), action='index')
+        decision = routes._select_route(str(project), action='index')
         route_state = decision.get('state')
         if route_state == 'candidate':
             if decision.get('journalPath') == str(Path(state) / 'install-journal.sqlite'):
@@ -476,7 +493,13 @@ def _detach_children(home, install, reason, now):
 
 
 def _sync_worktrees(home, proof, now, deadline, *, explicit):
-    """Register the proved linked worktrees; release rows git no longer lists."""
+    """Register the proved linked worktrees; release rows git no longer lists.
+
+    Off in a hook's reconcile (``reconcile(worktrees=False)``): git is never
+    run there. Setup and ``snapshot`` keep the worktree rows current.
+    """
+    if not _worktrees:
+        return 0
     linked = _linked(Path(proof['projectRoot']), deadline)
     if linked is None:
         return 0
@@ -805,12 +828,14 @@ def _complete(db):
 
 def reconcile(*, home=None, now=None, clock=None, max_rows=RECONCILE_ROWS,
               seconds=RECONCILE_SECONDS, backfill_page=BACKFILL_PAGE, seed=None,
-              busy_ms=BUSY_MS):
+              busy_ms=BUSY_MS, worktrees=True):
     """One bounded pass: live main rows from the stored cursor, then backfill.
 
     Budgets are a row count, a backfill entry count and ``seconds`` on
     ``clock`` (monotonic by default), whichever ends first; every SQLite
-    connection waits at most ``busy_ms``. A failing row never stops the next.
+    connection waits at most ``busy_ms``. ``worktrees=False`` (the hook) runs
+    no git: linked worktree rows are neither added nor released. A failing row
+    never stops the next.
     A ``seed`` (project root, state root) outside the HOME state bases skips
     the whole pass, so a fixture install never reconciles the account's
     installs. Never raises; an unavailable registry is reported.
@@ -823,7 +848,8 @@ def reconcile(*, home=None, now=None, clock=None, max_rows=RECONCILE_ROWS,
         if outside:
             return {'status': 'skipped', 'reason': 'state_root_outside_home', 'checked': 0,
                     'raced': 0, 'backfilled': 0, 'complete': False}
-    with _busy(busy_ms), _journal_reads(time.monotonic() + max(seconds, 0)):
+    with _busy(busy_ms), _worktree_discovery(worktrees), \
+            _journal_reads(time.monotonic() + max(seconds, 0)):
         return _reconcile(home=home, now=now, clock=clock, max_rows=max_rows,
                           seconds=seconds, backfill_page=backfill_page, seed=seed)
 

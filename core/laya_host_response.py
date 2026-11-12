@@ -2459,7 +2459,8 @@ def _reconcile_registry(decision: dict) -> None:
     """Bounded opportunistic reconcile of the selected project registry.
 
     SessionStart of a selected main checkout seeds its own row and checks a
-    few rows and backfill entries (``memvane_registry.HOOK_*``). The registry
+    few rows and backfill entries (``memvane_registry.HOOK_*``) without running
+    git (no linked worktree discovery). The registry
     is a lookup index: any failure leaves this hook's output unchanged.
     """
     if decision.get('state') != 'candidate' or not isinstance(decision.get('journalPath'), str):
@@ -2475,7 +2476,7 @@ def _reconcile_registry(decision: dict) -> None:
             seed=(decision['projectRoot'], str(Path(decision['journalPath']).parent)),
             max_rows=memvane_registry.HOOK_ROWS, seconds=seconds,
             backfill_page=memvane_registry.HOOK_BACKFILL_PAGE,
-            busy_ms=memvane_registry.HOOK_BUSY_MS)
+            busy_ms=memvane_registry.HOOK_BUSY_MS, worktrees=False)
     except (Exception, hook_budget.HookDeadlineExceeded):
         # An exhausted hook budget skips the reconcile; the response stays.
         pass

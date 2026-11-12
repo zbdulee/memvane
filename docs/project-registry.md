@@ -40,7 +40,9 @@ intent를 쓰지 않고, SQLite 자체 파일 잠금 외의 lock, wake kind, hoo
   install의 행을 `detached`(`released`)로 바꾼다. `blocked`·`recovery_required`·
   `rejected`나 재관측 실패는 행을 바꾸지 않는다. 해제 명령은 행을 새로 넣지 않는다.
 - 선택된 main checkout의 SessionStart hook이 자기 행을 seed하고 유계 reconcile을
-  한다(`HOOK_ROWS` 4행, `HOOK_BACKFILL_PAGE` 8항목, `HOOK_SECONDS` 0.5초).
+  한다(`HOOK_ROWS` 4행, `HOOK_BACKFILL_PAGE` 8항목, `HOOK_SECONDS` 0.5초). 이
+  reconcile은 git을 실행하지 않는다. 연결 worktree 행의 등록·해제는 setup 성공 뒤와
+  `snapshot()` 경로만 한다.
 - `snapshot()`(대시보드 조회)이 기본 예산(32행, backfill 32항목, 2초)으로
   reconcile한 뒤 읽는다.
 
@@ -71,7 +73,9 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 - route 증명이 실패하면 해제가 증명된 경우에만 `detached`(`released`)이고, 그 밖의
   실패는 상태를 두고 `proof`에 `unproved:<사유>`를 남긴다. 같은 install의 route가
   다른 state root를 가리키면(state move 완료) state root를 갱신한다.
-- main 행을 확인하거나 등록할 때 유계 `git worktree list`와
+- main checkout은 자기 route 기록으로만 분류한다(`_select_route`). 연결 worktree
+  분류는 git을 쓰므로 main 증명에 쓰지 않는다.
+- setup·`snapshot()` 경로에서 main 행을 확인하거나 등록할 때 유계 `git worktree list`와
   `laya_index_host_route.select_route`의 `worktree` 판정(같은 common git dir, 자기
   route 없음, 같은 settings 정체성)으로 연결 worktree를 `worktree` 행으로 등록한다.
   성공한 목록에서 사라진 worktree만 `detached`(`released`)다. git이 답하지 못하면
@@ -97,7 +101,11 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
   같을 때만 후보다. backfill이 미완료면 기존 유계 열거를 쓴다. 두 경우 모두
   레지스트리의 tombstone·`conflict`·비활성 main 행이 후보를 뺀다. 레지스트리가 없거나
   손상·busy·미지원 schema·안전하지 않으면 열거로 대체하지 않고 라우팅하지 않는다.
-  owner 선택(가장 긴 원문 root 접두사, 원문 자격 검사)은 레지스트리와 무관하다.
+  owner 선택은 가장 긴 원문 root 접두사와 원문 자격 검사다. 완료 조회에서만 편집
+  경로와 owner root 사이에 다른 프로젝트 폴더(`.memvane/settings.json` 또는
+  `.auto-context/settings.json`)가 있으면 라우팅하지 않는다. 등록되지 않은 중첩
+  설치가 바깥 owner로 전달되지 않게 하려는 것이고, 열거 모드는 모든 설치를 보므로
+  이 검사를 두지 않는다.
 
 ## 실패와 호환
 

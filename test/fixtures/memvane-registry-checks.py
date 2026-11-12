@@ -598,14 +598,15 @@ class Reconcile(Base):
     def test_one_failing_row_does_not_block_the_next(self):
         for install in (self.a, self.b):
             self.register(install)
-        real = routes.select_route
-
-        def flaky(cwd, action='recall'):
-            if cwd == str(self.a.project):
-                raise RuntimeError('boom')
-            return real(cwd, action=action)
+        def flaky(real):
+            def classify(cwd, action='recall'):
+                if cwd == str(self.a.project):
+                    raise RuntimeError('boom')
+                return real(cwd, action=action)
+            return classify
         self.b.project.rename(self.b.project.with_name('beta-away'))
-        with patch.object(routes, 'select_route', flaky):
+        with patch.object(routes, 'select_route', flaky(routes.select_route)), \
+                patch.object(routes, '_select_route', flaky(routes._select_route)):
             result = registry().reconcile(now=2000.0, backfill_page=0)
         self.assertEqual(result['checked'], 2, result)
         self.assertEqual(self.row(self.b)['status'], 'missing_pending')
@@ -810,6 +811,41 @@ class SessionStart(Base):
                 self.assertEqual(self.session_start(self.a), baseline)
         self.assertEqual(len(calls), 1)
         self.assertLessEqual(calls[0]['seconds'], 0.2 + 1e-9)
+
+    @unittest.skipUnless(shutil.which('git'), 'git unavailable')
+    def test_session_start_reconcile_runs_no_git(self):
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid',
+               '-c', 'commit.gpgsign=false', '-c', 'init.defaultBranch=main']
+        run = lambda *args: subprocess.run([*git, *args], cwd=self.b.project, check=True,
+                                           capture_output=True, text=True, timeout=30)
+        (self.b.project / 'note.md').write_text('B\n')
+        run('init', '-q')
+        run('add', 'note.md', '.memvane/settings.json')
+        run('commit', '-qm', 'init')
+        worktree = self.work / 'beta-wt'
+        run('worktree', 'add', '-q', str(worktree))
+        self.assertEqual(routes.select_route(str(worktree), action='index')['state'], 'worktree')
+        calls, results = [], []
+        real_run = subprocess.run
+        real_reconcile = registry().reconcile
+
+        def spy_run(args, *rest, **kwargs):
+            if isinstance(args, (list, tuple)) and args and str(args[0]).endswith('git'):
+                calls.append(list(args))
+            return real_run(args, *rest, **kwargs)
+
+        def spied(**kwargs):
+            with patch.object(subprocess, 'run', spy_run):
+                results.append(real_reconcile(**kwargs))
+                return results[-1]
+        with patch.object(registry(), 'reconcile', side_effect=spied):
+            self.session_start(self.b)
+            # A second pass reconciles the main row (seeded by the first).
+            self.session_start(self.b)
+        self.assertEqual(calls, [], 'the SessionStart reconcile ran git')
+        self.assertEqual([r['status'] for r in results], ['ok', 'ok'])
+        self.assertEqual(self.row(self.b)['status'], 'active')
+        self.assertIsNone(self.row(self.b, worktree))
 
     def test_session_start_with_an_exhausted_budget_keeps_the_response(self):
         import hook_budget

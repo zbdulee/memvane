@@ -438,6 +438,18 @@ class HookRouting(Routing):
         self.assertNotIn(('laya-sync', str(pending.project)), self.wakes())
         self.assertFalse((pending.folder / 'compile').exists())
 
+    def test_unregistered_nested_install_in_a_complete_registry_does_not_route(self):
+        nested = installs.make_install(self.home, self.b.project / 'nested', 'nested',
+                                        '8' * 32, '9' * 32)
+        self.owners.append(nested)
+        self.bundles.add(nested)
+        self.backfill_registry()  # complete; the nested install is not routable
+        path = nested.project / 'note.md'
+        path.write_text('nested owner\n')
+        self.assertEqual(self.index(self.event(path)), {})
+        self.assertNotIn(('laya-sync', str(self.b.project)), self.wakes())
+        self.assertNotIn(('laya-sync', str(nested.project)), self.wakes())
+
     def test_incomplete_owner_discovery_does_not_choose_an_earlier_parent(self):
         nested = installs.make_install(self.home, self.b.project / 'nested', 'nested',
                                         '8' * 32, '9' * 32)

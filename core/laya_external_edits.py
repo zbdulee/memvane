@@ -244,11 +244,31 @@ def _targets(origin, deadline):
             seen.add(project)
             for collection in decision.get('collections', []):
                 if collection.get('role') == 'raw':
-                    targets.append({'projectRoot': project, 'rawRoot': collection['sourceRoot'],
-                                    'decision': decision})
+                    target = {'projectRoot': project, 'rawRoot': collection['sourceRoot'],
+                              'decision': decision}
+                    if row is not None:
+                        target['registered'] = True
+                    targets.append(target)
         except (OSError, ValueError, RuntimeError):
             continue
     return targets
+
+
+def _nested_project(path, project):
+    """A project settings folder between the edited file and its owner root.
+
+    Registry lookup only: it lists registered owners, while the bounded scan
+    sees every install (a nested one, or the cap refuses). An unregistered
+    nested project is therefore never routed to its registered parent.
+    """
+    import project_dir
+    root = Path(project)
+    for parent in path.parents:
+        if parent == root:
+            return False
+        if project_dir.settings_path(parent) is not None:
+            return True
+    return False
 
 
 
@@ -275,6 +295,8 @@ def notify(paths, *, cwd, host, origin):
             path = _safe_path(raw, cwd)
             owner = owner_for(path, targets) if path is not None else None
             if owner is None or not _eligible(path, owner['decision']):
+                continue
+            if owner.get('registered') and _nested_project(path, owner['projectRoot']):
                 continue
             decision = owner['decision']
             proof = journal.verify_notification_target(decision)
