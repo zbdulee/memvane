@@ -1735,6 +1735,16 @@ def _busy_report(root: Path, queue: Path) -> dict:
 
 
 def main():
+    try:
+        return _main()
+    except ResourceDeferred as exc:
+        if '--json' in sys.argv:
+            import wiki_selected_laya
+            print(json.dumps(wiki_selected_laya.deferred_result(exc), ensure_ascii=False))
+        return 0
+
+
+def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--json", action="store_true")
@@ -1784,6 +1794,8 @@ def main():
             if (queue is None or queue.parent != locked_base
                     or cp.validate_compile_run_lock(root, run_lock) != locked_base):
                 return 0
+        except ResourceDeferred:
+            raise
         except (OSError, ValueError):
             return 0  # moved/unsafe authority: preserve all queued work
         if selected_route is not None:
