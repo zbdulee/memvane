@@ -1753,6 +1753,9 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
     if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
+        elif reason == 'no_candidates':
+            # The reason of a recall with no candidate rows; vector fallbacks stay notes.
+            _trace_final('no_candidates')
         return host_payload(host, '')
     if verify_preview_route(decision) != refreshed or not _selection_view_unchanged(decision, chosen):
         _fail('initial_preview_proof_changed')
@@ -1980,13 +1983,21 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     # A view sealed without vectors (a lexical-first publish whose fill is
     # still deferred) serves its lexical lists; the provider is not asked.
     unsealed = endpoint.record.get('vector_profile') is None
+    # A bundle-drift read carries the read-only proof of
+    # ``verify_selected_route_read_only`` (no full proof for the executing
+    # bundle): it cannot prove a query vector, so the provider is not asked and
+    # the lexical lists answer, as the v6 read does. A linked worktree read
+    # whose bundle proof holds keeps vectors.
+    if (not vector_off and proof.get('readOnlyAllowed') is True
+            and proof.get('productRouteAllowed') is not True):
+        vector_off.append('degraded_read')
     with ExitStack() as stack:
         vector = None
         if provider is not None and not vector_off and not unsealed:
             vector = stack.enter_context(dispatch.approved_query_vector(
                 authority=endpoint, snapshot=None, decision=decision, provider=provider,
                 prompt=prompt, deadline=deadline))
-            if vector is None:
+            if vector is None and not vector_off:
                 vector_off.append('provider_unavailable')
         for attempt in range(2):
             try:
@@ -3016,6 +3027,9 @@ def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top
     if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
+        elif reason == 'no_candidates':
+            # The reason of a recall with no candidate rows; vector fallbacks stay notes.
+            _trace_final('no_candidates')
         return host_payload(host, '')
     if not still_current(chosen):
         _fail('selected_proof_changed')

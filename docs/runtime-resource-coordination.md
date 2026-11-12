@@ -31,7 +31,21 @@ development execution guard is separate; see
   takes the same provider activity only when a view's vector fill has content no
   stored set holds (`_schema3_vectors`); one pass embeds content shared by two
   views once, and a refused lane or service leaves the lexical generation
-  published and the wake `deferred`. The shadow migration driver
+  published and the wake `deferred`. Before each provider call the fill
+  yields (`laya_sync_yield_priority`) to another project's initial build
+  waiting on the owner (`_initial_build_waiting`, as the v6 capacity path
+  does between rounds), whose wake is pulled ahead. A pass whose main-view
+  fill added embedding sets but did not finish (including a stop on that
+  yield or on a provider failure) is acknowledged and offers its own wake
+  again 30 seconds later (`WakeQueue.offer(delay=)`), inside the worker's
+  reclaim window; another due wake runs before it. A pass with no
+  fill progress stays `pending` and backs off; after 144 consecutive counted
+  attempts the wake policy drops it (`retry_cap`) until the next natural wake.
+  The first cold target of a pass (no stored chunk set) gets the resume budget
+  once, so the last provider call can run past the pass deadline by that one
+  document; that pass publishes its generation (lexical, or vector when the
+  fill completed) with a fresh publish reserve. A linked view held only by
+  the pass budget after such a pass gets the same re-offer. The shadow migration driver
   (`shadow_pass`) runs after the sync owner is released, inside the same wake,
   about 60 seconds of steps, at most 32. A pass that can go on re-offers its own
   wake due 30 seconds later (`WakeQueue.offer(delay=)`); the drain releases the
