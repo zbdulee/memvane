@@ -89,6 +89,8 @@ class ConnectionGuard:
         if action not in writes:return sqlite3.SQLITE_OK
         if self._active is None or self._frozen or threading.get_ident()!=self._thread:
             return sqlite3.SQLITE_DENY
+        if self._active=='convert':
+            return sqlite3.SQLITE_OK
         if isinstance(self._active,tuple):
             base=head_table(self._active[1])
             side=head_table(self._active[1],sidecar=True)
@@ -146,13 +148,37 @@ class ConnectionGuard:
             self._frozen=False
             self._db.set_authorizer(self._authorize)
 
+    @contextmanager
+    def converting(self):
+        """Format conversion capability over every FTS table; the caller commits inside.
+
+        The caller holds the owner and writer proof and validates both formats;
+        this capability only scopes FTS writes to one conversion transaction.
+        """
+        if self._active is not None or threading.get_ident()!=self._thread or not self._db.in_transaction:
+            v.fail('fts_build_capability_invalid')
+        self._active='convert'
+        self._frozen=False
+        self._db.set_authorizer(self._authorize)
+        try:
+            yield
+            if self._db.in_transaction:
+                v.fail('fts_transaction_unfinished')
+        except BaseException:
+            self._db.rollback()
+            raise
+        finally:
+            self._active=None
+            self._frozen=False
+            self._db.set_authorizer(self._authorize)
+
     def freeze_head(self):
         """Flush pending FTS5 segments and refuse any later FTS write.
 
         A savepoint after the last FTS write makes the shadow bytes read before
         COMMIT equal to the committed ones; the commitment is computed after it.
         """
-        if (not isinstance(self._active,tuple) or self._frozen or threading.get_ident()!=self._thread
+        if ((not isinstance(self._active,tuple) and self._active!='convert') or self._frozen or threading.get_ident()!=self._thread
                 or not self._db.in_transaction):
             v.fail('fts_build_capability_invalid')
         _execute(self._db,'SAVEPOINT s_head_flush')
@@ -192,6 +218,11 @@ def populate(db,ordinal,rows,*,sidecar=False):
 
 def create_head(db,view_id,*,sidecar=False):
     _execute(db,head_ddl(view_id,sidecar=sidecar))
+
+
+def populate_head(db,view_id,rows,*,sidecar=False):
+    for row in _entries(rows,insertion_order=sidecar):
+        _execute(db,f'INSERT INTO {head_table(view_id,sidecar=sidecar)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
 
 
 def apply_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):
@@ -421,6 +452,24 @@ def verify_head_index(db,view_id,*,sidecar=False):
         _execute(db,f"INSERT INTO {name}({name}) VALUES('integrity-check')")
     except sqlite3.Error:
         v.fail('fts_integrity_failed')
+
+
+def head_logical_digest(rows,deadline=None):
+    """The logical digest ``head_proof`` returns for the same path-ordered normal rows."""
+    logical=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0')
+    previous=None;size=0
+    for count,item in enumerate(rows,1):
+        _deadline(deadline)
+        if count>MAX_ROWS:v.fail('fts_rows_invalid')
+        row=_entries([item],insertion_order=True)[0]
+        encoded_path=row[3].encode('utf8')
+        if previous is not None and encoded_path<=previous:v.fail('fts_rows_invalid')
+        previous=encoded_path
+        size+=sum(len(value.encode('utf8')) for value in row)
+        if size>MAX_FTS_BYTES:v.fail('fts_rows_too_large')
+        raw=v.canonical(row).encode('utf8')
+        logical.update(len(raw).to_bytes(8,'big'));logical.update(raw)
+    return logical.hexdigest()
 
 
 def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,sidecar=False):

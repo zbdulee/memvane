@@ -451,6 +451,13 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
             v.fail('row_format_required')
         return self._rows_rollback(handle, expected_head=expected_head, deadline=deadline)
 
+    def convert_to_row_format(self, *, deadline=None):
+        """Generation format only: convert every view's head and its base in one transaction.
+
+        Closes this store; reopen it to use the row format.
+        """
+        return self._rows_convert(deadline=deadline)
+
     def collect_view_rows(self, handle, *, limit=256, deadline=None):
         """Row format only: one bounded batch of view rows outside the head and its prior."""
         if not self._rows:

@@ -487,6 +487,191 @@ class RowsMixin:
             _expired(deadline)
         return removed
 
+    # -- conversion from the generation format -------------------------------
+
+    def _rows_convert(self, *, deadline):
+        """Convert this generation-format store to the row format in one transaction.
+
+        Every view keeps its head and, when present, the published generation
+        the head was built on, with their ids and ordinals. Both are verified
+        with the generation-format verifier first; the new head seals, the
+        schema manifest and every head proof are checked before COMMIT. A
+        failure before COMMIT leaves the old format. The caller holds the owner
+        and writer proof, the host gate and the operator's approval.
+        """
+        import re
+        import laya_blob_schema as schema
+        from laya_blob_store import _insert
+        _deadline_value(deadline)
+        self._require_write()
+        if self._rows:
+            v.fail('row_format_already')
+        with self._session(write=True) as db:
+            if db.execute('SELECT COUNT(*) FROM delete_receipts').fetchone()[0]:
+                v.fail('row_conversion_unsupported')
+            if db.execute('SELECT COUNT(*) FROM fill_jobs WHERE cursor<target_count').fetchone()[0]:
+                v.fail('row_conversion_fill_pending')
+            heads = [dict(r) for r in db.execute('SELECT view_id,gen_id,epoch FROM view_heads ORDER BY view_id')]
+            plans = []
+            for head in heads:
+                _expired(deadline)
+                pending = db.execute(
+                    "SELECT COUNT(*) FROM generations g WHERE g.view_id=? AND g.state<>'published' "
+                    'AND g.ordinal>(SELECT ordinal FROM generations WHERE gen_id=?)',
+                    (head['view_id'], head['gen_id'])).fetchone()[0]
+                if pending:
+                    v.fail('row_conversion_stage_pending')
+                chain = []
+                for gen_id in (head['gen_id'], None):
+                    if gen_id is None:
+                        gen_id = chain[0]['generation']['parent_gen']
+                        if gen_id is None:
+                            break
+                    generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
+                    if generation is None or generation['state'] != 'published':
+                        v.fail('row_conversion_unsupported')
+                    handle, entry, saved = self._sealed_handle(db, generation)
+                    stage = self._verify_generation(db, handle, entry, saved, generation, deadline=deadline,
+                                                    full_vectors=True)
+                    if 'legacy' in stage or stage['vector_spec'] is not None:
+                        v.fail('row_conversion_unsupported')
+                    seal = dict(db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (gen_id,)).fetchone())
+                    members = [_card_row(m) for m in self._stored(db, gen_id)[0]]
+                    parent = (None if generation['parent_gen'] is None else db.execute(
+                        'SELECT ordinal FROM generations WHERE gen_id=?', (generation['parent_gen'],)).fetchone()[0])
+                    chain.append(dict(generation=dict(generation), stage=stage, seal=seal, members=members,
+                                      parent_ordinal=parent))
+                if len(chain) == 2 and chain[0]['stage']['base'] != dict(
+                        view_id=head['view_id'], gen_id=chain[1]['generation']['gen_id'],
+                        epoch=head['epoch'] - 1, incarnation=self._incarnation):
+                    v.fail('row_conversion_unsupported')
+                plans.append(dict(head=head, chain=chain))
+            meta = dict(db.execute('SELECT * FROM store_meta WHERE singleton=1').fetchone())
+            sequence = db.execute('SELECT MAX(ordinal) FROM generation_slots').fetchone()[0] or 0
+            old_fts = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                                                    "AND sql LIKE 'CREATE VIRTUAL TABLE%' AND name GLOB ?",
+                                                    (fts.PREFIX + '*',))]
+            with self._fts_guard.converting():
+                for name in old_fts:
+                    fts.table(int(name[len(fts.PREFIX):].replace('side_', '')),
+                              sidecar=name.startswith(fts.PREFIX + 'side_'))
+                    db.execute(f'DROP TABLE {name}')
+                for table in ('member_vectors', 'card_sources', 'wiki_members', 'source_members',
+                              'generation_seals', 'delete_receipts', 'view_heads', 'generations',
+                              'generation_slots', 'store_meta'):
+                    db.execute(f'DROP TABLE {table}')
+                existing = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'")}
+                triggers = []
+                for ddl in schema.statements(schema.ROW_SCHEMA_VERSION):
+                    match = re.match(r'\s*CREATE\s+(?:UNIQUE\s+)?(TABLE|INDEX|TRIGGER)\s+(\w+)', ddl)
+                    if match is None:
+                        v.fail('row_conversion_unsupported')
+                    if match.group(2) in existing:
+                        continue
+                    if match.group(1) == 'TRIGGER':
+                        triggers.append(ddl)
+                    else:
+                        db.execute(ddl)
+                _insert(db, 'store_meta', dict(meta, format=schema.ROW_FORMAT,
+                                               schema_version=schema.ROW_SCHEMA_VERSION,
+                                               schema_digest=schema.expected_manifest(schema.ROW_SCHEMA_VERSION)))
+                for plan in plans:
+                    self._rows_convert_view(db, plan, deadline)
+                db.execute("INSERT INTO sqlite_sequence(name,seq) SELECT 's_generations',0 "
+                           "WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='s_generations')")
+                db.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='s_generations'", (sequence,))
+                self._fts_guard.freeze_head()
+                for ddl in triggers:
+                    db.execute(ddl)
+                db.execute(f'PRAGMA user_version={schema.ROW_SCHEMA_VERSION}')
+                if schema.manifest(db, schema.ROW_SCHEMA_VERSION) != schema.expected_manifest(schema.ROW_SCHEMA_VERSION):
+                    v.fail('candidate_schema_mismatch')
+                result = {}
+                for plan in plans:
+                    view_id = plan['head']['view_id']
+                    head = self._rows_head_row(db, view_id)
+                    handle = self._sealed_handle(db, dict(checkout_evidence=plan['chain'][0]['generation']['checkout_evidence'],
+                                                          view_id=view_id))[0]
+                    physical = fts.head_storage_digest(db, view_id, deadline)
+                    generation = db.execute('SELECT * FROM s_generations WHERE view_id=? AND ordinal=?',
+                                            (view_id, head.ordinal)).fetchone()
+                    if generation['physical_fts_digest'] != physical:
+                        v.fail('fts_storage_mismatch')
+                    self._rows_verify(db, head, handle, deadline)
+                    result[view_id] = dict(gen_id=head.gen_id, epoch=head.epoch, ordinal=head.ordinal,
+                                           prior=len(plan['chain']) == 2)
+                _expired(deadline)
+                db.commit()
+        self.close()
+        return result
+
+    def _rows_convert_view(self, db, plan, deadline):
+        """One view's head (and its base) as row-format generations, cards, deltas and head FTS."""
+        view_id, epoch = plan['head']['view_id'], plan['head']['epoch']
+        chain = list(reversed(plan['chain']))  # base first, head last
+        prior_ordinal = None
+        for index, item in enumerate(chain):
+            generation, stage = item['generation'], item['stage']
+            rows = sorted(item['members'], key=lambda row: row['path'].encode('utf8'))
+            fts_rows = self._rows_fts_rows(rows, cache={}, deadline=deadline)
+            last = index == len(chain) - 1
+            if last:
+                fts.create_head(db, view_id)
+                fts.populate_head(db, view_id, fts_rows)
+            row = dict(ordinal=generation['ordinal'], gen_id=generation['gen_id'], view_id=view_id,
+                       epoch=epoch - (len(chain) - 1 - index),
+                       prior_ordinal=prior_ordinal if index else item['parent_ordinal'],
+                       kind='normal', sidecar_present=0, capture_json=generation['checkout_evidence'],
+                       policy_digest=generation['policy_digest'],
+                       skip_digest=v.digest('memvane-row-skip-v1', stage['skip_paths']),
+                       recipe_id=None, profile_id=None, coverage='lexical', member_digest=member_digest(rows),
+                       source_digest=v.digest('memvane-row-sources-v1', []),
+                       logical_fts_digest=fts.head_logical_digest(fts_rows, deadline),
+                       physical_fts_digest=item['seal']['fts_storage_digest'])
+            item['row'] = row
+            prior_ordinal = generation['ordinal']
+        # The head's physical digest is sealed after every FTS write is flushed.
+        db.execute('SAVEPOINT s_convert_flush')
+        db.execute('RELEASE s_convert_flush')
+        chain[-1]['row']['physical_fts_digest'] = fts.head_storage_digest(db, view_id, deadline)
+        for item in chain:
+            row = item['row']
+            row['seal_digest'] = seal_digest(_seal_fields(self._incarnation, row))
+            columns = tuple(row)
+            db.execute(f"INSERT INTO s_generations({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+                       tuple(row[k] for k in columns))
+        head_ordinal = chain[-1]['row']['ordinal']
+        base = {row['path']: row for row in chain[0]['members']} if len(chain) == 2 else {}
+        top = {row['path']: row for row in chain[-1]['members']}
+        for path in _sorted_paths(set(base) | set(top)):
+            _expired(deadline)
+            old, new = base.get(path), top.get(path)
+            spans = []
+            if old is not None and old == new:
+                spans.append((old, chain[0]['row']['ordinal'], None))
+            else:
+                if old is not None:
+                    spans.append((old, chain[0]['row']['ordinal'], head_ordinal))
+                if new is not None:
+                    spans.append((new, head_ordinal, None))
+                if len(chain) == 2:
+                    key = v.canonical([path])
+                    db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) '
+                               'VALUES (?,?,?,?,?,?)', (view_id, head_ordinal, 'card', key,
+                                                         None if old is None else v.canonical(old),
+                                                         None if new is None else v.canonical(new)))
+                    for side, value in (('old', old), ('new', new)):
+                        if value is not None:
+                            db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) '
+                                       'VALUES (?,?,?,?,?,?)', (view_id, head_ordinal, 'card', key, side,
+                                                                 value['blob_sha']))
+            for value, start, end in spans:
+                db.execute('INSERT INTO s_cards(view_id,path,gen_from,gen_to,blob_sha,title,eligible,'
+                           'trust_digest,metadata_json) VALUES (?,?,?,?,?,?,?,?,?)',
+                           (view_id, path, start, end, value['blob_sha'], value['title'], value['eligible'],
+                            value['trust_digest'], value['metadata_json']))
+        db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,?)', (view_id, head_ordinal, epoch))
+
     # -- reads ---------------------------------------------------------------
 
     def _rows_verify(self, db, head, live_handle, deadline):
