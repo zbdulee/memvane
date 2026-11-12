@@ -489,6 +489,78 @@ class Reconcile(Base):
             registry().reconcile(now=10000.0 + step * 120, backfill_page=0)
         self.assertEqual(self.row(self.b)['status'], 'missing_pending')
 
+    def test_an_emptied_registry_is_never_reinitialized_or_backfilled(self):
+        self.register(self.a)
+        with contextlib.closing(sqlite3.connect(str(self.db))) as db:
+            db.execute("UPDATE entries SET status='detached', reason='missing', version=version+1")
+            db.commit()
+        self.db.write_bytes(b'')
+        result = registry().reconcile(now=2000.0, max_rows=64, seconds=60.0, backfill_page=64)
+        self.assertEqual((result['status'], result.get('reason')),
+                         ('unavailable', 'registry_corrupt'), result)
+        self.assertEqual(self.db.read_bytes(), b'')
+        self.assertEqual(self.register(self.a)['status'], 'unavailable')
+        self.assertEqual(self.db.read_bytes(), b'')
+        with self.assertRaisesRegex(ValueError, 'registry_corrupt'):
+            registry().routing_rows()
+
+    def test_implicit_registration_never_adopts_a_replaced_root(self):
+        self.register(self.a)
+        inode = self.row(self.a)['inode']
+        moved = self.a.project.with_name('alpha-old')
+        shutil.copytree(self.a.project, moved, symlinks=True)
+        shutil.rmtree(self.a.project)
+        moved.rename(self.a.project)  # same path and route, new inode
+        self.assertNotEqual(self.a.project.stat().st_ino, inode)
+        # Backfill reaches the install before any row check does.
+        registry().reconcile(now=2000.0, max_rows=0, seconds=60.0, backfill_page=64)
+        row = self.row(self.a)
+        self.assertEqual((row['status'], row['reason'], row['inode']),
+                         ('detached', 'root_moved', inode))
+        self.assertEqual(self.register(self.a, explicit=False, now=3000.0)['status'],
+                         'tombstoned')
+        self.assertEqual(self.row(self.a)['status'], 'detached')
+
+    def missing_twice_then_back(self):
+        self.register(self.a)
+        away = self.a.project.with_name('alpha-away')
+        self.a.project.rename(away)
+        registry().reconcile(now=2000.0, backfill_page=0)
+        registry().reconcile(now=2000.0 + 3600, backfill_page=0)
+        row = self.row(self.a)
+        self.assertEqual((row['status'], row['missing_seen']), ('missing_pending', 2))
+        away.rename(self.a.project)  # the original inode returns after the grace
+
+    def test_a_root_back_after_the_grace_is_not_reactivated_by_reconcile(self):
+        self.missing_twice_then_back()
+        registry().reconcile(now=2000.0 + DAY + 10, backfill_page=0)
+        row = self.row(self.a)
+        self.assertNotEqual(row['status'], 'active')
+        self.assertEqual(row['missing_since'], 2000.0)
+
+    def test_a_root_back_after_the_grace_is_not_reactivated_by_implicit_registration(self):
+        self.missing_twice_then_back()
+        registry().reconcile(now=2000.0 + DAY + 10, max_rows=0, seconds=60.0,
+                             backfill_page=64)
+        self.register(self.a, explicit=False, now=2000.0 + DAY + 20)
+        row = self.row(self.a)
+        self.assertNotEqual(row['status'], 'active')
+        self.assertEqual(row['missing_since'], 2000.0)
+        self.assertEqual(self.register(self.a, explicit=True, now=2000.0 + DAY + 30)['status'],
+                         'registered')
+        self.assertEqual(self.row(self.a)['status'], 'active')
+
+    def test_one_sighting_and_a_day_neither_reactivates_nor_resets(self):
+        self.register(self.a)
+        away = self.a.project.with_name('alpha-away')
+        self.a.project.rename(away)
+        registry().reconcile(now=2000.0, backfill_page=0)
+        away.rename(self.a.project)
+        registry().reconcile(now=2000.0 + DAY + 10, backfill_page=0)
+        row = self.row(self.a)
+        self.assertEqual((row['status'], row['missing_since'], row['missing_seen']),
+                         ('missing_pending', 2000.0, 1))
+
     def test_return_within_grace_restores_active_inode_change_detaches(self):
         self.register(self.a)
         self.register(self.b)

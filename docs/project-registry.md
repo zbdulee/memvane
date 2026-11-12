@@ -64,12 +64,16 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
   막지 않는다. 파일·git·journal 검사는 트랜잭션 밖에서 하고, 저장은 관측 때의 행
   버전 compare-and-set이다. 경쟁에서 진 행은 다음 pass가 다시 본다.
 - root가 없으면 즉시 `missing_pending`이다. 60초 이상 떨어진 독립 관측 2회와 최초
-  소실 뒤 24시간이 모두 지나면 `detached`(`missing`)다. 유예 중 같은 inode와 선택
-  증명이 돌아오면 `active`로 복구한다. `detached` 뒤에는 자동 복귀하지 않는다.
+  소실 뒤 24시간이 모두 지나면 `detached`(`missing`)다. 유예(최초 소실 뒤 24시간)
+  안에 같은 inode와 선택 증명이 돌아오면 `active`로 복구한다. 유예가 지난 뒤 root가
+  돌아오면 reconcile도 암묵 등록도 복구·소실 정보 초기화를 하지 않는다. 관측 2회를
+  채운 행은 `detached`(`missing`)가 되고, 그렇지 않은 행은 `missing_pending`으로
+  남는다. 명시적 재등록만 되살린다. `detached` 뒤에는 자동 복귀하지 않는다.
   권한 오류 같은 관측 불가는 소실로 세지 않는다. 저장된 소실 시각이 미래면 그
   관측을 첫 관측으로 다시 센다.
-- inode가 바뀐 root는 `detached`(`root_moved`)다. 프로젝트 root 이동은 자동으로
-  경로를 바꾸지 않는다.
+- inode가 바뀐 root는 `detached`(`root_moved`)다. 암묵 등록(SessionStart seed,
+  backfill)도 저장된 inode와 다른 root를 만나면 덮어쓰지 않고 같은 규칙을 따른다.
+  프로젝트 root 이동은 자동으로 경로를 바꾸지 않는다.
 - route 증명이 실패하면 해제가 증명된 경우에만 `detached`(`released`)이고, 그 밖의
   실패는 상태를 두고 `proof`에 `unproved:<사유>`를 남긴다. 같은 install의 route가
   다른 state root를 가리키면(state move 완료) state root를 갱신한다.
@@ -114,7 +118,9 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 
 - 부재·손상·busy·미지원 schema·안전하지 않은 경로는 `RegistryUnavailable`이다.
   hook 읽기는 busy 대기 50ms로 끝난다. 레지스트리를 삭제·재생성하지 않고, 미지원
-  schema나 손상된 파일에는 쓰지 않는다. 0바이트 파일은 쓰는 쪽이 schema를 만든다.
+  schema나 손상된 파일에는 쓰지 않는다. schema는 파일을 새로 만든 연결만 초기화한다.
+  이미 있던 빈 파일은 tombstone을 담았을 수 있어 `registry_corrupt`로 거절하고
+  다시 만들거나 backfill로 다시 채우지 않는다.
 - SQLite 기본 rollback journal 모드를 써서 py3.9 hook이 새 python이 쓴 파일을 읽는다.
 - 레지스트리의 journal 읽기는 `read_only_journals()` 안에서 한다. 중단된 v3/v4
   journal의 rollback 복구를 하지 않고 그 설치를 이번 pass에서 건너뛴다. journal

@@ -217,8 +217,10 @@ def _classify(exc):
 def _require_schema(db, *, initialize):
     names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if not names:
+        # Only the connection that just created the file initializes it. An
+        # existing empty file may have held tombstones: never rebuilt here.
         if not initialize:
-            _fail('registry_absent')
+            _fail('registry_corrupt')
         for statement in _DDL:
             db.execute(statement)
         db.execute("INSERT INTO meta(key,value) VALUES ('schema',?)", (SCHEMA,))
@@ -243,6 +245,7 @@ def _connect(home, *, write, create, busy_ms):
     except OSError:
         _fail('registry_unsafe')
     path = directory / FILENAME
+    created = False
     try:
         before = _check_file(path)
     except FileNotFoundError:
@@ -251,6 +254,7 @@ def _connect(home, *, write, create, busy_ms):
         try:
             os.close(os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL |
                              getattr(os, 'O_NOFOLLOW', 0), 0o600))
+            created = True
         except FileExistsError:
             pass
         before = _check_file(path)
@@ -272,7 +276,7 @@ def _connect(home, *, write, create, busy_ms):
             db.execute('PRAGMA query_only=1')
         db.execute('BEGIN IMMEDIATE' if write else 'BEGIN')
         try:
-            _require_schema(db, initialize=write and create)
+            _require_schema(db, initialize=created)
             db.execute('COMMIT')
         except BaseException:
             db.execute('ROLLBACK')
@@ -609,6 +613,12 @@ def _journal_selected(row):
         return None
 
 
+def _grace_expired(row, now):
+    since = row['missing_since']
+    return (row['status'] == 'missing_pending' and since is not None and
+            since <= now + CLOCK_SKEW_SECONDS and now - since >= MISSING_GRACE_SECONDS)
+
+
 def _decide(db, current, others, proof, target, inode, now, explicit):
     install = proof['installId']
     mine = next((row for row in current if row['install_id'] == install), None)
@@ -616,6 +626,20 @@ def _decide(db, current, others, proof, target, inode, now, explicit):
                   row['reason'] in TOMBSTONE_REASONS]
     if not explicit and (mine in tombstoned or (mine is None and tombstoned)):
         return 'tombstoned'
+    if not explicit and mine is not None and mine['status'] in ('active', 'missing_pending'):
+        if mine['inode'] is not None and mine['inode'] != inode:
+            # Same path, another root: the stored identity decides (root_moved),
+            # never the implicit proof of whatever lives there now.
+            db.execute("UPDATE entries SET status='detached', reason='root_moved', "
+                       'observed_at=?, version=version+1 WHERE id=?', (now, mine['id']))
+            db.execute("UPDATE entries SET status='detached', reason='root_moved', "
+                       "observed_at=?, version=version+1 WHERE install_id=? AND "
+                       "kind='worktree' AND status IN ('active','missing_pending')",
+                       (now, install))
+            return 'root_moved'
+        if _grace_expired(mine, now):
+            # Past the grace only an explicit registration brings it back.
+            return 'held'
     live = [row for row in current if row['id'] in others]
     contested = False
     for row in live:
@@ -732,6 +756,16 @@ def _check_main(home, row, now, deadline):
         if outcome == 'stored':
             _detach_children(home, row['install_id'], 'root_moved', now)
         return outcome
+    if _grace_expired(row, now):
+        # The original root is back after the grace: never reactivated or reset
+        # here. Two sightings make it the ``missing`` tombstone it qualified as.
+        if (row['missing_seen'] or 0) >= MISSING_OBSERVATIONS:
+            outcome = _cas(home, row, {'status': 'detached', 'reason': 'missing',
+                                       'observed_at': now})
+            if outcome == 'stored':
+                _detach_children(home, row['install_id'], 'missing', now)
+            return outcome
+        return _cas(home, row, {'observed_at': now}, bump=False)
     project = Path(row['project_root'])
     try:
         proof = _prove_main(project)
