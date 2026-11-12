@@ -1666,7 +1666,12 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             raise
 
         def call(method, *args):
-            if _higher_priority_wake(controller):
+            # At each provider-call boundary, as the v6 capacity path does
+            # between rounds: due QMD work, or another project's initial build
+            # waiting on the owner this pass holds. Sets already committed stay
+            # (a pass that added some reports progress and is re-offered).
+            if (_higher_priority_wake(controller)
+                    or _initial_build_waiting(controller, Path(decision['projectRoot']))):
                 raise ResourceDeferred('laya_sync_yield_priority')
             context['calls'] += 1
             try:
