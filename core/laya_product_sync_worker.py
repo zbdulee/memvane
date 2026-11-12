@@ -1918,7 +1918,7 @@ def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snaps
 # the first step of a pass, on its own SHADOW_PREPARE_SECONDS budget; due
 # later in a pass, the pass ends and the next one starts with it.
 SHADOW_STEPS_PER_PASS = 32
-SHADOW_PASS_SECONDS = 10.0
+SHADOW_PASS_SECONDS = 60.0
 SHADOW_PREPARE_SECONDS = 60.0
 # ``off`` stops the driver before it reads or writes anything.
 SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'

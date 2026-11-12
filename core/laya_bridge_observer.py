@@ -47,7 +47,14 @@ def _probe_loaded_reader(project, root, *, sentinel_path, sentinel_sha256, deadl
             any(part in ('','.','..') for part in sentinel_path.split('/')) or
             not isinstance(sentinel_sha256,str) or not B._SHA.fullmatch(sentinel_sha256)):
         _refuse()
-    deadline = time.monotonic()+3 if deadline is None else deadline
+    if deadline is None:
+        # Inside a hook process: the receipt probe bound, cut to what is left
+        # of the hook budget (exhausted refuses).
+        import hook_budget
+        try:
+            deadline = time.monotonic() + hook_budget.remaining(HOOK_RECEIPT_SECONDS)
+        except hook_budget.HookDeadlineExceeded:
+            _refuse()
     if type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic() >= deadline:
         _refuse()
     info = root.stat()
@@ -91,7 +98,10 @@ def _probe_loaded_reader(project, root, *, sentinel_path, sentinel_sha256, deadl
 # format the QA collector writes. ``check_loaded_bridge`` stays the verifier;
 # a hook receipt holds while its journal epoch, preferred endpoint and release
 # commit stay selected, for at most ``_HOOK_TTL`` (a day).
-HOOK_RECEIPT_SECONDS = 2.0
+# Upper bound of one loaded-reader probe (hook receipt and QA collector), never
+# more than what is left of the hook budget: a warm v6 probe of a 4,000-card
+# install takes 5.2-5.5 s.
+HOOK_RECEIPT_SECONDS = 10.0
 _HOOK_STATES = ('shadow_verified', 'reader_ready')
 _SHELLS = frozenset(('sh', 'bash', 'zsh', 'dash', 'ksh', 'fish'))
 
