@@ -254,20 +254,37 @@ def _targets(origin, deadline):
     return targets
 
 
-def _nested_project(path, project):
+def _nested_project(path, project, deadline):
     """A project settings folder between the edited file and its owner root.
 
     Registry lookup only: it lists registered owners, while the bounded scan
     sees every install (a nested one, or the cap refuses). An unregistered
     nested project is therefore never routed to its registered parent.
+
+    Bounded: at most the source tree depth (``laya_index_source_port.
+    MAX_DEPTH``) parent folders, two stats each, checked against the hook
+    deadline before each one. A deeper path or a spent deadline holds the
+    edit back (True), never routes it unchecked.
     """
     import project_dir
-    root = Path(project)
-    for parent in path.parents:
-        if parent == root:
-            return False
-        if project_dir.settings_path(parent) is not None:
+    from laya_index_source_port import MAX_DEPTH
+    try:
+        between = len(path.relative_to(project).parts) - 1
+    except ValueError:
+        return True
+    if between > MAX_DEPTH:
+        return True
+    for parent in list(path.parents)[:max(between, 0)]:
+        if time.monotonic() >= deadline:
             return True
+        for name in project_dir.NAMES:
+            try:
+                if stat.S_ISREG(os.stat(parent / name / project_dir.SETTINGS).st_mode):
+                    return True
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
     return False
 
 
@@ -296,7 +313,8 @@ def notify(paths, *, cwd, host, origin):
             owner = owner_for(path, targets) if path is not None else None
             if owner is None or not _eligible(path, owner['decision']):
                 continue
-            if owner.get('registered') and _nested_project(path, owner['projectRoot']):
+            if owner.get('registered') and _nested_project(path, owner['projectRoot'],
+                                                           deadline):
                 continue
             decision = owner['decision']
             proof = journal.verify_notification_target(decision)

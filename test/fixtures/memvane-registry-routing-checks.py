@@ -199,6 +199,46 @@ class RegistryTargets(Routing):
                 self.assertEqual(self.notify()['owners'], 0)
                 self.assertFalse(self.routed())
 
+    def count_settings_stats(self):
+        counted = []
+        real = os.stat
+
+        def stat(path, *args, **kwargs):
+            if str(path).endswith('settings.json'):
+                counted.append(str(path))
+            return real(path, *args, **kwargs)
+        self.patch(os, 'stat', side_effect=stat)
+        return counted
+
+    def test_nested_check_is_bounded_by_depth_and_holds_deeper_edits(self):
+        from laya_index_source_port import MAX_DEPTH
+        self.backfill()
+        shallow = self.b.project / 'a' / 'b' / 'note.md'
+        shallow.parent.mkdir(parents=True)
+        shallow.write_text('shallow\n')
+        deep = self.b.project.joinpath(*[f'd{n}' for n in range(MAX_DEPTH + 5)], 'note.md')
+        deep.parent.mkdir(parents=True)
+        deep.write_text('deep\n')
+        counted = self.count_settings_stats()
+        self.assertEqual(self.notify(shallow)['owners'], 1)
+        self.assertLessEqual(len(counted), 2 * MAX_DEPTH)
+        counted.clear()
+        self.wake.reset_mock()
+        self.assertEqual(self.notify(deep)['owners'], 0)
+        self.assertFalse(self.routed())
+        self.assertLessEqual(len(counted), 2 * MAX_DEPTH)
+
+    def test_nested_check_at_the_deadline_holds_without_looking(self):
+        import time
+        nested = self.b.project / 'x' / 'note.md'
+        nested.parent.mkdir(parents=True)
+        counted = self.count_settings_stats()
+        self.assertTrue(external._nested_project(nested, str(self.b.project),
+                                                 time.monotonic() - 1))
+        self.assertEqual(counted, [])
+        self.assertFalse(external._nested_project(nested, str(self.b.project),
+                                                  time.monotonic() + 60))
+
     def test_nested_project_folders_hold_out_a_registered_owner_only(self):
         # Registry lookup lists registered owners only, so a project folder
         # between the file and the owner root holds the edit back. The scan

@@ -105,7 +105,10 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
   경로와 owner root 사이에 다른 프로젝트 폴더(`.memvane/settings.json` 또는
   `.auto-context/settings.json`)가 있으면 라우팅하지 않는다. 등록되지 않은 중첩
   설치가 바깥 owner로 전달되지 않게 하려는 것이고, 열거 모드는 모든 설치를 보므로
-  이 검사를 두지 않는다.
+  이 검사를 두지 않는다. 이 검사는 owner root 아래 부모 폴더를 원문 트리 깊이
+  상한(`laya_index_source_port.MAX_DEPTH`, 32단계)까지만 폴더당 stat 2회로 보고,
+  단계마다 hook deadline을 확인한다. 더 깊은 경로, deadline 초과, 판독 오류는 그
+  편집을 전달하지 않는다.
 
 ## 실패와 호환
 
