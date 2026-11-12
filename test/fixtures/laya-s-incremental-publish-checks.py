@@ -48,6 +48,24 @@ else:
 '''
 
 
+GC_CHILD = r'''
+import json, os, sys
+args = json.loads(sys.argv[1])
+sys.path.insert(0, args['core'])
+import laya_view_store as views
+store = views.ViewStore.open(args['db'], repository=args['repository'], scope_id=args['scope'])
+handle = store.capture_view(args['worktree_id'])
+def stop(*_):
+    os._exit(17)
+if args['point'] == 'before_commit':
+    store._db.set_trace_callback(lambda sql: stop() if sql.strip().upper() == 'COMMIT' else None)
+    store.collect_view_rows(handle, limit=64)
+else:
+    store.collect_view_rows(handle, limit=64)
+    stop()
+'''
+
+
 class IncrementalPublicationChecks(seed.GenerationCase):
     def rows_store(self, root=None):
         repository, worktree = self.bind(root)
@@ -421,6 +439,74 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(again['epoch'], 6)
         self.assertNotIn(first['gen_id'], gens)
         self.assertNotEqual(second['gen_id'], third['gen_id'])
+
+    def collectable(self):
+        store, repository, handle = self.rows_store()
+        for body in (b'# One\nuniqueone x\n', b'# Two\nuniquetwo x\n', b'# Three\nuniquethree x\n'):
+            head = self.publish(store, handle, body)
+        return store, repository, handle, head
+
+    def gc_crash(self, point):
+        store, repository, handle, head = self.collectable()
+        before = self.counts(store, handle.view_id)
+        store.close()
+        args = dict(core=str(CORE), db=str(self.db), repository=repository, scope=self.scope,
+                    worktree_id=handle.worktree_id, point=point)
+        result = subprocess.run([sys.executable, '-B', '-c', GC_CHILD, json.dumps(args)],
+                                env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+                                capture_output=True, encoding='utf8', timeout=120, check=False)
+        self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+        again = self.reopen(repository)
+        fresh = again.capture_view(handle.worktree_id)
+        self.assertEqual(again.head(fresh)['gen_id'], head['gen_id'])
+        self.assertEqual(self.found(again, fresh, 'uniquethree'), ['cards/a.md'])
+        return again, fresh, before, head
+
+    def test_collection_exit_before_commit_keeps_every_row(self):
+        store, handle, before, _ = self.gc_crash('before_commit')
+        self.assertEqual(self.counts(store, handle.view_id), before)
+
+    def test_collection_exit_after_commit_keeps_a_complete_batch_and_resumes(self):
+        store, handle, before, head = self.gc_crash('after_commit')
+        after = self.counts(store, handle.view_id)
+        self.assertEqual(after['s_generations'], 2)
+        self.assertLess(after['s_cards'], before['s_cards'])
+        self.assertFalse(any(store.collect_view_rows(handle, limit=64).get(t)
+                             for t in ('s_cards', 's_deltas', 's_generations')))
+        back = store.rollback_generation(handle, expected_head=head)
+        self.assertEqual(self.found(store, handle, 'uniquetwo'), ['cards/a.md'])
+        self.assertEqual(back['epoch'], head['epoch'] + 1)
+
+    def test_collection_leaves_a_pinned_head_and_a_ready_stage_usable(self):
+        store, _, handle, head = self.collectable()
+        pin = store.pin_view(handle)
+        manifest = self.snapshot(store, handle, body=b'# Four\nuniquefour x\n')
+        gen = store.prepare_generation(handle, manifest, expected_head=head)
+        try:
+            while any(store.collect_view_rows(handle, limit=64).get(t)
+                      for t in ('s_cards', 's_deltas', 's_generations', 'stage')):
+                pass
+            self.assertEqual([row['path'] for row in store.search(pin, 'uniquethree', 10)], ['cards/a.md'])
+        finally:
+            store.release(pin)
+        self.assertEqual(store._db.execute("SELECT state FROM s_stage_jobs WHERE view_id=?",
+                                           (handle.view_id,)).fetchone()[0], 'ready')
+        published = store.publish_generation(handle, gen, expected_head=head)
+        self.assertEqual(published['gen_id'], gen)
+        self.assertEqual(self.found(store, handle, 'uniquefour'), ['cards/a.md'])
+
+    def test_collection_waits_for_an_open_reader_and_deletes_nothing(self):
+        import sqlite3
+        store, _, handle, _ = self.collectable()
+        before = self.counts(store, handle.view_id)
+        reader = sqlite3.connect(str(self.db), timeout=0)
+        self.addCleanup(reader.close)
+        reader.execute('BEGIN')
+        reader.execute('SELECT COUNT(*) FROM s_cards').fetchone()
+        self.assertEqual(self.refused(store.collect_view_rows, handle, limit=64).reason, 'candidate_busy')
+        self.assertEqual(self.counts(store, handle.view_id), before)
+        reader.rollback()
+        self.assertTrue(store.collect_view_rows(handle, limit=64)['s_cards'])
 
     def test_unsupported_row_inputs_refuse_before_any_write(self):
         store, _, handle = self.rows_store()
