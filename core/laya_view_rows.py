@@ -104,7 +104,19 @@ def _source_value(row):
     return dict(path=row['path'], observation_id=row['observation_id'])
 
 
-def member_acc(cards, legacy_rows=(), sources=()):
+_CARD_SOURCE_DOMAIN = 'memvane-row-card-source-v1'
+CARD_SOURCE_FIELDS = ('card_path', 'source_path', 'observation_id', 'spans_json')
+
+
+def _card_source_value(row):
+    return {k: row[k] for k in CARD_SOURCE_FIELDS}
+
+
+def _card_source_key(row):
+    return (row['card_path'].encode('utf8'), row['source_path'].encode('utf8'))
+
+
+def member_acc(cards, legacy_rows=(), sources=(), card_sources=()):
     acc = EMPTY_ACC
     for row in cards:
         acc = acc_update(acc, _CARD_DOMAIN, _card_value(row))
@@ -112,12 +124,15 @@ def member_acc(cards, legacy_rows=(), sources=()):
         acc = acc_update(acc, _LEGACY_DOMAIN, _legacy_value(row))
     for row in sources:
         acc = acc_update(acc, _SOURCE_DOMAIN, _source_value(row))
+    for row in card_sources:
+        acc = acc_update(acc, _CARD_SOURCE_DOMAIN, _card_source_value(row))
     return acc
 
 
-def member_digest(cards, legacy_rows=(), sources=()):
-    """Card rows, a legacy generation's FTS corpus rows and the source rows as one multiset commitment."""
-    return acc_digest('member', member_acc(cards, legacy_rows, sources))
+def member_digest(cards, legacy_rows=(), sources=(), card_sources=()):
+    """Card rows, a legacy generation's FTS corpus rows, the source rows and the card source
+    rows as one multiset commitment."""
+    return acc_digest('member', member_acc(cards, legacy_rows, sources, card_sources))
 
 
 def fts_acc(rows, origin='normal', positions=None):
@@ -164,6 +179,14 @@ def _stage_item(path, row):
                                                metadata=row['metadata_json'])))
 
 
+def _card_source_item(old, new):
+    """One staged card source change: the new row (put) or the closed key (delete)."""
+    if new is None:
+        return dict(card_path=old['card_path'], source_path=old['source_path'], action='delete',
+                    observation_id=None, spans_json=None)
+    return dict(new, action='put')
+
+
 def _item_row(item):
     if item['action'] == 'delete':
         return None
@@ -178,15 +201,18 @@ def _sorted_paths(paths):
 
 
 def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items, spec=None,
-                 sources=(), source_items=()):
+                 sources=(), source_items=(), card_sources=(), card_source_items=()):
     """Every committed stage input; the generation id derives from it at prepare."""
     value = dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
                  view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
                  scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
-                 member_digest=member_digest(final, (), sources),
+                 member_digest=member_digest(final, (), sources, card_sources),
                  items_digest=v.digest('memvane-row-stage-items-v1', items))
     if source_items:
         value['source_items_digest'] = v.digest('memvane-row-stage-sources-v1', list(source_items))
+    if card_source_items:
+        value['card_source_items_digest'] = v.digest('memvane-row-stage-card-sources-v1',
+                                                     list(card_source_items))
     if spec is not None:
         value['vector_spec'] = spec
     return value
@@ -323,6 +349,20 @@ class RowsMixin:
         finally:
             cursor.close()
 
+    @staticmethod
+    def _observation_objects(spec, fingerprint_id):
+        """``(content, observation)`` of one fingerprint (HEAD and scan are not identity)."""
+        if spec['binding_state'] == 'observed':
+            content = vals.source_content(spec['source_sha'], spec['byte_length'])
+            return content, vals.source_observation(
+                worktree_id=spec['worktree_id'], branch_key=spec['branch_key'], path=spec['path'],
+                tracked_state=spec['tracked_state'], binding_state='observed',
+                content_id=content['content_id'], legacy_fingerprint_id=None)
+        return None, vals.source_observation(
+            worktree_id=spec['worktree_id'], branch_key=spec['branch_key'], path=spec['path'],
+            tracked_state=spec['tracked_state'], binding_state=spec['binding_state'],
+            content_id=None, legacy_fingerprint_id=fingerprint_id)
+
     def _rows_source_objects(self, sources, *, cache=None):
         """Content and observation rows of a manifest's present sources (HEAD and scan are not identity)."""
         rows, objects = [], []
@@ -330,21 +370,120 @@ class RowsMixin:
             if source['presence'] != 'present':
                 continue
             spec = self._fingerprint(source['fingerprint_id'], cache=cache)
-            if spec['binding_state'] == 'observed':
-                content = vals.source_content(spec['source_sha'], spec['byte_length'])
-                observation = vals.source_observation(
-                    worktree_id=spec['worktree_id'], branch_key=spec['branch_key'], path=spec['path'],
-                    tracked_state=spec['tracked_state'], binding_state='observed',
-                    content_id=content['content_id'], legacy_fingerprint_id=None)
-            else:
-                content = None
-                observation = vals.source_observation(
-                    worktree_id=spec['worktree_id'], branch_key=spec['branch_key'], path=spec['path'],
-                    tracked_state=spec['tracked_state'], binding_state=spec['binding_state'],
-                    content_id=None, legacy_fingerprint_id=source['fingerprint_id'])
+            content, observation = self._observation_objects(spec, source['fingerprint_id'])
             objects.append((content, observation))
             rows.append(dict(path=source['path'], observation_id=observation['observation_id']))
         return sorted(rows, key=lambda row: row['path'].encode('utf8')), objects
+
+    def _rows_card_source_objects(self, cards, *, cache=None):
+        """One card source row per (card, source path) of derived card refs, and their objects.
+
+        ``cards`` are ``_derive``'s refs in (card, ordinal) order. Refs of one
+        card to the same source path merge their spans in ordinal order when
+        they name one observation; two observations of one path refuse.
+        """
+        grouped, objects = {}, []
+        for card in cards:
+            spec = self._fingerprint(card['fingerprint_id'], cache=cache)
+            content, observation = self._observation_objects(spec, card['fingerprint_id'])
+            key = (card['wiki_path'], spec['path'])
+            entry = grouped.get(key)
+            if entry is None:
+                grouped[key] = dict(card_path=card['wiki_path'], source_path=spec['path'],
+                                    observation_id=observation['observation_id'], spans=list(card['spans']))
+                objects.append((content, observation))
+            elif entry['observation_id'] != observation['observation_id']:
+                v.fail('card_source_conflict')
+            else:
+                entry['spans'].extend(card['spans'])
+        rows = [dict(card_path=entry['card_path'], source_path=entry['source_path'],
+                     observation_id=entry['observation_id'], spans_json=v.canonical(entry['spans']))
+                for entry in grouped.values()]
+        return sorted(rows, key=_card_source_key), objects
+
+    def _rows_card_source_changes(self, db, view_id, current, plan):
+        """``(final rows, new objects, stage items)`` of an ordinary stage's card sources.
+
+        A card's source rows are a function of its path and trust digest
+        (the attestation's refs), so only cards whose row changes are
+        re-derived; the open rows of the others are kept.
+        """
+        wanted = {member['path']: _card_row(member) for member in plan['members']}
+        changed = {path for path in set(current) | set(wanted) if current.get(path) != wanted.get(path)}
+        derived, objects = self._rows_card_source_objects([card for card in plan['cards']
+                                                           if card['wiki_path'] in changed])
+        opened = self._rows_open_card_sources(db, view_id)
+        final = sorted([row for row in opened if row['card_path'] not in changed] + derived, key=_card_source_key)
+        items = [_card_source_item(old, new) for old, new in self._card_source_diff(opened, final)]
+        return final, objects, items
+
+    @staticmethod
+    def _rows_card_source_spans(row):
+        spans = v.parse_canonical(row['spans_json'])
+        if not isinstance(spans, list):
+            v.fail('card_source_invalid')
+        return spans
+
+    @staticmethod
+    def _rows_open_card_sources(db, view_id, ordinal=None, card_paths=None):
+        """The view's card source rows visible in ``ordinal`` (default: the open interval)."""
+        sql = 'SELECT card_path,source_path,observation_id,spans_json FROM s_card_sources WHERE view_id=? '
+        args = [view_id]
+        if ordinal is None:
+            sql += 'AND gen_to IS NULL '
+        else:
+            sql += 'AND gen_from<=? AND (gen_to IS NULL OR gen_to>?) '
+            args += [ordinal, ordinal]
+        if card_paths is not None:
+            sql += 'AND card_path IN (' + ','.join('?' for _ in card_paths) + ') '
+            args += list(card_paths)
+        cursor = db.execute(sql + 'ORDER BY card_path,source_path', args)
+        try:
+            return [dict(zip(CARD_SOURCE_FIELDS, tuple(row))) for row in cursor]
+        finally:
+            cursor.close()
+
+    @staticmethod
+    def _card_source_diff(current, wanted):
+        """``[(old, new)]`` card source rows by (card, source path), binary order."""
+        current = {_card_source_key(row): row for row in current}
+        wanted = {_card_source_key(row): row for row in wanted}
+        return [(current.get(key), wanted.get(key)) for key in sorted(set(current) | set(wanted))
+                if current.get(key) != wanted.get(key)]
+
+    @staticmethod
+    def _apply_card_source_delta(db, view_id, ordinal, old, new):
+        """Close and/or open one card source interval and record its rollback delta."""
+        row = old if old is not None else new
+        for value in (old, new):
+            if value is not None:
+                v.exact(value, CARD_SOURCE_FIELDS)
+        current = db.execute('SELECT card_path,source_path,observation_id,spans_json FROM s_card_sources '
+                             'WHERE view_id=? AND card_path=? AND source_path=? AND gen_to IS NULL',
+                             (view_id, row['card_path'], row['source_path'])).fetchone()
+        if (None if current is None else dict(zip(CARD_SOURCE_FIELDS, tuple(current)))) != old:
+            v.fail('card_source_delta_conflict')
+        if old is not None and db.execute(
+                'UPDATE s_card_sources SET gen_to=? WHERE view_id=? AND card_path=? AND source_path=? '
+                'AND gen_to IS NULL', (ordinal, view_id, old['card_path'], old['source_path'])).rowcount != 1:
+            v.fail('card_source_delta_conflict')
+        if new is not None:
+            db.execute('INSERT INTO s_card_sources(view_id,card_path,source_path,gen_from,gen_to,observation_id,'
+                       'spans_json) VALUES (?,?,?,?,NULL,?,?)', (view_id, new['card_path'], new['source_path'],
+                                                                 ordinal, new['observation_id'], new['spans_json']))
+        # A view's first generation has no prior to roll back to: no delta.
+        prior = db.execute('SELECT prior_ordinal FROM s_generations WHERE view_id=? AND ordinal=?',
+                           (view_id, ordinal)).fetchone()
+        if prior is not None and prior[0] is not None:
+            key = v.canonical([row['card_path'], row['source_path']])
+            db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
+                       (view_id, ordinal, 'card_source', key, None if old is None else v.canonical(old),
+                        None if new is None else v.canonical(new)))
+            for side, value in (('old', old), ('new', new)):
+                if value is not None:
+                    db.execute('INSERT INTO s_delta_observations(view_id,ordinal,rel,key_json,side,observation_id) '
+                               'VALUES (?,?,?,?,?,?)', (view_id, ordinal, 'card_source', key, side,
+                                                         value['observation_id']))
 
     @staticmethod
     def _rows_put_source_objects(db, objects):
@@ -491,6 +630,11 @@ class RowsMixin:
                                  observation_id=None if new is None else new['observation_id'])
                             for old, new in self._source_diff(self._rows_open_sources(db, handle.view_id),
                                                               source_rows)]
+            # A legacy import keeps its line spans in card metadata; its publication closes these rows.
+            card_rows, card_objects, card_items = [], [], []
+            if legacy is None:
+                card_rows, card_objects, card_items = self._rows_card_source_changes(db, handle.view_id, current,
+                                                                                    plan)
             # Zero or complete: every eligible member's set is validated before any write.
             self._rows_coverage(db, [_card_row(m) for m in plan['members']], spec, full=True, deadline=deadline)
         if legacy is None:
@@ -518,7 +662,7 @@ class RowsMixin:
             v.identifier(job_id, v.UUID)
             scan_digest = _legacy_scan(manifest, skips, legacy, _legacy_corpus_rows(legacy))
         stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items,
-                             spec, source_rows, source_items)
+                             spec, source_rows, source_items, card_rows, card_items)
         gen_id = vals.gen_id(job_id, v.digest(ROW_STAGE_SCHEMA, stage))
         self._observe(entry, deadline=deadline)
         _expired(deadline)
@@ -550,6 +694,12 @@ class RowsMixin:
             for item in source_items:
                 db.execute('INSERT INTO s_stage_source_changes(job_id,path,action,observation_id) VALUES (?,?,?,?)',
                            (job_id, item['path'], item['action'], item['observation_id']))
+            self._rows_put_source_objects(db, card_objects)
+            for item in card_items:
+                db.execute('INSERT INTO s_stage_card_source_changes(job_id,card_path,source_path,action,'
+                           'observation_id,spans_json) VALUES (?,?,?,?,?,?)',
+                           (job_id, item['card_path'], item['source_path'], item['action'],
+                            item['observation_id'], item['spans_json']))
             if spec is not None:
                 db.execute('UPDATE s_stage_jobs SET vector_spec_json=? WHERE job_id=?', (v.canonical(spec), job_id))
             cursor = None
@@ -608,6 +758,18 @@ class RowsMixin:
                 else:
                     sources[item['path']] = dict(path=item['path'], observation_id=item['observation_id'])
             final_sources = [sources[path] for path in _sorted_paths(sources)]
+            card_items = [dict(zip(('card_path', 'source_path', 'action', 'observation_id', 'spans_json'),
+                                   tuple(r))) for r in db.execute(
+                'SELECT card_path,source_path,action,observation_id,spans_json FROM s_stage_card_source_changes '
+                'WHERE job_id=? ORDER BY card_path,source_path', (job[0],))]
+            card_sources = {_card_source_key(row): row for row in self._rows_open_card_sources(db, handle.view_id)}
+            for item in card_items:
+                key = _card_source_key(item)
+                if item['action'] == 'delete':
+                    card_sources.pop(key, None)
+                else:
+                    card_sources[key] = {k: item[k] for k in CARD_SOURCE_FIELDS}
+            final_card_sources = [card_sources[key] for key in sorted(card_sources)]
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
             final = dict(current)
             for item in items:
@@ -622,12 +784,12 @@ class RowsMixin:
             import laya_view_vectors as vectors
             spec = None if job[8] is None else vectors.spec(v.parse_canonical(job[8]))
             stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items,
-                                 spec, final_sources, source_items)
+                                 spec, final_sources, source_items, final_card_sources, card_items)
             if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id:
                 v.fail('stage_identity_changed')
             if any('fts_path' in v.parse_canonical(row['metadata_json']) for row in final):
                 v.fail('migration_publish_proof_required')
-            return stage, items, current, final, final_sources
+            return stage, items, current, final, final_sources, final_card_sources
 
         stage = files = rows = None
         with self._session() as db:
@@ -636,7 +798,7 @@ class RowsMixin:
             if published is None:
                 if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
                     v.fail('view_head_conflict')
-                stage, items, _, final, _ = staged_state(db)
+                stage, items, _, final, _, _ = staged_state(db)
         if published is None:
             # Bounded FD reads of the final members' exact bytes, outside the writer lock.
             files = _wiki_files(saved, final)
@@ -655,7 +817,7 @@ class RowsMixin:
             again = staged_state(db)
             if stage is None or again[0] != stage:
                 v.fail('stage_identity_changed')
-            items, final_sources = again[1], again[4]
+            items, final_sources, final_card_sources = again[1], again[4], again[5]
             spec = stage.get('vector_spec')
             self._rows_coverage(db, final, spec, full=False, deadline=deadline)
             _live(db, saved, files)
@@ -683,13 +845,16 @@ class RowsMixin:
                               expected_member_digest=stage['member_digest'], legacy_json=None,
                               source_digest=v.digest('memvane-row-sources-v1', []))
             source_deltas = self._source_diff(self._rows_open_sources(db, handle.view_id), final_sources)
+            card_source_deltas = self._card_source_diff(self._rows_open_card_sources(db, handle.view_id),
+                                                        final_card_sources)
             written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline,
-                                       legacy_deltas=legacy_deltas, source_deltas=source_deltas)
+                                       legacy_deltas=legacy_deltas, source_deltas=source_deltas,
+                                       card_source_deltas=card_source_deltas)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
     def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, rollback=None,
-                    legacy_deltas=(), legacy_final=None, commit=None, source_deltas=()):
+                    legacy_deltas=(), legacy_final=None, commit=None, source_deltas=(), card_source_deltas=()):
         """Changed card and legacy corpus rows, their head FTS rows, the sealed generation and the head CAS.
 
         Runs inside the caller's write transaction and commits it under the
@@ -710,6 +875,13 @@ class RowsMixin:
             else:
                 open_sources[new['path']] = new
         final_sources = [open_sources[path] for path in _sorted_paths(open_sources)]
+        open_cards = {_card_source_key(row): row for row in self._rows_open_card_sources(db, view_id)}
+        for old, new in card_source_deltas:
+            if new is None:
+                open_cards.pop(_card_source_key(old), None)
+            else:
+                open_cards[_card_source_key(new)] = new
+        final_card_sources = [open_cards[key] for key in sorted(open_cards)]
         sequence = db.execute("SELECT seq FROM sqlite_sequence WHERE name='s_generations'").fetchone()
         ordinal = (0 if sequence is None else sequence[0]) + 1
         changes = {'base': [], 'sidecar': []}
@@ -775,7 +947,7 @@ class RowsMixin:
                 if side_rows is not None:
                     _, side_physical = fts.head_proof(db, view_id, side_rows, deadline, sidecar=True, logical=False)
                 physical = legacy_physical(base_physical, side_physical)
-                members = member_acc(final_cards, final_legacy, final_sources)
+                members = member_acc(final_cards, final_legacy, final_sources, final_card_sources)
                 text_acc = self._rows_legacy_fts_acc(base_rows, side_rows, positions)
             elif rollback is None:
                 if after_sidecar:
@@ -783,7 +955,8 @@ class RowsMixin:
                 fts.verify_head_index(db, view_id)
                 self._fts_guard.freeze_head()
                 _, physical = fts.head_proof(db, view_id, rows, deadline, logical=False)
-                members = member_acc(self._rows_open_after(db, view_id, deltas), (), final_sources)
+                members = member_acc(self._rows_open_after(db, view_id, deltas), (), final_sources,
+                                     final_card_sources)
                 text_acc = fts_acc(rows)
             else:
                 current, prior = rollback
@@ -803,6 +976,11 @@ class RowsMixin:
                         members = acc_update(members, _SOURCE_DOMAIN, _source_value(old), -1)
                     if new is not None:
                         members = acc_update(members, _SOURCE_DOMAIN, _source_value(new))
+                for old, new in card_source_deltas:
+                    if old is not None:
+                        members = acc_update(members, _CARD_SOURCE_DOMAIN, _card_source_value(old), -1)
+                    if new is not None:
+                        members = acc_update(members, _CARD_SOURCE_DOMAIN, _card_source_value(new))
                 for origin, row, sign in text_changes:
                     text_acc = acc_update(text_acc, _FTS_DOMAINS[origin], row, sign)
                 if (members, text_acc) != (acc_value(prior['member_acc']), acc_value(prior['fts_acc'])):
@@ -826,6 +1004,9 @@ class RowsMixin:
             for old, new in source_deltas:
                 _expired(deadline)
                 self._apply_source_delta(db, view_id, ordinal, old, new)
+            for old, new in card_source_deltas:
+                _expired(deadline)
+                self._apply_card_source_delta(db, view_id, ordinal, old, new)
             if head.ordinal is None:
                 db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,1)', (view_id, ordinal))
             elif db.execute('UPDATE s_heads SET ordinal=?,epoch=? WHERE view_id=? AND ordinal=? AND epoch=?',
@@ -934,19 +1115,21 @@ class RowsMixin:
             prior = dict(prior)
             if seal_digest(_seal_fields(self._incarnation, prior)) != prior['seal_digest']:
                 v.fail('generation_seal_mismatch')
-            deltas, legacy_deltas, source_deltas = [], [], []
+            deltas, legacy_deltas, source_deltas, card_source_deltas = [], [], [], []
             for rel, old_json, new_json in db.execute(
                     'SELECT rel,old_json,new_json FROM s_deltas WHERE view_id=? AND ordinal=? '
                     'ORDER BY rel,key_json DESC', (handle.view_id, head.ordinal)).fetchall():
-                if rel not in ('card', 'legacy_fts', 'source'):
+                if rel not in ('card', 'legacy_fts', 'source', 'card_source'):
                     v.fail('row_format_unsupported')
                 old = None if old_json is None else v.parse_canonical(old_json)
                 new = None if new_json is None else v.parse_canonical(new_json)
-                fields = dict(card=CARD_FIELDS, legacy_fts=LEGACY_FIELDS, source=('path', 'observation_id'))[rel]
+                fields = dict(card=CARD_FIELDS, legacy_fts=LEGACY_FIELDS, source=('path', 'observation_id'),
+                              card_source=CARD_SOURCE_FIELDS)[rel]
                 for value in (old, new):
                     if value is not None:
                         v.exact(value, fields)
-                dict(card=deltas, legacy_fts=legacy_deltas, source=source_deltas)[rel].append((new, old))
+                dict(card=deltas, legacy_fts=legacy_deltas, source=source_deltas,
+                     card_source=card_source_deltas)[rel].append((new, old))
             generation = dict(gen_id=vals.gen_id(uuid.uuid4().hex, v.digest('memvane-row-rollback-v1', dict(
                                   view_id=handle.view_id, head=head.gen_id, prior=prior['gen_id']))),
                               view_id=handle.view_id, epoch=head.epoch + 1, prior_ordinal=head.ordinal,
@@ -964,7 +1147,7 @@ class RowsMixin:
 
             written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,
                                        rollback=(current, prior), legacy_deltas=legacy_deltas,
-                                       source_deltas=source_deltas)
+                                       source_deltas=source_deltas, card_source_deltas=card_source_deltas)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
@@ -1078,12 +1261,17 @@ class RowsMixin:
                     source_rows, source_objects = self._rows_source_objects(stored[1])
                     legacy_rows = []
                     if 'legacy' in stage:
+                        # Legacy line spans move into card metadata.
                         members, legacy_rows = self._rows_convert_legacy(db, gen_id, stage['legacy'], members)
+                        card_rows, card_objects = [], []
+                    else:
+                        card_rows, card_objects = self._rows_card_source_objects(stored[2])
                     parent = (None if generation['parent_gen'] is None else db.execute(
                         'SELECT ordinal FROM generations WHERE gen_id=?', (generation['parent_gen'],)).fetchone()[0])
                     chain.append(dict(generation=dict(generation), stage=stage, seal=seal, members=members,
                                       legacy_rows=legacy_rows, parent_ordinal=parent, sources=source_rows,
-                                      source_objects=source_objects))
+                                      source_objects=source_objects, card_sources=card_rows,
+                                      card_objects=card_objects))
                 if len(chain) == 2 and chain[0]['stage']['base'] != dict(
                         view_id=head['view_id'], gen_id=chain[1]['generation']['gen_id'],
                         epoch=head['epoch'] - 1, incarnation=self._incarnation):
@@ -1190,7 +1378,8 @@ class RowsMixin:
                         fts.map_head(db, view_id, sidecar=True)
             else:
                 fts_rows = self._rows_fts_rows(rows, cache={}, deadline=deadline)
-                text_acc, members, side_rows = fts_acc(fts_rows), member_acc(rows, (), item['sources']), None
+                text_acc, side_rows = fts_acc(fts_rows), None
+                members = member_acc(rows, (), item['sources'], item['card_sources'])
                 if last:
                     fts.create_head(db, view_id)
                     fts.populate_head(db, view_id, fts_rows)
@@ -1256,6 +1445,41 @@ class RowsMixin:
             for value, start, end in spans:
                 db.execute('INSERT INTO s_sources(view_id,path,gen_from,gen_to,observation_id) VALUES (?,?,?,?,?)',
                            (view_id, path, start, end, value['observation_id']))
+        # Card source intervals: the same rule, keyed by card and source path.
+        for item in chain:
+            self._rows_put_source_objects(db, item['card_objects'])
+        base_cards = ({_card_source_key(row): row for row in chain[0]['card_sources']}
+                      if len(chain) == 2 else {})
+        top_cards = {_card_source_key(row): row for row in chain[-1]['card_sources']}
+        for key in sorted(set(base_cards) | set(top_cards)):
+            _expired(deadline)
+            old, new = base_cards.get(key), top_cards.get(key)
+            spans = []
+            if old is not None and old == new:
+                spans.append((old, chain[0]['row']['ordinal'], None))
+            else:
+                if old is not None:
+                    spans.append((old, chain[0]['row']['ordinal'], head_ordinal))
+                if new is not None:
+                    spans.append((new, head_ordinal, None))
+                if len(chain) == 2:
+                    row = old if old is not None else new
+                    delta_key = v.canonical([row['card_path'], row['source_path']])
+                    db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) '
+                               'VALUES (?,?,?,?,?,?)', (view_id, head_ordinal, 'card_source', delta_key,
+                                                         None if old is None else v.canonical(old),
+                                                         None if new is None else v.canonical(new)))
+                    for side, value in (('old', old), ('new', new)):
+                        if value is not None:
+                            db.execute('INSERT INTO s_delta_observations(view_id,ordinal,rel,key_json,side,'
+                                       'observation_id) VALUES (?,?,?,?,?,?)',
+                                       (view_id, head_ordinal, 'card_source', delta_key, side,
+                                        value['observation_id']))
+            for value, start, end in spans:
+                db.execute('INSERT INTO s_card_sources(view_id,card_path,source_path,gen_from,gen_to,observation_id,'
+                           'spans_json) VALUES (?,?,?,?,?,?,?)', (view_id, value['card_path'], value['source_path'],
+                                                                  start, end, value['observation_id'],
+                                                                  value['spans_json']))
         base = {row['path']: row for row in chain[0]['members']} if len(chain) == 2 else {}
         top = {row['path']: row for row in chain[-1]['members']}
         for path in _sorted_paths(set(base) | set(top)):
@@ -1350,7 +1574,8 @@ class RowsMixin:
         legacy_rows = self._rows_open_legacy(db, generation['view_id'], generation['ordinal'])
         legacy = self._rows_legacy_content(generation, legacy_rows)
         members = member_acc(rows, legacy_rows if legacy else (),
-                             self._rows_open_sources(db, generation['view_id'], generation['ordinal']))
+                             self._rows_open_sources(db, generation['view_id'], generation['ordinal']),
+                             self._rows_open_card_sources(db, generation['view_id'], generation['ordinal']))
         if (v.canonical(members) != generation['member_acc']
                 or acc_digest('member', members) != generation['member_digest']):
             v.fail('generation_rows_mismatch')
@@ -1594,13 +1819,19 @@ class RowsMixin:
             head = self._rows_head_row(db, pin.view_id)
             if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
                 v.fail('view_head_changed')
-            wanted = set(paths)
+            wanted = list(dict.fromkeys(paths))
+            chosen = set(wanted)
+            # Legacy imports keep line spans in card metadata; ordinary cards in card source rows.
+            spans = {}
+            for row in self._rows_open_card_sources(db, pin.view_id, head.ordinal, card_paths=wanted):
+                spans.setdefault(row['card_path'], []).extend(self._rows_card_source_spans(row))
             result = {}
             for row in self._rows_open(db, pin.view_id, head.ordinal):
-                if row['path'] in wanted:
-                    spans = v.parse_canonical(row['metadata_json']).get('spans', [])
-                    if spans:
-                        result[row['path']] = _locators(spans)
+                if row['path'] not in chosen:
+                    continue
+                found = v.parse_canonical(row['metadata_json']).get('spans', []) + spans.get(row['path'], [])
+                if found:
+                    result[row['path']] = _locators(found)
             return result
 
     # -- vector coverage, fill cursor and exact search ------------------------
@@ -2085,8 +2316,10 @@ class RowsMixin:
                                   legacy_json=v.canonical(_legacy_observation(legacy)),
                                   source_digest=v.digest('memvane-row-sources-v1', []))
                 source_deltas = [(row, None) for row in self._rows_open_sources(db, handle.view_id)]
+                card_source_deltas = [(row, None) for row in self._rows_open_card_sources(db, handle.view_id)]
                 written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,
                                            legacy_deltas=legacy_deltas, source_deltas=source_deltas,
+                                           card_source_deltas=card_source_deltas,
                                            legacy_final=(final, legacy_rows, base_rows, side_rows, positions),
                                            commit=commit)
         finally:

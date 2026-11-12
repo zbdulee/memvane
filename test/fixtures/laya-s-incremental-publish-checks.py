@@ -419,9 +419,11 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         fourth = self.publish_cards(store, handle, flipped)
         self.assertEqual(self.found(store, handle, 'uniquemany001'), [])
         db = store._db
-        deltas = [row[0] for row in db.execute(
-            'SELECT COUNT(*) FROM s_deltas WHERE view_id=? GROUP BY ordinal ORDER BY ordinal', (handle.view_id,))]
-        self.assertEqual(deltas, [1, 1, 1])
+        deltas = [tuple(row) for row in db.execute(
+            "SELECT SUM(rel='card'),SUM(rel='card_source'),COUNT(*) FROM s_deltas WHERE view_id=? "
+            'GROUP BY ordinal ORDER BY ordinal', (handle.view_id,))]
+        # One card row and its trusted card source row per change.
+        self.assertEqual(deltas, [(1, 1, 2), (1, 1, 2), (1, 1, 2)])
         back = store.rollback_generation(handle, expected_head=fourth)
         self.assertEqual(self.found(store, handle, 'uniquemany001'), ['cards/한글-001.md'])
         self.assertEqual(self.found(store, handle, 'uniquemany000'), [])
