@@ -418,22 +418,28 @@ class RowsMixin:
     def _rows_card_source_objects(self, cards, *, cache=None):
         """One card source row per (card, source path) of derived card refs, and their objects.
 
-        ``cards`` are ``_derive``'s refs in (card, ordinal) order. Refs of one
-        card to the same source path merge their spans in ordinal order when
-        they name one observation; two observations of one path refuse.
+        ``cards`` are attestation refs with their ordinals. Refs of one card to
+        the same source path fold into one row: the observation of the lowest
+        ordinal and every ref's spans in ordinal order. One path can carry two
+        observations when a writer card's ``sourceRevisions`` cite it at two
+        shas; the generation format keeps both as ordinals, and its locators
+        come from the spans alone, so the folded row reads the same.
+
+        The row seals only what it stores. The other observations stay bound
+        through the card row's trust digest (the attestation names every
+        source fingerprint), and a pin re-derives the accumulator from the
+        stored rows, so they are not separate accumulator contributions.
         """
         grouped, objects = {}, []
-        for card in cards:
+        for card in sorted(cards, key=lambda c: (c['wiki_path'].encode('utf8'), c['ordinal'])):
             spec = self._fingerprint(card['fingerprint_id'], cache=cache)
-            content, observation = self._observation_objects(spec, card['fingerprint_id'])
             key = (card['wiki_path'], spec['path'])
             entry = grouped.get(key)
             if entry is None:
+                content, observation = self._observation_objects(spec, card['fingerprint_id'])
                 grouped[key] = dict(card_path=card['wiki_path'], source_path=spec['path'],
                                     observation_id=observation['observation_id'], spans=list(card['spans']))
                 objects.append((content, observation))
-            elif entry['observation_id'] != observation['observation_id']:
-                v.fail('card_source_conflict')
             else:
                 entry['spans'].extend(card['spans'])
         rows = [dict(card_path=entry['card_path'], source_path=entry['source_path'],
