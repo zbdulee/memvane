@@ -454,8 +454,8 @@ def verify_head_index(db,view_id,*,sidecar=False):
         v.fail('fts_integrity_failed')
 
 
-def head_logical_digest(rows,deadline=None):
-    """The logical digest ``head_proof`` returns for the same path-ordered normal rows."""
+def head_logical_digest(rows,deadline=None,*,sidecar=False):
+    """The logical digest ``head_proof`` returns for the same rows (path order unless sidecar)."""
     logical=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0')
     previous=None;size=0
     for count,item in enumerate(rows,1):
@@ -463,7 +463,7 @@ def head_logical_digest(rows,deadline=None):
         if count>MAX_ROWS:v.fail('fts_rows_invalid')
         row=_entries([item],insertion_order=True)[0]
         encoded_path=row[3].encode('utf8')
-        if previous is not None and encoded_path<=previous:v.fail('fts_rows_invalid')
+        if not sidecar and previous is not None and encoded_path<=previous:v.fail('fts_rows_invalid')
         previous=encoded_path
         size+=sum(len(value.encode('utf8')) for value in row)
         if size>MAX_FTS_BYTES:v.fail('fts_rows_too_large')

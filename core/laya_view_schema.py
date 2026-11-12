@@ -289,6 +289,10 @@ def row_statements():
         WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
           ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
         BEGIN SELECT RAISE(ABORT,'view_row_retained'); END''',
+      '''CREATE TRIGGER s_legacy_fts_retained BEFORE DELETE ON s_legacy_fts
+        WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
+        BEGIN SELECT RAISE(ABORT,'view_row_retained'); END''',
       '''CREATE TRIGGER s_card_sources_retained BEFORE DELETE ON s_card_sources
         WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
           ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
@@ -313,9 +317,40 @@ def row_statements():
           ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),
           (SELECT ordinal FROM s_heads WHERE view_id=OLD.view_id), 0))
         BEGIN SELECT RAISE(ABORT,'view_generation_retained'); END''',
+      # Legacy FTS corpus rows: same interval rules as card rows.
+      '''CREATE TABLE s_legacy_fts (
+        view_id TEXT NOT NULL REFERENCES views(view_id),
+        origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')), path_key TEXT NOT NULL COLLATE BINARY,
+        gen_from INTEGER NOT NULL, gen_to INTEGER, blob_sha TEXT NOT NULL REFERENCES wiki_blobs(blob_sha),
+        title TEXT, position INTEGER, active INTEGER NOT NULL CHECK(active IN (0,1)),
+        PRIMARY KEY(view_id,origin,path_key,gen_from), CHECK(gen_to IS NULL OR gen_to>gen_from),
+        CHECK((origin='sidecar')=(title IS NOT NULL AND position IS NOT NULL)))''',
+      'CREATE UNIQUE INDEX s_legacy_fts_open ON s_legacy_fts(view_id,origin,path_key) WHERE gen_to IS NULL',
+      'CREATE INDEX s_legacy_fts_gc ON s_legacy_fts(view_id,gen_to) WHERE gen_to IS NOT NULL',
+      '''CREATE TRIGGER s_legacy_fts_no_overlap BEFORE INSERT ON s_legacy_fts
+        WHEN EXISTS(SELECT 1 FROM s_legacy_fts f WHERE f.view_id=NEW.view_id AND f.origin=NEW.origin
+          AND f.path_key=NEW.path_key AND (NEW.gen_to IS NULL OR f.gen_from<NEW.gen_to)
+          AND (f.gen_to IS NULL OR NEW.gen_from<f.gen_to))
+        BEGIN SELECT RAISE(ABORT,'legacy_fts_interval_overlap'); END''',
+      '''CREATE TRIGGER s_legacy_fts_close_only BEFORE UPDATE ON s_legacy_fts
+        WHEN OLD.gen_to IS NOT NULL OR NEW.gen_to IS NULL OR NEW.view_id IS NOT OLD.view_id
+          OR NEW.origin IS NOT OLD.origin OR NEW.path_key IS NOT OLD.path_key
+          OR NEW.gen_from IS NOT OLD.gen_from OR NEW.blob_sha IS NOT OLD.blob_sha
+          OR NEW.title IS NOT OLD.title OR NEW.position IS NOT OLD.position OR NEW.active IS NOT OLD.active
+        BEGIN SELECT RAISE(ABORT,'legacy_fts_interval_immutable'); END''',
+      f'''CREATE TRIGGER s_legacy_fts_in_flight BEFORE INSERT ON s_legacy_fts
+        WHEN NEW.gen_from IS NOT {view_new}
+        BEGIN SELECT RAISE(ABORT,'legacy_fts_generation_invalid'); END''',
+      f'''CREATE TRIGGER s_legacy_fts_close_in_flight BEFORE UPDATE ON s_legacy_fts
+        WHEN NEW.gen_to IS NOT {_IN_FLIGHT.format(view='OLD.view_id')}
+        BEGIN SELECT RAISE(ABORT,'legacy_fts_generation_invalid'); END''',
       '''CREATE INDEX s_generations_by_view ON s_generations(view_id,ordinal)''',
       '''CREATE INDEX s_cards_by_blob ON s_cards(blob_sha,view_id)''',
     ])
+    # Tables first, then indexes and triggers: creation order never changes the manifest.
+    rank = lambda ddl: (0 if ddl.lstrip().upper().startswith('CREATE TABLE') else
+                        1 if 'INDEX' in ddl.lstrip().upper().split('(')[0] else 2)
+    result.sort(key=rank)
     return result
 
 

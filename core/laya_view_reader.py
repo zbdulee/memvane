@@ -413,7 +413,7 @@ class ReaderMixin:
         the read. A path without spans is absent from the result.
         """
         if self._rows:
-            v.fail('row_format_unsupported')
+            return self._rows_card_locations(pin, paths, deadline_seconds)
         if (not isinstance(paths, (list, tuple)) or len(paths) > 100
                 or any(type(path) is not str or not path for path in paths)):
             v.fail('card_locations_invalid')

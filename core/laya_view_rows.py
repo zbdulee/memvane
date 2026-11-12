@@ -41,6 +41,21 @@ def member_digest(rows):
     return v.digest('memvane-row-members-v1', [{k: row[k] for k in CARD_FIELDS} for row in rows])
 
 
+LEGACY_FIELDS = ('origin', 'path_key', 'blob_sha', 'title', 'position', 'active')
+
+
+def legacy_member_digest(cards, legacy_rows):
+    """A legacy generation binds its card rows and its FTS corpus rows together."""
+    return v.digest('memvane-row-legacy-members-v1', dict(
+        cards=[{k: row[k] for k in CARD_FIELDS} for row in cards],
+        fts=[{k: row[k] for k in LEGACY_FIELDS} for row in legacy_rows]))
+
+
+def legacy_fts_digests(base_logical, base_physical, side_logical, side_physical):
+    return (v.digest('memvane-row-legacy-fts-v1', dict(base=base_logical, sidecar=side_logical)),
+            v.digest('memvane-row-legacy-fts-storage-v1', dict(base=base_physical, sidecar=side_physical)))
+
+
 def seal_digest(fields):
     return v.digest(ROW_SEAL_SCHEMA, fields)
 
@@ -88,6 +103,16 @@ def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, f
                 member_digest=member_digest(final), items_digest=v.digest('memvane-row-stage-items-v1', items))
 
 
+def _locators(spans):
+    """Sorted line locators; any span kind but the two line kinds refuses the read."""
+    import source_spans
+    for span in spans:
+        if not isinstance(span, dict) or span.get('kind') not in (v.LEGACY_LINE_SPAN, v.LINE_SPAN):
+            v.fail('legacy_card_trust_invalid')
+    ordered = sorted(spans, key=lambda span: (span['path'], span['startLine'], span['endLine']))
+    return [source_spans.locator(span) for span in ordered]
+
+
 @dataclass(frozen=True)
 class _Head:
     ordinal: int | None
@@ -131,6 +156,37 @@ class RowsMixin:
         finally:
             cursor.close()
 
+    @staticmethod
+    def _rows_open_legacy(db, view_id, ordinal):
+        cursor = db.execute('SELECT origin,path_key,blob_sha,title,position,active FROM s_legacy_fts '
+                            'WHERE view_id=? AND gen_from<=? AND (gen_to IS NULL OR gen_to>?) '
+                            'ORDER BY origin,path_key', (view_id, ordinal, ordinal))
+        try:
+            return [dict(zip(LEGACY_FIELDS, tuple(row))) for row in cursor]
+        finally:
+            cursor.close()
+
+    def _rows_legacy_fts(self, legacy_rows, *, cache, deadline=None):
+        """Base rows as the generation format built them, sidecar rows in their original order."""
+        bodies, side = {}, []
+        for row in legacy_rows:
+            _expired(deadline)
+            blob = row['blob_sha']
+            if blob not in cache:
+                cache[blob] = self._blob(blob)
+            if row['origin'] == 'base':
+                bodies[row['path_key']] = cache[blob]
+            else:
+                side.append(row)
+        side.sort(key=lambda row: row['position'])
+        sidecar = [dict(filepath=row['path_key'], title=row['title'], body=cache[row['blob_sha']],
+                        path_key=row['path_key']) for row in side]
+        return vals.fts_rows(bodies, deadline=deadline), (sidecar if side else None)
+
+    @staticmethod
+    def _rows_legacy_content(generation, legacy_rows):
+        return generation['kind'] == 'legacy' or bool(legacy_rows)
+
     def _rows_fts_rows(self, rows, *, cache=None, deadline=None):
         """Head FTS rows of the eligible card rows, from admitted blob bodies."""
         bodies, titles = {}, {}
@@ -167,6 +223,13 @@ class RowsMixin:
         with self._session() as db:
             if self._rows_head(db, handle) != base:
                 v.fail('view_head_conflict')
+            head = self._rows_head_row(db, handle.view_id)
+            if head.ordinal is not None and (
+                    self._rows_open_legacy(db, handle.view_id, head.ordinal) or db.execute(
+                        "SELECT kind='legacy' FROM s_generations WHERE view_id=? AND ordinal=?",
+                        (handle.view_id, head.ordinal)).fetchone()[0]):
+                # A normal publication over a legacy head is a separate unit.
+                v.fail('row_format_unsupported')
             plan = self._derive(handle, manifest, skips, deadline=deadline)
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
         wanted = {member['path']: _card_row(member) for member in plan['members']}
@@ -458,7 +521,7 @@ class RowsMixin:
                     removed['stage'] += step
                     if not step or removed['stage'] >= limit:
                         break
-            for table in ('s_card_sources', 's_sources', 's_cards'):
+            for table in ('s_card_sources', 's_sources', 's_legacy_fts', 's_cards'):
                 _expired(deadline)
                 removed[table] = db.execute(
                     f'DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE view_id=? '
@@ -533,14 +596,17 @@ class RowsMixin:
                     handle, entry, saved = self._sealed_handle(db, generation)
                     stage = self._verify_generation(db, handle, entry, saved, generation, deadline=deadline,
                                                     full_vectors=True)
-                    if 'legacy' in stage or stage['vector_spec'] is not None:
+                    if stage['vector_spec'] is not None:
                         v.fail('row_conversion_unsupported')
                     seal = dict(db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (gen_id,)).fetchone())
                     members = [_card_row(m) for m in self._stored(db, gen_id)[0]]
+                    legacy_rows = []
+                    if 'legacy' in stage:
+                        members, legacy_rows = self._rows_convert_legacy(db, gen_id, stage['legacy'], members)
                     parent = (None if generation['parent_gen'] is None else db.execute(
                         'SELECT ordinal FROM generations WHERE gen_id=?', (generation['parent_gen'],)).fetchone()[0])
                     chain.append(dict(generation=dict(generation), stage=stage, seal=seal, members=members,
-                                      parent_ordinal=parent))
+                                      legacy_rows=legacy_rows, parent_ordinal=parent))
                 if len(chain) == 2 and chain[0]['stage']['base'] != dict(
                         view_id=head['view_id'], gen_id=chain[1]['generation']['gen_id'],
                         epoch=head['epoch'] - 1, incarnation=self._incarnation):
@@ -592,11 +658,7 @@ class RowsMixin:
                     head = self._rows_head_row(db, view_id)
                     handle = self._sealed_handle(db, dict(checkout_evidence=plan['chain'][0]['generation']['checkout_evidence'],
                                                           view_id=view_id))[0]
-                    physical = fts.head_storage_digest(db, view_id, deadline)
-                    generation = db.execute('SELECT * FROM s_generations WHERE view_id=? AND ordinal=?',
-                                            (view_id, head.ordinal)).fetchone()
-                    if generation['physical_fts_digest'] != physical:
-                        v.fail('fts_storage_mismatch')
+                    # The verifier recomputes the head's physical and logical FTS digests.
                     self._rows_verify(db, head, handle, deadline)
                     result[view_id] = dict(gen_id=head.gen_id, epoch=head.epoch, ordinal=head.ordinal,
                                            prior=len(plan['chain']) == 2)
@@ -613,27 +675,49 @@ class RowsMixin:
         for index, item in enumerate(chain):
             generation, stage = item['generation'], item['stage']
             rows = sorted(item['members'], key=lambda row: row['path'].encode('utf8'))
-            fts_rows = self._rows_fts_rows(rows, cache={}, deadline=deadline)
+            legacy = 'legacy' in stage
             last = index == len(chain) - 1
-            if last:
-                fts.create_head(db, view_id)
-                fts.populate_head(db, view_id, fts_rows)
+            if legacy:
+                base_rows, side_rows = self._rows_legacy_fts(item['legacy_rows'], cache={}, deadline=deadline)
+                logical = legacy_fts_digests(
+                    fts.head_logical_digest(base_rows, deadline), None,
+                    None if side_rows is None else fts.head_logical_digest(side_rows, deadline, sidecar=True),
+                    None)[0]
+                digest = legacy_member_digest(rows, item['legacy_rows'])
+                if last:
+                    fts.create_head(db, view_id)
+                    fts.populate_head(db, view_id, base_rows)
+                    if side_rows is not None:
+                        fts.create_head(db, view_id, sidecar=True)
+                        fts.populate_head(db, view_id, side_rows, sidecar=True)
+            else:
+                fts_rows = self._rows_fts_rows(rows, cache={}, deadline=deadline)
+                logical, digest, side_rows = fts.head_logical_digest(fts_rows, deadline), member_digest(rows), None
+                if last:
+                    fts.create_head(db, view_id)
+                    fts.populate_head(db, view_id, fts_rows)
             row = dict(ordinal=generation['ordinal'], gen_id=generation['gen_id'], view_id=view_id,
                        epoch=epoch - (len(chain) - 1 - index),
                        prior_ordinal=prior_ordinal if index else item['parent_ordinal'],
-                       kind='normal', sidecar_present=0, capture_json=generation['checkout_evidence'],
-                       policy_digest=generation['policy_digest'],
+                       kind='legacy' if legacy else 'normal', sidecar_present=int(side_rows is not None),
+                       capture_json=generation['checkout_evidence'], policy_digest=generation['policy_digest'],
                        skip_digest=v.digest('memvane-row-skip-v1', stage['skip_paths']),
-                       recipe_id=None, profile_id=None, coverage='lexical', member_digest=member_digest(rows),
+                       recipe_id=None, profile_id=None, coverage='lexical', member_digest=digest,
                        source_digest=v.digest('memvane-row-sources-v1', []),
-                       logical_fts_digest=fts.head_logical_digest(fts_rows, deadline),
+                       logical_fts_digest=logical,
                        physical_fts_digest=item['seal']['fts_storage_digest'])
             item['row'] = row
             prior_ordinal = generation['ordinal']
         # The head's physical digest is sealed after every FTS write is flushed.
         db.execute('SAVEPOINT s_convert_flush')
         db.execute('RELEASE s_convert_flush')
-        chain[-1]['row']['physical_fts_digest'] = fts.head_storage_digest(db, view_id, deadline)
+        if chain[-1]['row']['kind'] == 'legacy':
+            chain[-1]['row']['physical_fts_digest'] = legacy_fts_digests(
+                None, fts.head_storage_digest(db, view_id, deadline), None,
+                fts.head_storage_digest(db, view_id, deadline, sidecar=True)
+                if chain[-1]['row']['sidecar_present'] else None)[1]
+        else:
+            chain[-1]['row']['physical_fts_digest'] = fts.head_storage_digest(db, view_id, deadline)
         for item in chain:
             row = item['row']
             row['seal_digest'] = seal_digest(_seal_fields(self._incarnation, row))
@@ -670,7 +754,40 @@ class RowsMixin:
                            'trust_digest,metadata_json) VALUES (?,?,?,?,?,?,?,?,?)',
                            (view_id, path, start, end, value['blob_sha'], value['title'], value['eligible'],
                             value['trust_digest'], value['metadata_json']))
+        if any(item['legacy_rows'] for item in chain):
+            if len(chain) == 2 and chain[0]['legacy_rows'] != chain[-1]['legacy_rows']:
+                # A legacy base under a different head needs legacy_fts deltas (not converted yet).
+                v.fail('row_conversion_unsupported')
+            for value in chain[0]['legacy_rows']:
+                db.execute('INSERT INTO s_legacy_fts(view_id,origin,path_key,gen_from,gen_to,blob_sha,title,'
+                           'position,active) VALUES (?,?,?,?,NULL,?,?,?,?)',
+                           (view_id, value['origin'], value['path_key'], chain[0]['row']['ordinal'],
+                            value['blob_sha'], value['title'], value['position'], value['active']))
         db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,?)', (view_id, head_ordinal, epoch))
+
+    def _rows_convert_legacy(self, db, gen_id, legacy, members):
+        """Card metadata (FTS path, origin, line spans) and corpus rows of one legacy generation."""
+        sidecar = 'sidecar_corpus' in legacy
+        spans = {}
+        for row in db.execute('SELECT wiki_path,spans_json FROM card_sources WHERE gen_id=? ORDER BY wiki_path,ordinal',
+                              (gen_id,)):
+            spans.setdefault(row['wiki_path'], []).extend(v.parse_canonical(row['spans_json']))
+        cards = []
+        for member in members:
+            origin = legacy['fts_sources'][member['path']] if sidecar else 'base'
+            meta = dict(fts_path=legacy['fts_paths'][member['path']], origin=origin,
+                        spans=spans.get(member['path'], []))
+            cards.append(dict(member, metadata_json=v.canonical(meta)))
+        rows = [dict(origin='base', path_key=row['path'], blob_sha=row['hash'], title=None, position=None,
+                     active=int(legacy['active_fts']['base'].get(row['path']) == row['hash']))
+                for row in legacy['corpus']]
+        if sidecar:
+            rows.extend(dict(origin='sidecar', path_key=row['path'], blob_sha=row['hash'], title=row['title'],
+                             position=row['rowid'],
+                             active=int(legacy['active_fts']['sidecar'].get(row['path']) == row['hash']))
+                        for row in legacy['sidecar_corpus'])
+        rows.sort(key=lambda row: (row['origin'], row['path_key'].encode('utf8')))
+        return cards, rows
 
     # -- reads ---------------------------------------------------------------
 
@@ -682,15 +799,18 @@ class RowsMixin:
         if generation is None or generation['gen_id'] != head.gen_id or generation['epoch'] != head.epoch:
             v.fail('view_head_invalid')
         generation = dict(generation)
-        if (generation['kind'] not in ('normal', 'rollback') or generation['sidecar_present']
-                or generation['coverage'] != 'lexical'):
+        if generation['coverage'] != 'lexical':
             v.fail('row_format_unsupported')
         handle, entry, saved = self._sealed_handle(
             db, dict(checkout_evidence=generation['capture_json'], view_id=generation['view_id']), live_handle)
         if generation['policy_digest'] != self._policy:
             v.fail('generation_binding_mismatch')
         rows = self._rows_open(db, generation['view_id'], generation['ordinal'])
-        if member_digest(rows) != generation['member_digest']:
+        legacy_rows = self._rows_open_legacy(db, generation['view_id'], generation['ordinal'])
+        legacy = self._rows_legacy_content(generation, legacy_rows)
+        if (legacy_member_digest(rows, legacy_rows) if legacy else member_digest(rows)) != generation['member_digest']:
+            v.fail('generation_rows_mismatch')
+        if generation['sidecar_present'] != int(any(row['origin'] == 'sidecar' for row in legacy_rows)):
             v.fail('generation_rows_mismatch')
         cache, checked = {}, {'blobs': set(), 'worktrees': {}, 'captures': set(), 'fingerprints': {}}
         for row in rows:
@@ -705,9 +825,20 @@ class RowsMixin:
                 spec = self._attestation(row['trust_digest'], cache=checked)
                 if spec['blob_sha'] != row['blob_sha'] or spec['policy_digest'] != handle.policy_digest:
                     v.fail('card_trust_mismatch')
-        logical, physical = fts.head_proof(db, generation['view_id'], self._rows_fts_rows(rows, cache=cache,
-                                                                                         deadline=deadline),
-                                           deadline, expected_storage=generation['physical_fts_digest'])
+        if legacy:
+            base_rows, side_rows = self._rows_legacy_fts(legacy_rows, cache=cache, deadline=deadline)
+            base_logical, base_physical = fts.head_proof(db, generation['view_id'], base_rows, deadline)
+            side_logical = side_physical = None
+            if side_rows is not None:
+                side_logical, side_physical = fts.head_proof(db, generation['view_id'], side_rows, deadline,
+                                                             sidecar=True)
+            logical, physical = legacy_fts_digests(base_logical, base_physical, side_logical, side_physical)
+            if physical != generation['physical_fts_digest']:
+                v.fail('fts_storage_mismatch')
+        else:
+            logical, physical = fts.head_proof(db, generation['view_id'],
+                                               self._rows_fts_rows(rows, cache=cache, deadline=deadline),
+                                               deadline, expected_storage=generation['physical_fts_digest'])
         if (logical != generation['logical_fts_digest']
                 or seal_digest(_seal_fields(self._incarnation, generation)) != generation['seal_digest']):
             v.fail('generation_seal_mismatch')
@@ -752,7 +883,7 @@ class RowsMixin:
                      legacy_origin, observed):
         import sqlite3
         from laya_view_reader import _query, _remaining
-        if legacy_origin is not None:
+        if legacy_origin is not None and legacy_origin not in ('base', 'sidecar'):
             v.fail('migration_lexical_origin_invalid')
         if type(observed) is not bool:
             v.fail('fts_query_invalid')
@@ -770,38 +901,134 @@ class RowsMixin:
             generation, original = self._rows_verified(db, head, entry['handle'], deadline, record)
             if generation['seal_digest'] != record['seal']:
                 v.fail('view_pin_changed')
-            name = fts.head_table(pin.view_id)
-            args = [pin.view_id, fts_query]
-            conditions = []
-            if path_prefixes is not None:
-                if not path_prefixes:
-                    conditions.append('0')
-                else:
-                    conditions.append('(' + ' OR '.join('(c.path=? OR substr(c.path,1,?)=?)'
-                                                        for _ in path_prefixes) + ')')
-                    for path in path_prefixes:
-                        args.extend((path, len(path) + 1, path + '/'))
-            if excluded_paths:
-                conditions.append('c.path NOT IN (' + ','.join('?' for _ in excluded_paths) + ')')
-                args.extend(excluded_paths)
-            extra = ''.join(' AND ' + clause for clause in conditions)
-            args.append(limit)
-            try:
-                rows = db.execute(f'''SELECT c.path,c.blob_sha,c.title AS display_title,
-                    bm25({name},1.5,4.0,1.0,0.0) AS score FROM {name}
-                    JOIN s_cards c ON c.view_id=? AND c.gen_to IS NULL AND c.path={name}.path_key
-                    WHERE {name} MATCH ? AND c.eligible=1 {extra}
-                    ORDER BY score ASC,c.path COLLATE BINARY ASC LIMIT ?''', args).fetchall()
-            except sqlite3.Error:
-                _remaining(deadline)
-                v.fail('fts_query_invalid')
-            state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']), deadline)
-            answer = [dict(path=r['path'], blob_sha=r['blob_sha'], body=self._blob(r['blob_sha']),
-                           display_title=r['display_title'], score=r['score'], view_id=pin.view_id,
-                           gen_id=pin.gen_id, evidence='commitment-only', owner_verified=False,
-                           snapshot_state=state) for r in rows]
+            legacy_rows = self._rows_open_legacy(db, pin.view_id, head.ordinal)
+            legacy_answer = None
+            if self._rows_legacy_content(generation, legacy_rows):
+                answer = self._rows_legacy_search(db, pin, generation, legacy_rows, fts_query, limit,
+                                                  path_prefixes, excluded_paths, legacy_origin, deadline)
+                state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']),
+                                             deadline)
+                legacy_answer = [dict(row, snapshot_state=state) for row in answer]
+            if legacy_answer is None and legacy_origin is not None:
+                v.fail('migration_lexical_origin_invalid')
+            if legacy_answer is not None:
+                answer = legacy_answer
+            else:
+                name = fts.head_table(pin.view_id)
+                args = [pin.view_id, fts_query]
+                conditions = []
+                if path_prefixes is not None:
+                    if not path_prefixes:
+                        conditions.append('0')
+                    else:
+                        conditions.append('(' + ' OR '.join('(c.path=? OR substr(c.path,1,?)=?)'
+                                                            for _ in path_prefixes) + ')')
+                        for path in path_prefixes:
+                            args.extend((path, len(path) + 1, path + '/'))
+                if excluded_paths:
+                    conditions.append('c.path NOT IN (' + ','.join('?' for _ in excluded_paths) + ')')
+                    args.extend(excluded_paths)
+                extra = ''.join(' AND ' + clause for clause in conditions)
+                args.append(limit)
+                try:
+                    rows = db.execute(f'''SELECT c.path,c.blob_sha,c.title AS display_title,
+                        bm25({name},1.5,4.0,1.0,0.0) AS score FROM {name}
+                        JOIN s_cards c ON c.view_id=? AND c.gen_to IS NULL AND c.path={name}.path_key
+                        WHERE {name} MATCH ? AND c.eligible=1 {extra}
+                        ORDER BY score ASC,c.path COLLATE BINARY ASC LIMIT ?''', args).fetchall()
+                except sqlite3.Error:
+                    _remaining(deadline)
+                    v.fail('fts_query_invalid')
+                state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']), deadline)
+                answer = [dict(path=r['path'], blob_sha=r['blob_sha'], body=self._blob(r['blob_sha']),
+                               display_title=r['display_title'], score=r['score'], view_id=pin.view_id,
+                               gen_id=pin.gen_id, evidence='commitment-only', owner_verified=False,
+                               snapshot_state=state) for r in rows]
             _remaining(deadline)
         if not observed:
             self._observe(entry, deadline=deadline)
         _remaining(deadline)
         return answer
+
+    def _rows_legacy_search(self, db, pin, generation, legacy_rows, fts_query, limit, path_prefixes,
+                            excluded_paths, legacy_origin, deadline):
+        """The generation format's legacy lexical search over the view's head FTS corpora."""
+        import sqlite3
+        from laya_view_reader import _remaining
+        paired = bool(generation['sidecar_present'])
+        if paired and legacy_origin is None:
+            v.fail('migration_lexical_sidecar_unproved')
+        if not paired and legacy_origin is not None:
+            v.fail('migration_lexical_origin_invalid')
+        origin = legacy_origin if paired else 'base'
+        name = fts.head_table(pin.view_id, sidecar=origin == 'sidecar')
+        cards = {row['path']: row for row in self._rows_open(db, pin.view_id, generation['ordinal'])}
+        mapping = {}
+        for path, row in cards.items():
+            meta = v.parse_canonical(row['metadata_json'])
+            if not paired or meta.get('origin') == origin:
+                mapping[path] = meta['fts_path']
+        # The same JSON object the generation format bound: active FTS path -> blob.
+        active = {row['path_key']: row['blob_sha'] for row in legacy_rows if row['origin'] == origin and row['active']}
+        args = [fts_query, v.canonical(active)]
+        path_expr = f"substr({name}.path_key,instr({name}.path_key,'/')+1)"
+        conditions = []
+        if path_prefixes is not None:
+            if not path_prefixes:
+                conditions.append('0')
+            else:
+                conditions.append('(' + ' OR '.join(f'({path_expr}=? OR substr({path_expr},1,?)=?)'
+                                                    for _ in path_prefixes) + ')')
+                for path in path_prefixes:
+                    args.extend((path, len(path) + 1, path + '/'))
+        if excluded_paths:
+            conditions.append(path_expr + ' NOT IN (' + ','.join('?' for _ in excluded_paths) + ')')
+            args.extend(excluded_paths)
+        extra = ''.join(' AND ' + clause for clause in conditions)
+        args.append(limit)
+        try:
+            ranked = db.execute(f'''SELECT {name}.path_key AS full_path,
+                bm25({name},1.5,4.0,1.0,0.0) AS score FROM {name}
+                WHERE {name} MATCH ? AND {name}.path_key IN (SELECT key FROM json_each(?)) {extra}
+                ORDER BY score ASC,{name}.path_key COLLATE BINARY ASC LIMIT ?''', args).fetchall()
+        except sqlite3.Error:
+            _remaining(deadline)
+            v.fail('fts_query_invalid')
+        relative = {}
+        for path, full in mapping.items():
+            relative.setdefault(full, []).append(path)
+        window = [(path, row['score']) for row in ranked for path in sorted(
+            relative.get(row['full_path'], ()), key=lambda p: p.encode('utf8'))]
+        answer = []
+        for path, score in window:
+            card = cards.get(path)
+            if card is None or not card['eligible']:
+                continue
+            answer.append(dict(path=path, blob_sha=card['blob_sha'], body=self._blob(card['blob_sha']),
+                               display_title=card['title'], score=score, view_id=pin.view_id, gen_id=pin.gen_id,
+                               evidence='commitment-only', owner_verified=False,
+                               source_locations=_locators(v.parse_canonical(card['metadata_json']).get('spans', []))))
+        return answer
+
+    def _rows_card_locations(self, pin, paths, deadline_seconds):
+        """Line locators of pinned cards from their row metadata; no source file is opened."""
+        if (not isinstance(paths, (list, tuple)) or len(paths) > 100
+                or any(type(path) is not str or not path for path in paths)):
+            v.fail('card_locations_invalid')
+        deadline = time.monotonic() + deadline_seconds
+        record = self._pinned(pin)
+        if not paths:
+            return {}
+        with self._reading(deadline) as db:
+            head = self._rows_head_row(db, pin.view_id)
+            if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
+                v.fail('view_head_changed')
+            wanted = set(paths)
+            result = {}
+            for row in self._rows_open(db, pin.view_id, head.ordinal):
+                if row['path'] in wanted:
+                    spans = v.parse_canonical(row['metadata_json']).get('spans', [])
+                    if spans:
+                        result[row['path']] = _locators(spans)
+            return result
+
