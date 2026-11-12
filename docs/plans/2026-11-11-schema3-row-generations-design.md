@@ -25,7 +25,8 @@ CREATE TABLE s_generations (
   coverage TEXT NOT NULL CHECK(coverage IN ('lexical','complete')),
   member_digest TEXT NOT NULL, source_digest TEXT NOT NULL,
   logical_fts_digest TEXT NOT NULL, physical_fts_digest TEXT NOT NULL,
-  seal_digest TEXT NOT NULL, UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal),
+  member_acc TEXT NOT NULL CHECK(json_valid(member_acc)), fts_acc TEXT NOT NULL CHECK(json_valid(fts_acc)),
+  seal_digest TEXT NOT NULL, UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal), UNIQUE(gen_id,view_id),
   CHECK((recipe_id IS NULL)=(profile_id IS NULL)),
   CHECK(coverage='lexical' OR recipe_id IS NOT NULL)
 );
@@ -155,6 +156,11 @@ CREATE TABLE s_legacy_fts (
 );
 CREATE UNIQUE INDEX s_legacy_fts_open ON s_legacy_fts(view_id,origin,path_key) WHERE gen_to IS NULL;
 CREATE INDEX s_legacy_fts_gc ON s_legacy_fts(view_id,gen_to) WHERE gen_to IS NOT NULL;
+CREATE TABLE s_head_fts_map (
+  view_id TEXT NOT NULL REFERENCES views(view_id), origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')),
+  path_key TEXT NOT NULL COLLATE BINARY, fts_rowid INTEGER NOT NULL,
+  PRIMARY KEY(view_id,origin,path_key), UNIQUE(view_id,origin,fts_rowid)
+);
 CREATE TABLE s_parity_anchor (
   view_id TEXT NOT NULL REFERENCES views(view_id), gen_id TEXT NOT NULL,
   ordinal INTEGER NOT NULL, incarnation TEXT NOT NULL, receipt_digest TEXT NOT NULL,
@@ -202,10 +208,11 @@ rollback 진입은 기존 setup skill의 owner 승인 경로에 추가하는 명
 
 ### seal 증분화
 
-`member_digest`와 `logical_fts_digest`는 행 순서와 무관한 증분 multiset hash다. 각 행의 기여는 도메인을 구분한 SHA-256 값이고(카드 행·legacy FTS 행·FTS 입력 행이 각자의 도메인을 쓴다), 세대의 digest는 행 수, 행 바이트 합, 기여값의 2^256 모듈러 합을 도메인과 함께 한 번 더 해시한 값이다. 행을 더하거나 빼면 그 행의 기여만 더하거나 빼면 되므로, 게시와 rollback은 바뀐 행만으로 새 digest를 만든다. 일반 세대의 FTS 입력 행은 eligible 카드의 정규화된 FTS 행이고, legacy 세대는 base·sidecar corpus를 각각 같은 방식으로 합치며 sidecar는 원래 rowid 순서 값을 행 내용에 포함한다. 이 digest는 구조적 결속이며 보안 경계가 아니다. 모듈러 합 multiset hash는 대량의 의도적 행 조작에 대한 충돌 저항을 주장하지 않고, 동일 UID 위조는 기존과 같이 범위 밖이다.
+`member_digest`와 `logical_fts_digest`는 행 순서와 무관한 증분 multiset hash다. 각 행의 기여는 도메인을 구분한 SHA-256 값이고(카드 행·legacy FTS 행·FTS 입력 행이 각자의 도메인을 쓴다), 누적값은 행 수, 행 바이트 합, 기여값의 2^256 모듈러 합이다. 세대마다 두 누적값을 `s_generations.member_acc`·`fts_acc`에 canonical JSON으로 저장하고, digest는 누적값을 도메인과 함께 한 번 더 해시한 값이며 seal은 누적값과 digest를 함께 결속한다. 게시와 rollback은 head 세대 행의 누적값에서 바뀐 행의 기여만 빼고 더해 새 누적값을 만든다. 프로세스를 다시 시작해도 누적값은 store에 있으므로 corpus를 다시 순회하지 않는다. 일반 세대의 FTS 입력 행은 eligible 카드의 정규화된 FTS 행이고, legacy 세대는 base·sidecar corpus 행을 같은 누적값에 origin을 구분해 더하며 sidecar는 원래 rowid 순서 값을 행 내용에 포함한다. 이 digest는 구조적 결속이며 보안 경계가 아니다. 모듈러 합 multiset hash는 대량의 의도적 행 조작에 대한 충돌 저항을 주장하지 않고, 동일 UID 위조는 기존과 같이 범위 밖이다.
 
-pin과 검색은 기존처럼 head의 카드 행·legacy FTS 행·blob 본문에서 FTS 행을 다시 만들어 FTS 테이블 내용과 행 단위로 대조하고, 같은 행들로 증분 digest를 다시 계산해 seal과 비교한다. 게시는 FTS 쓰기 뒤 flush한 head FTS의 물리 digest를 계산해 seal에 넣는다. rollback 세대는 물리 digest를 다시 계산하지 않고 `physical_fts_digest`에 "rollback이 물리 digest를 미룸"을 뜻하는 도메인 구분 값(직전 세대 물리 digest와 rollback 세대 ID의 digest)을 넣는다. 이 세대를 읽는 pin은 FTS 행 단위 대조와 논리 digest로 내용을 증명하고 물리 shadow 바이트 대조는 하지 않는다. 다음 일반 게시가 물리 digest를 다시 봉인한다. 물리 대조를 생략하는 범위는 rollback 세대 하나뿐이다.
+head FTS의 경로별 rowid는 `s_head_fts_map`에 있다. 이 relation은 각 view head의 FTS 행마다 한 행이고 구간 없이 head와 함께 바뀌며, FTS 행을 넣고 지우는 같은 transaction에서 같이 고친다. 게시와 rollback은 이 relation으로 바뀐 경로의 rowid를 찾고 FTS 테이블 전체를 읽지 않는다. pin은 FTS 행과 이 relation의 경로·rowid가 정확히 대응하는지 함께 대조한다.
 
+pin과 검색은 head의 카드 행·legacy FTS 행·blob 본문에서 FTS 행을 다시 만들어 FTS 테이블 내용과 행 단위로 대조하고, 같은 행들로 누적값을 다시 계산해 seal의 누적값과 비교한다. 이 대조는 FTS 테이블의 저장된 열 내용을 확인하며 역색인 postings의 물리 바이트를 대신 증명하지 않는다. 일반 게시는 FTS 쓰기 뒤 FTS5 `integrity-check`를 실행하고, flush한 head FTS의 물리 digest를 계산해 seal에 넣는다. rollback 세대는 `integrity-check`와 물리 digest 계산을 하지 않고 `physical_fts_digest`에 "rollback이 물리 digest를 미룸"을 뜻하는 도메인 구분 값(직전 head의 물리 digest와 rollback 세대 ID의 digest)을 넣는다. 이 세대를 읽는 pin은 FTS 행 단위 대조와 누적값으로 내용을 증명하고 물리 shadow 바이트 대조는 하지 않는다. rollback을 연속으로 하면 그 세대들은 모두 미룸 값을 가지며, 생략은 다음 일반 게시가 `integrity-check`와 물리 digest를 다시 봉인할 때까지 이어진다. 그 사이 역색인 postings의 물리 손상은 pin이 감지하지 못하고 FTS5 질의 오류나 결과 차이로만 드러날 수 있다.
 ## GC
 
 GC는 sync owner·writer proof 아래 한 transaction당 제한된 행 수와 bytes·deadline으로 수행한다. head 및 직전 ordinal을 재조회해 `:prev`를 고정하고 각 삭제 직전 같은 transaction에서 참조를 다시 확인한다. 다른 view·active claim·content fill·rollback delta·parity anchor·trust chain을 참조하는 객체는 남긴다. 아래는 각 batch의 핵심 SQL이며 실제 코드는 각 테이블 FK 순서와 보호 trigger를 함께 적용한다.
@@ -271,7 +278,7 @@ shadow migration은 새 store를 처음부터 새 DDL로 만들고 기존 sealed
 ### 구현 위치와 설계 밖 선택의 근거
 
 - **`core/laya_view_rows.py`의 책임:** 형식 4 view store의 행 단위 세대 전체를 소유한다. 변경 행 계산과 durable stage 기록, 한 트랜잭션의 게시(카드·legacy FTS 구간, head FTS 변경, seal, delta, head CAS), head seal 검증과 pin·검색·card locations, delta 역적용 rollback, view 행 GC, 형식 3→4 변환이다. `ViewStore`의 공개 메서드는 store 형식(`_rows`)에 따라 형식 3 구현과 이 모듈 구현 중 하나로 넘긴다. 이 모듈은 형식 3 코드를 감싸 호출하지 않으며 형식 4 relation의 SQL과 seal 계산을 직접 가진다. `laya_view_store.py`(형식 3 세대·공통 handle·관측)와 `laya_view_reader.py`(형식 3 읽기)의 형식 3 경로는 바뀌지 않는다.
-- **`delete_receipts`의 FK:** 형식 3의 `delete_receipts`는 `generations(gen_id,view_id)`를 참조하는데 형식 4에는 그 테이블이 없다. 형식 4는 같은 열·검사를 유지하고 `base_gen`만 `s_generations(gen_id)`를 참조한다. 이 relation은 아직 writer가 없는 예약 relation이며, 변환은 행이 있는 store를 `row_conversion_unsupported`로 거절한다. GC는 `delete_receipts`가 참조하는 세대 행을 지우지 않는다.
+- **`delete_receipts`의 FK:** 형식 3의 `delete_receipts`는 `generations(gen_id,view_id)`를 참조하는데 형식 4에는 그 테이블이 없다. 형식 4는 같은 열·검사를 유지하고 `(base_gen,view_id)`가 `s_generations(gen_id,view_id)`를 참조해, receipt가 다른 view의 세대를 가리키지 못한다. 이 relation은 아직 writer가 없는 예약 relation이며, 변환은 행이 있는 store를 `row_conversion_unsupported`로 거절한다. GC는 `delete_receipts`가 참조하는 세대 행을 지우지 않는다.
 - **변환 전 형식 3·4 이중 운영:** 변환은 양 호스트 gate와 운영 승인 뒤에만 일어나므로 그 전까지 새 번들은 기존 형식 3 store를 계속 읽고 게시해야 한다. 새 번들은 store header의 버전으로 형식 3과 4를 고르고, 새 store의 기본 생성 형식은 형식 4 경로가 worker·reader·shadow에서 모두 통과한 뒤에 바꾼다. 구 번들은 형식 4를 header에서 거절한다.
 - **첫 세대 delta 미기록:** view의 첫 세대는 직전 세대가 없어 rollback 대상이 아니다. 그 delta는 corpus 전체 크기이고 쓰임이 없으므로 기록하지 않는다. rollback은 직전 세대가 있는 head에서만 시작하며 그 head의 delta는 항상 기록된다.
 - **migration intent `prepared.generation`:** 형식 4에서 prepare는 게시 전 세대 행을 만들지 않고 durable stage를 기록하며, 반환하는 세대 ID(`g-<job id>-b<stage digest>`)는 게시될 때 그 세대의 ID가 된다. intent record의 모양과 GEN_ID 형식은 그대로이고, `prepared.generation`이 가리키는 대상은 prepared 세대 행 대신 그 view의 ready stage다. 이 의미 변경은 구 번들(0.44.18)이 형식 4 candidate를 가리키는 intent를 만나 fail-closed로 거절함을 시험으로 보인 경우에만 쓴다. 그 시험이 통과하지 못하면 형식 4 prepare는 기존 의미(게시 전 세대 행)로 되돌린다.
