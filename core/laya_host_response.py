@@ -3094,6 +3094,12 @@ def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
 def _serve_qa_stdin(action, host, fallback_cwd):
     """Reserved preflight only: no settle, serving, learning or wake path."""
     from laya_bridge_observer import qa_hook_reply, qa_session_start
+    # The loaded-reader probe reads what is left of the hook budget.
+    import hook_budget
+    try:
+        hook_budget.arm(watchdog=False, export=False)
+    except hook_budget.HookDeadlineExceeded:
+        pass
     payload, decision = {}, {}
     try:
         raw = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
