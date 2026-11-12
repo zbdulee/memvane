@@ -1327,24 +1327,9 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         cold = head['gen_id'] is None
         with store._session() as db:
             row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
-            # A cold view publishes nothing until complete; its progress is
-            # the newest generation it prepared and never published.
-            base = (head['gen_id'] if not cold else next(iter(db.execute(
-                "SELECT gen_id FROM generations WHERE view_id=? AND state='prepared' "
-                'ORDER BY ordinal DESC LIMIT 1', (handle.view_id,)).fetchone() or ()), None))
-            old = {} if base is None else {m['path']: m for m in store._stored(db, base)[0]}
-            # Progress of an unfinished change set: the newest generation
-            # prepared over this head. Its members passed prepare's byte check;
-            # one whose bytes are still current is carried, not re-ingested.
-            carry = {}
-            if not cold:
-                staged = db.execute(
-                    "SELECT g.gen_id,s.stage_json FROM generations g JOIN generation_slots s "
-                    "ON s.ordinal=g.ordinal WHERE g.view_id=? AND g.state='prepared' "
-                    'ORDER BY g.ordinal DESC LIMIT 1', (handle.view_id,)).fetchone()
-                over = staged and v.parse_canonical(staged[1]).get('base')
-                if over and (over.get('gen_id'), over.get('epoch')) == (head['gen_id'], head['epoch']):
-                    carry = {m['path']: m for m in store._stored(db, staged[0])[0]}
+            baseline = (_schema3_rows_baseline if store._rows else _schema3_generation_baseline)(
+                store, db, handle, head)
+        old, carry = baseline['old'], baseline['carry']
         if row is None or (binding is not None and row['binding_digest'] != binding):
             v.fail('wiki_binding_changed')
         root = row['wiki_root']
@@ -1369,15 +1354,26 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
                     'storeFormat': 'schema3', 'removed': len(removed)}
         observed = _schema3_sources(decision, handle, deadline, raw_scan=raw_scan)
-        stored = None if cold else _schema3_stage(store, head['gen_id'])
         if (not changed and not removed and not excluded and not cold
-                and _schema3_sources_same(store, stored['manifest'], observed, handle)):
-            vector = _schema3_vectors(store, writer, proof, marks, handle, stored['manifest'],
-                                      stored['vector_spec'], vectors, deadline)
+                and _schema3_head_same(store, head, baseline, observed, handle)):
+            sealed = baseline['vector_spec']
+            if store._rows:
+                # Row heads fill their own eligible cards; the manifest is built only to publish.
+                vector = _schema3_vectors(store, writer, proof, marks, handle, None, sealed, vectors, deadline)
+            else:
+                vector = _schema3_vectors(store, writer, proof, marks, handle, baseline['manifest'], sealed,
+                                          vectors, deadline)
             if vector['state'] != 'complete':
                 return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
                         'vector': vector}
-            generation = store.prepare_generation(handle, stored['manifest'], expected_head=head,
+            manifest = baseline.get('manifest')
+            if manifest is None:
+                _mark_schema3_write(writer, proof, marks)
+                scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
+                manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
+                                complete=True, sources=_schema3_put_sources(store, handle, scan, observed),
+                                members=[old[p] for p in sorted(old)])
+            generation = store.prepare_generation(handle, manifest, expected_head=head,
                                                   vector_spec=vectors['spec'], deadline=deadline)
             normal.validate_normal_writer(writer)
             store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
@@ -1420,7 +1416,12 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                         complete=True, sources=sources, members=[members[p] for p in sorted(members)])
         staging = pending and (cold or held)
         vector = {'state': 'pending', 'reason': 'schema3_view_preparing'}
-        if not staging:
+        if not staging and store._rows:
+            # A row head fills its own cards: the vector generation follows the
+            # lexical one unless every eligible set is already stored.
+            vector = _schema3_rows_covered(store, manifest, baseline['vector_spec'], vectors,
+                                           {members[p]['blob_sha'] for p in changed if p in members})
+        elif not staging:
             vector = _schema3_vectors(store, writer, proof, marks, handle, manifest, None,
                                       vectors, deadline)
         spec = vectors['spec'] if vector['state'] == 'complete' else None
@@ -1439,6 +1440,9 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                     'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
                     'removed': len(removed), 'pending': pending, 'skipped': skipped}
         store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+        if store._rows and vector['state'] == 'lexical_first':
+            generation, vector = _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest,
+                                                              vectors, deadline)
     except v.BlobStoreError as exc:
         if exc.reason in SCHEMA3_BINDING_REASONS:
             return {'state': 'deferred', 'reason': 'schema3_binding_changed',
@@ -1453,16 +1457,145 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector}
 
 
-def _schema3_stage(store, gen_id):
-    """The sealed stage of a published generation: its manifest and vector spec."""
+def _schema3_generation_baseline(store, db, handle, head):
+    """Format 3: ``old`` members, staged ``carry``, the head's sealed ``manifest`` and ``vector_spec``.
+
+    A cold view publishes nothing until complete; its progress is the newest
+    generation it prepared and never published. A warm view's progress is the
+    newest generation prepared over this head: its members passed prepare's
+    byte check, and one whose bytes are still current is carried, not
+    re-ingested.
+    """
     import laya_blob_values as v
-    with store._session() as db:
-        row = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
-                         'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (gen_id,)).fetchone()
-    if row is None:
-        v.fail('generation_missing')
-    stage = v.parse_canonical(row[0])
-    return {'manifest': stage['manifest'], 'vector_spec': stage['vector_spec']}
+    cold = head['gen_id'] is None
+    base = (head['gen_id'] if not cold else next(iter(db.execute(
+        "SELECT gen_id FROM generations WHERE view_id=? AND state='prepared' "
+        'ORDER BY ordinal DESC LIMIT 1', (handle.view_id,)).fetchone() or ()), None))
+    old = {} if base is None else {m['path']: m for m in store._stored(db, base)[0]}
+    carry, manifest, spec = {}, None, None
+    if not cold:
+        staged = db.execute(
+            "SELECT g.gen_id,s.stage_json FROM generations g JOIN generation_slots s "
+            "ON s.ordinal=g.ordinal WHERE g.view_id=? AND g.state='prepared' "
+            'ORDER BY g.ordinal DESC LIMIT 1', (handle.view_id,)).fetchone()
+        over = staged and v.parse_canonical(staged[1]).get('base')
+        if over and (over.get('gen_id'), over.get('epoch')) == (head['gen_id'], head['epoch']):
+            carry = {m['path']: m for m in store._stored(db, staged[0])[0]}
+        sealed = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
+                            'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (head['gen_id'],)).fetchone()
+        if sealed is None:
+            v.fail('generation_missing')
+        stage = v.parse_canonical(sealed[0])
+        manifest, spec = stage['manifest'], stage['vector_spec']
+    return dict(old=old, carry=carry, manifest=manifest, vector_spec=spec)
+
+
+def _schema3_rows_baseline(store, db, handle, head):
+    """Format 4: the head's open card rows, the view's ready stage, and the head's sources.
+
+    The view keeps one stage. A ready stage over this head is the progress of
+    an unfinished change set (``carry``); for a cold view, a ready stage over
+    no head is the progress itself (``old``). Members are read in the worker's
+    member shape. ``sources`` and ``head_oid`` let an unchanged pass compare
+    this pass's observation without reading a stored manifest.
+    """
+    import json
+    import laya_view_rows as view_rows
+    import laya_view_values as view_values
+    cold = head['gen_id'] is None
+
+    def member(row):
+        return dict(path=row['path'], blob_sha=row['blob_sha'], display_title=row['title'],
+                    trust_digest=row['trust_digest'])
+    opened = {} if cold else {row['path']: member(row) for row in store._rows_open(db, handle.view_id)}
+    staged = {}
+    job = db.execute("SELECT job_id,base_gen_id,base_epoch FROM s_stage_jobs WHERE view_id=? AND state='ready'",
+                     (handle.view_id,)).fetchone()
+    if job is not None and (job[1], job[2]) == (head['gen_id'], head['epoch']):
+        staged = dict(opened)
+        for item in db.execute('SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json FROM s_stage_items '
+                               'WHERE job_id=? ORDER BY path', (job[0],)).fetchall():
+            new = view_rows._item_row(view_values.check_stage_item(dict(zip(view_values.STAGE_ITEM_FIELDS,
+                                                                             tuple(item)))))
+            if new is None:
+                staged.pop(item[0], None)
+            else:
+                staged[item[0]] = member(new)
+    spec = head_oid = None
+    sources = []
+    if not cold:
+        generation = db.execute('SELECT g.recipe_id,g.profile_id,g.coverage,g.capture_json FROM s_heads h '
+                                'JOIN s_generations g ON g.view_id=h.view_id AND g.ordinal=h.ordinal '
+                                'WHERE h.view_id=?', (handle.view_id,)).fetchone()
+        if generation[2] == 'complete':
+            spec = dict(recipe_id=generation[0], profile_id=generation[1])
+        head_oid = json.loads(generation[3])['headOid']
+        sources = store._rows_open_sources(db, handle.view_id)
+    return dict(old=staged if cold else opened, carry={} if cold else staged, manifest=None,
+                vector_spec=spec, head_oid=head_oid, sources=sources)
+
+
+def _schema3_head_same(store, head, baseline, observed, handle):
+    """The head was published from exactly this observation at the same HEAD."""
+    if not store._rows:
+        return _schema3_sources_same(store, baseline['manifest'], observed, handle)
+    import laya_view_values as view_values
+    if baseline['head_oid'] != handle.head_oid:
+        return False
+    wanted = []
+    for path in sorted(observed, key=lambda item: item.encode('utf8')):
+        sha, length, tracked = observed[path]
+        content = view_values.source_content(sha, length)
+        observation = view_values.source_observation(
+            worktree_id=handle.worktree_id, branch_key=handle.branch_key, path=path, tracked_state=tracked,
+            binding_state='observed', content_id=content['content_id'], legacy_fingerprint_id=None)
+        wanted.append(dict(path=path, observation_id=observation['observation_id']))
+    return wanted == baseline['sources']
+
+
+def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
+    """Whether a row-format stage can seal ``vectors['spec']`` now, without a fill.
+
+    ``complete`` when every set it needs is stored (the changed cards' when the
+    head already has the spec, else every member's); ``lexical_first`` when
+    the lexical generation is published first and the head's own fill follows
+    (design: a row head fills its eligible cards).
+    """
+    import laya_blob_values as v
+    spec = vectors.get('spec')
+    if spec is None:
+        return {'state': 'off'}
+    blobs = set(changed_blobs) if sealed == spec else {member['blob_sha'] for member in manifest['members']}
+    try:
+        with store._session() as db:
+            store._recipe(spec['recipe_id']); store._profile(spec['profile_id'])
+            missing = any(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                                     (blob, spec['recipe_id'], spec['profile_id'])).fetchone() is None
+                          for blob in blobs)
+    except v.BlobStoreError as exc:
+        if exc.reason not in ('recipe_missing', 'profile_missing'):
+            raise
+        missing = True
+    if missing:
+        return {'state': 'lexical_first'}
+    return {'state': 'complete', 'filled': 0, 'cacheHits': len(blobs), 'targets': len(manifest['members'])}
+
+
+def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, vectors, deadline):
+    """After a row-format lexical publication: fill the new head and seal its vector generation.
+
+    Returns ``(generation, vector)``; an unfinished fill keeps the lexical head.
+    """
+    import laya_writer_scope as normal
+    vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline)
+    head = store.head(handle)
+    if vector['state'] != 'complete':
+        return head['gen_id'], vector
+    generation = store.prepare_generation(handle, manifest, expected_head=head, vector_spec=vectors['spec'],
+                                          deadline=deadline)
+    normal.validate_normal_writer(writer)
+    store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+    return generation, vector
 
 
 # Raw source observation of one view (design D2): the same bounded raw scan
@@ -1785,7 +1918,10 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             from laya_view_vectors import register_provider_spec
             if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
                 v.fail('vector_spec_mismatch')
-        _entry, _saved, _job, targets, stored = store._fill_plan(handle, manifest, recipe_id, profile_id)
+        if store._rows:
+            _entry, _saved, _job, targets, stored = store._rows_fill_plan(handle, recipe_id, profile_id)
+        else:
+            _entry, _saved, _job, targets, stored = store._fill_plan(handle, manifest, recipe_id, profile_id)
         cursor = 0 if stored is None else stored
         with store._session() as db:
             missing = sum(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? '
