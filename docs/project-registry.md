@@ -47,7 +47,13 @@ intent를 쓰지 않고, SQLite 자체 파일 잠금 외의 lock, wake kind, hoo
 어느 쓰기도 명령 결과·exit code·hook 출력을 바꾸지 않는다. 레지스트리 쓰기
 실패는 다음 기회의 reconcile이 복구한다. state root가 HOME state base 바로 아래가
 아닌 설치(fixture state root 등)는 기록하지 않는다. resident service는
-레지스트리를 reconcile하지 않는다.
+레지스트리를 reconcile하지 않는다. resident 시작·주기 reconcile은 resident 변경이
+승인되면 `memvane_registry.reconcile()` 1줄 호출로 붙인다.
+
+SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile 예산은
+`HOOK_SECONDS`와 `hook_budget.remaining()`에서 1초를 뺀 값 중 작은 쪽이고, 그 값이
+0 이하면 reconcile을 하지 않는다. 레지스트리 부재·손상·busy·예외는 SessionStart
+응답을 바꾸지 않는다.
 
 ## Reconcile
 

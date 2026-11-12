@@ -155,6 +155,37 @@ class RegistryTargets(Routing):
         self.assertEqual(self.notify()['owners'], 0)
         self.assertFalse(self.routed())
 
+    def test_forged_registry_rows_grant_nothing_without_the_owner_proof(self):
+        self.backfill()
+        pending = installs.make_install(self.home, self.work / 'gamma', 'gamma',
+                                        '8' * 32, '9' * 32, activate=False)
+        self.bundles.add(pending)
+        draft = pending.project / 'draft.md'
+        draft.write_text('pending\n')
+        other = tempfile.TemporaryDirectory(prefix='registry-forged-')
+        self.addCleanup(other.cleanup)
+        foreign = Path(other.name).resolve() / ('1' * 32)
+        shutil.copytree(self.b.state, foreign)
+        foreign.chmod(0o700)
+        with contextlib.closing(sqlite3.connect(str(self.db))) as db:
+            for install, state, project in (
+                    (pending.install_id, pending.state, pending.project),  # journal unselected
+                    ('f' * 32, self.b.state, pending.project),            # row names another root
+                    ('1' * 32, foreign, self.b.project)):                 # state root off the route
+                db.execute("INSERT INTO entries(install_id,state_root,project_root,target_root,"
+                           "kind,status,observed_at,version) VALUES (?,?,?,?,'main','active',1,1)",
+                           (install, str(state), str(project), str(project)))
+            db.commit()
+        self.assertEqual(self.notify(draft)['owners'], 0)
+        self.assertFalse(self.routed(pending))
+        self.assertFalse(self.routed())
+        result = self.notify()
+        self.assertEqual(result['owners'], 1, result)  # B only, through its own proof
+        self.bundles.drifted.add(str(self.b.plugin))
+        self.wake.reset_mock()
+        self.assertEqual(self.notify()['owners'], 0)
+        self.assertFalse(self.routed())
+
     def test_missing_pending_detached_and_conflict_rows_do_not_route(self):
         self.backfill()
         for status, reason in (('missing_pending', None), ('detached', 'missing'),

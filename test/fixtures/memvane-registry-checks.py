@@ -737,6 +737,60 @@ class SessionStart(Base):
         self.assertLessEqual(calls[0]['seconds'], registry().HOOK_SECONDS)
         self.assertLessEqual(calls[0]['busy_ms'], registry().HOOK_BUSY_MS)
 
+    def test_session_start_response_is_unchanged_by_registry_state(self):
+        # REG: no registry API is used, so the base release answers the same.
+        baseline = self.session_start(self.a)
+        self.assertIn('selected source update queued',
+                      baseline['hookSpecificOutput']['additionalContext'])
+        directory = memvane_paths.state_base() / 'registry'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        path = directory / 'projects.sqlite'
+        for case in ('corrupt', 'busy', 'unsafe'):
+            with self.subTest(case=case):
+                for entry in (path, directory):
+                    if entry.is_symlink() or entry.is_file():
+                        entry.unlink()
+                directory.mkdir(mode=0o700, exist_ok=True)
+                holder = None
+                if case == 'corrupt':
+                    path.write_bytes(b'not a database' * 64)
+                    path.chmod(0o600)
+                elif case == 'busy':
+                    holder = sqlite3.connect(str(path), timeout=0)
+                    holder.execute('CREATE TABLE x(y)')
+                    holder.commit()
+                    path.chmod(0o600)
+                    holder.execute('BEGIN EXCLUSIVE')
+                else:
+                    shutil.rmtree(directory)
+                    real = directory.with_name('registry-real')
+                    real.mkdir(mode=0o700, exist_ok=True)
+                    directory.symlink_to(real)
+                try:
+                    self.assertEqual(self.session_start(self.a), baseline)
+                finally:
+                    if holder is not None:
+                        holder.rollback()
+                        holder.close()
+                if case == 'corrupt':
+                    self.assertEqual(path.read_bytes(), b'not a database' * 64)
+                if case == 'unsafe':
+                    directory.unlink()
+
+    def test_session_start_reconciles_only_inside_the_hook_budget(self):
+        import hook_budget
+        baseline = self.session_start(self.a)
+        calls = []
+        with patch.object(registry(), 'reconcile',
+                          side_effect=lambda **kwargs: calls.append(kwargs) or {}):
+            with patch.object(hook_budget, 'remaining', return_value=0.6):
+                self.assertEqual(self.session_start(self.a), baseline)
+            self.assertEqual(calls, [])
+            with patch.object(hook_budget, 'remaining', return_value=1.2):
+                self.assertEqual(self.session_start(self.a), baseline)
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(calls[0]['seconds'], 0.2 + 1e-9)
+
     def test_session_start_registry_failure_keeps_the_hook_output(self):
         baseline = self.session_start(self.a)
         with patch.object(registry(), 'reconcile', side_effect=RuntimeError('boom')):
