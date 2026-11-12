@@ -413,15 +413,31 @@ def _idle_connections(context):
                 'normal_writer_snapshot_busy')
 
 
-def _prove_plan(context, plan, deadline):
-    with P.writer_proof_windows(plan, queue_owner=context.queue_owner,
-                                deadline=deadline) as window:
-        with J.writer_identity_reads(window):
-            snapshot = P._plan_record(plan)[1]
-            proof = J.verify_selected_route_for_write(snapshot['decision'])
-        P.validate_writer_proof_window(window)
-        _approved(proof, snapshot)
-    return proof
+def _prove_plan(context, plan, deadline, timings=None, stage=None):
+    """``timings[stage + '_lock']``/``[stage + '_sql']``: ms waiting for the
+    proof windows, then inside them (kept when the proof fails)."""
+    started = time.monotonic()
+    entered = None
+    try:
+        with P.writer_proof_windows(plan, queue_owner=context.queue_owner,
+                                    deadline=deadline) as window:
+            entered = time.monotonic()
+            with J.writer_identity_reads(window):
+                snapshot = P._plan_record(plan)[1]
+                proof = J.verify_selected_route_for_write(snapshot['decision'])
+            P.validate_writer_proof_window(window)
+            _approved(proof, snapshot)
+        return proof
+    finally:
+        if timings is not None:
+            ended = time.monotonic()
+            opened = ended if entered is None else entered
+            timings[stage + '_lock'] = _ms(opened - started)
+            timings[stage + '_sql'] = _ms(ended - opened)
+
+
+def _ms(seconds):
+    return max(0, int(round(seconds * 1000)))
 
 
 def mark_new_write(writer):
@@ -429,9 +445,14 @@ def mark_new_write(writer):
 
     A committed mark is forward-only. Reproof failure revokes this token;
     existing native handles retain cleanup-only ownership and their pins.
+    Each stage (validation and first proof, the image CAS, the reproof) gets
+    its own operation deadline, so two proofs do not share one budget. A
+    failure carries ``mark_timings`` (ms per stage; ``p1``/``p2`` split into
+    proof-window wait and the reads inside).
     """
     record = _record(writer)
     context = record['context']
+    timings, image_started = {}, None
     deadline = context.operation_deadline()
     validate_normal_writer(writer, deadline=deadline)
     if record.get('marked', False):
@@ -442,7 +463,9 @@ def mark_new_write(writer):
     record['transitioning'] = True
     try:
         original_plan = context.plan
-        _prove_plan(context, original_plan, deadline)
+        _prove_plan(context, original_plan, deadline, timings, 'p1')
+        deadline = context.operation_deadline()
+        image_started = time.monotonic()
         path = Path(old['decision']['journalPath'])
 
         def mark(image):
@@ -475,6 +498,7 @@ def mark_new_write(writer):
             context.check_deadline(deadline)
 
         R.mutate_image(path, mark, before_replace=before_replace)
+        context.check_deadline(deadline)
         plan = P.capture_writer_plan(old['project'], executing_root=old['executing_root'])
         current = P._plan_record(plan)[1]
         R._need(current['bundle']['epoch'] == old['bundle']['epoch'] + 1
@@ -484,7 +508,9 @@ def mark_new_write(writer):
         for key in ('epoch', 'new_write_seen'):
             normalized['bundle'][key] = old['bundle'][key]
         R._need(R._raw(normalized) == R._raw(old), 'normal_writer_intent_premise_changed')
-        proof = _prove_plan(context, plan, deadline)
+        timings['img'] = _ms(time.monotonic() - image_started)
+        deadline = context.operation_deadline()
+        proof = _prove_plan(context, plan, deadline, timings, 'p2')
         # No current writer is public while either proof/close is incomplete.
         context.plan = plan
         record['snapshot'], record['proof'] = current, proof
@@ -493,6 +519,12 @@ def mark_new_write(writer):
         validate_normal_writer(writer, deadline=deadline)
         context.check_deadline(deadline)
         return json.loads(R._raw(proof))
-    except BaseException:
+    except BaseException as exc:
         _issued.pop(writer, None)
+        if image_started is not None and 'img' not in timings:
+            timings['img'] = _ms(time.monotonic() - image_started)
+        try:
+            exc.mark_timings = dict(timings)
+        except AttributeError:
+            pass
         raise

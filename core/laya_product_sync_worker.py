@@ -2637,10 +2637,30 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     except ReaderWindowBusy as exc:
         if getattr(exc, 'rollback_pending', False) or str(exc) not in (
                 'reader_write_deadline', 'reader_publish_busy',
-                'reader_mutation_busy', 'reader_lifetime_busy', 'reader_physical_busy'):
+                'reader_mutation_busy', 'reader_lifetime_busy', 'reader_physical_busy',
+                'writer_proof_deadline', 'writer_proof_physical_busy'):
             raise
-        return {'state': 'deferred', 'reason': str(exc)}, state['proof']
+        result = {'state': 'deferred', 'reason': str(exc)}
+        detail = _mark_detail(getattr(exc, 'mark_timings', None))
+        if detail:
+            result['detail'] = detail
+        return result, state['proof']
     return _checked(result), state['proof']
+
+
+def _mark_detail(timings):
+    """``mark_new_write`` stage times (ms) as one fixed code, e.g.
+    ``p1_lock12_sql81:img20:p2_lock1950_sql0``; None without any."""
+    if not isinstance(timings, dict):
+        return None
+    parts = []
+    for stage in ('p1', 'img', 'p2'):
+        if stage == 'img':
+            if type(timings.get('img')) is int:
+                parts.append('img%d' % timings['img'])
+        elif type(timings.get(stage + '_lock')) is int and type(timings.get(stage + '_sql')) is int:
+            parts.append('%s_lock%d_sql%d' % (stage, timings[stage + '_lock'], timings[stage + '_sql']))
+    return ':'.join(parts) or None
 
 
 def _observe_member_block(decision, result):
