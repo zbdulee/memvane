@@ -115,6 +115,7 @@ BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 REFUSALS = frozenset((
     'provider_changed_rebuild_required', 'older_host_bundle',
     'marketplace_source_unavailable', 'marketplace_source_commit_mismatch',
+    'executing_bundle_unproved',
     'marketplace_source_dirty', 'host_layout_unknown',
     'qmd_origin_detach_required', 'installed_bundle_content_changed',
     'laya_embed_runtime_source_unavailable',
@@ -727,12 +728,20 @@ def _read_attestation(state):
 
 def _seal_companion(identity, root):
     """Same exact bundle in another host cache: seal it, change no route."""
-    from laya_product_bundle import inspect_full_plugin_candidate, seal_companion_host_copy
+    from laya_product_bundle import (BundleEvidenceError, inspect_full_plugin_candidate,
+                                     seal_companion_host_copy)
     owner = inspect_full_plugin_candidate(identity['pluginRoot'])
     if any(owner[key] != identity[key] for key in
            ('sourceCommit', 'bundleManifestSha256', 'vectorProfile')):
         _refuse('companion_owner_changed')
-    seal_companion_host_copy(owner['pluginRoot'], root)
+    if owner['ownershipManifestSha256'] != identity.get('ownershipManifestSha256'):
+        _refuse('companion_owner_changed')
+    try:
+        seal_companion_host_copy(owner['pluginRoot'], root, expected_owner=owner)
+    except BundleEvidenceError as exc:
+        if str(exc) == 'companion_owner_changed':
+            _refuse('companion_owner_changed')
+        raise
     return {'status': 'companion_sealed'}
 
 
@@ -854,6 +863,16 @@ def upgrade_install(project_root, state, root, home=None):
     if qmd_ledger_present(state):
         _refuse(QMD_ORIGIN_DETACH_REQUIRED)
     commit = installed_commit(root, home)
+    if commit is None:
+        # An unrecorded host copy cannot borrow the marketplace HEAD as its
+        # own commit. Only an exact copy of the selected owner can join it.
+        if not fenced and not same_root and kind != 'inactive':
+            from laya_product_bundle import BundleEvidenceError
+            try:
+                return {**_seal_companion(identity, root), 'kind': kind}
+            except (BundleEvidenceError, UpgradeRefused):
+                pass
+        _refuse('executing_bundle_unproved')
     if (not fenced and not same_root and commit is not None and commit == identity['sourceCommit'] and
             kind != 'inactive'):
         try:
@@ -872,7 +891,10 @@ def upgrade_install(project_root, state, root, home=None):
         # earlier plugin id's Hermes copy cannot read.
         from laya_journal_v4 import refuse_while_legacy_hermes
         refuse_while_legacy_hermes(home)
+    installed_proof = commit
     source, commit = select_source(root, home)
+    if commit != installed_proof or installed_commit(root, home) != installed_proof:
+        _refuse('executing_bundle_unproved')
     _not_older(source, identity['sourceCommit'], commit,
                bound_root=identity['pluginRoot'], root=root)
     old = (laya_active_upgrade.recovery_attestation(project_root, state) if fenced

@@ -935,7 +935,7 @@ def prepare_full_plugin_candidate(source_root, plugin_root, *, commit_id,
     return inspect_full_plugin_candidate(target)
 
 
-def seal_companion_host_copy(owner_root, plugin_root):
+def seal_companion_host_copy(owner_root, plugin_root, *, expected_owner=None):
     """Seal another host's exact cached copy of an owner-sealed bundle in place.
 
     The owner root must already be sealed by installer adoption. Every file in
@@ -947,6 +947,10 @@ def seal_companion_host_copy(owner_root, plugin_root):
     Existing companion metadata is accepted only when it is this exact seal.
     """
     owner = inspect_full_plugin_candidate(owner_root)
+    if expected_owner is not None and any(
+            owner.get(key) != expected_owner.get(key) for key in
+            ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile')):
+        _fail('companion_owner_changed')
     companion = _private(plugin_root)
     if companion == Path(owner['pluginRoot']):
         _fail('companion_is_owner_root')

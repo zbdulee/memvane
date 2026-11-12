@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 CORE = REPO / 'core'
@@ -523,6 +524,120 @@ class DevelopmentInstallRehearsal(unittest.TestCase):
             shutil.copytree(two['pluginRoot'], target,
                             ignore=shutil.ignore_patterns('.laya-product'))
             return target
+        # A host may have no install record while retaining an exact copy.
+        # The automatic worker must prove it against the selected owner and
+        # seal it without changing the journal or starting an owner upgrade.
+        import laya_bundle_upgrade as automatic
+        import laya_active_upgrade as active_upgrade
+        unrecorded = host_copy('unrecorded-exact-copy')
+        changed = host_copy('unrecorded-changed-copy')
+        changed_readme = changed / 'README.md'
+        changed_readme.chmod(stat.S_IMODE(changed_readme.stat().st_mode) | stat.S_IWUSR)
+        with changed_readme.open('ab') as output:
+            output.write(b' altered')
+        before = inspect_journal(journal)
+        self.assertEqual(automatic.classify(install)[0], 'active')
+        with mock.patch.object(automatic, 'installed_commit', return_value=None), \
+             mock.patch.object(active_upgrade, 'upgrade_fenced', return_value=False), \
+             mock.patch.object(active_upgrade, 'finish_activated', return_value=None), \
+             mock.patch.object(automatic, 'select_source', side_effect=AssertionError('unexpected upgrade')):
+            with self.assertRaisesRegex(automatic.UpgradeRefused, 'executing_bundle_unproved'):
+                automatic.upgrade_install(self.project, install, changed, self.root)
+            self.assertFalse((changed / '.laya-product').exists())
+            self.assertEqual(inspect_journal(journal), before)
+            result = automatic.upgrade_install(self.project, install, unrecorded, self.root)
+        self.assertEqual(result['status'], 'companion_sealed')
+        self.assertEqual(inspect_journal(journal), before)
+        self.assertEqual(inspect_full_plugin_candidate(unrecorded)['bundleManifestSha256'],
+                         two['bundleManifestSha256'])
+        # Swap the owner after the journal comparison but before the sealing
+        # function reopens it. The other host has the replacement's bytes.
+        import laya_product_bundle as product_bundle
+        replacement_copy = companion_parent / 'unrecorded-replacement-copy'
+        shutil.copytree(one['pluginRoot'], replacement_copy,
+                        ignore=shutil.ignore_patterns('.laya-product'))
+        owner_path = Path(two['pluginRoot'])
+        owner_saved = install / 'owner-journal-original'
+        owner_replacement = install / 'owner-replacement-after-check'
+        inspect_actual = product_bundle.inspect_full_plugin_candidate
+        swapped = [False]
+        def inspect_and_swap(root):
+            proof = inspect_actual(root)
+            if Path(root) == owner_path and not swapped[0]:
+                swapped[0] = True
+                os.rename(owner_path, owner_saved)
+                prepare_full_plugin_candidate(prior, owner_path, commit_id=first,
+                                              vector_profile=profile)
+            return proof
+        refusal = None
+        try:
+            with mock.patch.object(automatic, 'installed_commit', return_value=None), \
+                 mock.patch.object(active_upgrade, 'upgrade_fenced', return_value=False), \
+                 mock.patch.object(active_upgrade, 'finish_activated', return_value=None), \
+                 mock.patch.object(product_bundle, 'inspect_full_plugin_candidate',
+                                   side_effect=inspect_and_swap):
+                try:
+                    automatic.upgrade_install(self.project, install, replacement_copy, self.root)
+                except automatic.UpgradeRefused as exc:
+                    refusal = str(exc)
+        finally:
+            if swapped[0]:
+                os.rename(owner_path, owner_replacement)
+                os.rename(owner_saved, owner_path)
+        self.assertTrue(swapped[0])
+        self.assertEqual(inspect_full_plugin_candidate(owner_path), two)
+        print(json.dumps({'case': 'owner-swap', 'ownerRestored': True,
+                          'replacementSealed': (replacement_copy / '.laya-product').exists(),
+                          'refusal': refusal}), flush=True)
+        self.assertEqual(refusal, 'executing_bundle_unproved')
+        self.assertFalse((replacement_copy / '.laya-product').exists())
+        self.assertEqual(inspect_journal(journal), before)
+
+        # A registered host can race the same owner replacement.  Make B a
+        # distinct commit with A's identical tree and actual companion bytes.
+        _run_git(source, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'commit', '--allow-empty', '-q', '-m', 'same tree new owner')
+        later = _run_git(source, 'rev-parse', 'HEAD')
+        self.assertNotEqual(later, second)
+        self.assertEqual(_run_git(source, 'rev-parse', later + '^{tree}'),
+                         _run_git(source, 'rev-parse', second + '^{tree}'))
+        registered = host_copy('registered-owner-swap-copy')
+        saved_registered_owner = install / 'registered-owner-original'
+        parked_registered_owner = install / 'registered-owner-replacement'
+        registered_swapped = [False]
+        def inspect_and_swap_registered(root):
+            proof = inspect_actual(root)
+            if Path(root) == owner_path and not registered_swapped[0]:
+                registered_swapped[0] = True
+                os.rename(owner_path, saved_registered_owner)
+                prepare_full_plugin_candidate(source, owner_path, commit_id=later,
+                                              vector_profile=profile)
+            return proof
+        refusal = None
+        try:
+            with mock.patch.object(automatic, 'installed_commit', return_value=second), \
+                 mock.patch.object(active_upgrade, 'upgrade_fenced', return_value=False), \
+                 mock.patch.object(active_upgrade, 'finish_activated', return_value=None), \
+                 mock.patch.object(automatic, 'select_source') as select_source, \
+                 mock.patch.object(product_bundle, 'inspect_full_plugin_candidate',
+                                   side_effect=inspect_and_swap_registered):
+                try:
+                    automatic.upgrade_install(self.project, install, registered, self.root)
+                except automatic.UpgradeRefused as exc:
+                    refusal = str(exc)
+        finally:
+            if registered_swapped[0]:
+                os.rename(owner_path, parked_registered_owner)
+                os.rename(saved_registered_owner, owner_path)
+        self.assertTrue(registered_swapped[0])
+        self.assertEqual(inspect_full_plugin_candidate(owner_path), two)
+        print(json.dumps({'case': 'registered-owner-swap', 'ownerRestored': True,
+                          'replacementSealed': (registered / '.laya-product').exists(),
+                          'refusal': refusal}), flush=True)
+        self.assertEqual(refusal, 'companion_owner_changed')
+        select_source.assert_not_called()
+        self.assertFalse((registered / '.laya-product').exists())
+        self.assertEqual(inspect_journal(journal), before)
         cached = host_copy('codex-cache-copy')
         assert_host_denied({'pluginRoot': str(cached)}, 'executing_code_outside_bundle')
         sealed = seal_companion_host_copy(two['pluginRoot'], str(cached))
