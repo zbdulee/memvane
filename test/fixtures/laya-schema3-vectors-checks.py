@@ -570,9 +570,11 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         with mock.patch.object(fill, '_deadline', new=deadline), mock.patch.object(fill, '_expire', new=expire), \
                 mock.patch.object(self.worker.ReviewedLocalQmdProvider, 'embed_document', new=slow_document):
             first, _ingests, first_calls = self.run_vector_pass()
-            # Lexical publish kept; the vectors wait, the wake stays.
+            # Lexical publish kept; the vectors wait. Other cards' sets were
+            # filled, so the pass is ACKed and its wake offered again.
             self.assertEqual((first['state'], first['vector']['state'], first['vector']['reason']),
-                             ('pending', 'pending', 'schema3_vector_deadline'), first)
+                             ('indexed', 'pending', 'schema3_vector_deadline'), first)
+            self.assertGreater(first['vector']['progress'], 0, first)
             self.assertEqual(self.stage(first['generation'])[0]['vector_mode'], 'lexical-only')
             self.assertIn(target, self.paths(self.recall('slowprobe')))
             second, _ingests, second_calls = self.run_vector_pass()
@@ -662,8 +664,10 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         with self.virtual_fill_clock({'coldprobe': 40.0}) as budgets:
             first, _ingests, _calls = self.run_vector_pass()
             second, _ingests, _calls = self.run_vector_pass()
-        self.assertEqual(second['vector']['state'], 'published', (first, second))
-        self.assertEqual(self.embedded(second['generation'], target), (True, True))
+        # Published within two passes (in the first when the cold card is the
+        # pass's first cold target); before, both passes dropped its call.
+        self.assertIn('published', (first['vector']['state'], second['vector']['state']), (first, second))
+        self.assertEqual(self.embedded(self.head()[0], target), (True, True))
         self.assertTrue([b for b in budgets if b > self.worker.SCHEMA3_FILL_CALL_SECONDS], budgets)
         emit('schema3-cold-card-resume-budget', first=first['vector'].get('reason'),
              second=second['vector']['state'])
