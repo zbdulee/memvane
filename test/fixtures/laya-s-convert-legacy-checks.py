@@ -69,15 +69,69 @@ class LegacyConvertChecks(journal.Schema3EndpointChecks):
         db.rollback()
         self.assertEqual(db.execute('SELECT COUNT(*) FROM s_legacy_fts').fetchone()[0], count)
 
-    def test_normal_publication_over_a_legacy_head_refuses_for_now(self):
+    def normal_manifest(self, store, handle):
+        """The head's cards as an ordinary manifest (their legacy_verified trust kept)."""
+        rows = store._db.execute('SELECT path,blob_sha,title,trust_digest FROM s_cards '
+                                 'WHERE view_id=? AND gen_to IS NULL ORDER BY path', (handle.view_id,)).fetchall()
+        return {'scan_id': 'a' * 32, 'policy_digest': handle.policy_digest, 'revocation_epoch': 0,
+                'complete': True, 'sources': [],
+                'members': [dict(path=r[0], blob_sha=r[1], display_title=r[2], trust_digest=r[3]) for r in rows]}
+
+    def publish_normal(self, store, handle, head, manifest):
+        gen = store.prepare_generation(handle, manifest, expected_head=head)
+        return store.publish_generation(handle, gen, expected_head=head)
+
+    def test_normal_publication_over_a_legacy_head_closes_the_corpus_and_rolls_back(self):
         self.publish()
-        store, handle, _, head = self.convert()
-        with self.assertRaises(Exception) as caught:
-            store.prepare_generation(handle, {'scan_id': 'a' * 32, 'policy_digest': handle.policy_digest,
-                                              'revocation_epoch': 0, 'complete': True, 'sources': [],
-                                              'members': []}, expected_head=head)
-        self.assertEqual(getattr(caught.exception, 'reason', None), 'row_format_unsupported')
-        self.assertEqual(store.head(handle), head)
+        store, handle, before, head = self.convert()
+        import laya_view_fts as fts
+        manifest = self.normal_manifest(store, handle)
+        normal = self.publish_normal(store, handle, head, manifest)
+        db = store._db
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM s_legacy_fts WHERE view_id=? AND gen_to IS NULL',
+                                    (handle.view_id,)).fetchone()[0], 0)
+        self.assertEqual(tuple(db.execute('SELECT kind,sidecar_present FROM s_generations WHERE gen_id=?',
+                                          (normal['gen_id'],)).fetchone()), ('normal', 0))
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn(fts.head_table(handle.view_id, sidecar=True), tables)
+        self.assertGreater(db.execute("SELECT COUNT(*) FROM s_deltas WHERE ordinal=(SELECT ordinal FROM "
+                                      "s_generations WHERE gen_id=?) AND rel='legacy_fts'",
+                                      (normal['gen_id'],)).fetchone()[0], 0)
+        pin = store.pin_view(handle)
+        try:
+            self.assertIn('concepts/heron-route.md', [r['path'] for r in store.search(pin, 'heron', 20)])
+        finally:
+            store.release(pin)
+        back = store.rollback_generation(handle, expected_head=normal)
+        self.assertEqual(back['epoch'], normal['epoch'] + 1)
+        self.assertEqual(self.recall(store, handle), before)
+        while any(store.collect_view_rows(handle, limit=64).get(t) for t in ('s_cards', 's_legacy_fts', 'stage')):
+            pass
+        self.assertEqual(self.recall(store, handle), before)
+        again = self.publish_normal(store, handle, back, manifest)
+        self.assertEqual(again['epoch'], back['epoch'] + 1)
+
+    def test_legacy_base_under_a_normal_head_converts_and_rolls_back_to_the_legacy_recall(self):
+        self.publish()
+        with self.writer() as view:
+            handle = view.capture_view(self.worktree_id)
+            legacy = self.recall(view, handle)
+            head = view.head(handle)
+            members = [dict(path=m['path'], blob_sha=m['blob_sha'], display_title=m['display_title'],
+                            trust_digest=m['trust_digest'])
+                       for m in view._db.execute('SELECT * FROM wiki_members WHERE gen_id=?', (head['gen_id'],))]
+            manifest = {'scan_id': 'b' * 32, 'policy_digest': handle.policy_digest, 'revocation_epoch': 0,
+                        'complete': True, 'sources': [], 'members': members}
+            normal = self.publish_normal(view, handle, head, manifest)
+            view.convert_to_row_format()
+        store = self.views.ViewStore.open(self.store_path, repository=self.repository,
+                                          scope_id=self.case.route['scopeId'])
+        self.addCleanup(store.close)
+        fresh = store.capture_view(self.worktree_id)
+        self.assertEqual(store.head(fresh)['gen_id'], normal['gen_id'])
+        back = store.rollback_generation(fresh, expected_head=store.head(fresh))
+        self.assertEqual(self.recall(store, fresh), legacy)
+        self.assertNotEqual(back['gen_id'], head['gen_id'])
 
 
 def load_tests(loader, tests, pattern):

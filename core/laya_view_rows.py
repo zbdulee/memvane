@@ -320,13 +320,6 @@ class RowsMixin:
         with self._session() as db:
             if self._rows_head(db, handle) != base:
                 v.fail('view_head_conflict')
-            head = self._rows_head_row(db, handle.view_id)
-            if head.ordinal is not None and (
-                    self._rows_open_legacy(db, handle.view_id, head.ordinal) or db.execute(
-                        "SELECT kind='legacy' FROM s_generations WHERE view_id=? AND ordinal=?",
-                        (handle.view_id, head.ordinal)).fetchone()[0]):
-                # A normal publication over a legacy head is a separate unit.
-                v.fail('row_format_unsupported')
             plan = self._derive(handle, manifest, skips, deadline=deadline)
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
             # Zero or complete: every eligible member's set is validated before any write.
@@ -478,18 +471,23 @@ class RowsMixin:
                 capture()
                 _live(db, saved, files)
 
+            # A publication over a legacy head closes its whole FTS corpus.
+            legacy_deltas = ([] if head.ordinal is None else
+                             [(row, None) for row in self._rows_open_legacy(db, handle.view_id, head.ordinal)])
             generation = dict(gen_id=gen_id, view_id=handle.view_id, epoch=base['epoch'] + 1,
                               prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
                               capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
                               skip_digest=stage['skip_digest'], **_coverage_fields(spec),
                               expected_member_digest=stage['member_digest'],
                               source_digest=v.digest('memvane-row-sources-v1', []))
-            written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline)
+            written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline,
+                                       legacy_deltas=legacy_deltas)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
-    def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, rollback=None):
-        """Changed card rows, their head FTS rows, the sealed generation and the head CAS.
+    def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, rollback=None,
+                    legacy_deltas=()):
+        """Changed card and legacy corpus rows, their head FTS rows, the sealed generation and the head CAS.
 
         Runs inside the caller's write transaction and commits it under the
         view's FTS capability; any failure rolls the whole publication back.
@@ -497,24 +495,55 @@ class RowsMixin:
         and seals the physical digest. A rollback (``rollback`` = the head and
         prior generation rows) updates the head accumulators from the delta
         only, must reach the prior's accumulators and seals the deferral value.
+        ``legacy_deltas`` are ``(old, new)`` legacy FTS corpus rows; a legacy
+        card's FTS row lives in that corpus, not in the card's own row.
         """
         import laya_view_store as store_module
         view_id = generation['view_id']
         sequence = db.execute("SELECT seq FROM sqlite_sequence WHERE name='s_generations'").fetchone()
         ordinal = (0 if sequence is None else sequence[0]) + 1
-        changes = []
+        changes = {'base': [], 'sidecar': []}
+        text_changes = []  # (domain, fts row, sign) for the rollback accumulator
         for old, new in deltas:
             _expired(deadline)
-            old_fts = self._rows_fts_rows([old], deadline=deadline) if old is not None else []
-            new_fts = self._rows_fts_rows([new], deadline=deadline) if new is not None else []
-            old_fts, new_fts = (old_fts[0] if old_fts else None), (new_fts[0] if new_fts else None)
+            old_fts, new_fts = self._card_fts_row(old, deadline), self._card_fts_row(new, deadline)
             if old_fts != new_fts:
-                changes.append(dict(old=old_fts, new=new_fts))
+                changes['base'].append(dict(old=old_fts, new=new_fts))
+                text_changes += [('normal', row, sign) for row, sign in ((old_fts, -1), (new_fts, 1)) if row]
+        cache = {}
+        for old, new in legacy_deltas:
+            _expired(deadline)
+            for row, sign in ((old, -1), (new, 1)):
+                if row is None:
+                    continue
+                fts_row = self._legacy_fts_row(row, cache, deadline)
+                origin = row['origin']
+                value = fts_row if origin == 'base' else dict(fts_row, position=row['position'])
+                text_changes.append((origin, value, sign))
+                changes[origin].append(dict(old=fts_row, new=None) if sign < 0 else dict(old=None, new=fts_row))
+        changes['sidecar'].sort(key=lambda c: (c['new'] is not None,))
+        after_sidecar = bool(generation['sidecar_present'])
+        before_sidecar = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                                    (fts.head_table(view_id, sidecar=True),)).fetchone() is not None
         with self._fts_guard.view_head(view_id):
             if head.ordinal is None:
                 fts.create_head(db, view_id)
-            fts.apply_mapped_head_changes(db, view_id, changes, deadline=deadline)
+            fts.apply_mapped_head_changes(db, view_id, changes['base'], deadline=deadline)
+            if after_sidecar and not before_sidecar:
+                fts.create_head(db, view_id, sidecar=True)
+            if after_sidecar:
+                inserts = sorted((c for c in changes['sidecar'] if c['new'] is not None),
+                                 key=lambda c: self._legacy_position(legacy_deltas, c['new']['path_key']))
+                fts.apply_mapped_head_changes(db, view_id, [c for c in changes['sidecar'] if c['new'] is None],
+                                              sidecar=True, deadline=deadline)
+                for change in inserts:
+                    fts.apply_mapped_head_changes(db, view_id, [change], sidecar=True, deadline=deadline)
+            elif before_sidecar:
+                db.execute(f'DROP TABLE {fts.head_table(view_id, sidecar=True)}')
+                db.execute("DELETE FROM s_head_fts_map WHERE view_id=? AND origin='sidecar'", (view_id,))
             if rollback is None:
+                if after_sidecar:
+                    v.fail('row_format_unsupported')  # publications write ordinary generations only
                 fts.verify_head_index(db, view_id)
                 self._fts_guard.freeze_head()
                 _, physical = fts.head_proof(db, view_id, rows, deadline, logical=False)
@@ -528,11 +557,13 @@ class RowsMixin:
                         members = acc_update(members, _CARD_DOMAIN, _card_value(old), -1)
                     if new is not None:
                         members = acc_update(members, _CARD_DOMAIN, _card_value(new))
-                for change in changes:
-                    if change['old'] is not None:
-                        text_acc = acc_update(text_acc, _FTS_DOMAINS['normal'], change['old'], -1)
-                    if change['new'] is not None:
-                        text_acc = acc_update(text_acc, _FTS_DOMAINS['normal'], change['new'])
+                for old, new in legacy_deltas:
+                    if old is not None:
+                        members = acc_update(members, _LEGACY_DOMAIN, _legacy_value(old), -1)
+                    if new is not None:
+                        members = acc_update(members, _LEGACY_DOMAIN, _legacy_value(new))
+                for origin, row, sign in text_changes:
+                    text_acc = acc_update(text_acc, _FTS_DOMAINS[origin], row, sign)
                 if (members, text_acc) != (acc_value(prior['member_acc']), acc_value(prior['fts_acc'])):
                     v.fail('rollback_fts_mismatch')
                 physical = deferred_physical(current['physical_fts_digest'], generation['gen_id'])
@@ -548,6 +579,9 @@ class RowsMixin:
             for old, new in deltas:
                 _expired(deadline)
                 store_module._apply_card_delta(db, view_id, ordinal, old, new)
+            for old, new in legacy_deltas:
+                _expired(deadline)
+                self._apply_legacy_delta(db, view_id, ordinal, old, new)
             if head.ordinal is None:
                 db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,1)', (view_id, ordinal))
             elif db.execute('UPDATE s_heads SET ordinal=?,epoch=? WHERE view_id=? AND ordinal=? AND epoch=?',
@@ -567,6 +601,56 @@ class RowsMixin:
             else:
                 rows[new['path']] = new
         return [rows[path] for path in _sorted_paths(rows)]
+
+    def _card_fts_row(self, row, deadline):
+        """The head FTS row of one ordinary eligible card; legacy cards answer from their corpus."""
+        if row is None or not row['eligible'] or 'fts_path' in v.parse_canonical(row['metadata_json']):
+            return None
+        return self._rows_fts_rows([row], deadline=deadline)[0]
+
+    def _legacy_fts_row(self, row, cache, deadline):
+        if row['blob_sha'] not in cache:
+            cache[row['blob_sha']] = self._blob(row['blob_sha'])
+        body = cache[row['blob_sha']]
+        if row['origin'] == 'base':
+            return vals.fts_rows({row['path_key']: body}, deadline=deadline)[0]
+        return dict(filepath=row['path_key'], title=row['title'], body=body, path_key=row['path_key'])
+
+    @staticmethod
+    def _legacy_position(legacy_deltas, path_key):
+        for old, new in legacy_deltas:
+            if new is not None and new['origin'] == 'sidecar' and new['path_key'] == path_key:
+                return new['position']
+        v.fail('legacy_fts_delta_invalid')
+
+    @staticmethod
+    def _apply_legacy_delta(db, view_id, ordinal, old, new):
+        """Close and/or open one legacy corpus interval and record its rollback delta."""
+        row = old if old is not None else new
+        for value in (old, new):
+            if value is not None:
+                v.exact(value, LEGACY_FIELDS)
+        current = db.execute('SELECT origin,path_key,blob_sha,title,position,active FROM s_legacy_fts '
+                             'WHERE view_id=? AND origin=? AND path_key=? AND gen_to IS NULL',
+                             (view_id, row['origin'], row['path_key'])).fetchone()
+        if (None if current is None else dict(zip(LEGACY_FIELDS, tuple(current)))) != old:
+            v.fail('legacy_fts_delta_conflict')
+        if old is not None and db.execute(
+                'UPDATE s_legacy_fts SET gen_to=? WHERE view_id=? AND origin=? AND path_key=? AND gen_to IS NULL',
+                (ordinal, view_id, old['origin'], old['path_key'])).rowcount != 1:
+            v.fail('legacy_fts_delta_conflict')
+        if new is not None:
+            db.execute('INSERT INTO s_legacy_fts(view_id,origin,path_key,gen_from,gen_to,blob_sha,title,position,active) '
+                       'VALUES (?,?,?,?,NULL,?,?,?,?)', (view_id, new['origin'], new['path_key'], ordinal,
+                                                          new['blob_sha'], new['title'], new['position'], new['active']))
+        key = v.canonical([row['origin'], row['path_key']])
+        db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
+                   (view_id, ordinal, 'legacy_fts', key, None if old is None else v.canonical(old),
+                    None if new is None else v.canonical(new)))
+        for side, value in (('old', old), ('new', new)):
+            if value is not None:
+                db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) VALUES (?,?,?,?,?,?)',
+                           (view_id, ordinal, 'legacy_fts', key, side, value['blob_sha']))
 
     # -- rollback and view row collection -------------------------------------
 
@@ -602,18 +686,18 @@ class RowsMixin:
             prior = dict(prior)
             if seal_digest(_seal_fields(self._incarnation, prior)) != prior['seal_digest']:
                 v.fail('generation_seal_mismatch')
-            deltas = []
+            deltas, legacy_deltas = [], []
             for rel, old_json, new_json in db.execute(
                     'SELECT rel,old_json,new_json FROM s_deltas WHERE view_id=? AND ordinal=? '
-                    'ORDER BY key_json DESC', (handle.view_id, head.ordinal)).fetchall():
-                if rel != 'card':
+                    'ORDER BY rel,key_json DESC', (handle.view_id, head.ordinal)).fetchall():
+                if rel not in ('card', 'legacy_fts'):
                     v.fail('row_format_unsupported')
                 old = None if old_json is None else v.parse_canonical(old_json)
                 new = None if new_json is None else v.parse_canonical(new_json)
                 for value in (old, new):
                     if value is not None:
-                        v.exact(value, CARD_FIELDS)
-                deltas.append((new, old))
+                        v.exact(value, CARD_FIELDS if rel == 'card' else LEGACY_FIELDS)
+                (deltas if rel == 'card' else legacy_deltas).append((new, old))
             generation = dict(gen_id=vals.gen_id(uuid.uuid4().hex, v.digest('memvane-row-rollback-v1', dict(
                                   view_id=handle.view_id, head=head.gen_id, prior=prior['gen_id']))),
                               view_id=handle.view_id, epoch=head.epoch + 1, prior_ordinal=head.ordinal,
@@ -630,7 +714,7 @@ class RowsMixin:
                     store_module._stage_mark_abandon(db, job[0])
 
             written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,
-                                       rollback=(current, prior))
+                                       rollback=(current, prior), legacy_deltas=legacy_deltas)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
@@ -898,14 +982,24 @@ class RowsMixin:
                            (view_id, path, start, end, value['blob_sha'], value['title'], value['eligible'],
                             value['trust_digest'], value['metadata_json']))
         if any(item['legacy_rows'] for item in chain):
-            if len(chain) == 2 and chain[0]['legacy_rows'] != chain[-1]['legacy_rows']:
-                # A legacy base under a different head needs legacy_fts deltas (not converted yet).
+            closed = len(chain) == 2 and not chain[-1]['legacy_rows']
+            if len(chain) == 2 and not closed and chain[0]['legacy_rows'] != chain[-1]['legacy_rows']:
                 v.fail('row_conversion_unsupported')
             for value in chain[0]['legacy_rows']:
                 db.execute('INSERT INTO s_legacy_fts(view_id,origin,path_key,gen_from,gen_to,blob_sha,title,'
-                           'position,active) VALUES (?,?,?,?,NULL,?,?,?,?)',
+                           'position,active) VALUES (?,?,?,?,?,?,?,?,?)',
                            (view_id, value['origin'], value['path_key'], chain[0]['row']['ordinal'],
-                            value['blob_sha'], value['title'], value['position'], value['active']))
+                            head_ordinal if closed else None, value['blob_sha'], value['title'],
+                            value['position'], value['active']))
+                if closed:
+                    # The ordinary head closed the legacy base corpus: its rollback delta.
+                    key = v.canonical([value['origin'], value['path_key']])
+                    db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) '
+                               'VALUES (?,?,?,?,?,NULL)', (view_id, head_ordinal, 'legacy_fts', key,
+                                                           v.canonical(value)))
+                    db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) '
+                               'VALUES (?,?,?,?,?,?)', (view_id, head_ordinal, 'legacy_fts', key, 'old',
+                                                         value['blob_sha']))
         db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,?)', (view_id, head_ordinal, epoch))
 
     def _rows_convert_legacy(self, db, gen_id, legacy, members):
