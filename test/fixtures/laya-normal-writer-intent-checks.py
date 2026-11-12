@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Normal first-write epoch refresh and journal-image CAS preconditions."""
 from contextlib import ExitStack, closing, contextmanager
+import fcntl
 import importlib
 import importlib.util
 import gc
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -91,6 +93,120 @@ class NormalWriterIntentChecks(unittest.TestCase):
             after = self.J.inspect_journal(self.case.journal)
             self.assertEqual(after['epoch'], before['epoch'] + 1)
             self.assertTrue(after['newWriteSeen'])
+            with self.assertRaises(ValueError):
+                self.N.validate_normal_writer(writer)
+
+    def test_worker_mark_recapture_over_its_stage_deadline_revokes_writer(self):
+        """The image CAS stage includes the plan recapture: a recapture past the
+        stage deadline refuses before the reproof gets its own deadline."""
+        with self.warm_clean(), self.seed.authority(), ExitStack() as owners:
+            owner = owners.enter_context(self.sync.sync_owner(self.queue))
+            writer = owners.enter_context(self.N.worker_writer_scope(
+                self.fixture.plan, queue_owner=owner, operation_timeout=2))
+            before = self.J.inspect_journal(self.case.journal)
+            clock = [time.monotonic()]
+            capture, proofs = self.P.capture_writer_plan, []
+            windows = self.P.writer_proof_windows
+            def slow(*args, **kwargs):
+                result = capture(*args, **kwargs)
+                clock[0] += 3
+                return result
+            def counted(*args, **kwargs):
+                proofs.append(1)
+                return windows(*args, **kwargs)
+            with mock.patch.object(self.N, 'time', SimpleNamespace(monotonic=lambda: clock[0])), \
+                    mock.patch.object(self.P, 'capture_writer_plan', side_effect=slow), \
+                    mock.patch.object(self.P, 'writer_proof_windows', side_effect=counted):
+                with self.assertRaisesRegex(ValueError, 'normal_writer_deadline') as caught:
+                    self.N.mark_new_write(writer)
+            self.assertEqual(len(proofs), 1)
+            self.assertEqual(set(caught.exception.mark_timings), {'p1_lock', 'p1_sql', 'img'})
+            self.assertGreaterEqual(caught.exception.mark_timings['img'], 3000)
+            after = self.J.inspect_journal(self.case.journal)
+            self.assertEqual((after['epoch'], after['newWriteSeen']), (before['epoch'] + 1, True))
+            with self.assertRaises(ValueError):
+                self.N.validate_normal_writer(writer)
+
+    @contextmanager
+    def held_reader(self, hold, sql=()):
+        """A reader holding every physical lock SH for ``hold`` seconds of each
+        writer proof, on a clock only the writer modules read (no sleep).
+        ``sql[i]`` seconds pass inside proof ``i``'s route proof."""
+        proof_reader = importlib.import_module('laya_writer_proof_reader')
+        lock_dir = self.N.R._lock_dir(self.fixture.plan.install_id, create=False)
+        locks = sorted(lock_dir.glob('*-physical.lock'))
+        self.assertTrue(locks)
+        offset, waited, held, proofs = [0.0], [0.0], [], []
+
+        def release():
+            while held:
+                os.close(held.pop())
+
+        def sleep(seconds):
+            offset[0] += seconds
+            waited[0] += seconds
+            if held and waited[0] >= hold:
+                release()
+        clock = SimpleNamespace(monotonic=lambda: time.monotonic() + offset[0], sleep=sleep, time=time.time)
+        windows, verify = self.P.writer_proof_windows, self.J.verify_selected_route_for_write
+
+        def held_windows(*args, **kwargs):
+            proofs.append(len(proofs))
+            waited[0] = 0.0
+            for path in locks:
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                fcntl.flock(fd, fcntl.LOCK_SH)
+                held.append(fd)
+            return windows(*args, **kwargs)
+
+        def slow_verify(decision):
+            index = len(proofs) - 1
+            offset[0] += sql[index] if index < len(sql) else 0.0
+            return verify(decision)
+        try:
+            with mock.patch.object(self.N, 'time', clock), mock.patch.object(self.P, 'time', clock), \
+                    mock.patch.object(proof_reader, 'time', clock), \
+                    mock.patch.object(self.P, 'writer_proof_windows', side_effect=held_windows), \
+                    mock.patch.object(self.J, 'verify_selected_route_for_write', side_effect=slow_verify):
+                yield proofs
+        finally:
+            release()
+
+    def test_worker_mark_gives_each_proof_its_own_deadline_under_a_held_reader(self):
+        """Two proofs that each wait 1.5 s for a reader fit their own 2 s deadline."""
+        with self.warm_clean(), self.seed.authority(), ExitStack() as owners:
+            owner = owners.enter_context(self.sync.sync_owner(self.queue))
+            writer = owners.enter_context(self.N.worker_writer_scope(
+                self.fixture.plan, queue_owner=owner, operation_timeout=2))
+            before = self.J.inspect_journal(self.case.journal)
+            with self.held_reader(1.5) as proofs:
+                proof = self.N.mark_new_write(writer)
+            self.assertEqual(len(proofs), 2)
+            after = self.J.inspect_journal(self.case.journal)
+            self.assertEqual((after['epoch'], after['newWriteSeen']), (before['epoch'] + 1, True))
+            self.assertEqual(proof['selectionEpoch'], after['epoch'])
+            self.N.validate_normal_writer(writer)
+
+    def test_worker_mark_proof_over_its_deadline_reports_stage_timings(self):
+        """A proof that waits 1.5 s and then reads for 1 s ends writer_proof_deadline
+        with the measured lock and SQL time of every stage."""
+        with self.warm_clean(), self.seed.authority(), ExitStack() as owners:
+            owner = owners.enter_context(self.sync.sync_owner(self.queue))
+            writer = owners.enter_context(self.N.worker_writer_scope(
+                self.fixture.plan, queue_owner=owner, operation_timeout=2))
+            before = self.J.inspect_journal(self.case.journal)
+            with self.held_reader(1.5, sql=(0.0, 1.0)) as proofs:
+                with self.assertRaisesRegex(self.W.ReaderWindowBusy, 'writer_proof_deadline') as caught:
+                    self.N.mark_new_write(writer)
+            self.assertEqual(len(proofs), 2)
+            timings = caught.exception.mark_timings
+            self.assertEqual(set(timings), {'p1_lock', 'p1_sql', 'img', 'p2_lock', 'p2_sql'})
+            self.assertGreaterEqual(timings['p1_lock'], 1500)
+            self.assertGreaterEqual(timings['p2_lock'], 1500)
+            self.assertGreaterEqual(timings['p2_sql'], 1000)
+            # The mark committed before the second proof; the writer is revoked.
+            after = self.J.inspect_journal(self.case.journal)
+            self.assertEqual(after['epoch'], before['epoch'] + 1)
             with self.assertRaises(ValueError):
                 self.N.validate_normal_writer(writer)
 

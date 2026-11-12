@@ -148,6 +148,16 @@ development execution guard is separate; see
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
+- A v6 capacity sync marks its first write through
+  `laya_writer_scope.mark_new_write`. Validation with the first writer proof,
+  the journal image CAS with the plan recapture after it, and the reproof each
+  get their own operation deadline
+  (2 seconds for the worker writer); each proof first waits for the physical
+  windows readers hold. A proof that runs out (`writer_proof_deadline`,
+  `writer_proof_physical_busy`) ends the wake `deferred`, and its `wake.sync`
+  detail names each stage's milliseconds
+  (`p1_lock<ms>_sql<ms>:img<ms>:p2_lock<ms>_sql<ms>`: the window wait, then the
+  reads inside).
 - A selected sync yields (`laya_sync_yield_priority`) to a due `index` or
   `update` wake that has failed fewer than 3 times (those retired kinds are
   acknowledged on dispatch without work), and, between rounds, to another
