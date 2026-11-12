@@ -150,7 +150,8 @@ development execution guard is separate; see
   child result records its fixed `state`/`reason` codes there instead.
 - A v6 capacity sync marks its first write through
   `laya_writer_scope.mark_new_write`. Validation with the first writer proof,
-  the journal image CAS and the reproof each get their own operation deadline
+  the journal image CAS with the plan recapture after it, and the reproof each
+  get their own operation deadline
   (2 seconds for the worker writer); each proof first waits for the physical
   windows readers hold. A proof that runs out (`writer_proof_deadline`,
   `writer_proof_physical_busy`) ends the wake `deferred`, and its `wake.sync`
