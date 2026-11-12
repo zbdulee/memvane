@@ -21,8 +21,8 @@ preserve the existing QMD fixture/log isolation. Backup and hash work must use
 `npm run dev:guard -- --kind backup -- COMMAND ...` or `--kind hash`.
 The wrapper launches an argv directly, never constructs a shell command.
 The complete `npm test` suite has a finite1,800-second budget; focused checks
-keep the wrapper's900-second default. This accommodates the observed sequential
-CI duration without allowing unbounded execution.
+keep the wrapper's900-second default. CI runs the suite as three
+`--test-shard=N/3` jobs per Node version so each shard stays inside that budget.
 
 The full suite runs all `laya-sync-first-proof-checks.py` cases through
 `laya-sync-first-proof.test.mjs`. Its six dedicated focused wrappers repeat a

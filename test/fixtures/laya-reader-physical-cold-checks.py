@@ -26,6 +26,20 @@ from urllib.parse import unquote, urlparse
 ROOT=Path(__file__).resolve().parents[2]
 SELF=Path(__file__).resolve()
 
+def system_python_version():
+    try:
+        out=subprocess.run(['/usr/bin/python3','-c','import sys;print(*sys.version_info[:2])'],
+                           capture_output=True,text=True,timeout=30,check=True).stdout.split()
+        return tuple(int(part) for part in out)
+    except (OSError,subprocess.SubprocessError,ValueError):
+        return None
+
+# These checks cover the macOS system Python 3.9 and its bundled SQLite, which
+# hooks run under. Other hosts (Linux CI ships a newer /usr/bin/python3) skip them.
+SYSTEM_PYTHON=system_python_version()
+system_python39=unittest.skipUnless(SYSTEM_PYTHON==(3,9),
+    f'/usr/bin/python3 is {SYSTEM_PYTHON}, not the system Python 3.9 these checks cover')
+
 SELECTED_READER=r'''
 from pathlib import Path
 from types import SimpleNamespace
@@ -304,12 +318,15 @@ def without_sqlite_aux(before, after):
             {name:value for name,value in after.items() if name not in auxiliary})
 
 class PhysicalColdChecks(unittest.TestCase):
+    @system_python39
     def test_system_python39_selected_cold_full_query_without_optional_sidecar(self):
         self._selected_cold_full_query(sidecar_present=False)
 
+    @system_python39
     def test_system_python39_selected_cold_full_query_with_sealed_sidecar(self):
         self._selected_cold_full_query(sidecar_present=True)
 
+    @system_python39
     def test_system_python39_selected_cold_full_query_with_legacy_sidecar(self):
         self._selected_cold_full_query(sidecar_present=True,legacy=True)
 
@@ -379,6 +396,7 @@ class PhysicalColdChecks(unittest.TestCase):
         finally:
             seed.doCleanups()
 
+    @system_python39
     def test_system_python39_selected_cold_search_without_sidecars(self):
         fixture=load('selected_cold_seed','laya-reader-move-seal-checks.py')
         seed=fixture.MoveSealChecks('runTest')
@@ -491,6 +509,7 @@ class PhysicalColdChecks(unittest.TestCase):
     def test_default_interpreter_fresh_first_closed_writer_retained_read(self):
         self.check_cold(sys.executable,sys.version_info[:2])
 
+    @system_python39
     def test_system_python39_fresh_first_closed_writer_retained_read(self):
         self.check_cold('/usr/bin/python3',(3,9))
 
