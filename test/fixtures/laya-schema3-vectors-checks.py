@@ -600,6 +600,259 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         emit('schema3-vector-deadline-resume', pieces=pieces, firstDocuments=kinds(first_calls, 'document'),
              secondDocuments=kinds(second_calls, 'document'), secondChunks=kinds(second_calls, 'chunks'))
 
+    # -- 0.44.21: fill budget, re-offer, degraded recall, diagnostics -------------
+    @contextmanager
+    def virtual_fill_clock(self, slow):
+        """``laya_blob_fill`` deadlines on a virtual clock; ``slow[marker]`` virtual
+        seconds pass inside the provider's chunked call for a body holding marker.
+        Yields the list of content-fill budgets."""
+        fill = importlib.import_module('laya_blob_fill')
+        values = importlib.import_module('laya_blob_values')
+        clock, budgets = [0.0], []
+        real_deadline = fill._deadline
+
+        def deadline(seconds):
+            real_deadline(seconds)
+            budgets.append(seconds)
+            return (clock[0], seconds)
+
+        def expire(token):
+            if clock[0] - token[0] >= token[1]:
+                values.fail('content_fill_deadline')
+        real_chunks = self.worker.ReviewedLocalQmdProvider.embed_document_chunks
+
+        def chunks(provider, body, path, timeout=None):
+            clock[0] += sum(seconds for marker, seconds in slow.items() if marker in body)
+            return real_chunks(provider, body, path, timeout)
+        with mock.patch.object(fill, '_deadline', new=deadline), mock.patch.object(fill, '_expire', new=expire), \
+                mock.patch.object(self.worker.ReviewedLocalQmdProvider, 'embed_document_chunks', new=chunks):
+            yield budgets
+
+    @contextmanager
+    def offers(self):
+        """``runtime_work.request`` calls as (kind, target, delay)."""
+        work = importlib.import_module('runtime_work')
+        seen = []
+
+        def request(kind, target='', **kwargs):
+            seen.append((kind, target, kwargs.get('delay', 0)))
+            return {'status': 'queued'}
+        with mock.patch.object(work, 'request', side_effect=request):
+            yield seen
+
+    def embedded(self, gen_id, path):
+        """Whether ``path``'s blob has the spec's chunk and embedding sets."""
+        blob = self.members(gen_id)[path][0]
+        with closing(sqlite3.connect(self.store_path.as_uri() + '?mode=ro', uri=True)) as db:
+            chunked = db.execute('SELECT 1 FROM chunk_sets WHERE blob_sha=? AND recipe_id=?',
+                                 (blob, self.spec['recipe_id'])).fetchone() is not None
+            embedded = db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND '
+                                  'profile_id=?', (blob, self.spec['recipe_id'],
+                                                   self.spec['profile_id'])).fetchone() is not None
+        return chunked, embedded
+
+    def test_12_cold_card_over_one_fill_call_completes_with_the_resume_budget(self):
+        """A card whose single chunked provider call outlasts a fill call and has
+        no stored chunk set: the first cold target of a pass gets the resume budget."""
+        self.select_schema3()
+        target = 'concepts/cold-card.md'
+        self.card(target, 'coldprobe')
+        self.assertGreater(40.0, self.worker.SCHEMA3_FILL_CALL_SECONDS)
+        self.assertLess(40.0, self.worker.SCHEMA3_RESUME_SECONDS)
+        with self.virtual_fill_clock({'coldprobe': 40.0}) as budgets:
+            first, _ingests, _calls = self.run_vector_pass()
+            second, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(second['vector']['state'], 'published', (first, second))
+        self.assertEqual(self.embedded(second['generation'], target), (True, True))
+        self.assertTrue([b for b in budgets if b > self.worker.SCHEMA3_FILL_CALL_SECONDS], budgets)
+        emit('schema3-cold-card-resume-budget', first=first['vector'].get('reason'),
+             second=second['vector']['state'])
+
+    def test_13_cache_hit_run_is_one_fill_call(self):
+        """A new fill job whose first missing target sits behind a run of cache
+        hits commits that run in one ``fill_view`` call, not eight at a time."""
+        self.select_schema3()
+        for index in range(18):
+            self.card('concepts/hit-%02d.md' % index, 'hitprobe%02d' % index)
+        first, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(first['vector']['state'], 'published', first)
+        self.card('zzz/late.md', 'lateprobe')
+        calls = []
+        original = self.views.ViewStore.fill_view
+
+        def counted(store, *args, **kwargs):
+            calls.append(kwargs.get('max_files'))
+            return original(store, *args, **kwargs)
+        with mock.patch.object(self.views.ViewStore, 'fill_view', new=counted):
+            second, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(second['vector']['state'], 'published', second)
+        hits = len(set(self.eligible(second['generation']).values())) - 1
+        self.assertGreaterEqual(hits, 17)
+        self.assertLessEqual(len(calls), 2, calls)
+        emit('schema3-cache-hit-run', hits=hits, fillCalls=len(calls))
+
+    def test_14_progressing_vector_pass_acks_and_reoffers_its_wake(self):
+        """Progress with vectors left: the pass is ACKed (not a counted failure)
+        and the same laya-sync wake is offered again in 30 s, with the vector
+        diagnostics in its detail. A pass with no store progress offers nothing."""
+        self.select_schema3()
+        target = 'concepts/slow-card.md'
+        self.card(target, 'slowprobe')
+        project = str(self.case.project)
+        with self.virtual_fill_clock({'slowprobe': 300.0}), self.offers() as seen:
+            first, _ingests, _calls = self.run_vector_pass()
+            self.assertEqual(first['vector']['state'], 'pending', first)
+            self.assertIn(first['state'], ('indexed', 'unchanged'), first)
+            self.assertIn(('laya-sync', project, self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
+            self.assertEqual(self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS, 30)
+            detail = first.get('detail') or ''
+            self.assertRegex(detail, r'^vec_pending_[a-z_]+:rem[0-9]+:ord[0-9]+:pms[0-9]+')
+            self.assertLessEqual(len(detail), 80)
+            seen[:] = []
+            # Only the slow card is left; even the resume budget does not hold it.
+            second, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual((second['state'], second['vector']['state']), ('pending', 'pending'), second)
+        self.assertNotIn(('laya-sync', project, self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
+        self.assertEqual(self.embedded(self.head()[0], target), (False, False))
+        emit('schema3-vector-reoffer', first=first['state'], second=second['state'], detail=detail)
+
+    def test_15_budget_spent_pass_still_tries_one_cold_target_and_linked_budget_acks(self):
+        """A pass whose earlier work left no fill budget still fills the first cold
+        target; with main vectors progressing, a linked view held only by the pass
+        budget does not turn the result into a counted failure."""
+        import os
+        import shutil
+        import tempfile
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        project = self.case.project
+        base = Path(tempfile.mkdtemp(prefix='linked-', dir=str(project.parent))).resolve()
+        self.addCleanup(shutil.rmtree, base, True)
+        linked = base / 'linked'
+        subprocess.run(['git', '-C', str(project), '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add',
+                        '-q', '-b', 'side', str(linked)], check=True, capture_output=True, timeout=20)
+        settings = importlib.import_module('project_dir').settings_path(project)
+        relative = settings.relative_to(project)
+        (linked / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(settings, linked / relative)
+        for item in self.decision['collections']:
+            (linked / Path(item['sourceRoot']).relative_to(project)).mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.wiki, linked / self.wiki.relative_to(project), dirs_exist_ok=True)
+        time.sleep(1.1)  # Git racy-index window before the linked checkout's capture.
+        # Lexical generations of both views first; the provider lane refuses.
+        lexical, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        self.assertEqual(len(lexical.get('worktrees', ())), 1, lexical)
+        reserve = self.worker.SCHEMA3_PUBLISH_RESERVE
+        with mock.patch.object(self.worker, 'SCHEMA3_PASS_SECONDS', reserve + 0.001), \
+                self.offers() as seen:
+            result, _ingests, calls = self.run_vector_pass()
+        self.assertEqual(result['vector']['state'], 'pending', result)
+        self.assertGreaterEqual(len(calls), 1)  # the first cold target was filled
+        self.assertEqual([(w['state'], w.get('reason')) for w in result['worktrees']],
+                         [('pending', 'schema3_pass_budget')], result)
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        self.assertIn(('laya-sync', str(project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
+        emit('schema3-budget-spent-first-cold', state=result['state'], providerCalls=len(calls))
+
+    def test_16_degraded_schema3_recall_asks_no_query_vector(self):
+        """A drift or fence read of a schema3 endpoint sealed with a vector spec
+        serves its lexical lists and asks for no query vector."""
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(result.get('readerResettle'), 'resealed', result)
+        host = importlib.import_module('laya_host_response')
+        event_log = importlib.import_module('event_log')
+        asked, events = [], []
+
+        @contextmanager
+        def unproved(**kwargs):
+            asked.append(kwargs.get('prompt'))
+            raise ValueError('reader_vector_caller_unproved')
+            yield  # pragma: no cover
+
+        def recorded(event, **fields):
+            events.append(dict(fields, event=event))
+            return True
+        decision = self.J.select_route(str(self.case.project), action='recall')
+        payload = {'cwd': str(self.case.project), 'prompt': 'kestrelprobe', 'session_id': 'drift-probe'}
+        provider_module = importlib.import_module('laya_local_embed_provider')
+        resident = importlib.import_module('laya_embed_resident')
+        with self.seed.authority(), \
+                mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
+                mock.patch.object(provider_module, 'ReviewedLocalQmdProvider', new=self.stub_provider()), \
+                mock.patch.object(resident, 'admit_query', return_value=None), \
+                mock.patch.object(self.dispatch, 'approved_query_vector', new=unproved), \
+                mock.patch.object(event_log, 'emit', side_effect=recorded), \
+                host._event_scope('recall', 'claude', decision, payload):
+            answer = host.serve_endpoint_recall('claude', payload, cwd=str(self.case.project),
+                                                drift_decision=decision, main_proof=None)
+        self.assertEqual(asked, [])
+        context = answer['hookSpecificOutput']['additionalContext']
+        self.assertIn('kestrel', context)
+        recall = [e for e in events if e['event'] == 'recall']
+        self.assertEqual(len(recall), 1, events)
+        self.assertEqual(recall[0].get('degraded'), 'reader_endpoint', recall[0])
+        emit('schema3-degraded-recall-lexical', asked=len(asked), notes=recall[0].get('notes'))
+
+    def test_17_empty_recall_reason_is_no_candidates(self):
+        """A recall with no candidate rows names that, not its last diagnostic note."""
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        # Lexical only (the provider lane refuses): recall notes a vector fallback.
+        self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        host = importlib.import_module('laya_host_response')
+        event_log = importlib.import_module('event_log')
+        events = []
+
+        def recorded(event, **fields):
+            events.append(dict(fields, event=event))
+            return True
+        decision = self.J.select_route(str(self.case.project), action='recall')
+        payload = {'cwd': str(self.case.project), 'prompt': 'zzqqxv nomatch', 'session_id': 'empty-probe',
+                   'hook_event_name': 'UserPromptSubmit'}
+        with self.seed.authority(), \
+                mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
+                mock.patch.object(event_log, 'emit', side_effect=recorded):
+            host.serve_selected('recall', 'claude', decision, payload)
+        recall = [e for e in events if e['event'] == 'recall']
+        self.assertEqual(len(recall), 1, events)
+        self.assertEqual((recall[0]['outcome'], recall[0]['reason']), ('empty', 'no_candidates'), recall[0])
+        # The vector fallback stays a diagnostic note, not the reason.
+        self.assertTrue([n for n in recall[0].get('notes') or [] if n.startswith('laya_vector_')], recall[0])
+        emit('schema3-empty-recall-reason', reason=recall[0]['reason'], notes=recall[0].get('notes'))
+
+    def test_18_completing_pass_publishes_its_vector_generation_after_an_overflow(self):
+        """A fill that completes past the pass deadline still publishes the vector
+        generation in the same pass: the publish gets a fresh reserve."""
+        self.select_schema3()
+        self.card('zzz/last-card.md', 'lastprobe')
+        clock = [0.0]
+        real = self.worker.time
+        fake = mock.Mock(wraps=real)
+        fake.monotonic = lambda: real.monotonic() + clock[0]
+        real_chunks = self.worker.ReviewedLocalQmdProvider.embed_document_chunks
+
+        def chunks(provider, body, path, timeout=None):
+            if 'lastprobe' in body:
+                clock[0] += 120.0  # the worker's clock passes the pass deadline
+            return real_chunks(provider, body, path, timeout)
+        deadlines = []
+        original = self.views.ViewStore.prepare_generation
+
+        def prepare(store, *args, **kwargs):
+            deadlines.append(kwargs.get('deadline') - fake.monotonic())
+            return original(store, *args, **kwargs)
+        with mock.patch.object(self.worker, 'time', fake), \
+                mock.patch.object(self.worker.ReviewedLocalQmdProvider, 'embed_document_chunks', new=chunks), \
+                mock.patch.object(self.views.ViewStore, 'prepare_generation', new=prepare):
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual((result['vector']['state'], result.get('readerResettle')),
+                         ('published', 'resealed'), result)
+        self.assertGreaterEqual(deadlines[-1], self.worker.SCHEMA3_PUBLISH_RESERVE - 1, deadlines)
+        self.assertRegex(result.get('detail') or '', r'pub[0-9]+.*res_resealed')
+        emit('schema3-overflow-publish', margins=[round(d, 1) for d in deadlines])
+
     # -- R4: the first vector head after a bundle upgrade -----------------------
     @contextmanager
     def upgraded_bundle(self, new):
