@@ -167,12 +167,28 @@ def _sorted_paths(paths):
     return sorted(paths, key=lambda path: path.encode('utf8'))
 
 
-def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items):
+def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items, spec=None):
     """Every committed stage input; the generation id derives from it at prepare."""
-    return dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
-                view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
-                scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
-                member_digest=member_digest(final), items_digest=v.digest('memvane-row-stage-items-v1', items))
+    value = dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
+                 view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
+                 scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
+                 member_digest=member_digest(final), items_digest=v.digest('memvane-row-stage-items-v1', items))
+    if spec is not None:
+        value['vector_spec'] = spec
+    return value
+
+
+def _coverage_fields(spec):
+    if spec is None:
+        return dict(recipe_id=None, profile_id=None, coverage='lexical')
+    return dict(recipe_id=spec['recipe_id'], profile_id=spec['profile_id'], coverage='complete')
+
+
+def _path_allowed(path, prefixes, exclusions):
+    """The generation format's path filters: exact or directory prefix, then exclusions."""
+    if prefixes is not None and not any(path == prefix or path.startswith(prefix + '/') for prefix in prefixes):
+        return False
+    return not exclusions or path not in exclusions
 
 
 def _locators(spans):
@@ -294,8 +310,10 @@ class RowsMixin:
         self._require_write()
         entry = self._check(handle)
         base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
-        if legacy_snapshot is not None or vector_spec is not None:
+        if legacy_snapshot is not None:
             v.fail('row_format_unsupported')
+        import laya_view_vectors as vectors
+        spec = vectors.spec(vector_spec)
         manifest = vals.manifest(manifest, handle.policy_digest)
         saved = self._observe(entry, deadline=deadline)
         skips = _skip_patterns(saved)
@@ -311,6 +329,8 @@ class RowsMixin:
                 v.fail('row_format_unsupported')
             plan = self._derive(handle, manifest, skips, deadline=deadline)
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
+            # Zero or complete: every eligible member's set is validated before any write.
+            self._rows_coverage(db, [_card_row(m) for m in plan['members']], spec, full=True, deadline=deadline)
         wanted = {member['path']: _card_row(member) for member in plan['members']}
         items = [_stage_item(path, wanted.get(path)) for path in _sorted_paths(set(current) | set(wanted))
                  if current.get(path) != wanted.get(path)]
@@ -321,7 +341,8 @@ class RowsMixin:
         scan_digest = v.digest('memvane-row-stage-scan-v1', dict(
             manifest=vals.manifest_digest(manifest), skip_paths=skips,
             files=sorted([path, node] for path, node in files.items())))
-        stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items)
+        stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items,
+                             spec)
         gen_id = vals.gen_id(job_id, v.digest(ROW_STAGE_SCHEMA, stage))
         self._observe(entry, deadline=deadline)
         _expired(deadline)
@@ -346,6 +367,8 @@ class RowsMixin:
                             base_gen_id=base['gen_id'], base_epoch=base['epoch'], capture_json=capture_json,
                             policy_digest=handle.policy_digest, scan_digest=scan_digest)
             store_module._stage_start_job(db, identity)
+            if spec is not None:
+                db.execute('UPDATE s_stage_jobs SET vector_spec_json=? WHERE job_id=?', (v.canonical(spec), job_id))
             cursor = None
             for start in range(0, len(items), _PAGE):
                 _expired(deadline)
@@ -382,7 +405,8 @@ class RowsMixin:
         def staged_state(db):
             """The view's ready stage, re-derived only from committed rows."""
             job = db.execute('SELECT job_id,incarnation,base_gen_id,base_epoch,capture_json,policy_digest,'
-                             'scan_digest,state FROM s_stage_jobs WHERE view_id=?', (handle.view_id,)).fetchone()
+                             'scan_digest,state,vector_spec_json FROM s_stage_jobs WHERE view_id=?',
+                             (handle.view_id,)).fetchone()
             if job is None or job[7] != 'ready' or gen_id[2:34] != job[0]:
                 v.fail('generation_missing')
             if (tuple(job[1:6]) != (self._incarnation, base['gen_id'], base['epoch'],
@@ -402,7 +426,10 @@ class RowsMixin:
                 else:
                     final[item['path']] = new
             final = [final[path] for path in _sorted_paths(final)]
-            stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items)
+            import laya_view_vectors as vectors
+            spec = None if job[8] is None else vectors.spec(v.parse_canonical(job[8]))
+            stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items,
+                                 spec)
             if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id:
                 v.fail('stage_identity_changed')
             return stage, items, current, final
@@ -434,6 +461,8 @@ class RowsMixin:
             if stage is None or again[0] != stage:
                 v.fail('stage_identity_changed')
             items = again[1]
+            spec = stage.get('vector_spec')
+            self._rows_coverage(db, final, spec, full=False, deadline=deadline)
             _live(db, saved, files)
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
             deltas = []
@@ -452,8 +481,8 @@ class RowsMixin:
             generation = dict(gen_id=gen_id, view_id=handle.view_id, epoch=base['epoch'] + 1,
                               prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
                               capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
-                              skip_digest=stage['skip_digest'], recipe_id=None, profile_id=None,
-                              coverage='lexical', expected_member_digest=stage['member_digest'],
+                              skip_digest=stage['skip_digest'], **_coverage_fields(spec),
+                              expected_member_digest=stage['member_digest'],
                               source_digest=v.digest('memvane-row-sources-v1', []))
             written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
@@ -709,8 +738,6 @@ class RowsMixin:
                     handle, entry, saved = self._sealed_handle(db, generation)
                     stage = self._verify_generation(db, handle, entry, saved, generation, deadline=deadline,
                                                     full_vectors=True)
-                    if stage['vector_spec'] is not None:
-                        v.fail('row_conversion_unsupported')
                     seal = dict(db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (gen_id,)).fetchone())
                     members = [_card_row(m) for m in self._stored(db, gen_id)[0]]
                     legacy_rows = []
@@ -816,7 +843,7 @@ class RowsMixin:
                        kind='legacy' if legacy else 'normal', sidecar_present=int(side_rows is not None),
                        capture_json=generation['checkout_evidence'], policy_digest=generation['policy_digest'],
                        skip_digest=v.digest('memvane-row-skip-v1', stage['skip_paths']),
-                       recipe_id=None, profile_id=None, coverage='lexical',
+                       **_coverage_fields(stage['vector_spec']),
                        member_digest=acc_digest('member', members),
                        source_digest=v.digest('memvane-row-sources-v1', []),
                        logical_fts_digest=acc_digest('fts', text_acc),
@@ -915,7 +942,7 @@ class RowsMixin:
         if generation is None or generation['gen_id'] != head.gen_id or generation['epoch'] != head.epoch:
             v.fail('view_head_invalid')
         generation = dict(generation)
-        if generation['coverage'] != 'lexical':
+        if generation['coverage'] not in ('lexical', 'complete'):
             v.fail('row_format_unsupported')
         handle, entry, saved = self._sealed_handle(
             db, dict(checkout_evidence=generation['capture_json'], view_id=generation['view_id']), live_handle)
@@ -930,6 +957,8 @@ class RowsMixin:
             v.fail('generation_rows_mismatch')
         if generation['sidecar_present'] != int(any(row['origin'] == 'sidecar' for row in legacy_rows)):
             v.fail('generation_rows_mismatch')
+        if generation['coverage'] == 'complete':
+            self._rows_coverage(db, rows, generation, full=False, deadline=deadline)
         cache, checked = {}, {'blobs': set(), 'worktrees': {}, 'captures': set(), 'fingerprints': {}}
         for row in rows:
             _expired(deadline)
@@ -1015,7 +1044,10 @@ class RowsMixin:
         copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
         entry = dict(handle=copied, capture=json.loads(v.canonical(issued['capture'])), binding=issued['binding'])
         self._pins[pin.token] = dict(pin=pin, fields=(pin.view_id, pin.gen_id, pin.epoch, pin.incarnation, pin.token),
-                                     entry=entry, seal=generation['seal_digest'], vector=None,
+                                     entry=entry, seal=generation['seal_digest'],
+                                     vector=None if generation['coverage'] != 'complete' else dict(
+                                         recipe_id=generation['recipe_id'], profile_id=generation['profile_id'],
+                                         dimension=self._profile(generation['profile_id'])['dimension']),
                                      verified=record['verified'], ordinal=head.ordinal)
         return pin
 
@@ -1172,3 +1204,204 @@ class RowsMixin:
                         result[row['path']] = _locators(spans)
             return result
 
+    # -- vector coverage, fill cursor and exact search ------------------------
+
+    def _rows_coverage(self, db, cards, spec, *, full, deadline=None):
+        """Every eligible card's blob has the spec's complete set; ``full`` re-validates each set."""
+        if spec is None:
+            return []
+        self._recipe(spec['recipe_id']); self._profile(spec['profile_id'])
+        heads = {}
+        for row in cards:
+            _expired(deadline)
+            if not row['eligible'] or row['blob_sha'] in heads:
+                continue
+            head = self._vector_heads(db, row['blob_sha'], spec['recipe_id'], spec['profile_id'])
+            if full and len(self._vectors(row['blob_sha'], spec['recipe_id'], spec['profile_id'])) != head['chunk_count']:
+                v.fail('embedding_set_invalid')
+            heads[row['blob_sha']] = head
+        return heads
+
+    def _rows_fill_plan(self, handle, recipe_id, profile_id):
+        """Eligible head cards in path order and the head/spec-bound cursor of this view."""
+        from laya_view_fill import JOB_SCHEMA
+        import laya_fill_schema as fill_schema
+        entry = self._check(handle)
+        v.identifier(recipe_id); v.identifier(profile_id)
+        saved = self._observe(entry)
+        with self._session() as db:
+            self._recipe(recipe_id); self._profile(profile_id)
+            head = self._rows_head_row(db, handle.view_id)
+            if head.ordinal is None:
+                v.fail('view_preparing')
+            targets = []
+            for row in self._rows_open(db, handle.view_id, head.ordinal):
+                if row['eligible']:
+                    size = db.execute('SELECT byte_length FROM wiki_blobs WHERE blob_sha=?',
+                                      (row['blob_sha'],)).fetchone()[0]
+                    targets.append(dict(path=row['path'], blob_sha=row['blob_sha'], byte_length=size))
+            if len(targets) > fill_schema.MAX_TARGETS:
+                v.fail('fill_targets_too_large')
+            identity = dict(schema=JOB_SCHEMA + ':rows', incarnation=self._incarnation, view_id=handle.view_id,
+                            head_ordinal=head.ordinal, gen_id=head.gen_id, recipe_id=recipe_id,
+                            profile_id=profile_id, targets=v.digest('memvane-fill-targets-v1', targets))
+            job = dict(job_id=v.digest(JOB_SCHEMA, identity), head_ordinal=head.ordinal,
+                       target_count=len(targets))
+            row = db.execute('SELECT job_id,head_ordinal,target_count,cursor FROM s_fill_cursors '
+                             'WHERE view_id=? AND recipe_id=? AND profile_id=?',
+                             (handle.view_id, recipe_id, profile_id)).fetchone()
+            stored = row[3] if row is not None and tuple(row[:3]) == (job['job_id'], head.ordinal, len(targets)) else None
+        return entry, saved, job, targets, stored
+
+    def _rows_fill_status(self, handle, recipe_id, profile_id):
+        _, _, job, _, stored = self._rows_fill_plan(handle, recipe_id, profile_id)
+        cursor = 0 if stored is None else stored
+        return dict(job_id=job['job_id'], cursor=cursor, complete=stored is not None and cursor == job['target_count'])
+
+    def _rows_fill_view(self, handle, recipe_id, profile_id, *, chunker, embedder, write_fence, expected_cursor,
+                        max_files, max_bytes, deadline_seconds):
+        """The generation format's bounded fill loop over the head's eligible cards.
+
+        The cursor moves forward in its own transaction only after every
+        covered target's set committed; a new head or spec starts over.
+        """
+        import laya_fill_schema as fill_schema
+        import laya_view_fill as fills
+        import laya_view_store as views
+        from laya_blob_fill import ContentFiller
+        self._require_write()
+        deadline = fills._deadline(deadline_seconds)
+        fills._bounded(expected_cursor, 0, fill_schema.MAX_TARGETS, 'fill_cursor_invalid')
+        fills._bounded(max_files, 1, fills.MAX_FILES, 'fill_limit_invalid')
+        fills._bounded(max_bytes, 1, fills.MAX_BYTES, 'fill_limit_invalid')
+        if not all(callable(fn) for fn in (chunker, embedder, write_fence)):
+            v.fail('fill_callback_invalid')
+        self._fill_idle()
+        entry, saved, job, targets, stored = self._rows_fill_plan(handle, recipe_id, profile_id)
+        cursor = 0 if stored is None else stored
+        if expected_cursor != cursor:
+            v.fail('fill_cursor_conflict')
+        fills._remaining(deadline)
+        status = lambda new: dict(job_id=job['job_id'], cursor=new, complete=new == job['target_count'])
+        if stored is not None and cursor == job['target_count']:
+            return dict(status(cursor), status='complete', filled=0, cache_hits=0, deferred=False)
+        fenced = []
+
+        def fence():
+            if not fenced:
+                self._fill_idle()
+                write_fence()
+                fenced.append(True)
+
+        filler = ContentFiller(self)
+        steps = used = filled = hits = 0
+        deferred = False
+        for target in targets[cursor:]:
+            if steps >= max_files:
+                break
+            if used + target['byte_length'] > max_bytes:
+                deferred = steps == 0
+                break
+            try:
+                result = filler.ensure_content(target['blob_sha'], recipe_id, profile_id, chunker=chunker,
+                                               embedder=embedder, write_fence=fence,
+                                               deadline_seconds=fills._remaining(deadline))
+            except v.BlobStoreError as exc:
+                if exc.reason != fills.BUSY:
+                    raise
+                deferred = True
+                break
+            if result['status'] == 'filled':
+                filled += 1
+                self._observe(entry)
+            else:
+                hits += 1
+            fills._remaining(deadline)
+            steps += 1
+            used += target['byte_length']
+        if steps == 0 and not (stored is None and not targets):
+            return dict(status(cursor), status='deferred', filled=filled, cache_hits=hits, deferred=deferred)
+        new = cursor + steps
+        fills._remaining(deadline)
+        self._check(entry['handle'])
+        fence()
+        with self._session(write=True) as db:
+            again = db.execute('SELECT job_id,head_ordinal,target_count,cursor FROM s_fill_cursors '
+                               'WHERE view_id=? AND recipe_id=? AND profile_id=?',
+                               (handle.view_id, recipe_id, profile_id)).fetchone()
+            current = (again[3] if again is not None and tuple(again[:3]) == (
+                job['job_id'], job['head_ordinal'], job['target_count']) else None)
+            if current != stored or self._rows_head_row(db, handle.view_id).ordinal != job['head_ordinal']:
+                v.fail('fill_cursor_conflict')
+            for target in targets[cursor:new]:
+                if db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                              (target['blob_sha'], recipe_id, profile_id)).fetchone() is None:
+                    v.fail('fill_content_missing')
+            db.execute('INSERT INTO s_fill_cursors(view_id,recipe_id,profile_id,job_id,head_ordinal,target_count,cursor) '
+                       'VALUES (?,?,?,?,?,?,?) ON CONFLICT(view_id,recipe_id,profile_id) DO UPDATE SET '
+                       'job_id=excluded.job_id,head_ordinal=excluded.head_ordinal,'
+                       'target_count=excluded.target_count,cursor=excluded.cursor',
+                       (handle.view_id, recipe_id, profile_id, job['job_id'], job['head_ordinal'],
+                        job['target_count'], new))
+            views._live(db, saved, {})
+            views._current_capture(saved, self._repository, self._policy, entry['capture'])
+            fills._remaining(deadline)
+        done = new == job['target_count']
+        return dict(status(new), status='complete' if done else 'progress', filled=filled, cache_hits=hits,
+                    deferred=deferred)
+
+    def _rows_search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work, deadline_seconds,
+                           path_prefixes, excluded_paths):
+        """Exact max-cosine over the pinned head's eligible cards and the sealed spec's sets."""
+        import laya_view_vectors as vectors
+        deadline = time.monotonic() + vectors.options(limit, max_float_work, deadline_seconds,
+                                                      path_prefixes, excluded_paths)
+        v.identifier(profile_id)
+        query = vectors.query_values(query_vector)
+        record = self._pinned(pin)
+        entry = record['entry']
+        vectors._left(deadline)
+        self._observe(entry, deadline=deadline, timeout_reason=vectors.DEADLINE_EXCEEDED)
+        vectors._left(deadline)
+        with self._reading(deadline) as db:
+            head = self._rows_head_row(db, pin.view_id)
+            if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
+                v.fail('view_head_changed')
+            generation, original = self._rows_verified(db, head, entry['handle'], deadline, record)
+            if generation['seal_digest'] != record['seal']:
+                v.fail('view_pin_changed')
+            if generation['coverage'] != 'complete':
+                v.fail('vector_coverage_absent')
+            if profile_id != generation['profile_id']:
+                v.fail('vector_profile_mismatch')
+            recipe_id = generation['recipe_id']
+            dimension = self._profile(profile_id)['dimension']
+            if len(query) != dimension:
+                v.fail('vector_query_invalid')
+            cards = [row for row in self._rows_open(db, pin.view_id, head.ordinal) if row['eligible']
+                     and _path_allowed(row['path'], path_prefixes, excluded_paths)]
+            heads = self._rows_coverage(db, cards, generation, full=False, deadline=deadline)
+            if sum(heads[row['blob_sha']]['chunk_count'] for row in cards) * dimension > max_float_work:
+                v.fail(vectors.WORK_EXCEEDED)
+            groups = {}
+            for row in cards:
+                groups.setdefault(row['blob_sha'], []).append(row)
+            top = []
+            for blob, members in groups.items():
+                vectors._left(deadline)
+                rows = self._vectors(blob, recipe_id, profile_id)
+                if len(rows) != heads[blob]['chunk_count']:
+                    v.fail('vector_rows_mismatch')
+                score = vectors._set_score(query, rows, dimension, deadline)
+                rows = None
+                for row in members:
+                    vectors._keep(top, score, dict(path=row['path'], blob_sha=blob, display_title=row['title']), limit)
+            state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']), deadline)
+            answer = [dict(path=ref['path'], blob_sha=ref['blob_sha'], body=self._blob(ref['blob_sha']),
+                           display_title=ref['display_title'], score=-negative, view_id=pin.view_id,
+                           gen_id=pin.gen_id, evidence='commitment-only', owner_verified=False,
+                           snapshot_state=state) for negative, _, _, ref in top]
+            vectors._left(deadline)
+        self._observe(entry, deadline=deadline, timeout_reason=vectors.DEADLINE_EXCEEDED)
+        vectors._left(deadline)
+        return answer

@@ -191,6 +191,7 @@ def row_stage_statements():
         capture_json TEXT NOT NULL CHECK(json_valid(capture_json)), policy_digest TEXT NOT NULL,
         scan_digest TEXT NOT NULL, scan_complete INTEGER NOT NULL CHECK(scan_complete=1),
         cursor_path TEXT COLLATE BINARY, state TEXT NOT NULL CHECK(state IN ('collecting','ready','abandon')),
+        vector_spec_json TEXT CHECK(vector_spec_json IS NULL OR json_valid(vector_spec_json)),
         discard_relation TEXT CHECK(discard_relation IS NULL OR discard_relation IN ('card_source','source','item','job')),
         discard_key TEXT COLLATE BINARY,
         CHECK((base_gen_id IS NULL)=(base_epoch=0)),
@@ -319,6 +320,13 @@ def row_statements():
           ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),
           (SELECT ordinal FROM s_heads WHERE view_id=OLD.view_id), 0))
         BEGIN SELECT RAISE(ABORT,'view_generation_retained'); END''',
+      # One bounded fill cursor per view and vector spec, bound to one head generation.
+      '''CREATE TABLE s_fill_cursors (
+        view_id TEXT NOT NULL REFERENCES views(view_id), recipe_id TEXT NOT NULL REFERENCES chunk_recipes(recipe_id),
+        profile_id TEXT NOT NULL REFERENCES vector_profiles(profile_id), job_id TEXT NOT NULL,
+        head_ordinal INTEGER NOT NULL, target_count INTEGER NOT NULL CHECK(target_count>=0),
+        cursor INTEGER NOT NULL CHECK(cursor>=0 AND cursor<=target_count),
+        PRIMARY KEY(view_id,recipe_id,profile_id))''',
       # Head FTS rowid of each path; changes with the head FTS in the same transaction.
       '''CREATE TABLE s_head_fts_map (
         view_id TEXT NOT NULL REFERENCES views(view_id), origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')),
