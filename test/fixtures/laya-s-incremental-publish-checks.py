@@ -222,6 +222,29 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         fresh = again.capture_view(handle.worktree_id)
         self.assertEqual(self.refused(again.pin_view, fresh).reason, 'generation_rows_mismatch')
 
+    def test_prepared_stage_publishes_from_another_store_object(self):
+        store, repository, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        manifest = self.snapshot(store, handle, body=b'# Second\nuniquebeta synthetic card\n')
+        gen = store.prepare_generation(handle, manifest, expected_head=first)
+        store.close()
+        again = self.reopen(repository)
+        fresh = again.capture_view(handle.worktree_id)
+        head = again.publish_generation(fresh, gen, expected_head=again.head(fresh))
+        self.assertEqual((head['gen_id'], head['epoch']), (gen, first['epoch'] + 1))
+        self.assertEqual(self.found(again, fresh, 'uniquebeta'), ['cards/a.md'])
+        self.assertEqual(again.publish_generation(fresh, gen, expected_head=first), head)
+
+    def test_card_bytes_changed_after_prepare_refuse_the_publication(self):
+        store, _, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        manifest = self.snapshot(store, handle, body=b'# Second\nuniquebeta synthetic card\n')
+        gen = store.prepare_generation(handle, manifest, expected_head=first)
+        (self.root / '.memvane/wiki/cards/a.md').write_bytes(b'# Third\nuniquedelta synthetic card\n')
+        self.refused(store.publish_generation, handle, gen, expected_head=first)
+        self.assertEqual(store.head(handle), first)
+        self.assertEqual(store._db.execute('SELECT COUNT(*) FROM s_generations').fetchone()[0], 1)
+
     def test_unsupported_row_inputs_refuse_before_any_write(self):
         store, _, handle = self.rows_store()
         manifest = self.snapshot(store, handle)

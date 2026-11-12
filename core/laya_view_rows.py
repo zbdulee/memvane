@@ -76,6 +76,18 @@ def _item_row(item):
                 trust_digest=item['trust_digest'], metadata_json=extra['metadata'])
 
 
+def _sorted_paths(paths):
+    return sorted(paths, key=lambda path: path.encode('utf8'))
+
+
+def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items):
+    """Every committed stage input; the generation id derives from it at prepare."""
+    return dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
+                view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
+                scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
+                member_digest=member_digest(final), items_digest=v.digest('memvane-row-stage-items-v1', items))
+
+
 @dataclass(frozen=True)
 class _Head:
     ordinal: int | None
@@ -158,22 +170,16 @@ class RowsMixin:
             plan = self._derive(handle, manifest, skips, deadline=deadline)
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
         wanted = {member['path']: _card_row(member) for member in plan['members']}
-        paths = sorted(set(current) | set(wanted), key=lambda path: path.encode('utf8'))
-        items = [_stage_item(path, wanted.get(path)) for path in paths if current.get(path) != wanted.get(path)]
-        final = [wanted[path] for path in sorted(wanted, key=lambda path: path.encode('utf8'))]
+        items = [_stage_item(path, wanted.get(path)) for path in _sorted_paths(set(current) | set(wanted))
+                 if current.get(path) != wanted.get(path)]
+        final = [wanted[path] for path in _sorted_paths(wanted)]
         files = _wiki_files(saved, plan['members'])
-        bodies = plan['verified_bodies']
-        rows = self._rows_fts_rows(final, cache=dict(bodies), deadline=deadline)
         job_id = uuid.uuid4().hex
         capture_json = v.canonical(entry['capture'])
         scan_digest = v.digest('memvane-row-stage-scan-v1', dict(
             manifest=vals.manifest_digest(manifest), skip_paths=skips,
             files=sorted([path, node] for path, node in files.items())))
-        digest = member_digest(final)
-        stage = dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=self._incarnation,
-                     view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
-                     scan_digest=scan_digest, member_digest=digest,
-                     items_digest=v.digest('memvane-row-stage-items-v1', items))
+        stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items)
         gen_id = vals.gen_id(job_id, v.digest(ROW_STAGE_SCHEMA, stage))
         self._observe(entry, deadline=deadline)
         _expired(deadline)
@@ -211,17 +217,10 @@ class RowsMixin:
             store_module._current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
             _live(db, saved, files)
             _expired(deadline)
-        stages = getattr(self, '_row_stages', None)
-        if stages is None:
-            stages = self._row_stages = {}
-        while len(stages) >= 16:
-            stages.pop(next(iter(stages)))
-        stages[gen_id] = dict(stage=stage, saved=saved, files=files, items=items, rows=rows,
-                              skips=skips, capture_json=capture_json, member_digest=digest)
         return gen_id
 
     def _rows_publish(self, handle, gen_id, *, expected_head, legacy_snapshot, deadline):
-        from laya_view_store import _live
+        from laya_view_store import _live, _skip_patterns, _wiki_files
         import laya_view_store as store_module
         _deadline_value(deadline)
         self._require_write()
@@ -232,12 +231,52 @@ class RowsMixin:
         if legacy_snapshot is not None:
             v.fail('migration_publish_proof_invalid')
         saved = self._observe(entry, deadline=deadline)
-        staged = getattr(self, '_row_stages', {}).get(gen_id)
+        skips = _skip_patterns(saved)
 
         def capture():
             store_module._current_capture(saved, self._repository, self._policy, entry['capture'],
                                           deadline=deadline)
 
+        def staged_state(db):
+            """The view's ready stage, re-derived only from committed rows."""
+            job = db.execute('SELECT job_id,incarnation,base_gen_id,base_epoch,capture_json,policy_digest,'
+                             'scan_digest,state FROM s_stage_jobs WHERE view_id=?', (handle.view_id,)).fetchone()
+            if job is None or job[7] != 'ready' or gen_id[2:34] != job[0]:
+                v.fail('generation_missing')
+            if (tuple(job[1:6]) != (self._incarnation, base['gen_id'], base['epoch'],
+                                    v.canonical(entry['capture']), handle.policy_digest)):
+                v.fail('stage_identity_changed')
+            items = [vals.check_stage_item(dict(zip(vals.STAGE_ITEM_FIELDS, tuple(row)))) for row in db.execute(
+                'SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json FROM s_stage_items '
+                'WHERE job_id=? ORDER BY path', (job[0],))]
+            current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
+            final = dict(current)
+            for item in items:
+                new = _item_row(item)
+                if current.get(item['path']) == new:
+                    v.fail('stage_items_mismatch')
+                if new is None:
+                    final.pop(item['path'], None)
+                else:
+                    final[item['path']] = new
+            final = [final[path] for path in _sorted_paths(final)]
+            stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items)
+            if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id:
+                v.fail('stage_identity_changed')
+            return stage, items, current, final
+
+        stage = files = rows = None
+        with self._session() as db:
+            head = self._rows_head_row(db, handle.view_id)
+            published = db.execute('SELECT 1 FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()
+            if published is None:
+                if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
+                    v.fail('view_head_conflict')
+                stage, items, _, final = staged_state(db)
+        if published is None:
+            # Bounded FD reads of the final members' exact bytes, outside the writer lock.
+            files = _wiki_files(saved, final)
+            rows = self._rows_fts_rows(final, cache={}, deadline=deadline)
         with self._session(write=True) as db:
             head = self._rows_head_row(db, handle.view_id)
             published = db.execute('SELECT view_id,epoch FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()
@@ -247,25 +286,13 @@ class RowsMixin:
                     capture()
                     return self._rows_head(db, handle)  # exact replay of this publication only
                 v.fail('view_head_conflict')
-            if staged is None or staged['stage']['view'] != vals.view_fields(handle):
-                v.fail('generation_missing')
-            if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']) or staged['stage']['base'] != base:
+            if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
                 v.fail('view_head_conflict')
-            stage = staged['stage']
-            job = db.execute('SELECT job_id,incarnation,base_gen_id,base_epoch,capture_json,policy_digest,'
-                             'scan_digest,state FROM s_stage_jobs WHERE view_id=?', (handle.view_id,)).fetchone()
-            if job is None or tuple(job) != (stage['job_id'], self._incarnation, base['gen_id'], base['epoch'],
-                                             staged['capture_json'], handle.policy_digest,
-                                             stage['scan_digest'], 'ready'):
-                v.fail('generation_missing')
-            stored = [dict(zip(vals.STAGE_ITEM_FIELDS, tuple(row))) for row in db.execute(
-                'SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json FROM s_stage_items '
-                'WHERE job_id=? ORDER BY path', (stage['job_id'],))]
-            items = staged['items']
-            if (sorted(stored, key=lambda item: item['path'].encode('utf8')) != items
-                    or v.digest('memvane-row-stage-items-v1', items) != stage['items_digest']):
-                v.fail('stage_items_mismatch')
-            _live(db, saved, staged['files'])
+            again = staged_state(db)
+            if stage is None or again[0] != stage:
+                v.fail('stage_identity_changed')
+            items = again[1]
+            _live(db, saved, files)
             sequence = db.execute("SELECT seq FROM sqlite_sequence WHERE name='s_generations'").fetchone()
             ordinal = (0 if sequence is None else sequence[0]) + 1
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
@@ -287,11 +314,11 @@ class RowsMixin:
                 fts.apply_head_changes(db, handle.view_id, changes, deadline=deadline)
                 fts.verify_head_index(db, handle.view_id)
                 self._fts_guard.freeze_head()
-                logical, physical = fts.head_proof(db, handle.view_id, staged['rows'], deadline)
+                logical, physical = fts.head_proof(db, handle.view_id, rows, deadline)
                 generation = dict(ordinal=ordinal, gen_id=gen_id, view_id=handle.view_id, epoch=base['epoch'] + 1,
                                   prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
-                                  capture_json=staged['capture_json'], policy_digest=handle.policy_digest,
-                                  skip_digest=v.digest('memvane-row-skip-v1', staged['skips']),
+                                  capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
+                                  skip_digest=stage['skip_digest'],
                                   recipe_id=None, profile_id=None, coverage='lexical',
                                   member_digest=stage['member_digest'],
                                   source_digest=v.digest('memvane-row-sources-v1', []),
@@ -314,11 +341,10 @@ class RowsMixin:
                 # The published stage is discarded later in bounded steps.
                 store_module._stage_mark_abandon(db, stage['job_id'])
                 capture()
-                _live(db, saved, staged['files'])
+                _live(db, saved, files)
                 _expired(deadline)
                 result = self._rows_head(db, handle)
                 db.commit()
-        self._row_stages.pop(gen_id, None)
         return result
 
     # -- reads ---------------------------------------------------------------
