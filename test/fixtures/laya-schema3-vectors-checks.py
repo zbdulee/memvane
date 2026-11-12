@@ -1205,7 +1205,8 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
                 return None
             return {'phase': 'building',
                     'progress': {'state': 'deferred', 'reason': 'owner_busy',
-                                 'lastAttemptClass': 'other', 'lastAttemptNs': time.time_ns()}}
+                                 'lastAttemptClass': 'other',
+                                 'lastAttemptNs': time.time_ns() - 1_000_000_000}}
         passes, order = [], []
         mine = self.sync_execute(project, passes)
 
