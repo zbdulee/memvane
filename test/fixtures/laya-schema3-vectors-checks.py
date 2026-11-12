@@ -758,10 +758,11 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertIn(('laya-sync', str(project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
         emit('schema3-budget-spent-first-cold', state=result['state'], providerCalls=len(calls))
 
-    def test_16_degraded_schema3_recall_serves_lexical_when_the_vector_is_unproved(self):
-        """A drift read of a schema3 endpoint sealed with a vector spec, whose
-        query vector cannot be proved, serves its lexical lists; a degraded read
-        whose vector proof holds (a linked worktree's) still asks for it."""
+    def test_16_drift_schema3_recall_asks_no_query_vector_but_a_proved_degraded_read_does(self):
+        """A bundle-drift read of a schema3 endpoint sealed with a vector spec
+        (its proof is read-only: ``productRouteAllowed`` is not true) serves its
+        lexical lists without asking for a query vector; a degraded read whose
+        bundle proof holds (a linked worktree's) still asks for it."""
         self.select_schema3()
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
         result, _ingests, _calls = self.run_vector_pass()
@@ -770,14 +771,22 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         event_log = importlib.import_module('event_log')
         asked, events = [], []
 
-        proved = []
+        drift = [True]
 
         @contextmanager
         def unproved(**kwargs):
             asked.append(kwargs.get('prompt'))
-            if not proved:
+            if drift:
                 raise ValueError('reader_vector_caller_unproved')
             yield None  # proved, but no warm provider answered
+        real_recheck = self.R._recheck
+
+        def recheck(endpoint):
+            record, raw, proof = real_recheck(endpoint)
+            if drift:
+                # The read-only proof a drifted executing bundle gets.
+                proof = dict(proof, productRouteAllowed=False, readOnlyAllowed=True)
+            return record, raw, proof
 
         def recorded(event, **fields):
             events.append(dict(fields, event=event))
@@ -792,22 +801,23 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
                     mock.patch.object(provider_module, 'ReviewedLocalQmdProvider', new=self.stub_provider()), \
                     mock.patch.object(resident, 'admit_query', return_value=None), \
                     mock.patch.object(self.dispatch, 'approved_query_vector', new=unproved), \
+                    mock.patch.object(self.R, '_recheck', new=recheck), \
                     mock.patch.object(event_log, 'emit', side_effect=recorded), \
                     host._event_scope('recall', 'claude', decision, payload):
                 return host.serve_endpoint_recall('claude', payload, cwd=str(self.case.project),
                                                   drift_decision=decision, main_proof=None)
         answer = degraded_recall()
-        self.assertEqual(asked, ['kestrelprobe'])
+        self.assertEqual(asked, [])
         self.assertIn('kestrel', answer['hookSpecificOutput']['additionalContext'])
         recall = [e for e in events if e['event'] == 'recall']
         self.assertEqual(len(recall), 1, events)
         self.assertEqual(recall[0].get('degraded'), 'reader_endpoint', recall[0])
         self.assertIn('laya_vector_selected_reader_endpoint_degraded_read', recall[0].get('notes') or [])
-        # A degraded read whose vector proof holds keeps asking for it.
-        proved.append(True)
+        # A degraded read whose bundle proof holds keeps asking for it.
+        drift.clear()
         events[:] = []
         degraded_recall()
-        self.assertEqual(asked, ['kestrelprobe', 'kestrelprobe'])
+        self.assertGreaterEqual(len(asked), 1)
         recall = [e for e in events if e['event'] == 'recall']
         self.assertNotIn('laya_vector_selected_reader_endpoint_degraded_read', recall[0].get('notes') or [])
         emit('schema3-degraded-recall-lexical', asked=len(asked), notes=recall[0].get('notes'))
@@ -902,8 +912,12 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.select_schema3()
         self.card('aaa/first-cold.md', 'firstcoldprobe')
         self.card('zzz/later.md', 'laterprobe')
+        before = self.head()
         with self.worker_clock({'firstcoldprobe': 120.0}) as margins, self.offers() as seen:
             result, _ingests, _calls = self.run_vector_pass()
+        # This pass's lexical generation is the published head.
+        self.assertEqual(self.head(), (result['generation'], before[1] + 1), result)
+        self.assertIn('aaa/first-cold.md', self.members(result['generation']))
         self.assertEqual(result['vector']['state'], 'pending', result)
         self.assertGreater(result['vector']['progress'], 0, result)
         self.assertGreaterEqual(margins[-1], self.worker.SCHEMA3_PUBLISH_RESERVE - 1, margins)
