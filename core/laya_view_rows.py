@@ -293,59 +293,198 @@ class RowsMixin:
                 v.fail('stage_identity_changed')
             items = again[1]
             _live(db, saved, files)
-            sequence = db.execute("SELECT seq FROM sqlite_sequence WHERE name='s_generations'").fetchone()
-            ordinal = (0 if sequence is None else sequence[0]) + 1
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
-            changes, deltas = [], []
+            deltas = []
             for item in items:
-                _expired(deadline)
                 old, new = current.get(item['path']), _item_row(item)
                 if old == new:
                     v.fail('stage_items_mismatch')
                 deltas.append((old, new))
-                old_fts = self._rows_fts_rows([old], deadline=deadline) if old is not None else []
-                new_fts = self._rows_fts_rows([new], deadline=deadline) if new is not None else []
-                old_fts, new_fts = (old_fts[0] if old_fts else None), (new_fts[0] if new_fts else None)
-                if old_fts != new_fts:
-                    changes.append(dict(old=old_fts, new=new_fts))
-            with self._fts_guard.view_head(handle.view_id):
-                if head.ordinal is None:
-                    fts.create_head(db, handle.view_id)
-                fts.apply_head_changes(db, handle.view_id, changes, deadline=deadline)
-                fts.verify_head_index(db, handle.view_id)
-                self._fts_guard.freeze_head()
-                logical, physical = fts.head_proof(db, handle.view_id, rows, deadline)
-                generation = dict(ordinal=ordinal, gen_id=gen_id, view_id=handle.view_id, epoch=base['epoch'] + 1,
-                                  prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
-                                  capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
-                                  skip_digest=stage['skip_digest'],
-                                  recipe_id=None, profile_id=None, coverage='lexical',
-                                  member_digest=stage['member_digest'],
-                                  source_digest=v.digest('memvane-row-sources-v1', []),
-                                  logical_fts_digest=logical, physical_fts_digest=physical)
-                generation['seal_digest'] = seal_digest(_seal_fields(self._incarnation, generation))
-                columns = tuple(generation)
-                db.execute(f"INSERT INTO s_generations({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
-                           tuple(generation[k] for k in columns))
-                for old, new in deltas:
-                    _expired(deadline)
-                    store_module._apply_card_delta(db, handle.view_id, ordinal, old, new)
-                if member_digest(self._rows_open(db, handle.view_id)) != stage['member_digest']:
-                    v.fail('generation_rows_mismatch')
-                if head.ordinal is None:
-                    db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,1)', (handle.view_id, ordinal))
-                elif db.execute('UPDATE s_heads SET ordinal=?,epoch=? WHERE view_id=? AND ordinal=? AND epoch=?',
-                                (ordinal, base['epoch'] + 1, handle.view_id, head.ordinal,
-                                 base['epoch'])).rowcount != 1:
-                    v.fail('view_head_conflict')
+
+            def before_commit(db):
                 # The published stage is discarded later in bounded steps.
                 store_module._stage_mark_abandon(db, stage['job_id'])
                 capture()
                 _live(db, saved, files)
+
+            generation = dict(gen_id=gen_id, view_id=handle.view_id, epoch=base['epoch'] + 1,
+                              prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
+                              capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
+                              skip_digest=stage['skip_digest'], recipe_id=None, profile_id=None,
+                              coverage='lexical', member_digest=stage['member_digest'],
+                              source_digest=v.digest('memvane-row-sources-v1', []))
+            written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline)
+        return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
+                    incarnation=self._incarnation)
+
+    def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline):
+        """Changed card rows, their head FTS rows, the sealed generation and the head CAS.
+
+        Runs inside the caller's write transaction and commits it under the
+        view's FTS capability; any failure rolls the whole publication back.
+        """
+        import laya_view_store as store_module
+        view_id = generation['view_id']
+        sequence = db.execute("SELECT seq FROM sqlite_sequence WHERE name='s_generations'").fetchone()
+        ordinal = (0 if sequence is None else sequence[0]) + 1
+        changes = []
+        for old, new in deltas:
+            _expired(deadline)
+            old_fts = self._rows_fts_rows([old], deadline=deadline) if old is not None else []
+            new_fts = self._rows_fts_rows([new], deadline=deadline) if new is not None else []
+            old_fts, new_fts = (old_fts[0] if old_fts else None), (new_fts[0] if new_fts else None)
+            if old_fts != new_fts:
+                changes.append(dict(old=old_fts, new=new_fts))
+        with self._fts_guard.view_head(view_id):
+            if head.ordinal is None:
+                fts.create_head(db, view_id)
+            fts.apply_head_changes(db, view_id, changes, deadline=deadline)
+            fts.verify_head_index(db, view_id)
+            self._fts_guard.freeze_head()
+            logical, physical = fts.head_proof(db, view_id, rows, deadline)
+            generation = dict(generation, ordinal=ordinal, logical_fts_digest=logical, physical_fts_digest=physical)
+            generation['seal_digest'] = seal_digest(_seal_fields(self._incarnation, generation))
+            columns = tuple(generation)
+            db.execute(f"INSERT INTO s_generations({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+                       tuple(generation[k] for k in columns))
+            for old, new in deltas:
                 _expired(deadline)
-                result = self._rows_head(db, handle)
-                db.commit()
-        return result
+                store_module._apply_card_delta(db, view_id, ordinal, old, new)
+            if member_digest(self._rows_open(db, view_id)) != generation['member_digest']:
+                v.fail('generation_rows_mismatch')
+            if head.ordinal is None:
+                db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,1)', (view_id, ordinal))
+            elif db.execute('UPDATE s_heads SET ordinal=?,epoch=? WHERE view_id=? AND ordinal=? AND epoch=?',
+                            (ordinal, generation['epoch'], view_id, head.ordinal, head.epoch)).rowcount != 1:
+                v.fail('view_head_conflict')
+            before_commit(db)
+            _expired(deadline)
+            db.commit()
+        return generation
+
+    # -- rollback and view row collection -------------------------------------
+
+    def _rows_rollback(self, handle, *, expected_head, deadline):
+        """A new generation that applies the head's deltas in reverse.
+
+        The result must reproduce the prior generation's logical members and
+        FTS corpus; its physical FTS bytes are sealed anew. The caller holds
+        the owner proof and its explicit approval.
+        """
+        import laya_view_store as store_module
+        _deadline_value(deadline)
+        self._require_write()
+        entry = self._check(handle)
+        base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
+        self._observe(entry, deadline=deadline)
+        with self._session(write=True) as db:
+            head = self._rows_head_row(db, handle.view_id)
+            if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']) or head.gen_id is None:
+                v.fail('view_head_conflict')
+            current, _ = self._rows_verify(db, head, handle, deadline)
+            if current['prior_ordinal'] is None:
+                v.fail('rollback_prior_missing')
+            prior = db.execute('SELECT * FROM s_generations WHERE view_id=? AND ordinal=?',
+                               (handle.view_id, current['prior_ordinal'])).fetchone()
+            if prior is None:
+                v.fail('rollback_prior_missing')
+            prior = dict(prior)
+            if seal_digest(_seal_fields(self._incarnation, prior)) != prior['seal_digest']:
+                v.fail('generation_seal_mismatch')
+            deltas = []
+            for rel, old_json, new_json in db.execute(
+                    'SELECT rel,old_json,new_json FROM s_deltas WHERE view_id=? AND ordinal=? '
+                    'ORDER BY key_json DESC', (handle.view_id, head.ordinal)).fetchall():
+                if rel != 'card':
+                    v.fail('row_format_unsupported')
+                old = None if old_json is None else v.parse_canonical(old_json)
+                new = None if new_json is None else v.parse_canonical(new_json)
+                for value in (old, new):
+                    if value is not None:
+                        v.exact(value, CARD_FIELDS)
+                deltas.append((new, old))
+            restored = self._rows_open(db, handle.view_id, prior['ordinal'])
+            if member_digest(restored) != prior['member_digest']:
+                v.fail('generation_rows_mismatch')
+            rows = self._rows_fts_rows(restored, cache={}, deadline=deadline)
+            generation = dict(gen_id=vals.gen_id(uuid.uuid4().hex, v.digest('memvane-row-rollback-v1', dict(
+                                  view_id=handle.view_id, head=head.gen_id, prior=prior['gen_id']))),
+                              view_id=handle.view_id, epoch=head.epoch + 1, prior_ordinal=head.ordinal,
+                              kind='rollback', sidecar_present=prior['sidecar_present'],
+                              capture_json=prior['capture_json'], policy_digest=prior['policy_digest'],
+                              skip_digest=prior['skip_digest'], recipe_id=prior['recipe_id'],
+                              profile_id=prior['profile_id'], coverage=prior['coverage'],
+                              member_digest=prior['member_digest'], source_digest=prior['source_digest'])
+
+            def before_commit(db):
+                job = db.execute("SELECT job_id FROM s_stage_jobs WHERE view_id=? AND state<>'abandon'",
+                                 (handle.view_id,)).fetchone()
+                if job is not None:
+                    store_module._stage_mark_abandon(db, job[0])
+
+            written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline)
+            if written['logical_fts_digest'] != prior['logical_fts_digest']:
+                v.fail('rollback_fts_mismatch')
+        return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
+                    incarnation=self._incarnation)
+
+    def _rows_collect(self, handle, *, limit, deadline):
+        """Delete at most ``limit`` rows per relation no longer visible in the head or its prior.
+
+        One batch is one transaction. Shared content (blobs, attestations,
+        chunk and embedding sets) is never deleted here.
+        """
+        import laya_view_store as store_module
+        _deadline_value(deadline)
+        self._require_write()
+        v.integer(limit, 1, 4096)
+        self._check(handle)
+        removed = {}
+        with self._session(write=True) as db:
+            head = self._rows_head_row(db, handle.view_id)
+            if head.ordinal is None:
+                return removed
+            prior = db.execute('SELECT prior_ordinal FROM s_generations WHERE view_id=? AND ordinal=?',
+                               (handle.view_id, head.ordinal)).fetchone()[0]
+            keep = prior if prior is not None else head.ordinal
+            job = db.execute("SELECT job_id FROM s_stage_jobs WHERE view_id=? AND state='abandon'",
+                             (handle.view_id,)).fetchone()
+            if job is not None:
+                removed['stage'] = 0
+                while True:
+                    _expired(deadline)
+                    step = store_module._stage_discard_step(db, job[0], limit=min(limit, 64))
+                    removed['stage'] += step
+                    if not step or removed['stage'] >= limit:
+                        break
+            for table in ('s_card_sources', 's_sources', 's_cards'):
+                _expired(deadline)
+                removed[table] = db.execute(
+                    f'DELETE FROM {table} WHERE rowid IN (SELECT rowid FROM {table} WHERE view_id=? '
+                    'AND gen_to IS NOT NULL AND gen_to<=? ORDER BY gen_to,rowid LIMIT ?)',
+                    (handle.view_id, keep, limit)).rowcount
+            db.execute('CREATE TEMP TABLE IF NOT EXISTS tmp_gc_delta(view_id TEXT, ordinal INTEGER, rel TEXT, '
+                       'key_json TEXT, PRIMARY KEY(view_id,ordinal,rel,key_json))')
+            db.execute('DELETE FROM temp.tmp_gc_delta')
+            db.execute('INSERT INTO temp.tmp_gc_delta(view_id,ordinal,rel,key_json) '
+                       'SELECT view_id,ordinal,rel,key_json FROM s_deltas WHERE view_id=? AND ordinal<>? '
+                       'AND ordinal IS NOT ? ORDER BY ordinal,rel,key_json LIMIT ?',
+                       (handle.view_id, head.ordinal, prior, limit))
+            for table in ('s_delta_blobs', 's_delta_observations', 's_deltas'):
+                removed[table] = db.execute(
+                    f'DELETE FROM {table} WHERE (view_id,ordinal,rel,key_json) IN '
+                    '(SELECT view_id,ordinal,rel,key_json FROM temp.tmp_gc_delta)').rowcount
+            db.execute('DELETE FROM temp.tmp_gc_delta')
+            removed['s_generations'] = db.execute(
+                'DELETE FROM s_generations WHERE ordinal IN (SELECT g.ordinal FROM s_generations g '
+                'WHERE g.view_id=? AND g.ordinal<>? AND g.ordinal IS NOT ? '
+                'AND NOT EXISTS(SELECT 1 FROM s_deltas d WHERE d.view_id=g.view_id AND d.ordinal=g.ordinal) '
+                'AND NOT EXISTS(SELECT 1 FROM s_stage_jobs j WHERE j.base_gen_id=g.gen_id) '
+                'AND NOT EXISTS(SELECT 1 FROM s_parity_anchor a WHERE a.gen_id=g.gen_id) '
+                'AND NOT EXISTS(SELECT 1 FROM delete_receipts r WHERE r.base_gen=g.gen_id) '
+                'ORDER BY g.ordinal LIMIT ?)', (handle.view_id, head.ordinal, prior, limit)).rowcount
+            _expired(deadline)
+        return removed
 
     # -- reads ---------------------------------------------------------------
 
@@ -357,7 +496,8 @@ class RowsMixin:
         if generation is None or generation['gen_id'] != head.gen_id or generation['epoch'] != head.epoch:
             v.fail('view_head_invalid')
         generation = dict(generation)
-        if generation['kind'] != 'normal' or generation['sidecar_present'] or generation['coverage'] != 'lexical':
+        if (generation['kind'] not in ('normal', 'rollback') or generation['sidecar_present']
+                or generation['coverage'] != 'lexical'):
             v.fail('row_format_unsupported')
         handle, entry, saved = self._sealed_handle(
             db, dict(checkout_evidence=generation['capture_json'], view_id=generation['view_id']), live_handle)

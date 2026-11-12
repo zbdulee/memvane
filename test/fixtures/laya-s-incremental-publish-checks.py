@@ -245,6 +245,99 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(store.head(handle), first)
         self.assertEqual(store._db.execute('SELECT COUNT(*) FROM s_generations').fetchone()[0], 1)
 
+    def counts(self, store, view_id):
+        db = store._db
+        return {table: db.execute(f'SELECT COUNT(*) FROM {table} WHERE view_id=?', (view_id,)).fetchone()[0]
+                for table in ('s_generations', 's_cards', 's_deltas', 's_delta_blobs')}
+
+    def test_rollback_reverses_the_last_publication_as_a_new_generation(self):
+        store, _, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        second = self.publish(store, handle, b'# Second\nuniquebeta synthetic card\n')
+        back = store.rollback_generation(handle, expected_head=second)
+        self.assertEqual(back['epoch'], second['epoch'] + 1)
+        self.assertNotIn(back['gen_id'], (first['gen_id'], second['gen_id']))
+        self.assertEqual(self.found(store, handle, 'uniquealpha'), ['cards/a.md'])
+        self.assertEqual(self.found(store, handle, 'uniquebeta'), [])
+        db = store._db
+        rows = {row[0]: row[1:] for row in db.execute(
+            'SELECT gen_id,kind,member_digest,logical_fts_digest FROM s_generations WHERE view_id=?',
+            (handle.view_id,))}
+        self.assertEqual(rows[back['gen_id']][0], 'rollback')
+        self.assertEqual(rows[back['gen_id']][1:], rows[first['gen_id']][1:])
+        again = store.rollback_generation(handle, expected_head=back)
+        self.assertEqual(self.found(store, handle, 'uniquebeta'), ['cards/a.md'])
+        self.assertEqual(rows[second['gen_id']][1:], tuple(db.execute(
+            'SELECT member_digest,logical_fts_digest FROM s_generations WHERE gen_id=?',
+            (again['gen_id'],)).fetchone()))
+        third = self.publish(store, handle, b'# Third\nuniquedelta synthetic card\n')
+        self.assertEqual(third['epoch'], again['epoch'] + 1)
+        self.assertEqual(self.found(store, handle, 'uniquedelta'), ['cards/a.md'])
+
+    def test_rollback_needs_a_prior_generation_and_the_current_head(self):
+        store, _, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        self.assertEqual(self.refused(store.rollback_generation, handle, expected_head=first).reason,
+                         'rollback_prior_missing')
+        second = self.publish(store, handle, b'# Second\nuniquebeta synthetic card\n')
+        self.assertEqual(self.refused(store.rollback_generation, handle, expected_head=first).reason,
+                         'view_head_conflict')
+        self.assertEqual(store.head(handle), second)
+
+    def test_collection_keeps_head_and_prior_and_rollback_still_works(self):
+        store, _, handle = self.rows_store()
+        bodies = [b'# One\nuniqueone synthetic card\n', b'# Two\nuniquetwo synthetic card\n',
+                  b'# Three\nuniquethree synthetic card\n', b'# Four\nuniquefour synthetic card\n']
+        heads = [self.publish(store, handle, body) for body in bodies]
+        before = self.counts(store, handle.view_id)
+        self.assertEqual(before['s_generations'], 4)
+        removed = store.collect_view_rows(handle, limit=1)
+        self.assertEqual(removed['s_cards'], 1)
+        while any(store.collect_view_rows(handle, limit=64).get(t) for t in
+                  ('s_cards', 's_deltas', 's_generations', 'stage')):
+            pass
+        after = self.counts(store, handle.view_id)
+        self.assertEqual(after, dict(s_generations=2, s_cards=2, s_deltas=2, s_delta_blobs=4))
+        self.assertEqual(store._db.execute('SELECT COUNT(*) FROM s_stage_jobs').fetchone()[0], 0)
+        self.assertEqual(self.found(store, handle, 'uniquefour'), ['cards/a.md'])
+        back = store.rollback_generation(handle, expected_head=heads[-1])
+        self.assertEqual(self.found(store, handle, 'uniquethree'), ['cards/a.md'])
+        self.assertEqual(back['epoch'], 5)
+        self.assertEqual(store._db.execute('SELECT COUNT(*) FROM wiki_blobs').fetchone()[0], 4,
+                         'shared blobs are never collected by view row collection')
+
+    def test_head_and_prior_rows_refuse_direct_deletion(self):
+        import sqlite3
+        store, repository, handle = self.rows_store()
+        self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        self.publish(store, handle, b'# Second\nuniquebeta synthetic card\n')
+        store.close()
+        with sqlite3.connect(self.db) as db:
+            for sql, reason in [('DELETE FROM s_cards', 'view_row_retained'),
+                                ('DELETE FROM s_delta_blobs', 'view_delta_retained'),
+                                ('DELETE FROM s_generations', 'view_generation_retained')]:
+                with self.subTest(sql=sql):
+                    with self.assertRaisesRegex(sqlite3.DatabaseError, reason):
+                        db.execute(sql)
+
+    def test_collection_batch_failure_rolls_back_the_whole_batch(self):
+        store, _, handle = self.rows_store()
+        for body in (b'# One\nuniqueone x\n', b'# Two\nuniquetwo x\n', b'# Three\nuniquethree x\n'):
+            self.publish(store, handle, body)
+        before = self.counts(store, handle.view_id)
+        import laya_view_rows as rows
+        calls = []
+        real = rows._expired
+
+        def late(deadline):
+            calls.append(1)
+            if len(calls) == 3:
+                rows.v.fail('fts_deadline_exceeded')
+            return real(deadline)
+        with mock.patch.object(rows, '_expired', side_effect=late):
+            self.refused(store.collect_view_rows, handle, limit=64)
+        self.assertEqual(self.counts(store, handle.view_id), before)
+
     def test_unsupported_row_inputs_refuse_before_any_write(self):
         store, _, handle = self.rows_store()
         manifest = self.snapshot(store, handle)

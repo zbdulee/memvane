@@ -279,6 +279,40 @@ def row_statements():
       f'''CREATE TRIGGER s_deltas_in_flight BEFORE INSERT ON s_deltas
         WHEN NEW.ordinal IS NOT {view_new}
         BEGIN SELECT RAISE(ABORT,'delta_generation_invalid'); END''',
+      # The head and its prior stay readable and reversible: their rows,
+      # deltas and generation rows are never deleted.
+      '''CREATE TRIGGER s_cards_retained BEFORE DELETE ON s_cards
+        WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
+        BEGIN SELECT RAISE(ABORT,'view_row_retained'); END''',
+      '''CREATE TRIGGER s_sources_retained BEFORE DELETE ON s_sources
+        WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
+        BEGIN SELECT RAISE(ABORT,'view_row_retained'); END''',
+      '''CREATE TRIGGER s_card_sources_retained BEFORE DELETE ON s_card_sources
+        WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
+        BEGIN SELECT RAISE(ABORT,'view_row_retained'); END''',
+      '''CREATE TRIGGER s_deltas_retained BEFORE DELETE ON s_deltas
+        WHEN (OLD.ordinal>=COALESCE((SELECT g.prior_ordinal FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),
+          (SELECT ordinal FROM s_heads WHERE view_id=OLD.view_id), 0))
+        BEGIN SELECT RAISE(ABORT,'view_delta_retained'); END''',
+      '''CREATE TRIGGER s_delta_blobs_retained BEFORE DELETE ON s_delta_blobs
+        WHEN (OLD.ordinal>=COALESCE((SELECT g.prior_ordinal FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),
+          (SELECT ordinal FROM s_heads WHERE view_id=OLD.view_id), 0))
+        BEGIN SELECT RAISE(ABORT,'view_delta_retained'); END''',
+      '''CREATE TRIGGER s_delta_observations_retained BEFORE DELETE ON s_delta_observations
+        WHEN (OLD.ordinal>=COALESCE((SELECT g.prior_ordinal FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),
+          (SELECT ordinal FROM s_heads WHERE view_id=OLD.view_id), 0))
+        BEGIN SELECT RAISE(ABORT,'view_delta_retained'); END''',
+      '''CREATE TRIGGER s_generations_retained BEFORE DELETE ON s_generations
+        WHEN (OLD.ordinal>=COALESCE((SELECT g.prior_ordinal FROM s_heads h JOIN s_generations g
+          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),
+          (SELECT ordinal FROM s_heads WHERE view_id=OLD.view_id), 0))
+        BEGIN SELECT RAISE(ABORT,'view_generation_retained'); END''',
       '''CREATE INDEX s_generations_by_view ON s_generations(view_id,ordinal)''',
       '''CREATE INDEX s_cards_by_blob ON s_cards(blob_sha,view_id)''',
     ])
