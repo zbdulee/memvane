@@ -119,7 +119,15 @@ class ScaleChecks(publish.IncrementalPublicationChecks):
         reader = self.reopen(repository)
         fresh = reader.capture_view(handle.worktree_id)
         started = time.monotonic()
-        found = self.found(reader, fresh, expected[0])
+        if os.environ.get('S_SCALE_PROFILE') and rows:
+            import cProfile, io, pstats
+            profile = cProfile.Profile()
+            found = profile.runcall(self.found, reader, fresh, expected[0])
+            out = io.StringIO()
+            pstats.Stats(profile, stream=out).sort_stats('cumulative').print_stats(25)
+            print('S_PROFILE\n' + out.getvalue())
+        else:
+            found = self.found(reader, fresh, expected[0])
         result['fresh_pin_search_s'] = time.monotonic() - started
         self.assertEqual(found, [changed_path])
         reader.close()

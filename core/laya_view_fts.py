@@ -225,6 +225,19 @@ def populate_head(db,view_id,rows,*,sidecar=False):
         _execute(db,f'INSERT INTO {head_table(view_id,sidecar=sidecar)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
 
 
+def head_map_matches(db,view_id,rows,*,sidecar=False):
+    """True when the rowid map names exactly the head FTS table's ``rows`` rows (path and rowid).
+
+    ``rows`` is the row count the caller already proved for the table.
+    """
+    name=head_table(view_id,sidecar=sidecar);origin='sidecar' if sidecar else 'base'
+    table=rows
+    mapped=_execute(db,'SELECT COUNT(*) FROM s_head_fts_map WHERE view_id=? AND origin=?',(view_id,origin))[0][0]
+    joined=_execute(db,f'SELECT COUNT(*) FROM {name} t JOIN s_head_fts_map m ON m.view_id=? AND m.origin=? '
+                       f'AND m.fts_rowid=t.rowid AND m.path_key=t.path_key',(view_id,origin))[0][0]
+    return table==mapped==joined
+
+
 def head_map_rows(db,view_id,*,sidecar=False):
     """(path_key, rowid) of the head FTS table and of its map, both path-ordered."""
     name=head_table(view_id,sidecar=sidecar)
@@ -529,7 +542,7 @@ def head_logical_digest(rows,deadline=None,*,sidecar=False):
     return logical.hexdigest()
 
 
-def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,sidecar=False):
+def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,sidecar=False,logical=True):
     """Stream an ordered head corpus and its physical commitment in one snapshot."""
     try:rows=iter(rows)
     except TypeError:v.fail('fts_rows_invalid')
@@ -539,7 +552,7 @@ def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,sidecar=Fal
     order='rowid' if sidecar else 'path_key COLLATE BINARY'
     name=head_table(view_id,sidecar=sidecar)
     cursor=db.execute(f'SELECT filepath,title,body,path_key FROM {name} ORDER BY {order}')
-    logical=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0')
+    digest=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0') if logical else None
     seen=set();previous=None;size=0
     try:
         for count,item in enumerate(rows,1):
@@ -554,12 +567,13 @@ def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,sidecar=Fal
             if size>MAX_FTS_BYTES:v.fail('fts_rows_too_large')
             actual=cursor.fetchone()
             if actual is None or tuple(actual)!=row:v.fail('fts_rows_mismatch')
-            raw=v.canonical(row).encode('utf8')
-            logical.update(len(raw).to_bytes(8,'big'));logical.update(raw)
+            if digest is not None:
+                raw=v.canonical(row).encode('utf8')
+                digest.update(len(raw).to_bytes(8,'big'));digest.update(raw)
         if cursor.fetchone() is not None:v.fail('fts_rows_mismatch')
     finally:cursor.close()
     _deadline(deadline)
-    return logical.hexdigest(),physical
+    return (None if digest is None else digest.hexdigest()),physical
 
 
 def proof(db,ordinal,rows,deadline=None,*,return_storage=False,expected_storage=None,sidecar=False):

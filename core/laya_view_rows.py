@@ -45,9 +45,27 @@ _FTS_DOMAINS = {'normal': 'memvane-row-fts-v1', 'base': 'memvane-row-fts-base-v1
 EMPTY_ACC = dict(bytes=0, count=0, sum='0' * 64)
 
 
+def _row_bytes(row):
+    """Unambiguous bytes of one row: sorted keys, each key and value length-prefixed and typed."""
+    parts = []
+    for key in sorted(row):
+        value = row[key]
+        if value is None:
+            encoded = b'n'
+        elif type(value) is int:
+            encoded = b'i' + str(value).encode('ascii')
+        elif isinstance(value, str):
+            encoded = b's' + value.encode('utf8')
+        else:
+            v.fail('seal_accumulator_invalid')
+        name = key.encode('ascii')
+        parts.append(len(name).to_bytes(2, 'big') + name + len(encoded).to_bytes(8, 'big') + encoded)
+    return b''.join(parts)
+
+
 def acc_update(acc, domain, row, sign=1):
     """Add (sign 1) or remove (sign -1) one row's contribution to an order-free multiset accumulator."""
-    raw = v.canonical(row).encode('utf8')
+    raw = _row_bytes(row)
     value = int.from_bytes(hashlib.sha256(domain.encode('ascii') + b'\0' + raw).digest(), 'big')
     result = dict(bytes=acc['bytes'] + sign * len(raw), count=acc['count'] + sign,
                   sum=format((int(acc['sum'], 16) + sign * value) % (1 << 256), '064x'))
@@ -470,7 +488,7 @@ class RowsMixin:
             if rollback is None:
                 fts.verify_head_index(db, view_id)
                 self._fts_guard.freeze_head()
-                _, physical = fts.head_proof(db, view_id, rows, deadline)
+                _, physical = fts.head_proof(db, view_id, rows, deadline, logical=False)
                 members = member_acc(self._rows_open_after(db, view_id, deltas))
                 text_acc = fts_acc(rows)
             else:
@@ -935,27 +953,28 @@ class RowsMixin:
             deferred = True
         if legacy:
             base_rows, side_rows, positions = self._rows_legacy_fts(legacy_rows, cache=cache, deadline=deadline)
-            _, base_physical = fts.head_proof(db, generation['view_id'], base_rows, deadline)
+            _, base_physical = fts.head_proof(db, generation['view_id'], base_rows, deadline, logical=False)
             side_physical = None
             if side_rows is not None:
-                _, side_physical = fts.head_proof(db, generation['view_id'], side_rows, deadline, sidecar=True)
+                _, side_physical = fts.head_proof(db, generation['view_id'], side_rows, deadline, sidecar=True,
+                                                  logical=False)
             text_acc = self._rows_legacy_fts_acc(base_rows, side_rows, positions)
             physical = legacy_physical(base_physical, side_physical)
             maps = [False, True] if side_rows is not None else [False]
         else:
             fts_rows = self._rows_fts_rows(rows, cache=cache, deadline=deadline)
-            _, physical = fts.head_proof(db, generation['view_id'], fts_rows, deadline)
+            _, physical = fts.head_proof(db, generation['view_id'], fts_rows, deadline, logical=False)
             text_acc = fts_acc(fts_rows)
             maps = [False]
         if not deferred and physical != generation['physical_fts_digest']:
             v.fail('fts_storage_mismatch')
+        counts = ({False: len(base_rows), True: len(side_rows or ())} if legacy
+                  else {False: len(fts_rows), True: 0})
         for sidecar in maps:
-            table, mapped = fts.head_map_rows(db, generation['view_id'], sidecar=sidecar)
-            if table != mapped:
+            if not fts.head_map_matches(db, generation['view_id'], counts[sidecar], sidecar=sidecar):
                 v.fail('fts_head_map_mismatch')
-        if db.execute('SELECT COUNT(*) FROM s_head_fts_map WHERE view_id=?',
-                      (generation['view_id'],)).fetchone()[0] != sum(len(fts.head_map_rows(
-                          db, generation['view_id'], sidecar=sidecar)[1]) for sidecar in maps):
+        if not maps[-1] and db.execute("SELECT COUNT(*) FROM s_head_fts_map WHERE view_id=? AND origin='sidecar'",
+                                       (generation['view_id'],)).fetchone()[0]:
             v.fail('fts_head_map_mismatch')
         logical = acc_digest('fts', text_acc)
         if v.canonical(text_acc) != generation['fts_acc']:
