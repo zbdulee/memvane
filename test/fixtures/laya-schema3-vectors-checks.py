@@ -758,9 +758,10 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertIn(('laya-sync', str(project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
         emit('schema3-budget-spent-first-cold', state=result['state'], providerCalls=len(calls))
 
-    def test_16_degraded_schema3_recall_asks_no_query_vector(self):
-        """A drift or fence read of a schema3 endpoint sealed with a vector spec
-        serves its lexical lists and asks for no query vector."""
+    def test_16_degraded_schema3_recall_serves_lexical_when_the_vector_is_unproved(self):
+        """A drift read of a schema3 endpoint sealed with a vector spec, whose
+        query vector cannot be proved, serves its lexical lists; a degraded read
+        whose vector proof holds (a linked worktree's) still asks for it."""
         self.select_schema3()
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
         result, _ingests, _calls = self.run_vector_pass()
@@ -769,11 +770,14 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         event_log = importlib.import_module('event_log')
         asked, events = [], []
 
+        proved = []
+
         @contextmanager
         def unproved(**kwargs):
             asked.append(kwargs.get('prompt'))
-            raise ValueError('reader_vector_caller_unproved')
-            yield  # pragma: no cover
+            if not proved:
+                raise ValueError('reader_vector_caller_unproved')
+            yield None  # proved, but no warm provider answered
 
         def recorded(event, **fields):
             events.append(dict(fields, event=event))
@@ -782,21 +786,30 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         payload = {'cwd': str(self.case.project), 'prompt': 'kestrelprobe', 'session_id': 'drift-probe'}
         provider_module = importlib.import_module('laya_local_embed_provider')
         resident = importlib.import_module('laya_embed_resident')
-        with self.seed.authority(), \
-                mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
-                mock.patch.object(provider_module, 'ReviewedLocalQmdProvider', new=self.stub_provider()), \
-                mock.patch.object(resident, 'admit_query', return_value=None), \
-                mock.patch.object(self.dispatch, 'approved_query_vector', new=unproved), \
-                mock.patch.object(event_log, 'emit', side_effect=recorded), \
-                host._event_scope('recall', 'claude', decision, payload):
-            answer = host.serve_endpoint_recall('claude', payload, cwd=str(self.case.project),
-                                                drift_decision=decision, main_proof=None)
-        self.assertEqual(asked, [])
-        context = answer['hookSpecificOutput']['additionalContext']
-        self.assertIn('kestrel', context)
+        def degraded_recall():
+            with self.seed.authority(), \
+                    mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
+                    mock.patch.object(provider_module, 'ReviewedLocalQmdProvider', new=self.stub_provider()), \
+                    mock.patch.object(resident, 'admit_query', return_value=None), \
+                    mock.patch.object(self.dispatch, 'approved_query_vector', new=unproved), \
+                    mock.patch.object(event_log, 'emit', side_effect=recorded), \
+                    host._event_scope('recall', 'claude', decision, payload):
+                return host.serve_endpoint_recall('claude', payload, cwd=str(self.case.project),
+                                                  drift_decision=decision, main_proof=None)
+        answer = degraded_recall()
+        self.assertEqual(asked, ['kestrelprobe'])
+        self.assertIn('kestrel', answer['hookSpecificOutput']['additionalContext'])
         recall = [e for e in events if e['event'] == 'recall']
         self.assertEqual(len(recall), 1, events)
         self.assertEqual(recall[0].get('degraded'), 'reader_endpoint', recall[0])
+        self.assertIn('laya_vector_selected_reader_endpoint_degraded_read', recall[0].get('notes') or [])
+        # A degraded read whose vector proof holds keeps asking for it.
+        proved.append(True)
+        events[:] = []
+        degraded_recall()
+        self.assertEqual(asked, ['kestrelprobe', 'kestrelprobe'])
+        recall = [e for e in events if e['event'] == 'recall']
+        self.assertNotIn('laya_vector_selected_reader_endpoint_degraded_read', recall[0].get('notes') or [])
         emit('schema3-degraded-recall-lexical', asked=len(asked), notes=recall[0].get('notes'))
 
     def test_17_empty_recall_reason_is_no_candidates(self):
@@ -856,6 +869,82 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertGreaterEqual(deadlines[-1], self.worker.SCHEMA3_PUBLISH_RESERVE - 1, deadlines)
         self.assertRegex(result.get('detail') or '', r'pub[0-9]+.*res_resealed')
         emit('schema3-overflow-publish', margins=[round(d, 1) for d in deadlines])
+
+    @contextmanager
+    def worker_clock(self, jumps):
+        """The sync worker's own clock; ``jumps[marker]`` seconds pass inside the
+        provider's chunked call for a body holding marker (store clocks stay real).
+        Yields the prepare_generation deadline margins on that clock."""
+        clock = [0.0]
+        real = self.worker.time
+        fake = mock.Mock(wraps=real)
+        fake.monotonic = lambda: real.monotonic() + clock[0]
+        real_chunks = self.worker.ReviewedLocalQmdProvider.embed_document_chunks
+
+        def chunks(provider, body, path, timeout=None):
+            clock[0] += sum(seconds for marker, seconds in jumps.items() if marker in body)
+            return real_chunks(provider, body, path, timeout)
+        margins = []
+        original = self.views.ViewStore.prepare_generation
+
+        def prepare(store, *args, **kwargs):
+            margins.append(kwargs.get('deadline') - fake.monotonic())
+            return original(store, *args, **kwargs)
+        with mock.patch.object(self.worker, 'time', fake), \
+                mock.patch.object(self.worker.ReviewedLocalQmdProvider, 'embed_document_chunks', new=chunks), \
+                mock.patch.object(self.views.ViewStore, 'prepare_generation', new=prepare):
+            yield margins
+
+    def test_19_unfinished_fill_past_the_deadline_still_publishes_lexical_and_reoffers(self):
+        """The first cold target's call runs past the pass deadline and targets
+        remain: this pass's lexical generation gets a fresh reserve and the
+        progressing wake is offered again."""
+        self.select_schema3()
+        self.card('aaa/first-cold.md', 'firstcoldprobe')
+        self.card('zzz/later.md', 'laterprobe')
+        with self.worker_clock({'firstcoldprobe': 120.0}) as margins, self.offers() as seen:
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(result['vector']['state'], 'pending', result)
+        self.assertGreater(result['vector']['progress'], 0, result)
+        self.assertGreaterEqual(margins[-1], self.worker.SCHEMA3_PUBLISH_RESERVE - 1, margins)
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        self.assertIn(('laya-sync', str(self.case.project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
+        emit('schema3-unfinished-overflow-lexical', margins=[round(m, 1) for m in margins])
+
+    def test_20_overflowed_main_publish_reoffers_for_linked_views(self):
+        """A main view whose fill completes past the pass deadline publishes its
+        vector generation; a linked view the pass budget held is reported and
+        its wake offered again, not dropped with an ACK."""
+        import os
+        import shutil
+        import tempfile
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        project = self.case.project
+        base = Path(tempfile.mkdtemp(prefix='linked-', dir=str(project.parent))).resolve()
+        self.addCleanup(shutil.rmtree, base, True)
+        linked = base / 'linked'
+        subprocess.run(['git', '-C', str(project), '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add',
+                        '-q', '-b', 'side', str(linked)], check=True, capture_output=True, timeout=20)
+        settings = importlib.import_module('project_dir').settings_path(project)
+        relative = settings.relative_to(project)
+        (linked / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(settings, linked / relative)
+        for item in self.decision['collections']:
+            (linked / Path(item['sourceRoot']).relative_to(project)).mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.wiki, linked / self.wiki.relative_to(project), dirs_exist_ok=True)
+        time.sleep(1.1)  # Git racy-index window before the linked checkout's capture.
+        lexical, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        self.assertEqual(len(lexical.get('worktrees', ())), 1, lexical)
+        self.card('zzz/last-card.md', 'lastprobe')
+        with self.worker_clock({'lastprobe': 120.0}), self.offers() as seen:
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(result['vector']['state'], 'published', result)
+        self.assertEqual([(w['state'], w.get('reason')) for w in result['worktrees']],
+                         [('pending', 'schema3_pass_budget')], result)
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        self.assertIn(('laya-sync', str(project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
+        emit('schema3-overflow-linked-reoffer', state=result['state'])
 
     # -- R4: the first vector head after a bundle upgrade -----------------------
     @contextmanager
