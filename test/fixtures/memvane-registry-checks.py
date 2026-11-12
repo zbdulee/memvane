@@ -276,6 +276,45 @@ class Store(Base):
         row = self.row(self.a)
         self.assertEqual((row['status'], row['version']), ('conflict', version + 1))
 
+    def test_registration_racing_a_concurrent_change_writes_nothing(self):
+        self.register(self.a)
+        seen = []
+
+        def race(target_root, expected):
+            with contextlib.closing(sqlite3.connect(str(self.db))) as db:
+                db.execute("INSERT INTO entries(install_id,state_root,project_root,target_root,"
+                           "kind,status,observed_at,version) VALUES (?,?,?,?,'main','active',1,1)",
+                           ('e' * 32, str(self.home), target_root, target_root))
+                db.commit()
+            seen.append((target_root, expected))
+        with patch.object(registry(), '_before_store', race):
+            result = self.register(self.b)
+        self.assertEqual(result['status'], 'raced', result)
+        self.assertEqual(seen, [(str(self.b.project), None)])
+        self.assertIsNone(self.row(self.b))
+        statuses = {iid: row['status'] for (iid, root), row in self.rows().items()
+                    if root == str(self.b.project)}
+        self.assertEqual(statuses, {'e' * 32: 'active'})
+
+    def test_release_racing_a_concurrent_reregistration_keeps_the_row(self):
+        self.register(self.a)
+        with patch('laya_fresh_wiki_origin._proof'):
+            installs.fresh.restore(self.a.project, self.a.journal)
+        version = self.row(self.a)['version']
+
+        def race(target_root, expected):
+            with contextlib.closing(sqlite3.connect(str(self.db))) as db:
+                db.execute('UPDATE entries SET observed_at=7, version=version+1 '
+                           'WHERE target_root=?', (target_root,))
+                db.commit()
+        with patch.object(registry(), '_before_store', race):
+            result = registry().release(str(self.a.project), str(self.a.state), now=2000.0)
+        self.assertEqual(result['status'], 'raced', result)
+        row = self.row(self.a)
+        self.assertEqual((row['status'], row['version']), ('active', version + 1))
+        self.assertEqual(registry().release(str(self.a.project), str(self.a.state),
+                                            now=3000.0)['status'], 'released')
+
     def test_registry_db_written_by_this_python_is_readable_by_the_other(self):
         self.register(self.a)
         other = '/usr/bin/python3' if sys.version_info >= (3, 10) else shutil.which('python3.13')
@@ -633,6 +672,19 @@ class Reconcile(Base):
         with patch('git_branch_safety.run_git', side_effect=__import__(
                 'git_branch_safety').GitUnavailable('git_call_failed')):
             registry().reconcile(now=2000.0, backfill_page=0)
+        self.assertEqual(self.row(self.b, worktree)['status'], 'active')
+        calls = []
+        real = routes.select_route
+        with patch.object(routes, 'select_route',
+                          side_effect=lambda cwd, action='recall': calls.append(cwd) or
+                          real(cwd, action=action)):
+            deadline = __import__('time').monotonic() + 60
+            self.assertIsNone(registry()._linked(self.b.project, deadline,
+                                                 clock=lambda: deadline + 1))
+            self.assertIsNone(registry()._linked(self.b.project,
+                                                 __import__('time').monotonic() - 1))
+            registry().reconcile(now=2500.0, backfill_page=0, seconds=0.0)
+        self.assertEqual(calls, [])
         self.assertEqual(self.row(self.b, worktree)['status'], 'active')
         run('worktree', 'remove', '--force', str(worktree))
         registry().reconcile(now=3000.0, backfill_page=0)

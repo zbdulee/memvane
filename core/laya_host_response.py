@@ -2465,10 +2465,15 @@ def _reconcile_registry(decision: dict) -> None:
     if decision.get('state') != 'candidate' or not isinstance(decision.get('journalPath'), str):
         return
     try:
+        import hook_budget
         import memvane_registry
+        # Keep a second of the hook's own deadline for the rest of this response.
+        seconds = min(memvane_registry.HOOK_SECONDS, hook_budget.remaining() - 1.0)
+        if seconds <= 0:
+            return
         memvane_registry.reconcile(
             seed=(decision['projectRoot'], str(Path(decision['journalPath']).parent)),
-            max_rows=memvane_registry.HOOK_ROWS, seconds=memvane_registry.HOOK_SECONDS,
+            max_rows=memvane_registry.HOOK_ROWS, seconds=seconds,
             backfill_page=memvane_registry.HOOK_BACKFILL_PAGE,
             busy_ms=memvane_registry.HOOK_BUSY_MS)
     except Exception:

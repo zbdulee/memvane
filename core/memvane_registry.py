@@ -374,8 +374,13 @@ def _released(project, state):
         return False
 
 
-def _linked(project, deadline):
-    """``(proved worktree roots, listed roots)`` or None when git cannot answer."""
+def _linked(project, deadline, clock=time.monotonic):
+    """``(proved worktree roots, listed roots)`` or None when git cannot answer.
+
+    Each listed worktree costs one route classification (which runs git), so
+    the deadline is checked before every one; running out returns None and
+    nothing is registered or released.
+    """
     import git_branch_safety as git
     import laya_index_host_route as routes
     try:
@@ -398,8 +403,12 @@ def _linked(project, deadline):
     for root in listed:
         candidate = Path(os.path.abspath(Path(root) / relative))
         roots.add(str(candidate))
+        if len(proved) >= MAX_LINKED:
+            continue
+        if clock() >= deadline:
+            return None
         try:
-            if len(proved) >= MAX_LINKED or not candidate.is_dir():
+            if not candidate.is_dir():
                 continue
             resolved = candidate.resolve(strict=True)
             roots.add(str(resolved))
@@ -515,6 +524,9 @@ def register(project_root, state_root, *, explicit, home=None, now=None, deadlin
         others = {row['id']: _journal_selected(row) for row in before
                   if row['install_id'] != proof['installId'] and
                   row['status'] in ('active', 'missing_pending', 'conflict')}
+        if _before_store is not None:
+            mine = next((row for row in before if row['install_id'] == proof['installId']), None)
+            _before_store(target, None if mine is None else mine['version'])
         with _transaction(home) as db:
             current = _rows(db, 'WHERE target_root=?', (target,))
             if [(r['id'], r['version']) for r in current] != \

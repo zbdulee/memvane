@@ -210,8 +210,9 @@ class MixedBundle(Routing):
         self.old = Path(temp).resolve()
         archive = subprocess.run(['git', 'archive', BASE_COMMIT, 'core', 'test/fixtures'],
                                  cwd=REPO, capture_output=True, timeout=120)
-        if archive.returncode != 0:
-            self.skipTest('base commit unavailable: ' + archive.stderr.decode()[:200])
+        # The mixed-bundle regression needs the base release; never pass vacuously.
+        self.assertEqual(archive.returncode, 0,
+                         'base commit unavailable: ' + archive.stderr.decode()[:200])
         subprocess.run(['tar', '-x', '-C', str(self.old)], input=archive.stdout, check=True,
                        timeout=120)
 
