@@ -13,3 +13,12 @@ for (const name of ['Store', 'Lifecycle', 'Reconcile', 'SessionStart']) {
     assert.equal(result.status, 0, result.stdout + result.stderr);
   });
 }
+
+for (const name of ['RegistryTargets', 'MixedBundle']) {
+  test(`selected project registry routing: ${name}`, () => {
+    const result = spawnSync('python3',
+      ['-B', 'test/fixtures/memvane-registry-routing-checks.py', name],
+      {encoding: 'utf8', timeout: 300000, env});
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+}

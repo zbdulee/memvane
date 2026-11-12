@@ -93,6 +93,17 @@ class Routing(unittest.TestCase):
                    side_effect=lambda decision, action='update': self.full_proof(decision))
         self.wake = self.patch(runtime_work, 'request', return_value={'status': 'queued'})
         self.patch(response, '_request_wiki_lifecycle')
+        # Owner discovery reads the selected project registry; the product
+        # backfill registers the selected installs (registry v1).
+        self.backfill_registry()
+
+    def backfill_registry(self):
+        import memvane_registry
+        for _ in range(8):
+            if memvane_registry.reconcile(max_rows=64, seconds=60.0,
+                                          backfill_page=64)['complete']:
+                return
+        raise AssertionError('registry backfill incomplete')
 
     def patch(self, obj, name, **kw):
         patcher = patch.object(obj, name, **kw)
