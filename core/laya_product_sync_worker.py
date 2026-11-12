@@ -821,12 +821,16 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
                    or [v for v in vectors if v['state'] in ('pending', 'deferred')])
         main = result.get('vector') or {}
-        if (result.get('state') in ('indexed', 'unchanged') and main.get('state') == 'pending'
-                and main.get('progress', 0) > 0 and waiting and waiting[0] is main):
-            # The main view's vectors moved this pass: ACK (not a counted
-            # failure) and offer the same wake again shortly, so the fill goes
-            # on with a warm worker instead of waiting for the next edit.
-            # An offer failure leaves the next natural wake to go on.
+        progressed = (main.get('state') == 'pending' and main.get('progress', 0) > 0
+                      and waiting and waiting[0] is main)
+        blocked = [v for v in vectors if v['state'] == 'provider_blocked']
+        if (result.get('state') in ('indexed', 'unchanged') and not blocked
+                and (progressed or result.get('linkedReoffer'))):
+            # The main view's vectors moved this pass (or it published them and
+            # a linked view waits for the budget): ACK (not a counted failure)
+            # and offer the same wake again shortly, so the fill goes on with a
+            # warm worker instead of waiting for the next edit. An offer
+            # failure leaves the next natural wake to go on.
             try:
                 import runtime_work
                 runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
@@ -1179,7 +1183,8 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         if result['state'] not in ('indexed', 'unchanged'):
             return result, marks.get('proof', proof)
         linked = []
-        for project in _schema3_linked_projects(decision, deadline):
+        listing = max(deadline, time.monotonic() + SCHEMA3_LINKED_LIST_SECONDS)
+        for project in _schema3_linked_projects(decision, listing):
             if time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE:
                 linked.append({'root': str(project), 'state': 'pending', 'reason': 'schema3_pass_budget'})
                 continue
@@ -1216,12 +1221,17 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
         result['state'] = 'indexed'
     main = result.get('vector') or {}
-    progressing = main.get('state') == 'pending' and main.get('progress', 0) > 0
-    # While the main view's vectors move, a linked view held only by this
-    # pass's budget does not make the pass a failure: the re-offered wake
-    # (``_run_sync``) runs the next pass, which reaches it.
-    if any(item['state'] in ('pending', 'deferred')
-           and not (progressing and item.get('reason') == 'schema3_pass_budget') for item in linked):
+    advanced = ((main.get('state') == 'pending' and main.get('progress', 0) > 0)
+                or main.get('state') == 'published')
+    budget = [item for item in linked if item['state'] == 'pending'
+              and item.get('reason') == 'schema3_pass_budget']
+    # While the main view's vectors move (or this pass published them), a
+    # linked view held only by this pass's budget does not make the pass a
+    # failure: the re-offered wake (``_run_sync``) runs the next pass, which
+    # reaches it.
+    if advanced and budget:
+        result['linkedReoffer'] = True
+    if any(item['state'] in ('pending', 'deferred') and not (advanced and item in budget) for item in linked):
         result['state'] = 'pending'
         result.setdefault('reason', 'schema3_linked_pending')
     return result, proof
@@ -1452,8 +1462,9 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             vector = _schema3_vectors(store, writer, proof, marks, handle, manifest, None,
                                       vectors, deadline)
         spec = vectors['spec'] if vector['state'] == 'complete' else None
-        if spec is not None:
-            # As above: a completed fill gets a fresh publish reserve.
+        if not staging:
+            # The last fill call may run past the pass deadline (one document):
+            # this pass's generation, lexical or vector, gets a fresh reserve.
             deadline = max(deadline, time.monotonic() + SCHEMA3_PUBLISH_RESERVE)
         started = time.monotonic()
         generation = store.prepare_generation(handle, manifest, expected_head=head,
@@ -1779,6 +1790,10 @@ SCHEMA3_RESUME_SECONDS = 270
 # again this much later (``WakeQueue.offer(delay=)``), within RECLAIM_SECONDS
 # so the embedding worker stays warm.
 SCHEMA3_VECTOR_REOFFER_SECONDS = 30
+# Listing the linked worktrees after a main view whose last fill call ran past
+# the pass deadline: their own pass-budget check then holds them for the
+# re-offered wake instead of the listing failing on the spent budget.
+SCHEMA3_LINKED_LIST_SECONDS = 5
 SCHEMA3_FILL_DEADLINES = frozenset(('content_fill_deadline', 'fill_deadline_exceeded'))
 
 

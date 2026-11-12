@@ -1980,20 +1980,24 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
         admit_query()
     except Exception:
         vector_off.append('resource_deferred')
-    if degraded and not vector_off:
-        # A drift or fence read has no full proof for a query vector (the
-        # dispatcher refuses it): serve the lexical lists, as the v6 read does.
-        vector_off.append('degraded_read')
     # A view sealed without vectors (a lexical-first publish whose fill is
     # still deferred) serves its lexical lists; the provider is not asked.
     unsealed = endpoint.record.get('vector_profile') is None
     with ExitStack() as stack:
         vector = None
         if provider is not None and not vector_off and not unsealed:
-            vector = stack.enter_context(dispatch.approved_query_vector(
-                authority=endpoint, snapshot=None, decision=decision, provider=provider,
-                prompt=prompt, deadline=deadline))
-            if vector is None:
+            try:
+                vector = stack.enter_context(dispatch.approved_query_vector(
+                    authority=endpoint, snapshot=None, decision=decision, provider=provider,
+                    prompt=prompt, deadline=deadline))
+            except ValueError as exc:
+                # A drift read (no full proof for the executing bundle) cannot
+                # prove a query vector: serve the lexical lists, as the v6 read
+                # does. A linked worktree read with a proved bundle keeps vectors.
+                if not degraded or str(exc) != 'reader_vector_caller_unproved':
+                    raise
+                vector_off.append('degraded_read')
+            if vector is None and not vector_off:
                 vector_off.append('provider_unavailable')
         for attempt in range(2):
             try:
