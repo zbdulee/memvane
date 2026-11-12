@@ -114,6 +114,7 @@ CREATE TABLE s_stage_jobs (
   capture_json TEXT NOT NULL CHECK(json_valid(capture_json)), policy_digest TEXT NOT NULL,
   scan_digest TEXT NOT NULL, scan_complete INTEGER NOT NULL CHECK(scan_complete=1),
   cursor_path TEXT COLLATE BINARY, state TEXT NOT NULL CHECK(state IN ('collecting','ready','abandon')),
+  vector_spec_json TEXT CHECK(vector_spec_json IS NULL OR json_valid(vector_spec_json)),
   discard_relation TEXT CHECK(discard_relation IS NULL OR discard_relation IN ('card_source','source','item','job')),
   discard_key TEXT COLLATE BINARY,
   CHECK((base_gen_id IS NULL)=(base_epoch=0)),
@@ -156,6 +157,12 @@ CREATE TABLE s_legacy_fts (
 );
 CREATE UNIQUE INDEX s_legacy_fts_open ON s_legacy_fts(view_id,origin,path_key) WHERE gen_to IS NULL;
 CREATE INDEX s_legacy_fts_gc ON s_legacy_fts(view_id,gen_to) WHERE gen_to IS NOT NULL;
+CREATE TABLE s_fill_cursors (
+  view_id TEXT NOT NULL REFERENCES views(view_id), recipe_id TEXT NOT NULL REFERENCES chunk_recipes(recipe_id),
+  profile_id TEXT NOT NULL REFERENCES vector_profiles(profile_id), job_id TEXT NOT NULL,
+  head_ordinal INTEGER NOT NULL, target_count INTEGER NOT NULL CHECK(target_count>=0),
+  cursor INTEGER NOT NULL CHECK(cursor>=0 AND cursor<=target_count), PRIMARY KEY(view_id,recipe_id,profile_id)
+);
 CREATE TABLE s_head_fts_map (
   view_id TEXT NOT NULL REFERENCES views(view_id), origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')),
   path_key TEXT NOT NULL COLLATE BINARY, fts_rowid INTEGER NOT NULL,
@@ -182,7 +189,7 @@ SQL 트리거와 기존 connection guard는 (1) 구간 역행·중첩과 두 ope
 
 `observation_id`는 도메인 구분된 canonical `(worktree_id,branch_key,path,tracked_state,binding_state,content_id 또는 legacy_fingerprint_id)`의 digest다. `s_sources.path`는 참조 observation의 path와 같고, 해당 view의 worktree/branch와 observation이 같아야 한다. `s_card_sources.source_path`도 같은 규칙이며 `(card_path,source_path)`와 해당 view에서 유효한 카드·원문 구간을 가리켜야 한다. INSERT/종료 및 publish verifier는 이 관계와 byte-length 내 spans를 직접 검사한다. SQLite UNIQUE는 NULL을 서로 다르게 취급하므로 위 복합 UNIQUE만으로 XOR 양쪽의 중복을 막았다고 주장하지 않는다. canonical ID 재계산, duplicate-identity trigger 및 실제 schema 검사로 같은 legacy/content observation의 중복을 거절한다. `source_content`의 content ID는 원문 SHA/길이 규칙을 재검증하며, tracked 여부는 공유 content가 아니라 observation에서 읽는다.
 
-벡터는 `(blob_sha, recipe_id, profile_id)`의 불변 완성 set을 재사용하고 head 세대는 spec과 `lexical` 또는 `complete`만 기록한다. `complete` 봉인 전 모든 eligible 카드가 같은 spec의 완전한 set을 갖는지 검증한다. 개별 카드별 vector 세대 사본은 만들지 않는다. 현 `fill_targets`와 무기한 job receipt 대신 view·spec별 유계 cursor 1개를 두고 순회 종료 시 누락 set이 있으면 처음으로 재순회한다. 기존 content OS lease·claim·set 검증은 유지하고 callback은 SQLite transaction 밖이다. head 없는 cold view는 새 head를 게시하기 전에 lexical head를 먼저 게시한 뒤 fill한다. head 변경 중 fill은 기존 set만 재사용하고 새 head의 eligibility·capture를 다시 확인한 뒤 complete 세대를 게시한다. 진행 중 fill의 claim·임시 content는 GC 대상에서 제외한다. `fill_status` 소비자는 job ID 고정 재호출 대신 현재 head/spec의 누락 set과 cursor를 사용하도록 함께 바꾼다. 이 API 의미 변경은 PR8과 구 번들 교차 검증 대상이다.
+형식 4의 fill cursor는 view·spec마다 `s_fill_cursors` 한 행이다. 그 행은 현재 head ordinal, 결정적 job ID(incarnation·view·head·spec·대상 digest의 digest), 대상 수와 cursor를 담고, head나 spec이 바뀌면 같은 행을 새 identity로 덮어쓴다. 대상은 head의 eligible 카드 경로 순서이며 대상 행은 저장하지 않는다. `fill_status`·`fill_view`의 응답 필드(`job_id`·`cursor`·`complete`·`status`·`filled`·`cache_hits`·`deferred`)와 호출자 예산·deferred 의미는 형식 3과 같고, 형식 4에서는 호출자의 manifest를 읽지 않는다. stage job은 게시할 세대의 vector spec을 `vector_spec_json`에 담고 세대 ID가 그 spec을 결속한다. 벡터는 `(blob_sha, recipe_id, profile_id)`의 불변 완성 set을 재사용하고 head 세대는 spec과 `lexical` 또는 `complete`만 기록한다. `complete` 봉인 전 모든 eligible 카드가 같은 spec의 완전한 set을 갖는지 검증한다. 개별 카드별 vector 세대 사본은 만들지 않는다. 현 `fill_targets`와 무기한 job receipt 대신 view·spec별 유계 cursor 1개를 두고 순회 종료 시 누락 set이 있으면 처음으로 재순회한다. 기존 content OS lease·claim·set 검증은 유지하고 callback은 SQLite transaction 밖이다. head 없는 cold view는 새 head를 게시하기 전에 lexical head를 먼저 게시한 뒤 fill한다. head 변경 중 fill은 기존 set만 재사용하고 새 head의 eligibility·capture를 다시 확인한 뒤 complete 세대를 게시한다. 진행 중 fill의 claim·임시 content는 GC 대상에서 제외한다. `fill_status` 소비자는 job ID 고정 재호출 대신 현재 head/spec의 누락 set과 cursor를 사용하도록 함께 바꾼다. 이 API 의미 변경은 PR8과 구 번들 교차 검증 대상이다.
 
 ## 게시·rollback·read
 
