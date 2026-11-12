@@ -6,6 +6,7 @@ The generation format (3) keeps them as per-generation ``card_sources`` rows;
 ``s_card_sources`` with stage changes, rollback deltas, the member
 accumulator, conversion and GC. Synthetic stores only.
 """
+import hashlib
 import importlib.util
 from pathlib import Path
 import unittest
@@ -136,6 +137,49 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         cards[1] = dict(cards[1], fingerprint_id=other)
         with store._session():
             self.assertEqual(self.refused(store._rows_card_source_objects, cards).reason, 'card_source_conflict')
+
+
+    def test_07_writer_legacy_card_citing_one_path_at_two_revisions_publishes_like_the_generation_format(self):
+        """The product producer reaches two observations of one source path.
+
+        ``ingest_attested_card`` turns each frontmatter ``sourceRevisions``
+        entry into a ``legacy_unbound`` fingerprint and dedupes only equal
+        fingerprints; the reader rule it applies (``current_source=False``)
+        does not compare revisions with the file, so one path at two shas is
+        one attestation with two sources of that path. The generation format
+        keeps both as ``card_sources`` ordinals.
+        """
+        import yaml_scalars
+        raw = (self.root / 'notes/src.md').read_bytes()
+        older = b'# Source\nolder source body\n'
+        lines = yaml_scalars.dump_source_revisions([
+            dict(kind='file', path='notes/src.md', collection='fixture', sha256=hashlib.sha256(data).hexdigest(),
+                 size=len(data), mtimeNs=1) for data in (older, raw)])
+        text = ('---\ntitle: "Two revisions"\nstatus: verified\ncreatedBy: memvane\nsourceRevisions:\n'
+                + ''.join('  - ' + line + '\n' for line in lines) + '---\n# Two revisions\ntworevprobe body\n')
+        (self.wiki() / 'cards' / 'a.md').write_text(text, encoding='utf8')
+        decision = {'projectRoot': str(self.root), 'scopeId': self.scope,
+                    'collections': [{'name': 'fixture', 'role': 'raw', 'sourceRoot': str(self.root)},
+                                    {'name': 'fixture-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki())}],
+                    'collectionRoots': {'fixture': str(self.root), 'fixture-wiki': str(self.wiki())},
+                    'recallSettings': {'skipPaths': []}}
+        results = {}
+        generation_store, _, worktree_id = self.create(path=self.state / 'generation-format.db')
+        generation_handle = generation_store.capture_view(worktree_id)
+        row_store, _, row_handle = self.rows_store()
+        for name, store, handle in (('generation', generation_store, generation_handle),
+                                    ('row', row_store, row_handle)):
+            admitted = store.ingest_attested_card(handle.worktree_id, 'cards/a.md', decision=decision,
+                                                  provenance_scan={'id': '3' * 32, 'observed_ns': 5})
+            spec = store.attestation(admitted['trust_digest'])
+            self.assertEqual([store.fingerprint(s['fingerprint_id'])['path'] for s in spec['sources']],
+                             ['notes/src.md', 'notes/src.md'])
+            manifest = self.snapshot(store, handle, trust=False)
+            manifest['members'] = [dict(path='cards/a.md', blob_sha=admitted['blob_sha'], display_title='Two',
+                                        trust_digest=admitted['trust_digest'])]
+            self.publish_manifest(store, handle, manifest)
+            results[name] = (self.found(store, handle, 'tworevprobe'), self.locations(store, handle))
+        self.assertEqual(results['row'], results['generation'])
 
 
 def load_tests(loader, tests, pattern):
