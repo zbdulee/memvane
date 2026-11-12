@@ -255,10 +255,9 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
                 return generation, None
             with store._session():
                 dimension = store._profile(vector["profile_id"])["dimension"]
-            with store._reading(deadline) as db:
-                rows = db.execute("SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 "
-                                  "ORDER BY path COLLATE BINARY",
-                                  (generation,)).fetchmany(wiki_source_retire.MAX_CARDS + 1)
+            with store._reading(deadline):
+                # Either store format: the pinned generation's eligible cards in binary path order.
+                rows = store._eligible_members(generation, limit=wiki_source_retire.MAX_CARDS + 1)
             if len(rows) > wiki_source_retire.MAX_CARDS:
                 raise ValueError("selected_dedup_card_capacity")
             cards, total = {}, 0
