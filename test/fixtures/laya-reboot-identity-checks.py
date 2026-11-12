@@ -326,14 +326,31 @@ class RebootChecks(unittest.TestCase):
         with simulated_reboot(), case.seed.authority():
             installer = case.reader.seal_current_reader(case.case.state, case.case.project,
                                                         executing_root=case.case.plugin)
-            self.assertEqual(installer.endpoint.endpoint_id, initial.preferred_endpoint)
+            # Re-issued from this boot: the store nodes carry this boot's device.
+            reissued = dict(installer.endpoint.record)
+            for key in ('db_node', 'catalog_node', 'binding_node'):
+                self.assertEqual(reissued[key][1], v6[key][1])
             back = case.reader.cas_reader(case.case.journal, expected_epoch=selected.epoch,
                 expected_endpoint=selected.preferred_endpoint, target=installer.endpoint,
                 transition_id='2' * 32)
             self.assertEqual(case.reader.read_selection(case.case.journal), back)
         self.assertEqual((back.preferred_endpoint, back.previous_endpoint),
-                         (initial.preferred_endpoint, selected.preferred_endpoint))
+                         (installer.endpoint.endpoint_id, selected.preferred_endpoint))
         self.assertEqual(self.stored_record(case, initial.preferred_endpoint), v6)
+
+    def test_operator_rollback_after_a_reboot_reissues_the_v6_reader(self):
+        """The v6 and schema3 readers were sealed before the reboot; the
+        rollback re-issues the v6 reader from this boot and checks its store
+        nodes against the v6 reader the switch left."""
+        rollback = self.case_from('laya-shadow-rollback-checks.py', 'ShadowRollbackChecks')
+        initial, switched = rollback.switched()
+        with simulated_reboot():
+            result, wakes = rollback.rollback()
+        self.assertEqual(result['status'], 'rolled_back', result)
+        after = rollback.u15.selection()
+        self.assertEqual((after[0], after[2]), (switched[0] + 1, switched[1]))
+        self.assertEqual(rollback.u15.store_format(), 'v6')
+        self.assertEqual([a[:1] for a, _k in wakes], [('laya-sync',)])
 
     def test_record_nodes_still_differ_by_inode_and_in_process_owners_keep_the_device(self):
         import laya_move_read_seal as seal
