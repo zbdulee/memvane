@@ -872,6 +872,11 @@ def upgrade_install(project_root, state, root, home=None):
                 return {**_seal_companion(identity, root), 'kind': kind}
             except (BundleEvidenceError, UpgradeRefused):
                 pass
+        if kind == 'active':
+            # Preserve the existing actionable deferral when an old Hermes
+            # copy also prevents this owner switch.
+            from laya_journal_v4 import refuse_while_legacy_hermes
+            refuse_while_legacy_hermes(home)
         _refuse('executing_bundle_unproved')
     if (not fenced and not same_root and commit is not None and commit == identity['sourceCommit'] and
             kind != 'inactive'):

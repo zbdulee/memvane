@@ -235,6 +235,23 @@ class WorkerBase(Base):
 
 
 class WorkerChecks(WorkerBase):
+    def test_unrecorded_noncompanion_preserves_legacy_hermes_deferral(self):
+        (self.home / '.hermes' / 'plugins' / 'qmd-auto-context').mkdir(parents=True)
+        results, calls, _rescan, wake = self.run_worker('active', installed=None)
+        self.assertEqual((results[0]['status'], results[0]['reason']),
+                         ('deferred', 'legacy_hermes_copy_present'))
+        self.assertEqual(calls, {})
+        wake.assert_not_called()
+
+    def test_unrecorded_proven_companion_does_not_require_hermes_removal(self):
+        (self.home / '.hermes' / 'plugins' / 'qmd-auto-context').mkdir(parents=True)
+        with mock.patch.object(auto, '_seal_companion',
+                               return_value={'status': 'companion_sealed'}):
+            results, calls, _rescan, wake = self.run_worker('active', installed=None)
+        self.assertEqual(results[0]['status'], 'companion_sealed')
+        self.assertEqual(calls, {})
+        wake.assert_not_called()
+
     def test_already_activated_intent_finishes_before_host_record_is_required(self):
         import laya_active_upgrade
         with mock.patch.object(auto, 'classify', return_value=('active', self.old_identity)), \

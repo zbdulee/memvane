@@ -163,9 +163,13 @@ class ActiveUpgradeChecks(Lifecycle):
         companion.mkdir()
         before = case.journal.read_bytes()
         sealed = []
+        def seal(owner, root, *, expected_owner):
+            self.assertEqual(expected_owner['pluginRoot'], str(case.plugin))
+            self.assertEqual(expected_owner['ownershipManifestSha256'], identity['ownershipManifestSha256'])
+            sealed.append((owner, str(root)))
         with self.seed.authority(), \
                 mock.patch.object(product, 'seal_companion_host_copy',
-                                  side_effect=lambda owner, root: sealed.append((owner, str(root)))):
+                                  side_effect=seal):
             self.assertEqual(bundle._seal_companion(identity, companion), {'status': 'companion_sealed'})
         self.assertEqual(sealed, [(str(case.plugin), str(companion))])
         self.assertEqual(case.journal.read_bytes(), before)
