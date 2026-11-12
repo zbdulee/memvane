@@ -139,6 +139,35 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
             self.assertEqual(self.refused(store._rows_card_source_objects, cards).reason, 'card_source_conflict')
 
 
+    def two_revision_card(self):
+        """A verified writer card whose ``sourceRevisions`` cite ``notes/src.md`` at two shas."""
+        import yaml_scalars
+        raw = (self.root / 'notes/src.md').read_bytes()
+        older = b'# Source\nolder source body\n'
+        lines = yaml_scalars.dump_source_revisions([
+            dict(kind='file', path='notes/src.md', collection='fixture', sha256=hashlib.sha256(data).hexdigest(),
+                 size=len(data), mtimeNs=1) for data in (older, raw)])
+        text = ('---\ntitle: "Two revisions"\nstatus: verified\ncreatedBy: memvane\nsourceRevisions:\n'
+                + ''.join('  - ' + line + '\n' for line in lines) + '---\n# Two revisions\ntworevprobe body\n')
+        (self.wiki() / 'cards' / 'a.md').write_text(text, encoding='utf8')
+
+    def publish_two_revision_card(self, store, handle):
+        """Ingest the card through ``ingest_attested_card`` and publish it as the only member."""
+        decision = {'projectRoot': str(self.root), 'scopeId': self.scope,
+                    'collections': [{'name': 'fixture', 'role': 'raw', 'sourceRoot': str(self.root)},
+                                    {'name': 'fixture-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki())}],
+                    'collectionRoots': {'fixture': str(self.root), 'fixture-wiki': str(self.wiki())},
+                    'recallSettings': {'skipPaths': []}}
+        admitted = store.ingest_attested_card(handle.worktree_id, 'cards/a.md', decision=decision,
+                                              provenance_scan={'id': '3' * 32, 'observed_ns': 5})
+        spec = store.attestation(admitted['trust_digest'])
+        self.assertEqual([store.fingerprint(s['fingerprint_id'])['path'] for s in spec['sources']],
+                         ['notes/src.md', 'notes/src.md'])
+        manifest = self.snapshot(store, handle, trust=False)
+        manifest['members'] = [dict(path='cards/a.md', blob_sha=admitted['blob_sha'], display_title='Two',
+                                    trust_digest=admitted['trust_digest'])]
+        return self.publish_manifest(store, handle, manifest)
+
     def test_07_writer_legacy_card_citing_one_path_at_two_revisions_publishes_like_the_generation_format(self):
         """The product producer reaches two observations of one source path.
 
@@ -149,37 +178,44 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         one attestation with two sources of that path. The generation format
         keeps both as ``card_sources`` ordinals.
         """
-        import yaml_scalars
-        raw = (self.root / 'notes/src.md').read_bytes()
-        older = b'# Source\nolder source body\n'
-        lines = yaml_scalars.dump_source_revisions([
-            dict(kind='file', path='notes/src.md', collection='fixture', sha256=hashlib.sha256(data).hexdigest(),
-                 size=len(data), mtimeNs=1) for data in (older, raw)])
-        text = ('---\ntitle: "Two revisions"\nstatus: verified\ncreatedBy: memvane\nsourceRevisions:\n'
-                + ''.join('  - ' + line + '\n' for line in lines) + '---\n# Two revisions\ntworevprobe body\n')
-        (self.wiki() / 'cards' / 'a.md').write_text(text, encoding='utf8')
-        decision = {'projectRoot': str(self.root), 'scopeId': self.scope,
-                    'collections': [{'name': 'fixture', 'role': 'raw', 'sourceRoot': str(self.root)},
-                                    {'name': 'fixture-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki())}],
-                    'collectionRoots': {'fixture': str(self.root), 'fixture-wiki': str(self.wiki())},
-                    'recallSettings': {'skipPaths': []}}
+        self.two_revision_card()
         results = {}
         generation_store, _, worktree_id = self.create(path=self.state / 'generation-format.db')
         generation_handle = generation_store.capture_view(worktree_id)
         row_store, _, row_handle = self.rows_store()
         for name, store, handle in (('generation', generation_store, generation_handle),
                                     ('row', row_store, row_handle)):
-            admitted = store.ingest_attested_card(handle.worktree_id, 'cards/a.md', decision=decision,
-                                                  provenance_scan={'id': '3' * 32, 'observed_ns': 5})
-            spec = store.attestation(admitted['trust_digest'])
-            self.assertEqual([store.fingerprint(s['fingerprint_id'])['path'] for s in spec['sources']],
-                             ['notes/src.md', 'notes/src.md'])
-            manifest = self.snapshot(store, handle, trust=False)
-            manifest['members'] = [dict(path='cards/a.md', blob_sha=admitted['blob_sha'], display_title='Two',
-                                        trust_digest=admitted['trust_digest'])]
-            self.publish_manifest(store, handle, manifest)
+            self.publish_two_revision_card(store, handle)
             results[name] = (self.found(store, handle, 'tworevprobe'), self.locations(store, handle))
         self.assertEqual(results['row'], results['generation'])
+
+    def test_08_conversion_of_a_card_citing_one_path_at_two_revisions_refuses_and_keeps_the_generation_format(self):
+        """A generation-format store holding such a card converts all or nothing."""
+        import sqlite3
+        self.two_revision_card()
+        store, repository, worktree_id = self.create()
+        handle = store.capture_view(worktree_id)
+        head = self.publish_two_revision_card(store, handle)
+        before = dict(found=self.found(store, handle, 'tworevprobe'), locations=self.locations(store, handle))
+        self.assertEqual(before['found'], ['cards/a.md'])
+
+        def snapshot():
+            with sqlite3.connect('file:' + str(self.db) + '?mode=ro', uri=True) as db:
+                schema = sorted(tuple(r) for r in db.execute('SELECT type,name,sql FROM sqlite_master'))
+                counts = {name: db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+                          for kind, name, _ in schema if kind == 'table' and not name.startswith('sqlite_')}
+                return schema, counts, db.execute('PRAGMA user_version').fetchone()[0]
+
+        prior = snapshot()
+        self.assertFalse(any(name.startswith('s_') for _, name, _ in prior[0]))
+        self.assertEqual(self.refused(store.convert_to_row_format).reason, 'card_source_conflict')
+        store.close()
+        self.assertEqual(snapshot(), prior, 'the refused conversion writes nothing')
+        again = self.reopen(repository)
+        moved = again.capture_view(worktree_id)
+        self.assertEqual((again.head(moved)['gen_id'], again.head(moved)['epoch']), (head['gen_id'], head['epoch']))
+        self.assertEqual(dict(found=self.found(again, moved, 'tworevprobe'),
+                              locations=self.locations(again, moved)), before)
 
 
 def load_tests(loader, tests, pattern):
