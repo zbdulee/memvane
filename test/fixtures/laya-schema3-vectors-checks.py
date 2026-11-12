@@ -32,6 +32,10 @@ spec = importlib.util.spec_from_file_location('schema3_vectors_seed',
                                               ROOT / 'test/fixtures/laya-schema3-consumers-checks.py')
 seed_module = importlib.util.module_from_spec(spec); spec.loader.exec_module(seed_module)
 
+# The seed setUp replaces ``runtime_work.request``; the wake-queue checks keep
+# the real one, captured here before any setUp runs.
+REAL_WAKE_REQUEST = importlib.import_module('runtime_work').request
+
 MODEL_SHA = '3' * 64
 RECIPE = 'qmd-regex-token-chunks-candidate-v1'
 
@@ -1013,66 +1017,76 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertEqual(self.paths(hit)[0], target_path)
 
 
+    @contextmanager
+    def wake_queue(self):
+        """The real wake queue in this temp HOME, on a virtual wall clock.
+
+        Yields ``(queue, clock, drain)``: ``drain(execute)`` runs one worker
+        drain. The real ``runtime_work.request`` is restored (its fixture guard
+        is cleared, and QMD_RUNTIME_DISPATCH keeps it from starting a worker).
+        """
+        import os
+        import tempfile
+        from types import SimpleNamespace
+        work = importlib.import_module('runtime_work')
+        root = Path(tempfile.mkdtemp(prefix='wakes-', dir=os.environ.get('HOME'))).resolve()
+        clock = {'now': time.time()}
+        fake = SimpleNamespace(time=lambda: clock['now'], monotonic=time.monotonic, sleep=lambda _s: None)
+
+        def drain(execute, runs=1):
+            return work.drain(queue, execute=execute, ready=lambda: True,
+                              wall=lambda: clock['now'], sleep=lambda _s: None, max_runs=runs)
+        with mock.patch.dict(os.environ, {'QMD_SANDBOX': '', 'QMD_SETUP_GUARD_FIXTURE': '',
+                                          'QMD_RUNTIME_DISPATCH': '1'}), \
+                mock.patch.object(work, 'default_root', new=lambda: root), \
+                mock.patch.object(work, 'request', new=REAL_WAKE_REQUEST), \
+                mock.patch.object(work, 'time', fake):
+            queue = work.WakeQueue()
+            yield queue, clock, drain
+
+    def sync_execute(self, project, passes):
+        """A laya-sync dispatch stand-in: one real pass; non-done results raise
+        the dispatcher's ``target_deferred`` (laya_runtime_dispatch)."""
+        policy = importlib.import_module('runtime_wake_policy')
+
+        def execute(row):
+            self.assertEqual((row['kind'], row['target']), ('laya-sync', project))
+            result, _ingests, calls = self.run_vector_pass()
+            passes.append((result, calls))
+            if result['state'] in ('indexed', 'unchanged'):
+                return True
+            raise policy.DispatchFailure('target_deferred')
+        return execute
+
     def test_21_zero_progress_vector_pass_keeps_its_wake_unacked_without_a_delayed_row(self):
         """Through the real wake queue: a progressing pass ACKs its laya-sync wake
         and leaves one delayed re-offer 30 s out; a following pass with vectors
         left and no store progress is not ACKed (the same row and revision stay,
         with a counted target_deferred attempt) and leaves no delayed row."""
-        import os
-        import tempfile
-        from types import SimpleNamespace
         work = importlib.import_module('runtime_work')
-        policy = importlib.import_module('runtime_wake_policy')
         self.select_schema3()
         self.card('concepts/slow-card.md', 'slowprobe')
         project = str(self.case.project)
-        root = Path(tempfile.mkdtemp(prefix='wakes-', dir=os.environ.get('HOME'))).resolve()
-        clock = {'now': time.time()}
-        fake = SimpleNamespace(time=lambda: clock['now'], monotonic=time.monotonic, sleep=lambda _s: None)
         passes = []
-        # The seed setUp replaces ``runtime_work.request``; this check needs the
-        # real one (its fixture guard is cleared below, and QMD_RUNTIME_DISPATCH
-        # keeps it from starting a worker), compiled from the module source.
-        import ast
-        tree = ast.parse(Path(work.__file__).read_text(encoding='utf8'))
-        node, = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'request']
-        scope = {}
-        exec(compile(ast.Module(body=[node], type_ignores=[]), work.__file__, 'exec'), work.__dict__, scope)
-        real_request = scope['request']
-
-        def execute(row):
-            self.assertEqual((row['kind'], row['target']), ('laya-sync', project))
-            result, _ingests, _calls = self.run_vector_pass()
-            passes.append(result)
-            if result['state'] in ('indexed', 'unchanged'):
-                return True
-            # The dispatcher's mapping of a non-done laya-sync result.
-            raise policy.DispatchFailure('target_deferred')
-        with mock.patch.dict(os.environ, {'QMD_SANDBOX': '', 'QMD_SETUP_GUARD_FIXTURE': '',
-                                          'QMD_RUNTIME_DISPATCH': '1'}), \
-                mock.patch.object(work, 'default_root', new=lambda: root), \
-                mock.patch.object(work, 'request', new=real_request), \
-                mock.patch.object(work, 'time', fake), \
-                self.virtual_fill_clock({'slowprobe': 300.0}):
-            queue = work.WakeQueue()
+        execute = self.sync_execute(project, passes)
+        with self.wake_queue() as (queue, clock, drain), self.virtual_fill_clock({'slowprobe': 300.0}):
             self.assertEqual(queue.offer('laya-sync', project), 'queued')
-            first = work.drain(queue, execute=execute, ready=lambda: True,
-                               wall=lambda: clock['now'], sleep=lambda _s: None, max_runs=1)
+            first = drain(execute)
             row, = queue.pending()
             self.assertEqual(first['runs'], 1, first)
-            self.assertEqual((passes[0]['vector']['state'], passes[0].get('vectorReoffer')),
-                             ('pending', True), passes[0])
+            self.assertEqual((passes[0][0]['vector']['state'], passes[0][0].get('vectorReoffer')),
+                             ('pending', True), passes[0][0])
             # ACKed; the delayed re-offer survives with a fresh retry history.
             self.assertEqual((row['reason'], row['attempts'], row['status']),
                              (work.DELAYED_REASON, 0, 'pending'), row)
             self.assertGreaterEqual(row['due'], clock['now'] + self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS - 1)
             clock['now'] = row['due']
-            second = work.drain(queue, execute=execute, ready=lambda: True,
-                                wall=lambda: clock['now'], sleep=lambda _s: None, max_runs=1)
+            second = drain(execute)
             after, = queue.pending()
+        last = passes[1][0]
         self.assertEqual(second['runs'], 1, second)
-        self.assertEqual((passes[1]['state'], passes[1]['vector']['state']), ('pending', 'pending'), passes[1])
-        self.assertNotIn('vectorReoffer', passes[1])
+        self.assertEqual((last['state'], last['vector']['state']), ('pending', 'pending'), last)
+        self.assertNotIn('vectorReoffer', last)
         # Not ACKed: the same row and revision, one counted attempt, no delayed mark.
         self.assertEqual((after['id'], after['revision']), (row['id'], row['revision']), after)
         self.assertEqual(after['attempts'], 1, after)
@@ -1080,6 +1094,93 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertIn(':target_deferred:', str(after['reason']), after)
         emit('schema3-vector-zero-progress-wake', reason=after['reason'], attempts=after['attempts'])
 
+    def test_22_mid_pass_yield_after_progress_acks_reoffers_and_resumes_without_repeats(self):
+        """A vector pass that yields (``laya_sync_yield_priority`` before a
+        provider call) after it added embedding sets is a progressing pass: the
+        wake is ACKed with one delayed re-offer, no provider call follows the
+        yield, and the next pass asks the provider only for cards not done."""
+        work = importlib.import_module('runtime_work')
+        self.select_schema3()
+        for name in ('alpha', 'bravo', 'charlie'):
+            self.card(f'yield/{name}.md', name + 'yieldprobe')
+        project = str(self.case.project)
+        passes, probes = [], []
+
+        def priority(_controller):
+            # A due higher-priority wake appears once one provider call ran.
+            probes.append(True)
+            return len(probes) > 1
+        execute = self.sync_execute(project, passes)
+        with self.wake_queue() as (queue, clock, drain):
+            self.assertEqual(queue.offer('laya-sync', project), 'queued')
+            with mock.patch.object(self.worker, '_higher_priority_wake', side_effect=priority):
+                drain(execute)
+            row, = queue.pending()
+            first, first_calls = passes[0]
+            self.assertEqual(len(first_calls), 1, first_calls)  # nothing after the yield
+            self.assertEqual(first['vector'].get('progress', 0) > 0, True, first)
+            self.assertEqual((row['reason'], row['attempts']), (work.DELAYED_REASON, 0), row)
+            clock['now'] = row['due']
+            drain(execute)
+        second, second_calls = passes[1]
+        self.assertTrue(second_calls, second)
+        self.assertFalse(set(first_calls) & set(second_calls), (first_calls, second_calls))
+        emit('schema3-vector-mid-pass-yield', first=len(first_calls), second=len(second_calls),
+             reason=first['vector'].get('reason'))
+
+    def test_23_reoffered_vector_wake_lets_another_due_wake_run_first(self):
+        """Queue-level yield after a progressing pass (characterization): the
+        delayed re-offer is not due, so another install's due laya-sync wake
+        runs next, and the vector wake resumes once its delay passed."""
+        import os
+        import tempfile
+        self.select_schema3()
+        self.card('concepts/slow-card.md', 'slowprobe')
+        project = str(self.case.project)
+        other = Path(tempfile.mkdtemp(prefix='other-install-', dir=os.environ.get('HOME'))).resolve()
+        passes, order = [], []
+        mine = self.sync_execute(project, passes)
+
+        def execute(row):
+            order.append(row['target'])
+            return True if row['target'] == str(other) else mine(row)
+        with self.wake_queue() as (queue, clock, drain), self.virtual_fill_clock({'slowprobe': 300.0}):
+            self.assertEqual(queue.offer('laya-sync', project), 'queued')
+            clock['now'] += 1
+            self.assertEqual(queue.offer('laya-sync', str(other)), 'queued')
+            drain(execute, runs=8)
+            self.assertEqual(order, [project, str(other)])
+            row, = queue.pending()
+            self.assertEqual(row['target'], project)
+            self.assertGreater(row['due'], clock['now'])
+            clock['now'] = row['due']
+            drain(execute, runs=8)
+        self.assertEqual(order, [project, str(other), project])
+        emit('schema3-vector-queue-yield', order=len(order))
+
+    def test_24_held_provider_lane_defers_other_provider_users_but_not_query_admission(self):
+        """Characterization of the lanes a vector fill holds: while one pass
+        holds the provider lane, another provider user (a fill of another
+        install, learning) is deferred, and recall's query admission
+        (``admit_query``) is not: it takes no provider lane."""
+        import os
+        import tempfile
+        rc = importlib.import_module('context_learning.resource_coordination')
+        resident = importlib.import_module('laya_embed_resident')
+        from resource_deferred import ResourceDeferred
+        root = Path(tempfile.mkdtemp(prefix='lanes-', dir=os.environ.get('HOME'))).resolve()
+        policy = self.worker.EMBED_POLICY
+        with mock.patch.object(rc.Coordinator, '_admit', return_value={'ready': True}):
+            with rc.Coordinator(root).activity('provider', policy, {}):
+                with self.assertRaises(ResourceDeferred):
+                    with rc.Coordinator(root).activity('provider', policy, {}):
+                        pass
+                self.assertIs(rc.Coordinator(root).check(policy, {})['ready'], True)
+                resident.admit_query(coordinator=rc.Coordinator(root), report={})
+            # Released with the pass: the next provider user is admitted.
+            with rc.Coordinator(root).activity('provider', policy, {}):
+                pass
+        emit('schema3-vector-lanes', provider='exclusive', query='admitted')
 
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
