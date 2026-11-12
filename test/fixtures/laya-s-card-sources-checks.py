@@ -8,6 +8,7 @@ accumulator, conversion and GC. Synthetic stores only.
 """
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -119,7 +120,7 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         self.assertEqual(back['epoch'], head['epoch'] + 1)
         self.assertEqual(self.locations(again, moved), {'cards/a.md': ['notes/src.md#L2-L3']})
 
-    def test_06_one_source_path_merges_one_observation_and_refuses_two(self):
+    def test_06_one_source_path_folds_into_the_lowest_ordinal_observation(self):
         store, _, handle = self.rows_store()
         manifest = self.snapshot(store, handle, body=b'# Alpha\nhello merged\n')
         fingerprint = manifest['sources'][0]['fingerprint_id']
@@ -134,9 +135,16 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         self.assertEqual([(r['card_path'], r['source_path']) for r in rows], [('cards/a.md', 'notes/src.md')])
         self.assertEqual([s['startLine'] for s in store._rows_card_source_spans(rows[0])], [1, 2])
         other = store.put_fingerprint(dict(fp, source_sha='0' * 64, scan_id='2' * 32))
-        cards[1] = dict(cards[1], fingerprint_id=other)
+        first = dict(cards[0])
+        # Two observations of one path fold into the lowest ordinal's, whatever the input order.
+        cards = [dict(cards[1], fingerprint_id=other), first]
         with store._session():
-            self.assertEqual(self.refused(store._rows_card_source_objects, cards).reason, 'card_source_conflict')
+            rows, objects = store._rows_card_source_objects(cards)
+            single, _ = store._rows_card_source_objects([first])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['observation_id'], single[0]['observation_id'])
+        self.assertEqual(len(objects), 1)
+        self.assertEqual([s['startLine'] for s in store._rows_card_source_spans(rows[0])], [1, 2])
 
 
     def two_revision_card(self):
@@ -147,8 +155,12 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         lines = yaml_scalars.dump_source_revisions([
             dict(kind='file', path='notes/src.md', collection='fixture', sha256=hashlib.sha256(data).hexdigest(),
                  size=len(data), mtimeNs=1) for data in (older, raw)])
+        spans = yaml_scalars.dump_source_spans([
+            dict(path='notes/src.md', sourceSha256=hashlib.sha256(data).hexdigest(), startLine=start, endLine=end,
+                 spanSha256=hashlib.sha256(data).hexdigest()) for data, start, end in ((older, 3, 4), (raw, 1, 2))])
         text = ('---\ntitle: "Two revisions"\nstatus: verified\ncreatedBy: memvane\nsourceRevisions:\n'
-                + ''.join('  - ' + line + '\n' for line in lines) + '---\n# Two revisions\ntworevprobe body\n')
+                + ''.join('  - ' + line + '\n' for line in lines) + 'sourceSpans:\n'
+                + ''.join('  - ' + line + '\n' for line in spans) + '---\n# Two revisions\ntworevprobe body\n')
         (self.wiki() / 'cards' / 'a.md').write_text(text, encoding='utf8')
 
     def publish_two_revision_card(self, store, handle):
@@ -168,6 +180,25 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
                                     trust_digest=admitted['trust_digest'])]
         return self.publish_manifest(store, handle, manifest)
 
+    def recall_output(self, store, handle):
+        """What recall consumes: searched rows, their card locations and the cards' trust."""
+        pin = store.pin_view(handle)
+        try:
+            rows = [{k: row[k] for k in ('path', 'blob_sha', 'body', 'display_title', 'score')}
+                    for row in store.search(pin, 'tworevprobe', 10)]
+            locations = store.card_locations(pin, ['cards/a.md'])
+        finally:
+            store.release(pin)
+        if store._rows:
+            trust = [tuple(r) for r in store._db.execute(
+                'SELECT path,trust_digest,eligible FROM s_cards WHERE view_id=? AND gen_to IS NULL ORDER BY path',
+                (handle.view_id,))]
+        else:
+            trust = [tuple(r) for r in store._db.execute(
+                'SELECT path,trust_digest,eligible FROM wiki_members WHERE gen_id=? ORDER BY path',
+                (store.head(handle)['gen_id'],))]
+        return dict(rows=rows, locations=locations, trust=trust)
+
     def test_07_writer_legacy_card_citing_one_path_at_two_revisions_publishes_like_the_generation_format(self):
         """The product producer reaches two observations of one source path.
 
@@ -180,42 +211,44 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         """
         self.two_revision_card()
         results = {}
-        generation_store, _, worktree_id = self.create(path=self.state / 'generation-format.db')
-        generation_handle = generation_store.capture_view(worktree_id)
-        row_store, _, row_handle = self.rows_store()
+        # One registration for both stores: fingerprints carry the worktree id, so
+        # equal attestations (and trust digests) need the same worktree.
+        repository, worktree = self.bind()
+        stores = {}
+        for name, path, rows in (('generation', self.state / 'generation-format.db', False),
+                                 ('row', self.db, True)):
+            store = self.track(self.Store.create(str(path), project_root=str(self.root), repository=repository,
+                                                 worktree=worktree, scope_id=self.scope, row_generations=rows))
+            stores[name] = (store, store.capture_view(worktree['worktreeId']))
+        (generation_store, generation_handle), (row_store, row_handle) = stores['generation'], stores['row']
         for name, store, handle in (('generation', generation_store, generation_handle),
                                     ('row', row_store, row_handle)):
             self.publish_two_revision_card(store, handle)
-            results[name] = (self.found(store, handle, 'tworevprobe'), self.locations(store, handle))
-        self.assertEqual(results['row'], results['generation'])
+            results[name] = self.recall_output(store, handle)
+        generation = results['generation']
+        self.assertEqual([row['path'] for row in generation['rows']], ['cards/a.md'])
+        self.assertEqual(generation['locations'],
+                         {'cards/a.md': ['notes/src.md#L1-L2', 'notes/src.md#L3-L4']})
+        self.assertEqual(generation['trust'][0][2], 1)
+        self.assertEqual(json.dumps(results['row'], sort_keys=True).encode('utf8'),
+                         json.dumps(generation, sort_keys=True).encode('utf8'))
+        self.assertEqual(len(self.card_source_rows(row_store, row_handle)), 1)
 
-    def test_08_conversion_of_a_card_citing_one_path_at_two_revisions_refuses_and_keeps_the_generation_format(self):
-        """A generation-format store holding such a card converts all or nothing."""
-        import sqlite3
+    def test_08_conversion_of_a_card_citing_one_path_at_two_revisions_keeps_the_recall_output(self):
+        """A generation-format store holding such a card converts, and recall reads the same bytes."""
         self.two_revision_card()
         store, repository, worktree_id = self.create()
         handle = store.capture_view(worktree_id)
-        head = self.publish_two_revision_card(store, handle)
-        before = dict(found=self.found(store, handle, 'tworevprobe'), locations=self.locations(store, handle))
-        self.assertEqual(before['found'], ['cards/a.md'])
-
-        def snapshot():
-            with sqlite3.connect('file:' + str(self.db) + '?mode=ro', uri=True) as db:
-                schema = sorted(tuple(r) for r in db.execute('SELECT type,name,sql FROM sqlite_master'))
-                counts = {name: db.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-                          for kind, name, _ in schema if kind == 'table' and not name.startswith('sqlite_')}
-                return schema, counts, db.execute('PRAGMA user_version').fetchone()[0]
-
-        prior = snapshot()
-        self.assertFalse(any(name.startswith('s_') for _, name, _ in prior[0]))
-        self.assertEqual(self.refused(store.convert_to_row_format).reason, 'card_source_conflict')
-        store.close()
-        self.assertEqual(snapshot(), prior, 'the refused conversion writes nothing')
+        self.publish_two_revision_card(store, handle)
+        before = self.recall_output(store, handle)
+        self.assertEqual(before['locations'], {'cards/a.md': ['notes/src.md#L1-L2', 'notes/src.md#L3-L4']})
+        store.convert_to_row_format()
         again = self.reopen(repository)
         moved = again.capture_view(worktree_id)
-        self.assertEqual((again.head(moved)['gen_id'], again.head(moved)['epoch']), (head['gen_id'], head['epoch']))
-        self.assertEqual(dict(found=self.found(again, moved, 'tworevprobe'),
-                              locations=self.locations(again, moved)), before)
+        self.assertTrue(again._rows)
+        self.assertEqual(json.dumps(self.recall_output(again, moved), sort_keys=True).encode('utf8'),
+                         json.dumps(before, sort_keys=True).encode('utf8'))
+        self.assertEqual(len(self.card_source_rows(again, moved)), 1)
 
 
 def load_tests(loader, tests, pattern):
