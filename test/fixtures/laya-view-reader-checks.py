@@ -25,6 +25,49 @@ class ReaderChecks(helpers.GenerationCase):
         store.publish_generation(h,gen,expected_head=base)
         return store,repository,h,gen
 
+    def test_post_reboot_device_change_preserves_published_recall(self):
+        self.git(self.root,'init')
+        self.git(self.root,'add','notes/src.md')
+        self.git(self.root,'commit','-m','fixture')
+        store,repository,old,_=self.published()
+        checkout=self.views.checkout
+        directory=checkout._directory
+        def reboot_directory(path):
+            identity=directory(path)
+            return {**identity,'dev':identity['dev']+1}
+        checkout._capture_cache.entry=None
+        with mock.patch.object(checkout,'_directory',side_effect=reboot_directory):
+            current=store.capture_view(old.worktree_id)
+            manifest=self.snapshot(store,current,body=b'# After reboot\nhello postreboot\n')
+            generation,head=self.prepared(store,current,manifest)
+            store.publish_generation(current,generation,expected_head=head)
+            evidence=json.loads(store._db.execute(
+                'SELECT checkout_evidence FROM generations WHERE gen_id=?',(generation,)).fetchone()[0])['evidence']
+            for key in ('project','checkout','gitDir','commonGitDir'):
+                self.assertEqual(evidence[key]['dev'],directory(evidence[key]['path'])['dev']+1)
+            pin=store.pin_view(current)
+            self.addCleanup(store.release,pin)
+            rows=store.search(pin,'postreboot',10)
+            self.assertEqual([(row['gen_id'],row['path']) for row in rows],[(generation,'cards/a.md')])
+
+    def test_sealed_capture_rejects_changed_inode_or_path(self):
+        self.git(self.root,'init')
+        self.git(self.root,'add','notes/src.md')
+        self.git(self.root,'commit','-m','fixture')
+        store,_,_,gen=self.published()
+        generation=dict(store._db.execute('SELECT * FROM generations WHERE gen_id=?',(gen,)).fetchone())
+        checkout=self.views.checkout
+        for field in ('project','checkout','gitDir','commonGitDir'):
+            for part in ('ino','path'):
+                with self.subTest(field=field,part=part):
+                    capture=json.loads(generation['checkout_evidence'])
+                    identity=capture['evidence'][field]
+                    identity[part]=identity[part]+1 if part=='ino' else identity[part]+'-other'
+                    capture['checkoutDigest']=checkout._digest({k:v for k,v in capture.items() if k!='checkoutDigest'})
+                    forged={**generation,'checkout_evidence':self.views.v.canonical(capture)}
+                    with self.assertRaisesRegex(ValueError,'generation_capture_invalid'):
+                        store._sealed_handle(store._db,forged)
+
     def add_member(self,store,h,m,path,body,title):
         p=self.root/'.memvane/wiki'/path;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(body)
         blob=store.ingest_card(h.worktree_id,path)

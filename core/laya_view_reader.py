@@ -116,8 +116,10 @@ class ReaderMixin:
         saved = dict(saved)
         record = _worktree_record(saved, self._repository, self._policy)
         evidence = capture['evidence']
-        if (any(evidence[k] != record[k] for k in ('project', 'checkout', 'gitDir'))
-                or any(evidence[k] != self._repository[k] for k in ('commonGitDir', 'projectRelative', 'gitObjectFormat'))):
+        if (any(not checkout._persistent_directory_equal(record[k], evidence[k])
+                for k in ('project', 'checkout', 'gitDir'))
+                or not checkout._persistent_directory_equal(self._repository['commonGitDir'], evidence['commonGitDir'])
+                or any(evidence[k] != self._repository[k] for k in ('projectRelative', 'gitObjectFormat'))):
             v.fail('generation_capture_invalid')
         handle = self._handle_type(view_id=capture['viewId'], worktree_id=capture['worktreeId'],
             branch_key=capture['branchKey'], head_oid=capture['headOid'],
