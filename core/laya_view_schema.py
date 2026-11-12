@@ -124,8 +124,9 @@ def row_generation_statements():
         profile_id TEXT REFERENCES vector_profiles(profile_id),
         coverage TEXT NOT NULL CHECK(coverage IN ('lexical','complete')),
         member_digest TEXT NOT NULL, source_digest TEXT NOT NULL, logical_fts_digest TEXT NOT NULL,
-        physical_fts_digest TEXT NOT NULL, seal_digest TEXT NOT NULL,
-        UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal),
+        physical_fts_digest TEXT NOT NULL,
+        member_acc TEXT NOT NULL CHECK(json_valid(member_acc)), fts_acc TEXT NOT NULL CHECK(json_valid(fts_acc)),
+        seal_digest TEXT NOT NULL, UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal), UNIQUE(gen_id,view_id),
         CHECK((recipe_id IS NULL)=(profile_id IS NULL)),
         CHECK(coverage='lexical' OR recipe_id IS NOT NULL))''',
       '''CREATE TABLE s_heads (
@@ -235,11 +236,12 @@ def row_tables(text,sha,uuid,integer):
       # Reserved deletion/hold proof per view path; metadata only, no writer yet.
       'delete_receipts':f'''CREATE TABLE delete_receipts(
         {sha('receipt_id')} PRIMARY KEY, {sha('view_id')} REFERENCES views(view_id),
-        {text('base_gen')} REFERENCES s_generations(gen_id), {text('path')},
+        {text('base_gen')}, {text('path')},
         {sha('fingerprint_id')} REFERENCES source_fingerprints(fingerprint_id),
         observed_head TEXT CHECK(observed_head IS NULL OR typeof(observed_head)='text'),
         {text('proof_json')} CHECK(json_valid(proof_json)),
-        {text('decision')} CHECK(decision IN ('hold','retire')), {text('reason')}, {integer('created_ns')})''',
+        {text('decision')} CHECK(decision IN ('hold','retire')), {text('reason')}, {integer('created_ns')},
+        FOREIGN KEY(base_gen,view_id) REFERENCES s_generations(gen_id,view_id))''',
       's_parity_anchor':f'''CREATE TABLE s_parity_anchor(
         {sha('view_id')} REFERENCES views(view_id), {text('gen_id')},
         {integer('ordinal',1)}, {uuid('incarnation')}, {sha('receipt_digest')},
@@ -317,6 +319,11 @@ def row_statements():
           ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),
           (SELECT ordinal FROM s_heads WHERE view_id=OLD.view_id), 0))
         BEGIN SELECT RAISE(ABORT,'view_generation_retained'); END''',
+      # Head FTS rowid of each path; changes with the head FTS in the same transaction.
+      '''CREATE TABLE s_head_fts_map (
+        view_id TEXT NOT NULL REFERENCES views(view_id), origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')),
+        path_key TEXT NOT NULL COLLATE BINARY, fts_rowid INTEGER NOT NULL,
+        PRIMARY KEY(view_id,origin,path_key), UNIQUE(view_id,origin,fts_rowid))''',
       # Legacy FTS corpus rows: same interval rules as card rows.
       '''CREATE TABLE s_legacy_fts (
         view_id TEXT NOT NULL REFERENCES views(view_id),

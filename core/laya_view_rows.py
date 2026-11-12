@@ -10,6 +10,7 @@ imports, vector coverage and source relations refuse with a fixed reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import time
@@ -37,23 +38,75 @@ def _expired(deadline):
         v.fail('fts_deadline_exceeded')
 
 
-def member_digest(rows):
-    return v.digest('memvane-row-members-v1', [{k: row[k] for k in CARD_FIELDS} for row in rows])
-
-
 LEGACY_FIELDS = ('origin', 'path_key', 'blob_sha', 'title', 'position', 'active')
+_CARD_DOMAIN, _LEGACY_DOMAIN = 'memvane-row-card-v1', 'memvane-row-legacy-row-v1'
+_FTS_DOMAINS = {'normal': 'memvane-row-fts-v1', 'base': 'memvane-row-fts-base-v1',
+                'sidecar': 'memvane-row-fts-sidecar-v1'}
+EMPTY_ACC = dict(bytes=0, count=0, sum='0' * 64)
 
 
-def legacy_member_digest(cards, legacy_rows):
-    """A legacy generation binds its card rows and its FTS corpus rows together."""
-    return v.digest('memvane-row-legacy-members-v1', dict(
-        cards=[{k: row[k] for k in CARD_FIELDS} for row in cards],
-        fts=[{k: row[k] for k in LEGACY_FIELDS} for row in legacy_rows]))
+def acc_update(acc, domain, row, sign=1):
+    """Add (sign 1) or remove (sign -1) one row's contribution to an order-free multiset accumulator."""
+    raw = v.canonical(row).encode('utf8')
+    value = int.from_bytes(hashlib.sha256(domain.encode('ascii') + b'\0' + raw).digest(), 'big')
+    result = dict(bytes=acc['bytes'] + sign * len(raw), count=acc['count'] + sign,
+                  sum=format((int(acc['sum'], 16) + sign * value) % (1 << 256), '064x'))
+    if result['bytes'] < 0 or result['count'] < 0:
+        v.fail('seal_accumulator_invalid')
+    return result
 
 
-def legacy_fts_digests(base_logical, base_physical, side_logical, side_physical):
-    return (v.digest('memvane-row-legacy-fts-v1', dict(base=base_logical, sidecar=side_logical)),
-            v.digest('memvane-row-legacy-fts-storage-v1', dict(base=base_physical, sidecar=side_physical)))
+def acc_value(text):
+    acc = v.parse_canonical(text)
+    v.exact(acc, ('bytes', 'count', 'sum'))
+    if (type(acc['bytes']) is not int or type(acc['count']) is not int or acc['bytes'] < 0 or acc['count'] < 0
+            or not isinstance(acc['sum'], str) or len(acc['sum']) != 64
+            or acc['sum'].strip('0123456789abcdef')):
+        v.fail('seal_accumulator_invalid')
+    return acc
+
+
+def acc_digest(kind, acc):
+    return v.digest('memvane-row-' + kind + '-acc-v1', acc)
+
+
+def _card_value(row):
+    return {k: row[k] for k in CARD_FIELDS}
+
+
+def _legacy_value(row):
+    return {k: row[k] for k in LEGACY_FIELDS}
+
+
+def member_acc(cards, legacy_rows=()):
+    acc = EMPTY_ACC
+    for row in cards:
+        acc = acc_update(acc, _CARD_DOMAIN, _card_value(row))
+    for row in legacy_rows:
+        acc = acc_update(acc, _LEGACY_DOMAIN, _legacy_value(row))
+    return acc
+
+
+def member_digest(cards, legacy_rows=()):
+    """Card rows (and a legacy generation's FTS corpus rows) as one multiset commitment."""
+    return acc_digest('member', member_acc(cards, legacy_rows))
+
+
+def fts_acc(rows, origin='normal', positions=None):
+    acc = EMPTY_ACC
+    for index, row in enumerate(rows):
+        value = dict(row) if positions is None else dict(row, position=positions[index])
+        acc = acc_update(acc, _FTS_DOMAINS[origin], value)
+    return acc
+
+
+def legacy_physical(base_physical, side_physical):
+    return v.digest('memvane-row-legacy-fts-storage-v1', dict(base=base_physical, sidecar=side_physical))
+
+
+def deferred_physical(prior_physical, gen_id):
+    """The physical value a rollback seals when it defers the FTS physical digest."""
+    return v.digest('memvane-row-physical-deferred-v1', dict(prior=prior_physical, gen_id=gen_id))
 
 
 def seal_digest(fields):
@@ -63,7 +116,8 @@ def seal_digest(fields):
 def _seal_fields(incarnation, generation):
     keys = ('ordinal', 'gen_id', 'view_id', 'epoch', 'prior_ordinal', 'kind', 'sidecar_present',
             'capture_json', 'policy_digest', 'skip_digest', 'recipe_id', 'profile_id', 'coverage',
-            'member_digest', 'source_digest', 'logical_fts_digest', 'physical_fts_digest')
+            'member_digest', 'source_digest', 'logical_fts_digest', 'physical_fts_digest',
+            'member_acc', 'fts_acc')
     return dict(incarnation=incarnation, **{k: generation[k] for k in keys})
 
 
@@ -181,7 +235,14 @@ class RowsMixin:
         side.sort(key=lambda row: row['position'])
         sidecar = [dict(filepath=row['path_key'], title=row['title'], body=cache[row['blob_sha']],
                         path_key=row['path_key']) for row in side]
-        return vals.fts_rows(bodies, deadline=deadline), (sidecar if side else None)
+        return vals.fts_rows(bodies, deadline=deadline), (sidecar if side else None), [r['position'] for r in side]
+
+    @staticmethod
+    def _rows_legacy_fts_acc(base_rows, side_rows, positions):
+        acc = fts_acc(base_rows, 'base')
+        for index, row in enumerate(side_rows or ()):
+            acc = acc_update(acc, _FTS_DOMAINS['sidecar'], dict(row, position=positions[index]))
+        return acc
 
     @staticmethod
     def _rows_legacy_content(generation, legacy_rows):
@@ -374,17 +435,21 @@ class RowsMixin:
                               prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
                               capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
                               skip_digest=stage['skip_digest'], recipe_id=None, profile_id=None,
-                              coverage='lexical', member_digest=stage['member_digest'],
+                              coverage='lexical', expected_member_digest=stage['member_digest'],
                               source_digest=v.digest('memvane-row-sources-v1', []))
             written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
-    def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, expected_logical=None):
+    def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, rollback=None):
         """Changed card rows, their head FTS rows, the sealed generation and the head CAS.
 
         Runs inside the caller's write transaction and commits it under the
         view's FTS capability; any failure rolls the whole publication back.
+        A publication proves the full head FTS, runs the FTS5 integrity check
+        and seals the physical digest. A rollback (``rollback`` = the head and
+        prior generation rows) updates the head accumulators from the delta
+        only, must reach the prior's accumulators and seals the deferral value.
         """
         import laya_view_store as store_module
         view_id = generation['view_id']
@@ -401,13 +466,34 @@ class RowsMixin:
         with self._fts_guard.view_head(view_id):
             if head.ordinal is None:
                 fts.create_head(db, view_id)
-            fts.apply_head_changes(db, view_id, changes, deadline=deadline)
-            fts.verify_head_index(db, view_id)
-            self._fts_guard.freeze_head()
-            logical, physical = fts.head_proof(db, view_id, rows, deadline)
-            if expected_logical is not None and logical != expected_logical:
-                v.fail('rollback_fts_mismatch')
-            generation = dict(generation, ordinal=ordinal, logical_fts_digest=logical, physical_fts_digest=physical)
+            fts.apply_mapped_head_changes(db, view_id, changes, deadline=deadline)
+            if rollback is None:
+                fts.verify_head_index(db, view_id)
+                self._fts_guard.freeze_head()
+                _, physical = fts.head_proof(db, view_id, rows, deadline)
+                members = member_acc(self._rows_open_after(db, view_id, deltas))
+                text_acc = fts_acc(rows)
+            else:
+                current, prior = rollback
+                members, text_acc = acc_value(current['member_acc']), acc_value(current['fts_acc'])
+                for old, new in deltas:
+                    if old is not None:
+                        members = acc_update(members, _CARD_DOMAIN, _card_value(old), -1)
+                    if new is not None:
+                        members = acc_update(members, _CARD_DOMAIN, _card_value(new))
+                for change in changes:
+                    if change['old'] is not None:
+                        text_acc = acc_update(text_acc, _FTS_DOMAINS['normal'], change['old'], -1)
+                    if change['new'] is not None:
+                        text_acc = acc_update(text_acc, _FTS_DOMAINS['normal'], change['new'])
+                if (members, text_acc) != (acc_value(prior['member_acc']), acc_value(prior['fts_acc'])):
+                    v.fail('rollback_fts_mismatch')
+                physical = deferred_physical(current['physical_fts_digest'], generation['gen_id'])
+            generation = dict(generation, ordinal=ordinal, member_acc=v.canonical(members),
+                              fts_acc=v.canonical(text_acc), member_digest=acc_digest('member', members),
+                              logical_fts_digest=acc_digest('fts', text_acc), physical_fts_digest=physical)
+            if rollback is None and generation['member_digest'] != generation.pop('expected_member_digest'):
+                v.fail('generation_rows_mismatch')
             generation['seal_digest'] = seal_digest(_seal_fields(self._incarnation, generation))
             columns = tuple(generation)
             db.execute(f"INSERT INTO s_generations({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
@@ -415,8 +501,6 @@ class RowsMixin:
             for old, new in deltas:
                 _expired(deadline)
                 store_module._apply_card_delta(db, view_id, ordinal, old, new)
-            if member_digest(self._rows_open(db, view_id)) != generation['member_digest']:
-                v.fail('generation_rows_mismatch')
             if head.ordinal is None:
                 db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,1)', (view_id, ordinal))
             elif db.execute('UPDATE s_heads SET ordinal=?,epoch=? WHERE view_id=? AND ordinal=? AND epoch=?',
@@ -426,6 +510,16 @@ class RowsMixin:
             _expired(deadline)
             db.commit()
         return generation
+
+    def _rows_open_after(self, db, view_id, deltas):
+        """The view's open card rows once ``deltas`` apply (path order)."""
+        rows = {row['path']: row for row in self._rows_open(db, view_id)}
+        for old, new in deltas:
+            if new is None:
+                rows.pop(old['path'], None)
+            else:
+                rows[new['path']] = new
+        return [rows[path] for path in _sorted_paths(rows)]
 
     # -- rollback and view row collection -------------------------------------
 
@@ -446,7 +540,12 @@ class RowsMixin:
             head = self._rows_head_row(db, handle.view_id)
             if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']) or head.gen_id is None:
                 v.fail('view_head_conflict')
-            current, _ = self._rows_verify(db, head, handle, deadline)
+            current = db.execute('SELECT * FROM s_generations WHERE view_id=? AND ordinal=?',
+                                 (handle.view_id, head.ordinal)).fetchone()
+            current = dict(current)
+            # Only the head and prior seal rows are re-checked: a rollback never re-reads the corpus.
+            if seal_digest(_seal_fields(self._incarnation, current)) != current['seal_digest']:
+                v.fail('generation_seal_mismatch')
             if current['prior_ordinal'] is None:
                 v.fail('rollback_prior_missing')
             prior = db.execute('SELECT * FROM s_generations WHERE view_id=? AND ordinal=?',
@@ -468,10 +567,6 @@ class RowsMixin:
                     if value is not None:
                         v.exact(value, CARD_FIELDS)
                 deltas.append((new, old))
-            restored = self._rows_open(db, handle.view_id, prior['ordinal'])
-            if member_digest(restored) != prior['member_digest']:
-                v.fail('generation_rows_mismatch')
-            rows = self._rows_fts_rows(restored, cache={}, deadline=deadline)
             generation = dict(gen_id=vals.gen_id(uuid.uuid4().hex, v.digest('memvane-row-rollback-v1', dict(
                                   view_id=handle.view_id, head=head.gen_id, prior=prior['gen_id']))),
                               view_id=handle.view_id, epoch=head.epoch + 1, prior_ordinal=head.ordinal,
@@ -479,7 +574,7 @@ class RowsMixin:
                               capture_json=prior['capture_json'], policy_digest=prior['policy_digest'],
                               skip_digest=prior['skip_digest'], recipe_id=prior['recipe_id'],
                               profile_id=prior['profile_id'], coverage=prior['coverage'],
-                              member_digest=prior['member_digest'], source_digest=prior['source_digest'])
+                              source_digest=prior['source_digest'])
 
             def before_commit(db):
                 job = db.execute("SELECT job_id FROM s_stage_jobs WHERE view_id=? AND state<>'abandon'",
@@ -487,8 +582,8 @@ class RowsMixin:
                 if job is not None:
                     store_module._stage_mark_abandon(db, job[0])
 
-            written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline,
-                                       expected_logical=prior['logical_fts_digest'])
+            written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,
+                                       rollback=(current, prior))
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
@@ -678,44 +773,47 @@ class RowsMixin:
             legacy = 'legacy' in stage
             last = index == len(chain) - 1
             if legacy:
-                base_rows, side_rows = self._rows_legacy_fts(item['legacy_rows'], cache={}, deadline=deadline)
-                logical = legacy_fts_digests(
-                    fts.head_logical_digest(base_rows, deadline), None,
-                    None if side_rows is None else fts.head_logical_digest(side_rows, deadline, sidecar=True),
-                    None)[0]
-                digest = legacy_member_digest(rows, item['legacy_rows'])
+                base_rows, side_rows, positions = self._rows_legacy_fts(item['legacy_rows'], cache={},
+                                                                        deadline=deadline)
+                text_acc = self._rows_legacy_fts_acc(base_rows, side_rows, positions)
+                members = member_acc(rows, item['legacy_rows'])
                 if last:
                     fts.create_head(db, view_id)
                     fts.populate_head(db, view_id, base_rows)
+                    fts.map_head(db, view_id)
                     if side_rows is not None:
                         fts.create_head(db, view_id, sidecar=True)
                         fts.populate_head(db, view_id, side_rows, sidecar=True)
+                        fts.map_head(db, view_id, sidecar=True)
             else:
                 fts_rows = self._rows_fts_rows(rows, cache={}, deadline=deadline)
-                logical, digest, side_rows = fts.head_logical_digest(fts_rows, deadline), member_digest(rows), None
+                text_acc, members, side_rows = fts_acc(fts_rows), member_acc(rows), None
                 if last:
                     fts.create_head(db, view_id)
                     fts.populate_head(db, view_id, fts_rows)
+                    fts.map_head(db, view_id)
             row = dict(ordinal=generation['ordinal'], gen_id=generation['gen_id'], view_id=view_id,
                        epoch=epoch - (len(chain) - 1 - index),
                        prior_ordinal=prior_ordinal if index else item['parent_ordinal'],
                        kind='legacy' if legacy else 'normal', sidecar_present=int(side_rows is not None),
                        capture_json=generation['checkout_evidence'], policy_digest=generation['policy_digest'],
                        skip_digest=v.digest('memvane-row-skip-v1', stage['skip_paths']),
-                       recipe_id=None, profile_id=None, coverage='lexical', member_digest=digest,
+                       recipe_id=None, profile_id=None, coverage='lexical',
+                       member_digest=acc_digest('member', members),
                        source_digest=v.digest('memvane-row-sources-v1', []),
-                       logical_fts_digest=logical,
-                       physical_fts_digest=item['seal']['fts_storage_digest'])
+                       logical_fts_digest=acc_digest('fts', text_acc),
+                       physical_fts_digest=item['seal']['fts_storage_digest'],
+                       member_acc=v.canonical(members), fts_acc=v.canonical(text_acc))
             item['row'] = row
             prior_ordinal = generation['ordinal']
         # The head's physical digest is sealed after every FTS write is flushed.
         db.execute('SAVEPOINT s_convert_flush')
         db.execute('RELEASE s_convert_flush')
         if chain[-1]['row']['kind'] == 'legacy':
-            chain[-1]['row']['physical_fts_digest'] = legacy_fts_digests(
-                None, fts.head_storage_digest(db, view_id, deadline), None,
+            chain[-1]['row']['physical_fts_digest'] = legacy_physical(
+                fts.head_storage_digest(db, view_id, deadline),
                 fts.head_storage_digest(db, view_id, deadline, sidecar=True)
-                if chain[-1]['row']['sidecar_present'] else None)[1]
+                if chain[-1]['row']['sidecar_present'] else None)
         else:
             chain[-1]['row']['physical_fts_digest'] = fts.head_storage_digest(db, view_id, deadline)
         for item in chain:
@@ -808,7 +906,9 @@ class RowsMixin:
         rows = self._rows_open(db, generation['view_id'], generation['ordinal'])
         legacy_rows = self._rows_open_legacy(db, generation['view_id'], generation['ordinal'])
         legacy = self._rows_legacy_content(generation, legacy_rows)
-        if (legacy_member_digest(rows, legacy_rows) if legacy else member_digest(rows)) != generation['member_digest']:
+        members = member_acc(rows, legacy_rows if legacy else ())
+        if (v.canonical(members) != generation['member_acc']
+                or acc_digest('member', members) != generation['member_digest']):
             v.fail('generation_rows_mismatch')
         if generation['sidecar_present'] != int(any(row['origin'] == 'sidecar' for row in legacy_rows)):
             v.fail('generation_rows_mismatch')
@@ -825,20 +925,41 @@ class RowsMixin:
                 spec = self._attestation(row['trust_digest'], cache=checked)
                 if spec['blob_sha'] != row['blob_sha'] or spec['policy_digest'] != handle.policy_digest:
                     v.fail('card_trust_mismatch')
-        if legacy:
-            base_rows, side_rows = self._rows_legacy_fts(legacy_rows, cache=cache, deadline=deadline)
-            base_logical, base_physical = fts.head_proof(db, generation['view_id'], base_rows, deadline)
-            side_logical = side_physical = None
-            if side_rows is not None:
-                side_logical, side_physical = fts.head_proof(db, generation['view_id'], side_rows, deadline,
-                                                             sidecar=True)
-            logical, physical = legacy_fts_digests(base_logical, base_physical, side_logical, side_physical)
-            if physical != generation['physical_fts_digest']:
+        # A rollback generation defers the physical digest to the next publication.
+        deferred = None
+        if generation['kind'] == 'rollback':
+            prior = db.execute('SELECT physical_fts_digest FROM s_generations WHERE view_id=? AND ordinal=?',
+                               (generation['view_id'], generation['prior_ordinal'])).fetchone()
+            if prior is None or generation['physical_fts_digest'] != deferred_physical(prior[0], generation['gen_id']):
                 v.fail('fts_storage_mismatch')
+            deferred = True
+        if legacy:
+            base_rows, side_rows, positions = self._rows_legacy_fts(legacy_rows, cache=cache, deadline=deadline)
+            _, base_physical = fts.head_proof(db, generation['view_id'], base_rows, deadline)
+            side_physical = None
+            if side_rows is not None:
+                _, side_physical = fts.head_proof(db, generation['view_id'], side_rows, deadline, sidecar=True)
+            text_acc = self._rows_legacy_fts_acc(base_rows, side_rows, positions)
+            physical = legacy_physical(base_physical, side_physical)
+            maps = [False, True] if side_rows is not None else [False]
         else:
-            logical, physical = fts.head_proof(db, generation['view_id'],
-                                               self._rows_fts_rows(rows, cache=cache, deadline=deadline),
-                                               deadline, expected_storage=generation['physical_fts_digest'])
+            fts_rows = self._rows_fts_rows(rows, cache=cache, deadline=deadline)
+            _, physical = fts.head_proof(db, generation['view_id'], fts_rows, deadline)
+            text_acc = fts_acc(fts_rows)
+            maps = [False]
+        if not deferred and physical != generation['physical_fts_digest']:
+            v.fail('fts_storage_mismatch')
+        for sidecar in maps:
+            table, mapped = fts.head_map_rows(db, generation['view_id'], sidecar=sidecar)
+            if table != mapped:
+                v.fail('fts_head_map_mismatch')
+        if db.execute('SELECT COUNT(*) FROM s_head_fts_map WHERE view_id=?',
+                      (generation['view_id'],)).fetchone()[0] != sum(len(fts.head_map_rows(
+                          db, generation['view_id'], sidecar=sidecar)[1]) for sidecar in maps):
+            v.fail('fts_head_map_mismatch')
+        logical = acc_digest('fts', text_acc)
+        if v.canonical(text_acc) != generation['fts_acc']:
+            v.fail('generation_seal_mismatch')
         if (logical != generation['logical_fts_digest']
                 or seal_digest(_seal_fields(self._incarnation, generation)) != generation['seal_digest']):
             v.fail('generation_seal_mismatch')

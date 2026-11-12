@@ -619,10 +619,10 @@ class ContentIdentityTests(unittest.TestCase):
         db.execute('INSERT INTO views VALUES (?)', (view,))
         insert = '''INSERT INTO s_generations(gen_id,view_id,epoch,prior_ordinal,kind,capture_json,
                     policy_digest,skip_digest,coverage,member_digest,source_digest,logical_fts_digest,
-                    physical_fts_digest,seal_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'''
+                    physical_fts_digest,seal_digest,member_acc,fts_acc) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'''
         def generation(gen_id, epoch, prior):
             db.execute(insert, (gen_id, view, epoch, prior, 'normal', '{}', *(['b' * 64] * 2),
-                                'lexical', *(['c' * 64] * 5)))
+                                'lexical', *(['c' * 64] * 5), '{}', '{}'))
             return db.execute('SELECT ordinal FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()[0]
         first = generation('g1', 1, None)
         db.execute('INSERT INTO s_heads VALUES (?,?,?)', (view, first, 1))

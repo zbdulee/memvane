@@ -508,6 +508,71 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         reader.rollback()
         self.assertTrue(store.collect_view_rows(handle, limit=64)['s_cards'])
 
+    def test_generations_persist_seal_accumulators_and_a_head_rowid_map(self):
+        import laya_view_fts as fts
+        store, _, handle = self.rows_store()
+        self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        db = store._db
+        accs = db.execute('SELECT member_acc,fts_acc FROM s_generations').fetchone()
+        for acc in accs:
+            self.assertEqual(set(json.loads(acc)), {'count', 'bytes', 'sum'})
+        name = fts.head_table(handle.view_id)
+        self.assertEqual(sorted(tuple(r) for r in db.execute(
+            'SELECT path_key,fts_rowid FROM s_head_fts_map WHERE view_id=?', (handle.view_id,))),
+            sorted(tuple(r) for r in db.execute(f'SELECT path_key,rowid FROM {name}')))
+
+    def test_rollback_after_restart_reads_only_the_delta(self):
+        import laya_view_fts as fts
+        import laya_view_rows as rows
+        store, repository, handle = self.rows_store()
+        many = {f'cards/m{i:03d}.md': (f'# M {i}\nuniquemany{i:03d} x\n'.encode(), True) for i in range(40)}
+        self.publish_cards(store, handle, many)
+        changed = dict(many, **{'cards/m000.md': (b'# M 0\nuniquechanged x\n', True)})
+        head = self.publish_cards(store, handle, changed)
+        store.close()
+        again = self.reopen(repository)
+        fresh = again.capture_view(handle.worktree_id)
+        reads = []
+        real_blob = type(again)._blob
+
+        def counted(self_, blob, *a, **k):
+            reads.append(blob)
+            return real_blob(self_, blob, *a, **k)
+
+        def forbidden(*a, **k):
+            raise AssertionError('rollback must not read the whole head')
+        with mock.patch.object(type(again), '_blob', counted), \
+             mock.patch.object(rows.RowsMixin, '_rows_verify', forbidden), \
+             mock.patch.object(fts, 'head_storage_digest', forbidden), \
+             mock.patch.object(fts, 'head_proof', forbidden), \
+             mock.patch.object(fts, 'verify_head_index', forbidden):
+            back = again.rollback_generation(fresh, expected_head=head)
+        self.assertLessEqual(len(set(reads)), 2, reads)
+        self.assertEqual(self.found(again, fresh, 'uniquemany000'), ['cards/m000.md'])
+        self.assertEqual(self.found(again, fresh, 'uniquechanged'), [])
+        db = again._db
+        prior, rolled = (db.execute('SELECT member_digest,logical_fts_digest,physical_fts_digest FROM s_generations '
+                                    'WHERE gen_id=?', (gen,)).fetchone() for gen in (
+            db.execute('SELECT g.gen_id FROM s_generations g WHERE g.ordinal=(SELECT prior_ordinal FROM '
+                       's_generations WHERE gen_id=?)', (head['gen_id'],)).fetchone()[0], back['gen_id']))
+        self.assertEqual(tuple(rolled)[:2], tuple(prior)[:2])
+        self.assertNotEqual(rolled[2], fts.head_storage_digest(db, handle.view_id),
+                            'a rollback seals the deferral value, not a recomputed physical digest')
+        third = self.publish_cards(again, fresh, changed)
+        self.assertEqual(db.execute('SELECT physical_fts_digest FROM s_generations WHERE gen_id=?',
+                                    (third['gen_id'],)).fetchone()[0], fts.head_storage_digest(db, handle.view_id))
+
+    def test_tampered_head_rowid_map_refuses_the_pin(self):
+        import sqlite3
+        store, repository, handle = self.rows_store()
+        self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        store.close()
+        with sqlite3.connect(self.db) as db:
+            db.execute('UPDATE s_head_fts_map SET fts_rowid=fts_rowid+100')
+        again = self.reopen(repository)
+        self.assertEqual(self.refused(again.pin_view, again.capture_view(handle.worktree_id)).reason,
+                         'fts_head_map_mismatch')
+
     def test_unsupported_row_inputs_refuse_before_any_write(self):
         store, _, handle = self.rows_store()
         manifest = self.snapshot(store, handle)

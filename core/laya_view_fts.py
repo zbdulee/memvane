@@ -225,6 +225,63 @@ def populate_head(db,view_id,rows,*,sidecar=False):
         _execute(db,f'INSERT INTO {head_table(view_id,sidecar=sidecar)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
 
 
+def head_map_rows(db,view_id,*,sidecar=False):
+    """(path_key, rowid) of the head FTS table and of its map, both path-ordered."""
+    name=head_table(view_id,sidecar=sidecar)
+    table=[tuple(r) for r in _execute(db,f'SELECT path_key,rowid FROM {name} ORDER BY path_key COLLATE BINARY,rowid')]
+    mapped=[tuple(r) for r in _execute(db,'SELECT path_key,fts_rowid FROM s_head_fts_map WHERE view_id=? AND origin=? '
+                                        'ORDER BY path_key COLLATE BINARY',(view_id,'sidecar' if sidecar else 'base'))]
+    return table,mapped
+
+
+def map_head(db,view_id,*,sidecar=False):
+    """Record every current head FTS row in the rowid map (fresh head FTS only)."""
+    origin='sidecar' if sidecar else 'base'
+    for path,rowid in head_map_rows(db,view_id,sidecar=sidecar)[0]:
+        _execute(db,'INSERT INTO s_head_fts_map(view_id,origin,path_key,fts_rowid) VALUES (?,?,?,?)',
+                 (view_id,origin,path,rowid))
+
+
+def apply_mapped_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):
+    """Apply checked FTS row deltas, finding each path's rowid in the head map.
+
+    Reads and writes only the changed paths. The caller holds the view's FTS
+    capability, proves the head and owns the transaction.
+    """
+    name=head_table(view_id,sidecar=sidecar);origin='sidecar' if sidecar else 'base'
+    if not db.in_transaction or not isinstance(changes,list) or len(changes)>MAX_ROWS:
+        v.fail('fts_changes_invalid')
+    seen=set()
+    for change in changes:
+        _deadline(deadline)
+        if not isinstance(change,dict) or set(change)!={'old','new'}:v.fail('fts_changes_invalid')
+        old,new=change['old'],change['new']
+        if old is None and new is None:v.fail('fts_changes_invalid')
+        for row in (old,new):
+            if row is not None:_entries([row],insertion_order=True)
+        path=(old if old is not None else new)['path_key']
+        if path in seen or (old is not None and new is not None and new['path_key']!=path):
+            v.fail('fts_changes_invalid')
+        seen.add(path)
+        mapped=_execute(db,'SELECT fts_rowid FROM s_head_fts_map WHERE view_id=? AND origin=? AND path_key=?',
+                        (view_id,origin,path))
+        rowid=mapped[0][0] if mapped else None
+        existing=(_execute(db,f'SELECT filepath,title,body,path_key FROM {name} WHERE rowid=?',(rowid,))
+                  if rowid is not None else [])
+        if [tuple(r) for r in existing]!=([] if old is None else [tuple(old[k] for k in _FIELDS)]):
+            v.fail('fts_head_changed')
+        if old is not None:
+            _execute(db,f'DELETE FROM {name} WHERE rowid=?',(rowid,))
+            _execute(db,'DELETE FROM s_head_fts_map WHERE view_id=? AND origin=? AND path_key=?',(view_id,origin,path))
+        if new is not None:
+            cursor=db.execute(f'INSERT INTO {name}(rowid,filepath,title,body,path_key) VALUES(?,?,?,?,?)',
+                              (rowid,*(new[k] for k in _FIELDS)))
+            try:new_rowid=cursor.lastrowid
+            finally:cursor.close()
+            _execute(db,'INSERT INTO s_head_fts_map(view_id,origin,path_key,fts_rowid) VALUES (?,?,?,?)',
+                     (view_id,origin,path,new_rowid))
+
+
 def apply_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):
     """Apply checked FTS row deltas inside an existing view-head capability.
 
