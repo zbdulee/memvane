@@ -126,8 +126,8 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual([tuple(row) for row in cards], [(gens[0][0], gens[1][0]), (gens[1][0], None)])
         deltas = db.execute('SELECT ordinal,rel,old_json IS NOT NULL,new_json IS NOT NULL FROM s_deltas '
                             'WHERE view_id=? ORDER BY ordinal', (handle.view_id,)).fetchall()
-        self.assertEqual([tuple(row) for row in deltas],
-                         [(gens[0][0], 'card', 0, 1), (gens[1][0], 'card', 1, 1)])
+        self.assertEqual([tuple(row) for row in deltas], [(gens[1][0], 'card', 1, 1)],
+                         'the first generation has no prior and records no rollback delta')
         self.assertEqual(db.execute("SELECT COUNT(*) FROM s_stage_jobs WHERE state<>'abandon'").fetchone()[0], 0)
 
     def test_unchanged_republish_writes_no_card_rows(self):
@@ -421,7 +421,7 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         db = store._db
         deltas = [row[0] for row in db.execute(
             'SELECT COUNT(*) FROM s_deltas WHERE view_id=? GROUP BY ordinal ORDER BY ordinal', (handle.view_id,))]
-        self.assertEqual(deltas, [70, 1, 1, 1])
+        self.assertEqual(deltas, [1, 1, 1])
         back = store.rollback_generation(handle, expected_head=fourth)
         self.assertEqual(self.found(store, handle, 'uniquemany001'), ['cards/한글-001.md'])
         self.assertEqual(self.found(store, handle, 'uniquemany000'), [])

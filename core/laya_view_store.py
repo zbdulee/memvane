@@ -55,8 +55,12 @@ def _apply_card_delta(db, view_id, ordinal, old, new):
     path=(old if old is not None else new)['path']
     if old is not None and new is not None and old['path']!=new['path']:
         v.fail('card_delta_invalid')
-    if db.execute('SELECT 1 FROM s_generations WHERE view_id=? AND ordinal=?', (view_id,ordinal)).fetchone() is None:
+    generation=db.execute('SELECT prior_ordinal FROM s_generations WHERE view_id=? AND ordinal=?', (view_id,ordinal)).fetchone()
+    if generation is None:
         v.fail('generation_missing')
+    # A view's first generation has no prior to roll back to; its rows are
+    # the whole corpus, so it records no rollback delta.
+    reversible=generation[0] is not None
     row=db.execute('SELECT path,blob_sha,title,eligible,trust_digest,metadata_json,gen_from '
                    'FROM s_cards WHERE view_id=? AND path=? AND gen_to IS NULL', (view_id,path)).fetchone()
     actual=None if row is None else dict(zip(fields,tuple(row[:len(fields)])))
@@ -75,13 +79,14 @@ def _apply_card_delta(db, view_id, ordinal, old, new):
                        'VALUES (?,?,?,NULL,?,?,?,?,?)',
                        (view_id,new['path'],ordinal,new['blob_sha'],new['title'],new['eligible'],
                         new['trust_digest'],new['metadata_json']))
-        db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
-                   (view_id,ordinal,'card',key,None if old is None else v.canonical(old),
-                    None if new is None else v.canonical(new)))
-        for side,value in (('old',old),('new',new)):
-            if value is not None:
-                db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) VALUES (?,?,?,?,?,?)',
-                           (view_id,ordinal,'card',key,side,value['blob_sha']))
+        if reversible:
+            db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
+                       (view_id,ordinal,'card',key,None if old is None else v.canonical(old),
+                        None if new is None else v.canonical(new)))
+            for side,value in (('old',old),('new',new)):
+                if value is not None:
+                    db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) VALUES (?,?,?,?,?,?)',
+                               (view_id,ordinal,'card',key,side,value['blob_sha']))
     except BaseException:
         db.execute('ROLLBACK TO s_card_delta');db.execute('RELEASE s_card_delta')
         raise

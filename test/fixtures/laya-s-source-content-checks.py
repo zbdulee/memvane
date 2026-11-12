@@ -511,14 +511,15 @@ class ContentIdentityTests(unittest.TestCase):
         db.execute('CREATE TABLE views(view_id TEXT PRIMARY KEY)')
         db.execute('CREATE TABLE wiki_blobs(blob_sha TEXT PRIMARY KEY)')
         db.execute('CREATE TABLE card_attestations(trust_digest TEXT, blob_sha TEXT, PRIMARY KEY(trust_digest,blob_sha))')
-        db.execute('CREATE TABLE s_generations(view_id TEXT, ordinal INTEGER, PRIMARY KEY(view_id,ordinal))')
+        db.execute('CREATE TABLE s_generations(view_id TEXT, ordinal INTEGER, prior_ordinal INTEGER, '
+                   'PRIMARY KEY(view_id,ordinal))')
         db.execute('CREATE TABLE s_source_observations(observation_id TEXT PRIMARY KEY)')
         for sql in [*view_schema.row_card_statements(), *view_schema.row_delta_statements()]:
             db.execute(sql)
         view, old_blob, new_blob = 'a' * 64, 'b' * 64, 'c' * 64
         db.execute('INSERT INTO views VALUES (?)', (view,))
         db.executemany('INSERT INTO wiki_blobs VALUES (?)', [(old_blob,), (new_blob,)])
-        db.execute('INSERT INTO s_generations VALUES (?,?)', (view, 2))
+        db.execute('INSERT INTO s_generations VALUES (?,?,?)', (view, 2, 1))
         old = dict(path='a.md', blob_sha=old_blob, title='A', eligible=0, trust_digest=None, metadata_json='{}')
         new = dict(old, blob_sha=new_blob, title='B')
         db.execute('''INSERT INTO s_cards(view_id,path,gen_from,blob_sha,title,eligible,trust_digest,metadata_json)

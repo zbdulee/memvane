@@ -513,6 +513,10 @@ class RowsMixin:
             if row['eligible']:
                 if row['trust_digest'] is None:
                     v.fail('card_trust_mismatch')
+                if row['blob_sha'] not in cache:
+                    # One admitted read per body: the attestation check reuses it.
+                    cache[row['blob_sha']] = self._blob(row['blob_sha'], cache=checked)
+                    checked['blobs'].add(row['blob_sha'])
                 spec = self._attestation(row['trust_digest'], cache=checked)
                 if spec['blob_sha'] != row['blob_sha'] or spec['policy_digest'] != handle.policy_digest:
                     v.fail('card_trust_mismatch')
