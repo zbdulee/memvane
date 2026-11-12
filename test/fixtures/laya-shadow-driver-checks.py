@@ -977,28 +977,6 @@ class DriverChecks(unittest.TestCase):
                 self.assertEqual(len(proofs), 2 if closed == held else 3, observed)
         print('pre_proof_wal', sys.version_info[:2], observed, flush=True)
 
-    def parity_limits(self, overflow, error=lambda: IndexContractError('reader_snapshot_deadline'),
-                      spend=True):
-        """Patch the parity page capture: a page above ``overflow`` members fails with ``error()``.
-
-        With ``spend`` the page's own step deadline has run out first (the
-        wait ends at that deadline, nothing is timed); without it the code
-        surfaces while the page still has budget.
-        """
-        M, limits, real = self.M, [], self.M.capture_wiki_bytes
-
-        def capture(*args, **kwargs):
-            limit = kwargs.get('_page_limit')
-            if limit is not None:
-                limits.append(limit)
-                if limit > overflow:
-                    if spend:
-                        while time.monotonic() < kwargs['deadline']:
-                            time.sleep(min(.05, max(0, kwargs['deadline'] - time.monotonic())))
-                    raise error()
-            return real(*args, **kwargs)
-        return limits, mock.patch.object(M, 'capture_wiki_bytes', capture)
-
     def to_parity(self, seed, case):
         """Drive passes until the next step is a recall parity page (nothing of it runs)."""
         W, M = self.W, self.M
@@ -1009,98 +987,38 @@ class DriverChecks(unittest.TestCase):
                 return
         self.fail('parity stage not reached')
 
-    def test_parity_page_timeouts_shrink_only_when_the_page_budget_ran_out(self):
-        # Codex r1 #9: a spent page budget surfaces as several codes (the
-        # candidate pin/capture/search ``fts_deadline_exceeded``, a lookup
-        # turned ``migration_recall_probe_unproved``); each shrinks the page.
-        # A proof failure, or a timeout code before the page budget ran out,
-        # keeps its code and shrinks nothing.
+    def test_parity_page_timeouts_preserve_existing_cursor(self):
+        # A one-member sample is the minimum work unit: deadline failures
+        # must not mutate its cursor or reinterpret the new version marker.
         import laya_blob_values as values
         seed, case = self.seeded()
         W, M = self.W, self.M
-        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
-        absent.start()
-        self.addCleanup(absent.stop)
-
-        def probe_from(cause):
-            try:
-                raise cause
-            except ValueError as exc:
-                try:
-                    raise IndexContractError('migration_recall_probe_unproved') from exc
-                except IndexContractError as outer:
-                    return outer
-        def binding_changed():
-            # The view store reports any CheckoutUnavailable as its timeout code.
-            from laya_checkout_view import CheckoutUnavailable
-            try:
-                raise CheckoutUnavailable('repository_binding_changed')
-            except CheckoutUnavailable:
-                try:
-                    values.fail('fts_deadline_exceeded')
-                except values.BlobStoreError as exc:
-                    return exc
-        cases = (
-            ('proof failure', lambda: IndexContractError('migration_recall_probe_unproved'), True, None),
-            ('budget left', lambda: values.BlobStoreError('fts_deadline_exceeded'), False, None),
-            ('checkout changed', binding_changed, True, None),
-            ('pin timeout', lambda: values.BlobStoreError('fts_deadline_exceeded'), True, 2),
-            ('probe timeout', lambda: probe_from(values.BlobStoreError('fts_deadline_exceeded')), True, 1),
-        )
-        observed = []
-        with self.authority(seed, case):
+        with self.authority(seed, case), mock.patch.object(W, 'SHADOW_STEPS_PER_PASS', 1):
             self.to_parity(seed, case)
-            for name, error, spend, size in cases:
-                before = (self.intent(case).get('parity') or {}).get('page_members', M._PARITY_MEMBERS)
-                limits, patched = self.parity_limits(0, error, spend)
-                with patched, mock.patch.object(W, 'SHADOW_STEPS_PER_PASS', 1):
+            self.assertNotEqual(W.shadow_pass(case.project)['state'], 'error')
+            before = self.intent(case)['parity']
+            for error in (IndexContractError('reader_snapshot_deadline'),
+                          values.BlobStoreError('fts_deadline_exceeded'),
+                          IndexContractError('migration_recall_probe_unproved')):
+                with mock.patch.object(M, '_candidate_sample', side_effect=error):
                     status = W.shadow_pass(case.project)
-                after = (self.intent(case).get('parity') or {}).get('page_members', M._PARITY_MEMBERS)
-                observed.append((name, status['state'], status['reason'], limits, before, after))
-        print('parity_timeout_cases', observed, flush=True)
-        for (name, state, reason, limits, before, after), (_, _, _, size) in zip(observed, cases):
-            self.assertEqual(limits, [before], observed)
-            if size is None:
-                self.assertEqual((state, after), ('error', before), observed)
-                self.assertNotEqual(reason, None, observed)
-            else:
-                self.assertEqual((state, after), ('progressed', size), observed)
-        self.assertEqual([o[2] for o in observed[:3]],
-                         ['migration_recall_probe_unproved', 'fts_deadline_exceeded', 'fts_deadline_exceeded'],
-                         observed)
+                self.assertEqual(status['state'], 'error', status)
+                self.assertEqual(status['reason'], str(error), status)
+                self.assertEqual(self.intent(case)['parity'], before)
+                self.assertGreaterEqual(before['page_members'], 4)
 
-    def test_parity_page_that_compared_but_ran_out_before_its_cursor_write_retries_smaller(self):
-        # Codex r2: the compare succeeds, then the page's step deadline runs
-        # out in the locked recheck before the cursor write. That spent page
-        # budget shrinks the page like one inside the compare.
-        seed, case = self.seeded()
-        W, M = self.W, self.M
-        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
-        absent.start()
-        self.addCleanup(absent.stop)
-        real, sizes = M.compare_recall_corpus, []
-
-        def compared(*args, **kwargs):
-            page = real(*args, **kwargs)
-            size = kwargs.get('page_members') or M._PARITY_MEMBERS
-            sizes.append(size)
-            if size > 1:
-                while time.monotonic() < kwargs['deadline']:
-                    time.sleep(min(.05, max(0, kwargs['deadline'] - time.monotonic())))
-            return page
-        statuses = []
-        with self.authority(seed, case), mock.patch.object(M, 'compare_recall_corpus', compared):
-            for _ in range(16):
-                status = W.shadow_pass(case.project)
-                statuses.append((status['state'], status['reason']))
-                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
-                    break
-        print('parity_after_compare_sizes', sizes, flush=True)
-        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', statuses)
-        self.assertEqual(sizes[:3], [M._PARITY_MEMBERS, 2, 1], sizes)
-        self.assertNotIn('error', [state for state, _ in statuses], statuses)
-        parity = self.intent(case)['parity']
-        self.assertEqual((parity['page_members'], parity['pages']), (1, parity['members']))
+    def test_parity_deadline_after_sample_preserves_existing_cursor(self):
+        # The targeted parity fixture injects the deadline at the locked
+        # cursor write and verifies that neither cursor nor marker changes.
+        spec = importlib.util.spec_from_file_location('driver_parity_deadline',
+            HERE / 'laya-parity-replacement-checks.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        check = module.ParityReplacementChecks(
+            'test_deadline_before_cursor_write_never_reinterprets_marker')
+        result = unittest.TestResult()
+        check.run(result)
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
 
     def test_parity_seal_deadline_retry_reports_its_reason_and_rewakes_within_the_streak(self):
         # Codex r1 #11: a step-deadline retry at the seal reached the driver
@@ -1131,49 +1049,31 @@ class DriverChecks(unittest.TestCase):
             record = json.loads((case.state / W.SHADOW_ACTIVATION).read_text(encoding='utf8'))
             self.assertEqual(record['rewake_errors'], 0)
 
-    def test_parity_page_that_misses_its_deadline_retries_smaller(self):
+    def test_parity_sample_search_deadline_preserves_existing_cursor(self):
         seed, case = self.seeded()
         W, M = self.W, self.M
-        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
-        absent.start()
-        self.addCleanup(absent.stop)
-        limits, patched = self.parity_limits(1)
-        statuses = []
-        with self.authority(seed, case), patched:
-            for _ in range(16):
+        views = importlib.import_module('laya_view_store')
+        with self.authority(seed, case), mock.patch.object(W, 'SHADOW_STEPS_PER_PASS', 1):
+            self.to_parity(seed, case)
+            self.assertNotEqual(W.shadow_pass(case.project)['state'], 'error')
+            before = self.intent(case)['parity']
+            with mock.patch.object(views.ViewStore, 'search',
+                                   side_effect=IndexContractError('reader_snapshot_deadline')):
                 status = W.shadow_pass(case.project)
-                statuses.append((status['state'], status['reason'], status['stages']))
-                if (self.intent(case) or {}).get('migration_state') == 'shadow_verified':
-                    break
-        print('parity_page_limits', limits, flush=True)
-        self.assertEqual(self.intent(case)['migration_state'], 'shadow_verified', statuses)
-        self.assertEqual(limits[:3], [M._PARITY_MEMBERS, 2, 1], limits)
-        self.assertEqual(set(limits[2:]), {1}, limits)
-        self.assertNotIn('error', [state for state, _, _ in statuses], statuses)
-        parity = self.intent(case)['parity']
-        self.assertEqual((parity['page_members'], parity['compared']), (1, True))
-        # Every page after the shrink advanced the cursor: one page per member.
-        self.assertEqual(parity['pages'], parity['members'])
-        self.assertEqual(len(limits) - 2, parity['pages'])
+            self.assertEqual((status['state'], status['reason']), ('error', 'reader_snapshot_deadline'))
+            self.assertEqual(self.intent(case)['parity'], before)
 
-    def test_parity_page_of_one_member_that_misses_its_deadline_stays_an_error(self):
+    def test_first_parity_sample_deadline_keeps_no_record(self):
         seed, case = self.seeded()
         W, M = self.W, self.M
-        absent = mock.patch.object(M, 'advance_reader_ready', None, create=True)
-        absent.start()
-        self.addCleanup(absent.stop)
-        limits, patched = self.parity_limits(0)
-        statuses = []
-        with self.authority(seed, case), patched:
-            for _ in range(16):
+        with self.authority(seed, case), mock.patch.object(W, 'SHADOW_STEPS_PER_PASS', 1):
+            self.to_parity(seed, case)
+            before = self.intent(case).get('parity')
+            with mock.patch.object(M, '_candidate_sample',
+                                   side_effect=IndexContractError('reader_snapshot_deadline')):
                 status = W.shadow_pass(case.project)
-                statuses.append((status['state'], status['reason']))
-                if status['state'] == 'error':
-                    break
-        self.assertEqual(statuses[-1], ('error', 'reader_snapshot_deadline'), statuses)
-        self.assertEqual(limits, [M._PARITY_MEMBERS, 2, 1], limits)
-        parity = self.intent(case)['parity']
-        self.assertEqual((parity['page_members'], parity['pages'], parity['cursor']), (1, 0, None))
+            self.assertEqual((status['state'], status['reason']), ('error', 'reader_snapshot_deadline'))
+            self.assertEqual(self.intent(case).get('parity'), before)
 
     def test_vector_and_checkout_deadlines_are_migration_reasons(self):
         seed, case = self.seeded()
@@ -1263,4 +1163,5 @@ class DriverChecks(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    print('python-executable=%s python-version=%s' % (sys.executable, sys.version.split()[0]), flush=True)
     unittest.main(verbosity=2)

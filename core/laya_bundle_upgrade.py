@@ -115,6 +115,7 @@ BUNDLE_PATH_KEYS = frozenset(('providerPath', 'workerPath'))
 REFUSALS = frozenset((
     'provider_changed_rebuild_required', 'older_host_bundle',
     'marketplace_source_unavailable', 'marketplace_source_commit_mismatch',
+    'executing_bundle_unproved',
     'marketplace_source_dirty', 'host_layout_unknown',
     'qmd_origin_detach_required', 'installed_bundle_content_changed',
     'laya_embed_runtime_source_unavailable',
@@ -727,12 +728,20 @@ def _read_attestation(state):
 
 def _seal_companion(identity, root):
     """Same exact bundle in another host cache: seal it, change no route."""
-    from laya_product_bundle import inspect_full_plugin_candidate, seal_companion_host_copy
+    from laya_product_bundle import (BundleEvidenceError, inspect_full_plugin_candidate,
+                                     seal_companion_host_copy)
     owner = inspect_full_plugin_candidate(identity['pluginRoot'])
     if any(owner[key] != identity[key] for key in
            ('sourceCommit', 'bundleManifestSha256', 'vectorProfile')):
         _refuse('companion_owner_changed')
-    seal_companion_host_copy(owner['pluginRoot'], root)
+    if owner['ownershipManifestSha256'] != identity.get('ownershipManifestSha256'):
+        _refuse('companion_owner_changed')
+    try:
+        seal_companion_host_copy(owner['pluginRoot'], root, expected_owner=owner)
+    except BundleEvidenceError as exc:
+        if str(exc) == 'companion_owner_changed':
+            _refuse('companion_owner_changed')
+        raise
     return {'status': 'companion_sealed'}
 
 
@@ -854,6 +863,21 @@ def upgrade_install(project_root, state, root, home=None):
     if qmd_ledger_present(state):
         _refuse(QMD_ORIGIN_DETACH_REQUIRED)
     commit = installed_commit(root, home)
+    if commit is None:
+        # An unrecorded host copy cannot borrow the marketplace HEAD as its
+        # own commit. Only an exact copy of the selected owner can join it.
+        if not fenced and not same_root and kind != 'inactive':
+            from laya_product_bundle import BundleEvidenceError
+            try:
+                return {**_seal_companion(identity, root), 'kind': kind}
+            except (BundleEvidenceError, UpgradeRefused):
+                pass
+        if kind == 'active':
+            # Preserve the existing actionable deferral when an old Hermes
+            # copy also prevents this owner switch.
+            from laya_journal_v4 import refuse_while_legacy_hermes
+            refuse_while_legacy_hermes(home)
+        _refuse('executing_bundle_unproved')
     if (not fenced and not same_root and commit is not None and commit == identity['sourceCommit'] and
             kind != 'inactive'):
         try:
@@ -872,7 +896,10 @@ def upgrade_install(project_root, state, root, home=None):
         # earlier plugin id's Hermes copy cannot read.
         from laya_journal_v4 import refuse_while_legacy_hermes
         refuse_while_legacy_hermes(home)
+    installed_proof = commit
     source, commit = select_source(root, home)
+    if commit != installed_proof or installed_commit(root, home) != installed_proof:
+        _refuse('executing_bundle_unproved')
     _not_older(source, identity['sourceCommit'], commit,
                bound_root=identity['pluginRoot'], root=root)
     old = (laya_active_upgrade.recovery_attestation(project_root, state) if fenced
@@ -1084,6 +1111,34 @@ def _project_states(project, home):
     return found
 
 
+def _failure_trace(project, state, reason, exc):
+    """Fields linking a failed bundle step to an opt-in detailed diagnostic.
+
+    Only a candidate route of this exact project whose journal lives in this
+    exact install may carry the diagnostic; anything else (unproved, blocked,
+    another install, or a route lookup failure) is ``trace_unavailable`` and
+    records nothing. Never raises and never changes the upgrade result.
+    """
+    try:
+        from laya_index_host_route import select_route
+        decision = select_route(str(project), action='update')
+        journal = decision.get('journalPath') if isinstance(decision, dict) else None
+        if (not isinstance(decision, dict) or decision.get('state') != 'candidate'
+                or decision.get('projectRoot') != str(project)
+                or not isinstance(journal, str)
+                or Path(journal).parent != Path(state)):
+            return {'trace_unavailable': True}
+    except Exception:
+        return {'trace_unavailable': True}
+    try:
+        import diagnostic_trace
+        diagnostic_id = diagnostic_trace.capture(decision, event='bundle.upgrade',
+                                                 reason=reason, exc=exc)
+    except Exception:
+        diagnostic_id = None
+    return {'diagnostic_id': diagnostic_id} if diagnostic_id else {}
+
+
 def run(project_root, *, root=None, home=None):
     """Worker: upgrade every install of one project, one state root at a time.
 
@@ -1215,6 +1270,7 @@ def run(project_root, *, root=None, home=None):
                                   status='refused' if reason in REFUSALS else 'failed',
                                   executingRoot=str(root), attempts=attempts,
                                   reason=reason, **extra)
+                    diagnostic.update(_failure_trace(project, state, reason, exc))
             _event(state, 'bundle.upgrade', result.get('status'), result.get('reason'),
                    ms=(time.monotonic() - started) * 1000, kind=result.get('kind'),
                    attempt=attempts, operation=operation,

@@ -728,7 +728,7 @@ class WorkerReproof(ReproofBase):
                     'vectorProfile': self.old_att['vectorProfile']}
         with mock.patch.object(auto, 'installs', return_value=[state]), \
              mock.patch.object(auto, 'classify', return_value=('active', identity)), \
-             mock.patch.object(auto, 'installed_commit', return_value=None), \
+             mock.patch.object(auto, 'installed_commit', return_value='2' * 40), \
              mock.patch.object(auto, 'select_source',
                                return_value=(self.base / 'source', '2' * 40)), \
              mock.patch.object(auto, '_not_older'), \

@@ -1378,8 +1378,8 @@ def wait_for_release(*args,**kwargs):
     reported=[]
     def observed_sleep(seconds):
         if not reported:
-            print(json.dumps({'checkpoint':'socket-wait'}),flush=True)
             reported.append(True)
+            checkpoint('socket-wait')
         return real_sleep(seconds)
     with mock.patch.object(resident.time,'sleep',side_effect=observed_sleep):
         return real_wait(*args,**kwargs)

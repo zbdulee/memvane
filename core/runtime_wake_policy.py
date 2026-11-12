@@ -226,6 +226,11 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
         if isinstance(done, Dropped):
             return {'ack': True, 'due': now, 'reason': None, 'count': 0, 'drop': done.reason}
         return {'ack': True, 'due': now, 'reason': None, 'count': 0}
+    if (kind == 'laya-compile' and isinstance(error, DispatchFailure)
+            and error.code == 'target_deferred'
+            and error.detail == 'deferred:deferred:owner_busy'):
+        return {'ack': False, 'due': now + retry_delay(attempts),
+                'reason': failure_reason(error), 'count': 0}
     if isinstance(error, DispatchFailure) and error.code in UNCOUNTED_DISPATCH_REASONS:
         step = {'ack': False, 'due': now + PREPARING_RETRY_SECS,
                 'reason': failure_reason(error), 'count': 0}

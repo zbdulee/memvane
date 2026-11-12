@@ -191,14 +191,15 @@ class WorkerBase(Base):
         super().setUp()
         self.root = self.claude_root()
         self.old_identity = {'pluginRoot': '/old', 'sourceCommit': '1' * 40,
-                             'bundleManifestSha256': 'a' * 64, 'vectorProfile': PROFILE}
+                             'bundleManifestSha256': 'a' * 64,
+                             'ownershipManifestSha256': '7' * 64, 'vectorProfile': PROFILE}
         self.attestation = {'providerManifest': manifest('/old'), 'vectorProfile': PROFILE,
                             'dependencyClosure': []}
         self.reviewed = {'proposalSha256': '9' * 64, 'reviewedProvider': {
             'vectorProfile': PROFILE, 'dependencyClosure': [],
             'providerManifest': manifest(str(self.root))}}
 
-    def run_worker(self, kind='active', reviewed=None, installed=None, active=None):
+    def run_worker(self, kind='active', reviewed=None, installed='2' * 40, active=None):
         import laya_active_upgrade
         import laya_bound_upgrade
         import laya_inactive_upgrade
@@ -214,7 +215,7 @@ class WorkerBase(Base):
              mock.patch.object(auto, 'classify', return_value=(kind, self.old_identity)), \
              mock.patch.object(auto, 'installed_commit', return_value=installed), \
              mock.patch.object(auto, 'select_source',
-                               return_value=(self.base / 'source', '2' * 40)), \
+                               return_value=(self.base / 'source', installed or '2' * 40)), \
              mock.patch.object(auto, '_not_older'), \
              mock.patch.object(auto, '_read_attestation', return_value=self.attestation), \
              mock.patch.object(auto, '_mark_sealed_for_rescan') as rescan, \
@@ -234,6 +235,35 @@ class WorkerBase(Base):
 
 
 class WorkerChecks(WorkerBase):
+    def test_unrecorded_noncompanion_preserves_legacy_hermes_deferral(self):
+        (self.home / '.hermes' / 'plugins' / 'qmd-auto-context').mkdir(parents=True)
+        results, calls, _rescan, wake = self.run_worker('active', installed=None)
+        self.assertEqual((results[0]['status'], results[0]['reason']),
+                         ('deferred', 'legacy_hermes_copy_present'))
+        self.assertEqual(calls, {})
+        wake.assert_not_called()
+
+    def test_unrecorded_proven_companion_does_not_require_hermes_removal(self):
+        (self.home / '.hermes' / 'plugins' / 'qmd-auto-context').mkdir(parents=True)
+        with mock.patch.object(auto, '_seal_companion',
+                               return_value={'status': 'companion_sealed'}):
+            results, calls, _rescan, wake = self.run_worker('active', installed=None)
+        self.assertEqual(results[0]['status'], 'companion_sealed')
+        self.assertEqual(calls, {})
+        wake.assert_not_called()
+
+    def test_already_activated_intent_finishes_before_host_record_is_required(self):
+        import laya_active_upgrade
+        with mock.patch.object(auto, 'classify', return_value=('active', self.old_identity)), \
+             mock.patch.object(laya_active_upgrade, 'upgrade_fenced', return_value=True), \
+             mock.patch.object(laya_active_upgrade, 'finish_activated',
+                               return_value={'status': 'active_upgrade_complete'}) as finish, \
+             mock.patch.object(auto, 'installed_commit', side_effect=AssertionError('unexpected lookup')):
+            result = auto.upgrade_install(self.project, self.state, self.root, self.home)
+        self.assertEqual(result, {'status': 'active_upgrade_complete', 'kind': 'active'})
+        finish.assert_called_once_with(project_root=str(self.project), state_root=str(self.state),
+                                       requested_root=str(self.root))
+
     def test_bridge_preflight_failure_has_bounded_stage_and_host(self):
         error = ValueError('reader_hosts_pending')
         error.bridge_stage, error.bridge_host = 'observe_host', 'codex'
@@ -304,13 +334,26 @@ class WorkerChecks(WorkerBase):
     def test_same_commit_in_other_host_cache_is_sealed_as_companion(self):
         import laya_product_bundle as bundle
         owner = {'pluginRoot': '/old', 'sourceCommit': '1' * 40,
-                 'bundleManifestSha256': 'a' * 64, 'vectorProfile': PROFILE}
+                 'bundleManifestSha256': 'a' * 64,
+                 'ownershipManifestSha256': '7' * 64, 'vectorProfile': PROFILE}
         with mock.patch.object(bundle, 'inspect_full_plugin_candidate', return_value=owner), \
              mock.patch.object(bundle, 'seal_companion_host_copy') as seal:
             results, calls, _rescan, _wake = self.run_worker('active', installed='1' * 40)
         self.assertEqual(results[0]['status'], 'companion_sealed')
-        seal.assert_called_once_with('/old', self.root)
+        seal.assert_called_once_with('/old', self.root, expected_owner=owner)
         self.assertEqual(calls, {})
+
+    def test_legacy_companion_identity_without_ownership_digest_refuses(self):
+        import laya_product_bundle as bundle
+        owner = dict(self.old_identity)
+        del self.old_identity['ownershipManifestSha256']
+        with mock.patch.object(bundle, 'inspect_full_plugin_candidate', return_value=owner), \
+             mock.patch.object(bundle, 'seal_companion_host_copy') as seal:
+            results, calls, _rescan, _wake = self.run_worker('active', installed='1' * 40)
+        self.assertEqual((results[0]['status'], results[0]['reason']),
+                         ('refused', 'companion_owner_changed'))
+        self.assertEqual(calls, {})
+        seal.assert_not_called()
 
 
     def test_install_held_by_other_host_copy_of_older_release_moves_here(self):
@@ -576,6 +619,72 @@ class CrossHostWorkerChecks(Base):
         self.assertEqual(result['status'], 'active_upgrade_complete', result)
         self.assertEqual((calls[0]['plugin_root'], calls[0]['commit_id']),
                          (str(root), self.newer))
+
+    def test_host_record_disappears_between_proof_and_source_selection(self):
+        bound = self.codex('0.44.14', self.older)
+        root = self.claude('0.44.15', self.newer)
+        source = self.home / '.claude' / 'plugins' / 'marketplaces' / 'mkt'
+        git(self.upstream, 'commit', '--allow-empty', '-q', '-m', 'same tree, new commit')
+        later = git(self.upstream, 'rev-parse', 'HEAD')
+        git(source, 'fetch', '-q', 'origin')
+        git(source, 'checkout', '-q', later)
+        self.assertEqual(git(source, 'rev-parse', self.newer + '^{tree}'),
+                         git(source, 'rev-parse', later + '^{tree}'))
+        with mock.patch.object(auto, 'installed_commit', side_effect=[self.newer, None]):
+            result, calls = self.run_from(root, bound, self.older)
+        self.assertEqual(result['status'], 'refused', result)
+        self.assertEqual(calls, [])
+
+    def test_host_record_missing_with_unchanged_source_still_refuses(self):
+        bound = self.codex('0.44.14', self.older)
+        root = self.claude('0.44.15', self.newer)
+        with mock.patch.object(auto, 'installed_commit', side_effect=[self.newer, None, None]):
+            result, calls = self.run_from(root, bound, self.older)
+        self.assertEqual((result['status'], result.get('reason')),
+                         ('refused', 'executing_bundle_unproved'))
+        self.assertEqual(calls, [])
+
+    def test_host_record_changed_during_source_selection_refuses(self):
+        bound = self.codex('0.44.14', self.older)
+        root = self.claude('0.44.15', self.newer)
+        with mock.patch.object(auto, 'installed_commit', side_effect=[self.newer, self.older]):
+            result, calls = self.run_from(root, bound, self.older)
+        self.assertEqual((result['status'], result.get('reason')),
+                         ('refused', 'marketplace_source_commit_mismatch'))
+        self.assertEqual(calls, [])
+
+    def test_stale_unrecorded_claude_cache_cannot_take_newer_codex_install(self):
+        # A stale process retains the old root while Claude's current host
+        # record and its marketplace source both name the newer release.
+        import sqlite3
+        print(json.dumps({'python': sys.version, 'executable': sys.executable,
+                          'sqlite': sqlite3.sqlite_version}), flush=True)
+        bound = self.codex('0.44.16', self.newer)
+        root = self.claude('0.44.13', self.older)
+        source = self.home / '.claude' / 'plugins' / 'marketplaces' / 'mkt'
+        git(source, 'checkout', '-q', self.newer)
+        current_root = self.claude_root('0.44.16')
+        self.installed(current_root, self.newer)
+        self.assertIsNone(auto.installed_commit(root, self.home))
+        self.assertEqual(auto.bundle_version(root), '0.44.13')
+        self.assertEqual(auto.bundle_version(bound), '0.44.16')
+        self.assertEqual(auto.select_source(root, self.home), (source, self.newer))
+        result, calls = self.run_from(root, bound, self.newer)
+        import event_log
+        events = [row for row in event_log.read(self.state)
+                  if row['event'] == 'bundle.upgrade']
+        print(json.dumps({'case': 'unrecorded-stale-cache',
+                          'sourceMatchesBound': True,
+                          'hostRecordForOldRoot': False,
+                          'result': result.get('status'),
+                          'reason': result.get('reason'),
+                          'upgradeCalls': len(calls),
+                          'events': [row.get('outcome') for row in events]}), flush=True)
+        # `started` only records worker entry; the gate must refuse before
+        # invoking any actual owner switch for the stale executing bundle.
+        self.assertEqual((result['status'], result.get('reason')),
+                         ('refused', 'executing_bundle_unproved'))
+        self.assertEqual(calls, [])
 
     def test_newer_codex_bundle_upgrades_a_route_bound_to_claude(self):
         bound = self.claude_root('0.37.1')

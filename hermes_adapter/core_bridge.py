@@ -155,6 +155,49 @@ def _map_edit_tool(tool_name: str, args: Any) -> Optional[Tuple[str, Dict[str, A
     return None
 
 
+def _log_recall_failure(decision: Any, exc: BaseException) -> None:
+    """One host=hermes event for an unexpected selected-recall failure.
+
+    Skipped when a core boundary already logged ``exc``. The diagnostic is
+    captured only through the selected decision's own consent check; the
+    prompt is never recorded. Never raises and never changes the answer.
+    """
+    if getattr(exc, "_memvane_event_logged", False) or not isinstance(decision, dict):
+        return
+    token = None
+    try:
+        import event_log
+        import diagnostic_trace
+        token = event_log.bind(decision=decision, host="hermes")
+        reason = None
+        try:
+            from laya_host_response import _refusal_code
+            reason = _refusal_code(exc)
+        except Exception:
+            reason = "unexpected_exception"
+        try:
+            diagnostic_id = diagnostic_trace.capture(
+                decision, event="recall.selected", reason=reason, exc=exc)
+        except Exception:
+            diagnostic_id = None
+        fields = {"diagnostic_id": diagnostic_id} if diagnostic_id else {}
+        event_log.emit("recall.selected", outcome="failed", reason=reason,
+                       decision=decision, host="hermes", **fields)
+        try:
+            exc._memvane_event_logged = True
+        except Exception:
+            pass
+    except Exception:
+        pass
+    finally:
+        if token is not None:
+            try:
+                import event_log
+                event_log.unbind(token)
+            except Exception:
+                pass
+
+
 def recall_context(
     user_message: str = "",
     cwd: Optional[str] = None,
@@ -163,6 +206,7 @@ def recall_context(
     """Hermes pre_llm_call hook: inject selected Laya recall context into this turn."""
     selected_route = False
     route_state = None
+    decision = None
     try:
         if _is_noop_env():
             return None
@@ -222,6 +266,7 @@ def recall_context(
         # A selected route must make proof or search failure visible to the host.
         # Rechecking is read-only; even if the marker changes, no QMD path ran.
         if selected_route:
+            _log_recall_failure(decision, exc)
             try:
                 from laya_host_response import _upgrade_recall_notice, _refusal_code
                 selected_cwd = _cwd(cwd, **kwargs)

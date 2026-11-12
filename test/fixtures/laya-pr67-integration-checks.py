@@ -722,9 +722,12 @@ class Pr67IntegrationChecks(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('pr67_bundle_upgrade', ROOT / 'core' / 'laya_bundle_upgrade.py')
         real = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(real)
-        with lifecycle.Lifecycle.upgrade_authority(self.u10, new):
+        with lifecycle.Lifecycle.upgrade_authority(self.u10, new), \
+                mock.patch.object(real, 'installed_commit', return_value=target['sourceCommit']) as installed, \
+                mock.patch.object(real, 'select_source', side_effect=AssertionError('restored route reached review')):
             with self.assertRaisesRegex(real.UpgradeRefused, '^active_upgrade_restored$'):
                 real.upgrade_install(case.project, case.state, new, home=case.home)
+        installed.assert_called_once_with(new, case.home)
         self.assertIn('active_upgrade_restored', auto.REFUSALS)
         self.assertFalse(fresh.upgrade_fenced(str(case.project)))
         self.assertEqual((ledger_path.read_bytes(), case.journal.read_bytes()), (ledger_before, bytes_before))

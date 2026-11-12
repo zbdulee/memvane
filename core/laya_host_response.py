@@ -409,6 +409,51 @@ def _write_selection_log(project_root, reason: str, entries: list, **fields) -> 
         trace['fields'].update(fields)
     except Exception:
         pass
+    if isinstance(reason, str) and (reason in _SELECTOR_WARNINGS or
+                                    reason.startswith('laya_vector_')):
+        diagnostic_id = _trace_capture(trace, reason, warning=True)
+        if diagnostic_id is not None:
+            try:
+                trace['fields'].setdefault('diagnostic_ids', []).append(diagnostic_id)
+            except Exception:
+                pass
+
+
+# Fallback notes that are diagnostic warnings (origin stack, no exception).
+# Normal outcomes such as ``no_candidates`` are not warnings.
+_SELECTOR_WARNINGS = frozenset(('laya_selector_invalid_pool',
+                                'laya_selector_candidate_invalid',
+                                'laya_selector_candidate_unavailable',
+                                'laya_selector_selector_unavailable'))
+_MAX_DIAGNOSTICS = 4  # warning captures per hook; preserve a final exception too
+
+
+def _trace_capture(trace, reason, *, exc=None, warning=False):
+    """Record one detailed diagnostic for this scope; never raises.
+
+    Consent is decided once per scope from the scope's own route decision
+    (``diagnostic_trace.capture`` re-checks it right before writing), so an
+    off install pays one settings read and nothing else.
+    """
+    try:
+        diag = trace.get('diag')
+        if diag is None or (exc is None and diag['count'] >= _MAX_DIAGNOSTICS):
+            return None
+        import diagnostic_trace
+        if diag['enabled'] is None:
+            diag['enabled'] = diagnostic_trace.enabled(diag['decision']) is True
+        if not diag['enabled']:
+            return None
+        diag['count'] += 1
+        token = event_log.bind(decision=diag['decision'], host=diag['host'],
+                               session=diag['session'])
+        try:
+            return diagnostic_trace.capture(diag['decision'], event=diag['action'],
+                                            reason=reason, exc=exc, warning=warning)
+        finally:
+            event_log.unbind(token)
+    except Exception:  # noqa: BLE001 - diagnostics never alter the hook result
+        return None
 
 
 # The event trace of the hook call in progress (one ``events.jsonl`` line).
@@ -443,13 +488,18 @@ def _event_scope(action: str, host: str, decision, payload):
     if outer is not None:
         yield outer
         return
-    trace = {'notes': [], 'fields': {}, 'final': None, 'outcome': None, 'reason': None}
+    trace = {'notes': [], 'fields': {}, 'final': None, 'outcome': None, 'reason': None,
+             'diag': {'decision': decision, 'action': action, 'host': host,
+                      'session': event_log.session_id(payload), 'enabled': None, 'count': 0}}
     token = _TRACE.set(trace)
     started = time.monotonic()
     try:
         yield trace
     except Exception as exc:
         trace['outcome'], trace['reason'] = 'refused', _refusal_code(exc)
+        diagnostic_id = _trace_capture(trace, trace['reason'], exc=exc)
+        if diagnostic_id is not None:
+            trace['fields']['diagnostic_id'] = diagnostic_id
         try:
             exc._memvane_event_logged = True
         except Exception:
@@ -2303,8 +2353,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action == "gate":
             if host == "hermes":
                 return {"action": "continue"}
-            return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                           "permissionDecision": "allow"}}
+            return {}
         return {}  # Explicit observer/no-hint PostToolUse; index owns durable sync.
     if action in ("update", "update-queued", "index", "file-change-event"):
         # A successful agent Bash (git switch/pull, rm, mv) may change any
@@ -2581,8 +2630,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
             _fail('selected_proof_changed')
         if host == 'hermes':
             return {'action': 'continue'}
-        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                                       'permissionDecision': 'allow'}}
+        return {}
     # posttool/compile/index/file-change-event: nothing is
     # queued while the bundle is pending. The post-upgrade full scan covers it.
     if verify_selected_route_read_only(decision) != proof:
@@ -2727,8 +2775,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     if action == 'gate':
         if host == 'hermes':
             return {'action': 'continue'}
-        return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                                       'permissionDecision': 'allow'}}
+        return {}
     # posttool/compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.
     return {}

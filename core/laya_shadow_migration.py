@@ -37,8 +37,8 @@ MAX_BATCH_BYTES = 8 * 1024 * 1024
 #   snapshot across the build, so it runs on the caller's wall deadline,
 #   capped per source pass by ViewStore.prepare_generation. Its final source
 #   recheck reacquires both locks under a fresh _STEP_SECONDS deadline.
-# - Recall parity pages (compare_recall_corpus) hold no writer lock; each page
-#   is one pinned v6 snapshot under _STEP_SECONDS. Only the parity seal
+# - Recall parity samples hold no writer lock and use a pinned candidate
+#   generation under _STEP_SECONDS. Only the parity seal
 #   quiesces writers: it holds the installer, operation and sync owner locks
 #   (convert_reader_v5 order, without the provider lane) for at most
 #   _STEP_SECONDS, never waits for them, and reports the held time.
@@ -48,8 +48,7 @@ MAX_BATCH_BYTES = 8 * 1024 * 1024
 #   transaction ends with the proof and its idle connection closes after the
 #   step. The step's snapshots reuse it while the base store's file identity
 #   and head row hold (published_proof_reuse, shared across one driver pass).
-# - A recall parity page that misses its step deadline is retried from the
-#   same cursor at half the members (_shrink_parity_page), down to one.
+# - A sample that misses its deadline leaves the existing cursor unchanged.
 _STEP_SECONDS = 3.0
 # Writer-receipt catch-up (design 8.2-6) replays at most this many changed
 # paths per step; more changes take the full path/SHA recapture instead.
@@ -1617,7 +1616,7 @@ _DEFERRED_REASONS = frozenset(('migration_space_deferred',))
 _WAITING_REASONS = frozenset(reason for reason in _MIGRATION_REASONS if reason.startswith('switch_'))
 # Integer diagnostics a terminal event may carry (bounded; never text).
 _EVENT_FIELDS = ('needed_bytes', 'free_bytes', 'quiesce_ms', 'page_members',
-                 'capture_ms', 'pin_verify_ms', 'inspect_ms', 'members')
+                 'capture_ms', 'pin_verify_ms', 'inspect_ms', 'members', 'sampled', 'top_hits', 'hit_rate_bp')
 # One step's published-proof diagnostics (``advance_shadow``): the unlocked
 # preproof's code and ms, and whether the locked step reused a proof.
 _STEP_PROOF = ContextVar('laya_shadow_step_proof', default=None)
@@ -3126,9 +3125,8 @@ def compare_recall_corpus(store, generation, *, project, executing_root, after, 
             finally:
                 store.release(pin)
         except Exception as exc:
-            # A page whose step deadline ran out is retried smaller
-            # (_shrink_parity_page), wherever the timeout surfaced; any other
-            # failure, including a proof failure, keeps its own code.
+            # Keep the legacy corpus API's page-deadline classification;
+            # other failures, including proof failures, retain their code.
             if _page_deadline_spent(exc, page_deadline[0]):
                 raise _ParityPageDeadline() from exc
             raise
@@ -3355,12 +3353,6 @@ def _advance_shadow_step(store, *, project, executing_root, deadline, vector_spe
         if stage == 'parity_seal' and reason in _PARITY_SEAL_RETRY_REASONS:
             # The seal released the writer again; nothing was written.
             return {**step('retry', reread()), 'reason': reason}
-        if stage == 'parity' and isinstance(exc, _ParityPageDeadline):
-            shrunk = _shrink_parity_page(store, project, intent,
-                                         min(wall_deadline, time.monotonic() + _STEP_SECONDS), reason)
-            if shrunk is not None:
-                return step('parity_shrunk', shrunk)
-            raise
         if (not isinstance(exc, (IndexContractError, values.BlobStoreError))
                 or reason not in _SHADOW_RESTART_REASONS):
             raise
@@ -3370,23 +3362,14 @@ def _advance_shadow_step(store, *, project, executing_root, deadline, vector_spe
             store, project, intent, min(wall_deadline, time.monotonic() + _STEP_SECONDS), reason))
 
 
-# Recall parity (U5). Pages run lock-free: each compare_recall_corpus page is
-# one pinned v6 snapshot bound to the intent observation, so a writer commit
-# inside a page cannot change its result and a commit between pages fails the
-# next page (or the seal) as migration_snapshot_changed. A change restarts the
-# whole parity instead of only affected pages: it replaces the private head
-# (catch-up builds a new generation), and combined recall ranks every prompt
-# against the whole corpus, so one changed member can move any prompt. The
-# discarded work is counted (``attempt``, ``discarded_pages``). The record is
-# bound like ``vectors``: a restart replaces ``published`` and the record stops
-# applying without any restart path clearing it.
+# Recall parity reuses the source-derived inventory sealed into the candidate.
+# Each step samples at most one member of the same pinned candidate generation.
+# A final catch-up under the existing owner lock checks the current v6 source.
 _PARITY_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'observation',
                   'source_revision', 'vectors', 'cursor', 'pages', 'members', 'prompts',
                   'digest', 'compared', 'seal', 'attempt', 'discarded_pages')
-# A parity page that missed its step deadline is retried at half the members
-# (4 -> 2 -> 1) from the same cursor; the record keeps the smaller size as the
-# optional ``page_members`` (absent means _PARITY_MEMBERS). A page of one
-# member that still misses its deadline is an error, as before.
+# Values 4..14 mark the new domain and encode the number of top hits. Older
+# bundles accept only 1..3 and therefore refuse new intents and receipts.
 _PARITY_PAGE_KEY = 'page_members'
 # Seal outcomes that leave the intent unchanged and only ask for a later step.
 _PARITY_SEAL_RETRY_REASONS = frozenset(('sync_owner_busy',)) | _STEP_DEADLINE_REASONS
@@ -3398,7 +3381,7 @@ def _check_parity_record(record):
     import laya_view_values as view_values
     if _PARITY_PAGE_KEY in record:
         values.exact(record, _PARITY_RECORD + (_PARITY_PAGE_KEY,))
-        values.integer(record[_PARITY_PAGE_KEY], 1, _PARITY_MEMBERS - 1)
+        values.integer(record[_PARITY_PAGE_KEY], 1, 14)
     else:
         values.exact(record, _PARITY_RECORD)
     values.identifier(record['migration_id'], values.UUID)
@@ -3441,7 +3424,9 @@ def _complete_vectors(intent):
 def _bound_parity(intent):
     """The parity record bound to the current head, source and vectors, else None."""
     record, receipt = intent.get('parity'), intent.get('published')
-    if (record is None or receipt is None or record['migration_id'] != intent['migration_id']
+    if (record is None or receipt is None
+            or (intent['migration_state'] == 'caught_up' and record.get(_PARITY_PAGE_KEY, 0) < 4)
+            or record['migration_id'] != intent['migration_id']
             or record['generation'] != receipt['generation']
             or record['candidate_incarnation'] != receipt['candidate_incarnation']
             or record['observation'] != intent['observation']
@@ -3457,53 +3442,111 @@ def _initial_parity(intent):
     again = previous is not None and previous['migration_id'] == intent['migration_id']
     vectors = _complete_vectors(intent)
     # A restart of the same migration keeps a page size it already learned.
-    page = {_PARITY_PAGE_KEY: previous[_PARITY_PAGE_KEY]} if again and _PARITY_PAGE_KEY in previous else {}
+    page = {_PARITY_PAGE_KEY: 4}
     return {**page, 'migration_id': intent['migration_id'], 'generation': receipt['generation'],
             'candidate_incarnation': receipt['candidate_incarnation'],
             'observation': intent['observation'], 'source_revision': intent['source_revision'],
             'vectors': vectors, 'cursor': None, 'pages': 0, 'members': 0, 'prompts': 0,
             'compared': False, 'seal': None,
-            'digest': values.digest('memvane-shadow-recall-parity-v1', {
+            'digest': values.digest('memvane-shadow-recall-sample-v2', {
                 'migration': intent['migration_id'], 'published': receipt, 'vectors': vectors}),
             'attempt': previous['attempt'] + 1 if again else 1,
             'discarded_pages': previous['discarded_pages'] + previous['pages'] if again else 0}
 
 
-def _fold_parity(record, page):
+def _candidate_sample(store, intent, record, deadline):
+    """Use the source-derived inventory sealed when this candidate was built."""
     import laya_blob_values as values
-    if page['observation'] != record['observation']:
-        raise IndexContractError('migration_snapshot_changed')
-    if record['pages'] >= MAX_DOCS + 1:
-        raise IndexContractError('migration_membership_limit')
-    nxt = page['next']
-    digest = values.digest('memvane-shadow-recall-parity-page-v1', {
-        'previous': record['digest'], 'page': page['digest'],
-        'next': None if nxt is None else nxt['after']})
-    return {**record, 'cursor': nxt, 'pages': record['pages'] + 1,
-            'members': record['members'] + page['members'], 'prompts': record['prompts'] + page['prompts'],
-            'digest': digest, 'compared': nxt is None}
+    from laya_host_response import _hybrid_fts_queries, merge_incremental_rows
+    handle = store.capture_view(intent['worktree_id'], deadline=deadline)
+    pin = store.pin_view(handle, deadline=deadline, _observed=True)
+    try:
+        receipt = intent['published']
+        if (pin.gen_id != record['generation'] or pin.view_id != receipt['view_id']
+                or pin.epoch != receipt['epoch'] or pin.incarnation != receipt['candidate_incarnation']):
+            raise IndexContractError('migration_snapshot_changed')
+        with store._reading(deadline) as db:
+            generation, seal, _, stage = store._read_pinned(db, pin, deadline)
+            legacy = stage.get('legacy')
+            if (generation['state'] != 'published' or legacy is None
+                    or legacy.get('observation') != record['observation']
+                    or values.digest('memvane-read-pin-seal-v1', seal) != store._pinned(pin)['seal']):
+                raise IndexContractError('migration_snapshot_changed')
+            count = db.execute('SELECT count(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
+                               (pin.gen_id,)).fetchone()[0]
+            if count != len(legacy['paths']):
+                raise IndexContractError('migration_recall_parity_mismatch')
+            if record['pages'] and count != record['members']:
+                raise IndexContractError('migration_recall_parity_mismatch')
+            sampled = min(count, 10)
+            after = '' if record['cursor'] is None else record['cursor']['after']
+            member = db.execute('SELECT path,blob_sha,display_title FROM wiki_members '
+                                'WHERE gen_id=? AND eligible=1 AND path>? '
+                                'ORDER BY path COLLATE BINARY LIMIT 1', (pin.gen_id, after)).fetchone()
+            paired = 'sidecar_corpus' in legacy
+        prompt_hash, hit, next_cursor = None, False, None
+        if record['prompts'] < sampled:
+            if member is None:
+                raise IndexContractError('migration_recall_parity_mismatch')
+            path, blob, title = member
+            prompts = recall_corpus_prompts(path, store._blob(blob), title)
+            query = next((query for prompt in prompts
+                          for query in _hybrid_fts_queries(prompt, ()) if query), None)
+            if query is None:
+                raise IndexContractError('migration_recall_parity_mismatch')
+            prompt_hash = hashlib.sha256(query.encode('utf8')).hexdigest()
+            ranked = {}
+            for origin in (('base', 'sidecar') if paired else (None,)):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise IndexContractError('reader_snapshot_deadline')
+                found = store.search(pin, query, 10, deadline_seconds=min(remaining, 30),
+                                     _legacy_origin=origin, _observed=True)
+                ranked[origin] = [{**row, 'score': 1 / rank}
+                                  for rank, row in enumerate(found, 1)]
+            rows = (merge_incremental_rows(ranked['sidecar'], ranked['base'])[:10]
+                    if paired else ranked[None])
+            if not rows:
+                raise IndexContractError('migration_recall_parity_mismatch')
+            hit = any(row['path'] == path for row in rows)
+            if record['prompts'] + 1 < sampled:
+                next_cursor = {'after': path, 'observation': record['observation']}
+        try:
+            store._observe(store._pinned(pin)['entry'], deadline=deadline,
+                           timeout_reason='reader_snapshot_deadline')
+        except values.BlobStoreError as exc:
+            if exc.reason == 'checkout_changed':
+                raise IndexContractError('migration_checkout_changed') from exc
+            raise
+        digest = values.digest('memvane-shadow-recall-sample-page-v2', {
+            'previous': record['digest'], 'source_generation': record['source_revision']['generation'],
+            'count': count, 'prompt': prompt_hash})
+        return {**record, 'cursor': next_cursor, 'pages': record['pages'] + 1,
+                'members': count, 'prompts': record['prompts'] + (prompt_hash is not None),
+                _PARITY_PAGE_KEY: record[_PARITY_PAGE_KEY] + int(hit),
+                'digest': digest, 'compared': next_cursor is None}
+    finally:
+        store.release(pin)
 
 
 def _advance_parity(store, *, project, executing_root, deadline):
-    """Compare one recall corpus page and fold its digest into the intent."""
+    """Check the sealed counts and sample one candidate search."""
     import laya_fresh_wiki_origin as fresh
     import laya_ledger_common as ledger
     import project_dir
     from laya_product_install import _install_lock
     project, state, decision, node = _migration_state(project, store)
     path = state / _INTENT
-    # This read only picks the cursor; compare_recall_corpus re-proves the
-    # head under both locks and the write below rechecks the intent.
+    # This read only picks the cursor; the write below rechecks the intent.
     intent = _migration_intent(path, project=project, state=state, node=node, store=store)
     if intent['migration_state'] != 'caught_up':
         raise IndexContractError('migration_publication_unrecorded')
+    _completed_shadow_commitments(intent)
     record = _bound_parity(intent) or _initial_parity(intent)
     if record['compared']:
         raise IndexContractError('migration_intent_changed')
-    page = compare_recall_corpus(store, record['generation'], project=project,
-        executing_root=executing_root, after=record['cursor'], deadline=deadline,
-        page_members=record.get(_PARITY_PAGE_KEY, _PARITY_MEMBERS))
-    updated = _stamp({**intent, 'parity': _fold_parity(record, page)})
+    updated_record = _candidate_sample(store, intent, record, deadline)
+    updated = _stamp({**intent, 'parity': updated_record})
     marker = project_dir.runtime_file(project, fresh.MARKER)
     with _migration_trace(state, 'parity', 'parity') as trace, _install_lock(state), ledger._operation_lock(marker):
         if _migration_state(project, store) != (project, state, decision, node):
@@ -3514,47 +3557,16 @@ def _advance_parity(store, *, project, executing_root, deadline):
         if current != intent:
             raise IndexContractError('migration_intent_changed')
         if time.monotonic() >= deadline:
-            # The page compared, but its step deadline ran out before the
-            # cursor write: the same spent page budget as inside the compare.
-            raise _ParityPageDeadline()
+            # The sample is discarded and the existing cursor is preserved.
+            raise IndexContractError('reader_snapshot_deadline')
         ledger._write(path, updated, replace=True)
         trace['outcome'] = 'parity_page'
+        if updated_record['compared']:
+            sampled = updated_record['prompts']
+            hits = updated_record[_PARITY_PAGE_KEY] - 4
+            trace['fields'] = {'sampled': sampled, 'top_hits': hits,
+                               'hit_rate_bp': (hits * 10000 // sampled) if sampled else 0}
     return updated
-
-
-def _shrink_parity_page(store, project, expected, deadline, reason):
-    """Halve the parity page after a page missed its step deadline; None at one member.
-
-    The discarded page wrote nothing and the cursor stays, so the next step
-    compares the same members in smaller pages. Under both locks, on a fresh
-    ``deadline`` (the page's own one is spent).
-    """
-    import laya_fresh_wiki_origin as fresh
-    import laya_ledger_common as ledger
-    import project_dir
-    from laya_product_install import _install_lock
-    project, state, decision, node = _migration_state(project, store)
-    marker = project_dir.runtime_file(project, fresh.MARKER)
-    with _migration_trace(state, 'parity_shrink', 'parity') as trace, _install_lock(state), \
-            ledger._operation_lock(marker):
-        if _migration_state(project, store) != (project, state, decision, node):
-            raise IndexContractError('migration_route_changed')
-        path = state / _INTENT
-        current = _migration_intent(path, project=project, state=state, node=node, store=store)
-        trace['migration'] = current['migration_id']
-        if current != expected or current['migration_state'] != 'caught_up':
-            raise IndexContractError('migration_intent_changed')
-        record = _bound_parity(current) or _initial_parity(current)
-        size = record.get(_PARITY_PAGE_KEY, _PARITY_MEMBERS)
-        if record['compared'] or size <= 1:
-            return None
-        _migration_event(state, trace, 'attempt')
-        if time.monotonic() >= deadline:
-            raise IndexContractError('reader_snapshot_deadline')
-        updated = _stamp({**current, 'parity': {**record, _PARITY_PAGE_KEY: size // 2}})
-        ledger._write(path, updated, replace=True)
-        trace.update(outcome='parity_page_shrunk', reason=reason, fields={'page_members': size // 2})
-        return updated
 
 
 def _parity_seal_digest(intent, record):

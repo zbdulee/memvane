@@ -523,7 +523,7 @@ class MovedProvider(Base):
                     'vectorProfile': self.old_att['vectorProfile']}
         import laya_active_upgrade
         with mock.patch.object(auto, 'classify', return_value=('active', identity)), \
-                mock.patch.object(auto, 'installed_commit', return_value=None), \
+                mock.patch.object(auto, 'installed_commit', return_value=commit), \
                 mock.patch.object(auto, 'select_source', return_value=(source, commit)), \
                 mock.patch.object(auto, '_not_older'), \
                 mock.patch.object(auto, '_read_attestation', return_value=attestation), \

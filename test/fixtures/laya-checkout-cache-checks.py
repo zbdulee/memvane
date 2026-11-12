@@ -61,7 +61,7 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         self.assertGreater(cold.call_count, 0)
         self.assertTrue(merging['evidence']['operations'])
 
-    def test_recent_same_tick_and_packed_head_use_cold_git(self):
+    def test_recent_same_tick_and_packed_head_cache_invalidation(self):
         repository, worktree = self.bind(self.root)
         time.sleep(1.1)
         self.cap(self.root, repository, worktree)
@@ -78,7 +78,16 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         with mock.patch.object(view, '_git', wraps=view._git) as packed:
             actual = self.cap(self.root, repository, worktree)
         self.assertEqual(actual, expected)
-        self.assertGreater(packed.call_count, 0)
+        self.assertEqual(packed.call_count, 0)
+        self.commit(self.root, 'a.txt', 'new packed revision\n')
+        time.sleep(1.1)
+        newer = self.cap(self.root, repository, worktree)
+        self.assertNotEqual(newer['headOid'], expected['headOid'])
+        self.git(self.root, 'pack-refs', '--all', '--prune')
+        with mock.patch.object(view, '_git', wraps=view._git) as changed:
+            repacked = self.cap(self.root, repository, worktree)
+        self.assertEqual(repacked, newer)
+        self.assertGreater(changed.call_count, 0)
 
     def test_mutating_returned_capture_does_not_mutate_cache(self):
         repository, worktree = self.bind(self.root)

@@ -16,7 +16,8 @@
 
 ## Minimal settings
 
-settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minimal settings**입니다.
+settings 파일의 키가 `name`(필수)과 `skipPaths`(선택), 그리고 선택적 진단 동의
+[`diagnostics`](#diagnostics--상세-진단-동의-opt-in)뿐이면 **minimal settings**입니다.
 나머지 effective 설정은 플러그인이 `name`에서 결정적으로 유도합니다
 (`core/config.py`의 `expand_minimal_settings`).
 
@@ -42,7 +43,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택)뿐이면 **minim
 이 키가 없습니다. 설정 파일은 하나만 읽습니다: `.memvane/settings.json`, 없으면
 `.auto-context/settings.json`.
 
-**minimal이 아닌 경우.** 두 키 외의 키가 하나라도 있으면 legacy 파일이며 아래
+**minimal이 아닌 경우.** 이 키들 외의 키가 하나라도 있으면 legacy 파일이며 아래
 [전체 키 레퍼런스](#전체-키-레퍼런스)대로 읽습니다. 일부 키만 유도하지 않습니다.
 `name`이 없거나 slug가 비는 경우(ASCII 영숫자가 없는 이름), `skipPaths`가 비어 있지
 않은 문자열 목록이 아닌 경우도 minimal이 아니며, collection이 비어 아무것도
@@ -70,6 +71,35 @@ identity를 묶습니다(아래 "route의 settings binding"). minimal settings�
 **raw collection.** minimal settings의 raw collection(프로젝트 루트 `.`)은 wiki 생성 원천이자
 선택된 route의 원천 신선도 기준입니다. `resolve_paths`는 이를 `sourceEntries`로 내보내고,
 laya route에서의 role은 `raw`입니다.
+
+### `diagnostics` — 상세 진단 동의 (opt-in)
+
+```json
+{
+  "name": "my-project",
+  "diagnostics": { "enabled": true }
+}
+```
+
+- **기본값은 꺼짐(`false`)입니다.** JSON boolean `true`만 켭니다. `"true"`, `1`,
+  객체가 아닌 `diagnostics`, 그 밖의 모든 값은 꺼짐입니다(`config.diagnostics_config`).
+- **minimal 모델을 바꾸지 않습니다.** `diagnostics`는 collection·경로·role·recall·compile을
+  정하지 않으므로, `name`·`skipPaths`와 함께 있어도(값이 무엇이든) minimal settings로
+  유지되고 유도되는 identity도 바뀌지 않습니다.
+- **동의는 매 호출마다 다시 읽습니다.** 판정은 증명된 route가 가리키는 프로젝트의
+  settings에서만 나오며(linked worktree는 main checkout의 settings), 캐시하지 않습니다.
+- **켜면 무엇이 기록되나.** 실패를 기록하는 지점 중 진단 캡처가 붙은 곳에서 Python
+  traceback(예외 메시지 포함) 또는 자식 프로세스 stderr의 꼬리가 기록됩니다. **원문
+  예외 메시지에는 토큰·경로·명령 인자 같은 비밀이 들어 있을 수 있습니다.** 기록 위치는
+  사용자 전용 install state root의 회전 로그(`events.jsonl`, `0700` 디렉터리 안 `0600`
+  파일, 4 MiB에서 `.1`·`.2`로 회전)뿐이며, 외부에 자동 전송하지 않습니다. 모든 실패
+  경로가 캡처되는 것은 아닙니다.
+- **끄면.** 이후의 새 캡처만 멈춥니다. 마지막 동의 확인을 이미 지난 기록은 완료될 수 있습니다.
+  이미 기록된 진단은 지우지 않으며, 로그 회전으로
+  밀려날 때까지 남습니다.
+
+진단의 종류와 읽는 방법은 [architecture.md](architecture.md#detailed-diagnostics)와
+`logs` skill을 보세요.
 
 ### Laya 온보딩과 settings binding
 

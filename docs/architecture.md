@@ -960,6 +960,68 @@ per-user directory.
 Line envelope (`v` 1): `{ts, v, install, host, session, event, outcome, reason,
 ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 
+### Detailed diagnostics
+
+`core/diagnostic_trace.py` records optional raw failure detail into the same
+`events.jsonl`. It is off unless the proved route's project settings carry
+`diagnostics.enabled: true` (JSON boolean only; see
+[settings](settings.md#diagnostics--상세-진단-동의-opt-in)). Consent is re-read on
+every capture, checked before formatting and again right before the first write;
+turning it off stops new captures but deletes nothing already written. A
+capture already past its final consent check may still finish. Only
+failure paths that call `capture` record detail; not every failure path does.
+
+When on, the raw text can include exception messages, which may contain
+secrets. It is written only to the user-private, rotated install event log
+described above.
+
+Kinds:
+
+- `exception` — a Python exception chain (`traceback.TracebackException`, at
+  most 64 frames, no locals, shortened frame paths), including its message.
+- `origin_stack` — for a warning with no exception: the caller's stack at the
+  point the failure was noticed, without this module's own frames.
+- `child_stderr_tail` — the last 4096 UTF-8 bytes of a child process's stderr.
+  It is a bounded tail, not the child's complete stack; the start of the
+  child's output may be missing.
+
+Fragment format: text is capped at 16 KiB, written as up to 96
+`diagnostic.part` rows (base64, 180 raw bytes each) and then one
+`diagnostic.header` row (`diagnostic_id`, `kind`, `parts`, `bytes`, `sha256`,
+`truncated`). The header is written last. A diagnostic whose parts are missing,
+rotated away, or fail the length/hash check reassembles as
+`incomplete`; a part without a header is never shown.
+
+Reading (`skills/logs/scripts/logs.py`):
+
+- Default text and `--json` never print `diagnostic.part` rows or stored legacy
+  `prompt.text`; a `diagnostic.header` shows only its ID and fixed metadata.
+- `--details` is the explicit opt-in that reassembles each shown header into
+  its raw text (or reports `incomplete` / `unavailable`). Every printed string
+  is terminal-escaped (control and format characters become `\xNN`-style
+  text); stored bytes are not changed.
+- `--register PROJECT` (repeatable) is the tool's only write: it adds the
+  project's canonical root and current install ID to the owner-private
+  registry `$XDG_CONFIG_HOME/memvane/log-targets.json` (`~/.config` when unset;
+  user-owned `memvane` directory without group/other bits, `0600` single-link
+  file, `flock` on the file itself; at most 64 targets). It stores no event
+  content. Each request reports its own outcome.
+- `--all` reads every registered target, re-verifying each against its current
+  route (`stale_route` when the install ID changed), and merges lines in UTC
+  order under one 16 MiB read budget split equally between readable targets.
+  A target that cannot be read is listed with its fixed reason (`missing`,
+  `not_onboarded`, `stale_route`, registry refusals), never shown as empty.
+
+| Boundary | Available detail |
+|---|---|
+| Selected recall hook | Exception chain, or origin stack for the instrumented selector and vector fallback warnings |
+| Sync/compile dispatcher | Dispatcher exception; a failed child has at most its stderr tail and a `trace_unavailable` marker |
+| Compile verify pass | Exception chain when the selected route still matches the bound install |
+| Bundle upgrade | Exception chain when the current selected route still proves the same state root; otherwise `trace_unavailable` |
+| Hermes selected recall adapter | Exception chain if the core has not already logged it and a selected route is available |
+| Migration and resident service internals | Existing fixed event codes only when an exception has already been swallowed; no reconstructed cause stack |
+| Other hook and adapter boundaries | Existing event codes where available; detailed exception capture is not guaranteed |
+
 | Event | Written by | Outcome / fields |
 |---|---|---|
 | `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`core/laya_host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` or `bundle_upgrade_pending` |

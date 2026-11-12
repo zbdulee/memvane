@@ -1666,7 +1666,34 @@ def _run_verify_pass(
         frames = traceback.extract_tb(exc.__traceback__)[-1:]
         event_log.emit('compile.verify_pass', outcome='error', reason=type(exc).__name__,
                        where=(f"{os.path.basename(frames[0].filename)}:{frames[0].lineno}"
-                              if frames else None))
+                              if frames else None),
+                       diagnostic_id=_verify_diagnostic(root, exc))
+
+
+def _verify_diagnostic(root: Path, exc: BaseException) -> str | None:
+    """Opt-in detailed diagnostic of a swallowed verify exception, else None.
+
+    Recorded only when a freshly selected compile route names the same install
+    and journal state root this worker's event log is bound to; anything not
+    provable (no binding, other install, lookup failure) records nothing. The
+    exception stays swallowed and the verify outcome is unchanged either way.
+    """
+    try:
+        import diagnostic_trace
+        import event_log
+        import laya_index_host_route
+        bound = event_log.bound()
+        if not isinstance(bound, dict) or bound.get('stateRoot') is None:
+            return None
+        route = laya_index_host_route.select_route(str(root), action='compile')
+        if (event_log.state_root_for_decision(route) != Path(bound['stateRoot'])
+                or event_log.install_of(route) is None
+                or event_log.install_of(route) != bound.get('install')):
+            return None
+        return diagnostic_trace.capture(route, event='compile.verify_pass',
+                                        reason=type(exc).__name__, exc=exc)
+    except Exception:  # noqa: BLE001 - a diagnostic never alters the outcome
+        return None
 
 
 COMPILE_RUN_LOCK = cp.COMPILE_RUN_LOCK
@@ -1708,6 +1735,16 @@ def _busy_report(root: Path, queue: Path) -> dict:
 
 
 def main():
+    try:
+        return _main()
+    except ResourceDeferred as exc:
+        if '--json' in sys.argv:
+            import wiki_selected_laya
+            print(json.dumps(wiki_selected_laya.deferred_result(exc), ensure_ascii=False))
+        return 0
+
+
+def _main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", default=os.getcwd())
     parser.add_argument("--json", action="store_true")
@@ -1757,6 +1794,8 @@ def main():
             if (queue is None or queue.parent != locked_base
                     or cp.validate_compile_run_lock(root, run_lock) != locked_base):
                 return 0
+        except ResourceDeferred:
+            raise
         except (OSError, ValueError):
             return 0  # moved/unsafe authority: preserve all queued work
         if selected_route is not None:

@@ -122,7 +122,7 @@ class CatalogCase(unittest.TestCase):
                 setattr(owner, name, original)
 
     def spoof_signatures(self, catalog):
-        """Patch the module's signature function to replay scan-time signatures.
+        """Make the stat hint replay scan-time signatures for recorded nodes.
 
         Any node the current snapshot recorded reports its old signature, so
         the stat hint sees nothing even though content or membership changed.
@@ -134,10 +134,14 @@ class CatalogCase(unittest.TestCase):
                 'WHERE seq=(SELECT seq FROM current)'):
             dev, ino = sig.split(':')[:2]
             recorded[(int(dev), int(ino))] = sig
-        original = catalog_mod._sig_text
-        catalog_mod._sig_text = lambda st: recorded.get((st.st_dev, st.st_ino),
-                                                        original(st))
-        self.addCleanup(setattr, catalog_mod, '_sig_text', original)
+        original = catalog_mod._sig_text_matches
+        def matches(stored, live):
+            key = (live.st_dev, live.st_ino)
+            if key in recorded:
+                return stored == recorded[key]
+            return original(stored, live)
+        catalog_mod._sig_text_matches = matches
+        self.addCleanup(setattr, catalog_mod, '_sig_text_matches', original)
 
     def assert_stale(self, call, detail):
         with self.assertRaisesRegex(IndexContractError, 'index_stale') as caught:
@@ -750,6 +754,16 @@ class ProofTests(CatalogCase):
         self.assertEqual((after.st_ino, after.st_size, after.st_mtime_ns),
                          (before.st_ino, before.st_size, before.st_mtime_ns))
         self.spoof_signatures(catalog)
+        recorded_sig = catalog.db.execute(
+            'SELECT sig FROM scan_files WHERE seq=? AND path=?',
+            (snap.seq, 'plans/a07.md')).fetchone()[0]
+        self.assertTrue(catalog_mod._sig_text_matches(recorded_sig, after))
+        self.assertFalse(catalog_mod._sig_text_matches(recorded_sig + ':0', after))
+        outsider = self.write(self.base, 'unrecorded.txt', 'unrecorded')
+        outsider_stat = os.stat(outsider)
+        self.assertTrue(catalog_mod._sig_text_matches(catalog_mod._sig_text(outsider_stat),
+                                                       outsider_stat))
+        self.assertFalse(catalog_mod._sig_text_matches(recorded_sig, outsider_stat))
         catalog.verify_unchanged(snap)  # the stat hint is blind to this rewrite
         self.assert_stale(lambda: self.search(catalog, 'card'),
                           'source bytes or membership differ from catalog snapshot')

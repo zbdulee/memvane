@@ -10,8 +10,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import json
 import os
+import re
 import subprocess
 import sys
+from resource_deferred import ResourceDeferred
 
 _compile_owner = ContextVar('selected_compile_owner', default=None)
 
@@ -134,7 +136,36 @@ def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
     return matches
 
 
+_DEFERRED_REASONS = frozenset(('owner_busy', 'writer_proof_deadline',
+                               'reader_lifetime_busy', 'writer_proof_physical_busy'))
+
+
+def deferred_result(exc):
+    """A bounded public result for a retryable compile resource refusal."""
+    reason = str(exc)
+    return {'state': 'deferred',
+            'reason': reason if reason in _DEFERRED_REASONS else 'resource_deferred'}
+
+
+def _worker_failure_code(stderr):
+    """Report a fixed exception category, never child stderr or a path."""
+    if not isinstance(stderr, str):
+        return 'worker_error'
+    last = stderr.rstrip().splitlines()[-1:]  # stderr can contain private text
+    match = re.match(r'^(?:[A-Za-z_][A-Za-z0-9_]*\.)*(ValueError|RuntimeError|OSError|PermissionError|ResourceDeferred)(?::|$)', last[0]) if last else None
+    return {'ValueError': 'worker_value_error', 'RuntimeError': 'worker_runtime_error',
+            'OSError': 'worker_os_error', 'PermissionError': 'worker_permission_error',
+            'ResourceDeferred': 'worker_resource_deferred'}.get(match.group(1), 'worker_error') if match else 'worker_error'
+
+
 def run(project: Path):
+    try:
+        return _run(project)
+    except ResourceDeferred as exc:
+        return deferred_result(exc)
+
+
+def _run(project: Path):
     """One bounded durable compile/verify pass; ACK only drained queues."""
     project = Path(project)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
@@ -170,10 +201,16 @@ def run(project: Path):
         env={**os.environ, 'QMD_RUNTIME_DISPATCH': '1'})
     recheck(bound)
     if proc.returncode:
-        return {'state': 'deferred', 'reason': 'compile_worker_failed'}
+        return {'state': 'deferred', 'reason': 'compile_worker_failed',
+                'detail': _worker_failure_code(proc.stderr)}
     try:
         answer = json.loads(proc.stdout)
     except (ValueError, TypeError):
+        return {'state': 'deferred', 'reason': 'compile_worker_result_invalid'}
+    if isinstance(answer, dict) and answer.get('state') == 'deferred':
+        if (isinstance(answer.get('reason'), str)
+                and answer['reason'] in _DEFERRED_REASONS | {'resource_deferred'}):
+            return {'state': 'deferred', 'reason': answer['reason']}
         return {'state': 'deferred', 'reason': 'compile_worker_result_invalid'}
     if not isinstance(answer, dict) or type(answer.get('processed')) is not int:
         return {'state': 'deferred', 'reason': 'compile_worker_result_invalid'}
