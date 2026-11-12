@@ -342,6 +342,10 @@ class RebootChecks(unittest.TestCase):
         """The v6 and schema3 readers were sealed before the reboot; the
         rollback re-issues the v6 reader from this boot and checks its store
         nodes against the v6 reader the switch left."""
+        # The rollback path imports these lazily; imported first under the
+        # fixture's bundle authority they would keep its patched bindings.
+        for name in ('laya_active_upgrade', 'laya_bound_upgrade', 'laya_inactive_upgrade'):
+            importlib.import_module(name)
         rollback = self.case_from('laya-shadow-rollback-checks.py', 'ShadowRollbackChecks')
         initial, switched = rollback.switched()
         with simulated_reboot():
