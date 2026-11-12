@@ -2423,6 +2423,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         _trace_fields(grant=grant_kind if grant is not None else None)
         if action in ("index", "file-change-event"):
             return {}
+        if action == "update-queued":
+            _reconcile_registry(decision)
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
         if action == "update-queued":
             block_notice = _vector_block_notice(decision, payload)
@@ -2451,6 +2453,26 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 exc._memvane_reader_attempted = True
             raise
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _reconcile_registry(decision: dict) -> None:
+    """Bounded opportunistic reconcile of the selected project registry.
+
+    SessionStart of a selected main checkout seeds its own row and checks a
+    few rows and backfill entries (``memvane_registry.HOOK_*``). The registry
+    is a lookup index: any failure leaves this hook's output unchanged.
+    """
+    if decision.get('state') != 'candidate' or not isinstance(decision.get('journalPath'), str):
+        return
+    try:
+        import memvane_registry
+        memvane_registry.reconcile(
+            seed=(decision['projectRoot'], str(Path(decision['journalPath']).parent)),
+            max_rows=memvane_registry.HOOK_ROWS, seconds=memvane_registry.HOOK_SECONDS,
+            backfill_page=memvane_registry.HOOK_BACKFILL_PAGE,
+            busy_ms=memvane_registry.HOOK_BUSY_MS)
+    except Exception:
+        pass
 
 
 def _selected_store_format(decision: dict) -> str:
