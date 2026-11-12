@@ -573,6 +573,31 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(self.refused(again.pin_view, again.capture_view(handle.worktree_id)).reason,
                          'fts_head_map_mismatch')
 
+    def test_stale_prepare_handle_after_a_head_move_leaves_no_orphan_and_collection_keeps_head_and_prior(self):
+        store, repository, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        stale_manifest = self.snapshot(store, handle, body=b'# Stale\nuniquestale synthetic card\n')
+        stale = store.prepare_generation(handle, stale_manifest, expected_head=first)
+        other = self.reopen(repository)
+        moved_handle = other.capture_view(handle.worktree_id)
+        moved = self.publish(other, moved_handle, b'# Moved\nuniquemoved synthetic card\n')
+        reason = self.refused(store.publish_generation, handle, stale, expected_head=first).reason
+        self.assertIn(reason, ('view_head_conflict', 'generation_missing'))
+        db = other._db
+        self.assertEqual(other.head(moved_handle), moved)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM s_generations WHERE gen_id=?', (stale,)).fetchone()[0], 0)
+        self.assertEqual(db.execute("SELECT COUNT(*) FROM s_stage_jobs WHERE state<>'abandon'").fetchone()[0], 0)
+        while any(other.collect_view_rows(moved_handle, limit=64).get(t) for t in ('s_cards', 'stage', 's_deltas')):
+            pass
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM s_stage_jobs').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM s_stage_items').fetchone()[0], 0)
+        self.assertEqual(db.execute('PRAGMA foreign_key_check').fetchall(), [])
+        self.assertEqual(sorted(r[0] for r in db.execute('SELECT gen_id FROM s_generations')),
+                         sorted([first['gen_id'], moved['gen_id']]))
+        back = other.rollback_generation(moved_handle, expected_head=moved)
+        self.assertEqual(self.found(other, moved_handle, 'uniquealpha'), ['cards/a.md'])
+        self.assertEqual(back['epoch'], moved['epoch'] + 1)
+
     def test_unsupported_row_inputs_refuse_before_any_write(self):
         store, _, handle = self.rows_store()
         manifest = self.snapshot(store, handle)
