@@ -145,6 +145,16 @@ CREATE TABLE s_stage_card_source_changes (
   CHECK((action='put' AND observation_id IS NOT NULL AND spans_json IS NOT NULL)
      OR (action='delete' AND observation_id IS NULL AND spans_json IS NULL))
 );
+CREATE TABLE s_legacy_fts (
+  view_id TEXT NOT NULL REFERENCES views(view_id),
+  origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')), path_key TEXT NOT NULL COLLATE BINARY,
+  gen_from INTEGER NOT NULL, gen_to INTEGER, blob_sha TEXT NOT NULL REFERENCES wiki_blobs(blob_sha),
+  title TEXT, position INTEGER, active INTEGER NOT NULL CHECK(active IN (0,1)),
+  PRIMARY KEY(view_id,origin,path_key,gen_from), CHECK(gen_to IS NULL OR gen_to>gen_from),
+  CHECK((origin='sidecar')=(title IS NOT NULL AND position IS NOT NULL))
+);
+CREATE UNIQUE INDEX s_legacy_fts_open ON s_legacy_fts(view_id,origin,path_key) WHERE gen_to IS NULL;
+CREATE INDEX s_legacy_fts_gc ON s_legacy_fts(view_id,gen_to) WHERE gen_to IS NOT NULL;
 CREATE TABLE s_parity_anchor (
   view_id TEXT NOT NULL REFERENCES views(view_id), gen_id TEXT NOT NULL,
   ordinal INTEGER NOT NULL, incarnation TEXT NOT NULL, receipt_digest TEXT NOT NULL,
@@ -152,7 +162,7 @@ CREATE TABLE s_parity_anchor (
 );
 ```
 
-`prior_ordinal`는 과거 세대 전체를 FK로 붙잡지 않는다. sealed 현재·직전 연결만 검사하고 숫자만으로 신뢰하지 않는다. 각 view의 FTS 이름은 검증된 view ID에서 만든 고정 접두사+hex로만 생성하고 식별자를 SQL에 임의 삽입하지 않는다. 일반 FTS와 legacy base/sidecar FTS의 tokenizer·columns·weights·MATCH·row mapping은 기존 `laya_view_fts`와 같다. `legacy_fts` delta는 path·origin·본문/FTS 입력의 immutable blob 참조를 저장하며 raw 원문은 넣지 않는다. 최초 legacy 및 vector-only 게시에서 이전과 동일한 corpus를 보존한다.
+`prior_ordinal`는 과거 세대 전체를 FK로 붙잡지 않는다. sealed 현재·직전 연결만 검사하고 숫자만으로 신뢰하지 않는다. 각 view의 FTS 이름은 검증된 view ID에서 만든 고정 접두사+hex로만 생성하고 식별자를 SQL에 임의 삽입하지 않는다. 일반 FTS와 legacy base/sidecar FTS의 tokenizer·columns·weights·MATCH·row mapping은 기존 `laya_view_fts`와 같다. legacy 세대의 FTS corpus는 `s_legacy_fts`의 구간 행이다. 한 행은 origin(base/sidecar)·FTS 전체 경로·immutable blob·sidecar 제목과 원래 rowid 순서·active 여부이고, 카드가 아닌 inactive/untrusted 행도 BM25 통계를 위해 같은 구간 규칙으로 남는다. 카드 경로는 `s_cards`, FTS 전체 경로는 `s_legacy_fts`에 두고 두 경로 체계를 한 relation에 섞지 않는다. legacy 카드의 FTS 경로·origin·원문 줄 span은 그 카드 행의 `metadata_json`에 있다. head의 legacy FTS 행은 `s_legacy_fts` 열린 행과 blob 본문에서 다시 만들고 seal의 논리·물리 digest로 대조한다. 따라서 delta가 GC된 뒤에도 head corpus를 다시 증명할 수 있다. legacy 세대의 `member_digest`는 카드 행과 legacy FTS 행을 함께 결속한다. `legacy_fts` delta는 path·origin·본문/FTS 입력의 immutable blob 참조를 저장하며 raw 원문은 넣지 않는다. 최초 legacy 및 vector-only 게시에서 이전과 동일한 corpus를 보존한다.
 
 `sidecar_present`는 현재 head의 sidecar FTS 존재 여부를 명시해 전체 FTS schema manifest와 seal이 같은 corpus 집합을 검증하도록 한다. 이 플래그만으로 legacy 원본이나 content 증명이 성립하지는 않는다.
 
@@ -196,7 +206,7 @@ GC는 sync owner·writer proof 아래 한 transaction당 제한된 행 수와 by
 
 ### S v1 보존 범위
 
-S v1은 view 행·head FTS·stage/delta·세대만 GC한다. 현재 head와 직전 세대, 활성 stage·parity 및 필요한 참조를 보호한다. 여러 view가 공유하는 blob 본문·admission·attestation·fingerprint·chunk/embedding set·recipe/profile은 삭제하지 않는다. 따라서 검색 가능한 view는 현재+직전이지만 오래된 공유 본문·벡터는 더 남는다. 공유 content 회수의 활성화 규칙 R1~R6와 경합 재현은 `docs/TODO.md`와 `context/claude-handoff-s-blob-gc-locks-20261112.md`에 보류한다. 보고서는 정적 분석이며 실제 경합 재현·S 구현 검증이 아니다. 새 lock이나 소유 계약 변경은 하지 않는다.
+S v1은 view 행(`s_cards`·`s_sources`·`s_card_sources`·`s_legacy_fts`)·head FTS·stage/delta·세대만 GC한다. 구간 행은 `gen_to`가 head의 직전 세대 ordinal 이하일 때만 지우고, head와 직전 세대가 보는 행은 삭제 trigger가 거절한다. 현재 head와 직전 세대, 활성 stage·parity 및 필요한 참조를 보호한다. 여러 view가 공유하는 blob 본문·admission·attestation·fingerprint·chunk/embedding set·recipe/profile은 삭제하지 않는다. 따라서 검색 가능한 view는 현재+직전이지만 오래된 공유 본문·벡터는 더 남는다. 공유 content 회수의 활성화 규칙 R1~R6와 경합 재현은 `docs/TODO.md`와 `context/claude-handoff-s-blob-gc-locks-20261112.md`에 보류한다. 보고서는 정적 분석이며 실제 경합 재현·S 구현 검증이 아니다. 새 lock이나 소유 계약 변경은 하지 않는다.
 
 ### view 행 GC의 S 구현 RED 후보
 
@@ -236,7 +246,7 @@ DELETE FROM s_generations WHERE ordinal IN (SELECT g.ordinal FROM s_generations 
 
 새 bundle은 기존 format의 정확한 DDL·identity·head/직전 seal·모든 참조를 우선 검증한다. 기존 sync owner + writer scope 아래 rollback journal의 한 `BEGIN IMMEDIATE`에서 기존 head와 직전 콘텐츠를 구간 relation과 head 전용 FTS로 옮기고 양 세대 간 delta를 만든다. 원래 head가 최초 세대면 직전이 없음을 명시한다. 원래 head/직전 logical digest와 신 형식 집합·legacy corpus가 일치하는지 검사한다. 양 host가 사용하는 구 validator의 선행 metadata 조회에 필요한 `store_meta`·`worktrees` 열을 보존한다. 기존 target+job이 진행 중이면 변환을 보류하고 완료 또는 안전한 재시도를 확인한다. 구 relation 및 세대별 FTS 제거, 새 DDL·head·seal, `user_version`과 `store_meta.schema_version`은 같은 commit이다. 동시 구 reader가 연 transaction을 마치지 못해 busy면 기존 wake로 재시도한다. 변환 commit 이전 실패 시 old schema, commit 후 새 schema만 허용한다. hot journal의 recovery와 권한/sidecar identity는 SQLite·기존 validator의 실제 조건을 검증하며 임의 sidecar 삭제는 금지한다.
 
-구 bundle의 `_schema3_store`는 버전 검사 전 일부 metadata를 읽지만 이후 `ViewStore.open_reader`의 `BlobStore._header`는 exact version/DDL을 요구한다. 새 형식에서 구 bundle이 content 반환·writer 발급·setup 변경 전에 `candidate_format_mismatch` 등 고정 거절에 도달해야 한다. 단일 저수준 validator 관측은 전체 consumer 증거가 아니다. 실제 새 형식 DB와 고정 구 core로 recall, dedup, compile, sync, setup, linked worktree 및 열린 연결의 다음 transaction을 양 Python과 양 host 경로에서 검사한다. 거절 사유와 파일 바이트·inode를 기록하고, 열려 있던 read transaction이 변환 전 일관된 snapshot을 마치는 경우와 변환 후 신규 접근을 구분한다.
+`s_legacy_fts`도 형식 4 DDL manifest의 일부이므로 구 bundle은 이 relation을 읽기 전에 header 검사에서 거절한다. 구 bundle의 `_schema3_store`는 버전 검사 전 일부 metadata를 읽지만 이후 `ViewStore.open_reader`의 `BlobStore._header`는 exact version/DDL을 요구한다. 새 형식에서 구 bundle이 content 반환·writer 발급·setup 변경 전에 `candidate_format_mismatch` 등 고정 거절에 도달해야 한다. 단일 저수준 validator 관측은 전체 consumer 증거가 아니다. 실제 새 형식 DB와 고정 구 core로 recall, dedup, compile, sync, setup, linked worktree 및 열린 연결의 다음 transaction을 양 Python과 양 host 경로에서 검사한다. 거절 사유와 파일 바이트·inode를 기록하고, 열려 있던 read transaction이 변환 전 일관된 snapshot을 마치는 경우와 변환 후 신규 접근을 구분한다.
 
 shadow migration은 새 store를 처음부터 새 DDL로 만들고 기존 sealed inventory의 legacy base·sidecar와 observation을 첫 세대로 게시한다. parity는 `6f7f1399`의 원본 sealed inventory 개수와 candidate eligible 개수, 고정 샘플 검색을 동일 pin에서 검사한다. 원본의 모든 경로 동일성까지 증명하는 것은 아니다. 카드 0개일 때 빈 corpus·inventory를 정상 봉인하고 sampled query는 0개다. v6 rollback 뒤 명시 재개는 새 incarnation의 새 candidate와 receipt를 만들며 기존 receipt를 재사용하지 않는다.
 
