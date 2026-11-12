@@ -8,5 +8,5 @@ test('persisted install identities survive an APFS device reassignment', () => {
     env: {...process.env, QMD_RECALL_LOG: '', QMD_REAL_MODEL_TESTS: '', PYTHONDONTWRITEBYTECODE: '1'},
   });
   assert.equal(result.status, 0, result.stdout + result.stderr);
-  assert.match(result.stderr, /Ran 8 tests\b/);
+  assert.match(result.stderr, /Ran 11 tests\b/);
 });
