@@ -99,6 +99,37 @@ class LegacyConvertChecks(journal.Schema3EndpointChecks):
         self.assertEqual(after[7], fts.head_table(store.capture_view(self.worktree_id).view_id))
         self.assertIsNotNone(after[2]['observation'])
 
+    @staticmethod
+    def unscanned(shaped):
+        legacy = {k: val for k, val in shaped[2].items() if k != 'scan'}
+        return (shaped[1], legacy, shaped[3], shaped[4])
+
+    def test_row_store_imports_a_legacy_generation_like_the_generation_format(self):
+        import importlib
+        checkout = importlib.import_module('laya_checkout_view')
+        self.publish()
+        with self.writer() as view:
+            handle = view.capture_view(self.worktree_id)
+            expected = (self.recall(view, handle), self.unscanned(self.shaped(view, handle)))
+        rows_path = self.case.state / 'schema3-rows-candidate.sqlite'
+        worktree = checkout.register_worktree(str(self.case.project), self.repository)
+        created = self.views.ViewStore.create(rows_path, project_root=str(self.case.project),
+                                              repository=self.repository, worktree=worktree,
+                                              scope_id=self.case.route['scopeId'], row_generations=True)
+        created.close()
+        self.store_path, self.worktree_id = rows_path, worktree['worktreeId']
+        generation = self.publish()
+        with self.writer() as view:
+            handle = view.capture_view(self.worktree_id)
+            self.assertTrue(view._rows)
+            self.assertEqual(view.head(handle)['gen_id'], generation)
+            kind = view._db.execute('SELECT kind,legacy_json IS NOT NULL FROM s_generations WHERE gen_id=?',
+                                    (generation,)).fetchone()
+            self.assertEqual(tuple(kind), ('legacy', 1))
+            # Each import runs its own provenance scan; everything else matches.
+            self.assertEqual((self.recall(view, handle), self.unscanned(self.shaped(view, handle))), expected)
+            self.assertEqual(view.head(handle)['epoch'], 1)
+
     def normal_manifest(self, store, handle):
         """The head's cards as an ordinary manifest (their legacy_verified trust kept)."""
         rows = store._db.execute('SELECT path,blob_sha,title,trust_digest FROM s_cards '

@@ -603,6 +603,94 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
             return side_rows
         return vals.fts_rows(bodies, deadline=deadline)
 
+    def _legacy_evidence(self, handle, manifest, legacy_snapshot, spec, derive_manifest, deadline):
+        """Members, corpora and v6 observation of a legacy import; both store formats use it.
+
+        Returns ``(manifest, legacy)``; with ``derive_manifest`` the manifest is
+        built from the proved members.
+        """
+        import laya_shadow_migration as migration
+        bounded = type(legacy_snapshot) is dict and 'observation' in legacy_snapshot
+        commitments = legacy_snapshot.get('commitments') if bounded else None
+        v.exact(legacy_snapshot, (('observation' if bounded else 'snapshot'),
+                                  'endpoint', 'decision', 'provenance_scan',
+                                  *(('commitments',) if commitments is not None else ()),
+                                  *(('build_id',) if commitments is not None and 'build_id' in legacy_snapshot
+                                    else ())))
+        if commitments is not None:
+            v.exact(commitments, ('migration_id', 'verification', 'corpora'))
+            v.identifier(commitments['migration_id'], v.UUID)
+            v.exact(commitments['corpora'], ('verification_digest', 'base', 'sidecar'))
+            if (type(commitments['verification']) is not dict or
+                    commitments['corpora']['verification_digest'] != commitments['verification'].get('digest') or
+                    commitments['corpora']['base'] is None):
+                v.fail('migration_commitment_mismatch')
+        if (spec is not None or (not derive_manifest and
+                (manifest['sources'] or manifest['scan_id'] != legacy_snapshot['provenance_scan'].get('id')))):
+            v.fail('migration_manifest_mismatch')
+        source_args = {key: value for key, value in legacy_snapshot.items()
+                       if key not in ('commitments', 'build_id')}
+        source_deadline = min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30
+        # A committed migration reuses its verified page chains: one pinned
+        # metadata read must refold to them, so prepare does not re-read
+        # every old body while writers keep moving the source.
+        reused = (migration.reuse_committed_members(self, worktree_id=handle.worktree_id,
+                      endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                      provenance_scan=legacy_snapshot['provenance_scan'],
+                      observation=legacy_snapshot['observation'], commitments=commitments,
+                      deadline=source_deadline)
+                  if commitments is not None else None)
+        evidence = reused['evidence'] if reused is not None else (
+            migration.collect_generation_members if bounded else migration.verify_generation_members)(
+            self, worktree_id=handle.worktree_id, **source_args, deadline=source_deadline)
+        if derive_manifest:
+            manifest = vals.manifest({'scan_id': legacy_snapshot['provenance_scan']['id'],
+                'policy_digest': handle.policy_digest, 'revocation_epoch': 0,
+                'complete': True, 'sources': [], 'members': evidence['members']}, handle.policy_digest)
+        if sorted(evidence['members'], key=lambda row: row['path']) != sorted(
+                manifest['members'], key=lambda row: row['path']):
+            v.fail('migration_manifest_mismatch')
+        if reused is not None:
+            commitment, corpus = reused['sidecar_commitment'], reused['corpus']
+            needs_sidecar = commitment is not None
+        elif bounded:
+            commitment = migration.inspect_sidecar_bounded(endpoint=legacy_snapshot['endpoint'],
+                decision=legacy_snapshot['decision'], observation=evidence['observation'],
+                deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+            needs_sidecar = commitment is not None
+            corpus = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
+                endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=False)
+        else:
+            needs_sidecar = migration.sidecar_fts_required(legacy_snapshot['snapshot'],
+                endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+            corpus = migration.stage_base_fts_corpus(self, worktree_id=handle.worktree_id,
+                snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
+                decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, allow_sidecar=True)
+        legacy = {'observation': evidence['observation'],
+                  'paths': sorted(row['path'] for row in evidence['members']),
+                  'fts_paths': evidence['fts_paths'], 'corpus_observation': corpus['observation'],
+                  'corpus': corpus['members'], 'scan': dict(legacy_snapshot['provenance_scan']),
+                  'active_fts': evidence['active_fts']}
+        if needs_sidecar:
+            if reused is not None:
+                side = reused['sidecar_corpus']
+            elif bounded:
+                side = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
+                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                    observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=True)
+            else:
+                side = migration.stage_sidecar_fts_corpus(self, worktree_id=handle.worktree_id,
+                    snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
+                    decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+                commitment = migration.sidecar_fts_commitment(legacy_snapshot['snapshot'],
+                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                    deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+            legacy.update(sidecar_corpus=side['members'], sidecar_observation=side['observation'],
+                          sidecar_commitment=commitment, fts_sources=evidence['fts_sources'])
+        return manifest, legacy
+
     def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None, legacy_snapshot=None,
                            deadline=None):
         if self._rows:
@@ -623,86 +711,8 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
         skips = _skip_patterns(saved)
         legacy = None
         if legacy_snapshot is not None:
-            import laya_shadow_migration as migration
-            bounded = type(legacy_snapshot) is dict and 'observation' in legacy_snapshot
-            commitments = legacy_snapshot.get('commitments') if bounded else None
-            v.exact(legacy_snapshot, (('observation' if bounded else 'snapshot'),
-                                      'endpoint', 'decision', 'provenance_scan',
-                                      *(('commitments',) if commitments is not None else ()),
-                                      *(('build_id',) if commitments is not None and 'build_id' in legacy_snapshot
-                                        else ())))
-            if commitments is not None:
-                v.exact(commitments, ('migration_id', 'verification', 'corpora'))
-                v.identifier(commitments['migration_id'], v.UUID)
-                v.exact(commitments['corpora'], ('verification_digest', 'base', 'sidecar'))
-                if (type(commitments['verification']) is not dict or
-                        commitments['corpora']['verification_digest'] != commitments['verification'].get('digest') or
-                        commitments['corpora']['base'] is None):
-                    v.fail('migration_commitment_mismatch')
-            if (spec is not None or (not derive_manifest and
-                    (manifest['sources'] or manifest['scan_id'] != legacy_snapshot['provenance_scan'].get('id')))):
-                v.fail('migration_manifest_mismatch')
-            source_args = {key: value for key, value in legacy_snapshot.items()
-                           if key not in ('commitments', 'build_id')}
-            source_deadline = min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30
-            # A committed migration reuses its verified page chains: one pinned
-            # metadata read must refold to them, so prepare does not re-read
-            # every old body while writers keep moving the source.
-            reused = (migration.reuse_committed_members(self, worktree_id=handle.worktree_id,
-                          endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                          provenance_scan=legacy_snapshot['provenance_scan'],
-                          observation=legacy_snapshot['observation'], commitments=commitments,
-                          deadline=source_deadline)
-                      if commitments is not None else None)
-            evidence = reused['evidence'] if reused is not None else (
-                migration.collect_generation_members if bounded else migration.verify_generation_members)(
-                self, worktree_id=handle.worktree_id, **source_args, deadline=source_deadline)
-            if derive_manifest:
-                manifest = vals.manifest({'scan_id': legacy_snapshot['provenance_scan']['id'],
-                    'policy_digest': handle.policy_digest, 'revocation_epoch': 0,
-                    'complete': True, 'sources': [], 'members': evidence['members']}, handle.policy_digest)
-            if sorted(evidence['members'], key=lambda row: row['path']) != sorted(
-                    manifest['members'], key=lambda row: row['path']):
-                v.fail('migration_manifest_mismatch')
-            if reused is not None:
-                commitment, corpus = reused['sidecar_commitment'], reused['corpus']
-                needs_sidecar = commitment is not None
-            elif bounded:
-                commitment = migration.inspect_sidecar_bounded(endpoint=legacy_snapshot['endpoint'],
-                    decision=legacy_snapshot['decision'], observation=evidence['observation'],
-                    deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                needs_sidecar = commitment is not None
-                corpus = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
-                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                    observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=False)
-            else:
-                needs_sidecar = migration.sidecar_fts_required(legacy_snapshot['snapshot'],
-                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                    deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                corpus = migration.stage_base_fts_corpus(self, worktree_id=handle.worktree_id,
-                    snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
-                    decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, allow_sidecar=True)
-            legacy = {'observation': evidence['observation'],
-                      'paths': sorted(row['path'] for row in evidence['members']),
-                      'fts_paths': evidence['fts_paths'], 'corpus_observation': corpus['observation'],
-                      'corpus': corpus['members'], 'scan': dict(legacy_snapshot['provenance_scan']),
-                      'active_fts': evidence['active_fts']}
-            if needs_sidecar:
-                if reused is not None:
-                    side = reused['sidecar_corpus']
-                elif bounded:
-                    side = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
-                        endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                        observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=True)
-                else:
-                    side = migration.stage_sidecar_fts_corpus(self, worktree_id=handle.worktree_id,
-                        snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
-                        decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                    commitment = migration.sidecar_fts_commitment(legacy_snapshot['snapshot'],
-                        endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                        deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                legacy.update(sidecar_corpus=side['members'], sidecar_observation=side['observation'],
-                              sidecar_commitment=commitment, fts_sources=evidence['fts_sources'])
+            manifest, legacy = self._legacy_evidence(handle, manifest, legacy_snapshot, spec, derive_manifest,
+                                                     deadline)
         with self._session() as db:
             if self._head(db, handle) != base:
                 v.fail('view_head_conflict')

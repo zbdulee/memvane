@@ -9,6 +9,7 @@ imports, vector coverage and source relations refuse with a fixed reason.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -219,6 +220,40 @@ def _locators(spans):
     return [source_spans.locator(span) for span in ordered]
 
 
+def _legacy_corpus_rows(legacy):
+    """Corpus rows (base and sidecar, with active flags) of one legacy evidence mapping."""
+    sidecar = 'sidecar_corpus' in legacy
+    rows = [dict(origin='base', path_key=row['path'], blob_sha=row['hash'], title=None, position=None,
+                 active=int(legacy['active_fts']['base'].get(row['path']) == row['hash']))
+            for row in legacy['corpus']]
+    if sidecar:
+        rows.extend(dict(origin='sidecar', path_key=row['path'], blob_sha=row['hash'], title=row['title'],
+                         position=row['rowid'],
+                         active=int(legacy['active_fts']['sidecar'].get(row['path']) == row['hash']))
+                    for row in legacy['sidecar_corpus'])
+    rows.sort(key=lambda row: (row['origin'], row['path_key'].encode('utf8')))
+    return rows
+
+
+def _legacy_card_rows(legacy, members, spans):
+    """Card rows of a legacy import: FTS path, origin and line spans in each row's metadata."""
+    sidecar = 'sidecar_corpus' in legacy
+    cards = []
+    for member in members:
+        origin = legacy['fts_sources'][member['path']] if sidecar else 'base'
+        meta = dict(fts_path=legacy['fts_paths'][member['path']], origin=origin,
+                    spans=spans.get(member['path'], []))
+        cards.append(dict(_card_row(member), metadata_json=v.canonical(meta)))
+    return cards
+
+
+def _legacy_scan(manifest, skips, legacy, legacy_rows):
+    return v.digest('memvane-row-stage-scan-v1', dict(
+        manifest=vals.manifest_digest(manifest), skip_paths=skips, files=[],
+        legacy=dict(observation=_legacy_observation(legacy),
+                    corpus=v.digest('memvane-row-legacy-corpus-v1', [_legacy_value(r) for r in legacy_rows]))))
+
+
 @dataclass(frozen=True)
 class _Head:
     ordinal: int | None
@@ -328,30 +363,50 @@ class RowsMixin:
         self._require_write()
         entry = self._check(handle)
         base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
-        if legacy_snapshot is not None:
-            v.fail('row_format_unsupported')
         import laya_view_vectors as vectors
         spec = vectors.spec(vector_spec)
-        manifest = vals.manifest(manifest, handle.policy_digest)
+        derive_manifest = manifest is None and type(legacy_snapshot) is dict and 'observation' in legacy_snapshot
+        if not derive_manifest:
+            manifest = vals.manifest(manifest, handle.policy_digest)
         saved = self._observe(entry, deadline=deadline)
         skips = _skip_patterns(saved)
+        legacy = None
+        if legacy_snapshot is not None:
+            # Legacy import: the corpus is re-derived at publish from the re-observed v6 snapshot.
+            manifest, legacy = self._legacy_evidence(handle, manifest, legacy_snapshot, spec, derive_manifest,
+                                                     deadline)
         with self._session() as db:
             if self._rows_head(db, handle) != base:
                 v.fail('view_head_conflict')
-            plan = self._derive(handle, manifest, skips, deadline=deadline)
+            plan = self._derive(handle, manifest, skips, deadline=deadline,
+                                legacy_paths=() if legacy is None else legacy['paths'])
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
             # Zero or complete: every eligible member's set is validated before any write.
             self._rows_coverage(db, [_card_row(m) for m in plan['members']], spec, full=True, deadline=deadline)
-        wanted = {member['path']: _card_row(member) for member in plan['members']}
+        if legacy is None:
+            wanted = {member['path']: _card_row(member) for member in plan['members']}
+        else:
+            spans = {}
+            for card in plan['cards']:
+                spans.setdefault(card['wiki_path'], []).extend(card['spans'])
+            wanted = {row['path']: row for row in _legacy_card_rows(legacy, plan['members'], spans)}
         items = [_stage_item(path, wanted.get(path)) for path in _sorted_paths(set(current) | set(wanted))
                  if current.get(path) != wanted.get(path)]
         final = [wanted[path] for path in _sorted_paths(wanted)]
-        files = _wiki_files(saved, plan['members'])
-        job_id = uuid.uuid4().hex
         capture_json = v.canonical(entry['capture'])
-        scan_digest = v.digest('memvane-row-stage-scan-v1', dict(
-            manifest=vals.manifest_digest(manifest), skip_paths=skips,
-            files=sorted([path, node] for path, node in files.items())))
+        if legacy is None:
+            files = _wiki_files(saved, plan['members'])
+            job_id = uuid.uuid4().hex
+            scan_digest = v.digest('memvane-row-stage-scan-v1', dict(
+                manifest=vals.manifest_digest(manifest), skip_paths=skips,
+                files=sorted([path, node] for path, node in files.items())))
+        else:
+            # A migration's provenance scan names its build, so a re-run prepare replays the same stage.
+            files = {}
+            job_id = (legacy_snapshot.get('build_id', legacy_snapshot['provenance_scan']['id'])
+                      if derive_manifest else uuid.uuid4().hex)
+            v.identifier(job_id, v.UUID)
+            scan_digest = _legacy_scan(manifest, skips, legacy, _legacy_corpus_rows(legacy))
         stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items,
                              spec)
         gen_id = vals.gen_id(job_id, v.digest(ROW_STAGE_SCHEMA, stage))
@@ -367,7 +422,10 @@ class RowsMixin:
                                           branch_key=handle.branch_key))
             elif tuple(view) != (handle.worktree_id, handle.branch_key):
                 v.fail('view_binding_conflict')
-            old = db.execute('SELECT job_id,state FROM s_stage_jobs WHERE view_id=?', (handle.view_id,)).fetchone()
+            old = db.execute('SELECT job_id,state,scan_digest FROM s_stage_jobs WHERE view_id=?',
+                             (handle.view_id,)).fetchone()
+            if old is not None and tuple(old) == (job_id, 'ready', scan_digest):
+                return gen_id  # exact replay of this stage
             if old is not None:
                 # One stage per view: an earlier unpublished or published stage
                 # is discarded in bounded steps before this one starts.
@@ -405,7 +463,7 @@ class RowsMixin:
         if not isinstance(gen_id, str) or not vals.GEN_ID.fullmatch(gen_id):
             v.fail('generation_id_invalid')
         if legacy_snapshot is not None:
-            v.fail('migration_publish_proof_invalid')
+            return self._rows_publish_legacy(handle, gen_id, entry, base, legacy_snapshot, deadline)
         saved = self._observe(entry, deadline=deadline)
         skips = _skip_patterns(saved)
 
@@ -443,6 +501,8 @@ class RowsMixin:
                                  spec)
             if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id:
                 v.fail('stage_identity_changed')
+            if any('fts_path' in v.parse_canonical(row['metadata_json']) for row in final):
+                v.fail('migration_publish_proof_required')
             return stage, items, current, final
 
         stage = files = rows = None
@@ -504,7 +564,7 @@ class RowsMixin:
                     incarnation=self._incarnation)
 
     def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, rollback=None,
-                    legacy_deltas=()):
+                    legacy_deltas=(), legacy_final=None, commit=None):
         """Changed card and legacy corpus rows, their head FTS rows, the sealed generation and the head CAS.
 
         Runs inside the caller's write transaction and commits it under the
@@ -531,6 +591,7 @@ class RowsMixin:
         cache = {}
         for old, new in legacy_deltas:
             _expired(deadline)
+            pair = {}
             for row, sign in ((old, -1), (new, 1)):
                 if row is None:
                     continue
@@ -538,7 +599,18 @@ class RowsMixin:
                 origin = row['origin']
                 value = fts_row if origin == 'base' else dict(fts_row, position=row['position'])
                 text_changes.append((origin, value, sign))
-                changes[origin].append(dict(old=fts_row, new=None) if sign < 0 else dict(old=None, new=fts_row))
+                pair['old' if sign < 0 else 'new'] = fts_row
+            origin = (old if old is not None else new)['origin']
+            if origin == 'base':
+                # One change per base path keeps its rowid when only the content moves.
+                if pair.get('old') != pair.get('new'):
+                    changes['base'].append(dict(old=pair.get('old'), new=pair.get('new')))
+            else:
+                # Sidecar rows: deletes first, then inserts in their original order.
+                if 'old' in pair:
+                    changes['sidecar'].append(dict(old=pair['old'], new=None))
+                if 'new' in pair:
+                    changes['sidecar'].append(dict(old=None, new=pair['new']))
         changes['sidecar'].sort(key=lambda c: (c['new'] is not None,))
         after_sidecar = bool(generation['sidecar_present'])
         before_sidecar = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -552,14 +624,28 @@ class RowsMixin:
             if after_sidecar:
                 inserts = sorted((c for c in changes['sidecar'] if c['new'] is not None),
                                  key=lambda c: self._legacy_position(legacy_deltas, c['new']['path_key']))
-                fts.apply_mapped_head_changes(db, view_id, [c for c in changes['sidecar'] if c['new'] is None],
-                                              sidecar=True, deadline=deadline)
+                for change in (c for c in changes['sidecar'] if c['new'] is None):
+                    fts.apply_mapped_head_changes(db, view_id, [change], sidecar=True, deadline=deadline)
                 for change in inserts:
                     fts.apply_mapped_head_changes(db, view_id, [change], sidecar=True, deadline=deadline)
             elif before_sidecar:
                 db.execute(f'DROP TABLE {fts.head_table(view_id, sidecar=True)}')
                 db.execute("DELETE FROM s_head_fts_map WHERE view_id=? AND origin='sidecar'", (view_id,))
-            if rollback is None:
+            if rollback is None and legacy_final is not None:
+                # A legacy import: the full head proof over both corpora.
+                final_cards, final_legacy, base_rows, side_rows, positions = legacy_final
+                fts.verify_head_index(db, view_id)
+                if side_rows is not None:
+                    fts.verify_head_index(db, view_id, sidecar=True)
+                self._fts_guard.freeze_head()
+                _, base_physical = fts.head_proof(db, view_id, base_rows, deadline, logical=False)
+                side_physical = None
+                if side_rows is not None:
+                    _, side_physical = fts.head_proof(db, view_id, side_rows, deadline, sidecar=True, logical=False)
+                physical = legacy_physical(base_physical, side_physical)
+                members = member_acc(final_cards, final_legacy)
+                text_acc = self._rows_legacy_fts_acc(base_rows, side_rows, positions)
+            elif rollback is None:
                 if after_sidecar:
                     v.fail('row_format_unsupported')  # publications write ordinary generations only
                 fts.verify_head_index(db, view_id)
@@ -607,7 +693,7 @@ class RowsMixin:
                 v.fail('view_head_conflict')
             before_commit(db)
             _expired(deadline)
-            db.commit()
+            (commit or (lambda db: db.commit()))(db)
         return generation
 
     def _rows_open_after(self, db, view_id, deltas):
@@ -1608,9 +1694,18 @@ class RowsMixin:
             v.fail('generation_missing')
         return row[0], row[1]
 
+    @contextmanager
+    def _joined_session(self):
+        """The caller's open read transaction, or a new short session when there is none."""
+        if self._db.in_transaction:
+            yield self._db
+        else:
+            with self._session() as db:
+                yield db
+
     def _eligible_members(self, gen_id, *, after=None, limit=None):
         """``[(path, blob_sha)]`` of a generation's eligible cards in path order, either format."""
-        with self._session() as db:
+        with self._joined_session() as db:
             if not self._rows:
                 sql = 'SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1'
                 args = [gen_id]
@@ -1629,13 +1724,50 @@ class RowsMixin:
             return [(row[0], row[1]) for row in db.execute(sql, args).fetchall()]
 
     def _eligible_count(self, gen_id):
-        with self._session() as db:
+        with self._joined_session() as db:
             if not self._rows:
                 return db.execute('SELECT COUNT(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
                                   (gen_id,)).fetchone()[0]
             view_id, ordinal = self._generation_rows_at(db, gen_id)
             return db.execute('SELECT COUNT(*) FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
                               'AND (gen_to IS NULL OR gen_to>?)', (view_id, ordinal, ordinal)).fetchone()[0]
+
+    def _eligible_member_after(self, gen_id, after):
+        """``(path, blob_sha, title)`` of the first eligible card after ``after`` in binary order, or None."""
+        with self._joined_session() as db:
+            if not self._rows:
+                return db.execute('SELECT path,blob_sha,display_title FROM wiki_members '
+                                  'WHERE gen_id=? AND eligible=1 AND path>? ORDER BY path COLLATE BINARY LIMIT 1',
+                                  (gen_id, after)).fetchone()
+            view_id, ordinal = self._generation_rows_at(db, gen_id)
+            row = db.execute('SELECT path,blob_sha,title FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
+                             'AND (gen_to IS NULL OR gen_to>?) AND path>? ORDER BY path COLLATE BINARY LIMIT 1',
+                             (view_id, ordinal, ordinal, after)).fetchone()
+            return None if row is None else tuple(row)
+
+    def _prepared_stage(self, gen_id, handle):
+        """The base head (and legacy marker) of a prepared or published generation, either format."""
+        with self._joined_session() as db:
+            if not self._rows:
+                row = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
+                                 'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (gen_id,)).fetchone()
+                if row is None:
+                    v.fail('generation_missing')
+                return vals.check_stage(v.parse_canonical(row['stage_json']), handle, self._incarnation)
+            published = db.execute('SELECT g.view_id,g.epoch,p.gen_id FROM s_generations g LEFT JOIN s_generations p '
+                                   'ON p.view_id=g.view_id AND p.ordinal=g.prior_ordinal WHERE g.gen_id=?',
+                                   (gen_id,)).fetchone()
+            if published is not None:
+                base = dict(view_id=published[0], gen_id=published[2], epoch=published[1] - 1,
+                            incarnation=self._incarnation)
+            else:
+                job = db.execute("SELECT base_gen_id,base_epoch FROM s_stage_jobs WHERE view_id=? AND job_id=? "
+                                 "AND state='ready'", (handle.view_id, gen_id[2:34])).fetchone()
+                if job is None:
+                    v.fail('generation_missing')
+                base = dict(view_id=handle.view_id, gen_id=job[0], epoch=job[1], incarnation=self._incarnation)
+            # Row stages keep only their scan digest; the legacy publication re-derives and compares it.
+            return dict(base=base, legacy=dict(observation=None))
 
     def _rows_preverify(self, handle, deadline):
         self._check(handle)
@@ -1645,4 +1777,140 @@ class RowsMixin:
                 return None
             self._rows_verify(db, head, handle, deadline)
         return head.gen_id
+
+    # -- legacy import publication -------------------------------------------
+
+    def _rows_publish_legacy(self, handle, gen_id, entry, base, legacy_snapshot, deadline):
+        """Publish a staged legacy import after re-deriving its corpus from the re-observed v6 snapshot.
+
+        The fresh observation, sidecar commitment and source revision are
+        proved on a pinned snapshot first; the corpus and members are then
+        re-derived from that observation and must reproduce the stage's scan
+        digest. Only the cut identity and the commit run under the shared
+        publication cut, as in the generation format.
+        """
+        from contextlib import contextmanager
+        import laya_reader_open as readers
+        import laya_shadow_migration as migration
+        import laya_view_store as store_module
+        from laya_view_store import _CUT_SECONDS, _live, _skip_patterns
+        v.exact(legacy_snapshot, (('snapshot',) if 'snapshot' in legacy_snapshot else ()) +
+                ('endpoint', 'decision', 'provenance_scan') +
+                (('source_revision',) if 'source_revision' in legacy_snapshot else ()))
+        endpoint, decision = legacy_snapshot['endpoint'], legacy_snapshot['decision']
+        if deadline is None:
+            deadline = time.monotonic() + migration._STEP_SECONDS
+        saved = self._observe(entry, deadline=deadline)
+        skips = _skip_patterns(saved)
+        with self._session() as db:
+            head = self._rows_head_row(db, handle.view_id)
+            published = db.execute('SELECT view_id,epoch FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()
+            if published is not None:
+                if (tuple(published) == (handle.view_id, base['epoch'] + 1) and head.gen_id == gen_id
+                        and head.epoch == base['epoch'] + 1):
+                    return self._rows_head(db, handle)  # exact replay of this publication only
+                v.fail('view_head_conflict')
+            if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
+                v.fail('view_head_conflict')
+        with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as fresh:
+            observed = migration.capture_effective(fresh, endpoint=endpoint, decision=decision, after=None,
+                                                   deadline=deadline)
+            if ('source_revision' in legacy_snapshot and
+                    migration._source_revision(fresh) != legacy_snapshot['source_revision']):
+                v.fail('migration_source_revision_unproved')
+            pinned = migration.publication_cut_identity(fresh, endpoint=endpoint, decision=decision,
+                                                        deadline=deadline)
+        manifest, legacy = self._legacy_evidence(
+            handle, None, dict(observation=observed['observation'], endpoint=endpoint, decision=decision,
+                               provenance_scan=legacy_snapshot['provenance_scan']), None, True, deadline)
+        legacy_rows = _legacy_corpus_rows(legacy)
+        with self._session() as db:
+            plan = self._derive(handle, manifest, skips, deadline=deadline, legacy_paths=legacy['paths'])
+            spans = {}
+            for card in plan['cards']:
+                spans.setdefault(card['wiki_path'], []).extend(card['spans'])
+            wanted = {row['path']: row for row in _legacy_card_rows(legacy, plan['members'], spans)}
+            current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
+            job = db.execute('SELECT job_id,incarnation,base_gen_id,base_epoch,capture_json,policy_digest,'
+                             'scan_digest,state FROM s_stage_jobs WHERE view_id=?', (handle.view_id,)).fetchone()
+        if job is None or job[7] != 'ready' or gen_id[2:34] != job[0]:
+            v.fail('generation_missing')
+        items = [_stage_item(path, wanted.get(path)) for path in _sorted_paths(set(current) | set(wanted))
+                 if current.get(path) != wanted.get(path)]
+        final = [wanted[path] for path in _sorted_paths(wanted)]
+        scan_digest = _legacy_scan(manifest, skips, legacy, legacy_rows)
+        stage = _stage_value(self._incarnation, handle, saved, base, job[0], scan_digest, skips, final, items)
+        if (tuple(job[1:7]) != (self._incarnation, base['gen_id'], base['epoch'], v.canonical(entry['capture']),
+                                handle.policy_digest, scan_digest)
+                or vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id):
+            v.fail('migration_snapshot_changed')
+        base_rows, side_rows, positions = self._rows_legacy_fts(legacy_rows, cache={}, deadline=deadline)
+
+        @contextmanager
+        def publication_cut():
+            cut_deadline = min(deadline, time.monotonic() + _CUT_SECONDS)
+            with readers.reader_publish_cut(endpoint, deadline=cut_deadline):
+                if migration.current_cut_identity(endpoint, decision=decision, deadline=cut_deadline) != pinned:
+                    v.fail('migration_snapshot_changed')
+                yield cut_deadline
+
+        def commit(db):
+            if time.monotonic() >= deadline:
+                v.fail('reader_snapshot_deadline')
+            with publication_cut() as cut_deadline:
+                if time.monotonic() >= cut_deadline:
+                    v.fail('reader_snapshot_deadline')
+                db.commit()
+
+        remaining = max(0, int(min(deadline - time.monotonic(), _CUT_SECONDS) * 1000))
+        if not remaining:
+            v.fail('reader_snapshot_deadline')
+        previous_timeout = self._db.execute('PRAGMA busy_timeout').fetchone()[0]
+        self._db.execute('PRAGMA busy_timeout=' + str(remaining))
+        try:
+            with self._session(write=True) as db:
+                head = self._rows_head_row(db, handle.view_id)
+                if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
+                    v.fail('view_head_conflict')
+                again = db.execute('SELECT job_id,scan_digest,state FROM s_stage_jobs WHERE view_id=?',
+                                   (handle.view_id,)).fetchone()
+                stored = [dict(zip(vals.STAGE_ITEM_FIELDS, tuple(row))) for row in db.execute(
+                    'SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json FROM s_stage_items '
+                    'WHERE job_id=? ORDER BY path', (job[0],))]
+                if again is None or tuple(again) != (job[0], scan_digest, 'ready') or stored != items:
+                    v.fail('migration_snapshot_changed')
+                _live(db, saved, {})
+                before = {row['path']: row for row in self._rows_open(db, handle.view_id)}
+                deltas = [(before.get(item['path']), _item_row(item)) for item in items]
+                old_legacy = ({} if head.ordinal is None else
+                              {(r['origin'], r['path_key']): r
+                               for r in self._rows_open_legacy(db, handle.view_id, head.ordinal)})
+                new_legacy = {(r['origin'], r['path_key']): r for r in legacy_rows}
+                legacy_deltas = [(old_legacy.get(key), new_legacy.get(key))
+                                 for key in sorted(set(old_legacy) | set(new_legacy),
+                                                   key=lambda k: (k[0], k[1].encode('utf8')))
+                                 if old_legacy.get(key) != new_legacy.get(key)]
+
+                def before_commit(db):
+                    store_module._stage_mark_abandon(db, job[0])
+                    store_module._current_capture(saved, self._repository, self._policy, entry['capture'],
+                                                  deadline=deadline)
+                    _live(db, saved, {})
+
+                generation = dict(gen_id=gen_id, view_id=handle.view_id, epoch=base['epoch'] + 1,
+                                  prior_ordinal=head.ordinal, kind='legacy',
+                                  sidecar_present=int(side_rows is not None),
+                                  capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
+                                  skip_digest=stage['skip_digest'], **_coverage_fields(None),
+                                  expected_member_digest=member_digest(final, legacy_rows),
+                                  legacy_json=v.canonical(_legacy_observation(legacy)),
+                                  source_digest=v.digest('memvane-row-sources-v1', []))
+                written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,
+                                           legacy_deltas=legacy_deltas,
+                                           legacy_final=(final, legacy_rows, base_rows, side_rows, positions),
+                                           commit=commit)
+        finally:
+            self._db.execute('PRAGMA busy_timeout=' + str(previous_timeout))
+        return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
+                    incarnation=self._incarnation)
 

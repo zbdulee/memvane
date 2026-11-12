@@ -1924,6 +1924,16 @@ SHADOW_PREPARE_SECONDS = 60.0
 SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
 SHADOW_ACTIVATION = 'shadow-migration-activation.json'
 SHADOW_CANDIDATE = 'shadow-candidate.sqlite'
+
+
+def _shadow_row_format():
+    """New shadow candidates stay in the generation format until the sync worker publishes row heads.
+
+    Fixture runs (``QMD_SETUP_GUARD_FIXTURE=1``) may create row-format
+    candidates with ``MEMVANE_TEST_SHADOW_ROW_FORMAT=1``; no other environment does.
+    """
+    return (os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
+            and os.environ.get('MEMVANE_TEST_SHADOW_ROW_FORMAT') == '1')
 # A restart (lost candidate, moved state or project, explicit resume after a
 # rollback) names a fresh candidate; the old store and intent stay (D4).
 _SHADOW_CANDIDATE_NAME = re.compile(r'shadow-candidate(?:-[0-9a-f]{32})?\.sqlite')
@@ -2158,7 +2168,8 @@ def _shadow_step(decision, state, executing_root, store, deadline, provider=None
         repository = checkout.register_repository(str(project))
         worktree = checkout.register_worktree(str(project), repository)
         ViewStore.create(candidate, project_root=str(project), repository=repository,
-                         worktree=worktree, scope_id=decision['scopeId']).close()
+                         worktree=worktree, scope_id=decision['scopeId'],
+                         row_generations=_shadow_row_format()).close()
         return 'create', None, store, None
     if store is None:
         store = _shadow_open(state, project, decision['scopeId'], candidate,
