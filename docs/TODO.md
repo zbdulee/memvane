@@ -33,6 +33,72 @@
 
 - 대기 큐(64경로)를 넘는 개별 compile 알림은 큐에 추가되지 않고 대상 프로젝트의 full-scan wake만 offer된다. 초과분을 보존할지 정한다. 전체 원문 compile 권한으로 넓히지 않는다. 현재 계약은 [프로젝트 밖 원문 편집 라우팅](out-of-project-edit-routing.md)에 있다.
 
+## 세션 위치와 무관한 recall: hook이 도는 세션이면 recall도 돈다
+
+owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세션이라면 세션을 어디서 열었든, 작업 대상 프로젝트의 카드가 만들어지고 그 프로젝트의 recall도 주입돼야 한다. 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다.
+
+- **현재 동작.**
+  - route 선택은 hook payload의 `cwd` 기준이다(`laya_host_response.select_route(cwd, …)`, `config._project_search_dirs`). cwd에서 HOME까지 위로만 올라가며 가장 가까운 `.memvane/settings.json`을 찾고, 하위 디렉터리는 보지 않는다.
+  - 편집 hook(`_edit_targets`)은 세션 cwd가 선택된 프로젝트 안에 있어야 동작한다.
+  - 프로젝트 밖 원문 편집 라우팅([계약](out-of-project-edit-routing.md))은 선택된 A 세션에서 선택된 B 원문을 고칠 때 B 워커에 알림을 보낸다. 그래서 B 카드는 만들어진다. 하지만 recall 컨텍스트는 A 색인만 쓰므로 그 세션에서 B 카드는 보이지 않는다.
+  - 미온보딩 A 세션은 라우팅에서 빠진다. 예: 여러 작품을 하위 폴더로 둔 monorepo 루트(`.memvane` 없음)에서 연 세션은 활성화된 하위 프로젝트 파일을 고쳐도 카드도 recall도 없다.
+- **목표.**
+  - 편집: 세션 cwd가 어디든(미온보딩 루트 포함) 편집한 원문이 속한 선택 프로젝트의 compile로 이어진다.
+  - recall: 세션이 지금 다루는 선택 프로젝트(들)의 카드가 프롬프트에 주입된다. cwd가 그 프로젝트 밖이어도 그렇다.
+- **방향 후보.**
+  - 편집 라우팅 대상 확대: 편집 경로에서 가장 가까운 선택 프로젝트를 찾아 알린다. A가 없거나 미온보딩이어도 알린다. 지금 알림 계약의 증명·상한·제외 규칙(숨김 경로, wiki, `skipPaths`, symlink 탈출)은 그대로 쓴다.
+  - 세션 작업 집합(working set): 세션 id별로 이번 세션에서 편집·조회한 원문이 속한 선택 프로젝트 목록을 짧은 TTL로 기록한다. recall은 cwd 프로젝트와 작업 집합의 프로젝트를 후보로 쓴다.
+  - 하위 프로젝트 탐색: cwd에 설정이 없으면 cwd 아래의 선택 프로젝트를 상한(개수·깊이·시간) 안에서 찾는다. 작업 집합이 비어 있으면 주입하지 않거나 프롬프트에 나온 경로·작품명으로 고른다.
+  - 다중 프로젝트 병합: 후보 프로젝트마다 자기 route 증명으로 질의한다. 결과는 프로젝트 이름을 붙여 나누고, 프로젝트별 예산 안에서 병합한다.
+- **먼저 정할 계약.**
+  - 증명과 신뢰: 프로젝트마다 기존 selected route 증명을 따로 통과해야 한다. 한 프로젝트 증명 실패가 다른 프로젝트 주입을 막지 않는다.
+  - hook 예산: 여러 색인을 질의해도 UserPromptSubmit 2초 예산 안에 끝난다. 벡터 질의는 resident service 한 번 호출로 묶을지 정한다.
+  - 격리: B 카드를 A 세션에 주입하는 것을 기본 허용할지 정한다. owner 목표는 허용이다. 프로젝트별 opt-out 설정 키가 필요한지도 정한다.
+  - 작업 집합 저장 위치·수명: 세션 id, TTL, 호스트별(Claude·Codex·Hermes) 동일 동작, subagent 세션 처리(「recall 품질」의 subagent 주입 항목과 함께 정한다).
+  - 선택 기준: cwd 프로젝트, 작업 집합, 프롬프트 언급 경로의 우선순위와 동률 처리.
+  - 연결 worktree·preview·blocked·bundle drift 대상의 처리. 지금 라우팅 제외 규칙과 맞춘다.
+  - 미온보딩 루트의 SessionStart 안내: 하위에 선택 프로젝트가 있으면 안내 문구를 바꿀지 정한다.
+- **검증 기준.**
+  - 미온보딩 monorepo 루트 세션에서 하위 선택 프로젝트 원문을 고치면 그 프로젝트 카드가 생긴다. 다음 프롬프트에 그 카드가 주입된다.
+  - 선택된 A 세션에서 B 원문을 고치면 B 카드가 생기고, 이후 B 관련 프롬프트에 B 카드가 주입된다.
+  - 다중 프로젝트 질의가 hook 예산 안에 끝나고, 한 프로젝트 실패가 다른 프로젝트 주입을 막지 않는다.
+- 새 hook action·wake kind·lock이 필요한지는 설계 단계에서 판단한다.
+
+## 선택 프로젝트 레지스트리: 등록 경로를 DB로 관리한다
+
+「세션 위치와 무관한 recall」과 「연결 git worktree의 카드 수명 주기」가 이 레지스트리에 기댄다. 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다.
+
+- **현재 동작.**
+  - 세션 프로젝트는 hook payload `cwd`에서 위로 올라가며 `.memvane/settings.json`을 찾아 정한다(`config._project_search_dirs`).
+  - 프로젝트 밖 원문 편집 라우팅(`laya_external_edits`)은 편집 hook마다 state base(`~/.local/state/memvane/<install>`)를 최대 128개(`MAX_INSTALLS`)까지 훑는다. 각 install의 journal 메타데이터를 읽고 가장 긴 원문 root 접두사로 대상을 고른다(2초 예산).
+  - 초기 빌드 pointer(`initial-builds/<projectRoot 해시>.json`), 설치별 state 디렉터리, 연결 worktree view가 따로 흩어져 있다. 사용자 단위 단일 색인은 없다.
+  - uninstall 뒤 정리 단계가 없다. retire·abandon·restore는 저장소와 journal을 남기고, 거절된 prepare도 state 디렉터리를 남긴다(2026-11-10 관측: 잠금 파일만 있는 `efb6dee9…`). 이런 디렉터리도 계속 훑기 대상이다.
+- **목표.**
+  - 사용자 단위 레지스트리 DB(state base 아래 SQLite)가 등록 경로를 가진다. 항목은 프로젝트 root, worktree root, install id, state root, 종류(main·worktree), 상태다.
+  - hook은 cwd·편집 경로·세션 작업 집합을 레지스트리의 최장 접두사 조회로 프로젝트에 대응시킨다. 파일시스템을 훑지 않는다.
+  - install·uninstall이 등록 lifecycle을 결정한다.
+- **lifecycle.**
+  - 등록: 온보딩 activate가 성공하면 프로젝트 root를 등록한다. 연결 worktree view가 처음 게시되면 그 worktree root를 같은 install의 하위 항목으로 등록한다.
+  - 해제: uninstall(선택 해제)이 끝나면 그 install의 프로젝트·worktree 항목을 지운다. worktree는 `git worktree remove`·prune이 관측되면 해제한다.
+  - 이동: 프로젝트 디렉터리 이동·이름 변경(`laya_project_dir_move`, state move)은 항목을 원자적으로 갱신한다.
+  - 프로젝트 폴더 삭제: 등록된 프로젝트·worktree root가 사라지면 그 항목을 해제 대상으로 표시한다. uninstall과 같은 정리 범위를 적용하되, state 디렉터리·저장소·학습 상태 삭제는 uninstall의 승인 규칙을 따른다. 폴더가 다시 나타나면(같은 경로 재생성, 볼륨 재연결) 자동으로 다시 선택하지 않는다. 같은 install로 되살릴지 새 온보딩으로 볼지 정한다.
+  - reconcile 시점: 상주 서비스(`laya_resident_service`)가 시작할 때 레지스트리 항목을 실제 폴더와 맞춘다. root 존재 여부, `.memvane` 존재 여부, inode 변경, journal 선택 상태, worktree 등록 상태(`git worktree list`)를 본다. 서비스가 오래 떠 있으면 주기적으로도 맞춘다. 맞추는 동안 공유 lock을 쥐지 않고(`context/pr10-decision-draft.md` §6 원칙), 항목마다 짧게 끝낸다.
+  - 외장·네트워크 볼륨처럼 잠시 사라지는 경로는 즉시 해제하지 않는다. 유예 기간(또는 연속 관측 횟수)을 둔다.
+- **먼저 정할 계약.**
+  - 권한: 레지스트리는 조회 색인일 뿐 권한을 주지 않는다. 조회한 뒤 기존 selected route 증명(journal·route·attestation)을 그대로 통과해야 한다. 항목과 증명이 어긋나면 그 항목을 건너뛰고 백그라운드 reconcile이 고친다.
+  - uninstall의 정의와 단일 진입점: 지금은 `restore-index-origin`, `retire-index-origin`, `abandon-*`로 흩어져 있다. 진입점을 하나로 모을지, uninstall이 지우는 범위(route 파일, state 디렉터리, wiki 카드, 학습 상태)와 owner 승인 단계도 정한다.
+  - 동시성과 호환: Claude·Codex·Hermes의 서로 다른 번들 버전이 같은 레지스트리를 읽고 쓴다. schema 버전, 잠금, 구 번들이 레지스트리 없이 동작할 때의 fallback(지금의 훑기)을 정한다.
+  - 기존 설치 이전: 첫 실행 때 state base를 한 번 훑어 레지스트리를 채운다(backfill).
+  - 오래된 항목: 경로 소실, inode 변경, journal 미선택을 판정하는 규칙, 일시적 소실의 유예 기간, 서비스 시작·주기 reconcile의 예산을 정한다.
+  - 연결 worktree: 등록 단위와 main 항목과의 관계를 정한다. 「연결 git worktree의 카드 수명 주기」의 계약과 맞춘다.
+- **검증 기준.**
+  - 프로젝트 해석과 프로젝트 밖 편집 라우팅이 state base 훑기 없이 레지스트리 조회로 끝난다.
+  - uninstall 뒤 그 경로의 세션은 미온보딩과 같이 동작하고, 레지스트리와 훑기 대상에서 빠진다.
+  - worktree 제거 뒤 그 worktree 항목이 해제된다.
+  - 프로젝트 폴더를 지우고 서비스를 다시 시작하면 그 항목이 해제 대상이 되고, 훑기·라우팅·recall 대상에서 빠진다. 잠시 분리된 볼륨은 유예 기간 동안 해제되지 않는다.
+  - 레지스트리가 손상되거나 없어도 기존 증명 경로로 안전하게 동작하거나 거절한다.
+- 새 hook action·wake kind·lock이 필요한지는 설계 단계에서 판단한다.
+
 ## 세대 저장 구조: 전체 사본에서 행 단위 버전으로
 
 PR10 GC 뒤에 진행한다. 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다. 저장 스키마·recall 읽기 경로·봉인 증명이 함께 바뀐다.
