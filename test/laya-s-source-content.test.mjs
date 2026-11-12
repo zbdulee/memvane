@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 test('S source content identity is independent of checkout and rejects inconsistent rows', () => {
-  const python = process.env.LANE_B_PYTHON;
-  assert.ok(['/usr/bin/python3', '/opt/homebrew/bin/python3.13'].includes(python));
+  // The interpreter on PATH, like the other fixture tests (CI and both local Pythons).
+  const python = 'python3';
   const home = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), 's-source-')));
   try {
     const result = spawnSync(python, ['-B', 'test/fixtures/laya-s-source-content-checks.py'], {

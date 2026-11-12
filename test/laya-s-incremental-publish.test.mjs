@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 test('S view publishes changed content without copying the whole FTS', async () => {
-  const python = process.env.LANE_B_PYTHON;
-  assert.ok(['/usr/bin/python3', '/opt/homebrew/bin/python3.13'].includes(python));
+  // The interpreter on PATH, like the other fixture tests (CI and both local Pythons).
+  const python = 'python3';
   const home = await realpath(await mkdtemp(join(await realpath(tmpdir()), 's-publish-')));
   try {
     const child = spawn(python, ['-B', 'test/fixtures/laya-s-incremental-publish-checks.py'], {
