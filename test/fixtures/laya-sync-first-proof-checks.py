@@ -89,6 +89,8 @@ class SyncFirstProofChecks(unittest.TestCase):
                 'test_capacity_worker_propagates_pending_rollback',
                 'test_capacity_worker_defers_physical_window_busy',
                 'test_capacity_worker_propagates_physical_busy_pending_rollback',
+                'test_capacity_worker_defers_new_write_proof_deadline_with_stage_timings',
+                'test_capacity_worker_defers_new_write_proof_physical_busy',
             }
             if self._testMethodName in absent_sidecar_cases:
                 import laya_incremental_docs
