@@ -76,7 +76,10 @@ def acc_update(acc, domain, row, sign=1):
 
 
 def acc_value(text):
-    acc = v.parse_canonical(text)
+    return _acc_checked(v.parse_canonical(text))
+
+
+def _acc_checked(acc):
     v.exact(acc, ('bytes', 'count', 'sum'))
     if (type(acc['bytes']) is not int or type(acc['count']) is not int or acc['bytes'] < 0 or acc['count'] < 0
             or not isinstance(acc['sum'], str) or len(acc['sum']) != 64
@@ -116,23 +119,60 @@ def _card_source_key(row):
     return (row['card_path'].encode('utf8'), row['source_path'].encode('utf8'))
 
 
+_SOURCE_DOMAINS = (_SOURCE_DOMAIN, _CARD_SOURCE_DOMAIN)
+_ACC_KEYS = ('bytes', 'count', 'sum')
+
+
 def member_acc(cards, legacy_rows=(), sources=(), card_sources=()):
+    """The ``member_acc`` value: the card accumulator (card rows and a legacy
+    generation's FTS corpus rows) with the source membership accumulator
+    (source rows and card source rows) under ``sources``."""
     acc = EMPTY_ACC
     for row in cards:
         acc = acc_update(acc, _CARD_DOMAIN, _card_value(row))
     for row in legacy_rows:
         acc = acc_update(acc, _LEGACY_DOMAIN, _legacy_value(row))
+    source = EMPTY_ACC
     for row in sources:
-        acc = acc_update(acc, _SOURCE_DOMAIN, _source_value(row))
+        source = acc_update(source, _SOURCE_DOMAIN, _source_value(row))
     for row in card_sources:
-        acc = acc_update(acc, _CARD_SOURCE_DOMAIN, _card_source_value(row))
-    return acc
+        source = acc_update(source, _CARD_SOURCE_DOMAIN, _card_source_value(row))
+    return dict(acc, sources=source)
 
 
-def member_digest(cards, legacy_rows=(), sources=(), card_sources=()):
-    """Card rows, a legacy generation's FTS corpus rows, the source rows and the card source
-    rows as one multiset commitment."""
-    return acc_digest('member', member_acc(cards, legacy_rows, sources, card_sources))
+def members_update(members, domain, row, sign=1):
+    """Add or remove one row in the accumulator its domain belongs to."""
+    if domain in _SOURCE_DOMAINS:
+        return dict(members, sources=acc_update(members['sources'], domain, row, sign))
+    return dict(acc_update({k: members[k] for k in _ACC_KEYS}, domain, row, sign), sources=members['sources'])
+
+
+def members_value(text):
+    members = v.parse_canonical(text)
+    v.exact(members, _ACC_KEYS + ('sources',))
+    _acc_checked({k: members[k] for k in _ACC_KEYS})
+    _acc_checked(members['sources'])
+    return members
+
+
+def members_digest(members):
+    """The card side's ``member_digest``."""
+    return acc_digest('member', {k: members[k] for k in _ACC_KEYS})
+
+
+def members_source_digest(members):
+    """``source_digest``: the source membership accumulator under its own domain."""
+    return acc_digest('source', members['sources'])
+
+
+def member_digest(cards, legacy_rows=()):
+    """Card rows and a legacy generation's FTS corpus rows as one multiset commitment."""
+    return members_digest(member_acc(cards, legacy_rows))
+
+
+def source_digest(sources=(), card_sources=()):
+    """Source rows and card source rows as one multiset commitment."""
+    return members_source_digest(member_acc((), (), sources, card_sources))
 
 
 def fts_acc(rows, origin='normal', positions=None):
@@ -206,7 +246,7 @@ def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, f
     value = dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
                  view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
                  scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
-                 member_digest=member_digest(final, (), sources, card_sources),
+                 member_digest=member_digest(final), source_digest=source_digest(sources, card_sources),
                  items_digest=v.digest('memvane-row-stage-items-v1', items))
     if source_items:
         value['source_items_digest'] = v.digest('memvane-row-stage-sources-v1', list(source_items))
@@ -843,7 +883,7 @@ class RowsMixin:
                               capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
                               skip_digest=stage['skip_digest'], **_coverage_fields(spec),
                               expected_member_digest=stage['member_digest'], legacy_json=None,
-                              source_digest=v.digest('memvane-row-sources-v1', []))
+                              expected_source_digest=stage['source_digest'])
             source_deltas = self._source_diff(self._rows_open_sources(db, handle.view_id), final_sources)
             card_source_deltas = self._card_source_diff(self._rows_open_card_sources(db, handle.view_id),
                                                         final_card_sources)
@@ -960,36 +1000,27 @@ class RowsMixin:
                 text_acc = fts_acc(rows)
             else:
                 current, prior = rollback
-                members, text_acc = acc_value(current['member_acc']), acc_value(current['fts_acc'])
-                for old, new in deltas:
-                    if old is not None:
-                        members = acc_update(members, _CARD_DOMAIN, _card_value(old), -1)
-                    if new is not None:
-                        members = acc_update(members, _CARD_DOMAIN, _card_value(new))
-                for old, new in legacy_deltas:
-                    if old is not None:
-                        members = acc_update(members, _LEGACY_DOMAIN, _legacy_value(old), -1)
-                    if new is not None:
-                        members = acc_update(members, _LEGACY_DOMAIN, _legacy_value(new))
-                for old, new in source_deltas:
-                    if old is not None:
-                        members = acc_update(members, _SOURCE_DOMAIN, _source_value(old), -1)
-                    if new is not None:
-                        members = acc_update(members, _SOURCE_DOMAIN, _source_value(new))
-                for old, new in card_source_deltas:
-                    if old is not None:
-                        members = acc_update(members, _CARD_SOURCE_DOMAIN, _card_source_value(old), -1)
-                    if new is not None:
-                        members = acc_update(members, _CARD_SOURCE_DOMAIN, _card_source_value(new))
+                members, text_acc = members_value(current['member_acc']), acc_value(current['fts_acc'])
+                for domain, value, pairs in ((_CARD_DOMAIN, _card_value, deltas),
+                                             (_LEGACY_DOMAIN, _legacy_value, legacy_deltas),
+                                             (_SOURCE_DOMAIN, _source_value, source_deltas),
+                                             (_CARD_SOURCE_DOMAIN, _card_source_value, card_source_deltas)):
+                    for old, new in pairs:
+                        if old is not None:
+                            members = members_update(members, domain, value(old), -1)
+                        if new is not None:
+                            members = members_update(members, domain, value(new))
                 for origin, row, sign in text_changes:
                     text_acc = acc_update(text_acc, _FTS_DOMAINS[origin], row, sign)
-                if (members, text_acc) != (acc_value(prior['member_acc']), acc_value(prior['fts_acc'])):
+                if (members, text_acc) != (members_value(prior['member_acc']), acc_value(prior['fts_acc'])):
                     v.fail('rollback_fts_mismatch')
                 physical = deferred_physical(current['physical_fts_digest'], generation['gen_id'])
             generation = dict(generation, ordinal=ordinal, member_acc=v.canonical(members),
-                              fts_acc=v.canonical(text_acc), member_digest=acc_digest('member', members),
+                              fts_acc=v.canonical(text_acc), member_digest=members_digest(members),
+                              source_digest=members_source_digest(members),
                               logical_fts_digest=acc_digest('fts', text_acc), physical_fts_digest=physical)
-            if rollback is None and generation['member_digest'] != generation.pop('expected_member_digest'):
+            if rollback is None and (generation['member_digest'] != generation.pop('expected_member_digest')
+                                     or generation['source_digest'] != generation.pop('expected_source_digest')):
                 v.fail('generation_rows_mismatch')
             generation['seal_digest'] = seal_digest(_seal_fields(self._incarnation, generation))
             columns = tuple(generation)
@@ -1136,8 +1167,7 @@ class RowsMixin:
                               kind='rollback', sidecar_present=prior['sidecar_present'],
                               capture_json=prior['capture_json'], policy_digest=prior['policy_digest'],
                               skip_digest=prior['skip_digest'], recipe_id=prior['recipe_id'],
-                              profile_id=prior['profile_id'], coverage=prior['coverage'],
-                              source_digest=prior['source_digest'], legacy_json=None)
+                              profile_id=prior['profile_id'], coverage=prior['coverage'], legacy_json=None)
 
             def before_commit(db):
                 job = db.execute("SELECT job_id FROM s_stage_jobs WHERE view_id=? AND state<>'abandon'",
@@ -1391,8 +1421,7 @@ class RowsMixin:
                        capture_json=generation['checkout_evidence'], policy_digest=generation['policy_digest'],
                        skip_digest=v.digest('memvane-row-skip-v1', stage['skip_paths']),
                        **_coverage_fields(stage['vector_spec']),
-                       member_digest=acc_digest('member', members),
-                       source_digest=v.digest('memvane-row-sources-v1', []),
+                       member_digest=members_digest(members), source_digest=members_source_digest(members),
                        logical_fts_digest=acc_digest('fts', text_acc),
                        physical_fts_digest=item['seal']['fts_storage_digest'],
                        member_acc=v.canonical(members), fts_acc=v.canonical(text_acc),
@@ -1577,7 +1606,8 @@ class RowsMixin:
                              self._rows_open_sources(db, generation['view_id'], generation['ordinal']),
                              self._rows_open_card_sources(db, generation['view_id'], generation['ordinal']))
         if (v.canonical(members) != generation['member_acc']
-                or acc_digest('member', members) != generation['member_digest']):
+                or members_digest(members) != generation['member_digest']
+                or members_source_digest(members) != generation['source_digest']):
             v.fail('generation_rows_mismatch')
         if generation['sidecar_present'] != int(any(row['origin'] == 'sidecar' for row in legacy_rows)):
             v.fail('generation_rows_mismatch')
@@ -2314,7 +2344,7 @@ class RowsMixin:
                                   skip_digest=stage['skip_digest'], **_coverage_fields(None),
                                   expected_member_digest=member_digest(final, legacy_rows),
                                   legacy_json=v.canonical(_legacy_observation(legacy)),
-                                  source_digest=v.digest('memvane-row-sources-v1', []))
+                                  expected_source_digest=source_digest())
                 source_deltas = [(row, None) for row in self._rows_open_sources(db, handle.view_id)]
                 card_source_deltas = [(row, None) for row in self._rows_open_card_sources(db, handle.view_id)]
                 written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,

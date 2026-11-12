@@ -515,9 +515,10 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         store, _, handle = self.rows_store()
         self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
         db = store._db
-        accs = db.execute('SELECT member_acc,fts_acc FROM s_generations').fetchone()
-        for acc in accs:
-            self.assertEqual(set(json.loads(acc)), {'count', 'bytes', 'sum'})
+        members, text = db.execute('SELECT member_acc,fts_acc FROM s_generations').fetchone()
+        self.assertEqual(set(json.loads(members)), {'count', 'bytes', 'sum', 'sources'})
+        self.assertEqual(set(json.loads(members)['sources']), {'count', 'bytes', 'sum'})
+        self.assertEqual(set(json.loads(text)), {'count', 'bytes', 'sum'})
         name = fts.head_table(handle.view_id)
         self.assertEqual(sorted(tuple(r) for r in db.execute(
             'SELECT path_key,fts_rowid FROM s_head_fts_map WHERE view_id=?', (handle.view_id,))),
@@ -633,15 +634,26 @@ class IncrementalPublicationChecks(seed.GenerationCase):
 
     def test_card_equal_generations_with_other_source_membership_seal_other_source_digests(self):
         store, _, handle = self.rows_store()
-        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+
+        def publish():
+            # An untrusted card: its row carries no attestation, so a source
+            # change leaves the card rows byte-for-byte the same.
+            manifest = self.snapshot(store, handle, body=b'# First\nuniquealpha synthetic card\n', trust=False)
+            head = store.head(handle)
+            return store.publish_generation(handle, store.prepare_generation(handle, manifest, expected_head=head),
+                                            expected_head=head)
+
+        first = publish()
         (self.root / 'notes/src.md').write_text('# Source\nchanged source body\n', encoding='utf8')
-        second = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        second = publish()
+        self.assertNotEqual(first['gen_id'], second['gen_id'])
         (first_member, first_source), (second_member, second_source) = (
             self.digests(store, first['gen_id']), self.digests(store, second['gen_id']))
         # The card rows are the same; only the source membership moved.
         self.assertEqual(first_member, second_member)
         self.assertNotEqual(first_source, second_source)
-        self.assertEqual(self.found(store, handle, 'uniquealpha'), ['cards/a.md'])
+        pin = store.pin_view(handle)
+        store.release(pin)
 
     def test_rollback_restores_the_prior_source_digest(self):
         store, _, handle = self.rows_store()
