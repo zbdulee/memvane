@@ -126,6 +126,8 @@ def row_generation_statements():
         member_digest TEXT NOT NULL, source_digest TEXT NOT NULL, logical_fts_digest TEXT NOT NULL,
         physical_fts_digest TEXT NOT NULL,
         member_acc TEXT NOT NULL CHECK(json_valid(member_acc)), fts_acc TEXT NOT NULL CHECK(json_valid(fts_acc)),
+        legacy_json TEXT CHECK((kind='legacy')=(legacy_json IS NOT NULL)
+          AND (legacy_json IS NULL OR json_valid(legacy_json))),
         seal_digest TEXT NOT NULL, UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal), UNIQUE(gen_id,view_id),
         CHECK((recipe_id IS NULL)=(profile_id IS NULL)),
         CHECK(coverage='lexical' OR recipe_id IS NOT NULL))''',

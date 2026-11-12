@@ -135,7 +135,7 @@ def _seal_fields(incarnation, generation):
     keys = ('ordinal', 'gen_id', 'view_id', 'epoch', 'prior_ordinal', 'kind', 'sidecar_present',
             'capture_json', 'policy_digest', 'skip_digest', 'recipe_id', 'profile_id', 'coverage',
             'member_digest', 'source_digest', 'logical_fts_digest', 'physical_fts_digest',
-            'member_acc', 'fts_acc')
+            'member_acc', 'fts_acc', 'legacy_json')
     return dict(incarnation=incarnation, **{k: generation[k] for k in keys})
 
 
@@ -182,6 +182,24 @@ def _coverage_fields(spec):
     if spec is None:
         return dict(recipe_id=None, profile_id=None, coverage='lexical')
     return dict(recipe_id=spec['recipe_id'], profile_id=spec['profile_id'], coverage='complete')
+
+
+LEGACY_OBSERVATION_FIELDS = ('observation', 'corpus_observation', 'sidecar_observation', 'sidecar_commitment',
+                             'scan')
+
+
+def _legacy_observation(legacy):
+    """The v6 observation values a legacy generation keeps in ``legacy_json``."""
+    return {key: legacy.get(key) for key in LEGACY_OBSERVATION_FIELDS}
+
+
+def _pin_seal_value(generation):
+    return dict(seal_digest=generation['seal_digest'])
+
+
+def _pin_seal(generation):
+    """The pin's seal commitment, computed like the generation format's pin seal."""
+    return v.digest('memvane-read-pin-seal-v1', _pin_seal_value(generation))
 
 
 def _path_allowed(path, prefixes, exclusions):
@@ -478,7 +496,7 @@ class RowsMixin:
                               prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
                               capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
                               skip_digest=stage['skip_digest'], **_coverage_fields(spec),
-                              expected_member_digest=stage['member_digest'],
+                              expected_member_digest=stage['member_digest'], legacy_json=None,
                               source_digest=v.digest('memvane-row-sources-v1', []))
             written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline,
                                        legacy_deltas=legacy_deltas)
@@ -705,7 +723,7 @@ class RowsMixin:
                               capture_json=prior['capture_json'], policy_digest=prior['policy_digest'],
                               skip_digest=prior['skip_digest'], recipe_id=prior['recipe_id'],
                               profile_id=prior['profile_id'], coverage=prior['coverage'],
-                              source_digest=prior['source_digest'])
+                              source_digest=prior['source_digest'], legacy_json=None)
 
             def before_commit(db):
                 job = db.execute("SELECT job_id FROM s_stage_jobs WHERE view_id=? AND state<>'abandon'",
@@ -953,7 +971,8 @@ class RowsMixin:
                        source_digest=v.digest('memvane-row-sources-v1', []),
                        logical_fts_digest=acc_digest('fts', text_acc),
                        physical_fts_digest=item['seal']['fts_storage_digest'],
-                       member_acc=v.canonical(members), fts_acc=v.canonical(text_acc))
+                       member_acc=v.canonical(members), fts_acc=v.canonical(text_acc),
+                       legacy_json=v.canonical(_legacy_observation(stage['legacy'])) if legacy else None)
             item['row'] = row
             prior_ordinal = generation['ordinal']
         # The head's physical digest is sealed after every FTS write is flushed.
@@ -1159,7 +1178,7 @@ class RowsMixin:
         copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
         entry = dict(handle=copied, capture=json.loads(v.canonical(issued['capture'])), binding=issued['binding'])
         self._pins[pin.token] = dict(pin=pin, fields=(pin.view_id, pin.gen_id, pin.epoch, pin.incarnation, pin.token),
-                                     entry=entry, seal=generation['seal_digest'],
+                                     entry=entry, seal=_pin_seal(generation),
                                      vector=None if generation['coverage'] != 'complete' else dict(
                                          recipe_id=generation['recipe_id'], profile_id=generation['profile_id'],
                                          dimension=self._profile(generation['profile_id'])['dimension']),
@@ -1186,7 +1205,7 @@ class RowsMixin:
             if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
                 v.fail('view_head_changed')
             generation, original = self._rows_verified(db, head, entry['handle'], deadline, record)
-            if generation['seal_digest'] != record['seal']:
+            if _pin_seal(generation) != record['seal']:
                 v.fail('view_pin_changed')
             legacy_rows = self._rows_open_legacy(db, pin.view_id, head.ordinal)
             legacy_answer = None
@@ -1494,7 +1513,7 @@ class RowsMixin:
             if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
                 v.fail('view_head_changed')
             generation, original = self._rows_verified(db, head, entry['handle'], deadline, record)
-            if generation['seal_digest'] != record['seal']:
+            if _pin_seal(generation) != record['seal']:
                 v.fail('view_pin_changed')
             if generation['coverage'] != 'complete':
                 v.fail('vector_coverage_absent')
@@ -1531,3 +1550,99 @@ class RowsMixin:
         self._observe(entry, deadline=deadline, timeout_reason=vectors.DEADLINE_EXCEEDED)
         vectors._left(deadline)
         return answer
+
+    # -- generation-format shaped reads for the shadow migration -------------
+
+    def _rows_read_pinned(self, db, pin, deadline):
+        """``(generation, seal, capture, stage)`` of a pinned row head in the generation format's shape.
+
+        ``stage`` carries ``vector_spec`` and, for a legacy head, the ``legacy``
+        mapping rebuilt from card metadata, legacy corpus rows and ``legacy_json``.
+        """
+        record = self._pinned(pin)
+        head = self._rows_head_row(db, pin.view_id)
+        if (head.ordinal, head.gen_id, head.epoch) != (record['ordinal'], pin.gen_id, pin.epoch):
+            v.fail('view_head_changed')
+        generation, capture = self._rows_verified(db, head, record['entry']['handle'], deadline, record)
+        stage = dict(vector_spec=None if generation['coverage'] != 'complete' else dict(
+            recipe_id=generation['recipe_id'], profile_id=generation['profile_id']))
+        legacy = self._rows_legacy_mapping(db, generation)
+        if legacy is not None:
+            stage['legacy'] = legacy
+        shaped = dict(state='published', ordinal=generation['ordinal'], gen_id=generation['gen_id'],
+                      view_id=generation['view_id'])
+        return shaped, _pin_seal_value(generation), capture, stage
+
+    def _rows_legacy_mapping(self, db, generation):
+        legacy_rows = self._rows_open_legacy(db, generation['view_id'], generation['ordinal'])
+        if not self._rows_legacy_content(generation, legacy_rows):
+            return None
+        cards = self._rows_open(db, generation['view_id'], generation['ordinal'])
+        meta = {row['path']: v.parse_canonical(row['metadata_json']) for row in cards}
+        observed = (dict.fromkeys(LEGACY_OBSERVATION_FIELDS) if generation['legacy_json'] is None
+                    else v.parse_canonical(generation['legacy_json']))
+        legacy = dict(observed, paths=[row['path'] for row in cards],
+                      fts_paths={path: value['fts_path'] for path, value in meta.items()},
+                      corpus=[dict(path=row['path_key'], hash=row['blob_sha'])
+                              for row in legacy_rows if row['origin'] == 'base'],
+                      active_fts={origin: {row['path_key']: row['blob_sha'] for row in legacy_rows
+                                           if row['origin'] == origin and row['active']}
+                                  for origin in ('base', 'sidecar')})
+        if generation['sidecar_present']:
+            legacy['fts_sources'] = {path: value['origin'] for path, value in meta.items()}
+            legacy['sidecar_corpus'] = [dict(path=row['path_key'], hash=row['blob_sha'], title=row['title'],
+                                             rowid=row['position'])
+                                        for row in legacy_rows if row['origin'] == 'sidecar']
+        return legacy
+
+    def _pin_fts_table(self, pin, *, sidecar=False):
+        """The FTS table a pinned head searches: per-generation (format 3) or the view head (format 4)."""
+        record = self._pinned(pin)
+        if self._rows:
+            return fts.head_table(pin.view_id, sidecar=sidecar)
+        return fts.table(record['verified']['generation']['ordinal'], sidecar=sidecar)
+
+    def _generation_rows_at(self, db, gen_id):
+        row = db.execute('SELECT view_id,ordinal FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()
+        if row is None:
+            v.fail('generation_missing')
+        return row[0], row[1]
+
+    def _eligible_members(self, gen_id, *, after=None, limit=None):
+        """``[(path, blob_sha)]`` of a generation's eligible cards in path order, either format."""
+        with self._session() as db:
+            if not self._rows:
+                sql = 'SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1'
+                args = [gen_id]
+            else:
+                view_id, ordinal = self._generation_rows_at(db, gen_id)
+                sql = ('SELECT path,blob_sha FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
+                       'AND (gen_to IS NULL OR gen_to>?)')
+                args = [view_id, ordinal, ordinal]
+            if after is not None:
+                sql += ' AND path>?'
+                args.append(after)
+            sql += ' ORDER BY path'
+            if limit is not None:
+                sql += ' LIMIT ?'
+                args.append(limit)
+            return [(row[0], row[1]) for row in db.execute(sql, args).fetchall()]
+
+    def _eligible_count(self, gen_id):
+        with self._session() as db:
+            if not self._rows:
+                return db.execute('SELECT COUNT(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
+                                  (gen_id,)).fetchone()[0]
+            view_id, ordinal = self._generation_rows_at(db, gen_id)
+            return db.execute('SELECT COUNT(*) FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
+                              'AND (gen_to IS NULL OR gen_to>?)', (view_id, ordinal, ordinal)).fetchone()[0]
+
+    def _rows_preverify(self, handle, deadline):
+        self._check(handle)
+        with self._reading(deadline) as db:
+            head = self._rows_head_row(db, handle.view_id)
+            if head.gen_id is None:
+                return None
+            self._rows_verify(db, head, handle, deadline)
+        return head.gen_id
+

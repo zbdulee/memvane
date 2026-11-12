@@ -69,6 +69,36 @@ class LegacyConvertChecks(journal.Schema3EndpointChecks):
         db.rollback()
         self.assertEqual(db.execute('SELECT COUNT(*) FROM s_legacy_fts').fetchone()[0], count)
 
+    def shaped(self, store, handle, deadline_seconds=20):
+        import time
+        pin = store.pin_view(handle)
+        try:
+            with store._reading(time.monotonic() + deadline_seconds) as db:
+                generation, seal, _, stage = store._read_pinned(db, pin, time.monotonic() + deadline_seconds)
+            legacy = stage.get('legacy') or {}
+            keys = ('observation', 'corpus_observation', 'scan', 'paths', 'fts_paths', 'active_fts', 'corpus',
+                    'fts_sources', 'sidecar_corpus', 'sidecar_observation', 'sidecar_commitment')
+            return (generation['state'], stage.get('vector_spec'), {k: legacy.get(k) for k in keys},
+                    store._eligible_members(pin.gen_id), store._eligible_count(pin.gen_id),
+                    store._preverify_view(handle, deadline=time.monotonic() + deadline_seconds),
+                    pin.gen_id, store._pin_fts_table(pin, sidecar=False))
+        finally:
+            store.release(pin)
+
+    def test_shadow_shaped_reads_match_across_the_conversion(self):
+        self.publish()
+        with self.writer() as view:
+            before = self.shaped(view, view.capture_view(self.worktree_id))
+            view.convert_to_row_format()
+        store = self.views.ViewStore.open(self.store_path, repository=self.repository,
+                                          scope_id=self.case.route['scopeId'])
+        self.addCleanup(store.close)
+        after = self.shaped(store, store.capture_view(self.worktree_id))
+        import laya_view_fts as fts
+        self.assertEqual(after[:7], before[:7])
+        self.assertEqual(after[7], fts.head_table(store.capture_view(self.worktree_id).view_id))
+        self.assertIsNotNone(after[2]['observation'])
+
     def normal_manifest(self, store, handle):
         """The head's cards as an ordinary manifest (their legacy_verified trust kept)."""
         rows = store._db.execute('SELECT path,blob_sha,title,trust_digest FROM s_cards '

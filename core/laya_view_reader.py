@@ -165,6 +165,8 @@ class ReaderMixin:
         generation and seal rows. Any commit, including an out-of-band one,
         re-runs the full verification and refreshes the reuse.
         """
+        if self._rows:
+            return self._rows_read_pinned(db, pin, deadline)
         record = self._pinned(pin)
         _remaining(deadline)
         stamp = self._commit_stamp(db)
@@ -191,7 +193,7 @@ class ReaderMixin:
         or None when the view has no head.
         """
         if self._rows:
-            v.fail('row_format_unsupported')
+            return self._rows_preverify(handle, deadline)
         self._check(handle)
         self._preverified = None
         with self._reading(deadline) as db:
