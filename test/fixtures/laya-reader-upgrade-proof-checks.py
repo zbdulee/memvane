@@ -1698,5 +1698,6 @@ if __name__=='__main__':
         UpgradeProofChecks('test_v5_prefence_intent_retargets_after_its_bundle_disappears'),
         UpgradeProofChecks('test_v4_missing_old_bundle_bootstrap_is_conversion_only'),
         UpgradeProofChecks('test_v4_upgrade_driver_requires_preflight_and_converts_before_fence'),
-        UpgradeProofChecks('test_current_v4_bundle_still_converts_after_preflight')]))
+        UpgradeProofChecks('test_current_v4_bundle_still_converts_after_preflight'),
+        UpgradeProofChecks('test_loaded_qa_probe_deadline_is_bounded_by_the_remaining_hook_budget')]))
     raise SystemExit(not result.wasSuccessful())
