@@ -32,9 +32,12 @@ development execution guard is separate; see
   stored set holds (`_schema3_vectors`); one pass embeds content shared by two
   views once, and a refused lane or service leaves the lexical generation
   published and the wake `deferred`. A pass whose main-view fill added
-  embedding sets but did not finish is acknowledged and offers its own wake
-  again 30 seconds later (`WakeQueue.offer(delay=)`), inside the worker's
-  reclaim window; a pass with no fill progress stays `pending` and backs off.
+  embedding sets but did not finish (including a stop on a priority yield
+  before a provider call or on a provider failure) is acknowledged and offers
+  its own wake again 30 seconds later (`WakeQueue.offer(delay=)`), inside the
+  worker's reclaim window; another due wake runs before it. A pass with no
+  fill progress stays `pending` and backs off; after 144 consecutive counted
+  attempts the wake policy drops it (`retry_cap`) until the next natural wake.
   The first cold target of a pass (no stored chunk set) gets the resume budget
   once, so the last provider call can run past the pass deadline by that one
   document; that pass publishes its generation (lexical, or vector when the

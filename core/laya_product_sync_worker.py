@@ -1855,9 +1855,10 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     ``complete``: every eligible member has the spec's sets (the caller seals
     a vector generation). ``current``: ``sealed`` (the head's vector spec)
     already is the spec. ``off``: no spec. ``pending``: the pass budget ran
-    out or a fill call hit its deadline (cursor kept; committed content sets
-    stay). ``deferred``: the provider lane or service refused (no
-    store write was made for it). ``blocked``: the provider refused a document
+    out, a fill call hit its deadline, or a deferral came after this pass
+    added embedding sets (cursor kept; committed content sets stay).
+    ``deferred``: the provider lane or service refused before this pass
+    added any embedding set. ``blocked``: the provider refused a document
     or its chunk set is over the store's limit; the view stays lexical until
     that card changes.
     ``provider_blocked``: the install's provider cannot be proved
@@ -1880,6 +1881,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         if exc.reason not in ('recipe_missing', 'profile_missing'):
             raise
         registered = False
+    pending = None
     try:
         if not registered:
             vectors['acquire'](current())
@@ -1945,6 +1947,14 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                 return pending('schema3_vector_content_busy', step['cursor'])
             status = step
     except ResourceDeferred as exc:
+        if pending is not None:
+            # A deferral (a priority yield before a provider call, a provider
+            # failure, a moved selection) after this pass committed embedding
+            # sets: those stay, and the pass reports its progress like a
+            # deadline stop, so the wake is not counted as a failure.
+            stopped = pending(str(exc), status['cursor'])
+            if stopped['progress'] > 0:
+                return stopped
         return {'state': 'deferred', 'reason': str(exc)}
     except _VectorMemberBlocked as exc:
         return {'state': 'blocked', 'reason': str(exc)}
