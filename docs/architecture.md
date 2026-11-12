@@ -447,7 +447,11 @@ new one. Details are in [flow 03](architecture/flows/03-wiki-index-search.md).
 Persisted file and directory identities bind by canonical path and inode,
 plus their recorded content and metadata fields. `st_dev` is boot-local on
 macOS APFS and is not compared across processes. Journal rows, endpoint IDs,
-ownership manifests and their digests retain their original bytes. Live
+ownership manifests and their digests retain their original bytes. Two reader
+endpoint records sealed in different boots compare their `*_node` fields by
+inode too (`laya_journal_reader.records_agree`: reader switch and rollback CAS,
+selection checks, a reader lease's journal image advance, the store check of
+the v6 reader a rollback re-issues). Live
 fd/path and before/after checks within one process compare device numbers;
 source traversal compares each file's device with its live root fd's device.
 

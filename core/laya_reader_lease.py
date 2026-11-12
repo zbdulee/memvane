@@ -261,8 +261,8 @@ def _forward_image(before, after):
           'reader_store_changed')
     _need(all(new_seals.get(key) == value for key,value in old_seals.items()), 'reader_store_changed')
     for key, record in records.items():
-        _need(all(record.get(name) == old_stored[name]
-                  for name in reader.stable_fields(record, old_stored))
+        fields = reader.stable_fields(record, old_stored)
+        _need(reader.records_agree({name: record.get(name) for name in fields}, old_stored, fields)
               and current[key][1] == endpoints[old.preferred_endpoint][1],
               'reader_install_changed')
 

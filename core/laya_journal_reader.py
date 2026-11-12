@@ -46,6 +46,19 @@ PARITY_KEYS = ('migration_id', 'generation', 'digest')
 _RECEIPT_KEYS = frozenset(PARITY_KEYS + ('candidate', 'candidate_incarnation'))
 
 
+# Endpoint record fields holding ``[st_dev, st_ino]``. APFS renumbers devices
+# at boot, so two records sealed in different boots name the same file with
+# another device: records compare these fields by inode (paths compare as they
+# are). Live fd/path and before/after observations keep the full identity.
+_RECORD_NODES = ('project_node', 'state_node', 'db_node', 'catalog_node', 'binding_node')
+
+
+def records_agree(first, second, keys):
+    """``first`` and ``second`` hold the same values at ``keys`` (record nodes by inode)."""
+    return all(persistent_node_equal(first[k], second[k]) if k in _RECORD_NODES
+               else first[k] == second[k] for k in keys)
+
+
 def stable_fields(first, second):
     """Fields two endpoints of one install must share."""
     if 'schema3' in (first.get('store_format'), second.get('store_format')):
@@ -79,7 +92,7 @@ def relocated_pair(old, new):
             paths, moved = _V6_STORE_PATHS, _RELOCATED_V6
         else:
             return False
-        return (all(old[k] == new[k] for k in set(old) - moved)
+        return (records_agree(old, new, set(old) - moved)
                 and old['state'] != new['state']
                 and Path(old['state']).name == Path(new['state']).name
                 and all(Path(old[k]).parent == Path(old['state'])
@@ -131,7 +144,7 @@ def _sha(data):
 
 def _preserve_node_devices(stored, current):
     # Compare live observations, but keep the committed endpoint bytes/ID.
-    for key in ('project_node', 'state_node', 'db_node', 'catalog_node', 'binding_node'):
+    for key in _RECORD_NODES:
         if key in stored and key in current and persistent_node_equal(stored[key], current[key]):
             current[key] = list(stored[key])
     return current
@@ -1521,7 +1534,7 @@ def _selection(db):
         previous = _stored_endpoint(db, selected.previous_endpoint)
         fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
                   else ('install_id',))
-        _need(all(record[k] == previous[k] for k in fields) or relocated_pair(previous, record)
+        _need(records_agree(record, previous, fields) or relocated_pair(previous, record)
               or resettled_pair(previous, record) or rollback_pair(previous, record)
               or upgraded_pair(previous, record),
               'reader_install_changed')
@@ -1628,7 +1641,7 @@ def resettled_pair(old, new):
         if not (old.get('store_format') == new.get('store_format') == 'schema3'
                 and set(old) == set(new) == _SCHEMA3_KEYS):
             return False
-        changed = {k for k in _SCHEMA3_KEYS if old[k] != new[k]} - _RESETTLED_WITH
+        changed = {k for k in _SCHEMA3_KEYS if not records_agree(old, new, (k,))} - _RESETTLED_WITH
         vector = changed & {'vector_profile', 'vector_recipe'}
         return (bool(changed) and changed <= _RESETTLED
                 and (not vector or (old['vector_profile'] is None and old['vector_recipe'] is None
@@ -1677,7 +1690,7 @@ def rollback_pair(old, new):
     try:
         return (old.get('store_format') == 'schema3' and set(old) == _SCHEMA3_KEYS
                 and new.get('store_format') == 'v6' and new.get('capability') == 'v6-ro-v1'
-                and all(old[k] == new[k] for k in INSTALL_IDENTITY if k not in _ROLLBACK_NEWER))
+                and records_agree(old, new, [k for k in INSTALL_IDENTITY if k not in _ROLLBACK_NEWER]))
     except (AttributeError, KeyError, TypeError):
         return False
 
@@ -1695,7 +1708,7 @@ def upgraded_pair(old, new):
         return (old.get('store_format') == 'v6' and old.get('capability') == 'v6-ro-v1'
                 and new.get('store_format') == 'schema3' and set(new) == _SCHEMA3_KEYS
                 and old['attestation_sha256'] != new['attestation_sha256']
-                and all(old[k] == new[k] for k in INSTALL_IDENTITY if k != 'attestation_sha256'))
+                and records_agree(old, new, [k for k in INSTALL_IDENTITY if k != 'attestation_sha256']))
     except (AttributeError, KeyError, TypeError):
         return False
 
@@ -2073,7 +2086,7 @@ def cas_reader(journal: Path, *, expected_epoch: int, expected_endpoint: str,
         formats = (base['store_format'], record['store_format'])
         _need(formats in (('v6', 'v6'), ('v6', 'schema3'), ('schema3', 'v6')),
               'reader_format_not_selectable')
-        _need(all(record[k] == base[k] for k in stable_fields(base, record))
+        _need(records_agree(record, base, stable_fields(base, record))
               or rollback_pair(base, record) or upgraded_pair(base, record), 'reader_install_changed')
 
         def attestation_step():

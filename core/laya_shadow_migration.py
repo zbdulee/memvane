@@ -4300,7 +4300,10 @@ def rollback_reader(project, *, executing_root):
                 raise IndexContractError('rollback_not_switched')
             target = installer.endpoint
             current = journal._recheck(target)[0]
-            if (any(current.get(key) != before.get(key) for key in _ROLLBACK_STORE)
+            # Re-issued in this boot: store nodes compare by inode.
+            now, then = ({k: r.get(k) for k in _ROLLBACK_STORE} for r in (current, before))
+            if (any(now[k] != then[k] and not journal.records_agree(now, then, (k,))
+                    for k in _ROLLBACK_STORE)
                     or any(Path(current[key]).name != Path(before[key]).name for key in _ROLLBACK_PATHS)):
                 raise IndexContractError('rollback_v6_changed')
             transition = _rollback_transition_id(selection.preferred_endpoint, target.endpoint_id,
