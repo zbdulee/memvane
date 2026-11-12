@@ -598,6 +598,48 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(self.found(other, moved_handle, 'uniquealpha'), ['cards/a.md'])
         self.assertEqual(back['epoch'], moved['epoch'] + 1)
 
+    def sources(self, store, view_id, *, open_only=True):
+        return [tuple(r) for r in store._db.execute(
+            'SELECT s.path,s.gen_from,s.gen_to,c.source_sha,o.tracked_state FROM s_sources s '
+            'JOIN s_source_observations o ON o.observation_id=s.observation_id '
+            'LEFT JOIN s_source_content c ON c.content_id=o.content_id WHERE s.view_id=? '
+            + ('AND s.gen_to IS NULL ' if open_only else '') + 'ORDER BY s.path,s.gen_from', (view_id,))]
+
+    def test_source_rows_follow_content_not_scan_and_roll_back(self):
+        store, repository, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        opened = self.sources(store, handle.view_id)
+        self.assertEqual([row[0] for row in opened], ['notes/src.md'])
+        # Same bytes under another scan id: the same observation, no source rows written.
+        manifest = self.snapshot(store, handle, scan_id='2' * 32)
+        second = store.publish_generation(handle, store.prepare_generation(handle, manifest, expected_head=first),
+                                          expected_head=first)
+        self.assertEqual(self.sources(store, handle.view_id, open_only=False), opened)
+        (self.root / 'notes/src.md').write_text('# Source\nchanged source body\n', encoding='utf8')
+        third = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        rows = self.sources(store, handle.view_id, open_only=False)
+        self.assertEqual(len(rows), 2)
+        self.assertNotEqual(rows[0][3], rows[1][3])
+        self.assertEqual(store._db.execute("SELECT COUNT(*) FROM s_deltas WHERE rel='source'").fetchone()[0], 1)
+        store.rollback_generation(handle, expected_head=third)
+        self.assertEqual(self.sources(store, handle.view_id)[0][3], opened[0][3])
+        self.assertEqual(second['epoch'], first['epoch'] + 1)
+
+    def test_tampered_source_row_refuses_the_pin(self):
+        import sqlite3
+        store, repository, handle = self.rows_store()
+        self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        store.close()
+        with sqlite3.connect(self.db) as db:
+            for trigger in ('s_sources_retained',):
+                ddl = db.execute('SELECT sql FROM sqlite_master WHERE name=?', (trigger,)).fetchone()[0]
+                db.execute('DROP TRIGGER ' + trigger)
+            db.execute('DELETE FROM s_sources')
+            db.execute(ddl)
+        again = self.reopen(repository)
+        self.assertEqual(self.refused(again.pin_view, again.capture_view(handle.worktree_id)).reason,
+                         'generation_rows_mismatch')
+
     def test_unsupported_row_inputs_refuse_before_any_write(self):
         store, _, handle = self.rows_store()
         manifest = self.snapshot(store, handle)

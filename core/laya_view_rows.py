@@ -97,18 +97,27 @@ def _legacy_value(row):
     return {k: row[k] for k in LEGACY_FIELDS}
 
 
-def member_acc(cards, legacy_rows=()):
+_SOURCE_DOMAIN = 'memvane-row-source-v1'
+
+
+def _source_value(row):
+    return dict(path=row['path'], observation_id=row['observation_id'])
+
+
+def member_acc(cards, legacy_rows=(), sources=()):
     acc = EMPTY_ACC
     for row in cards:
         acc = acc_update(acc, _CARD_DOMAIN, _card_value(row))
     for row in legacy_rows:
         acc = acc_update(acc, _LEGACY_DOMAIN, _legacy_value(row))
+    for row in sources:
+        acc = acc_update(acc, _SOURCE_DOMAIN, _source_value(row))
     return acc
 
 
-def member_digest(cards, legacy_rows=()):
-    """Card rows (and a legacy generation's FTS corpus rows) as one multiset commitment."""
-    return acc_digest('member', member_acc(cards, legacy_rows))
+def member_digest(cards, legacy_rows=(), sources=()):
+    """Card rows, a legacy generation's FTS corpus rows and the source rows as one multiset commitment."""
+    return acc_digest('member', member_acc(cards, legacy_rows, sources))
 
 
 def fts_acc(rows, origin='normal', positions=None):
@@ -168,12 +177,16 @@ def _sorted_paths(paths):
     return sorted(paths, key=lambda path: path.encode('utf8'))
 
 
-def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items, spec=None):
+def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items, spec=None,
+                 sources=(), source_items=()):
     """Every committed stage input; the generation id derives from it at prepare."""
     value = dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
                  view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
                  scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
-                 member_digest=member_digest(final), items_digest=v.digest('memvane-row-stage-items-v1', items))
+                 member_digest=member_digest(final, (), sources),
+                 items_digest=v.digest('memvane-row-stage-items-v1', items))
+    if source_items:
+        value['source_items_digest'] = v.digest('memvane-row-stage-sources-v1', list(source_items))
     if spec is not None:
         value['vector_spec'] = spec
     return value
@@ -298,6 +311,98 @@ class RowsMixin:
             cursor.close()
 
     @staticmethod
+    def _rows_open_sources(db, view_id, ordinal=None):
+        if ordinal is None:
+            cursor = db.execute('SELECT path,observation_id FROM s_sources WHERE view_id=? AND gen_to IS NULL '
+                                'ORDER BY path', (view_id,))
+        else:
+            cursor = db.execute('SELECT path,observation_id FROM s_sources WHERE view_id=? AND gen_from<=? '
+                                'AND (gen_to IS NULL OR gen_to>?) ORDER BY path', (view_id, ordinal, ordinal))
+        try:
+            return [dict(path=row[0], observation_id=row[1]) for row in cursor]
+        finally:
+            cursor.close()
+
+    def _rows_source_objects(self, sources, *, cache=None):
+        """Content and observation rows of a manifest's present sources (HEAD and scan are not identity)."""
+        rows, objects = [], []
+        for source in sources:
+            if source['presence'] != 'present':
+                continue
+            spec = self._fingerprint(source['fingerprint_id'], cache=cache)
+            if spec['binding_state'] == 'observed':
+                content = vals.source_content(spec['source_sha'], spec['byte_length'])
+                observation = vals.source_observation(
+                    worktree_id=spec['worktree_id'], branch_key=spec['branch_key'], path=spec['path'],
+                    tracked_state=spec['tracked_state'], binding_state='observed',
+                    content_id=content['content_id'], legacy_fingerprint_id=None)
+            else:
+                content = None
+                observation = vals.source_observation(
+                    worktree_id=spec['worktree_id'], branch_key=spec['branch_key'], path=spec['path'],
+                    tracked_state=spec['tracked_state'], binding_state=spec['binding_state'],
+                    content_id=None, legacy_fingerprint_id=source['fingerprint_id'])
+            objects.append((content, observation))
+            rows.append(dict(path=source['path'], observation_id=observation['observation_id']))
+        return sorted(rows, key=lambda row: row['path'].encode('utf8')), objects
+
+    @staticmethod
+    def _rows_put_source_objects(db, objects):
+        """Insert content and observation rows that are not stored yet; stored ones must be identical."""
+        from laya_blob_store import _insert
+        for content, observation in objects:
+            if content is not None:
+                row = db.execute('SELECT content_id,source_sha,byte_length FROM s_source_content WHERE content_id=?',
+                                 (content['content_id'],)).fetchone()
+                if row is None:
+                    _insert(db, 's_source_content', content)
+                else:
+                    vals.check_source_content(dict(zip(('content_id', 'source_sha', 'byte_length'), tuple(row))),
+                                              content['source_sha'], content['byte_length'])
+            fields = ('observation_id', *vals.SOURCE_OBSERVATION_FIELDS)
+            row = db.execute('SELECT ' + ','.join(fields) + ' FROM s_source_observations WHERE observation_id=?',
+                             (observation['observation_id'],)).fetchone()
+            if row is None:
+                _insert(db, 's_source_observations', observation)
+            elif vals.check_source_observation(dict(zip(fields, tuple(row)))) != observation:
+                v.fail('source_observation_mismatch')
+
+    @staticmethod
+    def _source_diff(current, wanted):
+        """``[(old, new)]`` source rows by path, binary path order."""
+        current = {row['path']: row for row in current}
+        wanted = {row['path']: row for row in wanted}
+        return [(current.get(path), wanted.get(path)) for path in _sorted_paths(set(current) | set(wanted))
+                if current.get(path) != wanted.get(path)]
+
+    @staticmethod
+    def _apply_source_delta(db, view_id, ordinal, old, new):
+        """Close and/or open one source interval and record its rollback delta."""
+        row = old if old is not None else new
+        current = db.execute('SELECT path,observation_id FROM s_sources WHERE view_id=? AND path=? AND gen_to IS NULL',
+                             (view_id, row['path'])).fetchone()
+        if (None if current is None else dict(path=current[0], observation_id=current[1])) != old:
+            v.fail('source_delta_conflict')
+        if old is not None and db.execute('UPDATE s_sources SET gen_to=? WHERE view_id=? AND path=? AND gen_to IS NULL',
+                                          (ordinal, view_id, old['path'])).rowcount != 1:
+            v.fail('source_delta_conflict')
+        if new is not None:
+            db.execute('INSERT INTO s_sources(view_id,path,gen_from,gen_to,observation_id) VALUES (?,?,?,NULL,?)',
+                       (view_id, new['path'], ordinal, new['observation_id']))
+        # A view's first generation has no prior to roll back to: no delta.
+        prior = db.execute('SELECT prior_ordinal FROM s_generations WHERE view_id=? AND ordinal=?',
+                           (view_id, ordinal)).fetchone()
+        if prior is not None and prior[0] is not None:
+            key = v.canonical([row['path']])
+            db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
+                       (view_id, ordinal, 'source', key, None if old is None else v.canonical(old),
+                        None if new is None else v.canonical(new)))
+            for side, value in (('old', old), ('new', new)):
+                if value is not None:
+                    db.execute('INSERT INTO s_delta_observations(view_id,ordinal,rel,key_json,side,observation_id) '
+                               'VALUES (?,?,?,?,?,?)', (view_id, ordinal, 'source', key, side, value['observation_id']))
+
+    @staticmethod
     def _rows_open_legacy(db, view_id, ordinal):
         cursor = db.execute('SELECT origin,path_key,blob_sha,title,position,active FROM s_legacy_fts '
                             'WHERE view_id=? AND gen_from<=? AND (gen_to IS NULL OR gen_to>?) '
@@ -381,6 +486,11 @@ class RowsMixin:
             plan = self._derive(handle, manifest, skips, deadline=deadline,
                                 legacy_paths=() if legacy is None else legacy['paths'])
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
+            source_rows, source_objects = self._rows_source_objects(plan['sources'])
+            source_items = [dict(path=(old or new)['path'], action='delete' if new is None else 'put',
+                                 observation_id=None if new is None else new['observation_id'])
+                            for old, new in self._source_diff(self._rows_open_sources(db, handle.view_id),
+                                                              source_rows)]
             # Zero or complete: every eligible member's set is validated before any write.
             self._rows_coverage(db, [_card_row(m) for m in plan['members']], spec, full=True, deadline=deadline)
         if legacy is None:
@@ -408,7 +518,7 @@ class RowsMixin:
             v.identifier(job_id, v.UUID)
             scan_digest = _legacy_scan(manifest, skips, legacy, _legacy_corpus_rows(legacy))
         stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items,
-                             spec)
+                             spec, source_rows, source_items)
         gen_id = vals.gen_id(job_id, v.digest(ROW_STAGE_SCHEMA, stage))
         self._observe(entry, deadline=deadline)
         _expired(deadline)
@@ -436,6 +546,10 @@ class RowsMixin:
                             base_gen_id=base['gen_id'], base_epoch=base['epoch'], capture_json=capture_json,
                             policy_digest=handle.policy_digest, scan_digest=scan_digest)
             store_module._stage_start_job(db, identity)
+            self._rows_put_source_objects(db, source_objects)
+            for item in source_items:
+                db.execute('INSERT INTO s_stage_source_changes(job_id,path,action,observation_id) VALUES (?,?,?,?)',
+                           (job_id, item['path'], item['action'], item['observation_id']))
             if spec is not None:
                 db.execute('UPDATE s_stage_jobs SET vector_spec_json=? WHERE job_id=?', (v.canonical(spec), job_id))
             cursor = None
@@ -484,6 +598,16 @@ class RowsMixin:
             items = [vals.check_stage_item(dict(zip(vals.STAGE_ITEM_FIELDS, tuple(row)))) for row in db.execute(
                 'SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json FROM s_stage_items '
                 'WHERE job_id=? ORDER BY path', (job[0],))]
+            source_items = [dict(path=r[0], action=r[1], observation_id=r[2]) for r in db.execute(
+                'SELECT path,action,observation_id FROM s_stage_source_changes WHERE job_id=? ORDER BY path',
+                (job[0],))]
+            sources = {row['path']: row for row in self._rows_open_sources(db, handle.view_id)}
+            for item in source_items:
+                if item['action'] == 'delete':
+                    sources.pop(item['path'], None)
+                else:
+                    sources[item['path']] = dict(path=item['path'], observation_id=item['observation_id'])
+            final_sources = [sources[path] for path in _sorted_paths(sources)]
             current = {row['path']: row for row in self._rows_open(db, handle.view_id)}
             final = dict(current)
             for item in items:
@@ -498,12 +622,12 @@ class RowsMixin:
             import laya_view_vectors as vectors
             spec = None if job[8] is None else vectors.spec(v.parse_canonical(job[8]))
             stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items,
-                                 spec)
+                                 spec, final_sources, source_items)
             if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id:
                 v.fail('stage_identity_changed')
             if any('fts_path' in v.parse_canonical(row['metadata_json']) for row in final):
                 v.fail('migration_publish_proof_required')
-            return stage, items, current, final
+            return stage, items, current, final, final_sources
 
         stage = files = rows = None
         with self._session() as db:
@@ -512,7 +636,7 @@ class RowsMixin:
             if published is None:
                 if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
                     v.fail('view_head_conflict')
-                stage, items, _, final = staged_state(db)
+                stage, items, _, final, _ = staged_state(db)
         if published is None:
             # Bounded FD reads of the final members' exact bytes, outside the writer lock.
             files = _wiki_files(saved, final)
@@ -531,7 +655,7 @@ class RowsMixin:
             again = staged_state(db)
             if stage is None or again[0] != stage:
                 v.fail('stage_identity_changed')
-            items = again[1]
+            items, final_sources = again[1], again[4]
             spec = stage.get('vector_spec')
             self._rows_coverage(db, final, spec, full=False, deadline=deadline)
             _live(db, saved, files)
@@ -558,13 +682,14 @@ class RowsMixin:
                               skip_digest=stage['skip_digest'], **_coverage_fields(spec),
                               expected_member_digest=stage['member_digest'], legacy_json=None,
                               source_digest=v.digest('memvane-row-sources-v1', []))
+            source_deltas = self._source_diff(self._rows_open_sources(db, handle.view_id), final_sources)
             written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline,
-                                       legacy_deltas=legacy_deltas)
+                                       legacy_deltas=legacy_deltas, source_deltas=source_deltas)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
     def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, rollback=None,
-                    legacy_deltas=(), legacy_final=None, commit=None):
+                    legacy_deltas=(), legacy_final=None, commit=None, source_deltas=()):
         """Changed card and legacy corpus rows, their head FTS rows, the sealed generation and the head CAS.
 
         Runs inside the caller's write transaction and commits it under the
@@ -578,6 +703,13 @@ class RowsMixin:
         """
         import laya_view_store as store_module
         view_id = generation['view_id']
+        open_sources = {row['path']: row for row in self._rows_open_sources(db, view_id)}
+        for old, new in source_deltas:
+            if new is None:
+                open_sources.pop(old['path'], None)
+            else:
+                open_sources[new['path']] = new
+        final_sources = [open_sources[path] for path in _sorted_paths(open_sources)]
         sequence = db.execute("SELECT seq FROM sqlite_sequence WHERE name='s_generations'").fetchone()
         ordinal = (0 if sequence is None else sequence[0]) + 1
         changes = {'base': [], 'sidecar': []}
@@ -643,7 +775,7 @@ class RowsMixin:
                 if side_rows is not None:
                     _, side_physical = fts.head_proof(db, view_id, side_rows, deadline, sidecar=True, logical=False)
                 physical = legacy_physical(base_physical, side_physical)
-                members = member_acc(final_cards, final_legacy)
+                members = member_acc(final_cards, final_legacy, final_sources)
                 text_acc = self._rows_legacy_fts_acc(base_rows, side_rows, positions)
             elif rollback is None:
                 if after_sidecar:
@@ -651,7 +783,7 @@ class RowsMixin:
                 fts.verify_head_index(db, view_id)
                 self._fts_guard.freeze_head()
                 _, physical = fts.head_proof(db, view_id, rows, deadline, logical=False)
-                members = member_acc(self._rows_open_after(db, view_id, deltas))
+                members = member_acc(self._rows_open_after(db, view_id, deltas), (), final_sources)
                 text_acc = fts_acc(rows)
             else:
                 current, prior = rollback
@@ -666,6 +798,11 @@ class RowsMixin:
                         members = acc_update(members, _LEGACY_DOMAIN, _legacy_value(old), -1)
                     if new is not None:
                         members = acc_update(members, _LEGACY_DOMAIN, _legacy_value(new))
+                for old, new in source_deltas:
+                    if old is not None:
+                        members = acc_update(members, _SOURCE_DOMAIN, _source_value(old), -1)
+                    if new is not None:
+                        members = acc_update(members, _SOURCE_DOMAIN, _source_value(new))
                 for origin, row, sign in text_changes:
                     text_acc = acc_update(text_acc, _FTS_DOMAINS[origin], row, sign)
                 if (members, text_acc) != (acc_value(prior['member_acc']), acc_value(prior['fts_acc'])):
@@ -686,6 +823,9 @@ class RowsMixin:
             for old, new in legacy_deltas:
                 _expired(deadline)
                 self._apply_legacy_delta(db, view_id, ordinal, old, new)
+            for old, new in source_deltas:
+                _expired(deadline)
+                self._apply_source_delta(db, view_id, ordinal, old, new)
             if head.ordinal is None:
                 db.execute('INSERT INTO s_heads(view_id,ordinal,epoch) VALUES (?,?,1)', (view_id, ordinal))
             elif db.execute('UPDATE s_heads SET ordinal=?,epoch=? WHERE view_id=? AND ordinal=? AND epoch=?',
@@ -747,14 +887,18 @@ class RowsMixin:
             db.execute('INSERT INTO s_legacy_fts(view_id,origin,path_key,gen_from,gen_to,blob_sha,title,position,active) '
                        'VALUES (?,?,?,?,NULL,?,?,?,?)', (view_id, new['origin'], new['path_key'], ordinal,
                                                           new['blob_sha'], new['title'], new['position'], new['active']))
-        key = v.canonical([row['origin'], row['path_key']])
-        db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
-                   (view_id, ordinal, 'legacy_fts', key, None if old is None else v.canonical(old),
-                    None if new is None else v.canonical(new)))
-        for side, value in (('old', old), ('new', new)):
-            if value is not None:
-                db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) VALUES (?,?,?,?,?,?)',
-                           (view_id, ordinal, 'legacy_fts', key, side, value['blob_sha']))
+        # A view's first generation has no prior to roll back to: no delta.
+        prior = db.execute('SELECT prior_ordinal FROM s_generations WHERE view_id=? AND ordinal=?',
+                           (view_id, ordinal)).fetchone()
+        if prior is not None and prior[0] is not None:
+            key = v.canonical([row['origin'], row['path_key']])
+            db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
+                       (view_id, ordinal, 'legacy_fts', key, None if old is None else v.canonical(old),
+                        None if new is None else v.canonical(new)))
+            for side, value in (('old', old), ('new', new)):
+                if value is not None:
+                    db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) VALUES (?,?,?,?,?,?)',
+                               (view_id, ordinal, 'legacy_fts', key, side, value['blob_sha']))
 
     # -- rollback and view row collection -------------------------------------
 
@@ -790,18 +934,19 @@ class RowsMixin:
             prior = dict(prior)
             if seal_digest(_seal_fields(self._incarnation, prior)) != prior['seal_digest']:
                 v.fail('generation_seal_mismatch')
-            deltas, legacy_deltas = [], []
+            deltas, legacy_deltas, source_deltas = [], [], []
             for rel, old_json, new_json in db.execute(
                     'SELECT rel,old_json,new_json FROM s_deltas WHERE view_id=? AND ordinal=? '
                     'ORDER BY rel,key_json DESC', (handle.view_id, head.ordinal)).fetchall():
-                if rel not in ('card', 'legacy_fts'):
+                if rel not in ('card', 'legacy_fts', 'source'):
                     v.fail('row_format_unsupported')
                 old = None if old_json is None else v.parse_canonical(old_json)
                 new = None if new_json is None else v.parse_canonical(new_json)
+                fields = dict(card=CARD_FIELDS, legacy_fts=LEGACY_FIELDS, source=('path', 'observation_id'))[rel]
                 for value in (old, new):
                     if value is not None:
-                        v.exact(value, CARD_FIELDS if rel == 'card' else LEGACY_FIELDS)
-                (deltas if rel == 'card' else legacy_deltas).append((new, old))
+                        v.exact(value, fields)
+                dict(card=deltas, legacy_fts=legacy_deltas, source=source_deltas)[rel].append((new, old))
             generation = dict(gen_id=vals.gen_id(uuid.uuid4().hex, v.digest('memvane-row-rollback-v1', dict(
                                   view_id=handle.view_id, head=head.gen_id, prior=prior['gen_id']))),
                               view_id=handle.view_id, epoch=head.epoch + 1, prior_ordinal=head.ordinal,
@@ -818,7 +963,8 @@ class RowsMixin:
                     store_module._stage_mark_abandon(db, job[0])
 
             written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,
-                                       rollback=(current, prior), legacy_deltas=legacy_deltas)
+                                       rollback=(current, prior), legacy_deltas=legacy_deltas,
+                                       source_deltas=source_deltas)
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
@@ -927,14 +1073,17 @@ class RowsMixin:
                     stage = self._verify_generation(db, handle, entry, saved, generation, deadline=deadline,
                                                     full_vectors=True)
                     seal = dict(db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (gen_id,)).fetchone())
-                    members = [_card_row(m) for m in self._stored(db, gen_id)[0]]
+                    stored = self._stored(db, gen_id)
+                    members = [_card_row(m) for m in stored[0]]
+                    source_rows, source_objects = self._rows_source_objects(stored[1])
                     legacy_rows = []
                     if 'legacy' in stage:
                         members, legacy_rows = self._rows_convert_legacy(db, gen_id, stage['legacy'], members)
                     parent = (None if generation['parent_gen'] is None else db.execute(
                         'SELECT ordinal FROM generations WHERE gen_id=?', (generation['parent_gen'],)).fetchone()[0])
                     chain.append(dict(generation=dict(generation), stage=stage, seal=seal, members=members,
-                                      legacy_rows=legacy_rows, parent_ordinal=parent))
+                                      legacy_rows=legacy_rows, parent_ordinal=parent, sources=source_rows,
+                                      source_objects=source_objects))
                 if len(chain) == 2 and chain[0]['stage']['base'] != dict(
                         view_id=head['view_id'], gen_id=chain[1]['generation']['gen_id'],
                         epoch=head['epoch'] - 1, incarnation=self._incarnation):
@@ -1030,7 +1179,7 @@ class RowsMixin:
                 base_rows, side_rows, positions = self._rows_legacy_fts(item['legacy_rows'], cache={},
                                                                         deadline=deadline)
                 text_acc = self._rows_legacy_fts_acc(base_rows, side_rows, positions)
-                members = member_acc(rows, item['legacy_rows'])
+                members = member_acc(rows, item['legacy_rows'], item['sources'])
                 if last:
                     fts.create_head(db, view_id)
                     fts.populate_head(db, view_id, base_rows)
@@ -1041,7 +1190,7 @@ class RowsMixin:
                         fts.map_head(db, view_id, sidecar=True)
             else:
                 fts_rows = self._rows_fts_rows(rows, cache={}, deadline=deadline)
-                text_acc, members, side_rows = fts_acc(fts_rows), member_acc(rows), None
+                text_acc, members, side_rows = fts_acc(fts_rows), member_acc(rows, (), item['sources']), None
                 if last:
                     fts.create_head(db, view_id)
                     fts.populate_head(db, view_id, fts_rows)
@@ -1078,6 +1227,35 @@ class RowsMixin:
             db.execute(f"INSERT INTO s_generations({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
                        tuple(row[k] for k in columns))
         head_ordinal = chain[-1]['row']['ordinal']
+        # Source intervals: kept across both generations when unchanged, else closed and reopened.
+        for item in chain:
+            self._rows_put_source_objects(db, item['source_objects'])
+        base_sources = {row['path']: row for row in chain[0]['sources']} if len(chain) == 2 else {}
+        top_sources = {row['path']: row for row in chain[-1]['sources']}
+        for path in _sorted_paths(set(base_sources) | set(top_sources)):
+            old, new = base_sources.get(path), top_sources.get(path)
+            spans = []
+            if old is not None and old == new:
+                spans.append((old, chain[0]['row']['ordinal'], None))
+            else:
+                if old is not None:
+                    spans.append((old, chain[0]['row']['ordinal'], head_ordinal))
+                if new is not None:
+                    spans.append((new, head_ordinal, None))
+                if len(chain) == 2:
+                    key = v.canonical([path])
+                    db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) '
+                               'VALUES (?,?,?,?,?,?)', (view_id, head_ordinal, 'source', key,
+                                                         None if old is None else v.canonical(old),
+                                                         None if new is None else v.canonical(new)))
+                    for side, value in (('old', old), ('new', new)):
+                        if value is not None:
+                            db.execute('INSERT INTO s_delta_observations(view_id,ordinal,rel,key_json,side,'
+                                       'observation_id) VALUES (?,?,?,?,?,?)',
+                                       (view_id, head_ordinal, 'source', key, side, value['observation_id']))
+            for value, start, end in spans:
+                db.execute('INSERT INTO s_sources(view_id,path,gen_from,gen_to,observation_id) VALUES (?,?,?,?,?)',
+                           (view_id, path, start, end, value['observation_id']))
         base = {row['path']: row for row in chain[0]['members']} if len(chain) == 2 else {}
         top = {row['path']: row for row in chain[-1]['members']}
         for path in _sorted_paths(set(base) | set(top)):
@@ -1171,7 +1349,8 @@ class RowsMixin:
         rows = self._rows_open(db, generation['view_id'], generation['ordinal'])
         legacy_rows = self._rows_open_legacy(db, generation['view_id'], generation['ordinal'])
         legacy = self._rows_legacy_content(generation, legacy_rows)
-        members = member_acc(rows, legacy_rows if legacy else ())
+        members = member_acc(rows, legacy_rows if legacy else (),
+                             self._rows_open_sources(db, generation['view_id'], generation['ordinal']))
         if (v.canonical(members) != generation['member_acc']
                 or acc_digest('member', members) != generation['member_digest']):
             v.fail('generation_rows_mismatch')
@@ -1905,8 +2084,9 @@ class RowsMixin:
                                   expected_member_digest=member_digest(final, legacy_rows),
                                   legacy_json=v.canonical(_legacy_observation(legacy)),
                                   source_digest=v.digest('memvane-row-sources-v1', []))
+                source_deltas = [(row, None) for row in self._rows_open_sources(db, handle.view_id)]
                 written = self._rows_write(db, head, generation, deltas, None, before_commit, deadline,
-                                           legacy_deltas=legacy_deltas,
+                                           legacy_deltas=legacy_deltas, source_deltas=source_deltas,
                                            legacy_final=(final, legacy_rows, base_rows, side_rows, positions),
                                            commit=commit)
         finally:
