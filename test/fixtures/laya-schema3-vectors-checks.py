@@ -1030,6 +1030,15 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         clock = {'now': time.time()}
         fake = SimpleNamespace(time=lambda: clock['now'], monotonic=time.monotonic, sleep=lambda _s: None)
         passes = []
+        # The seed setUp replaces ``runtime_work.request``; this check needs the
+        # real one (its fixture guard is cleared below, and QMD_RUNTIME_DISPATCH
+        # keeps it from starting a worker), compiled from the module source.
+        import ast
+        tree = ast.parse(Path(work.__file__).read_text(encoding='utf8'))
+        node, = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'request']
+        scope = {}
+        exec(compile(ast.Module(body=[node], type_ignores=[]), work.__file__, 'exec'), work.__dict__, scope)
+        real_request = scope['request']
 
         def execute(row):
             self.assertEqual((row['kind'], row['target']), ('laya-sync', project))
@@ -1042,6 +1051,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         with mock.patch.dict(os.environ, {'QMD_SANDBOX': '', 'QMD_SETUP_GUARD_FIXTURE': '',
                                           'QMD_RUNTIME_DISPATCH': '1'}), \
                 mock.patch.object(work, 'default_root', new=lambda: root), \
+                mock.patch.object(work, 'request', new=real_request), \
                 mock.patch.object(work, 'time', fake), \
                 self.virtual_fill_clock({'slowprobe': 300.0}):
             queue = work.WakeQueue()
@@ -1067,7 +1077,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertEqual((after['id'], after['revision']), (row['id'], row['revision']), after)
         self.assertEqual(after['attempts'], 1, after)
         self.assertNotEqual(after['reason'], work.DELAYED_REASON, after)
-        self.assertTrue(str(after['reason']).startswith('target_deferred'), after)
+        self.assertIn(':target_deferred:', str(after['reason']), after)
         emit('schema3-vector-zero-progress-wake', reason=after['reason'], attempts=after['attempts'])
 
 
