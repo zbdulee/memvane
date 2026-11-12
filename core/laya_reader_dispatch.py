@@ -336,78 +336,93 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         remaining=min(30,deadline-time.monotonic())
         if remaining<=0:raise ValueError('reader_snapshot_deadline')
         return remaining
-    with journal._schema3_pin(record,deadline=deadline,linked=linked) as (store,handle,pin):
-        vector=store._pinned(pin)['vector']
-        # A lexical head (vectors pending) answers lexical lists only.
-        semantic=query_vector is not None and vector is not None
-        if semantic:
-            proof=_vector_proof(authority,None,decision,provider,deadline)
-            if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)
-                    or proof!=valid[-1][7]):
+    def attempt():
+        with journal._schema3_pin(record,deadline=deadline,linked=linked) as (store,handle,pin):
+            vector=store._pinned(pin)['vector']
+            # A lexical head (vectors pending) answers lexical lists only.
+            semantic=query_vector is not None and vector is not None
+            if semantic:
+                proof=_vector_proof(authority,None,decision,provider,deadline)
+                if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)
+                        or proof!=valid[-1][7]):
+                    raise ValueError('reader_vector_caller_unproved')
+            with store._reading(time.monotonic()+left()) as db:
+                saved=db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
+                                 (handle.worktree_id,)).fetchone()
+                if store._rows:
+                    # Row format: the pinned head generation says whether a sidecar corpus is present.
+                    paired=bool(store._pinned(pin)['verified']['generation']['sidecar_present'])
+                else:
+                    legacy=store._read_pinned(db,pin,time.monotonic()+left())[3].get('legacy',{})
+                    paired='sidecar_corpus' in legacy
+            # A migration head imported while a completed v6 sidecar shadowed its
+            # base keeps both sealed FTS corpora (paired); every active card is in
+            # exactly one. Each corpus is fused on its own and the two are merged
+            # by the v6 incremental merge rule (merge_incremental_rows).
+            origins=True if paired else None
+            # The migration prepares that head without a vector spec (lexical
+            # only); vectors arrive with the next ordinary schema3 generation.
+            if origins is not None and vector is not None:
+                raise ValueError('migration_vector_spec_invalid')
+
+            def rooted(source):
+                if linked is None:
+                    return str(Path(source))
+                try:
+                    return str(Path(linked['worktreeProjectRoot'])/Path(source).relative_to(record['project']))
+                except ValueError:
+                    return None
+            names=[item['name'] for item in record['roots'] if item.get('role')=='wiki'
+                   and saved is not None and rooted(item['sourceRoot'])==saved[0]]
+            if len(names)!=1:
+                _fail('selected_wiki_required')
+            name=names[0]
+            roots=wiki_index_roots(decision['collections'])
+
+            def shaped(rows):
+                answer=[]
+                for row in rows:
+                    full=name+'/'+row['path']
+                    if auxiliary_wiki_row(full,row['body'],roots):
+                        continue
+                    answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
+                                   'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
+                return answer
+            lexical={origin:[shaped(store.search(pin,query,HYBRID_LIST_LIMIT,deadline_seconds=left(),
+                                                 **({} if origin is None else {'_legacy_origin':origin})))
+                             for query in queries]
+                     for origin in ((None,) if origins is None else ('base','sidecar'))}
+            status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
+            nearest=None
+            if semantic:
+                try:
+                    nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
+                                                      profile_id=vector['profile_id'],
+                                                      deadline_seconds=left()))
+                except BlobStoreError as exc:
+                    if exc.reason not in DEFERRED:
+                        raise
+                    status=DEFERRED[exc.reason]
+
+            def fused(lists):
+                return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
+            rows=(fused(lexical[None]+([] if nearest is None else [nearest])) if origins is None
+                  else merge_incremental_rows(fused(lexical['sidecar']),fused(lexical['base'])))
+            spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
+                                       deadline_seconds=left())
+            if time.monotonic()>=deadline:
+                raise ValueError('reader_snapshot_deadline')
+            if semantic and _vector_proof(authority,None,decision,provider,deadline)!=proof:
                 raise ValueError('reader_vector_caller_unproved')
-        with store._reading(time.monotonic()+left()) as db:
-            saved=db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
-                             (handle.worktree_id,)).fetchone()
-            legacy=store._read_pinned(db,pin,time.monotonic()+left())[3].get('legacy',{})
-        # A migration head imported while a completed v6 sidecar shadowed its
-        # base keeps both sealed FTS corpora (paired); every active card is in
-        # exactly one. Each corpus is fused on its own and the two are merged
-        # by the v6 incremental merge rule (merge_incremental_rows).
-        origins=legacy['fts_sources'] if 'sidecar_corpus' in legacy else None
-        # The migration prepares that head without a vector spec (lexical
-        # only); vectors arrive with the next ordinary schema3 generation.
-        if origins is not None and vector is not None:
-            raise ValueError('migration_vector_spec_invalid')
+            locations={name+'/'+path:tuple(found) for path,found in spans.items() if found}
+            return ReaderResult('schema3',endpoint.endpoint_id,selected.epoch,pin.gen_id,
+                                rows,status,frozenset(),locations)
 
-        def rooted(source):
-            if linked is None:
-                return str(Path(source))
-            try:
-                return str(Path(linked['worktreeProjectRoot'])/Path(source).relative_to(record['project']))
-            except ValueError:
-                return None
-        names=[item['name'] for item in record['roots'] if item.get('role')=='wiki'
-               and saved is not None and rooted(item['sourceRoot'])==saved[0]]
-        if len(names)!=1:
-            _fail('selected_wiki_required')
-        name=names[0]
-        roots=wiki_index_roots(decision['collections'])
-
-        def shaped(rows):
-            answer=[]
-            for row in rows:
-                full=name+'/'+row['path']
-                if auxiliary_wiki_row(full,row['body'],roots):
-                    continue
-                answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
-                               'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
-            return answer
-        lexical={origin:[shaped(store.search(pin,query,HYBRID_LIST_LIMIT,deadline_seconds=left(),
-                                             **({} if origin is None else {'_legacy_origin':origin})))
-                         for query in queries]
-                 for origin in ((None,) if origins is None else ('base','sidecar'))}
-        status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
-        nearest=None
-        if semantic:
-            try:
-                nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
-                                                  profile_id=vector['profile_id'],
-                                                  deadline_seconds=left()))
-            except BlobStoreError as exc:
-                if exc.reason not in DEFERRED:
-                    raise
-                status=DEFERRED[exc.reason]
-
-        def fused(lists):
-            return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
-        rows=(fused(lexical[None]+([] if nearest is None else [nearest])) if origins is None
-              else merge_incremental_rows(fused(lexical['sidecar']),fused(lexical['base'])))
-        spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
-                                   deadline_seconds=left())
-        if time.monotonic()>=deadline:
-            raise ValueError('reader_snapshot_deadline')
-        if semantic and _vector_proof(authority,None,decision,provider,deadline)!=proof:
-            raise ValueError('reader_vector_caller_unproved')
-        locations={name+'/'+path:tuple(found) for path,found in spans.items() if found}
-        return ReaderResult('schema3',endpoint.endpoint_id,selected.epoch,pin.gen_id,
-                            rows,status,frozenset(),locations)
+    # A row-format head that moved between the pin and its read refuses with
+    # view_head_changed; recall pins the new head once and never serves another view.
+    try:
+        return attempt()
+    except BlobStoreError as exc:
+        if exc.reason!='view_head_changed':
+            raise
+    return attempt()

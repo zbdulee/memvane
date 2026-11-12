@@ -778,7 +778,7 @@ class RowsMixin:
 
     # -- conversion from the generation format -------------------------------
 
-    def _rows_convert(self, *, deadline):
+    def _rows_convert(self, *, deadline, parity=None):
         """Convert this generation-format store to the row format in one transaction.
 
         Every view keeps its head and, when present, the published generation
@@ -836,6 +836,25 @@ class RowsMixin:
                         epoch=head['epoch'] - 1, incarnation=self._incarnation):
                     v.fail('row_conversion_unsupported')
                 plans.append(dict(head=head, chain=chain))
+            anchor = None
+            if parity is not None:
+                # Only a published generation of a converted view, proved by the
+                # generation-format verifier in this transaction, is anchored.
+                v.exact(parity, ('gen_id', 'receipt_digest'))
+                v.identifier(parity['receipt_digest'])
+                if not isinstance(parity['gen_id'], str) or not vals.GEN_ID.fullmatch(parity['gen_id']):
+                    v.fail('row_conversion_parity_invalid')
+                anchored = db.execute("SELECT * FROM generations WHERE gen_id=? AND state='published'",
+                                      (parity['gen_id'],)).fetchone()
+                if anchored is None or anchored['view_id'] not in {plan['head']['view_id'] for plan in plans}:
+                    v.fail('row_conversion_parity_invalid')
+                handle, entry, saved = self._sealed_handle(db, anchored)
+                self._verify_generation(db, handle, entry, saved, anchored, deadline=deadline)
+                seal = dict(db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (parity['gen_id'],)).fetchone())
+                anchor = dict(view_id=anchored['view_id'], gen_id=parity['gen_id'], ordinal=anchored['ordinal'],
+                              incarnation=self._incarnation, receipt_digest=parity['receipt_digest'],
+                              proof_digest=v.digest('memvane-row-parity-anchor-v1', dict(
+                                  generation=dict(anchored), seal=seal, receipt=parity['receipt_digest'])))
             meta = dict(db.execute('SELECT * FROM store_meta WHERE singleton=1').fetchone())
             sequence = db.execute('SELECT MAX(ordinal) FROM generation_slots').fetchone()[0] or 0
             old_fts = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
@@ -867,6 +886,8 @@ class RowsMixin:
                                                schema_digest=schema.expected_manifest(schema.ROW_SCHEMA_VERSION)))
                 for plan in plans:
                     self._rows_convert_view(db, plan, deadline)
+                if anchor is not None:
+                    _insert(db, 's_parity_anchor', anchor)
                 db.execute("INSERT INTO sqlite_sequence(name,seq) SELECT 's_generations',0 "
                            "WHERE NOT EXISTS(SELECT 1 FROM sqlite_sequence WHERE name='s_generations')")
                 db.execute("UPDATE sqlite_sequence SET seq=MAX(seq,?) WHERE name='s_generations'", (sequence,))
