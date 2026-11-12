@@ -317,7 +317,7 @@ class RowsMixin:
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 
-    def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline):
+    def _rows_write(self, db, head, generation, deltas, rows, before_commit, deadline, *, expected_logical=None):
         """Changed card rows, their head FTS rows, the sealed generation and the head CAS.
 
         Runs inside the caller's write transaction and commits it under the
@@ -342,6 +342,8 @@ class RowsMixin:
             fts.verify_head_index(db, view_id)
             self._fts_guard.freeze_head()
             logical, physical = fts.head_proof(db, view_id, rows, deadline)
+            if expected_logical is not None and logical != expected_logical:
+                v.fail('rollback_fts_mismatch')
             generation = dict(generation, ordinal=ordinal, logical_fts_digest=logical, physical_fts_digest=physical)
             generation['seal_digest'] = seal_digest(_seal_fields(self._incarnation, generation))
             columns = tuple(generation)
@@ -422,9 +424,8 @@ class RowsMixin:
                 if job is not None:
                     store_module._stage_mark_abandon(db, job[0])
 
-            written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline)
-            if written['logical_fts_digest'] != prior['logical_fts_digest']:
-                v.fail('rollback_fts_mismatch')
+            written = self._rows_write(db, head, generation, deltas, rows, before_commit, deadline,
+                                       expected_logical=prior['logical_fts_digest'])
         return dict(view_id=handle.view_id, gen_id=written['gen_id'], epoch=written['epoch'],
                     incarnation=self._incarnation)
 

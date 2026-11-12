@@ -324,19 +324,103 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         store, _, handle = self.rows_store()
         for body in (b'# One\nuniqueone x\n', b'# Two\nuniquetwo x\n', b'# Three\nuniquethree x\n'):
             self.publish(store, handle, body)
-        before = self.counts(store, handle.view_id)
+
+        def state():
+            db = store._db
+            return (self.counts(store, handle.view_id),
+                    db.execute('SELECT COUNT(*) FROM s_stage_jobs').fetchone()[0],
+                    db.execute('SELECT COUNT(*) FROM s_stage_items').fetchone()[0])
+        before = state()
+        self.assertGreater(before[1], 0)
         import laya_view_rows as rows
-        calls = []
-        real = rows._expired
+        real, failed = rows._expired, []
 
         def late(deadline):
-            calls.append(1)
-            if len(calls) == 3:
+            # Fail only at the batch's last check, after every DELETE ran.
+            frame = sys._getframe(1)
+            while frame is not None and frame.f_code.co_name != '_rows_collect':
+                frame = frame.f_back
+            done = {} if frame is None else frame.f_locals.get('removed', {})
+            if 's_generations' in done:
+                failed.append(dict(done))
                 rows.v.fail('fts_deadline_exceeded')
             return real(deadline)
         with mock.patch.object(rows, '_expired', side_effect=late):
             self.refused(store.collect_view_rows, handle, limit=64)
-        self.assertEqual(self.counts(store, handle.view_id), before)
+        self.assertTrue(failed and failed[0]['s_cards'] and failed[0]['s_generations'], failed)
+        self.assertEqual(state(), before)
+        removed = store.collect_view_rows(handle, limit=64)
+        self.assertEqual({k: removed[k] for k in ('s_cards', 's_generations')},
+                         {k: failed[0][k] for k in ('s_cards', 's_generations')})
+
+    def cards_manifest(self, store, handle, cards, *, scan_id=seed.SCAN):
+        """Manifest of several cards: ``{path: (bytes, trusted)}`` written under the wiki."""
+        import hashlib
+        wiki = self.root / '.memvane/wiki'
+        for old in wiki.rglob('*.md'):
+            if old.parent != wiki:
+                old.unlink()
+        raw = (self.root / 'notes/src.md').read_bytes()
+        fp = store.put_fingerprint(dict(worktree_id=handle.worktree_id, branch_key=handle.branch_key,
+            path='notes/src.md', source_sha=hashlib.sha256(raw).hexdigest(), byte_length=len(raw),
+            head_oid=handle.head_oid, tracked_state='unknown' if handle.branch_key == 'non-git' else 'tracked',
+            binding_state='observed', scan_id=scan_id, observed_ns=1))
+        members = []
+        for path, (body, trusted) in sorted(cards.items()):
+            target = wiki / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+            blob = store.ingest_card(handle.worktree_id, path)
+            trust = store.put_attestation(dict(blob_sha=blob, verification_kind='compiled',
+                engine_identity='synthetic:codex', policy_digest=handle.policy_digest,
+                receipt=dict(schema='memvane-card-evidence-v1', verdict='verified',
+                             result_digest='e' * 64, prior_trust=None),
+                sources=[dict(fingerprint_id=fp, spans=[dict(start=0, end=4)])])) if trusted else None
+            members.append(dict(path=path, blob_sha=blob, display_title='T ' + path, trust_digest=trust))
+        return dict(scan_id=scan_id, policy_digest=handle.policy_digest, revocation_epoch=0, complete=True,
+                    sources=[dict(path='notes/src.md', fingerprint_id=fp, presence='present')], members=members)
+
+    def publish_cards(self, store, handle, cards):
+        head = store.head(handle)
+        gen = store.prepare_generation(handle, self.cards_manifest(store, handle, cards), expected_head=head)
+        return store.publish_generation(handle, gen, expected_head=head)
+
+    def test_add_delete_eligibility_and_many_paths_publish_reverse_and_collect(self):
+        store, _, handle = self.rows_store()
+        many = {f'cards/한글-{i:03d}.md': (f'# Card {i}\nuniquemany{i:03d} 본문\n'.encode('utf8'), True)
+                for i in range(70)}
+        first = self.publish_cards(store, handle, many)
+        self.assertEqual(self.found(store, handle, 'uniquemany069'), ['cards/한글-069.md'])
+        added = dict(many, **{'cards/zz-new.md': (b'# New\nuniqueadded card\n', True)})
+        second = self.publish_cards(store, handle, added)
+        self.assertEqual(self.found(store, handle, 'uniqueadded'), ['cards/zz-new.md'])
+        removed = {k: val for k, val in added.items() if k != 'cards/한글-000.md'}
+        third = self.publish_cards(store, handle, removed)
+        self.assertEqual(self.found(store, handle, 'uniquemany000'), [])
+        flipped = dict(removed, **{'cards/한글-001.md': (many['cards/한글-001.md'][0], False)})
+        fourth = self.publish_cards(store, handle, flipped)
+        self.assertEqual(self.found(store, handle, 'uniquemany001'), [])
+        db = store._db
+        deltas = [row[0] for row in db.execute(
+            'SELECT COUNT(*) FROM s_deltas WHERE view_id=? GROUP BY ordinal ORDER BY ordinal', (handle.view_id,))]
+        self.assertEqual(deltas, [70, 1, 1, 1])
+        back = store.rollback_generation(handle, expected_head=fourth)
+        self.assertEqual(self.found(store, handle, 'uniquemany001'), ['cards/한글-001.md'])
+        self.assertEqual(self.found(store, handle, 'uniquemany000'), [])
+        while any(store.collect_view_rows(handle, limit=16).get(t) for t in
+                  ('s_cards', 's_deltas', 's_generations', 'stage')):
+            pass
+        gens = [row[0] for row in db.execute('SELECT gen_id FROM s_generations WHERE view_id=? ORDER BY ordinal',
+                                             (handle.view_id,))]
+        self.assertEqual(gens, [fourth['gen_id'], back['gen_id']])
+        self.assertEqual(db.execute('SELECT COUNT(*) FROM s_cards WHERE view_id=? AND gen_to IS NULL',
+                                    (handle.view_id,)).fetchone()[0], 70)
+        again = store.rollback_generation(handle, expected_head=back)
+        self.assertEqual(self.found(store, handle, 'uniquemany001'), [])
+        self.assertEqual(self.found(store, handle, 'uniqueadded'), ['cards/zz-new.md'])
+        self.assertEqual(again['epoch'], 6)
+        self.assertNotIn(first['gen_id'], gens)
+        self.assertNotEqual(second['gen_id'], third['gen_id'])
 
     def test_unsupported_row_inputs_refuse_before_any_write(self):
         store, _, handle = self.rows_store()
