@@ -190,6 +190,8 @@ class ReaderMixin:
         branch; anything else verifies again. Returns the head generation id,
         or None when the view has no head.
         """
+        if self._rows:
+            v.fail('row_format_unsupported')
         self._check(handle)
         self._preverified = None
         with self._reading(deadline) as db:
@@ -232,6 +234,8 @@ class ReaderMixin:
         else:
             deadline=min(deadline,now+30)
         _remaining(deadline)
+        if self._rows:
+            return self._rows_pin(handle, deadline, _observed)
         issued = self._check(handle)
         if not _observed:
             self._observe(issued,deadline=deadline)
@@ -295,6 +299,10 @@ class ReaderMixin:
 
     def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
                deadline_seconds=2, _legacy_origin=None, _observed=False):
+        if self._rows:
+            return self._rows_search(pin, fts_query, limit, path_prefixes=path_prefixes,
+                                     excluded_paths=excluded_paths, deadline_seconds=deadline_seconds,
+                                     legacy_origin=_legacy_origin, observed=_observed)
         if _legacy_origin is not None and _legacy_origin not in ('base', 'sidecar'):
             v.fail('migration_lexical_origin_invalid')
         if type(_observed) is not bool:
@@ -404,6 +412,8 @@ class ReaderMixin:
         in one locator format; any other kind, byte spans included, refuses
         the read. A path without spans is absent from the result.
         """
+        if self._rows:
+            v.fail('row_format_unsupported')
         if (not isinstance(paths, (list, tuple)) or len(paths) > 100
                 or any(type(path) is not str or not path for path in paths)):
             v.fail('card_locations_invalid')
@@ -419,6 +429,8 @@ class ReaderMixin:
             return _card_locations(db, pin.gen_id, list(dict.fromkeys(paths)))
 
     def verify_views(self):
+        if self._rows:
+            v.fail('row_format_unsupported')
         deadline = time.monotonic() + 30
         with self._reading(deadline) as db:
             for generation in db.execute('SELECT * FROM generations ORDER BY ordinal').fetchall():

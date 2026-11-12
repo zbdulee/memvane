@@ -60,6 +60,7 @@ class ConnectionGuard:
     def __init__(self,db):
         self._db=db
         self._active=None
+        self._frozen=False
         self._thread=threading.get_ident()
         db.set_authorizer(self._authorize)
 
@@ -86,7 +87,7 @@ class ConnectionGuard:
                 sqlite3.SQLITE_CREATE_VTABLE,sqlite3.SQLITE_DROP_VTABLE,
                 sqlite3.SQLITE_ALTER_TABLE}
         if action not in writes:return sqlite3.SQLITE_OK
-        if self._active is None or threading.get_ident()!=self._thread:
+        if self._active is None or self._frozen or threading.get_ident()!=self._thread:
             return sqlite3.SQLITE_DENY
         if isinstance(self._active,tuple):
             base=head_table(self._active[1])
@@ -131,6 +132,7 @@ class ConnectionGuard:
         if self._active is not None or threading.get_ident()!=self._thread or not self._db.in_transaction:
             v.fail('fts_build_capability_invalid')
         self._active=('head',view_id)
+        self._frozen=False
         self._db.set_authorizer(self._authorize)
         try:
             yield
@@ -141,7 +143,22 @@ class ConnectionGuard:
             raise
         finally:
             self._active=None
+            self._frozen=False
             self._db.set_authorizer(self._authorize)
+
+    def freeze_head(self):
+        """Flush pending FTS5 segments and refuse any later FTS write.
+
+        A savepoint after the last FTS write makes the shadow bytes read before
+        COMMIT equal to the committed ones; the commitment is computed after it.
+        """
+        if (not isinstance(self._active,tuple) or self._frozen or threading.get_ident()!=self._thread
+                or not self._db.in_transaction):
+            v.fail('fts_build_capability_invalid')
+        _execute(self._db,'SAVEPOINT s_head_flush')
+        _execute(self._db,'RELEASE s_head_flush')
+        self._frozen=True
+        self._db.set_authorizer(self._authorize)
 
 
 def create(db,ordinal,*,sidecar=False):
@@ -171,6 +188,10 @@ def _entries(rows, *, insertion_order=False):
 def populate(db,ordinal,rows,*,sidecar=False):
     for row in _entries(rows,insertion_order=sidecar):
         _execute(db,f'INSERT INTO {table(ordinal,sidecar=sidecar)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
+
+
+def create_head(db,view_id,*,sidecar=False):
+    _execute(db,head_ddl(view_id,sidecar=sidecar))
 
 
 def apply_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):

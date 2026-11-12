@@ -362,6 +362,8 @@ class VectorMixin:
 
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None):
+        if self._rows:
+            v.fail('row_format_unsupported')
         deadline = time.monotonic() + options(limit, max_float_work, deadline_seconds,
                                               path_prefixes, excluded_paths)
         v.identifier(profile_id)
@@ -423,6 +425,8 @@ class VectorMixin:
                       max_float_work=DEFAULT_WORK, deadline_seconds=2, path_prefixes=None,
                       excluded_paths=None):
         """Two ordered lanes under one elapsed deadline; no fusion or ANN."""
+        if self._rows:
+            v.fail('row_format_unsupported')
         start = time.monotonic()
         options(limit, max_float_work, deadline_seconds, path_prefixes, excluded_paths)
         if profile_id is not None:

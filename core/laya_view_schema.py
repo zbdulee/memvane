@@ -221,6 +221,70 @@ def row_stage_statements():
     ]
 
 
+# The view's in-flight generation: its newest row, not yet a head. A
+# publication inserts it, writes its rows and moves the head in one transaction.
+_IN_FLIGHT = """(SELECT g.ordinal FROM s_generations g WHERE g.view_id={view}
+          AND g.ordinal=(SELECT MAX(ordinal) FROM s_generations WHERE view_id={view})
+          AND NOT EXISTS(SELECT 1 FROM s_heads h WHERE h.view_id={view} AND h.ordinal=g.ordinal))"""
+
+
+def row_tables(text,sha,uuid,integer):
+    """Row-format relations kept from the generation format plus the parity anchor."""
+    return {
+      'views':tables(text,sha,uuid,integer)['views'],
+      # Reserved deletion/hold proof per view path; metadata only, no writer yet.
+      'delete_receipts':f'''CREATE TABLE delete_receipts(
+        {sha('receipt_id')} PRIMARY KEY, {sha('view_id')} REFERENCES views(view_id),
+        {text('base_gen')} REFERENCES s_generations(gen_id), {text('path')},
+        {sha('fingerprint_id')} REFERENCES source_fingerprints(fingerprint_id),
+        observed_head TEXT CHECK(observed_head IS NULL OR typeof(observed_head)='text'),
+        {text('proof_json')} CHECK(json_valid(proof_json)),
+        {text('decision')} CHECK(decision IN ('hold','retire')), {text('reason')}, {integer('created_ns')})''',
+      's_parity_anchor':f'''CREATE TABLE s_parity_anchor(
+        {sha('view_id')} REFERENCES views(view_id), {text('gen_id')},
+        {integer('ordinal',1)}, {uuid('incarnation')}, {sha('receipt_digest')},
+        {sha('proof_digest')}, PRIMARY KEY(view_id,gen_id))''',
+    }
+
+
+def row_immutable_keys():
+    return {'views':(('view_id',),('worktree_id','branch_key')), 'delete_receipts':(('receipt_id',),),
+            's_parity_anchor':(('view_id','gen_id'),)}
+
+
+def row_statements():
+    """Generation, interval, delta and stage relations of the row format."""
+    view_new = _IN_FLIGHT.format(view='NEW.view_id')
+    result = [*row_generation_statements(), *row_card_statements(), *row_source_statements(),
+              *row_delta_statements(), *row_stage_statements()]
+    result.extend([
+      # Ordinals never repeat, even after a generation row is collected; the
+      # new generation continues exactly from the current head (or starts at 1).
+      f'''CREATE TRIGGER s_generations_insert BEFORE INSERT ON s_generations
+        WHEN NEW.ordinal<=COALESCE((SELECT seq FROM sqlite_sequence WHERE name='s_generations'),0)
+          OR EXISTS(SELECT 1 FROM s_generations g WHERE g.view_id=NEW.view_id
+            AND NOT EXISTS(SELECT 1 FROM s_heads h WHERE h.view_id=g.view_id AND h.ordinal=g.ordinal)
+            AND g.ordinal>COALESCE((SELECT ordinal FROM s_heads WHERE view_id=NEW.view_id),0))
+          OR NOT ((NOT EXISTS(SELECT 1 FROM s_heads WHERE view_id=NEW.view_id)
+                   AND NEW.prior_ordinal IS NULL AND NEW.epoch=1)
+              OR EXISTS(SELECT 1 FROM s_heads h WHERE h.view_id=NEW.view_id
+                   AND NEW.prior_ordinal=h.ordinal AND NEW.epoch=h.epoch+1))
+        BEGIN SELECT RAISE(ABORT,'generation_insert_invalid'); END''',
+      f'''CREATE TRIGGER s_cards_in_flight BEFORE INSERT ON s_cards
+        WHEN NEW.gen_from IS NOT {view_new}
+        BEGIN SELECT RAISE(ABORT,'card_generation_invalid'); END''',
+      f'''CREATE TRIGGER s_cards_close_in_flight BEFORE UPDATE ON s_cards
+        WHEN NEW.gen_to IS NOT {_IN_FLIGHT.format(view='OLD.view_id')}
+        BEGIN SELECT RAISE(ABORT,'card_generation_invalid'); END''',
+      f'''CREATE TRIGGER s_deltas_in_flight BEFORE INSERT ON s_deltas
+        WHEN NEW.ordinal IS NOT {view_new}
+        BEGIN SELECT RAISE(ABORT,'delta_generation_invalid'); END''',
+      '''CREATE INDEX s_generations_by_view ON s_generations(view_id,ordinal)''',
+      '''CREATE INDEX s_cards_by_blob ON s_cards(blob_sha,view_id)''',
+    ])
+    return result
+
+
 def tables(text,sha,uuid,integer):
     return {
       'views':f'''CREATE TABLE views(

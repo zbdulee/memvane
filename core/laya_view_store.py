@@ -25,6 +25,7 @@ import laya_view_values as vals
 import laya_view_vectors as vectors
 from laya_view_fill import FillMixin
 from laya_view_reader import ReaderMixin
+from laya_view_rows import RowsMixin
 from laya_view_vectors import VectorMixin
 
 # Publication cut budget; only an O(1) source identity and the commit run under it.
@@ -332,7 +333,7 @@ def _current_capture(saved, repository, policy, expected, *, deadline=None):
         v.fail('checkout_changed')
 
 
-class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
+class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
     _handle_type = ViewHandle
 
     @classmethod
@@ -420,6 +421,8 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return handle
 
     def _head(self, db, handle):
+        if self._rows:
+            return self._rows_head(db, handle)
         row = db.execute('SELECT gen_id,epoch FROM view_heads WHERE view_id=?', (handle.view_id,)).fetchone()
         if row is None:
             return dict(view_id=handle.view_id, gen_id=None, epoch=0, incarnation=self._incarnation)
@@ -576,6 +579,9 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
 
     def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None, legacy_snapshot=None,
                            deadline=None):
+        if self._rows:
+            return self._rows_prepare(handle, manifest, expected_head=expected_head, vector_spec=vector_spec,
+                                      legacy_snapshot=legacy_snapshot, deadline=deadline)
         if deadline is not None:
             if (type(deadline) not in (int, float) or not math.isfinite(deadline)
                     or time.monotonic() >= deadline):
@@ -829,6 +835,9 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return stage
 
     def publish_generation(self, handle, gen_id, *, expected_head, legacy_snapshot=None, deadline=None):
+        if self._rows:
+            return self._rows_publish(handle, gen_id, expected_head=expected_head,
+                                      legacy_snapshot=legacy_snapshot, deadline=deadline)
         if deadline is not None and (type(deadline) not in (int, float)
                 or not math.isfinite(deadline) or time.monotonic() >= deadline):
             v.fail('fts_deadline_exceeded')
