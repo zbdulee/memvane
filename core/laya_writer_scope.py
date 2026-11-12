@@ -508,6 +508,9 @@ def mark_new_write(writer):
         for key in ('epoch', 'new_write_seen'):
             normalized['bundle'][key] = old['bundle'][key]
         R._need(R._raw(normalized) == R._raw(old), 'normal_writer_intent_premise_changed')
+        # The recapture belongs to the image stage: check its deadline before
+        # the reproof takes a fresh one.
+        context.check_deadline(deadline)
         timings['img'] = _ms(time.monotonic() - image_started)
         deadline = context.operation_deadline()
         proof = _prove_plan(context, plan, deadline, timings, 'p2')
