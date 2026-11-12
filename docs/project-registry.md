@@ -1,7 +1,7 @@
 # 선택 프로젝트 레지스트리
 
 `core/memvane_registry.py`는 사용자 단위 조회 색인이다. HOME state base 아래
-소유자 전용 SQLite 파일 `~/.local/state/memvane/registry/projects.sqlite` 하나에
+소유자 전용 SQLite 파일 `~/.local/state/memvane/auto-context/registry/projects.sqlite` 하나에
 선택된 main checkout과 그 연결 git worktree의 경로를 기록한다. 레지스트리 행은
 조회 후보일 뿐 권한이 아니다. 소비자는 사용 직전에 기존 선택 route 증명(route
 기록·설치 journal·attestation)을 그대로 수행하고, 행만으로 recall·외부 편집
@@ -52,8 +52,8 @@ intent를 쓰지 않고, SQLite 자체 파일 잠금 외의 lock, wake kind, hoo
 
 SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile 예산은
 `HOOK_SECONDS`와 `hook_budget.remaining()`에서 1초를 뺀 값 중 작은 쪽이고, 그 값이
-0 이하면 reconcile을 하지 않는다. 레지스트리 부재·손상·busy·예외는 SessionStart
-응답을 바꾸지 않는다.
+0 이하면 reconcile을 하지 않는다. 예산 소진(`HookDeadlineExceeded`)과 레지스트리
+부재·손상·busy·예외는 SessionStart 응답을 바꾸지 않는다.
 
 ## Reconcile
 
@@ -92,10 +92,12 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 - `snapshot()`: 대시보드용 전체 행·base별 완료 시각·`stale` 표시. 손상·미지원
   schema·안전하지 않은 경로는 `recovery_required`로 보인다.
 - `laya_external_edits`의 대상 탐색은 backfill이 완료된 정상 레지스트리에서 state
-  base를 열거하지 않고 `active` main 행의 state root만 증명한다. backfill이 미완료면
-  기존 유계 열거에 레지스트리의 tombstone·`conflict`·비활성 행을 적용한다.
-  레지스트리가 없거나 손상·busy·미지원 schema·안전하지 않으면 열거로 대체하지 않고
-  라우팅하지 않는다.
+  base를 열거하지 않고 `active` main 행의 state root만 증명한다. 행은 state root가
+  HOME state base 바로 아래이고 그 이름·journal project root·route install ID가 행과
+  같을 때만 후보다. backfill이 미완료면 기존 유계 열거를 쓴다. 두 경우 모두
+  레지스트리의 tombstone·`conflict`·비활성 main 행이 후보를 뺀다. 레지스트리가 없거나
+  손상·busy·미지원 schema·안전하지 않으면 열거로 대체하지 않고 라우팅하지 않는다.
+  owner 선택(가장 긴 원문 root 접두사, 원문 자격 검사)은 레지스트리와 무관하다.
 
 ## 실패와 호환
 
@@ -103,9 +105,15 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
   hook 읽기는 busy 대기 50ms로 끝난다. 레지스트리를 삭제·재생성하지 않고, 미지원
   schema나 손상된 파일에는 쓰지 않는다. 0바이트 파일은 쓰는 쪽이 schema를 만든다.
 - SQLite 기본 rollback journal 모드를 써서 py3.9 hook이 새 python이 쓴 파일을 읽는다.
-- 구 번들은 레지스트리를 읽지 않는다. `registry/` 디렉터리는 install ID 형식이 아니라
-  구 번들의 state base 열거에서 install로 다뤄지지 않는다. 구 번들의 설치·해제는
-  다음 backfill·reconcile이 반영한다. tombstone은 구 번들 동작을 막지 않는다.
+- 레지스트리의 journal 읽기는 `read_only_journals()` 안에서 한다. 중단된 v3/v4
+  journal의 rollback 복구를 하지 않고 그 설치를 이번 pass에서 건너뛴다. journal
+  busy 대기는 `laya_install_journal.reader_deadline`으로 그 pass의 예산에 묶인다.
+- 레지스트리는 state base의 기존 `auto-context/` 항목 아래에 있다. 구 번들은 이름
+  필터 전에 state base 항목을 512개(`laya_external_edits.MAX_STATE_ENTRIES`)까지만
+  센다. `auto-context/`가 없고 state base 항목이 이미 512개면 레지스트리를 만들지
+  않는다(`registry_state_base_full`).
+- 구 번들은 레지스트리를 읽지 않는다. 구 번들의 설치·해제는 다음 backfill·reconcile이
+  반영한다. tombstone은 구 번들 동작을 막지 않는다.
 - 같은 프로젝트의 직접 세션은 레지스트리와 무관하게 기존 route 증명으로 동작한다.
 
 ## 진단

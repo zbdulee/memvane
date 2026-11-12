@@ -82,7 +82,7 @@ class Base(unittest.TestCase):
 
     @property
     def db(self):
-        return memvane_paths.state_base() / 'registry' / 'projects.sqlite'
+        return registry().registry_path()
 
     def rows(self):
         if not self.db.exists():
@@ -122,7 +122,7 @@ class Store(Base):
     def test_absent_registry_refuses_reads_and_creates_nothing(self):
         with self.assertRaisesRegex(ValueError, 'registry_absent'):
             registry().routing_rows()
-        self.assertFalse((memvane_paths.state_base() / 'registry').exists())
+        self.assertFalse(registry().registry_path().parent.exists())
 
     def test_register_writes_one_private_main_row_idempotently(self):
         first = self.register(self.a)
@@ -164,7 +164,7 @@ class Store(Base):
         result = registry().register(str(self.a.project), str(foreign), explicit=True,
                                      now=1000.0)
         self.assertEqual(result['status'], 'skipped', result)
-        self.assertFalse((memvane_paths.state_base() / 'registry').exists())
+        self.assertFalse(registry().registry_path().parent.exists())
 
     def test_seed_outside_home_skips_the_whole_pass(self):
         other = tempfile.TemporaryDirectory(prefix='registry-foreign-')
@@ -173,7 +173,7 @@ class Store(Base):
         foreign.mkdir(mode=0o700)
         result = registry().reconcile(seed=(str(self.a.project), str(foreign)), now=1000.0)
         self.assertEqual(result['status'], 'skipped', result)
-        self.assertFalse((memvane_paths.state_base() / 'registry').exists())
+        self.assertFalse(registry().registry_path().parent.exists())
 
     def test_fixture_process_never_touches_the_account_home(self):
         import pwd
@@ -183,7 +183,7 @@ class Store(Base):
             self.assertEqual(registry().reconcile(now=1000.0)['status'], 'unavailable')
             with self.assertRaisesRegex(ValueError, 'registry_fixture_live_home'):
                 registry().routing_rows()
-        self.assertFalse((memvane_paths.state_base() / 'registry').exists())
+        self.assertFalse(registry().registry_path().parent.exists())
 
     def test_corrupt_registry_is_refused_and_preserved(self):
         self.register(self.a)
@@ -217,7 +217,7 @@ class Store(Base):
         self.db.chmod(0o600)
         moved = self.db.parent.with_name('registry-real')
         self.db.parent.rename(moved)
-        (memvane_paths.state_base() / 'registry').symlink_to(moved)
+        self.db.parent.symlink_to(moved)
         with self.assertRaisesRegex(ValueError, 'registry_unsafe'):
             registry().routing_rows()
         self.assertEqual(self.register(self.b)['status'], 'unavailable')
@@ -536,6 +536,26 @@ class Reconcile(Base):
         registry().reconcile(now=5000.0 + DAY + 1, backfill_page=0)
         self.assertEqual(self.row(self.a)['status'], 'detached')
 
+    def test_reconcile_never_recovers_another_install_journal(self):
+        self.register(self.b)
+        # A crashed writer leaves the v4 journal torn with a hot rollback file.
+        script = ('import os, sqlite3, sys; '
+                  'db = sqlite3.connect(sys.argv[1], isolation_level=None); '
+                  "db.execute('PRAGMA cache_size=1'); db.execute('BEGIN IMMEDIATE'); "
+                  "db.execute('CREATE TABLE junk(x)'); "
+                  "[db.execute('INSERT INTO junk VALUES(randomblob(4000))') for _ in range(300)]; "
+                  'os._exit(9)')
+        done = subprocess.run([sys.executable, '-B', '-c', script, str(self.b.journal)],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 9, done.stderr)
+        side = Path(str(self.b.journal) + '-journal')
+        self.assertTrue(side.exists())
+        before = (sha(self.b.journal), sha(side))
+        self.backfill(now=2000.0)
+        registry().reconcile(now=3000.0, backfill_page=0)
+        self.assertTrue(side.exists(), 'the registry rolled back another install journal')
+        self.assertEqual((sha(self.b.journal), sha(side)), before)
+
     def test_old_bundle_release_is_observed_as_released(self):
         self.register(self.a)
         with patch('laya_fresh_wiki_origin._proof'):
@@ -742,8 +762,8 @@ class SessionStart(Base):
         baseline = self.session_start(self.a)
         self.assertIn('selected source update queued',
                       baseline['hookSpecificOutput']['additionalContext'])
-        directory = memvane_paths.state_base() / 'registry'
-        directory.mkdir(mode=0o700, exist_ok=True)
+        directory = memvane_paths.state_base() / 'auto-context' / 'registry'
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = directory / 'projects.sqlite'
         for case in ('corrupt', 'busy', 'unsafe'):
             with self.subTest(case=case):
@@ -790,6 +810,31 @@ class SessionStart(Base):
                 self.assertEqual(self.session_start(self.a), baseline)
         self.assertEqual(len(calls), 1)
         self.assertLessEqual(calls[0]['seconds'], 0.2 + 1e-9)
+
+    def test_session_start_with_an_exhausted_budget_keeps_the_response(self):
+        import hook_budget
+        baseline = self.session_start(self.a)
+        with patch.object(hook_budget, 'remaining',
+                          side_effect=hook_budget.HookDeadlineExceeded()):
+            self.assertEqual(self.session_start(self.a), baseline)
+
+    def test_hook_reconcile_journal_waits_are_bounded_by_its_budget(self):
+        timeouts = []
+        real_connect = sqlite3.connect
+        real_reconcile = registry().reconcile
+
+        def connect(target, *args, **kwargs):
+            if str(target).split('?')[0].endswith('install-journal.sqlite'):
+                timeouts.append(kwargs.get('timeout', 5.0))
+            return real_connect(target, *args, **kwargs)
+
+        def spied(**kwargs):
+            with patch.object(sqlite3, 'connect', connect):
+                return real_reconcile(**kwargs)
+        with patch.object(registry(), 'reconcile', side_effect=spied):
+            self.session_start(self.a)
+        self.assertNotEqual(timeouts, [])
+        self.assertLessEqual(max(timeouts), registry().HOOK_SECONDS)
 
     def test_session_start_registry_failure_keeps_the_hook_output(self):
         baseline = self.session_start(self.a)

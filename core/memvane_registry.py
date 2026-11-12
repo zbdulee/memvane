@@ -41,6 +41,10 @@ import sys
 import time
 
 SCHEMA = 'memvane-project-registry-v1'
+# Inside the existing per-user ``auto-context`` entry of the state base: an
+# older bundle counts at most ``laya_external_edits.MAX_STATE_ENTRIES`` state
+# base entries before its install-name filter, so the registry adds none.
+PARENT = 'auto-context'
 DIRECTORY = 'registry'
 FILENAME = 'projects.sqlite'
 STATUSES = ('active', 'missing_pending', 'detached', 'conflict')
@@ -147,7 +151,7 @@ def _fixture_live_home(home):
 
 def registry_path(home=None):
     import memvane_paths
-    return memvane_paths.state_base(home) / DIRECTORY / FILENAME
+    return memvane_paths.state_base(home) / PARENT / DIRECTORY / FILENAME
 
 
 def _owned_dir(path, *, create, private):
@@ -173,8 +177,14 @@ def _directory(home, create):
     if not root.is_absolute() or not root.is_dir():
         _fail('registry_unsafe')
     cursor = root
-    for name in (*memvane_paths.STATE_PARTS, DIRECTORY):
-        cursor = cursor / name
+    for name in (*memvane_paths.STATE_PARTS, PARENT, DIRECTORY):
+        parent, cursor = cursor, cursor / name
+        if name == PARENT and create and not os.path.lexists(cursor):
+            # Creating it is one more state base entry: never past the
+            # older bundles' entry limit.
+            from laya_external_edits import MAX_STATE_ENTRIES
+            if len(os.listdir(parent)) >= MAX_STATE_ENTRIES:
+                _fail('registry_state_base_full')
         _owned_dir(cursor, create=create, private=name == DIRECTORY)
     return cursor
 
@@ -298,6 +308,22 @@ def _bases(home):
     import memvane_paths
     return (('current', memvane_paths.state_base(home)),
             ('legacy', memvane_paths.legacy_state_base(home)))
+
+
+def is_home_install(state, home=None):
+    """``state`` is an install root directly under a HOME state base."""
+    try:
+        return _home_install(Path(state), home)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
+@contextmanager
+def _journal_reads(deadline):
+    """Registry journal reads: never legacy recovery, busy waits bounded by ``deadline``."""
+    import laya_install_journal as journal
+    with journal.read_only_journals(), journal.reader_deadline(deadline):
+        yield
 
 
 def _home_install(state, home):
@@ -500,10 +526,17 @@ def register(project_root, state_root, *, explicit, home=None, now=None, deadlin
     ``root_moved`` tombstone and another install's tombstone at the same
     root; an implicit registration (SessionStart seed, backfill) never does.
     Another live install at the same root is released when its journal is no
-    longer selected; otherwise both rows become ``conflict``.
+    longer selected; otherwise both rows become ``conflict``. Journal reads
+    never recover a journal and end by ``deadline`` (``deferred``).
     """
-    now = time.time() if now is None else float(now)
     deadline = time.monotonic() + GIT_SECONDS if deadline is None else deadline
+    with _journal_reads(deadline):
+        return _register(project_root, state_root, explicit=explicit, home=home, now=now,
+                         deadline=deadline)
+
+
+def _register(project_root, state_root, *, explicit, home, now, deadline):
+    now = time.time() if now is None else float(now)
     try:
         project, state = Path(project_root).resolve(), Path(state_root).resolve()
     except (OSError, RuntimeError, TypeError, ValueError):
@@ -524,6 +557,9 @@ def register(project_root, state_root, *, explicit, home=None, now=None, deadlin
         others = {row['id']: _journal_selected(row) for row in before
                   if row['install_id'] != proof['installId'] and
                   row['status'] in ('active', 'missing_pending', 'conflict')}
+        if time.monotonic() >= deadline:
+            # A journal read cut short is no evidence of another selection.
+            return {'status': 'deferred'}
         if _before_store is not None:
             mine = next((row for row in before if row['install_id'] == proof['installId']), None)
             _before_store(target, None if mine is None else mine['version'])
@@ -590,6 +626,11 @@ def _decide(db, current, others, proof, target, inode, now, explicit):
 
 def release(project_root, state_root, *, home=None, now=None):
     """Detach this install's rows after a proved release; never inserts a row."""
+    with _journal_reads(time.monotonic() + GIT_SECONDS):
+        return _release(project_root, state_root, home=home, now=now)
+
+
+def _release(project_root, state_root, *, home, now):
     now = time.time() if now is None else float(now)
     try:
         project, state = Path(project_root).resolve(), Path(state_root).resolve()
@@ -671,10 +712,14 @@ def _check_main(home, row, now, deadline):
     project = Path(row['project_root'])
     try:
         proof = _prove_main(project)
+        if time.monotonic() >= deadline:
+            return 'deferred'
         if proof['installId'] != row['install_id'] or not _home_install(
                 Path(proof['stateRoot']), home):
             raise _Unproved('install_mismatch')
     except _Unproved as exc:
+        if time.monotonic() >= deadline:
+            return 'deferred'  # a read cut short by the budget proves nothing
         if _released(project, row['state_root']):
             outcome = _cas(home, row, {'status': 'detached', 'reason': 'released',
                                        'observed_at': now})
@@ -778,7 +823,7 @@ def reconcile(*, home=None, now=None, clock=None, max_rows=RECONCILE_ROWS,
         if outside:
             return {'status': 'skipped', 'reason': 'state_root_outside_home', 'checked': 0,
                     'raced': 0, 'backfilled': 0, 'complete': False}
-    with _busy(busy_ms):
+    with _busy(busy_ms), _journal_reads(time.monotonic() + max(seconds, 0)):
         return _reconcile(home=home, now=now, clock=clock, max_rows=max_rows,
                           seconds=seconds, backfill_page=backfill_page, seed=seed)
 
@@ -842,7 +887,9 @@ def routing_rows(*, home=None, busy_ms=HOOK_BUSY_MS):
 def excluded(view, install_id, project_root):
     """True when a fallback scan result is held out by the registry."""
     for row in view['entries']:
-        if row['projectRoot'] != project_root and row['targetRoot'] != project_root:
+        # Worktree rows describe linked checkouts, never the main selection.
+        if row['kind'] != 'main' or (row['projectRoot'] != project_root and
+                                     row['targetRoot'] != project_root):
             continue
         if row['installId'] == install_id and row['status'] != 'active':
             return True

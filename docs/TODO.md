@@ -74,6 +74,7 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
   - 프로젝트 밖 원문 편집 라우팅(`laya_external_edits`)은 backfill이 완료된 레지스트리의 `active` main 행만 후보로 증명하고 state base를 훑지 않는다. 레지스트리가 없거나 읽을 수 없으면 라우팅하지 않는다.
   - 세션 프로젝트 해석은 레지스트리를 쓰지 않는다. 활성 선택 해제(첫 선택 쓰기 뒤 uninstall), 프로젝트 root 이전, schema3 worktree view ID·준비 상태 기록은 남아 있다.
   - resident service는 레지스트리를 reconcile하지 않는다. resident 연결은 resident 변경 승인 시 `memvane_registry.reconcile()` 1줄 호출로 붙인다.
+  - 외부 편집 owner 선택은 레지스트리 도입 전과 같다. 등록되지 않은 중첩 프로젝트(owner root 안의 다른 settings 폴더) 아래 편집도 바깥 owner의 원문으로 전달된다. 이를 막을지는 열거 경로와 함께 별도로 정한다.
   - 초기 빌드 pointer(`initial-builds/<projectRoot 해시>.json`), 설치별 state 디렉터리, 연결 worktree view는 레지스트리와 별개로 남는다.
   - uninstall 뒤 정리 단계가 없다. retire·abandon·restore는 저장소와 journal을 남기고, 거절된 prepare도 state 디렉터리를 남긴다(2026-11-10 관측: 잠금 파일만 있는 `efb6dee9…`). 이런 디렉터리도 계속 훑기 대상이다.
 - **목표.**

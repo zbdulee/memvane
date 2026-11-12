@@ -191,22 +191,25 @@ def _targets(origin, deadline):
     """Selected owners other than ``origin``, from the selected project registry.
 
     A complete registry names the candidate state roots and no state base is
-    listed. While its backfill is incomplete the bounded scan runs with the
-    registry's tombstones applied. A registry that cannot be read (absent,
-    corrupt, busy, unsafe, unsupported schema) raises: its tombstones are
-    unknown, so nothing routes. Either way each candidate passes the same
-    journal and route proof; a registry row grants nothing.
+    listed; a row counts only for an install root directly under a HOME state
+    base whose name, journal project and route install id match the row.
+    While its backfill is incomplete the bounded scan runs. In both modes the
+    registry's tombstones, conflicts and inactive rows hold a candidate out. A
+    registry that cannot be read (absent, corrupt, busy, unsafe, unsupported
+    schema) raises: its tombstones are unknown, so nothing routes. Either way
+    each candidate passes the same journal and route proof; a registry row
+    grants nothing.
     """
     import laya_index_host_route as routes
     import laya_install_journal as journal
     import memvane_registry
     view = memvane_registry.routing_rows()
     if view['complete']:
-        states = [Path(row['stateRoot']) for row in view['rows']]
+        candidates = [(Path(row['stateRoot']), row) for row in view['rows']]
     else:
-        states = _scanned_states(deadline)
+        candidates = [(state, None) for state in _scanned_states(deadline)]
     targets, seen, scanned = [], set(), 0
-    for state in states:
+    for state, row in candidates:
         if time.monotonic() >= deadline:
             raise ValueError('external_edit_discovery_incomplete')
         if not _HEX32.fullmatch(state.name):
@@ -214,6 +217,9 @@ def _targets(origin, deadline):
         if scanned >= MAX_INSTALLS:
             raise ValueError('external_edit_discovery_incomplete')
         scanned += 1
+        if row is not None and (row['installId'] != state.name or
+                                not memvane_registry.is_home_install(state)):
+            continue
         try:
             info = state.lstat()
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
@@ -225,11 +231,15 @@ def _targets(origin, deadline):
             if (metadata.get('state') not in ('active', 'restored_old')
                     or project == origin or project in seen or not isinstance(project, str)):
                 continue
-            if not view['complete'] and memvane_registry.excluded(view, state.name, project):
+            if row is not None and project != row['projectRoot']:
+                continue
+            if memvane_registry.excluded(view, state.name, project):
                 continue
             decision = routes.select_route(project, action='index')
             if (decision.get('state') != 'candidate' or decision.get('projectRoot') != project
                     or decision.get('journalPath') != str(pointer)):
+                continue
+            if row is not None and decision.get('installId') != row['installId']:
                 continue
             seen.add(project)
             for collection in decision.get('collections', []):
@@ -240,20 +250,6 @@ def _targets(origin, deadline):
             continue
     return targets
 
-
-def _nested_project(path, project):
-    """A settings folder between the edited file and its owner root: another project.
-
-    An unregistered nested project is never routed to its parent owner.
-    """
-    import project_dir
-    root = Path(project)
-    for parent in path.parents:
-        if parent == root:
-            return False
-        if project_dir.settings_path(parent) is not None:
-            return True
-    return False
 
 
 def notify(paths, *, cwd, host, origin):
@@ -278,8 +274,7 @@ def notify(paths, *, cwd, host, origin):
         try:
             path = _safe_path(raw, cwd)
             owner = owner_for(path, targets) if path is not None else None
-            if (owner is None or not _eligible(path, owner['decision'])
-                    or _nested_project(path, owner['projectRoot'])):
+            if owner is None or not _eligible(path, owner['decision']):
                 continue
             decision = owner['decision']
             proof = journal.verify_notification_target(decision)

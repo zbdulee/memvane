@@ -2464,8 +2464,8 @@ def _reconcile_registry(decision: dict) -> None:
     """
     if decision.get('state') != 'candidate' or not isinstance(decision.get('journalPath'), str):
         return
+    import hook_budget
     try:
-        import hook_budget
         import memvane_registry
         # Keep a second of the hook's own deadline for the rest of this response.
         seconds = min(memvane_registry.HOOK_SECONDS, hook_budget.remaining() - 1.0)
@@ -2476,7 +2476,8 @@ def _reconcile_registry(decision: dict) -> None:
             max_rows=memvane_registry.HOOK_ROWS, seconds=seconds,
             backfill_page=memvane_registry.HOOK_BACKFILL_PAGE,
             busy_ms=memvane_registry.HOOK_BUSY_MS)
-    except Exception:
+    except (Exception, hook_budget.HookDeadlineExceeded):
+        # An exhausted hook budget skips the reconcile; the response stays.
         pass
 
 

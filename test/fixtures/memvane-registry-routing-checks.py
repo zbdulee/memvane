@@ -86,7 +86,7 @@ class Routing(unittest.TestCase):
 
     @property
     def db(self):
-        return memvane_paths.state_base() / 'registry' / 'projects.sqlite'
+        return registry().registry_path()
 
     def backfill(self):
         for _ in range(8):
@@ -199,14 +199,55 @@ class RegistryTargets(Routing):
                 self.assertEqual(self.notify()['owners'], 0)
                 self.assertFalse(self.routed())
 
-    def test_unregistered_nested_project_is_not_routed_to_its_parent(self):
+    def test_owner_choice_ignores_settings_folders_as_the_base_release_does(self):
+        # The registry changes where candidates come from, not owner choice:
+        # an unselected settings folder inside B is B's source in both modes.
         self.backfill()
         nested = self.b.project / 'nested'
         (nested / '.memvane').mkdir(parents=True)
         (nested / '.memvane' / 'settings.json').write_text('{"name": "nested", "skipPaths": []}\n')
         path = nested / 'note.md'
         path.write_text('nested\n')
+        self.assertEqual(self.notify(path)['owners'], 1)
+        with contextlib.closing(sqlite3.connect(str(self.db))) as db:
+            db.execute('UPDATE scans SET complete_at=NULL')
+            db.commit()
+        self.wake.reset_mock()
+        self.assertEqual(self.notify(path)['owners'], 1)
+        self.assertTrue(self.routed())
+
+    def test_complete_rows_outside_the_home_state_base_do_not_route(self):
+        self.backfill()
+        other = tempfile.TemporaryDirectory(prefix='registry-elsewhere-')
+        self.addCleanup(other.cleanup)
+        elsewhere = Path(other.name).resolve()
+        foreign = installs.make_install(elsewhere, self.work / 'delta', 'delta',
+                                        '8' * 32, '9' * 32)
+        self.bundles.add(foreign)
+        self.assertEqual(routes.select_route(str(foreign.project), action='index')['state'],
+                         'candidate')
+        with contextlib.closing(sqlite3.connect(str(self.db))) as db:
+            db.execute("INSERT INTO entries(install_id,state_root,project_root,target_root,"
+                       "kind,status,observed_at,version) VALUES (?,?,?,?,'main','active',1,1)",
+                       (foreign.install_id, str(foreign.state), str(foreign.project),
+                        str(foreign.project)))
+            db.commit()
+        path = foreign.project / 'note.md'
+        path.write_text('elsewhere\n')
         self.assertEqual(self.notify(path)['owners'], 0)
+        self.assertFalse(self.routed(foreign))
+
+    def test_a_tombstone_is_not_bypassed_by_another_active_row(self):
+        self.backfill()
+        with contextlib.closing(sqlite3.connect(str(self.db))) as db:
+            db.execute("UPDATE entries SET status='detached', reason='missing', "
+                       'version=version+1 WHERE install_id=?', (self.b.install_id,))
+            db.execute("INSERT INTO entries(install_id,state_root,project_root,target_root,"
+                       "kind,status,observed_at,version) VALUES (?,?,?,?,'main','active',1,1)",
+                       ('f' * 32, str(self.b.state), str(self.b.project),
+                        str(self.b.project / 'alias')))
+            db.commit()
+        self.assertEqual(self.notify()['owners'], 0)
         self.assertFalse(self.routed())
 
     def test_registry_rows_over_the_install_cap_refuse(self):
@@ -272,6 +313,31 @@ print(json.dumps(sorted((t['projectRoot'], t['rawRoot']) for t in targets)))
         self.backfill()
         self.assertTrue(self.db.exists())
         self.assertEqual(self.old_targets(), without)
+
+    def fill_state_base(self, *, with_auto_context):
+        base = memvane_paths.state_base()
+        names = os.listdir(base)
+        fillers = 512 - len(names) - (1 if with_auto_context else 0)
+        for n in range(fillers):
+            (base / f'filler-{n:03d}').mkdir()
+        if with_auto_context:
+            (base / 'auto-context').mkdir(mode=0o700)
+        self.assertEqual(len(os.listdir(base)), 512)
+        return base
+
+    def test_old_core_reads_a_full_state_base_after_a_reconcile(self):
+        base = self.fill_state_base(with_auto_context=False)
+        self.assertEqual(self.old_targets(), [[str(self.b.project), str(self.b.project)]])
+        registry().reconcile(now=1000.0, max_rows=64, seconds=60.0, backfill_page=64)
+        self.assertLessEqual(len(os.listdir(base)), 512)
+        self.assertEqual(self.old_targets(), [[str(self.b.project), str(self.b.project)]])
+
+    def test_registry_lives_inside_an_existing_state_base_entry(self):
+        base = self.fill_state_base(with_auto_context=True)
+        self.backfill()
+        self.assertEqual(len(os.listdir(base)), 512)
+        self.assertTrue(registry().routing_rows()['complete'])
+        self.assertEqual(self.old_targets(), [[str(self.b.project), str(self.b.project)]])
 
     def test_old_core_activation_is_found_by_a_later_backfill(self):
         self.backfill()

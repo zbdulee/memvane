@@ -445,6 +445,12 @@ class HookRouting(Routing):
         self.bundles.add(nested)
         path = nested.project / 'note.md'
         path.write_text('nested owner\n')
+        # The owner cap applies to the bounded scan, which runs while the
+        # registry backfill is incomplete.
+        import memvane_registry
+        with contextlib.closing(sqlite3.connect(str(memvane_registry.registry_path()))) as db:
+            db.execute('UPDATE scans SET complete_at=NULL')
+            db.commit()
         with patch.object(external(), 'MAX_INSTALLS', 2):
             self.assertEqual(self.index(self.event(path)), {})
         self.assertNotIn(('laya-sync', str(self.b.project)), self.wakes())
