@@ -264,7 +264,8 @@ def _nested_project(path, project, deadline):
     Bounded: at most the source tree depth (``laya_index_source_port.
     MAX_DEPTH``) parent folders, two stats each, checked against the hook
     deadline before each one. A deeper path or a spent deadline holds the
-    edit back (True), never routes it unchecked.
+    edit back (True), never routes it unchecked, including a deadline that
+    passes during the last stat.
     """
     import project_dir
     from laya_index_source_port import MAX_DEPTH
@@ -285,7 +286,8 @@ def _nested_project(path, project, deadline):
                 continue
             except OSError:
                 return True
-    return False
+    # The last stat may end past the deadline: no unchecked edit is routed.
+    return time.monotonic() >= deadline
 
 
 

@@ -239,6 +239,29 @@ class RegistryTargets(Routing):
         self.assertFalse(external._nested_project(nested, str(self.b.project),
                                                   time.monotonic() + 60))
 
+    def test_deadline_passing_during_the_last_nested_stat_holds_the_edit(self):
+        from types import SimpleNamespace
+        self.backfill()
+        path = self.b.project / 'x' / 'note.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('late\n')
+        now = [0.0]
+        self.patch(external, 'time', new=SimpleNamespace(monotonic=lambda: now[0]))
+        real = os.stat
+        last = str(path.parent / '.auto-context' / 'settings.json')
+
+        def stat(target, *args, **kwargs):
+            if str(target) == last:
+                now[0] = 1000.0  # the hook deadline passes inside the last stat
+            return real(target, *args, **kwargs)
+        self.patch(os, 'stat', side_effect=stat)
+        result = self.notify(path)
+        self.assertEqual(now[0], 1000.0, 'the last nested stat did not run')
+        self.assertEqual(result['owners'], 0, result)
+        self.assertFalse(self.routed())
+        inbox = external._inbox_path(routes.select_route(str(self.b.project), action='index'))
+        self.assertFalse(inbox.exists())
+
     def test_nested_project_folders_hold_out_a_registered_owner_only(self):
         # Registry lookup lists registered owners only, so a project folder
         # between the file and the owner root holds the edit back. The scan
