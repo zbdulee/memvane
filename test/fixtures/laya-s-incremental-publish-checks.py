@@ -627,6 +627,32 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(self.sources(store, handle.view_id)[0][3], opened[0][3])
         self.assertEqual(second['epoch'], first['epoch'] + 1)
 
+    def digests(self, store, gen_id):
+        return tuple(store._db.execute('SELECT member_digest,source_digest FROM s_generations WHERE gen_id=?',
+                                       (gen_id,)).fetchone())
+
+    def test_card_equal_generations_with_other_source_membership_seal_other_source_digests(self):
+        store, _, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        (self.root / 'notes/src.md').write_text('# Source\nchanged source body\n', encoding='utf8')
+        second = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        (first_member, first_source), (second_member, second_source) = (
+            self.digests(store, first['gen_id']), self.digests(store, second['gen_id']))
+        # The card rows are the same; only the source membership moved.
+        self.assertEqual(first_member, second_member)
+        self.assertNotEqual(first_source, second_source)
+        self.assertEqual(self.found(store, handle, 'uniquealpha'), ['cards/a.md'])
+
+    def test_rollback_restores_the_prior_source_digest(self):
+        store, _, handle = self.rows_store()
+        first = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        (self.root / 'notes/src.md').write_text('# Source\nchanged source body\n', encoding='utf8')
+        second = self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
+        self.assertNotEqual(self.digests(store, second['gen_id'])[1], self.digests(store, first['gen_id'])[1])
+        back = store.rollback_generation(handle, expected_head=second)
+        self.assertEqual(self.digests(store, back['gen_id']), self.digests(store, first['gen_id']))
+        self.assertEqual(self.found(store, handle, 'uniquealpha'), ['cards/a.md'])
+
     def test_tampered_source_row_refuses_the_pin(self):
         import sqlite3
         store, repository, handle = self.rows_store()
