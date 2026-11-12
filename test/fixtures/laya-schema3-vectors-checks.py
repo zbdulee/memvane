@@ -1013,6 +1013,64 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertEqual(self.paths(hit)[0], target_path)
 
 
+    def test_21_zero_progress_vector_pass_keeps_its_wake_unacked_without_a_delayed_row(self):
+        """Through the real wake queue: a progressing pass ACKs its laya-sync wake
+        and leaves one delayed re-offer 30 s out; a following pass with vectors
+        left and no store progress is not ACKed (the same row and revision stay,
+        with a counted target_deferred attempt) and leaves no delayed row."""
+        import os
+        import tempfile
+        from types import SimpleNamespace
+        work = importlib.import_module('runtime_work')
+        policy = importlib.import_module('runtime_wake_policy')
+        self.select_schema3()
+        self.card('concepts/slow-card.md', 'slowprobe')
+        project = str(self.case.project)
+        root = Path(tempfile.mkdtemp(prefix='wakes-', dir=os.environ.get('HOME'))).resolve()
+        clock = {'now': time.time()}
+        fake = SimpleNamespace(time=lambda: clock['now'], monotonic=time.monotonic, sleep=lambda _s: None)
+        passes = []
+
+        def execute(row):
+            self.assertEqual((row['kind'], row['target']), ('laya-sync', project))
+            result, _ingests, _calls = self.run_vector_pass()
+            passes.append(result)
+            if result['state'] in ('indexed', 'unchanged'):
+                return True
+            # The dispatcher's mapping of a non-done laya-sync result.
+            raise policy.DispatchFailure('target_deferred')
+        with mock.patch.dict(os.environ, {'QMD_SANDBOX': '', 'QMD_SETUP_GUARD_FIXTURE': '',
+                                          'QMD_RUNTIME_DISPATCH': '1'}), \
+                mock.patch.object(work, 'default_root', new=lambda: root), \
+                mock.patch.object(work, 'time', fake), \
+                self.virtual_fill_clock({'slowprobe': 300.0}):
+            queue = work.WakeQueue()
+            self.assertEqual(queue.offer('laya-sync', project), 'queued')
+            first = work.drain(queue, execute=execute, ready=lambda: True,
+                               wall=lambda: clock['now'], sleep=lambda _s: None, max_runs=1)
+            row, = queue.pending()
+            self.assertEqual(first['runs'], 1, first)
+            self.assertEqual((passes[0]['vector']['state'], passes[0].get('vectorReoffer')),
+                             ('pending', True), passes[0])
+            # ACKed; the delayed re-offer survives with a fresh retry history.
+            self.assertEqual((row['reason'], row['attempts'], row['status']),
+                             (work.DELAYED_REASON, 0, 'pending'), row)
+            self.assertGreaterEqual(row['due'], clock['now'] + self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS - 1)
+            clock['now'] = row['due']
+            second = work.drain(queue, execute=execute, ready=lambda: True,
+                                wall=lambda: clock['now'], sleep=lambda _s: None, max_runs=1)
+            after, = queue.pending()
+        self.assertEqual(second['runs'], 1, second)
+        self.assertEqual((passes[1]['state'], passes[1]['vector']['state']), ('pending', 'pending'), passes[1])
+        self.assertNotIn('vectorReoffer', passes[1])
+        # Not ACKed: the same row and revision, one counted attempt, no delayed mark.
+        self.assertEqual((after['id'], after['revision']), (row['id'], row['revision']), after)
+        self.assertEqual(after['attempts'], 1, after)
+        self.assertNotEqual(after['reason'], work.DELAYED_REASON, after)
+        self.assertTrue(str(after['reason']).startswith('target_deferred'), after)
+        emit('schema3-vector-zero-progress-wake', reason=after['reason'], attempts=after['attempts'])
+
+
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
     if _name.startswith('test') and _name not in vars(Schema3VectorChecks):
