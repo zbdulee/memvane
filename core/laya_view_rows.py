@@ -1251,12 +1251,18 @@ class RowsMixin:
                              'WHERE view_id=? AND recipe_id=? AND profile_id=?',
                              (handle.view_id, recipe_id, profile_id)).fetchone()
             stored = row[3] if row is not None and tuple(row[:3]) == (job['job_id'], head.ordinal, len(targets)) else None
+            # A finished pass is complete only while every target's set is present;
+            # otherwise the next pass restarts from the first target.
+            job['restart'] = stored == len(targets) and any(
+                db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                           (target['blob_sha'], recipe_id, profile_id)).fetchone() is None for target in targets)
         return entry, saved, job, targets, stored
 
     def _rows_fill_status(self, handle, recipe_id, profile_id):
         _, _, job, _, stored = self._rows_fill_plan(handle, recipe_id, profile_id)
-        cursor = 0 if stored is None else stored
-        return dict(job_id=job['job_id'], cursor=cursor, complete=stored is not None and cursor == job['target_count'])
+        cursor = 0 if stored is None or job['restart'] else stored
+        return dict(job_id=job['job_id'], cursor=cursor,
+                    complete=stored is not None and not job['restart'] and cursor == job['target_count'])
 
     def _rows_fill_view(self, handle, recipe_id, profile_id, *, chunker, embedder, write_fence, expected_cursor,
                         max_files, max_bytes, deadline_seconds):
@@ -1278,12 +1284,12 @@ class RowsMixin:
             v.fail('fill_callback_invalid')
         self._fill_idle()
         entry, saved, job, targets, stored = self._rows_fill_plan(handle, recipe_id, profile_id)
-        cursor = 0 if stored is None else stored
+        cursor = 0 if stored is None or job['restart'] else stored
         if expected_cursor != cursor:
             v.fail('fill_cursor_conflict')
         fills._remaining(deadline)
         status = lambda new: dict(job_id=job['job_id'], cursor=new, complete=new == job['target_count'])
-        if stored is not None and cursor == job['target_count']:
+        if stored is not None and not job['restart'] and cursor == job['target_count']:
             return dict(status(cursor), status='complete', filled=0, cache_hits=0, deferred=False)
         fenced = []
 
@@ -1333,10 +1339,14 @@ class RowsMixin:
                 job['job_id'], job['head_ordinal'], job['target_count']) else None)
             if current != stored or self._rows_head_row(db, handle.view_id).ordinal != job['head_ordinal']:
                 v.fail('fill_cursor_conflict')
-            for target in targets[cursor:new]:
+            for target in targets[cursor:cursor + steps]:
                 if db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
                               (target['blob_sha'], recipe_id, profile_id)).fetchone() is None:
                     v.fail('fill_content_missing')
+            if new == job['target_count'] and any(
+                    db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                               (t['blob_sha'], recipe_id, profile_id)).fetchone() is None for t in targets):
+                new = 0  # a set of an earlier target vanished: the next pass starts over
             db.execute('INSERT INTO s_fill_cursors(view_id,recipe_id,profile_id,job_id,head_ordinal,target_count,cursor) '
                        'VALUES (?,?,?,?,?,?,?) ON CONFLICT(view_id,recipe_id,profile_id) DO UPDATE SET '
                        'job_id=excluded.job_id,head_ordinal=excluded.head_ordinal,'
@@ -1347,6 +1357,7 @@ class RowsMixin:
             views._current_capture(saved, self._repository, self._policy, entry['capture'])
             fills._remaining(deadline)
         done = new == job['target_count']
+        # A pass that ends with a vanished earlier set reports progress from the first target again.
         return dict(status(new), status='complete' if done else 'progress', filled=filled, cache_hits=hits,
                     deferred=deferred)
 

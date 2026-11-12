@@ -42,6 +42,31 @@ class RowVectorChecks(fill.FillCase):
         self.assertEqual(db.execute('SELECT COUNT(*) FROM s_fill_cursors').fetchone()[0], 1)
         self.assertEqual(db.execute('SELECT COUNT(*) FROM fill_targets').fetchone()[0], 0)
 
+    def test_completion_rechecks_every_set_and_restarts_when_one_is_missing(self):
+        import sqlite3
+        store, repository, handle, manifest, r, p = self.rows_configured()
+        self.publish(store, handle, manifest)
+        self.fill(store, handle, manifest, r, p)
+        self.assert_status(store.fill_status(handle, manifest, r, p), 1, True)
+        store.close()
+        db = sqlite3.connect(str(self.db))
+        triggers = [row for row in db.execute(
+            "SELECT name,sql FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('vectors','embedding_sets')")]
+        for name, _ in triggers:
+            db.execute(f'DROP TRIGGER {name}')
+        db.execute('DELETE FROM vectors'); db.execute('DELETE FROM embedding_sets')
+        for _, sql in triggers:
+            db.execute(sql)
+        db.commit(); db.close()
+        again = self.reopen(repository)
+        fresh = again.capture_view(handle.worktree_id)
+        self.assert_status(again.fill_status(fresh, manifest, r, p), 0, False)
+        before = len(self.calls['embedder'])
+        done = self.fill(again, fresh, manifest, r, p)
+        self.assertEqual((done['status'], done['complete'], done['filled']), ('complete', True, 1))
+        self.assertGreater(len(self.calls['embedder']), before)
+        self.assert_status(again.fill_status(fresh, manifest, r, p), 1, True)
+
     def test_complete_generation_publishes_and_answers_exact_and_hybrid_search(self):
         store, repository, handle, manifest, r, p = self.rows_configured()
         self.publish(store, handle, manifest)
