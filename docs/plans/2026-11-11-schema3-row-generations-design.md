@@ -26,6 +26,7 @@ CREATE TABLE s_generations (
   member_digest TEXT NOT NULL, source_digest TEXT NOT NULL,
   logical_fts_digest TEXT NOT NULL, physical_fts_digest TEXT NOT NULL,
   member_acc TEXT NOT NULL CHECK(json_valid(member_acc)), fts_acc TEXT NOT NULL CHECK(json_valid(fts_acc)),
+  legacy_json TEXT CHECK((kind='legacy')=(legacy_json IS NOT NULL) AND (legacy_json IS NULL OR json_valid(legacy_json))),
   seal_digest TEXT NOT NULL, UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal), UNIQUE(gen_id,view_id),
   CHECK((recipe_id IS NULL)=(profile_id IS NULL)),
   CHECK(coverage='lexical' OR recipe_id IS NOT NULL)
@@ -268,7 +269,7 @@ DELETE FROM s_generations WHERE ordinal IN (SELECT g.ordinal FROM s_generations 
 
 `s_legacy_fts`도 형식 4 DDL manifest의 일부이므로 구 bundle은 이 relation을 읽기 전에 header 검사에서 거절한다. 구 bundle의 `_schema3_store`는 버전 검사 전 일부 metadata를 읽지만 이후 `ViewStore.open_reader`의 `BlobStore._header`는 exact version/DDL을 요구한다. 새 형식에서 구 bundle이 content 반환·writer 발급·setup 변경 전에 `candidate_format_mismatch` 등 고정 거절에 도달해야 한다. 단일 저수준 validator 관측은 전체 consumer 증거가 아니다. 실제 새 형식 DB와 고정 구 core로 recall, dedup, compile, sync, setup, linked worktree 및 열린 연결의 다음 transaction을 양 Python과 양 host 경로에서 검사한다. 거절 사유와 파일 바이트·inode를 기록하고, 열려 있던 read transaction이 변환 전 일관된 snapshot을 마치는 경우와 변환 후 신규 접근을 구분한다.
 
-shadow migration은 새 store를 처음부터 새 DDL로 만들고 기존 sealed inventory의 legacy base·sidecar와 observation을 첫 세대로 게시한다. parity는 `6f7f1399`의 원본 sealed inventory 개수와 candidate eligible 개수, 고정 샘플 검색을 동일 pin에서 검사한다. 원본의 모든 경로 동일성까지 증명하는 것은 아니다. 카드 0개일 때 빈 corpus·inventory를 정상 봉인하고 sampled query는 0개다. v6 rollback 뒤 명시 재개는 새 incarnation의 새 candidate와 receipt를 만들며 기존 receipt를 재사용하지 않는다.
+legacy 세대는 v6 관측 값(observation·corpus_observation·sidecar_observation·sidecar_commitment·provenance scan)을 `s_generations.legacy_json`에 canonical JSON으로 담고 seal이 그 값을 결속한다. legacy가 아닌 세대는 이 열이 NULL이다. shadow prepare는 카드 변경을 stage item으로 기록하고, legacy corpus는 stage에 저장하지 않는다. stage의 `scan_digest`가 legacy corpus 행의 digest와 그 관측 값을 결속한다. publish는 publication_cut 아래에서 이미 다시 관측하는 v6 snapshot으로 corpus를 다시 만들어 그 digest와 관측 값을 대조하고, 다르면 `migration_snapshot_changed`로 거절한다. shadow migration은 새 store를 처음부터 새 DDL로 만들고 기존 sealed inventory의 legacy base·sidecar와 observation을 첫 세대로 게시한다. parity는 `6f7f1399`의 원본 sealed inventory 개수와 candidate eligible 개수, 고정 샘플 검색을 동일 pin에서 검사한다. 원본의 모든 경로 동일성까지 증명하는 것은 아니다. 카드 0개일 때 빈 corpus·inventory를 정상 봉인하고 sampled query는 0개다. v6 rollback 뒤 명시 재개는 새 incarnation의 새 candidate와 receipt를 만들며 기존 receipt를 재사용하지 않는다.
 
 현재 `_schema3_parity_floor`는 endpoint 봉인과 v6→schema3 CAS에서 `parity.generation`의 published ordinal을 찾는다. GC는 이를 통째로 제거하지 않는다. 변환 시 기존 generation의 view·id·ordinal·incarnation과 receipt 결속을 `s_parity_anchor`에 보존하고 seal/proof를 검증한다. 새 verifier는 anchor가 기존 published row와 동일한 증명 권한과 floor 관계를 갖는지 확인한다. record가 더 이상 참조하지 않는다는 증거가 있기 전 anchor를 지우지 않는다. anchor 발급 권한과 구 receipt·선택 record·GC의 동등성은 재리뷰·교차 시험 전 미증명이다.
 
