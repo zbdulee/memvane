@@ -19,14 +19,16 @@ spec.loader.exec_module(journal)
 
 
 ROOT = HERE.parent.parent
-# Released 0.44.18 and 0.44.19, archived from their exact commits (CI fetches them).
-CONSUMER_CORES = ('6d26d8afeebf2931f515bb12849377b458e2872d', '5a90c2d4410f26b416140c4131b160fd38baa511')
+# Released 0.44.18, 0.44.19 and 0.44.20, archived from their exact commits (CI fetches them).
+CONSUMER_CORES = ('6d26d8afeebf2931f515bb12849377b458e2872d', '5a90c2d4410f26b416140c4131b160fd38baa511',
+                  # 0.44.20, the newest main release before the row format.
+                  '9553e3aff5d5a601d8240ef67b4256de30a32f98')
 CONSUMER_CHILD = r'''
 import json, sys, time
 from pathlib import Path
 core, journal_path, project, plugin = sys.argv[1:5]
 sys.path.insert(0, core)
-import laya_journal_reader as R, laya_writer_open_plan as W
+import laya_journal_reader as R, laya_writer_open_plan as W, wiki_compile_retrieval as C
 assert R.__file__.startswith(core), R.__file__
 path, out = Path(journal_path), {}
 def attempt(name, fn):
@@ -45,6 +47,11 @@ def head():
 attempt('recall_pin', pin)
 attempt('head_only', head)
 attempt('writer_plan', lambda: W._snapshot(Path(project), Path(plugin)))
+# Write-time dedup retrieval's vector lane pins the selected head the same way; a
+# head other than the named generation answers no cosines.
+attempt('dedup_cosines', lambda: C._schema3_cosines((None, {}), dict(record, vector_profile='0' * 64,
+                                                                       vector_recipe='0' * 64),
+                                                    {}, 'heron', 'g-' + '0' * 32 + '-b' + '0' * 64))
 print(json.dumps(out, sort_keys=True))
 '''
 
@@ -126,6 +133,7 @@ class ReaderRowsChecks(journal.Schema3EndpointChecks):
         current = self.consumers(ROOT / 'core')
         self.assertEqual(current['recall_pin'], 'accepted', current)
         self.assertEqual(current['head_only'], 'accepted', current)
+        self.assertEqual(current['dedup_cosines'], 'accepted', current)
         before = file_state(Path(self.case.journal), self.store_path)
         observed = {}
         for commit in CONSUMER_CORES:
@@ -141,6 +149,7 @@ class ReaderRowsChecks(journal.Schema3EndpointChecks):
                 self.assertEqual(out['recall_pin'], 'candidate_format_mismatch', out)
                 self.assertEqual(out['head_only'], 'candidate_format_mismatch', out)
                 self.assertEqual(out['writer_plan'], 'writer_plan_store_changed', out)
+                self.assertEqual(out['dedup_cosines'], 'candidate_format_mismatch', out)
         self.assertEqual(file_state(Path(self.case.journal), self.store_path), before)
 
     def test_conversion_refuses_a_parity_generation_outside_the_store(self):

@@ -20,8 +20,10 @@ spec = importlib.util.spec_from_file_location('s_publish_fixture', HERE / 'laya-
 publish = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publish)
 
-# bb4ae489: the schema3 core of the S design baseline; 4510105e: release 0.44.17.
-OLD_CORES = ('bb4ae4899bf6eb7ff8326a58c28c042bb00c386b', '4510105e9e2142ae4331d8de4b295543fa8332f2')
+# bb4ae489: the schema3 core of the S design baseline; then releases 0.44.17 to 0.44.20.
+OLD_CORES = ('bb4ae4899bf6eb7ff8326a58c28c042bb00c386b', '4510105e9e2142ae4331d8de4b295543fa8332f2',
+             '6d26d8afeebf2931f515bb12849377b458e2872d', '5a90c2d4410f26b416140c4131b160fd38baa511',
+             '9553e3aff5d5a601d8240ef67b4256de30a32f98')
 
 CHILD = r'''
 import json, sys
