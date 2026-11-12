@@ -96,6 +96,37 @@ class NormalWriterIntentChecks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.N.validate_normal_writer(writer)
 
+    def test_worker_mark_recapture_over_its_stage_deadline_revokes_writer(self):
+        """The image CAS stage includes the plan recapture: a recapture past the
+        stage deadline refuses before the reproof gets its own deadline."""
+        with self.warm_clean(), self.seed.authority(), ExitStack() as owners:
+            owner = owners.enter_context(self.sync.sync_owner(self.queue))
+            writer = owners.enter_context(self.N.worker_writer_scope(
+                self.fixture.plan, queue_owner=owner, operation_timeout=2))
+            before = self.J.inspect_journal(self.case.journal)
+            clock = [time.monotonic()]
+            capture, proofs = self.P.capture_writer_plan, []
+            windows = self.P.writer_proof_windows
+            def slow(*args, **kwargs):
+                result = capture(*args, **kwargs)
+                clock[0] += 3
+                return result
+            def counted(*args, **kwargs):
+                proofs.append(1)
+                return windows(*args, **kwargs)
+            with mock.patch.object(self.N, 'time', SimpleNamespace(monotonic=lambda: clock[0])), \
+                    mock.patch.object(self.P, 'capture_writer_plan', side_effect=slow), \
+                    mock.patch.object(self.P, 'writer_proof_windows', side_effect=counted):
+                with self.assertRaisesRegex(ValueError, 'normal_writer_deadline') as caught:
+                    self.N.mark_new_write(writer)
+            self.assertEqual(len(proofs), 1)
+            self.assertEqual(set(caught.exception.mark_timings), {'p1_lock', 'p1_sql', 'img'})
+            self.assertGreaterEqual(caught.exception.mark_timings['img'], 3000)
+            after = self.J.inspect_journal(self.case.journal)
+            self.assertEqual((after['epoch'], after['newWriteSeen']), (before['epoch'] + 1, True))
+            with self.assertRaises(ValueError):
+                self.N.validate_normal_writer(writer)
+
     @contextmanager
     def held_reader(self, hold, sql=()):
         """A reader holding every physical lock SH for ``hold`` seconds of each
