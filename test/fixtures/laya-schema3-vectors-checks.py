@@ -54,6 +54,7 @@ class Coordinator:
 
     def __init__(self, refuse=None):
         self.refuse, self.lanes = refuse, []
+        self.root = None  # the wake queue's default root (this temp HOME)
 
     @contextmanager
     def activity(self, lane, policy, report):
@@ -1181,6 +1182,57 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
             with rc.Coordinator(root).activity('provider', policy, {}):
                 pass
         emit('schema3-vector-lanes', provider='exclusive', query='admitted')
+
+    def test_25_vector_pass_yields_to_a_waiting_initial_build_before_its_next_provider_call(self):
+        """Another project's initial build, waiting on a busy owner, is yielded
+        to at the next provider-call boundary: no provider call follows, its
+        backed-off wake is pulled ahead and runs next, the pass's embedding
+        sets stay, and the vector wake resumes on its delayed re-offer."""
+        import os
+        import tempfile
+        work = importlib.import_module('runtime_work')
+        build = importlib.import_module('laya_initial_build')
+        self.select_schema3()
+        for name in ('delta', 'echo', 'foxtrot'):
+            self.card(f'build/{name}.md', name + 'buildprobe')
+        project = str(self.case.project)
+        other = Path(tempfile.mkdtemp(prefix='initial-build-', dir=os.environ.get('HOME'))).resolve()
+        base = len(self.provider_calls)
+
+        def lookup(target):
+            # The other build is seen waiting once this pass made one provider call.
+            if str(target) != str(other) or len(self.provider_calls) - base < 1:
+                return None
+            return {'phase': 'building',
+                    'progress': {'state': 'deferred', 'reason': 'owner_busy',
+                                 'lastAttemptClass': 'other', 'lastAttemptNs': time.time_ns()}}
+        passes, order = [], []
+        mine = self.sync_execute(project, passes)
+
+        def execute(row):
+            order.append(row['target'])
+            return True if row['target'] == str(other) else mine(row)
+        with self.wake_queue() as (queue, clock, drain), \
+                mock.patch.object(build, 'lookup', side_effect=lookup):
+            self.assertEqual(queue.offer('laya-sync', project), 'queued')
+            # The build's own wake is backed off after its owner_busy attempt.
+            self.assertEqual(queue.offer('laya-sync', str(other), delay=120), 'queued')
+            drain(execute, runs=8)
+            first, first_calls = passes[0]
+            self.assertEqual(len(first_calls), 1, first_calls)
+            self.assertEqual(order, [project, str(other)])
+            self.assertEqual(first['vector'].get('reason'), 'laya_sync_yield_priority', first)
+            self.assertGreater(first['vector'].get('progress', 0), 0, first)
+            row, = queue.pending()
+            self.assertEqual((row['target'], row['reason'], row['attempts']),
+                             (project, work.DELAYED_REASON, 0), row)
+            clock['now'] = row['due']
+            drain(execute, runs=8)
+        second, second_calls = passes[1]
+        self.assertEqual(order, [project, str(other), project])
+        self.assertTrue(second_calls, second)
+        self.assertFalse(set(first_calls) & set(second_calls), (first_calls, second_calls))
+        emit('schema3-vector-initial-build-yield', first=len(first_calls), second=len(second_calls))
 
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
