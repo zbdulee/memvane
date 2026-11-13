@@ -133,7 +133,7 @@ def derived_body(card_text: str) -> str | None:
 
 def _selection_state(config: dict, project_root: Path):
     """The live selector state directory the recall path would consult, or None."""
-    from memvane.learning.context_learning.seam import _private_state
+    from memvane.learning.api import project_selection_state as _private_state
     shared = config.get('sharedLearning', {}) if isinstance(config, dict) else {}
     if isinstance(shared, dict) and shared.get('enabled') is True:
         if shared.get('profile') == 'qmd-local-learning-profile-v1':

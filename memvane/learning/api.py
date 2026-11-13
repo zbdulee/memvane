@@ -87,6 +87,11 @@ def learning_state_base(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def project_selection_state(*args, **kwargs):
+    from memvane.learning.context_learning.seam import _private_state as implementation
+    return implementation(*args, **kwargs)
+
+
 def request_selector_maintenance(*args, **kwargs):
     from memvane.learning.selector_maintenance import request as implementation
     return implementation(*args, **kwargs)
