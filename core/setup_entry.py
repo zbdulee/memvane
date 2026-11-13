@@ -59,17 +59,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
                                           'gc-index-runtime',
-                                          'state-root-status', 'move-state-roots',
                                           'plan-fresh-wiki-origin',
                                           'index-runtime-status', 'provision-index-runtime',
                                           'review-index-provider',
                                           'prepare-fresh-wiki-origin',
                                           'index-origin-status',
                                           'index-build-status','index-build-rescan',
-                                          'upgrade-inactive-index-build',
-                                          'restore-inactive-index-upgrade',
-                                          'upgrade-active-index-bundle',
-                                          'restore-active-index-bundle',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
                                           'restore-index-origin','retire-index-origin',
@@ -96,8 +91,6 @@ def main(argv=None):
     parser.add_argument('--approve-index-origin-retire', action='store_true')
     parser.add_argument('--approve-index-build-abandon', action='store_true')
     parser.add_argument('--approve-inactive-index-build-abandon', action='store_true')
-    parser.add_argument('--approve-inactive-index-upgrade', action='store_true')
-    parser.add_argument('--approve-active-index-upgrade', action='store_true')
     parser.add_argument('--approve-index-runtime-download', action='store_true')
     parser.add_argument('--approve-index-runtime-gc', action='store_true')
     parser.add_argument('--wake-revision', type=int)
@@ -105,8 +98,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.project is None and args.action not in (
             'index-runtime-status',
-            'provision-index-runtime', 'gc-index-runtime', 'state-root-status',
-            'move-state-roots'):
+            'provision-index-runtime', 'gc-index-runtime'):
         parser.error('--project is required for ' + args.action)
     try:
         if args.action.startswith('onboarding-'):
@@ -121,14 +113,6 @@ def main(argv=None):
                 result = choice.resume(args.project)
             else:
                 result = choice.status(args.project)
-        elif args.action == 'state-root-status':
-            # Read only: installs and shared trees still under ~/.local/state/laya.
-            import laya_state_move
-            result = laya_state_move.status()
-        elif args.action == 'move-state-roots':
-            # What each project's SessionStart worker does, for every project now.
-            import laya_bundle_upgrade
-            result = laya_bundle_upgrade.move_all()
         elif args.action in ('index-runtime-status', 'provision-index-runtime',
                              'gc-index-runtime'):
             # The Laya embedding runtime the provider review reads.
@@ -148,10 +132,6 @@ def main(argv=None):
                            'prepare-fresh-wiki-origin',
                            'index-origin-status',
                            'index-build-status','index-build-rescan',
-                           'upgrade-inactive-index-build',
-                           'restore-inactive-index-upgrade',
-                           'upgrade-active-index-bundle',
-                           'restore-active-index-bundle',
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
                            'restore-index-origin','retire-index-origin',
@@ -201,32 +181,6 @@ def main(argv=None):
                     result = (product.initial_build_status(state)
                               if args.action == 'index-build-status' else
                               product.request_initial_build_rescan(state))
-                elif args.action in ('upgrade-inactive-index-build',
-                                     'restore-inactive-index-upgrade'):
-                    if not args.approve_inactive_index_upgrade:
-                        raise ValueError('inactive_index_upgrade_approval_required')
-                    from laya_inactive_upgrade import upgrade
-                    result = upgrade(
-                        project_root=str(Path(args.project).resolve()),
-                        state_root=state, source_root=args.source_root,
-                        plugin_root=installed, commit_id=args.commit,
-                        accepted_provider_sha256=args.accepted_provider_sha256,
-                        model_path=args.provider_model_file,
-                        dimension=args.provider_dimension,
-                        restore=args.action == 'restore-inactive-index-upgrade')
-                elif args.action in ('upgrade-active-index-bundle',
-                                     'restore-active-index-bundle'):
-                    if not args.approve_active_index_upgrade:
-                        raise ValueError('active_index_upgrade_approval_required')
-                    from laya_active_upgrade import upgrade
-                    result = upgrade(
-                        project_root=str(Path(args.project).resolve()),
-                        state_root=state, source_root=args.source_root,
-                        plugin_root=installed, commit_id=args.commit,
-                        accepted_provider_sha256=args.accepted_provider_sha256,
-                        model_path=args.provider_model_file,
-                        dimension=args.provider_dimension,
-                        restore=args.action == 'restore-active-index-bundle')
                 elif args.action == 'finalize-index-origin':
                     result = product.finalize_initial_build(
                         project_root=args.project, state_root=state)

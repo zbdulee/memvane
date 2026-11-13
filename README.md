@@ -165,15 +165,7 @@ SessionStart 뒤 백그라운드 워커가 같은 볼륨 안에서 `~/.local/sta
 돌려줍니다. 공유 디렉터리(`embed-runtime`, `service`, `auto-context`,
 `initial-builds`)는 마지막 설치가 옮겨지고 아무것도 참조하지 않을 때 정리되며, 그때
 `~/.local/state/laya`도 사라집니다. 업데이트 직후 sync가 돌고 있으면 이동은 다음
-세션으로 미뤄집니다. 남은 항목과 사유는 아래 명령으로 보고, 열지 않은 프로젝트까지
-지금 옮기려면 `move-state-roots`를 씁니다. `ROOT`는 설치된 플러그인 캐시
-(예: `~/.claude/plugins/cache/memvane-marketplace/memvane/<버전>`)이며, 저장소
-checkout에서 실행하면 번들 단계가 `host_layout_unknown`으로 거절됩니다.
-
-```bash
-python3 -B "$ROOT/core/setup_entry.py" state-root-status
-python3 -B "$ROOT/core/setup_entry.py" move-state-roots
-```
+세션으로 미뤄집니다.
 
 학습 상태(이전 플러그인 지원 디렉터리의 `live-selection`, `laya-inference`)도
 같은 워커가 한 번 `~/Library/Application Support/memvane`으로 옮깁니다. 옮기는 동안

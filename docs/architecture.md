@@ -310,18 +310,7 @@ install is left under `~/.local/state/laya`:
 - an empty `initial-builds` and then the empty base are removed.
 
 Removal walks directory descriptors from HOME without following links and
-refuses a tree that contains a mount point (`core/safe_rmtree.py`). A kept tree
-and its blockers are listed by:
-
-```bash
-python3 -B "$ROOT/core/setup_entry.py" state-root-status
-python3 -B "$ROOT/core/setup_entry.py" move-state-roots
-```
-
-`move-state-roots` runs the worker for every project that still has an
-install under the pre-rename base, an unfinished move intent under either
-base, or a prepared local selector, then the shared pass; `state-root-status`
-lists the first two.
+refuses a tree that contains a mount point (`core/safe_rmtree.py`).
 
 After the install steps, every worker run moves the learning state once per
 account (`~/Library/Application Support/qmd-auto-context/{live-selection,laya-inference}`
