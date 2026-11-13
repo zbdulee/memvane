@@ -67,7 +67,7 @@ hermes_adapter/ ← Hermes Agent plugin hook adapter(pre_llm_call/on_session_sta
 
 host route의 분류·실패 동작은 `host-route.md`를 읽는다.
 
-영속 파일·디렉터리 identity는 canonical 경로와 inode 및 기록된 내용·metadata 필드로 대조한다. macOS APFS의 `st_dev`는 부팅마다 달라질 수 있어 프로세스 간 대조에서 제외한다. 저장된 dev 값·endpoint ID·manifest 바이트와 SHA·scopeId seed는 유지한다. 서로 다른 부팅에 봉인된 두 reader endpoint record의 `*_node`(project·state·저장소)도 inode로 대조한다(`laya_journal_reader.records_agree`: reader 전환·rollback CAS, 선택 검증, reader lease의 journal 이미지 전진, rollback이 다시 발급한 v6 reader의 저장소 대조). 같은 프로세스의 fd/path·전후 관측은 dev도 대조하고, 원문 탐색의 장치 경계는 열린 root fd의 현재 dev를 기준으로 한다.
+영속 파일·디렉터리 identity는 canonical 경로와 inode 및 기록된 내용·metadata 필드로 대조한다. macOS APFS의 `st_dev`는 부팅마다 달라질 수 있어 프로세스 간 대조에서 제외한다. 저장된 dev 값·endpoint ID·manifest 바이트와 SHA·scopeId seed는 유지한다. 서로 다른 부팅에 봉인된 두 reader endpoint record의 `*_node`(project·state·저장소)도 inode로 대조한다(`laya_journal_reader.records_agree`의 선택 검증과 reader lease journal 이미지 대조). 같은 프로세스의 fd/path·전후 관측은 dev도 대조하고, 원문 탐색의 장치 경계는 열린 root fd의 현재 dev를 기준으로 한다.
 - **쓰기 반환값을 확인할지 말지는 "조용한 실패가 무엇을 잃는가"로 가른다.** 전부 확인하는 것은 과하고(노이즈이며 기존 판단을 뒤집는다) 전부 무시하는 것은 이 저장소에서 네 번 반복된 버그 클래스다. 기준 셋:
   1. **확인한다 — 작업이 유실되거나 상태가 오염되는 경로.** `stamp_verification`(유료 검수 1회를 쓰고 카드가 `generated`로 남아 영구 비가시), `record_verify_deletion`(원장 없이 삭제 = 설명 불가능한 소실, fail-closed로 삭제 자체를 막는다), `patch_frontmatter_fields`의 status 리셋(새 본문에 `verified`가 남는 stale 검증).
   2. **확인한다 — 거짓 성공 보고.** 그 쓰기가 연산의 **유일한 효과**일 때. 원장 행 하나가 전부인 기록 연산은 실패하면 아무 일도 안 했는데 성공을 출력하게 된다.
