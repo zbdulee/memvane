@@ -40,6 +40,21 @@ from laya_product_bundle import (BundleEvidenceError, COMMIT,
 
 SCHEMA_V3 = 'laya-installer-journal-v3'
 SCHEMA = 'laya-installer-journal-v4'
+V1_SCHEMA = 'memvane-install-journal-v1'
+V1_APP_ID = 0x4d564a31
+V1_SELECTION_DDL = '''CREATE TABLE selection(
+  id INTEGER PRIMARY KEY CHECK(id=1), schema TEXT NOT NULL,
+  epoch INTEGER NOT NULL, state TEXT NOT NULL,
+  install_id TEXT NOT NULL, scope_id TEXT NOT NULL,
+  project_root TEXT NOT NULL, project_ino INTEGER NOT NULL,
+  state_format INTEGER NOT NULL, writer_floor TEXT NOT NULL,
+  max_plugin_version TEXT NOT NULL,
+  store_path TEXT NOT NULL, store_ino INTEGER NOT NULL,
+  store_incarnation TEXT NOT NULL, route_sha TEXT NOT NULL,
+  attestation_sha TEXT NOT NULL, vector_profile TEXT NOT NULL,
+  vector_recipe TEXT, new_write_seen INTEGER NOT NULL)'''
+V1_READER_DDL = '''CREATE TABLE reader(
+  id INTEGER PRIMARY KEY CHECK(id=1), record TEXT NOT NULL)'''
 DEVELOPMENT_APPROVAL_SCHEMA = 'laya-development-vector-approval-v1'
 APP_ID = 0x4c594a31
 VERSION = 4
@@ -503,7 +518,13 @@ def _schema_version(db):
 
 
 def _schema_version_read(db):
-    if db.execute('PRAGMA application_id').fetchone()[0] != APP_ID:
+    app_id = db.execute('PRAGMA application_id').fetchone()[0]
+    if app_id == V1_APP_ID:
+        if db.execute('PRAGMA user_version').fetchone()[0] != 1:
+            return None
+        objects = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
+        return 1 if objects == {'selection': V1_SELECTION_DDL, 'reader': V1_READER_DDL} else None
+    if app_id != APP_ID:
         return None
     version = db.execute('PRAGMA user_version').fetchone()[0]
     expected = _FORMATS.get(version)
@@ -872,11 +893,58 @@ def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_r
     return inspect_journal(path)
 
 
+def _inspect_v1_row(db):
+    """Read the v1 journal row without granting a reader or writer authority."""
+    from memvane_version import version_key
+    rows = db.execute('SELECT * FROM selection').fetchall()
+    fields = ('id', 'schema', 'epoch', 'state', 'installId', 'scopeId',
+              'projectRoot', 'projectInode', 'stateFormat', 'writerFloor',
+              'maxPluginVersion', 'storePath', 'storeInode', 'storeIncarnation',
+              'routeSha256', 'attestationSha256', 'vectorProfile',
+              'vectorRecipe', 'newWriteSeen')
+    if len(rows) != 1 or len(rows[0]) != len(fields):
+        _fail('journal_selection_missing')
+    row = dict(zip(fields, rows[0]))
+    if (row['id'] != 1 or row['schema'] != V1_SCHEMA
+            or type(row['epoch']) is not int or row['epoch'] < 1
+            or row['state'] not in ('prepared', 'selected', 'restored')
+            or any(type(row[key]) is not str or not ID.fullmatch(row[key])
+                   for key in ('installId', 'scopeId', 'storeIncarnation'))
+            or any(type(row[key]) is not int or row[key] < 1
+                   for key in ('projectInode', 'stateFormat', 'storeInode'))
+            or any(type(row[key]) is not str or not Path(row[key]).is_absolute()
+                   for key in ('projectRoot', 'storePath'))
+            or any(type(row[key]) is not str or version_key(row[key]) is None
+                   for key in ('writerFloor', 'maxPluginVersion'))
+            or any(type(row[key]) is not str or not SHA.fullmatch(row[key])
+                   for key in ('routeSha256', 'attestationSha256'))
+            or (row['vectorRecipe'] is not None and
+                (type(row['vectorRecipe']) is not str or not SHA.fullmatch(row['vectorRecipe'])))
+            or type(row['newWriteSeen']) is not int or row['newWriteSeen'] not in (0, 1)):
+        _fail('journal_value_invalid')
+    try:
+        profile = json.loads(row['vectorProfile'], object_pairs_hook=_pairs,
+                             parse_constant=_nonfinite)
+    except (TypeError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise JournalEvidenceError('journal_value_invalid') from exc
+    if _canon(profile) != row['vectorProfile']:
+        _fail('journal_value_invalid')
+    _strict_vector_profile(profile)
+    row['vectorProfile'] = profile
+    row['newWriteSeen'] = bool(row['newWriteSeen'])
+    row.pop('id')
+    return row
+
+
 def inspect_journal(journal_path):
     path, db = _open(journal_path, write=False)
     with closing(db):
         db.execute('BEGIN')
         try:
+            if _schema_version(db) == 1:
+                row = _inspect_v1_row(db)
+                db.commit()
+                return {'journalPath': str(path), **row}
             row = _row(db)
             db.commit()
         except (OSError, RuntimeError, sqlite3.Error) as exc:
