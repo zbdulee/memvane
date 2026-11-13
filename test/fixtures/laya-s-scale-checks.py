@@ -39,7 +39,7 @@ class ScaleChecks(publish.IncrementalPublicationChecks):
             db.close()
         return dict(file=self.db.stat().st_size, used=(pages - free) * size, free=free * size)
 
-    def build(self, rows):
+    def build(self):
         repository, worktree = self.bind()
         store = self.Store.create(str(self.db), project_root=str(self.root), repository=repository,
                                   worktree=worktree, scope_id=self.scope)
@@ -75,16 +75,15 @@ class ScaleChecks(publish.IncrementalPublicationChecks):
                          prior_trust=None), sources=[dict(fingerprint_id=fp, spans=[dict(start=0, end=4)])]))
         return dict(path=path, blob_sha=blob, display_title='T ' + path, trust_digest=trust)
 
-    def measure(self, rows):
-        store, repository, handle, fp, manifest, head, result = self.build(rows)
+    def measure(self):
+        store, repository, handle, fp, manifest, head, result = self.build()
         wiki = self.root / '.memvane/wiki'
         changed_path = 'cards/c00000.md'
         new_body = body(0, 'changed')
         (wiki / changed_path).write_bytes(new_body)
-        if rows:
-            # Start from a collected view: the first publication's stage rows go first.
-            while any(store.collect_view_rows(handle, limit=4096).get(t) for t in ('stage', 's_cards')):
-                pass
+        # Start from a collected view.
+        while any(store.collect_view_rows(handle, limit=4096).get(t) for t in ('stage', 's_cards')):
+            pass
         before = self.file_bytes()
         members = [self.member(store, handle, changed_path, fp) if m['path'] == changed_path else m
                    for m in manifest['members']]
@@ -96,30 +95,27 @@ class ScaleChecks(publish.IncrementalPublicationChecks):
         second = store.publish_generation(handle, gen, expected_head=head)
         result.update(prepare_s=prepared - started, publish_s=time.monotonic() - prepared,
                       card_bytes=len(new_body), before=before, after_ingest=after_ingest, after_publish=self.file_bytes())
-        current, expected = second, ('uniquechanged00000', changed)
-        if rows:
-            started = time.monotonic()
-            current = store.rollback_generation(handle, expected_head=second)
-            result['rollback_s'] = time.monotonic() - started
-            expected = ('uniquebase00000', manifest)
-            (wiki / changed_path).write_bytes(body(0, 'base'))
+        started = time.monotonic()
+        current = store.rollback_generation(handle, expected_head=second)
+        result['rollback_s'] = time.monotonic() - started
+        expected = ('uniquebase00000', manifest)
+        (wiki / changed_path).write_bytes(body(0, 'base'))
         started = time.monotonic()
         unchanged = store.prepare_generation(handle, expected[1], expected_head=current)
         current = store.publish_generation(handle, unchanged, expected_head=current)
         result['unchanged_republish_s'] = time.monotonic() - started
-        if rows:
-            started = time.monotonic()
-            batches = 0
-            while any(store.collect_view_rows(handle, limit=256).get(t)
-                      for t in ('s_cards', 's_deltas', 's_generations', 'stage')):
-                batches += 1
-            result.update(collect_s=time.monotonic() - started, collect_batches=batches + 1,
-                          after_collect=self.file_bytes())
+        started = time.monotonic()
+        batches = 0
+        while any(store.collect_view_rows(handle, limit=256).get(t)
+                  for t in ('s_cards', 's_deltas', 's_generations', 'stage')):
+            batches += 1
+        result.update(collect_s=time.monotonic() - started, collect_batches=batches + 1,
+                      after_collect=self.file_bytes())
         store.close()
         reader = self.reopen(repository)
         fresh = reader.capture_view(handle.worktree_id)
         started = time.monotonic()
-        if os.environ.get('S_SCALE_PROFILE') and rows:
+        if os.environ.get('S_SCALE_PROFILE'):
             import cProfile, io, pstats
             profile = cProfile.Profile()
             found = profile.runcall(self.found, reader, fresh, expected[0])
@@ -135,7 +131,7 @@ class ScaleChecks(publish.IncrementalPublicationChecks):
 
     def test_scale_observation(self):
         out = dict(cards=CARDS, python=sys.version.split()[0], sqlite=sqlite3.sqlite_version,
-                   rows=self.measure(True))
+                   rows=self.measure())
         print('S_SCALE ' + json.dumps(out, sort_keys=True))
 
 
