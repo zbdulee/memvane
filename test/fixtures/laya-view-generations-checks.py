@@ -58,7 +58,9 @@ class GenerationCase(helpers.BlobStoreCase):
         return gen,head
 
     def eligible(self,store,gen):
-        return store._db.execute('SELECT eligible FROM wiki_members WHERE gen_id=?',(gen,)).fetchone()[0]
+        row = store._db.execute('SELECT metadata_json FROM s_stage_items WHERE job_id=? AND path=?',
+                                (gen[2:34], 'cards/a.md')).fetchone()
+        return json.loads(row[0])['eligible']
 
 
 class GenerationChecks(GenerationCase):
@@ -118,8 +120,6 @@ class GenerationChecks(GenerationCase):
         gen,_=self.prepared(store,h,m)
         self.assertEqual(self.eligible(store,gen),0)
         self.assertEqual(store.attestation(m['members'][0]['trust_digest']),original)
-        ref=store._db.execute('SELECT fingerprint_id FROM card_sources WHERE gen_id=?',(gen,)).fetchone()[0]
-        self.assertEqual(ref,original['sources'][0]['fingerprint_id'])
 
     def test_05_different_observation_same_source_preserves_old_fingerprint(self):
         store,_,h=self.seeded();m=self.snapshot(store,h)
@@ -127,7 +127,7 @@ class GenerationChecks(GenerationCase):
         m['sources'][0]['fingerprint_id']=store.put_fingerprint(dict(old,observed_ns=2))
         gen,_=self.prepared(store,h,m)
         self.assertEqual(self.eligible(store,gen),1)
-        self.assertEqual(store._db.execute('SELECT fingerprint_id FROM card_sources WHERE gen_id=?',(gen,)).fetchone()[0],original)
+        self.assertEqual(store.attestation(m['members'][0]['trust_digest'])['sources'][0]['fingerprint_id'], original)
 
     def test_06_source_path_scan_and_branch_claims_are_bound(self):
         store,_,h=self.seeded();m=self.snapshot(store,h)
