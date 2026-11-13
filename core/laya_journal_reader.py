@@ -540,7 +540,7 @@ def _insert_endpoint(db, endpoint, record, raw):
         _need(existing == row, 'reader_endpoint_conflict')
 
 
-_RESETTLED = frozenset(('settings', 'vector_profile', 'vector_recipe'))
+_RESETTLED = frozenset(('settings', 'profile', 'vector_profile', 'vector_recipe'))
 # Carried only alongside a ``_RESETTLED`` change, never alone.
 _RESETTLED_WITH = frozenset(('attestation_sha256',))
 
@@ -548,7 +548,8 @@ _RESETTLED_WITH = frozenset(('attestation_sha256',))
 def resettled_pair(old, new):
     """``new`` is the schema3 ``old`` re-sealed by its owner.
 
-    Recall settings or the vector spec may change. The owner proves a new
+    Recall settings or the vector spec may change. An install profile change
+    must accompany a vector spec change. The owner proves a new
     vector spec against the published main head before selecting it. Store,
     incarnation, worktree binding, policy, roots and other fields stay fixed.
     """
@@ -559,6 +560,7 @@ def resettled_pair(old, new):
         changed = {k for k in _SCHEMA3_KEYS if not records_agree(old, new, (k,))} - _RESETTLED_WITH
         vector = changed & {'vector_profile', 'vector_recipe'}
         return (bool(changed) and changed <= _RESETTLED
+                and ('profile' not in changed or bool(vector))
                 and (not vector or (type(new['vector_profile']) is str
                                     and type(new['vector_recipe']) is str)))
     except (AttributeError, KeyError, TypeError):
