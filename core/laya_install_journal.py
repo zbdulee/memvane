@@ -31,7 +31,7 @@ from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FI
 # Loaded for the executing-bundle proof (``_executing_from_candidate``),
 # which requires laya_package from the sealed core; no QMD inventory is read.
 import laya_package  # noqa: F401
-from laya_product_bundle import (BundleEvidenceError, COMMIT, inspect_product_candidate,
+from laya_product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
                                  RUNTIME_FILES_FIELD, production_provider_approved,
@@ -316,16 +316,13 @@ def _private_parent(path):
 
 
 def _identity(proof, route, journal_path):
-    if not isinstance(proof, dict) or proof.get('status') not in (
-            'exact_commit_candidate_consistent',
-            'exact_commit_full_plugin_candidate_consistent'):
+    if (not isinstance(proof, dict) or
+            proof.get('status') != 'exact_commit_full_plugin_candidate_consistent'):
         _fail('unverified_bundle')
-    full = proof['status'] == 'exact_commit_full_plugin_candidate_consistent'
-    live = (inspect_full_plugin_candidate(proof.get('pluginRoot')) if full else
-            inspect_product_candidate(proof.get('engineRoot')))
+    live = inspect_full_plugin_candidate(proof.get('pluginRoot'))
     if live != proof:
         _fail('bundle_proof_changed')
-    root = live['pluginRoot'] if full else live['engineRoot']
+    root = live['pluginRoot']
     if ((route['schema'] == ROUTE_SCHEMA and
          Path(root).parent != journal_path.parent) or
             route.get('pluginRoot') != root or
@@ -341,18 +338,15 @@ def _identity(proof, route, journal_path):
             'ownershipManifestSha256': live['ownershipManifestSha256'],
             'sourceCommit': live['sourceCommit'],
             'vectorProfile': live.get('vectorProfile'),
-            'bundleKind': 'full_plugin' if full else 'engine_subbundle'}
+            'bundleKind': 'full_plugin'}
 
 
 def _inspect_identity(identity):
     if not isinstance(identity, dict):
         _fail('invalid_bundle_identity')
-    if identity.get('bundleKind') == 'full_plugin':
-        proof = inspect_full_plugin_candidate(identity.get('pluginRoot'))
-    elif identity.get('bundleKind') == 'engine_subbundle':
-        proof = inspect_product_candidate(identity.get('pluginRoot'))
-    else:
+    if identity.get('bundleKind') != 'full_plugin':
         _fail('invalid_bundle_identity')
+    proof = inspect_full_plugin_candidate(identity.get('pluginRoot'))
     if (proof['bundleManifestSha256'] != identity.get('bundleManifestSha256') or
             proof['ownershipManifestSha256'] != identity.get('ownershipManifestSha256') or
             proof['sourceCommit'] != identity.get('sourceCommit') or
@@ -819,7 +813,7 @@ def _row(db):
                     ('bundleManifestSha256', 'ownershipManifestSha256')) or
                 type(value['sourceCommit']) is not str or
                 not COMMIT.fullmatch(value['sourceCommit']) or
-                value['bundleKind'] not in ('full_plugin', 'engine_subbundle')):
+                value['bundleKind'] != 'full_plugin'):
             _fail('journal_value_invalid')
         if value['vectorProfile'] is not None:
             _strict_vector_profile(value['vectorProfile'])

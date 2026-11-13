@@ -41,8 +41,6 @@ def _record_seal_write(root):
         writes.add(str(root))
 
 
-SCHEMA = 'laya-product-bundle-v1'
-OWNER_SCHEMA = 'laya-product-ownership-v1'
 FULL_SCHEMA = 'laya-full-plugin-bundle-v1'
 FULL_OWNER_SCHEMA = 'laya-full-plugin-ownership-v1'
 PLUGIN_PREFIXES = ('core/', 'hooks/', 'hermes_adapter/', 'backend/',
@@ -50,27 +48,6 @@ PLUGIN_PREFIXES = ('core/', 'hooks/', 'hermes_adapter/', 'backend/',
                    '.claude-plugin/', '.codex-plugin/', '.agents/plugins/')
 PLUGIN_ROOT_FILES = frozenset(('__init__.py', 'plugin.yaml', 'plugin.json',
                                'package.json', 'LICENSE', 'README.md'))
-ARTIFACTS = (
-    'config.py',
-    'laya_index_a.py',
-    'laya_index_vector.py',
-    'laya_local_embed_provider.py',
-    'laya_index_source_port.py',
-    'source_text.py',
-    'laya_index_claim_queue.py',
-    'laya_index_flow.py',
-    'laya_index_runtime.py',
-    'laya_index_sync.py',
-    'laya_source_catalog.py',
-    'laya_index_capacity.py',
-    'laya_vector_capacity.py',
-    'laya_index_host_route.py',
-    'laya_initial_build.py',
-    'laya_package.py',
-    'laya_product_bundle.py',
-    'laya_install_journal.py',
-    'persistent_identity.py',
-)
 MAX_FILE = 4 * 1024 * 1024
 MAX_JSON = 1024 * 1024
 SHA = re.compile(r'[0-9a-f]{64}\Z')
@@ -482,98 +459,6 @@ def _write(path, raw, *, mode=0o600):
         out.write(raw)
         out.flush()
         os.fsync(out.fileno())
-
-
-def prepare_product_candidate(source_root, engine_root, *, commit_id):
-    """Copy only exact committed bytes into a new private candidate directory."""
-    source = Path(source_root)
-    target = Path(engine_root)
-    if (not source.is_absolute() or source.is_symlink() or not source.is_dir() or
-            type(commit_id) is not str or not COMMIT.fullmatch(commit_id) or
-            not target.is_absolute() or target.exists() or target.is_symlink() or
-            not target.parent.is_dir() or target.parent.is_symlink()):
-        _fail('invalid_bundle_request')
-    source = source.resolve(strict=True)
-    if (_git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source) or
-            _git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id):
-        _fail('source_commit_mismatch')
-    inputs = {}
-    for name in ARTIFACTS:
-        raw, _ = _read(source / 'core' / name, MAX_FILE)
-        committed = _git(source, 'show', f'{commit_id}:core/{name}')
-        if raw != committed:
-            _fail('source_not_exact_commit')
-        inputs[name] = raw
-    os.mkdir(target, 0o700)
-    os.mkdir(target / 'core', 0o700)
-    entries = {}
-    for name, raw in inputs.items():
-        _write(target / 'core' / name, raw)
-        _, entries[name] = _read(target / 'core' / name, MAX_FILE)
-    manifest = {'schema': SCHEMA, 'kind': 'exact_commit_python_candidate',
-                'sourceCommit': commit_id, 'exactCommitVerifiedAtPackaging': True,
-                'artifacts': {name: {'sha256': row['sha256'], 'bytes': row['bytes']}
-                              for name, row in entries.items()}}
-    _write(target / 'manifest.json', _canonical(manifest))
-    manifest_sha = _sha(_canonical(manifest))
-    ownership = {'schema': OWNER_SCHEMA, 'engineRoot': str(target.resolve(strict=True)),
-                 'bundleManifestSha256': manifest_sha,
-                 'entries': entries}
-    _write(target / 'ownership-manifest.json', _canonical(ownership))
-    for directory in (target / 'core', target):
-        fd = os.open(directory, os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-    return inspect_product_candidate(target)
-
-
-def inspect_product_candidate(engine_root):
-    """Recheck file bytes and owner inode evidence without selecting a route."""
-    root = _private(engine_root)
-    if set(os.listdir(root)) != {'core', 'manifest.json', 'ownership-manifest.json'}:
-        _fail('unexpected_bundle_entry')
-    files = set(os.listdir(root / 'core'))
-    # Both fixed dependency closures have immutable historical manifests.
-    legacy_files = set(ARTIFACTS) - {'persistent_identity.py'}
-    if files not in (set(ARTIFACTS), legacy_files):
-        _fail('unexpected_bundle_entry')
-    manifest, manifest_file = _json(root / 'manifest.json')
-    ownership, ownership_file = _json(root / 'ownership-manifest.json')
-    if (not isinstance(manifest, dict) or manifest.get('schema') != SCHEMA or
-            manifest.get('kind') != 'exact_commit_python_candidate' or
-            manifest.get('exactCommitVerifiedAtPackaging') is not True or
-            type(manifest.get('sourceCommit')) is not str or
-            not COMMIT.fullmatch(manifest['sourceCommit']) or
-            not isinstance(manifest.get('artifacts'), dict) or
-            set(manifest['artifacts']) != files or
-            not isinstance(ownership, dict) or ownership.get('schema') != OWNER_SCHEMA or
-            ownership.get('engineRoot') != str(root) or
-            ownership.get('bundleManifestSha256') != manifest_file['sha256'] or
-            not isinstance(ownership.get('entries'), dict) or
-            set(ownership['entries']) != files):
-        _fail('bundle_manifest_mismatch')
-    for name in ARTIFACTS:
-        if name not in files:
-            continue
-        raw, live = _read(root / 'core' / name, MAX_FILE)
-        expected = manifest['artifacts'][name]
-        owner = ownership['entries'][name]
-        if (not isinstance(expected, dict) or type(expected.get('sha256')) is not str or
-                not SHA.fullmatch(expected['sha256']) or type(expected.get('bytes')) is not int or
-                expected != {'sha256': live['sha256'], 'bytes': len(raw)} or
-                not isinstance(owner, dict) or
-                any(type(owner.get(key)) is not int for key in
-                    ('bytes', 'dev', 'ino', 'nlink', 'mode', 'mtimeNs', 'ctimeNs')) or
-                type(owner.get('sha256')) is not str or not persistent_identity_equal(owner, live)):
-            _fail('bundle_file_identity_changed')
-    return {'status': 'exact_commit_candidate_consistent', 'engineRoot': str(root),
-            'sourceCommit': manifest['sourceCommit'],
-            'bundleManifestSha256': manifest_file['sha256'],
-            'ownershipManifestSha256': ownership_file['sha256'],
-            'includedModules': [name for name in ARTIFACTS if name in files], 'exactCommitVerifiedAtPackaging': True,
-            'productRouteAllowed': False}
 
 
 def _plugin_paths(source, commit_id, *, required_paths=None):
