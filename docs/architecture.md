@@ -515,7 +515,7 @@ the loser stays, the pair is recorded as skipped and the CLI returns
 
 `core/laya_resident_service.py` is one per-user process that owns the local
 embedding worker for each vector profile and serves every adopted
-install through that install's sealed socket (`<state>/runtime/laya-embed.sock`).
+install through its sealed socket under `<state base v1>/run/`.
 Hooks never load a model.
 
 The embedding runtime lives in `~/.local/state/memvane/embed-runtime`

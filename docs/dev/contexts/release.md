@@ -7,7 +7,7 @@
 
 - store·journal DDL, application id와 `user_version`.
 - route·ledger·build·attestation JSON의 키 집합과 schema id.
-- sync owner·`sync.lock`·wiki mutation lock의 이름과 위치.
+- sync owner·`sync.lock`·wiki mutation lock 및 socket의 이름과 위치. 설치별 socket은 `<state base v1>/run/<설치 id의 SHA-256 앞 16 hex>.sock`이다.
 - wake kind 집합과 target 모양, `recipe_id`·`profile_id` 입력.
 - 카드 frontmatter 필드와 `.memvane/compile/*.jsonl` 행 모양.
 

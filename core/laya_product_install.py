@@ -250,11 +250,14 @@ def review_local_provider(*, plugin_root, state_root,
     root, state = map(Path, (plugin_root, state_root))
     if (not all(path.is_absolute() and not path.is_symlink()
                 for path in (root, state)) or
-            str(state.resolve(strict=False)) != str(state) or
-            len(str(state / 'runtime' / 'laya-embed.sock').encode()) > 100):
+            str(state.resolve(strict=False)) != str(state)):
         _fail('provider_review_paths_invalid')
     # Only the v1 install namespace may be created by prepare.
     import memvane_paths
+    try:
+        socket_path = memvane_paths.install_socket(state)
+    except ValueError as exc:
+        _fail(str(exc))
     if (not state.exists() and not state.is_symlink() and
             (state.parent != memvane_paths.installs_base() or
              not re.fullmatch(r'[0-9a-f]{32}', state.name))):
@@ -321,7 +324,7 @@ def review_local_provider(*, plugin_root, state_root,
                 'providerPath': str(root / profile['providerRelativePath']),
                 'workerPath': str(root / 'core/laya_local_embed_worker.mjs'),
                 'workerSha256': worker_sha,
-                'serviceSocketPath': str(state / 'runtime/laya-embed.sock'),
+                'serviceSocketPath': str(socket_path),
                 'nodePath': str(node), 'nodeSha256': node_sha,
                 'moduleEntryPath': str(module), 'moduleEntrySha256': module_sha,
                 'modelPath': str(model_path), 'modelSha256': model_sha,
@@ -369,9 +372,11 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
         _fail('invalid_origin_preparation_request')
     state = _prepare_state_root(state_root, install_id)
     journal = state / 'journal.sqlite'
-    socket = state / 'runtime' / 'laya-embed.sock'
-    if len(str(socket).encode('utf-8')) > 100:
-        _fail('install_socket_path_too_long')
+    import memvane_paths
+    try:
+        memvane_paths.install_socket(state, create=True)
+    except ValueError as exc:
+        _fail(str(exc))
     with _install_lock(state):
         runtime = state / 'runtime'
         if not runtime.exists() and not runtime.is_symlink():

@@ -17,6 +17,8 @@ import os
 import stat
 import sys
 import tempfile
+import hashlib
+import re
 
 NAME = 'memvane'
 DISPLAY_NAME = 'MemVane'
@@ -56,6 +58,33 @@ def install_root(install_id, home=None):
 
 def installs_base(home=None):
     return state_base(home) / 'installs'
+
+
+def install_socket(state_root, *, create=False):
+    """Return the private, stable per-install socket in the v1 run directory."""
+    state = Path(state_root)
+    if (not state.is_absolute() or state.parent.name != 'installs'
+            or not re.fullmatch(r'[0-9a-f]{32}', state.name)
+            or state.resolve(strict=False) != state):
+        raise ValueError('install_socket_state_invalid')
+    run = state.parent.parent / 'run'
+    if create:
+        try:
+            os.mkdir(run, 0o700)
+        except FileExistsError:
+            pass
+    if os.path.lexists(run):
+        info = run.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700
+                or run.resolve(strict=True) != run):
+            raise ValueError('install_socket_directory_invalid')
+    elif create:
+        raise ValueError('install_socket_directory_invalid')
+    result = run / (hashlib.sha256(state.name.encode('ascii')).hexdigest()[:16] + '.sock')
+    if len(os.fsencode(result)) > 100:
+        raise ValueError('install_socket_path_too_long')
+    return result
 
 
 def ensure_state_layout(home=None):

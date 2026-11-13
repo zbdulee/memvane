@@ -211,7 +211,7 @@ def _closure_rows_valid(closure):
 def _private_socket_parent(socket_path):
     """The provider socket may live in any owner-only directory.
 
-    It is an install runtime (``<state>/runtime``) or a per-user service
+    It is the install run directory or a per-user service
     directory; either way only this user can create or replace it.
     """
     if (type(socket_path) is not str or not socket_path.startswith('/') or

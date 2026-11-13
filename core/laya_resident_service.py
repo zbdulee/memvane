@@ -2,7 +2,7 @@
 
 A single process per OS user owns one exact local embedding worker per
 provider fingerprint and serves every adopted installation through that
-installation's own sealed socket path (``<state>/runtime/laya-embed.sock``).
+installation's own sealed socket path under the v1 state base's ``run`` directory.
 The installation keeps its provider manifest, owner lease, owner state and
 vector profile; only the process behind the socket is shared. The same
 process hosts the learning inference service on its existing socket.
