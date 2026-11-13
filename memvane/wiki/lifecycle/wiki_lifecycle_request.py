@@ -95,8 +95,8 @@ def claim(root) -> dict | None:
 def run_lifecycle(project: Path) -> dict:
     """One bounded lifecycle child for this project; fail-open."""
     from memvane.wiki.lifecycle import wiki_lifecycle
-    argv = [sys.executable, "-B", str(Path(__file__).with_name("wiki_lifecycle.py")),
-            "--cwd", str(project)]
+    from memvane.kernel.bundle_paths import entry_argv
+    argv = entry_argv("wiki-lifecycle", "--cwd", str(project))
     try:
         proc = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, check=False, timeout=LIFECYCLE_SECONDS,

@@ -32,6 +32,7 @@ TARGETS = {
     'wiki-compile': ('memvane.wiki.compile.wiki_compile', None),
     'wiki-compile-worker': ('memvane.wiki.compile.wiki_compile_worker', None),
     'wiki-extract': ('memvane.wiki.compile.wiki_extract', None),
+    'wiki-lifecycle': ('memvane.wiki.lifecycle.wiki_lifecycle', None),
     'wiki-dedup-resolve': ('memvane.wiki.dedup.wiki_dedup_resolve', None),
 }
 

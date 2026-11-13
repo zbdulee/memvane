@@ -20,6 +20,7 @@ the reviewed provider/worker bytes unchanged. Hooks never wait for a model.
 from __future__ import annotations
 
 from contextlib import suppress
+from memvane.kernel.bundle_paths import entry_argv
 import fcntl
 import hashlib
 import json
@@ -334,8 +335,8 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
         if learning_root is None:
             learning_root = _learning_root()
         # -I: the hosted learning inference requires an isolated interpreter.
-        argv = [_interpreter(root, python), '-I', '-B', str(Path(__file__).resolve().parents[2] / 'entry/run.py'), 'resident-service', 'serve',
-                str(root), str(learning_root) if learning_root else '-', str(fd)]
+        argv = entry_argv('resident-service', 'serve', str(root), str(learning_root) if learning_root else '-', str(fd),
+                          python=_interpreter(root, python), isolated=True)
         fds = (fd,)
         (spawn or default_spawn)(argv, pass_fds=fds)
         return True

@@ -45,6 +45,7 @@ import time
 sys.dont_write_bytecode = True
 
 from memvane.kernel.resource_deferred import ResourceDeferred
+from memvane.kernel.bundle_paths import entry_argv
 # Neutral lease primitives: importing this module never loads context_learning.
 from memvane.runtime.runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 from memvane.runtime import runtime_wake_policy as wake_policy
@@ -428,7 +429,7 @@ def _wake(queue=None):
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return 'busy'
-        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-work','worker',str(fd)],
+        subprocess.Popen(entry_argv('runtime-work','worker',str(fd)),
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return 'spawned'
@@ -449,7 +450,7 @@ def _arm_timer(queue):
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return False
-        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-work','timer',str(fd)],
+        subprocess.Popen(entry_argv('runtime-work','timer',str(fd)),
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return True
@@ -512,7 +513,7 @@ def _handoff():
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return False
-        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-work','handoff',str(fd)],
+        subprocess.Popen(entry_argv('runtime-work','handoff',str(fd)),
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return True

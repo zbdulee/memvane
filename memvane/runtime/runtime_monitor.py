@@ -1,4 +1,5 @@
 """One model-free child tied to the existing shared daemon's lifecycle pipe."""
+from memvane.kernel.bundle_paths import entry_argv
 import fcntl
 import os
 from pathlib import Path
@@ -87,7 +88,7 @@ def start(root,*,spawn=None):
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return None
         read,write=os.pipe()
-        process=spawn([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-monitor',str(root),str(fd),str(read)],
+        process=spawn(entry_argv('runtime-monitor',str(root),str(fd),str(read)),
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,read),start_new_session=True)
         result=Handle(process,write);write=None;return result

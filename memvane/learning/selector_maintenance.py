@@ -1,5 +1,6 @@
 """Detached version-aware selector preparation for selected installations."""
 from pathlib import Path
+from memvane.kernel.bundle_paths import entry_argv
 import os
 import subprocess
 import sys
@@ -56,8 +57,7 @@ def _request_owned(decision, owner, *, force):
                                             'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
            if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
-    subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve().parents[2] / 'entry/run.py'), 'selector-maintenance',
-                      decision['projectRoot'], 'force' if force or retry else 'newer'],
+    subprocess.Popen(entry_argv('selector-maintenance', decision['projectRoot'], 'force' if force or retry else 'newer'),
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, close_fds=True,
                      start_new_session=True, env=env, cwd='/')
