@@ -719,6 +719,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/provider/adapters/closure.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/provider/adapters/local_embed_provider.py": {
       "context": "provider",
       "layer": "adapter",

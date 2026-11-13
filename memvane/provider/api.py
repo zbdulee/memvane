@@ -4,6 +4,11 @@ from __future__ import annotations
 from memvane.provider.types import FILES_SHA, LLAMA_VERSION, RuntimeUnavailable
 
 
+def closure_layout(*args, **kwargs):
+    from memvane.provider.adapters.closure import closure_layout as implementation
+    return implementation(*args, **kwargs)
+
+
 def collect(*args, **kwargs):
     from memvane.provider.embed_runtime import collect as implementation
     return implementation(*args, **kwargs)

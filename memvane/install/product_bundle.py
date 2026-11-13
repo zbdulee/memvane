@@ -21,6 +21,8 @@ import unicodedata
 
 from memvane.kernel.package import require_no_lazy_fetch
 from memvane.kernel.persistent_identity import persistent_identity_equal
+from memvane.provider.types import BundleEvidenceError
+from memvane.provider.api import closure_layout
 
 _seal_writes = contextvars.ContextVar('laya_seal_writes', default=None)
 
@@ -78,12 +80,6 @@ PROVIDER_MANIFEST_FIELDS = frozenset((
     'dependencyClosureApproved', 'dependencyClosureSha256',
     'serviceSocketPath'))
 FLAGS = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
-
-
-class BundleEvidenceError(ValueError):
-    def __init__(self, reason, detail=None):
-        super().__init__(reason)
-        self.detail = detail
 
 
 def _fail(reason, detail=None):
@@ -180,22 +176,6 @@ def _attested_file(path, expected_sha, expected_bytes=None):
         if isinstance(exc, BundleEvidenceError):
             raise
         raise BundleEvidenceError('provider_artifact_unavailable') from exc
-
-
-def closure_layout(closure):
-    """Path-independent content of a native closure: relative layout and bytes.
-
-    Each row becomes ``[path relative to the rows' common directory, sha256,
-    bytes]``. The same package moved to another directory has the same layout.
-    """
-    if (type(closure) is not list or not closure or
-            any(type(row) is not dict or set(row) != {'path', 'sha256', 'bytes'} or
-                type(row['path']) is not str or not Path(row['path']).is_absolute()
-                for row in closure)):
-        _fail('production_dependency_closure_invalid')
-    base = os.path.commonpath([os.path.dirname(row['path']) for row in closure])
-    return sorted([os.path.relpath(row['path'], base), row['sha256'], row['bytes']]
-                  for row in closure)
 
 
 def _closure_rows_valid(closure):
