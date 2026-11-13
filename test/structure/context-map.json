@@ -94,6 +94,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/diagnostics/api.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/diagnostics/diagnostic_trace.py": {
       "context": "diagnostics",
       "layer": "adapter",
@@ -107,6 +112,11 @@
     "memvane/diagnostics/job_telemetry.py": {
       "context": "diagnostics",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/types.py": {
+      "context": "diagnostics",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/host/__init__.py": {

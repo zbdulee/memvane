@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from memvane.diagnostics import event_log
+from memvane.diagnostics import api as event_log
 from memvane.wiki.compile import wiki_card_budget
 
 TAIL_CHARS = event_log.WIKI_TAIL_CHARS

@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import secrets
-from memvane.diagnostics import job_telemetry
+from memvane.diagnostics.api import telemetry_emit
 
 from .compact_input import derive
 from .contracts import digest, validate_label, validate_request
@@ -1272,7 +1272,7 @@ def train_due(root, policy, *, trainer_factory=None):
                           "source_version": current["cycle_id"] if current else "base",
                           "destination_version": cycle_id}
             queued_at = time.monotonic()
-            job_telemetry.emit(root / "job-telemetry.jsonl", "queued", **train_meta)
+            telemetry_emit(root / "job-telemetry.jsonl", "queued", **train_meta)
             train_resources = None
             train_status = "error"
             started_at = queued_at
@@ -1280,7 +1280,7 @@ def train_due(root, policy, *, trainer_factory=None):
                 artifact.unlink(missing_ok=True)
                 (folder / "train.json").unlink(missing_ok=True)
                 started_at = time.monotonic()
-                job_telemetry.emit(root / "job-telemetry.jsonl", "started",
+                telemetry_emit(root / "job-telemetry.jsonl", "started",
                                    queue_wait_ms=(started_at - queued_at) * 1000,
                                    **train_meta)
                 train_request = {"schema_version": 1,
@@ -1303,7 +1303,7 @@ def train_due(root, policy, *, trainer_factory=None):
                     after_report = resource_report(policy, detailed=True)
                 except Exception:
                     after_report = {}
-                job_telemetry.emit(root / "job-telemetry.jsonl", "finished",
+                telemetry_emit(root / "job-telemetry.jsonl", "finished",
                                    status=train_status,
                                    error_code="train_failed" if train_status == "error" else None,
                                    exit_code=getattr(trainer, "last_exit_code", None),
@@ -1674,7 +1674,7 @@ def run(root, *, project=None, sync_config=None, wait_for_lock=False):
             queue_wait = max(0.0, (time.time() - queued_at) * 1000)
         except ValueError:
             queue_wait = None
-        job_telemetry.emit(telemetry_path, "started", queue_wait_ms=queue_wait,
+        telemetry_emit(telemetry_path, "started", queue_wait_ms=queue_wait,
                            **telemetry_meta)
         meter.start()
     try:
@@ -1702,7 +1702,7 @@ def run(root, *, project=None, sync_config=None, wait_for_lock=False):
                 after_report = resource_report(_policy(root), detailed=True)
             except Exception:
                 after_report = {}
-            job_telemetry.emit(telemetry_path, "finished", status=worker_status,
+            telemetry_emit(telemetry_path, "finished", status=worker_status,
                                error_code="worker_failed" if worker_status == "error" else None,
                                resources={**resources, "before": before_report,
                                           "after": after_report},
@@ -1816,7 +1816,7 @@ def launch(config, project, *, parent_id=None, episode=None,
     metadata = {"job_id": job_id, "parent_id": parent_id,
                 "episode": episode, "op": "shared_worker",
                 "runtime_kind": "local_worker", "model_version": version}
-    job_telemetry.emit(root / "job-telemetry.jsonl", "queued",
+    telemetry_emit(root / "job-telemetry.jsonl", "queued",
                        ts=queued_at, **metadata)
     _atomic_json(root / FULL_WORKER_REQUEST, {
         "schema": FULL_WORKER_SCHEMA, "nonce": secrets.token_hex(16),
@@ -1932,7 +1932,7 @@ def _spawn_owned(root, project, command, lease_fd, spawn, *, job, job_id):
                   stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
                   start_new_session=True, close_fds=True, pass_fds=(lease_fd,))
         except Exception:
-            job_telemetry.emit(root / "job-telemetry.jsonl", "finished",
+            telemetry_emit(root / "job-telemetry.jsonl", "finished",
                                status="error", error_code="worker_spawn_failed",
                                job_id=job_id, op="shared_worker",
                                runtime_kind="local_worker")

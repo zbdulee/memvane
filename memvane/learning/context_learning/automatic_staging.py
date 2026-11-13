@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import time
 
-from memvane.diagnostics import job_telemetry
+from memvane.diagnostics.api import telemetry_emit
 
 from .automatic_cohort import training_and_validation
 from .contracts import digest
@@ -250,9 +250,9 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                     'op': 'laya_train', 'runtime_kind': 'local_trainer',
                     'model_version': 'laya', 'source_version': 'base',
                     'destination_version': cycle_id}
-            job_telemetry.emit(root / 'job-telemetry.jsonl', 'queued', **meta)
+            telemetry_emit(root / 'job-telemetry.jsonl', 'queued', **meta)
             start = time.monotonic()
-            job_telemetry.emit(root / 'job-telemetry.jsonl', 'started',
+            telemetry_emit(root / 'job-telemetry.jsonl', 'started',
                                queue_wait_ms=0, **meta)
             answer, train_resources = _train_once(trainer, request, folder)
             if answer != {'schema_version': 1, 'status': 'trained'}:
@@ -287,7 +287,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
                     queue.complete(cycle_id, db=db)
                 else:
                     db.execute("UPDATE learning_jobs SET status='blocked',reason='source_revoked' WHERE job_id=?",(cycle_id,))
-            job_telemetry.emit(root / 'job-telemetry.jsonl', 'finished',
+            telemetry_emit(root / 'job-telemetry.jsonl', 'finished',
                 status='success', run_ms=(time.monotonic() - start) * 1000,
                 resources=train_resources, **meta)
             if not stage['sourceActiveAtStage']:
@@ -298,7 +298,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
             if deferred:
                 record_resource_defer(root, exc.report, reason=str(exc))
             if meta is not None and start is not None:
-                job_telemetry.emit(root / 'job-telemetry.jsonl', 'finished',
+                telemetry_emit(root / 'job-telemetry.jsonl', 'finished',
                     status='failure', run_ms=(time.monotonic() - start) * 1000,
                     error_type=type(exc).__name__, **meta)
             with _db(root) as db:

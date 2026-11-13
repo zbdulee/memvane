@@ -17,7 +17,7 @@ import sys
 import time
 import unicodedata
 
-from memvane.diagnostics import event_log
+from memvane.diagnostics import api as event_log
 from memvane.route.index_host_route import (MAX_HOOK_BYTES, select_hook_payload,
                                    select_hook_route, select_route)
 
@@ -421,7 +421,7 @@ def _trace_capture(trace, reason, *, exc=None, warning=False):
         diag = trace.get('diag')
         if diag is None or (exc is None and diag['count'] >= _MAX_DIAGNOSTICS):
             return None
-        from memvane.diagnostics import diagnostic_trace
+        from memvane.diagnostics import api as diagnostic_trace
         if diag['enabled'] is None:
             diag['enabled'] = diagnostic_trace.enabled(diag['decision']) is True
         if not diag['enabled']:

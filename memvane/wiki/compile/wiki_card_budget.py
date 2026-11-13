@@ -382,7 +382,7 @@ def emit(root, outcome: str, *, bound, path: str = '', title: str = '',
     Field names avoid the word "token": the event log drops such keys.
     """
     try:
-        from memvane.diagnostics import event_log
+        from memvane.diagnostics import api as event_log
         state_root = event_log.state_root_of(bound[0].get('journalPath')) if bound else None
         if state_root is None:
             return False

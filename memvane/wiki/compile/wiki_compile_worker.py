@@ -874,7 +874,7 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
     if proc.stderr:
         # Extractor stderr can quote source or model text. Only the digest and
         # size of its bounded tail reach the install event log.
-        from memvane.diagnostics import event_log
+        from memvane.diagnostics import api as event_log
         tail = proc.stderr[-event_log.PROMPT_CHARS:]
         event_log.emit('compile.extractor', outcome='stderr', reason=None,
                        rc=proc.returncode, stderr=event_log.prompt_fields(tail))
@@ -1744,7 +1744,7 @@ def _run_verify_pass(
         wiki_verify_worker.run(root, config, compile_cfg, produced_targets=produced_targets or [])
     except Exception as exc:
         # Exception class and failing frame only; the message may name paths.
-        from memvane.diagnostics import event_log
+        from memvane.diagnostics import api as event_log
         frames = traceback.extract_tb(exc.__traceback__)[-1:]
         event_log.emit('compile.verify_pass', outcome='error', reason=type(exc).__name__,
                        where=(f"{os.path.basename(frames[0].filename)}:{frames[0].lineno}"
@@ -1761,8 +1761,8 @@ def _verify_diagnostic(root: Path, exc: BaseException) -> str | None:
     exception stays swallowed and the verify outcome is unchanged either way.
     """
     try:
-        from memvane.diagnostics import diagnostic_trace
-        from memvane.diagnostics import event_log
+        from memvane.diagnostics import api as diagnostic_trace
+        from memvane.diagnostics import api as event_log
         from memvane.route import index_host_route as laya_index_host_route
         bound = event_log.bound()
         if not isinstance(bound, dict) or bound.get('stateRoot') is None:
@@ -1881,7 +1881,7 @@ def _main():
         except (OSError, ValueError):
             return 0  # moved/unsafe authority: preserve all queued work
         if selected_route is not None:
-            from memvane.diagnostics import event_log
+            from memvane.diagnostics import api as event_log
             event_log.bind(decision=selected_route[0], host='worker')
         return _main_locked(args, root, config, compile_cfg, queue, selected_route)
     finally:

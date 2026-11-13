@@ -274,7 +274,7 @@ def summary(row):
 
 
 def _emit(decision, row):
-    from memvane.diagnostics import event_log
+    from memvane.diagnostics import api as event_log
     progress = summary(row)
     event_log.emit('wiki.backfill', decision=decision, outcome=progress['state'],
                    engine=row['engine'], **{key: value for key, value in progress.items() if key != 'state'})
