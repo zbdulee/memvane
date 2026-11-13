@@ -5,8 +5,7 @@ description: Use when the user asks to clean up, dedupe, merge, or consolidate n
 
 # Wiki Dedup
 
-Drain `.memvane/compile/dedup-needed.jsonl` (`.auto-context/compile/` in a project without
-`.memvane/`) — pairs of **already-existing** wiki pages that
+Drain `.memvane/compile/dedup-needed.jsonl` — pairs of **already-existing** wiki pages that
 `core/wiki_dedup_scan.py`'s retroactive scan found similar enough (cosine similarity of 0.9 or more
 between the cards' stored memvane-db vectors) to be worth consolidating. The scan runs in the background
 after SessionStart and source edits on a selected project and only fills the queue; this skill is
@@ -22,7 +21,7 @@ each queued pair autonomously.
 
    ```bash
    ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"
-   DIR="$PWD/.memvane"; [ -d "$DIR" ] || DIR="$PWD/.auto-context"
+   DIR="$PWD/.memvane"
    cat "$DIR/compile/dedup-needed.jsonl" 2>/dev/null
    ```
 

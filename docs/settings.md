@@ -1,7 +1,7 @@
 # Settings Reference
 
 `.memvane/settings.json`은 프로젝트별 MemVane 동작을 정하는 파일입니다.
-`.auto-context/`만 있는 프로젝트는 그 폴더의 `settings.json`을 읽습니다.
+온보딩 전에 프로젝트 설정을 `.memvane/settings.json`에 둡니다.
 보통은 에이전트에게 자연어로 요청해서 만들거나 조정하고, 직접 편집할 때는 이
 문서를 기준으로 필요한 값만 바꾸면 됩니다.
 
@@ -40,8 +40,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택), 그리고 선�
 | `minScore`·`topN`·`queryTimeout`·`prefixStyle`·`lexicalPatterns`·`allowRoots` 등 | 기본값 |
 
 정규화된 effective config에는 `settingsModel: "minimal"`이 붙습니다. legacy 파일에는
-이 키가 없습니다. 설정 파일은 하나만 읽습니다: `.memvane/settings.json`, 없으면
-`.auto-context/settings.json`.
+이 키가 없습니다. 설정 파일은 `.memvane/settings.json` 하나만 읽습니다.
 
 **minimal이 아닌 경우.** 이 키들 외의 키가 하나라도 있으면 legacy 파일이며 아래
 [전체 키 레퍼런스](#전체-키-레퍼런스)대로 읽습니다. 일부 키만 유도하지 않습니다.
@@ -55,7 +54,7 @@ settings 파일의 키가 `name`(필수)과 `skipPaths`(선택), 그리고 선�
 기본 제외는 다음과 같습니다.
 
 - `.`으로 시작하는 모든 폴더와 파일(`.git`, `.claude`, `docs/.draft` 등)
-- `.memvane`(그리고 `.auto-context`): 위키 생성 원천에서 제외됩니다. 그 안의 `wiki`는
+- `.memvane`: 위키 생성 원천에서 제외됩니다. 그 안의 `wiki`는
   wiki collection 루트이므로 검색 대상입니다.
 
 **인덱싱 끄기.** minimal settings에는 `indexing` 키가 없고, settings 파일이 있으면 켜짐으로
@@ -210,7 +209,7 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `events` | `["sessionStart","userPromptSubmit","postToolUse"]` | 자동 동작을 켤 이벤트 목록입니다 → [Events](#events) |
 | `sessionStartSync` | `true` | SessionStart 스냅샷 동기화 스위치입니다. 값은 정규화되지만 이 값을 읽는 경로가 없습니다. 선택된 Laya route의 sync는 full-scan worker가 맡습니다 → [Git checkout·worktree 정책](git-worktree-search-sync-policy.md) |
 | `lexicalPatterns` | `[]` | 특수 lexical pattern입니다. 현재 쓰이는 값은 `ep` 하나입니다. |
-| `wikiPath` | `".memvane/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. `.memvane/`나 `.auto-context/`로 시작하는 값(`collectionPaths` 포함)은 프로젝트의 활성 폴더를 따릅니다. |
+| `wikiPath` | `".memvane/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. 프로젝트의 `.memvane/` 경로를 사용합니다. |
 | `compile.mode` | `"off"` | **compile의 유일한 활성 스위치이자 쓰기 정책**입니다. `off`·`candidates`·`guarded`·`auto-wiki` → [compile.mode](#compilemode) |
 | `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. SessionStart가 감지한 파일의 위키 생성에는 별도 `session_start_source` 동의가 필요합니다. |
 | `compile.defaultStatus` | `"generated"` | 새 카드의 status입니다. `generated`·`tentative`만 허용합니다(`verified`를 넣으면 검수를 우회합니다). |
