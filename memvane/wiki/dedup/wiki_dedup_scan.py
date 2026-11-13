@@ -171,17 +171,17 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
     ``cards`` is None while the head is lexical.
     """
     import struct
-    from memvane.journal import journal_reader as reader
-    from memvane.journal import reader_lease as lease
+    from memvane.journal import api as reader
+    from memvane.journal import api as lease
     from memvane.kernel.bundle_paths import plugin_root
     from memvane.wiki.card.types import MAX_CARDS
     root = Path(decision["projectRoot"])
     deadline = min(deadline, time.monotonic() + SCHEMA3_READ_SECONDS)
     with lease.resolve_endpoint(root, action="recall", host_root=plugin_root()) as endpoint:
-        record, _raw, _proof = reader._recheck(endpoint)
+        record, _raw, _proof = reader.recheck_reader(endpoint)
         if record.get("store_format") != "schema3" or record["scope"] != decision["scopeId"]:
             raise ValueError("selected_dedup_schema3_endpoint_changed")
-        with reader._schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+        with reader.pin_schema3(record, deadline=deadline) as (store, _handle, pin):
             generation, vector = pin.gen_id, store._pinned(pin)["vector"]
             if vector is None:
                 return generation, None

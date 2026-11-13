@@ -430,9 +430,9 @@ def _schema3_search(bound, text):
     ``vectorCosines``) adds vector-only candidates and carries the cosine the
     vector-only relevance rule needs; otherwise the list is lexical only.
     """
-    from memvane.journal import journal_reader as reader
+    from memvane.journal import api as reader
     from memvane.recall import api as dispatch
-    from memvane.journal import reader_lease as lease
+    from memvane.journal import api as lease
     from memvane.settings import api as project_dir
     from memvane.route.api import wiki_index_roots
     from memvane.sync.api import sync_owner
@@ -451,7 +451,7 @@ def _schema3_search(bound, text):
                                     host_root=plugin_root()) as endpoint:
             if endpoint.record.get('store_format') != 'schema3':
                 raise ValueError('selected_store_format_changed')
-            _record, _raw, current = reader._recheck(endpoint)
+            _record, _raw, current = reader.recheck_reader(endpoint)
             if current.get('installId') != proof.get('installId'):
                 raise ValueError('selected_compile_proof_changed')
             result = dispatch.query_endpoint(
@@ -477,7 +477,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     ``generation`` (the lexical rows' generation).
     """
     from memvane.recall.types import VectorUnavailable
-    from memvane.journal import journal_reader as reader
+    from memvane.journal import api as reader
     from memvane.recall.api import approved_profile_matches
     from memvane.store.view.view_vectors import DEFERRED
     from memvane.store.types import BlobStoreError
@@ -485,7 +485,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     if record.get('vector_profile') is None:
         return {}
     deadline = time.monotonic() + QUERY_SECONDS
-    with reader._schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+    with reader.pin_schema3(record, deadline=deadline) as (store, _handle, pin):
         vector = store._pinned(pin)['vector']
         if pin.gen_id != generation or vector is None:
             return {}

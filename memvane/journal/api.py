@@ -57,6 +57,26 @@ def legacy_identity_reads(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def recheck_reader(*args, **kwargs):
+    from memvane.journal.journal_reader import _recheck as implementation
+    return implementation(*args, **kwargs)
+
+
+def pin_schema3(*args, **kwargs):
+    from memvane.journal.journal_reader import _schema3_pin as implementation
+    return implementation(*args, **kwargs)
+
+
+def settings_resettle_pending(*args, **kwargs):
+    from memvane.journal.journal_reader import settings_resettle_pending as implementation
+    return implementation(*args, **kwargs)
+
+
+def resolve_endpoint(*args, **kwargs):
+    from memvane.journal.reader_lease import resolve_endpoint as implementation
+    return implementation(*args, **kwargs)
+
+
 def service_worker_attestation(*args, **kwargs):
     from memvane.journal.application.service_proof import service_worker_attestation as implementation
     return implementation(*args, **kwargs)

@@ -930,7 +930,7 @@ _RESETTLE_PENDING = 'reader_settings_resealing'
 
 def _settings_resettle_pending(decision, project, root) -> bool:
     try:
-        from memvane.journal import journal_reader as reader
+        from memvane.journal import api as reader
         return (decision.get('state') == 'candidate' and
                 reader.settings_resettle_pending(Path(decision['journalPath']).parent, project, root))
     except Exception:
@@ -981,8 +981,8 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
             (requested != project and project not in requested.parents)):
         _fail('reader_selection_unproved')
     from memvane.kernel import hook_budget
-    from memvane.journal import reader_lease as lease
-    from memvane.journal import journal_reader as reader
+    from memvane.journal import api as lease
+    from memvane.journal import api as reader
     deadline = time.monotonic() + hook_budget.remaining()
     root = Path(__file__).resolve().parents[2]
     with ExitStack() as stack:
@@ -1011,7 +1011,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
                 if (attempt or str(exc) != 'reader_selection_changed'
                         or time.monotonic() >= deadline):
                     raise
-        _record,_att,proof = reader._recheck(endpoint)
+        _record,_att,proof = reader.recheck_reader(endpoint)
         decision = proof.get('readerDecision')
         if not isinstance(decision, dict) or decision != route_decision:
             _fail('reader_selection_unproved')
@@ -1035,7 +1035,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     back to another view.
     """
     from memvane.settings import config
-    from memvane.journal import journal_reader as reader
+    from memvane.journal import api as reader
     from memvane.recall import api as dispatch
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.api import reviewed_provider_class
@@ -1138,10 +1138,10 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     def still_current(chosen):
         # Same install proof (epoch may only advance) and the same view head:
         # the served rows stay bound to the generation they were read from.
-        record, _raw, current = reader._recheck(endpoint)
+        record, _raw, current = reader.recheck_reader(endpoint)
         if not _proof_still_current(current, proof):
             return False
-        with reader._schema3_pin(record, deadline=deadline, linked=linked,
+        with reader.pin_schema3(record, deadline=deadline, linked=linked,
                                  pin_view=False) as (_store, _handle, head):
             return head['gen_id'] == result.data_generation
     return _serve_verified_rows(
