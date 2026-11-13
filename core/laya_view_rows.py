@@ -2261,9 +2261,15 @@ class RowsMixin:
         replayed = None
         with self._session() as db:
             head = self._rows_head_row(db, handle.view_id)
-            published = db.execute('SELECT view_id,epoch,kind,legacy_json FROM s_generations WHERE gen_id=?',
-                                   (gen_id,)).fetchone()
+            published = db.execute('SELECT view_id,epoch,kind,legacy_json,capture_json FROM s_generations '
+                                   'WHERE gen_id=?', (gen_id,)).fetchone()
             if published is not None:
+                if published[0] != handle.view_id:
+                    v.fail('view_head_conflict')
+                if published[4] != v.canonical(entry['capture']):
+                    # As the generation format's stage view check: the replay names
+                    # the checkout the generation was published from.
+                    v.fail('generation_binding_mismatch')
                 if (tuple(published[:2]) != (handle.view_id, base['epoch'] + 1) or head.gen_id != gen_id
                         or head.epoch != base['epoch'] + 1):
                     v.fail('view_head_conflict')
