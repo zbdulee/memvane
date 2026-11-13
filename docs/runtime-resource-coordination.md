@@ -41,6 +41,14 @@ development execution guard is separate; see
   reclaim window; another due wake runs before it. A pass with no
   fill progress stays `pending` and backs off; after 144 consecutive counted
   attempts the wake policy drops it (`retry_cap`) until the next natural wake.
+  A pass whose main view has nothing to ingest (unchanged cards and sources)
+  fills vectors, and publishes the vector generation it completes, within a
+  240-second window (`SCHEMA3_VECTOR_SECONDS`, publish reserve included); in
+  that window a fill call stopped by its own deadline after adding embedding
+  sets is followed by the next call. The pass holds the sync owner, writer
+  scope and provider lane for that window; the yields above still apply at
+  each provider call. A pass that ingests, and linked views, keep the pass
+  budget.
   The first cold target of a pass (no stored chunk set) gets the resume budget
   once, so the last provider call can run past the pass deadline by that one
   document; that pass publishes its generation (lexical, or vector when the

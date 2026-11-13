@@ -752,7 +752,9 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         lexical, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
         self.assertEqual(len(lexical.get('worktrees', ())), 1, lexical)
         reserve = self.worker.SCHEMA3_PUBLISH_RESERVE
+        # The unchanged pass's vector window is closed here: the A1 path under test.
         with mock.patch.object(self.worker, 'SCHEMA3_PASS_SECONDS', reserve + 0.001), \
+                mock.patch.object(self.worker, 'SCHEMA3_VECTOR_SECONDS', reserve + 0.001), \
                 self.offers() as seen:
             result, _ingests, calls = self.run_vector_pass()
         self.assertEqual(result['vector']['state'], 'pending', result)
@@ -1234,6 +1236,211 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertTrue(second_calls, second)
         self.assertFalse(set(first_calls) & set(second_calls), (first_calls, second_calls))
         emit('schema3-vector-initial-build-yield', first=len(first_calls), second=len(second_calls))
+
+    # -- 0.44.22: the unchanged pass's vector window (A3) -------------------------
+    @contextmanager
+    def shared_clock(self, cost):
+        """One virtual monotonic clock for the sync worker and both fill layers;
+        ``cost[marker]`` seconds pass inside the provider's chunked call for a
+        body holding marker. Yields the list of chunked-call markers seen."""
+        modules = [self.worker, importlib.import_module('laya_view_fill'),
+                   importlib.import_module('laya_blob_fill')]
+        offset = [0.0]
+        fake = mock.Mock(wraps=time)
+        fake.monotonic = lambda: time.monotonic() + offset[0]
+        real_chunks = self.worker.ReviewedLocalQmdProvider.embed_document_chunks
+        seen = []
+
+        def chunks(provider, body, path, timeout=None):
+            for marker, seconds in cost.items():
+                if marker in body:
+                    seen.append(marker)
+                    offset[0] += seconds
+            return real_chunks(provider, body, path, timeout)
+        with ExitStack() as stack:
+            for module in modules:
+                stack.enter_context(mock.patch.object(module, 'time', fake))
+            stack.enter_context(mock.patch.object(self.worker.ReviewedLocalQmdProvider,
+                                                  'embed_document_chunks', new=chunks))
+            yield seen
+
+    def cold_cards(self, prefix, count):
+        markers = [f'{prefix}{index:02d}probe' for index in range(count)]
+        for marker in markers:
+            self.card(f'window/{marker}.md', marker)
+        return markers
+
+    def embedded_count(self, markers):
+        gen = self.head()[0]
+        return sum(self.embedded(gen, f'window/{marker}.md')[1] for marker in markers)
+
+    def linked_worktree(self):
+        import os
+        import shutil
+        import tempfile
+        project = self.case.project
+        base = Path(tempfile.mkdtemp(prefix='linked-', dir=str(project.parent))).resolve()
+        self.addCleanup(shutil.rmtree, base, True)
+        linked = base / 'linked'
+        subprocess.run(['git', '-C', str(project), '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add',
+                        '-q', '-b', 'side', str(linked)], check=True, capture_output=True, timeout=20)
+        settings = importlib.import_module('project_dir').settings_path(project)
+        relative = settings.relative_to(project)
+        (linked / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(settings, linked / relative)
+        for item in self.decision['collections']:
+            (linked / Path(item['sourceRoot']).relative_to(project)).mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.wiki, linked / self.wiki.relative_to(project), dirs_exist_ok=True)
+        time.sleep(1.1)  # Git racy-index window before the linked checkout's capture.
+        return linked
+
+    def test_26_unchanged_pass_fills_its_targets_in_the_vector_window(self):
+        """An unchanged pass gets the 240 s vector window: with 12 s cards, one
+        pass fills all ten (a fill call that hits its own deadline after adding
+        sets does not end the window) and publishes the vector generation; the
+        45 s pass budget alone fills two."""
+        self.select_schema3()
+        markers = self.cold_cards('wnd', 10)
+        lexical, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        self.assertEqual(self.embedded_count(markers), 0, lexical)
+        with self.shared_clock({m: 12.0 for m in markers}) as seen, self.offers():
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(self.embedded_count(markers), 10, (result, seen))
+        self.assertEqual(result['vector']['state'], 'published', result)
+        self.assertLessEqual(len(seen), 10 + 5, seen)  # a deadline-discarded call is the only repeat
+        self.assertEqual(getattr(self.worker, 'SCHEMA3_VECTOR_SECONDS', None), 240)
+        emit('schema3-vector-window', calls=len(seen), state=result['vector']['state'])
+
+    def test_27_query_admission_stays_open_through_the_vector_window(self):
+        """While an unchanged pass holds the provider lane for its whole window,
+        recall's query admission is granted at every provider call and another
+        provider user is deferred."""
+        import os
+        import tempfile
+        rc = importlib.import_module('context_learning.resource_coordination')
+        resident = importlib.import_module('laya_embed_resident')
+        from resource_deferred import ResourceDeferred
+        self.select_schema3()
+        markers = self.cold_cards('adm', 10)
+        self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        root = Path(tempfile.mkdtemp(prefix='lanes-', dir=os.environ.get('HOME'))).resolve()
+        policy = self.worker.EMBED_POLICY
+        admitted, deferred = [], []
+        real = self.worker.ReviewedLocalQmdProvider.embed_document_chunks
+
+        def probe(provider, body, path, timeout=None):
+            resident.admit_query(coordinator=rc.Coordinator(root), report={})
+            admitted.append(path)
+            try:
+                with rc.Coordinator(root).activity('provider', policy, {}):
+                    pass
+            except ResourceDeferred:
+                deferred.append(path)
+            return real(provider, body, path, timeout)
+        with mock.patch.object(rc.Coordinator, '_admit', return_value={'ready': True}), \
+                mock.patch.object(self.worker.ReviewedLocalQmdProvider, 'embed_document_chunks', new=probe), \
+                self.shared_clock({m: 12.0 for m in markers}) as seen, self.offers():
+            result, _ingests, _calls = self.run_vector_pass(rc.Coordinator(root))
+        self.assertGreaterEqual(len(seen), 10, (result, seen))
+        # The window went on past a fill call stopped by its own deadline (a
+        # card asked again), and admission held through it.
+        self.assertGreater(len(seen), len(set(seen)), seen)
+        # Every provider call of the pass (seeded cards' included) was admitted.
+        self.assertGreaterEqual(len(admitted), len(seen))
+        self.assertEqual(deferred, admitted)
+        emit('schema3-vector-window-admission', admitted=len(admitted))
+
+    def test_28_initial_build_yield_holds_inside_the_vector_window(self):
+        """Inside the 240 s window, another project's initial build seen waiting
+        on the owner after five provider calls is yielded to before the sixth:
+        its backed-off wake runs next and the filled sets stay."""
+        import os
+        import tempfile
+        work = importlib.import_module('runtime_work')
+        build = importlib.import_module('laya_initial_build')
+        self.select_schema3()
+        markers = self.cold_cards('yld', 10)
+        self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        project = str(self.case.project)
+        other = Path(tempfile.mkdtemp(prefix='initial-build-', dir=os.environ.get('HOME'))).resolve()
+        passes, order = [], []
+        mine = self.sync_execute(project, passes)
+
+        def execute(row):
+            order.append(row['target'])
+            return True if row['target'] == str(other) else mine(row)
+        with self.wake_queue() as (queue, clock, drain), \
+                self.shared_clock({m: 12.0 for m in markers}) as seen:
+            def lookup(target):
+                if str(target) != str(other) or len(seen) < 5:
+                    return None
+                return {'phase': 'building',
+                        'progress': {'state': 'deferred', 'reason': 'owner_busy', 'lastAttemptClass': 'other',
+                                     'lastAttemptNs': time.time_ns() - 1_000_000_000}}
+            with mock.patch.object(build, 'lookup', side_effect=lookup):
+                self.assertEqual(queue.offer('laya-sync', project), 'queued')
+                self.assertEqual(queue.offer('laya-sync', str(other), delay=120), 'queued')
+                drain(execute, runs=8)
+        first, _calls = passes[0]
+        self.assertEqual(len(seen), 5, (seen, first))
+        self.assertEqual(order, [project, str(other)])
+        self.assertEqual(first['vector'].get('reason'), 'laya_sync_yield_priority', first)
+        # Every card asked for before the yield keeps its sets (a call discarded
+        # at its own deadline asks for the same card again: the yield came
+        # after the window went on past it).
+        self.assertGreater(len(seen), len(set(seen)), seen)
+        self.assertEqual(self.embedded_count(markers), len(set(seen)), seen)
+        emit('schema3-vector-window-initial-build', calls=len(seen), filled=len(set(seen)))
+
+    def test_29_changed_pass_keeps_the_pass_budget(self):
+        """A pass that ingests a card keeps the 45 s pass budget for its fill
+        (no vector window): with 12 s cards it fills two."""
+        self.select_schema3()
+        markers = self.cold_cards('chg', 10)
+        with self.shared_clock({m: 12.0 for m in markers}) as seen, self.offers():
+            result, ingests, _calls = self.run_vector_pass()
+        self.assertTrue(ingests, result)
+        self.assertEqual(result['vector']['state'], 'pending', result)
+        self.assertLessEqual(self.embedded_count(markers), 2, (result, seen))
+        emit('schema3-changed-pass-budget', filled=self.embedded_count(markers))
+
+    def test_30_linked_views_keep_the_pass_budget_after_a_vector_window(self):
+        """The window is the main view's: after it, a linked view is held by the
+        pass budget (``schema3_pass_budget``) and gets the re-offer, as before."""
+        self.select_schema3()
+        markers = self.cold_cards('lnk', 4)
+        self.linked_worktree()
+        lexical, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        self.assertEqual(len(lexical.get('worktrees', ())), 1, lexical)
+        with self.shared_clock({m: 12.0 for m in markers}), self.offers() as seen:
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual(result['vector']['state'], 'published', result)
+        self.assertEqual([(w['state'], w.get('reason')) for w in result['worktrees']],
+                         [('pending', 'schema3_pass_budget')], result)
+        self.assertIn(('laya-sync', str(self.case.project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
+        emit('schema3-linked-after-window', state=result['state'])
+
+    def test_31_window_ends_at_a_deadline_call_that_adds_no_set(self):
+        """Inside the vector window a fill call stopped by its own deadline goes
+        on only when it added embedding sets: a card whose single provider call
+        outlasts every fill call ends the pass ``pending`` after at most one
+        repeat, and the cards behind it are not asked for."""
+        self.select_schema3()
+        self.card('window/aaa-fast.md', 'aaafastprobe')
+        self.card('window/bbb-slow.md', 'bbbslowprobe')
+        self.card('window/ccc-later.md', 'ccclaterprobe')
+        self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        cost = {'aaafastprobe': 1.0, 'bbbslowprobe': 40.0, 'ccclaterprobe': 1.0}
+        with self.shared_clock(cost) as seen, self.offers():
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual((result['vector']['state'], result['vector']['reason']),
+                         ('pending', 'schema3_vector_deadline'), result)
+        self.assertLessEqual(seen.count('bbbslowprobe'), 2, seen)
+        self.assertNotIn('ccclaterprobe', seen)
+        gen = self.head()[0]
+        self.assertEqual(self.embedded(gen, 'window/bbb-slow.md')[1], False)
+        self.assertEqual(self.embedded(gen, 'window/ccc-later.md')[1], False)
+        emit('schema3-vector-window-ends', slow=seen.count('bbbslowprobe'), calls=len(seen))
 
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):

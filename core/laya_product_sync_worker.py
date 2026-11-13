@@ -999,6 +999,10 @@ SCHEMA3_MAX_INGEST = 64
 # ingested cards always fits; otherwise an over-budget pass would publish
 # nothing and the next one would redo the same ingests.
 SCHEMA3_PUBLISH_RESERVE = 15
+# A pass whose main view has nothing to ingest (unchanged cards and sources)
+# pays the pass's fixed cost once and fills vectors for this long (its
+# publish reserve included); a pass that ingests keeps the pass budget.
+SCHEMA3_VECTOR_SECONDS = 240
 # The store binds the v6 settings identity (collections, roles, roots) and
 # the wiki root node in an immutable worktree row; a change refuses reads and
 # writes alike, and no in-place rebinding exists. Not transient.
@@ -1179,7 +1183,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         marks = {}
         result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
                                        info['worktree_binding'], deadline, marks, vectors,
-                                       raw_scan=vectors.get('rawScan'))
+                                       raw_scan=vectors.get('rawScan'), window=True)
         if result['state'] not in ('indexed', 'unchanged'):
             return result, marks.get('proof', proof)
         linked = []
@@ -1330,7 +1334,7 @@ def _mark_schema3_write(writer, proof, marks):
 
 
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
-                          vectors=None, *, raw_scan=None):
+                          vectors=None, *, raw_scan=None, window=False):
     """One view's pass: changed cards ingested, unchanged members keep their trust.
 
     ``binding`` is the main worktree's journal-recorded binding (None for a
@@ -1405,8 +1409,13 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         stored = None if cold else _schema3_stage(store, head['gen_id'])
         if (not changed and not removed and not excluded and not cold
                 and _schema3_sources_same(store, stored['manifest'], observed, handle)):
+            if window:
+                # The main view has nothing to ingest: its vector fill (and the
+                # generation it may publish) gets the vector window. Linked
+                # views keep the pass deadline (``_publish_schema3``).
+                deadline = max(deadline, time.monotonic() + SCHEMA3_VECTOR_SECONDS)
             vector = _schema3_vectors(store, writer, proof, marks, handle, stored['manifest'],
-                                      stored['vector_spec'], vectors, deadline)
+                                      stored['vector_spec'], vectors, deadline, window=window)
             if vector['state'] != 'complete':
                 return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
                         'vector': vector}
@@ -1854,7 +1863,8 @@ def _schema3_embedded(store, targets, recipe_id, profile_id):
                    for t in targets)
 
 
-def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline):
+def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline,
+                     *, window=False):
     """Fill this manifest's vectors for the pass's spec; ``state`` says what remains.
 
     ``complete``: every eligible member has the spec's sets (the caller seals
@@ -1936,6 +1946,10 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                 # A run of cache hits ahead of the first missing target: one call.
                 files = MAX_FILES
             calls += 1
+            # The targets this call can reach: the window compares their sets
+            # before and after a call stopped by its own deadline.
+            reach = targets[status['cursor']:status['cursor'] + files]
+            mark = _schema3_embedded(store, reach, recipe_id, profile_id) if window else None
             try:
                 step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
                                        embedder=embedder, write_fence=fence,
@@ -1946,6 +1960,12 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                     raise
                 # Content sets committed before the deadline stay (cache hits
                 # next pass); the lexical publish of this pass goes on.
+                if window and _schema3_embedded(store, reach, recipe_id, profile_id) > mark:
+                    # Inside the vector window, a call that added sets before its
+                    # own deadline does not end the window: the next call passes
+                    # those as cache hits. A call that added none ends it.
+                    status = store.fill_status(handle, manifest, recipe_id, profile_id)
+                    continue
                 return pending('schema3_vector_deadline', status['cursor'])
             filled += step['filled']; hits += step['cache_hits']
             if step['status'] == 'deferred':
