@@ -183,7 +183,7 @@ def _check_sync_lease(record, queue_path=None):
         if (not current.is_absolute() or current.is_symlink()
                 or (queue_path is not None and Path(queue_path) != current)):
             raise IndexContractError('sync_owner_lock_unavailable')
-        lock_path = Path(str(current) + '.sync.lock')
+        lock_path = current.parent / 'sync.lock'
         _check_held_sync_file(lock_path, record['fd'], record['lock_node'])
         if _file_identity(current) != record['queue_node']:
             raise IndexContractError('sync_owner_lock_unavailable')
@@ -205,7 +205,7 @@ _SYNC_OWNER_POLL_SECONDS = 0.05
 
 @contextmanager
 def sync_owner(queue_path: Path, *, recheck_queue=None, wait=False, deadline=None):
-    """Issue a lexical owner after stable UID and legacy queue exclusions.
+    """Issue a lexical owner after stable UID and install exclusions.
 
     ``wait=True`` retries a busy owner or queue lock for at most
     ``SYNC_OWNER_WAIT_SECONDS`` (never past ``deadline``), then yields None.
@@ -233,19 +233,18 @@ def sync_owner(queue_path: Path, *, recheck_queue=None, wait=False, deadline=Non
 
 @contextmanager
 def _queue_sync_owner(queue_path: Path, *, recheck_queue, anchor):
-    """Hold queue exclusion and issue a lexical, same-thread owner or None.
+    """Hold install exclusion and issue a lexical, same-thread owner or None.
 
-    All selected sync writers use this exact queue-adjacent file from before
-    taking a claim lease until after receipt/ACK or retry release. The file is
+    All selected sync writers use the install's ``sync.lock`` from before
+    admission until after receipt/ACK or retry release. The file is
     never unlinked, including on failure; unlinking would split the lock domain.
-    A directory mover may supply its checked new queue name; both nodes must
-    still match the originally acquired queue and open kernel lock.
+    The supplied store node and open kernel lock must remain unchanged.
     """
     queue_path = Path(queue_path)
     if not queue_path.is_absolute() or queue_path.is_symlink():
         raise IndexContractError('sync_owner_lock_unavailable')
     queue_identity = _file_identity(queue_path)
-    lock_path = Path(str(queue_path) + '.sync.lock')
+    lock_path = queue_path.parent / 'sync.lock'
     flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
     flags |= getattr(os, 'O_CLOEXEC', 0)
     try:
