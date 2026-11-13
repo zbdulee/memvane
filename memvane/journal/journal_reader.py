@@ -16,7 +16,6 @@ from types import MappingProxyType, SimpleNamespace
 import weakref
 
 from memvane.journal import install_journal as journal
-from memvane.install.product_install import _install_lock, _read_private
 from memvane.kernel.persistent_identity import persistent_node_equal
 
 _JOURNAL = 'journal.sqlite'

@@ -30,7 +30,7 @@ from memvane.route.api import select_route, written_schema
 from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
-                                 RUNTIME_FILES_FIELD, production_provider_approved,
+                                 RUNTIME_FILES_FIELD,
                                  validate_production_provider_attestation,
                                  validate_vector_profile)
 
