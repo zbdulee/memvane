@@ -46,6 +46,27 @@ class PolicyPurity(unittest.TestCase):
 
 
 class PolicyDecisions(unittest.TestCase):
+    def test_sync_durable_progress_retries_without_counting_only_new_details(self):
+        for reason in ('schema3_progress_ingest', 'schema3_progress_vector'):
+            failure = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64,
+                                             detail='deferred:pending:' + reason)
+            attempts = 7
+            for _ in range(5):
+                step = policy.settle(attempts, done=False, error=failure, now=100, kind='laya-sync')
+                self.assertEqual((step['ack'], step['count'], step['due']), (False, 0, 130))
+                attempts += step['count']
+            self.assertEqual(attempts, 7)
+        for detail in ('deferred:pending:schema3_ingest_backlog',
+                       'deferred:pending:schema3_vector_fill',
+                       'deferred:pending:schema3_progress_ingest_extra'):
+            failure = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64, detail=detail)
+            step = policy.settle(7, done=False, error=failure, now=100, kind='laya-sync')
+            self.assertEqual((step['ack'], step['count'], step['due']), (False, 1, 400))
+        failure = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64,
+                                         detail='deferred:pending:schema3_progress_ingest')
+        self.assertEqual(policy.settle(0, done=False, error=failure, now=100,
+                                       kind='laya-compile')['count'], 1)
+
     def test_fixed_kinds_and_priority_classes(self):
         self.assertEqual(policy.KINDS, {'index': 0, 'update': 1, 'cleanup': 2,
                                         'laya-sync': 2, 'laya-compile': 2,

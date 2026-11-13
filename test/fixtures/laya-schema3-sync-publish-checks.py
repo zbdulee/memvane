@@ -478,6 +478,17 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(sorted(self.members(second['generation'])), sorted(first_calls + second_calls))
         emit('schema3-sync-ingest-cap', firstPass=first_calls, secondPass=second_calls)
 
+    def test_ingest_pending_detail_requires_committed_progress(self):
+        import laya_runtime_dispatch as dispatch
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        with mock.patch.object(self.worker, 'SCHEMA3_MAX_INGEST', 2):
+            first, calls = self.run_pass()
+        self.assertGreater(len(calls), 0)
+        self.assertEqual(first['state'], 'pending')
+        self.assertEqual(dispatch._deferred_detail(first),
+                         'deferred:pending:schema3_progress_ingest')
+
     def test_09_modified_cards_over_ingest_cap_converge_without_partial_publish(self):
         """Every published card changes and the change set exceeds one pass's ingest cap."""
         self.select_schema3()
