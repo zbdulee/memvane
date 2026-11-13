@@ -43,10 +43,6 @@ def trace_result(action, count, outcome, reason, final, notes):
     return outcome, reason
 
 
-def reader_reseal_candidate(code, has_route):
-    return code == 'reader_endpoint_changed' and has_route
-
-
 def is_session(action):
     return action in ('update', 'update-queued')
 

@@ -96,3 +96,7 @@ def _fuse_verified_lists(lists: list[list[dict]], *, max_rows: int = MAX_ROWS) -
     # QMD skipRerank replaces fused score with position score 1/rank.
     return [{**by_path[path], "score": 1 / rank}
             for rank, path in enumerate(ordered[:max_rows], 1)]
+
+
+def reader_reseal_candidate(code, has_route):
+    return code == 'reader_endpoint_changed' and has_route

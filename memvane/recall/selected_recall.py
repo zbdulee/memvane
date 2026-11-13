@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from pathlib import Path
 import re
 import sys
 import time
@@ -140,3 +141,111 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
         title_only=result.title_only, locations=dict(result.source_locations),
         generation=result.data_generation, still_current=still_current,
         vector_fallback=vector_fallback, allow_mixed_generation=False)
+
+
+_RESETTLE_PENDING = 'reader_settings_resealing'
+
+def _settings_resettle_pending(decision, project, root) -> bool:
+    try:
+        from memvane.journal import api as reader
+        return (decision.get('state') == 'candidate' and
+                reader.settings_resettle_pending(Path(decision['journalPath']).parent, project, root))
+    except Exception:
+        return False
+
+def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=None,
+                          main_proof=None, linked=None, _recall_epoch, _trace_fields, _RECALL_STATE, _fail, _recall_sync_wake,
+                          _write_selection_log, _trace_final, host_payload, _wake_provider,
+                          _proof_still_current, _serve_verified_rows) -> dict:
+    """Serve the journal-preferred reader endpoint (``_serve_endpoint_recall``).
+
+    A store a killed writer left with a hot journal refuses the recall as
+    ``reader_store_recovery_pending`` (recall never rolls it back); the main
+    checkout's recall then offers its sync wake, whose owner pass recovers it.
+    """
+    try:
+        return _serve_endpoint_recall(host, payload, cwd=cwd, route_decision=route_decision,
+                                      main_proof=main_proof, linked=linked,
+                                      _recall_epoch=_recall_epoch, _trace_fields=_trace_fields,
+                                      _RECALL_STATE=_RECALL_STATE, _fail=_fail,
+                                      _recall_sync_wake=_recall_sync_wake,
+                                      _write_selection_log=_write_selection_log,
+                                      _trace_final=_trace_final, host_payload=host_payload,
+                                      _wake_provider=_wake_provider,
+                                      _proof_still_current=_proof_still_current,
+                                      _serve_verified_rows=_serve_verified_rows)
+    except Exception as exc:
+        if str(exc) == 'reader_store_recovery_pending' and main_proof is not None:
+            try:
+                _recall_sync_wake(route_decision['projectRoot'])
+            except Exception:
+                pass  # The refusal stands; a later wake still recovers it.
+        raise
+
+def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=None,
+                           main_proof=None, linked=None, _recall_epoch, _trace_fields, _RECALL_STATE, _fail, _recall_sync_wake,
+                          _write_selection_log, _trace_final, host_payload, _wake_provider,
+                          _proof_still_current, _serve_verified_rows) -> dict:
+    """Serve the journal-preferred reader endpoint.
+
+    ``main_proof`` is the selected route proof. ``linked`` reads only the
+    linked worktree view.
+    """
+    if main_proof is not None and route_decision is None:
+        _fail('reader_selection_unproved')
+    if host not in ('claude','codex','hermes') or not isinstance(payload,dict):
+        _fail('invalid_hook_payload')
+    requested = payload.get('cwd',cwd)
+    prompt = payload.get('prompt')
+    if (not isinstance(requested,str) or not Path(requested).is_absolute() or
+            not isinstance(prompt,str) or not prompt.strip()):
+        _fail('invalid_query_prompt')
+    requested = Path(requested).resolve(strict=True)
+    if not isinstance(route_decision, dict) or route_decision.get('state') != 'candidate':
+        _fail('reader_selection_unproved')
+    project = Path(route_decision['projectRoot'])
+    if (project.resolve(strict=True) != project or
+            (requested != project and project not in requested.parents)):
+        _fail('reader_selection_unproved')
+    from memvane.kernel import hook_budget
+    from memvane.journal import api as lease
+    from memvane.journal import api as reader
+    deadline = time.monotonic() + hook_budget.remaining()
+    root = Path(__file__).resolve().parents[2]
+    with ExitStack() as stack:
+        for attempt in range(2):
+            try:
+                endpoint = stack.enter_context(lease.resolve_endpoint(project,action='recall',host_root=root))
+                break
+            except ValueError as exc:
+                from memvane.recall.domain.rules import reader_reseal_candidate
+                if (reader_reseal_candidate(str(exc), route_decision is not None) and
+                        _settings_resettle_pending(route_decision, project, root)):
+                    # Only the project's recall settings moved (skipPaths and
+                    # the like): the sync owner re-seals the schema3 reader.
+                    # Until then this recall answers without context, never
+                    # from the stale record and never as an error.
+                    if main_proof is not None:
+                        try:
+                            _recall_sync_wake(route_decision['projectRoot'])
+                        except Exception:
+                            pass
+                    _write_selection_log(route_decision['projectRoot'], 'laya_' + _RESETTLE_PENDING, [])
+                    _trace_final(_RESETTLE_PENDING)
+                    print(f'[memvane] {_RESETTLE_PENDING}; no context until the index applies '
+                          'the new recall settings', file=sys.stderr)
+                    return host_payload(host, '')
+                if (attempt or str(exc) != 'reader_selection_changed'
+                        or time.monotonic() >= deadline):
+                    raise
+        _record,_att,proof = reader.recheck_reader(endpoint)
+        decision = proof.get('readerDecision')
+        if not isinstance(decision, dict) or decision != route_decision:
+            _fail('reader_selection_unproved')
+        return serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
+            decision=decision, project=project, prompt=prompt, deadline=deadline,
+            main_proof=main_proof, linked=linked, _recall_epoch=_recall_epoch,
+            _trace_fields=_trace_fields, _RECALL_STATE=_RECALL_STATE, _fail=_fail,
+            _recall_sync_wake=_recall_sync_wake, _write_selection_log=_write_selection_log,
+            _trace_final=_trace_final, host_payload=host_payload, _wake_provider=_wake_provider,
+            _proof_still_current=_proof_still_current, _serve_verified_rows=_serve_verified_rows)

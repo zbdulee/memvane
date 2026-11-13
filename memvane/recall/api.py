@@ -40,3 +40,8 @@ def query_endpoint(*args, **kwargs):
 def serve_schema3_recall(*args, **kwargs):
     from memvane.recall.selected_recall import serve_schema3_recall as implementation
     return implementation(*args, **kwargs)
+
+
+def serve_endpoint_recall(*args, **kwargs):
+    from memvane.recall.selected_recall import serve_endpoint_recall as implementation
+    return implementation(*args, **kwargs)
