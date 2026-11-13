@@ -1381,7 +1381,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         try:
             if 'journalPath' in decision:
                 from memvane.sync.api import sync_owner
-                from memvane.wiki.workspace.wiki_selected_laya import _owner_scope
+                from memvane.wiki.workspace.api import owner_scope as _owner_scope
                 with sync_owner(Path(decision['storePath'])) as owner:
                     if owner is None:
                         raise ResourceDeferred('owner_busy')

@@ -2,6 +2,21 @@
 from __future__ import annotations
 
 
+def card_write_lock(*args, **kwargs):
+    from memvane.wiki.workspace.compile_paths import card_write_lock as implementation
+    return implementation(*args, **kwargs)
+
+
+def compile_dir(*args, **kwargs):
+    from memvane.settings.api import compile_dir as implementation
+    return implementation(*args, **kwargs)
+
+
+def owner_scope(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import _owner_scope as implementation
+    return implementation(*args, **kwargs)
+
+
 def safe_queue_path(*args, **kwargs):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
     return _safe_queue_path(*args, **kwargs)

@@ -21,7 +21,7 @@ import stat
 import sys
 import time
 
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.wiki.workspace import api as cp
 from memvane.settings import api as source_text
 from memvane.wiki.card import api as wiki_card
 from memvane.wiki.card.api import card_sources_allowed
