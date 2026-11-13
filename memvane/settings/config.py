@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 
 from memvane.settings import project_dir
-from memvane.settings.types import DEFAULT_CONFIG, DEDUP_AUTO_MERGE_THRESHOLD
+from memvane.settings.types import (DEFAULT_CONFIG, DEDUP_AUTO_MERGE_THRESHOLD,
+                                    VERIFIED_MODE_CROSS, VERIFIED_MODE_SELF,
+                                    VERIFIED_MODE_UNKNOWN, VERIFIED_MODES)
 
 
 # The project folder is `.memvane/` (project_dir).
@@ -136,10 +138,6 @@ CROSS_ENGINE_MODES = VERIFY_CROSS_ENGINE
 # 카드 frontmatter `verifiedMode` = 검수 엔진과 생성 엔진의 관계. 값 집합은 코드가 정하고
 # 모델 입력이 아니다. 이 필드가 **없는** 카드는 4단계 이전에 검수된 카드로, 자기검증일
 # 가능성이 높다(실측 655/688) — 없음은 cross-engine을 뜻하지 않는다.
-VERIFIED_MODE_CROSS = "cross-engine"
-VERIFIED_MODE_SELF = "self"
-VERIFIED_MODE_UNKNOWN = "unknown"
-VERIFIED_MODES = {VERIFIED_MODE_CROSS, VERIFIED_MODE_SELF, VERIFIED_MODE_UNKNOWN}
 # status: verified/contested와 **함께** 써야 하는 증명 필드. 리셋 시 함께 제거된다.
 # 검증 증명 필드. 리셋 경로(`wiki_compile` frontmatter merge)가 이 튜플을 보고
 # **키째 제거**하므로, 취소된 검증의

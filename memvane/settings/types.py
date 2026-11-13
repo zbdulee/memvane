@@ -19,6 +19,11 @@ DENIED_SOURCE_SEGMENTS = frozenset({
     'Library', 'Temp', 'obj',  # Unity project caches
 })
 
+VERIFIED_MODE_CROSS = "cross-engine"
+VERIFIED_MODE_SELF = "self"
+VERIFIED_MODE_UNKNOWN = "unknown"
+VERIFIED_MODES = {VERIFIED_MODE_CROSS, VERIFIED_MODE_SELF, VERIFIED_MODE_UNKNOWN}
+
 
 DEFAULT_CONFIG = {
     "name": "",
