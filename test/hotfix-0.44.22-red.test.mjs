@@ -21,7 +21,7 @@ for (const [name, file, method] of cases) {
     mkdirSync(runtime, { mode: 0o700 });
     try {
       const result = spawnSync('python3', ['-B', '-c',
-        'import sys; print("child Python:", sys.version, flush=True); path = sys.argv.pop(1); exec(compile(open(path, "rb").read(), path, "exec"))',
+        'import runpy, sys; print("child Python:", sys.version, flush=True); sys.argv.pop(0); runpy.run_path(sys.argv[0], run_name="__main__")',
         `test/fixtures/${file}`, method], {
         encoding: 'utf8', timeout: 300000,
         env: { ...process.env, HOME: home, TMPDIR: home, XDG_RUNTIME_DIR: runtime,
