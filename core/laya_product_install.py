@@ -747,6 +747,35 @@ def _request_build_wake(project_root):
     return queued if queued is not None else {'status': 'wake_skipped_in_fixture'}
 
 
+def _create_v1_store(project_root, state_root, scope_id):
+    """Create one new format-4 store under the installer's lock."""
+    from memvane_execution_guard import require_cached_plugin_for_live_write
+    import laya_checkout_view as checkout
+    from laya_view_store import ViewStore
+    state = _private_parent(state_root)
+    require_cached_plugin_for_live_write(state)
+    project = _checked_project(project_root)
+    path = state / 'store.sqlite'
+    if path.exists() or path.is_symlink():
+        _fail('initial_store_already_exists')
+    repository = checkout.register_repository(str(project))
+    worktree = checkout.register_worktree(str(project), repository)
+    store = ViewStore.create(path, project_root=str(project), repository=repository,
+                             worktree=worktree, scope_id=scope_id)
+    try:
+        incarnation = store._incarnation
+        policy = store._policy
+    finally:
+        store.close()
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+        _fail('initial_store_unsafe')
+    return {'storePath': str(path), 'storeNode': [info.st_dev, info.st_ino],
+            'storeIncarnation': incarnation, 'repository': repository,
+            'worktree': worktree, 'settingsPolicyDigest': policy}
+
+
 def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256,
                             source_root, plugin_root, state, journal, socket,
                             commit_id, install_id):
