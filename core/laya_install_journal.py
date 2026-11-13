@@ -1725,7 +1725,8 @@ def _worker_attestation_manifest(selected):
                 row = _inspect_v1_row(db)
                 if (row['epoch'] != selected['selectionEpoch'] or row['state'] != 'selected'
                         or any(row[key] != selected.get(key) for key in
-                               ('installId', 'scopeId', 'storeIncarnation', 'stateFormat'))):
+                               ('installId', 'scopeId', 'projectRoot', 'storePath',
+                                'storeIncarnation', 'stateFormat', 'vectorProfile'))):
                     _fail('worker_selection_changed')
                 db.commit()
                 record, digest = _attestation(path)
