@@ -777,207 +777,54 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         decision, proof = _selected(project, owner_wait=True)
     except ResourceDeferred as exc:
         return _deferred(exc)
-    except IndexContractError as exc:
-        if str(exc) != 'selected_route_unavailable':
-            raise
-        # Imported here: a selected route never needs it, and an installed
-        # bundle that does not ship it yet must keep serving selected wakes.
-        import laya_initial_build as initial_build
-        build = initial_build.lookup(Path(project))
-        if build is None:
-            raise
-        return run_initial_build(Path(project), build, coordinator=coordinator,
-                                 report=report, start_service=start_service)
     # A malformed route source fails before any model start or index write.
     source_root = _route_source(decision)
-    if _selected_store_format(decision) == 'schema3':
-        # The view store path loads no model and opens no v6 runtime or
-        # capacity store; discovery reads the view head, not the v6 lineage.
-        if qa_sync_barrier(decision) is not None:
-            raise IndexContractError('qa_barrier_schema3_unsupported')
-        grants = None
-        if not isinstance(source_root, str):
-            # Snapshot hook grants before the scan, as on the v6 path.
-            import laya_wiki_discovery
-            grants = laya_wiki_discovery.observe_grants(decision)
-        # One raw scan per pass: the main view's D2 observation is also the
-        # discovery snapshot (laya_wiki_discovery._raw_snapshot, same roots and bounds).
-        raw_scan = {}
-        result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
-                                     start_service=start_service, raw_scan=raw_scan)
-        result = _after_sync(decision, proof, grants, result, store_format='schema3',
-                             raw_snapshot=raw_scan.get('snapshot'))
-        vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
-        waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
-                   or [v for v in vectors if v['state'] in ('pending', 'deferred')])
-        main = result.get('vector') or {}
-        progressed = (main.get('state') == 'pending' and main.get('progress', 0) > 0
-                      and waiting and waiting[0] is main)
-        blocked = [v for v in vectors if v['state'] == 'provider_blocked']
-        if (result.get('state') in ('indexed', 'unchanged') and not blocked
-                and (progressed or result.get('linkedReoffer'))):
-            # The main view's vectors moved this pass (or it published them and
-            # a linked view waits for the budget): ACK (not a counted failure)
-            # and offer the same wake again shortly, so the fill goes on with a
-            # warm worker instead of waiting for the next edit. An offer
-            # failure leaves the next natural wake to go on.
-            try:
-                import runtime_work
-                runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
-                result = {**result, 'vectorReoffer': True}
-            except Exception:
-                result = {**result, 'state': 'pending', 'reason': main.get('reason')}
-        elif result.get('state') in ('indexed', 'unchanged') and waiting:
-            # The lexical generations are published and discovery ran; the
-            # wake stays until the views' vector generations are published,
-            # or ends ``blocked`` on a provider defect of the install.
-            state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
-            result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
-            if state == 'pending' and waiting[0] is main and main.get('progress', 0) > 0:
-                result['progressKind'] = 'vector'
-        detail = _schema3_vector_detail(result)
-        if detail:
-            result = {**result, 'detail': detail}
-        return result
+    # The view store path loads no model and opens no v6 runtime or
+    # capacity store; discovery reads the view head, not the v6 lineage.
     grants = None
     if not isinstance(source_root, str):
-        # v2 only. Snapshot hook grants before the scan; later ones stay live.
+        # Snapshot hook grants before the scan, as on the v6 path.
         import laya_wiki_discovery
         grants = laya_wiki_discovery.observe_grants(decision)
-    # A mis-armed QA barrier fails before any model start or index write.
-    qa = qa_sync_barrier(decision)
-    # A malformed capacity store fails here, before any model start.
-    capacity = _capacity_paths(decision)
-    if capacity is not None and qa is not None:
-        # The QA race barrier holds a full-scan batch, but host recall would
-        # use the capacity path for the same stores: the two would disagree.
-        raise IndexContractError('qa_barrier_capacity_unsupported')
-    provider = ReviewedLocalQmdProvider(proof['providerManifest'])
-    profile = proof['vectorProfile']
-    if (provider.profile['profile_id'] != profile['profileId'] or
-            provider.profile['model_id'] != profile['modelId'] or
-            provider.profile['embedding_fingerprint'] != profile['embeddingFingerprint'] or
-            provider.profile['dimension'] != profile['dimension']):
-        raise IndexContractError('selected_provider_profile_mismatch')
-    if start_service is start_owned_embed_service:
-        # Activation's selected wake must warm the model even when the sealed
-        # candidate has no changed documents. The bounded dispatcher only
-        # starts the independent owner and retries after it becomes ready.
-        from laya_embed_resident import ensure_running
+    # One raw scan per pass: the main view's D2 observation is also the
+    # discovery snapshot (laya_wiki_discovery._raw_snapshot, same roots and bounds).
+    raw_scan = {}
+    result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
+                                 start_service=start_service, raw_scan=raw_scan)
+    result = _after_sync(decision, proof, grants, result, store_format='schema3',
+                         raw_snapshot=raw_scan.get('snapshot'))
+    vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
+    waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
+               or [v for v in vectors if v['state'] in ('pending', 'deferred')])
+    main = result.get('vector') or {}
+    progressed = (main.get('state') == 'pending' and main.get('progress', 0) > 0
+                  and waiting and waiting[0] is main)
+    blocked = [v for v in vectors if v['state'] == 'provider_blocked']
+    if (result.get('state') in ('indexed', 'unchanged') and not blocked
+            and (progressed or result.get('linkedReoffer'))):
+        # The main view's vectors moved this pass (or it published them and
+        # a linked view waits for the budget): ACK (not a counted failure)
+        # and offer the same wake again shortly, so the fill goes on with a
+        # warm worker instead of waiting for the next edit. An offer
+        # failure leaves the next natural wake to go on.
         try:
-            import laya_install_journal as journal
-            with journal.read_only_journals():
-                if select_route(str(project), action='update') != decision:
-                    raise IndexContractError('selected_provider_proof_changed')
-            # This short owner admission requests adoption, never waits for
-            # the model. Release it before taking the provider lane below.
-            with sync_owner(Path(decision['queuePath']), wait=True) as prewarm_owner:
-                if prewarm_owner is None:
-                    return {'state': 'deferred', 'reason': 'owner_busy'}
-                with journal.read_only_journals():
-                    if journal.journal_version(decision['journalPath']) == 5:
-                        current = _selected_v5_proof(Path(decision['projectRoot']),
-                                                     decision, prewarm_owner)
-                    else:
-                        # Reject a concurrent v4-to-v5 transition before a
-                        # legacy proof can open v5 content without a window.
-                        with journal.legacy_identity_reads():
-                            current = verify_selected_route(decision)
-                if current != proof:
-                    raise IndexContractError('selected_provider_proof_changed')
-                ensure_running(decision['projectRoot'], proof['providerManifest'])
-        except ResourceDeferred as exc:
-            return _deferred(exc)
-    controller = coordinator or Coordinator()
-    observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
-    if capacity is not None:
-        result, proof = _run_capacity(decision, proof, source_root, capacity, provider,
-                                      controller, observed, start_service)
-        _observe_member_block(decision, result)
-        return _after_sync(decision, proof, grants, result)
-    try:
-        with controller.activity('provider', EMBED_POLICY, observed), \
-                sync_owner(Path(decision['queuePath']), wait=True) as owner:
-            if owner is None:
-                return {'state': 'deferred', 'reason': 'owner_busy'}
-            # The hook's sealed stat receipt is a fast freshness fence. This
-            # off-hook worker must rehash the full native closure before load.
-            validated_manifest = _owned_worker_attestation(decision, owner, proof)
-            if validated_manifest != proof['providerManifest']:
-                raise IndexContractError('selected_provider_proof_changed')
-            def admit():
-                # The service verifies its exact model/runtime files first.
-                # Re-sample afterward, immediately before its model load.
-                fresh = resource_report(EMBED_POLICY, detailed=True)
-                return controller.check(EMBED_POLICY, fresh)['ready']
-
-            service = _selected_service(decision, validated_manifest, admit, start_service)
-            try:
-                if _owned_selected_proof(decision, owner) != proof:
-                    raise IndexContractError('selected_proof_changed')
-                class AdmittedProvider:
-                    manifest = provider.manifest
-                    profile = provider.profile
-
-                    def embed_document_chunks(self, body, path):
-                        if _higher_priority_wake(controller):
-                            raise ResourceDeferred('laya_sync_yield_priority')
-                        return _embed_with_budget(provider, body, path)
-
-                with _full_worker_runtime(decision, owner, proof, source_root) as (runtime, writer):
-                    def before_publish():
-                        nonlocal proof
-                        if _owned_selected_proof(decision, owner) != proof:
-                            raise IndexContractError('selected_proof_changed')
-                        if writer is not None:
-                            import laya_writer_scope as normal
-                            fresh = normal.mark_new_write(writer)
-                            if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1 or
-                                    fresh.get('productRouteAllowed') is not True):
-                                raise IndexContractError('new_write_proof_unconfirmed')
-                            proof = fresh
-                            from laya_publication_revision import ensure_base_baseline
-                            ensure_base_baseline(runtime.index, scope=decision['scopeId'],
-                                                 profile_id=profile['profileId'], deadline=time.monotonic()+2)
-                            return
-                        marked = cas_mark_new_write(decision['journalPath'],
-                                                    proof['selectionEpoch'])
-                        if (marked.get('epoch') != proof['selectionEpoch'] + 1 or
-                                marked.get('newWriteSeen') is not True):
-                            raise IndexContractError('new_write_intent_unconfirmed')
-                        fresh = _owned_selected_proof(decision, owner)
-                        if (fresh.get('selectionEpoch') != marked['epoch'] or
-                                fresh.get('productRouteAllowed') is not True):
-                            raise IndexContractError('new_write_proof_unconfirmed')
-                        proof = fresh
-
-                    batch = prepare_candidate_batch_off_hook(runtime, AdmittedProvider())
-                    if _owned_selected_proof(decision, owner) != proof:
-                        raise IndexContractError('selected_proof_changed')
-                    try:
-                        if qa is not None:
-                            # The batch is accepted; nothing is enqueued yet.
-                            qa.hold(batch['source_manifest'])
-                        if _higher_priority_wake(controller):
-                            raise ResourceDeferred('laya_sync_yield_priority')
-                        result = sync_full(runtime, before_publish=before_publish,
-                                           vector_batch=batch, require_vector=True, owner=owner)
-                    except BaseException as exc:
-                        if qa is not None:
-                            qa.finish(error=exc)
-                        raise
-                    if qa is not None:
-                        qa.finish(result)
-                if _owned_selected_proof(decision, owner) != proof:
-                    raise IndexContractError('selected_proof_changed')
-            finally:
-                service.stop()
-    except ResourceDeferred as exc:
-        return _deferred(exc)
-    if result.get('state') not in ('indexed', 'unchanged', 'deferred'):
-        raise IndexContractError('invalid_sync_result')
-    return _after_sync(decision, proof, grants, result)
-
+            import runtime_work
+            runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
+            result = {**result, 'vectorReoffer': True}
+        except Exception:
+            result = {**result, 'state': 'pending', 'reason': main.get('reason')}
+    elif result.get('state') in ('indexed', 'unchanged') and waiting:
+        # The lexical generations are published and discovery ran; the
+        # wake stays until the views' vector generations are published,
+        # or ends ``blocked`` on a provider defect of the install.
+        state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
+        result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
+        if state == 'pending' and waiting[0] is main and main.get('progress', 0) > 0:
+            result['progressKind'] = 'vector'
+    detail = _schema3_vector_detail(result)
+    if detail:
+        result = {**result, 'detail': detail}
+    return result
 
 # One schema3 pass: wall budget and card ingests (each a Git capture). A
 # large change set stays ``pending`` over several passes. New cards publish

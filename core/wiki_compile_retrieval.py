@@ -550,55 +550,9 @@ def _schema3_cosines(bound, record, current, text, generation):
 
 @contextmanager
 def selected_search(bound, text):
-    """Open only the capacity path; never fall back to a whole-root scan."""
-    from laya_index_runtime import capacity_store_paths
-    from laya_index_capacity import open_pinned_candidate_query
-    from laya_index_host_route import wiki_index_roots
-    from laya_source_catalog import load_exclusions
-    import laya_host_response as response
-    decision, proof = bound
-    if 'journalPath' in decision:
-        from laya_product_sync_worker import _selected_store_format
-        if _selected_store_format(decision) == 'schema3':
-            with _schema3_search(bound, text) as found:
-                yield found
-            return
-    capacity = capacity_store_paths(decision['dbPath'])
-    roots = wiki_index_roots(decision['collections'])
-    names = tuple(sorted(roots))
-    with _selected_runtime(bound,roots,capacity) as runtime:
-        token, _generation = runtime.index.pin(runtime.scope)
-        candidates = None
-        try:
-            exclusions = load_exclusions(runtime.index, runtime.scope)
-            rows = []
-            diagnostics = {}
-            if capacity is not None:
-                provider = query_provider(bound)
-                response._provider_ready(text, decision['vectorProfile'], proof['vectorProfile'], provider)
-                candidates = open_pinned_candidate_query(runtime.index, token, runtime.binding_store)
-
-                def eligible(row):
-                    name, sep, rel = row['path'].partition('/')
-                    return (bool(sep) and name in names and visible(rel)
-                            and card_sources_allowed(row['body'], decision['recallSettings']['skipPaths']))
-                rows, _body_evidence = response._v2_phase(
-                    runtime, token, text, decision['vectorProfile'], provider, roots, names,
-                    tuple(decision['recallSettings'].get('lexicalPatterns', ())), 0, (),
-                    candidates, eligible, diagnostics=diagnostics)
-            yield ([(row['path'].split('/', 1)[1], row['hash'],
-                     diagnostics.get('vectorCosines', {}).get((row['path'], row['hash'])))
-                    for row in rows],
-                   exclusions, names[0], 'bound' if capacity else 'overlay_only')
-            if load_exclusions(runtime.index, runtime.scope) != exclusions:
-                raise ValueError('selected_wiki_exclusions_changed')
-            if candidates is not None:
-                candidates.require_returned_verified()
-                candidates.finish()
-        finally:
-            if candidates is not None:
-                candidates.close()
-            runtime.index.release(token)
+    """Search the selected view store."""
+    with _schema3_search(bound, text) as found:
+        yield found
 
 
 def matches(root, wiki, text, top_k, cap_chars, bound):
