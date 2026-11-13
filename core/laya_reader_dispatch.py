@@ -45,7 +45,7 @@ except IndexContractError as exc:
 
 
 def reader_capabilities():
-    return frozenset(('v6-ro-v1','schema3-ro-v1'))
+    return frozenset(('schema3-ro-v1',))
 
 
 def _approved_profile_matches(candidate, proof):

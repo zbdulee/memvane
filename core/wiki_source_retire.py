@@ -337,9 +337,7 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
     with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
         wiki_selected_laya.recheck(selected)
         if selected is not None and 'journalPath' in selected[0]:
-            from laya_product_sync_worker import _selected_store_format
-            if _selected_store_format(selected[0]) == 'schema3':
-                return 'schema3_selected'
+            return 'schema3_selected'
         try:
             subpath = card.relative_to(wiki_root)
         except ValueError:

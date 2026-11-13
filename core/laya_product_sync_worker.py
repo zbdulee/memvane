@@ -520,23 +520,6 @@ SCHEMA3_TRANSIENT_REASONS = frozenset(('checkout_changed', 'fts_deadline_exceede
 _SCHEMA3_ROOT_META = frozenset(('SCHEMA.md', 'index.md', 'log.md'))
 
 
-def _selected_store_format(decision):
-    """Store format of the journal's preferred reader endpoint (v4: ``v6``)."""
-    import laya_install_journal as journal
-    import laya_journal_reader as readers
-    with journal.read_only_journals():
-        if journal.journal_version(decision['journalPath']) != 5:
-            return 'v6'
-        for attempt in range(3):
-            path = readers._journal(decision['journalPath'])
-            try:
-                with readers._readonly(path, path.parent) as db:
-                    return readers._selection(db)[1].get('store_format')
-            except JournalEvidenceError as exc:
-                if str(exc) != 'reader_store_changed' or attempt == 2:
-                    raise
-
-
 def _run_schema3(decision, proof, *, coordinator=None, report=None,
                  start_service=start_owned_embed_service, raw_scan=None):
     """One publish pass of the selected schema3 view store (main view, then linked views).
