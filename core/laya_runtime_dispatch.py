@@ -110,11 +110,14 @@ def resolve(kind, value):
     from memvane_version import same_major, writer_floor_allows
     try:
         matching_major = same_major(proof.get('stateFormat'))
-        writable = writer_floor_allows(proof.get('writerFloor'))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise DispatchFailure('target_journal_changed') from exc
     if not matching_major:
         raise DispatchFailure('state_format_mismatch')
+    try:
+        writable = writer_floor_allows(proof.get('writerFloor'))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise DispatchFailure('target_journal_changed') from exc
     if not writable:
         raise DispatchFailure('writer_floor')
     if any(not isinstance(value, str) or not value for value in stable.values()):

@@ -174,10 +174,13 @@ def _approved(proof, snapshot):
     from memvane_version import same_major, writer_floor_allows
     try:
         matching_major = same_major(proof['stateFormat'])
-        writable = writer_floor_allows(proof['writerFloor'])
     except (OSError, KeyError, TypeError, ValueError):
         R._need(False, 'writer_version_invalid')
     R._need(matching_major, 'state_format_mismatch')
+    try:
+        writable = writer_floor_allows(proof['writerFloor'])
+    except (OSError, KeyError, TypeError, ValueError):
+        R._need(False, 'writer_version_invalid')
     R._need(writable, 'writer_floor')
     decision, selected = snapshot['decision'], snapshot['bundle']['selected']
     expected = dict(status='installer_active_full_plugin_verified',
