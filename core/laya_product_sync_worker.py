@@ -157,154 +157,48 @@ def _writer_executing_root():
     return Path(__file__).resolve().parent.parent
 
 
-def _selected_v5_proof(project, decision, owner, *, plan_root=None, verify=None):
-    """``verify`` (default ``verify_selected_route``) inside the v5 windows.
-
-    A busy lifetime or physical window, or unprepared windows, defer.
-    """
-    import laya_install_journal as journal
-    import laya_writer_open_plan as plan_module
-    from laya_reader_windows import ReaderWindowBusy
-    try:
-        plan = plan_module.capture_writer_plan(
-            project, executing_root=_writer_executing_root() if plan_root is None else plan_root)
-    except journal.JournalEvidenceError as exc:
-        if str(exc) == 'writer_windows_not_prepared':
-            raise ResourceDeferred(str(exc)) from exc
-        raise
-    try:
-        with plan_module.writer_proof_windows(plan, queue_owner=owner,
-                                              deadline=time.monotonic()+2) as window:
-            with journal.writer_identity_reads(window):
-                return (verify_selected_route if verify is None else verify)(decision)
-    except ReaderWindowBusy as exc:
-        if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
-                        'reader_lifetime_busy'):
-            raise ResourceDeferred(str(exc)) from exc
-        raise
-
-
 def _owned_selected_proof(decision, owner):
-    """Reprove a selected worker route with the queue owner already held."""
-    import laya_install_journal as journal
-    with journal.read_only_journals():
-        if journal.journal_version(decision['journalPath']) == 5:
-            return _selected_v5_proof(Path(decision['projectRoot']), decision, owner)
-        with journal.legacy_identity_reads():
-            return verify_selected_route(decision)
-
-
-def _owned_worker_attestation(decision, owner, expected):
-    """Reprove v5 around closure hashing without holding physical windows."""
-    import laya_install_journal as journal
-    with journal.read_only_journals():
-        version = journal.journal_version(decision['journalPath'])
-        if version != 5:
-            with journal.legacy_identity_reads():
-                manifest = verify_worker_attestation(decision)
-                if verify_selected_route(decision) != expected:
-                    raise IndexContractError('worker_selection_changed')
-                return manifest
-        project = Path(decision['projectRoot'])
-        selected = _selected_v5_proof(project, decision, owner)
-        if selected != expected:
-            raise IndexContractError('worker_selection_changed')
-        manifest = journal._worker_attestation_manifest(selected)
-        if _selected_v5_proof(project, decision, owner) != selected:
-            raise IndexContractError('worker_selection_changed')
-        return manifest
+    """Reprove the selected route while the sync owner is held."""
+    from sync_owner_lock import validate_sync_owner
+    from laya_install_journal import verify_selected_route_for_write
+    validate_sync_owner(owner, Path(decision['storePath']))
+    proof = verify_selected_route_for_write(decision)
+    validate_sync_owner(owner, Path(decision['storePath']))
+    return proof
 
 
 def _selected(project, *, owner_wait=False):
-    """Prove the selected route under its reader windows."""
+    """Prove the selected v1 route before acquiring the writer owner."""
+    from laya_install_journal import verify_selected_route_for_write
     project = Path(project)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')
-    import laya_install_journal as journal
-    from laya_worker_journal import worker_journal_access
-    # Clean legacy installs need no new ledger, lock or recovery permission.
-    # A hot image falls through to the narrowly owned recovery admission.
-    with journal.read_only_journals():
-        decision = select_route(str(project), action='update')
-        if decision.get('state') == 'candidate' and decision.get('projectRoot') == str(project):
-            try:
-                if journal.journal_version(decision['journalPath']) != 5:
-                    with journal.legacy_identity_reads():
-                        proof = verify_selected_route(decision)
-                    if (proof.get('productRouteAllowed') is not True
-                            or not isinstance(proof.get('providerManifest'), dict)):
-                        raise IndexContractError('selected_provider_unavailable')
-                    return decision, proof
-            except journal.JournalEvidenceError as exc:
-                if str(exc) not in ('journal_unavailable', 'writer_plan_v5_required'):
-                    raise
-    # Classification/version reads must not recover a legacy hot image. The
-    # legacy proof also checks its actual transaction's version, closing the
-    # v4-observed/v5-published interval before any raw content connection.
-    with worker_journal_access(project, wait=owner_wait) as access:
-        for attempt in range(2):
-            with journal.read_only_journals():
-                decision = select_route(str(project), action='update')
-                if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
-                    raise IndexContractError('selected_route_unavailable')
-                if journal.journal_version(decision['journalPath']) == 5:
-                    proof = _selected_v5_proof(project, decision, access.owner)
-                else:
-                    try:
-                        with journal.legacy_identity_reads():
-                            proof = verify_selected_route(decision)
-                    except journal.JournalEvidenceError as exc:
-                        if str(exc) == 'writer_plan_v5_required' and attempt == 0:
-                            continue
-                        raise
-                break
+    decision = select_route(str(project), action='update')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('selected_route_unavailable')
+    proof = verify_selected_route_for_write(decision)
     if proof.get('productRouteAllowed') is not True or not isinstance(proof.get('providerManifest'), dict):
         raise IndexContractError('selected_provider_unavailable')
     return decision, proof
 
 
-
-
 def service_worker_attestation(decision, expected):
-    """The per-user service's worker attestation for one selected install.
-
-    Re-prove the selected installation before and after runtime-file hashing.
-    The plan uses this executing plugin's root. A changed selection defers;
-    an epoch advance by itself is not a changed selection.
-    """
-    import laya_install_journal as journal
-    from laya_worker_journal import worker_journal_access
-    accepted = {'view': _journal_view(decision)}
-
-    def guarded(call, *args):
-        try:
-            return call(*args)
-        except ResourceDeferred:
-            raise
-        except Exception as exc:
-            if _selection_moved(decision, accepted['view']):
-                raise ResourceDeferred('worker_selection_changed') from exc
-            raise
-    with journal.read_only_journals():
-        version = journal.journal_version(decision['journalPath'])
-    if version != 5:
-        with journal.read_only_journals(), journal.legacy_identity_reads():
-            return guarded(_selection_moves_defer, verify_worker_attestation, decision)
-    project, plan_root = Path(decision['projectRoot']), _writer_executing_root()
-
-    def reprove():
-        with worker_journal_access(project, wait=True) as access, journal.read_only_journals():
-            proof = _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
-        return proof, _journal_view(decision)
-    before, view = guarded(reprove)
-    if _without_epoch(before) != _without_epoch(expected):
-        raise ResourceDeferred('worker_selection_changed')
-    accepted['view'] = view
-    manifest = guarded(_selection_moves_defer, journal._worker_attestation_manifest, before)
-    after, _view = guarded(reprove)
-    if _without_epoch(after) != _without_epoch(before):
-        raise ResourceDeferred('worker_selection_changed')
-    return manifest
+    """Reprove the selected installation around worker attestation."""
+    view = _journal_view(decision)
+    try:
+        selected = verify_selected_route(decision)
+        if _without_epoch(selected) != _without_epoch(expected):
+            raise ResourceDeferred('worker_selection_changed')
+        manifest = _selection_moves_defer(verify_worker_attestation, decision)
+        if _without_epoch(verify_selected_route(decision)) != _without_epoch(selected):
+            raise ResourceDeferred('worker_selection_changed')
+        return manifest
+    except ResourceDeferred:
+        raise
+    except Exception as exc:
+        if _selection_moved(decision, view):
+            raise ResourceDeferred('worker_selection_changed') from exc
+        raise
 
 
 # Route fields that name one selected installation and its single store.
@@ -581,83 +475,18 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     asks for query vectors (``resettle_selection``).
     """
     from contextlib import ExitStack
-    import laya_install_journal as journal
-    import laya_journal_reader as journal_readers
-    import laya_reader_windows as windows
-    import laya_writer_proof_reader as readers
-    import laya_writer_open_plan as plans
     import laya_writer_scope as normal
-    from laya_reader_windows import ReaderWindowBusy
-    project = Path(decision['projectRoot'])
-    if decision.get('routeSchema') == 'memvane-route-v4':
-        try:
-            with sync_owner(Path(decision['storePath']), wait=True) as owner:
-                if owner is None:
-                    return {'state': 'deferred', 'reason': 'owner_busy'}, proof
-                with ExitStack() as lane, normal.selected_v1_writer_scope(decision, queue_owner=owner) as writer:
-                    if normal.admission_proof(writer) != proof:
-                        raise IndexContractError('selected_proof_changed')
-                    vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
-                                                       report=report, start_service=start_service)
-                    vectors['rawScan'] = raw_scan
-                    return _publish_schema3(decision, proof, writer, vectors)
-        except ResourceDeferred as exc:
-            return _deferred(exc), proof
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}, proof
-            # The owner re-seals the selected reader when only the project's
-            # recall settings changed; recall never does (it refuses until then).
-            try:
-                resettle = journal_readers.resettle_selection(Path(decision['journalPath']).parent, project,
-                                                              _writer_executing_root())
-            except JournalEvidenceError as exc:
-                resettle = str(exc)
-            try:
-                try:
-                    with journal.read_only_journals():
-                        plan = plans.capture_writer_plan(project, executing_root=_writer_executing_root())
-                except JournalEvidenceError as exc:
-                    if str(exc) == 'writer_windows_not_prepared':
-                        raise ResourceDeferred(str(exc)) from exc
-                    raise
-                if plans.plan_store(plan) is None:
-                    raise IndexContractError('selected_store_format_changed')
-                try:
-                    with ExitStack() as lane, \
-                            normal.worker_writer_scope(plan, queue_owner=owner, operation_timeout=2) as writer:
-                        if normal.admission_proof(writer) != proof:
-                            raise IndexContractError('selected_proof_changed')
-                        vectors = _schema3_vector_context(
-                            decision, proof, lane, coordinator=coordinator, report=report,
-                            start_service=start_service)
-                        vectors['rawScan'] = raw_scan
-                        result, proof = _publish_schema3(decision, proof, writer, vectors)
-                    if (result.get('vector') or {}).get('state') == 'published':
-                        # The writer scope is closed; the owner still holds the queue.
-                        try:
-                            adopted = journal_readers.resettle_selection(
-                                Path(decision['journalPath']).parent, project, _writer_executing_root())
-                        except JournalEvidenceError as exc:
-                            adopted = str(exc)
-                        if adopted != 'unchanged':
-                            resettle = adopted
-                    if resettle != 'unchanged':
-                        result = {**result, 'readerResettle': resettle}
-                    return result, proof
-                except ReaderWindowBusy as exc:
-                    if str(exc) in ('writer_proof_physical_busy', 'writer_proof_deadline',
-                                    'reader_lifetime_busy'):
-                        raise ResourceDeferred(str(exc)) from exc
-                    raise
-            finally:
-                try:
-                    windows.drain_pending(deadline=time.monotonic()+2)
-                finally:
-                    readers.drain_proof_readers(deadline=time.monotonic()+2)
-                if windows.local_pending_count() or readers.local_pending_proof_readers():
-                    raise ResourceDeferred('writer_cleanup_unsettled')
+            with ExitStack() as lane, normal.selected_v1_writer_scope(decision, queue_owner=owner) as writer:
+                if normal.admission_proof(writer) != proof:
+                    raise IndexContractError('selected_proof_changed')
+                vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
+                                                   report=report, start_service=start_service)
+                vectors['rawScan'] = raw_scan
+                return _publish_schema3(decision, proof, writer, vectors)
     except ResourceDeferred as exc:
         return _deferred(exc), proof
 
