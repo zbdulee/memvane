@@ -244,8 +244,8 @@ def admit_query(*, coordinator=None, report=None):
     beyond its two-second provider budget, so the caller reports deferral and
     the next prompt can retry; no prompt is persisted in a background queue.
     """
-    from memvane.learning.context_learning.resource_coordination import Coordinator
-    from memvane.learning.api import resource_report
+    from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
+    from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
     from memvane.resident.types import EMBED_POLICY
 
     try:

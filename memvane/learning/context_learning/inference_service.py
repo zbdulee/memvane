@@ -10,72 +10,11 @@ import time
 
 from . import resident
 from .inference_identity import IdentityCache, has_evidence
+from memvane.runtime.api import resource as runtime_resource
 
 _IDENTITY_CACHE = IdentityCache()
-
-
-class ServiceFailure(ValueError):
-    def __init__(self, code, timing=None):
-        super().__init__('resident_service_' + code)
-        self.code = code
-        self.timing = timing or {}
-
-
-def _check_root(root, home):
-    for part in (root, *root.parents):
-        if part == home:
-            break
-        if part.is_symlink():
-            raise ServiceFailure('unsafe_root')
-        if part.exists():
-            info = part.stat()
-            if not part.is_dir() or info.st_uid != os.getuid() or info.st_mode & 0o022:
-                raise ServiceFailure('unsafe_root')
-
-
-TEST_ROOT_ENV = 'MEMVANE_TEST_RUNTIME_ROOT'
-
-
-def _test_root(create):
-    """The test-only runtime root, or None.
-
-    ``npm test`` (the development guard) and the shared fixtures export
-    ``MEMVANE_TEST_RUNTIME_ROOT`` so every runtime participant of a test run
-    (wake queue, worker lease, coordinator, monitor) resolves one temp root and
-    never the user's. A value that is set but not an absolute path strictly
-    inside a fixed platform temp root fails closed (``unsafe_test_root``): it
-    never falls back to the user's root, and never redirects a real install.
-    """
-    raw = os.environ.get(TEST_ROOT_ENV)
-    if not raw:
-        return None
-    from memvane.runtime.api import in_platform_temp
-    base = Path(raw)
-    if not base.is_absolute() or not in_platform_temp(base):
-        raise ServiceFailure('unsafe_test_root')
-    base = Path(os.path.realpath(base))
-    root = base / 'laya-inference'
-    if create:
-        base.mkdir(mode=0o700, parents=True, exist_ok=True)
-        root.mkdir(mode=0o700, exist_ok=True)
-    return resident._private_state(root)
-
-
-def service_root(*, create=False, home=None):
-    # Host HOME/CODEX_HOME overrides must not create a second user service.
-    if home is None:
-        test_root = _test_root(create)
-        if test_root is not None:
-            return test_root
-        import pwd
-        home = pwd.getpwuid(os.getuid()).pw_dir
-    home = Path(home).resolve()
-    from memvane.kernel import memvane_paths
-    root = memvane_paths.state_base(home) / 'wake'
-    _check_root(root, home)
-    if create:
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return resident._private_state(root)
+ServiceFailure = runtime_resource.service_failure()
+service_root = runtime_resource.service_root
 
 
 def namespace(state):
@@ -751,7 +690,7 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
     root = service_root(create=True)
     started = time.perf_counter()
     try:
-        from .resource_coordination import Coordinator
+        from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
         with Coordinator(root).inference(deadline,envelope['namespace']):
             _ensure(root, policy['trainerArgv'][0], deadline)
             response = _exchange(root, envelope, deadline)
@@ -817,7 +756,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
     production_engine=engine is None
     engine = engine or GenerationEngine()
     validate = validate or _validate_request
-    from .resource_coordination import Coordinator
+    from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
     coordinator=Coordinator(root)
     apply_validate=apply_validate or _validate_apply
     pending = queue.Queue(maxsize=capacity)
@@ -932,8 +871,8 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
             server.listen(CAPACITY);server.settimeout(.1)
             if monitor_factory is not None:monitor=monitor_factory(root)
             elif production_engine:
-                from memvane.runtime.runtime_monitor import Supervisor
-                monitor=Supervisor(root)
+                from memvane.runtime.api import resource
+                monitor=resource.supervisor(root)
             if monitor is not None:monitor.tick()
             worker.start()
             if ready is not None:

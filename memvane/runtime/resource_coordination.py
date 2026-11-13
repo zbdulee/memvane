@@ -5,16 +5,18 @@ No PID signaling, TTL lease stealing, model selection or service registration.
 from contextlib import closing,contextmanager
 from contextvars import ContextVar
 import fcntl
+import hashlib
 import math
 import os
 from pathlib import Path
+import select
 import sqlite3
 import stat
 import time
-from . import resident
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.kernel.atomic_rename import atomic_json as _atomic_json
-from .dataset import read_private_json
+from memvane.kernel.atomic_rename import atomic_json as _atomic_json, canonical_json_bytes
+from memvane.runtime.private_json import read_private_json
+from .runtime_lease import private_state
 # Re-exported: the same object as the neutral runtime_lease primitive.
 from memvane.runtime.runtime_lease import coordination_lock as _lock
 
@@ -39,7 +41,7 @@ def _present(path):
 
 
 def default_root():
-    from .inference_service import service_root
+    from .service_state import service_root
     return service_root(create=True)
 
 
@@ -66,7 +68,7 @@ def decision(policy,report,*,resident_credit=0,now=None):
     if not pressure_ready(report,policy,now=now):
         return {**result,'reason':'os_memory_pressure'}
     if 'adaptiveMemory' in policy:
-        from .memory_policy import assess
+        from memvane.runtime.api import resource as runtime_resource; assess = runtime_resource.memory_assess
         admission=assess(report,policy,resident_credit=resident_credit,
             phase='loaded_self' if resident_credit>0 else 'cold',now=now)
         if not admission['ready']:return {**result,'reason':admission['reason'],'memory_admission':admission}
@@ -93,7 +95,7 @@ def decision(policy,report,*,resident_credit=0,now=None):
 
 class Coordinator:
     def __init__(self,root=None,*,clock=time.monotonic,wall=time.time):
-        self.root=resident._private_state(Path(root) if root is not None else default_root())
+        self.root=private_state(Path(root) if root is not None else default_root())
         self.clock,self.wall=clock,wall
 
     def startup_barrier(self):
@@ -115,13 +117,12 @@ class Coordinator:
         Never overwrite an earlier reservation. A partial/invalid file also
         blocks all common admission, until manual proof resolves its state.
         """
-        from .store import canonical
         path=self.root/'cleanup-reservation.json'
         try:fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         except FileExistsError:return
         with os.fdopen(fd,'w') as stream:
-            stream.write(canonical({'schema':1,'owner_pid':os.getpid(),
-                'owned_group':owned_pid,'reason':'owned_child_cleanup_unavailable'})+'\n')
+            stream.write(canonical_json_bytes({'schema':1,'owner_pid':os.getpid(),
+                'owned_group':owned_pid,'reason':'owned_child_cleanup_unavailable'}).decode('utf8')+'\n')
             stream.flush();os.fsync(stream.fileno())
         directory=os.open(self.root,os.O_RDONLY)
         try:os.fsync(directory)
@@ -264,8 +265,8 @@ class Coordinator:
                     except BlockingIOError:os.close(candidate);continue
                     fd=candidate
                     # Hashed namespace only, never prompts or job/case bodies.
-                    from .contracts import digest
-                    _atomic_json(self.root/f'inference-{n}.json',{'namespace':digest(namespace),'deadline_epoch':time.time()+max(0,deadline-time.monotonic())})
+                    digest = hashlib.sha256(namespace.encode('utf-8')).hexdigest()
+                    _atomic_json(self.root/f'inference-{n}.json',{'namespace':digest,'deadline_epoch':time.time()+max(0,deadline-time.monotonic())})
                     break
                 if fd is None:raise ResourceDeferred('learning_inference_capacity')
             token=_INFERENCE_OWNER.set({'pid':os.getpid(),'root':str(self.root),'fd':fd,'slot':n})
@@ -369,7 +370,6 @@ class TrainingGuard:
         except ValueError:raise ValueError('learning_control_invalid') from None
 
     def poll(self):
-        from .training_watch import poll_stop
         poll_stop(self.stop_fd)
         if self.controller.demand():raise ValueError('learning_yield')
         if self.controller.priority_work():raise ValueError('learning_yield')
@@ -382,12 +382,25 @@ class TrainingGuard:
 
     @contextmanager
     def step(self):
-        from .shared import resource_report
         # Demand is always checked, even when OS measurement is briefly reused.
         self.poll()
         now=time.monotonic()
         if self.report is None or now>=self.next_probe:
-            self.report=resource_report(self.policy,detailed=True,admission=False);self.next_probe=now+1
+            from .resource_report import report
+            self.report=report(self.policy,detailed=True,admission=False);self.next_probe=now+1
         try:
             with self.controller.step(self.policy,self.report,resident_credit=self.resident_credit) as limits:yield limits
         except ResourceDeferred as exc:raise ValueError('learning_yield') from exc
+
+
+def poll_stop(fd):
+    if fd is None:
+        return
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            raise ValueError('learning_control_invalid')
+        if select.select([fd], [], [], 0)[0]:
+            os.read(fd, 1)
+            raise ValueError('learning_yield')
+    except OSError:
+        raise ValueError('learning_yield') from None

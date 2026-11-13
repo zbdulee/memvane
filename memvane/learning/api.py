@@ -3,7 +3,8 @@ from __future__ import annotations
 
 
 def resource_report(*args, **kwargs):
-    from memvane.learning.context_learning.shared import resource_report as implementation
+    from memvane.runtime.api import resource
+    implementation = resource.report
     return implementation(*args, **kwargs)
 
 

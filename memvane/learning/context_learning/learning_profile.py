@@ -7,7 +7,7 @@ from .store import canonical
 from .dataset import read_private_json,_json
 from .local_cycle import _atomic_json,_safe_file,_hash
 from .training_cursor import _sync
-from .resource_coordination import _lock
+from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
 from . import resident
 
 NAME='learning-profile.json'

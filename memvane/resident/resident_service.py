@@ -729,8 +729,8 @@ def _quiet_stop(handle):
 
 
 def default_admit():
-    from memvane.learning.context_learning.resource_coordination import Coordinator
-    from memvane.learning.api import resource_report
+    from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
+    from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
     from memvane.resident.types import EMBED_POLICY
     # Memory/pressure admission and learning demand, under control.lock only.
     # The service never holds the provider lane: one cold load per service.

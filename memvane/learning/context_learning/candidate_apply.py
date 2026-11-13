@@ -5,7 +5,7 @@ import fcntl,json,math,os,re,time
 from .dataset import read_private_json
 from .local_cycle import _safe_file,_hash,_atomic_json,ResourceDeferred
 from .learning_profile import digest
-from .resource_coordination import _lock
+from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
 from .training_cursor import _sync
 from . import inference_identity as identity,resident
 

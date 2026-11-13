@@ -22,8 +22,8 @@ import time
 from memvane.sync.intent_ack import _ack_compile_intent
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.kernel.atomic_rename import canonical_json_bytes
-from memvane.learning.context_learning.resource_coordination import Coordinator
-from memvane.learning.api import resource_report
+from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
+from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
 from memvane.kernel.errors import IndexContractError
 from memvane.journal.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots

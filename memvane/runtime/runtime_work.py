@@ -79,15 +79,13 @@ TIMER_MAX_SECONDS=3600
 
 
 def Coordinator(*args,**kwargs):
-    # Call-time shim: the real coordinator and its root stay in context_learning.
-    # Module attribute, so tests can keep patching runtime_work.Coordinator.
-    from memvane.learning.context_learning.resource_coordination import Coordinator as coordinator
-    return coordinator(*args,**kwargs)
+    from memvane.runtime.api import resource
+    return resource.coordinator(*args,**kwargs)
 
 
 def default_root():
-    from memvane.learning.context_learning.resource_coordination import default_root as root
-    return root()
+    from memvane.runtime.api import resource
+    return resource.service_root()
 
 
 def yield_requested(root,*,now=None):
@@ -108,7 +106,7 @@ def yield_requested(root,*,now=None):
 
 
 def sample():
-    from memvane.learning.api import resource_report
+    from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
     return resource_report(POLICY,detailed=True,admission=False)
 
 

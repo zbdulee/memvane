@@ -176,7 +176,7 @@ def _policy(root):
                 and not general_grant)):
         raise ValueError("invalid_shared_trainer")
     if 'adaptiveMemory' in value:
-        from .memory_policy import validate
+        from memvane.runtime.api import resource as runtime_resource; validate = runtime_resource.memory_validate
         validate(value['adaptiveMemory'])
     if 'modelInputView' in value:
         from .adapter import EDIT_INPUT_VIEW, _read_json
@@ -802,30 +802,9 @@ def enqueue(config, project, sample, compact_sources):
     return "queued"
 
 
-def resource_report(policy, *, detailed=False, admission=True,deadline=None):
-    """OS adapter observations plus explicit configured memory policy."""
-    from memvane.runtime.api import adapter_for,normal_pressure,number
-    from .bounded_calibration import pressure_ready,verdict
-    from .memory_policy import assess
-    from .resource_coordination import observation_fresh
-    started=time.monotonic()
-    end=min(started+2,deadline) if deadline is not None else started+2
-    report=adapter_for(sys.platform).observe(path_factory=Path,run=subprocess.run,
-        clock=time.monotonic,cpu_count=os.cpu_count,loadavg=getattr(os,'getloadavg',None),
-        deadline=end,detailed=detailed)
-    available,load=report['available_mib'],report['load_per_cpu']
-    report['ready']=(number(load) and load<=policy['maxLoadPerCpu']
-        and number(available) and available>=policy['minAvailableMib']
-        and pressure_ready(report,policy))
-    if 'calibration' in policy:report['calibration_admission']=verdict(report,policy)
-    if 'adaptiveMemory' in policy:
-        result=assess(report,policy,admission=admission)
-        report.update(ready=result['ready'],memory_admission=result)
-        if result['training_limits'] is not None:report['training_limits']=result['training_limits']
-    report['observation_status']='fresh' if observation_fresh(report) else 'stale'
-    report['ready']=report['ready'] and report['observation_status']=='fresh' and time.monotonic()<end
-    return report
-
+def resource_report(policy, *, detailed=False, admission=True, deadline=None):
+    from memvane.runtime.api import resource
+    return resource.report(policy, detailed=detailed, admission=admission, deadline=deadline)
 
 def _meta(db, key, default):
     row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -2021,7 +2000,7 @@ def learning_worker_step(root, project, revision, *, spawn=None):
     per shared root. A full (teacher+trainer) request goes first; otherwise
     the wake is a training-only retry. ``running``/``started`` keep the wake.
     """
-    from .resource_coordination import _lock
+    from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
     root, project = _validated_root(root), Path(project).resolve(strict=True)
     if type(revision) is not int or revision < 0:
         raise ValueError("invalid_runtime_revision")
@@ -2169,7 +2148,7 @@ def run_training_pending(root,project):
     """Retry local training only, never teacher/observation or enrollment."""
     from memvane.settings import api as config
     from .runtime_authorization import require_operation
-    from .resource_coordination import _lock
+    from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
     root,project=Path(root),Path(project)
     cfg=config.find_project_config(str(project))['config']
     if _safe_root(cfg,project)!=root:return {'status':'disabled'}

@@ -21,8 +21,8 @@ import sys
 import time
 
 from .local_cycle import _safe_file
-# Re-exported: the same objects as the neutral runtime_lease primitives.
-from memvane.runtime.runtime_lease import private_lock as _private_lock, private_state as _private_state
+from memvane.runtime.api import resource
+_private_lock, _private_state = resource.private_lock, resource.private_state
 
 MAX_WIRE_BYTES = 1024 * 1024
 IDLE_SECONDS = 90

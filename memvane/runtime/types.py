@@ -68,3 +68,10 @@ class DispatchFailure(ValueError):
         # reason, which stays a fixed non-sensitive shape.
         self.detail = detail
         super().__init__(code)
+
+
+class ServiceFailure(ValueError):
+    def __init__(self, code, timing=None):
+        super().__init__('resident_service_' + code)
+        self.code = code
+        self.timing = timing or {}

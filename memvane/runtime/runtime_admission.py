@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-from memvane.learning.context_learning.resource_coordination import Coordinator,_STARTUP_OWNER
+from memvane.runtime.api import resource as runtime_resource; Coordinator, _STARTUP_OWNER = runtime_resource.coordinator, runtime_resource.startup_owner
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,'targetHeadroomFraction':.35}
@@ -26,7 +26,7 @@ from memvane.runtime.types import PreSendDeferred
 
 
 def sample(policy,*,deadline=None):
-    from memvane.learning.api import resource_report
+    from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
     try:return resource_report(policy,detailed=True,admission=False,deadline=deadline)
     except (OSError,ValueError,TypeError,KeyError):return None
 
@@ -55,7 +55,7 @@ def provider():
             # Matching an inode alone is not a held-lease proof. A second open
             # must observe contention, while the inherited open description
             # itself must already own (or be able to reuse) that exact lock.
-            from memvane.learning.context_learning.resource_coordination import _lock
+            from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
             probe=_lock(controller.root/'provider.lock')
             try:
                 try:fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)

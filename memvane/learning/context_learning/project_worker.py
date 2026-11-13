@@ -24,7 +24,7 @@ def run(root, project, config=None):
     if not setup_ready(root):return {'status':'setup_in_progress'}
     from . import project_scope,general_teacher
     from memvane.learning import project_learning_setup
-    from .resource_coordination import _lock
+    from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
     policy=shared._policy(root)
     fd=_lock(root/'project-worker.lock')
     try:

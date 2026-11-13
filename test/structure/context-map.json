@@ -554,11 +554,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/learning/context_learning/memory_policy.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/learning/context_learning/offline.py": {
       "context": "learning",
       "layer": "adapter",
@@ -585,11 +580,6 @@
       "pinned": false
     },
     "memvane/learning/context_learning/resident.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/learning/context_learning/resource_coordination.py": {
       "context": "learning",
       "layer": "adapter",
       "pinned": false
@@ -904,6 +894,21 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/runtime/bounded_calibration.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/memory_policy.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/private_json.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/runtime/qa_model_budget.py": {
       "context": "runtime",
       "layer": "adapter",
@@ -914,7 +919,17 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/runtime/resource_coordination.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/runtime/resource_platform.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/resource_report.py": {
       "context": "runtime",
       "layer": "adapter",
       "pinned": false
@@ -945,6 +960,11 @@
       "pinned": false
     },
     "memvane/runtime/runtime_work.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/service_state.py": {
       "context": "runtime",
       "layer": "adapter",
       "pinned": false

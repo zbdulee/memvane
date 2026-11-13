@@ -96,7 +96,7 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
         return {'status':'deferred_resource','resources':report,'cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
     with queue.claim(job['id']) as claim:
         if claim is None:return {'status':'deferred_resource','cycle_id':job['id'],'next_retry':queue.get(job['id'])['retry_at']}
-        from .resource_coordination import Coordinator
+        from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
         coordinator=coordinator or Coordinator()
         try:
             with coordinator.training(policy,report) as lease:
@@ -184,7 +184,7 @@ def _prepare_staged(root,policy,grant):
 def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,trainer_factory=None,claim_fd=None,coordination=None):
     from .shared import _case, _case_active, _db, _predict
     from .adapter import EDIT_INPUT_VIEW
-    from .resource_coordination import admission_policy
+    from memvane.runtime.api import resource as runtime_resource; admission_policy = runtime_resource.admission_policy
     controller,(coord_fd,admission)=coordination
     control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),
              'namespace':queue.scope,'job_id':job['id']}
@@ -316,7 +316,7 @@ def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,tr
 
 def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*,trainer_factory,coordination):
     from .evaluation_queue import EvaluationQueue
-    from .resource_coordination import admission_policy
+    from memvane.runtime.api import resource as runtime_resource; admission_policy = runtime_resource.admission_policy
     from .shared import _db,_predict,_case,_case_active
     from .adapter import EDIT_INPUT_VIEW
     cycle_id=job['id'];project=_project(root, grant);grant_sha=proposal_sha256(grant)
@@ -356,7 +356,7 @@ def evaluate_pending(root,policy,cycle_id,*,trainer_factory=None,coordinator=Non
     """Quality-only recovery: never reserves or calls a training operation."""
     from memvane.runtime.api import preparation
     from .shared import resource_report
-    from .resource_coordination import Coordinator
+    from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
     try:
         with preparation():prepared=_prepare_evaluation(root,policy,cycle_id)
     except ResourceDeferred as exc:
@@ -378,7 +378,7 @@ def _prepare_evaluation(root,policy,cycle_id):
     from .shared import _db,_case_active
     from .learning_queue import LearningQueue
     from .evaluation_queue import EvaluationQueue
-    from .resource_coordination import Coordinator
+    from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
     root=Path(root)
     grant=require_operation(root,policy,'quality_evaluate')
     queue=LearningQueue(root);job=queue.get(cycle_id)

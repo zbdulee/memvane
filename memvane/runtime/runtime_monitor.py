@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from memvane.learning.context_learning.resource_coordination import Coordinator,_lock
+from memvane.runtime.api import resource as runtime_resource; Coordinator, _lock = runtime_resource.coordinator, runtime_resource.coordination_lock
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.runtime import runtime_work
 
