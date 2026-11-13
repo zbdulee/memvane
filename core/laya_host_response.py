@@ -1753,6 +1753,9 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
     if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
+        elif reason == 'no_candidates':
+            # The reason of a recall with no candidate rows; vector fallbacks stay notes.
+            _trace_final('no_candidates')
         return host_payload(host, '')
     if verify_preview_route(decision) != refreshed or not _selection_view_unchanged(decision, chosen):
         _fail('initial_preview_proof_changed')
@@ -1980,13 +1983,21 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     # A view sealed without vectors (a lexical-first publish whose fill is
     # still deferred) serves its lexical lists; the provider is not asked.
     unsealed = endpoint.record.get('vector_profile') is None
+    # A bundle-drift read carries the read-only proof of
+    # ``verify_selected_route_read_only`` (no full proof for the executing
+    # bundle): it cannot prove a query vector, so the provider is not asked and
+    # the lexical lists answer, as the v6 read does. A linked worktree read
+    # whose bundle proof holds keeps vectors.
+    if (not vector_off and proof.get('readOnlyAllowed') is True
+            and proof.get('productRouteAllowed') is not True):
+        vector_off.append('degraded_read')
     with ExitStack() as stack:
         vector = None
         if provider is not None and not vector_off and not unsealed:
             vector = stack.enter_context(dispatch.approved_query_vector(
                 authority=endpoint, snapshot=None, decision=decision, provider=provider,
                 prompt=prompt, deadline=deadline))
-            if vector is None:
+            if vector is None and not vector_off:
                 vector_off.append('provider_unavailable')
         for attempt in range(2):
             try:
@@ -2282,6 +2293,37 @@ def _project_dir_moved(decision) -> bool:
         return False
 
 
+def _codex_seal_notice(decision):
+    """Best-effort recent event notice; it does not observe hook trust."""
+    from datetime import datetime, timezone
+    state = event_log.state_root_for_decision(decision)
+    if state is None:
+        return None
+    try:
+        now = datetime.now(timezone.utc).timestamp()
+        pending = False
+        for row in event_log.read(state, max_bytes=1024 * 1024):
+            if row.get('event') != 'bundle.upgrade':
+                continue
+            try:
+                stamp = datetime.fromisoformat(row['ts'].replace('Z', '+00:00')).timestamp()
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not 0 <= now - stamp <= 86400:
+                continue
+            if row.get('codexSealWritten') is True:
+                pending = True
+            elif row.get('outcome') == 'codex_hook_notice':
+                pending = False
+        if not pending:
+            return None
+        event_log.emit('bundle.upgrade', outcome='codex_hook_notice', state_root=state,
+                       host='claude')
+        return '[memvane] Codex hook approval may need to be renewed after the bundle seal.'
+    except Exception:
+        return None
+
+
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
@@ -2429,6 +2471,10 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             if block_notice:
                 move_notice = (move_notice + "\n" + block_notice if move_notice
                                else block_notice)
+            if host == 'claude':
+                trust_notice = _codex_seal_notice(decision)
+                if trust_notice:
+                    move_notice = (move_notice + "\n" + trust_notice if move_notice else trust_notice)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
@@ -2620,6 +2666,10 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
+        if host == 'claude' and action == 'update-queued':
+            trust_notice = _codex_seal_notice(decision)
+            if trust_notice:
+                notice += '\n' + trust_notice
         if host == 'hermes':
             return {'status': 'bundle_upgrade_pending', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
@@ -3016,6 +3066,9 @@ def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top
     if reason not in ('selected', 'ranked') or not chosen:
         if reason == 'selected':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
+        elif reason == 'no_candidates':
+            # The reason of a recall with no candidate rows; vector fallbacks stay notes.
+            _trace_final('no_candidates')
         return host_payload(host, '')
     if not still_current(chosen):
         _fail('selected_proof_changed')
@@ -3094,6 +3147,12 @@ def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
 def _serve_qa_stdin(action, host, fallback_cwd):
     """Reserved preflight only: no settle, serving, learning or wake path."""
     from laya_bridge_observer import qa_hook_reply, qa_session_start
+    # The loaded-reader probe reads what is left of the hook budget.
+    import hook_budget
+    try:
+        hook_budget.arm(watchdog=False, export=False)
+    except hook_budget.HookDeadlineExceeded:
+        pass
     payload, decision = {}, {}
     try:
         raw = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)

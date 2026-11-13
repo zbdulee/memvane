@@ -278,6 +278,105 @@ class RebootChecks(unittest.TestCase):
             self.assertEqual(reopened._db.execute(
                 'SELECT binding_json,binding_digest,record_json FROM worktrees').fetchall(), before)
 
+    def schema3_case(self):
+        return self.case_from('laya-journal-schema3-checks.py', 'Schema3EndpointChecks')
+
+    def stored_record(self, case, endpoint_id):
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(case.case.journal)) as db:
+            return json.loads(db.execute('SELECT record FROM read_endpoints WHERE endpoint_id=?',
+                                         (endpoint_id,)).fetchone()[0])
+
+    def switch_after_reboot(self, case):
+        """A v6 reader sealed before the reboot; the schema3 target and the CAS after it."""
+        import laya_reader_lease as lease
+        case.publish()
+        initial = case.reader.read_selection(case.case.journal)
+        v6 = self.stored_record(case, initial.preferred_endpoint)
+        with case.reader._readonly(case.case.journal, case.case.state) as db:
+            before = lease._image(db)
+        with simulated_reboot():
+            target = case.seal()
+            loaded = case.loaded(initial)
+            with case.receipt():
+                selected = case.cas(target, loaded, base=initial)
+            self.assertEqual(case.reader.read_selection(case.case.journal), selected)
+            with case.reader._readonly(case.case.journal, case.case.state) as db:
+                lease._forward_image(before, lease._image(db))
+        return initial, v6, target, selected
+
+    def test_schema3_switch_over_a_v6_reader_sealed_before_the_reboot(self):
+        case = self.schema3_case()
+        initial, v6, target, selected = self.switch_after_reboot(case)
+        self.assertEqual((selected.epoch, selected.preferred_endpoint, selected.previous_endpoint),
+                         (initial.epoch + 1, target.endpoint_id, initial.preferred_endpoint))
+        # Stored records keep the device each was sealed with; only the inode matches.
+        record = self.stored_record(case, target.endpoint_id)
+        for key in ('project_node', 'state_node'):
+            self.assertEqual(record[key][1], v6[key][1])
+            self.assertEqual(record[key][0], v6[key][0] + 1)
+        self.assertEqual(self.stored_record(case, initial.preferred_endpoint), v6)
+        # Back in the original boot the selection still reads.
+        self.assertEqual(case.reader.read_selection(case.case.journal), selected)
+
+    def test_rollback_from_a_schema3_reader_sealed_after_the_reboot(self):
+        case = self.schema3_case()
+        initial, v6, _target, selected = self.switch_after_reboot(case)
+        with simulated_reboot(), case.seed.authority():
+            installer = case.reader.seal_current_reader(case.case.state, case.case.project,
+                                                        executing_root=case.case.plugin)
+            # Re-issued from this boot: the store nodes carry this boot's device.
+            reissued = dict(installer.endpoint.record)
+            for key in ('db_node', 'catalog_node', 'binding_node'):
+                self.assertEqual(reissued[key][1], v6[key][1])
+            back = case.reader.cas_reader(case.case.journal, expected_epoch=selected.epoch,
+                expected_endpoint=selected.preferred_endpoint, target=installer.endpoint,
+                transition_id='2' * 32)
+            self.assertEqual(case.reader.read_selection(case.case.journal), back)
+        self.assertEqual((back.preferred_endpoint, back.previous_endpoint),
+                         (installer.endpoint.endpoint_id, selected.preferred_endpoint))
+        self.assertEqual(self.stored_record(case, initial.preferred_endpoint), v6)
+
+    def test_operator_rollback_after_a_reboot_reissues_the_v6_reader(self):
+        """The v6 and schema3 readers were sealed before the reboot; the
+        rollback re-issues the v6 reader from this boot and checks its store
+        nodes against the v6 reader the switch left."""
+        # The rollback path imports these lazily; imported first under the
+        # fixture's bundle authority they would keep its patched bindings.
+        for name in ('laya_active_upgrade', 'laya_bound_upgrade', 'laya_inactive_upgrade'):
+            importlib.import_module(name)
+        rollback = self.case_from('laya-shadow-rollback-checks.py', 'ShadowRollbackChecks')
+        initial, switched = rollback.switched()
+        with simulated_reboot():
+            result, wakes = rollback.rollback()
+        self.assertEqual(result['status'], 'rolled_back', result)
+        after = rollback.u15.selection()
+        self.assertEqual((after[0], after[2]), (switched[0] + 1, switched[1]))
+        self.assertEqual(rollback.u15.store_format(), 'v6')
+        self.assertEqual([a[:1] for a, _k in wakes], [('laya-sync',)])
+
+    def test_record_nodes_still_differ_by_inode_and_in_process_owners_keep_the_device(self):
+        import laya_move_read_seal as seal
+        reader = importlib.import_module('laya_journal_reader')
+        base = {'project_node': [4, 8], 'state_node': [4, 9], 'db_node': [4, 10], 'scope': 's'}
+        keys = tuple(base)
+        self.assertTrue(reader.records_agree(base, {**base, 'project_node': [5, 8], 'state_node': [5, 9],
+                                                    'db_node': [5, 10]}, keys))
+        for key in ('project_node', 'state_node', 'db_node'):
+            with self.subTest(field=key):
+                self.assertFalse(reader.records_agree(base, {**base, key: [4, 7]}, keys))
+        self.assertFalse(reader.records_agree(base, {**base, 'scope': 't'}, keys))
+        # A writer scope compares its own earlier observation in this process,
+        # device included: a device change under it refuses.
+        case = self.schema3_case()
+        with ExitStack() as stack:
+            seal._register_writer(stack, case.case.project, case.case.state, kind='reboot-fixture')
+            self.assertIsNotNone(seal._owner())
+            with simulated_reboot():
+                with self.assertRaisesRegex(ValueError, 'reader_move_owner_changed'):
+                    seal._owner()
+
     def test_inference_manifest_cold_and_warm_identity(self):
         case = self.case_from('context-learning-inference-identity-checks.py', 'IdentityChecks')
         raw = (case.state / 'laya-inference-manifest.json').read_bytes()

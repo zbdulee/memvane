@@ -447,7 +447,11 @@ new one. Details are in [flow 03](architecture/flows/03-wiki-index-search.md).
 Persisted file and directory identities bind by canonical path and inode,
 plus their recorded content and metadata fields. `st_dev` is boot-local on
 macOS APFS and is not compared across processes. Journal rows, endpoint IDs,
-ownership manifests and their digests retain their original bytes. Live
+ownership manifests and their digests retain their original bytes. Two reader
+endpoint records sealed in different boots compare their `*_node` fields by
+inode too (`laya_journal_reader.records_agree`: reader switch and rollback CAS,
+selection checks, a reader lease's journal image advance, the store check of
+the v6 reader a rollback re-issues). Live
 fd/path and before/after checks within one process compare device numbers;
 source traversal compares each file's device with its live root fd's device.
 
@@ -459,7 +463,7 @@ view per checkout and branch. Recall branches on the selected endpoint
 
 A v6-selected main checkout builds the schema3 copy off-hook. After a selected
 sync ends `indexed` or `unchanged`, `laya_product_sync_worker.shadow_pass` runs at
-about 10 seconds of bounded steps, at most 32 (`core/laya_shadow_migration.py`):
+about 60 seconds of bounded steps, at most 32 (`core/laya_shadow_migration.py`):
 `copying → caught_up → shadow_verified → reader_ready → switched`. The copy holds
 published wiki bytes and trust only, never raw bodies or raw FTS. A space
 pre-check defers a step without writing. A pass that progressed or ran out of its

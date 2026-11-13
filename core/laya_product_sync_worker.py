@@ -603,7 +603,7 @@ def service_worker_attestation(decision, expected):
     project, plan_root = Path(decision['projectRoot']), Path(decision['pluginRoot'])
 
     def reprove():
-        with worker_journal_access(project) as access, journal.read_only_journals():
+        with worker_journal_access(project, wait=True) as access, journal.read_only_journals():
             proof = _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
         return proof, _journal_view(decision)
     before, view = guarded(reprove)
@@ -820,12 +820,34 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
         waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
                    or [v for v in vectors if v['state'] in ('pending', 'deferred')])
-        if result.get('state') in ('indexed', 'unchanged') and waiting:
+        main = result.get('vector') or {}
+        progressed = (main.get('state') == 'pending' and main.get('progress', 0) > 0
+                      and waiting and waiting[0] is main)
+        blocked = [v for v in vectors if v['state'] == 'provider_blocked']
+        if (result.get('state') in ('indexed', 'unchanged') and not blocked
+                and (progressed or result.get('linkedReoffer'))):
+            # The main view's vectors moved this pass (or it published them and
+            # a linked view waits for the budget): ACK (not a counted failure)
+            # and offer the same wake again shortly, so the fill goes on with a
+            # warm worker instead of waiting for the next edit. An offer
+            # failure leaves the next natural wake to go on.
+            try:
+                import runtime_work
+                runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
+                result = {**result, 'vectorReoffer': True}
+            except Exception:
+                result = {**result, 'state': 'pending', 'reason': main.get('reason')}
+        elif result.get('state') in ('indexed', 'unchanged') and waiting:
             # The lexical generations are published and discovery ran; the
             # wake stays until the views' vector generations are published,
             # or ends ``blocked`` on a provider defect of the install.
             state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
             result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
+            if state == 'pending' and waiting[0] is main and main.get('progress', 0) > 0:
+                result['progressKind'] = 'vector'
+        detail = _schema3_vector_detail(result)
+        if detail:
+            result = {**result, 'detail': detail}
         return result
     grants = None
     if not isinstance(source_root, str):
@@ -979,6 +1001,10 @@ SCHEMA3_MAX_INGEST = 64
 # ingested cards always fits; otherwise an over-budget pass would publish
 # nothing and the next one would redo the same ingests.
 SCHEMA3_PUBLISH_RESERVE = 15
+# A pass whose main view has nothing to ingest (unchanged cards and sources)
+# pays the pass's fixed cost once and fills vectors for this long (its
+# publish reserve included); a pass that ingests keeps the pass budget.
+SCHEMA3_VECTOR_SECONDS = 240
 # The store binds the v6 settings identity (collections, roles, roots) and
 # the wiki root node in an immutable worktree row; a change refuses reads and
 # writes alike, and no in-place rebinding exists. Not transient.
@@ -1159,11 +1185,12 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         marks = {}
         result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
                                        info['worktree_binding'], deadline, marks, vectors,
-                                       raw_scan=vectors.get('rawScan'))
+                                       raw_scan=vectors.get('rawScan'), window=True)
         if result['state'] not in ('indexed', 'unchanged'):
             return result, marks.get('proof', proof)
         linked = []
-        for project in _schema3_linked_projects(decision, deadline):
+        listing = max(deadline, time.monotonic() + SCHEMA3_LINKED_LIST_SECONDS)
+        for project in _schema3_linked_projects(decision, listing):
             if time.monotonic() >= deadline - SCHEMA3_PUBLISH_RESERVE:
                 linked.append({'root': str(project), 'state': 'pending', 'reason': 'schema3_pass_budget'})
                 continue
@@ -1199,8 +1226,21 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     result = {**result, 'worktrees': linked}
     if result['state'] == 'unchanged' and any(item['state'] == 'indexed' for item in linked):
         result['state'] = 'indexed'
-    if any(item['state'] in ('pending', 'deferred') for item in linked):
+    main = result.get('vector') or {}
+    advanced = ((main.get('state') == 'pending' and main.get('progress', 0) > 0)
+                or main.get('state') == 'published')
+    budget = [item for item in linked if item['state'] == 'pending'
+              and item.get('reason') == 'schema3_pass_budget']
+    # While the main view's vectors move (or this pass published them), a
+    # linked view held only by this pass's budget does not make the pass a
+    # failure: the re-offered wake (``_run_sync``) runs the next pass, which
+    # reaches it.
+    if advanced and budget:
+        result['linkedReoffer'] = True
+    if any(item['state'] in ('pending', 'deferred') and not (advanced and item in budget) for item in linked):
         result['state'] = 'pending'
+        result.setdefault('reason', 'schema3_linked_pending')
+        result.pop('progressKind', None)
     return result, proof
 
 
@@ -1297,7 +1337,7 @@ def _mark_schema3_write(writer, proof, marks):
 
 
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
-                          vectors=None, *, raw_scan=None):
+                          vectors=None, *, raw_scan=None, window=False):
     """One view's pass: changed cards ingested, unchanged members keep their trust.
 
     ``binding`` is the main worktree's journal-recorded binding (None for a
@@ -1362,16 +1402,25 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                            if 'snapshot' in scanned else None)
         if (not changed and not removed and not excluded and not cold
                 and _schema3_head_same(store, head, baseline, observed, handle)):
+            if window:
+                # The main view has nothing to ingest: its vector fill (and the
+                # generation it may publish) gets the vector window. Linked
+                # views keep the pass deadline (``_publish_schema3``).
+                deadline = max(deadline, time.monotonic() + SCHEMA3_VECTOR_SECONDS)
             sealed = baseline['vector_spec']
             if store._rows:
                 # Row heads fill their own eligible cards; the manifest is built only to publish.
-                vector = _schema3_vectors(store, writer, proof, marks, handle, None, sealed, vectors, deadline)
+                vector = _schema3_vectors(store, writer, proof, marks, handle, None, sealed, vectors, deadline,
+                                          window=window)
             else:
                 vector = _schema3_vectors(store, writer, proof, marks, handle, baseline['manifest'], sealed,
-                                          vectors, deadline)
+                                          vectors, deadline, window=window)
             if vector['state'] != 'complete':
                 return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
                         'vector': vector}
+            # The last fill call may run past the pass deadline: the vector
+            # generation it completed gets a fresh publish reserve.
+            deadline = max(deadline, time.monotonic() + SCHEMA3_PUBLISH_RESERVE)
             manifest = baseline.get('manifest')
             if manifest is None:
                 _mark_schema3_write(writer, proof, marks)
@@ -1379,13 +1428,15 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
                                 complete=True, sources=_schema3_put_sources(store, handle, scan, observed),
                                 members=[old[p] for p in sorted(old)])
+            started = time.monotonic()
             generation = store.prepare_generation(handle, manifest, expected_head=head,
                                                   vector_spec=vectors['spec'], deadline=deadline)
             normal.validate_normal_writer(writer)
             store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+            vector = dict(vector, state='published', publishMs=int((time.monotonic() - started) * 1000))
             return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
                     'ingested': 0, 'removed': 0, 'pending': 0, 'skipped': skipped,
-                    'sources': len(observed), 'vector': dict(vector, state='published')}
+                    'sources': len(observed), 'vector': vector}
         # First store write of this pass: the journal fence comes first.
         _mark_schema3_write(writer, proof, marks)
         scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
@@ -1431,18 +1482,25 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             vector = _schema3_vectors(store, writer, proof, marks, handle, manifest, None,
                                       vectors, deadline)
         spec = vectors['spec'] if vector['state'] == 'complete' else None
+        if not staging:
+            # The last fill call may run past the pass deadline (one document):
+            # this pass's generation, lexical or vector, gets a fresh reserve.
+            deadline = max(deadline, time.monotonic() + SCHEMA3_PUBLISH_RESERVE)
+        started = time.monotonic()
         generation = store.prepare_generation(handle, manifest, expected_head=head,
                                               vector_spec=spec, deadline=deadline)
         normal.validate_normal_writer(writer)
         if cold and pending:
             # No partial first generation: recall answers view_preparing until complete.
             return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
+                    **({'progressKind': 'ingest'} if ingested else {}),
                     'generation': None, 'prepared': generation, 'ingested': ingested,
                     'removed': len(removed), 'pending': pending, 'skipped': skipped}
         if staging:
             # Published cards wait for new bytes: the head stays, the prepared
             # progress is the next pass's carry.
             return {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
+                    **({'progressKind': 'ingest'} if ingested else {}),
                     'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
                     'removed': len(removed), 'pending': pending, 'skipped': skipped}
         store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
@@ -1457,10 +1515,15 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             return {'state': 'deferred', 'reason': exc.reason, 'storeFormat': 'schema3'}
         raise
     if vector['state'] == 'complete':
-        vector = dict(vector, state='published')
-    return {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
-            'generation': generation, 'ingested': ingested, 'removed': len(removed),
-            'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector}
+        vector = dict(vector, state='published', publishMs=int((time.monotonic() - started) * 1000))
+    result = {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
+              'generation': generation, 'ingested': ingested, 'removed': len(removed),
+              'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector}
+    if pending:
+        result['reason'] = 'schema3_ingest_backlog'
+        if ingested:
+            result['progressKind'] = 'ingest'
+    return result
 
 
 def _schema3_generation_baseline(store, db, handle, head):
@@ -1759,7 +1822,12 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             raise
 
         def call(method, *args):
-            if _higher_priority_wake(controller):
+            # At each provider-call boundary, as the v6 capacity path does
+            # between rounds: due QMD work, or another project's initial build
+            # waiting on the owner this pass holds. Sets already committed stay
+            # (a pass that added some reports progress and is re-offered).
+            if (_higher_priority_wake(controller)
+                    or _initial_build_waiting(controller, Path(decision['projectRoot']))):
                 raise ResourceDeferred('laya_sync_yield_priority')
             context['calls'] += 1
             try:
@@ -1815,11 +1883,20 @@ def _schema3_chunker(context, current):
     import laya_blob_values as v
     from laya_view_vectors import FALLBACK_CHARS, qmd_first_pass
 
+    stats = context.setdefault('stats', {'providerMs': 0})
+
+    def timed(call):
+        started = time.monotonic()
+        try:
+            return call()
+        finally:
+            stats['providerMs'] = max(stats['providerMs'], int((time.monotonic() - started) * 1000))
+
     def chunker(document, _recipe):
         body = document['body']
         parts = qmd_first_pass(body)
         try:
-            rows = context['acquire'](current()).embed_document_chunks(body, document['path'])
+            rows = timed(lambda: context['acquire'](current()).embed_document_chunks(body, document['path']))
         except IndexContractError as exc:
             if str(exc) == 'provider_member_refused':
                 raise _VectorMemberBlocked('provider_member_refused') from exc
@@ -1849,7 +1926,7 @@ def _schema3_chunker(context, current):
                         or 'title: ' + title + ' | text: ' + chunk != text):
                     raise _VectorMemberBlocked('embedding_input_unparsed')
                 try:
-                    vector = context['acquire'](current()).embed_document(chunk, title)
+                    vector = timed(lambda: context['acquire'](current()).embed_document(chunk, title))
                 except IndexContractError as exc:
                     if str(exc) == 'provider_member_refused':
                         raise _VectorMemberBlocked('provider_member_refused') from exc
@@ -1870,11 +1947,19 @@ SCHEMA3_FILL_CALL_SECONDS = 30
 # one fill call completes on its next pass instead of repeating the same
 # dropped work every wake.
 SCHEMA3_RESUME_SECONDS = 270
+# A pass whose vectors moved but did not finish offers its own laya-sync wake
+# again this much later (``WakeQueue.offer(delay=)``), within RECLAIM_SECONDS
+# so the embedding worker stays warm.
+SCHEMA3_VECTOR_REOFFER_SECONDS = 30
+# Listing the linked worktrees after a main view whose last fill call ran past
+# the pass deadline: their own pass-budget check then holds them for the
+# re-offered wake instead of the listing failing on the spent budget.
+SCHEMA3_LINKED_LIST_SECONDS = 5
 SCHEMA3_FILL_DEADLINES = frozenset(('content_fill_deadline', 'fill_deadline_exceeded'))
 
 
-def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
-    """Index of the first target from ``cursor`` without its embedding set, when its chunk set is stored."""
+def _schema3_first_missing(store, targets, cursor, recipe_id, profile_id):
+    """``(index, chunked)`` of the first target from ``cursor`` without its embedding set, or None."""
     with store._session() as db:
         for index in range(cursor, len(targets)):
             blob = targets[index]['blob_sha']
@@ -1882,19 +1967,60 @@ def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
                           (blob, recipe_id, profile_id)).fetchone() is None:
                 chunked = db.execute('SELECT 1 FROM chunk_sets WHERE blob_sha=? AND recipe_id=?',
                                      (blob, recipe_id)).fetchone()
-                return index if chunked is not None else None
+                return index, chunked is not None
     return None
 
 
-def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline):
+def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
+    """Index of the first target from ``cursor`` without its embedding set, when its chunk set is stored."""
+    first = _schema3_first_missing(store, targets, cursor, recipe_id, profile_id)
+    return first[0] if first is not None and first[1] else None
+
+
+def _schema3_vector_detail(result):
+    """The main view's vector progress as one fixed code for the wake event, or None.
+
+    ``vec_<state>[_<reason>]`` with ``rem`` (targets left), ``ord`` (first
+    missing target), ``pms`` (slowest provider call of the pass, ms), and for a
+    published vector generation ``pub`` (its prepare+publish ms) and ``res_``
+    (the reader reseal). No path or body.
+    """
+    import re
+    vector = result.get('vector') if isinstance(result, dict) else None
+    if not isinstance(vector, dict) or vector.get('state') not in ('pending', 'published', 'deferred',
+                                                                   'blocked', 'provider_blocked'):
+        return None
+    reason = str(vector.get('reason') or '')
+    for prefix in ('schema3_vector_', 'schema3_'):
+        reason = reason[len(prefix):] if reason.startswith(prefix) else reason
+    parts = ['vec_' + vector['state'] + ('_' + reason if reason else '')]
+    for key, label in (('remaining', 'rem'), ('ordinal', 'ord'), ('providerMs', 'pms'), ('publishMs', 'pub')):
+        if type(vector.get(key)) is int:
+            parts.append(label + str(vector[key]))
+    if isinstance(result.get('readerResettle'), str):
+        parts.append('res_' + result['readerResettle'])
+    return re.sub(r'[^a-z0-9_.:-]', '_', ':'.join(parts))[:80]
+
+
+def _schema3_embedded(store, targets, recipe_id, profile_id):
+    """How many of ``targets`` have the spec's embedding set (store observation)."""
+    with store._session() as db:
+        return sum(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? '
+                              'AND profile_id=?', (t['blob_sha'], recipe_id, profile_id)).fetchone() is not None
+                   for t in targets)
+
+
+def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline,
+                     *, window=False):
     """Fill this manifest's vectors for the pass's spec; ``state`` says what remains.
 
     ``complete``: every eligible member has the spec's sets (the caller seals
     a vector generation). ``current``: ``sealed`` (the head's vector spec)
     already is the spec. ``off``: no spec. ``pending``: the pass budget ran
-    out or a fill call hit its deadline (cursor kept; committed content sets
-    stay). ``deferred``: the provider lane or service refused (no
-    store write was made for it). ``blocked``: the provider refused a document
+    out, a fill call hit its deadline, or a deferral came after this pass
+    added embedding sets (cursor kept; committed content sets stay).
+    ``deferred``: the provider lane or service refused before this pass
+    added any embedding set. ``blocked``: the provider refused a document
     or its chunk set is over the store's limit; the view stays lexical until
     that card changes.
     ``provider_blocked``: the install's provider cannot be proved
@@ -1917,6 +2043,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         if exc.reason not in ('recipe_missing', 'profile_missing'):
             raise
         registered = False
+    pending = None
     try:
         if not registered:
             vectors['acquire'](current())
@@ -1929,27 +2056,50 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         else:
             _entry, _saved, _job, targets, stored = store._fill_plan(handle, manifest, recipe_id, profile_id)
         cursor = 0 if stored is None else stored
-        with store._session() as db:
-            missing = sum(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? '
-                                     'AND profile_id=?', (t['blob_sha'], recipe_id, profile_id)).fetchone() is None
-                          for t in targets[cursor:])
+        before = _schema3_embedded(store, targets, recipe_id, profile_id)
+        missing = len(targets) - before
         if missing:
             vectors['acquire'](current())
         chunker, embedder = _schema3_chunker(vectors, current)
         status = store.fill_status(handle, manifest, recipe_id, profile_id)
-        filled = hits = 0
+        filled = hits = calls = 0
+        cold_used = False
+
+        def pending(reason, at):
+            # ``progress``: embedding sets this pass added (store observation,
+            # not callback counts); ``ordinal``: the first target still missing.
+            first = _schema3_first_missing(store, targets, at, recipe_id, profile_id)
+            return {'state': 'pending', 'reason': reason, 'filled': filled, 'cacheHits': hits,
+                    'remaining': len(targets) - at,
+                    'progress': _schema3_embedded(store, targets, recipe_id, profile_id) - before,
+                    'cursorMoved': at - cursor, 'ordinal': None if first is None else first[0],
+                    'providerMs': vectors.get('stats', {}).get('providerMs', 0)}
         while not status['complete']:
             left = deadline - SCHEMA3_PUBLISH_RESERVE - time.monotonic()
-            if left <= 0:
-                return {'state': 'pending', 'reason': 'schema3_vector_budget', 'filled': filled,
-                        'cacheHits': hits, 'remaining': len(targets) - status['cursor']}
+            first = _schema3_first_missing(store, targets, status['cursor'], recipe_id, profile_id)
+            span = None if first is None else first[0] - status['cursor'] + 1
+            # The first cold target of a pass (no chunk set: its single chunked
+            # provider call is the whole work) gets the resume budget, so a card
+            # whose call outlasts one fill call is not dropped on every pass.
+            # A target whose chunk set is stored keeps that budget as before.
+            resumable = span is not None and span <= MAX_FILES and (first[1] or not cold_used)
+            if left <= 0 and not (resumable and not calls):
+                return pending('schema3_vector_budget', status['cursor'])
 
             def fence():
                 _mark_schema3_write(writer, proof, marks)
             files, seconds = 8, min(SCHEMA3_FILL_CALL_SECONDS, left)
-            resume = _schema3_resume(store, targets, status['cursor'], recipe_id, profile_id)
-            if resume is not None and resume - status['cursor'] < MAX_FILES:
-                files, seconds = resume - status['cursor'] + 1, SCHEMA3_RESUME_SECONDS
+            if resumable:
+                files, seconds = span, SCHEMA3_RESUME_SECONDS
+                cold_used = cold_used or not first[1]
+            elif span is not None and span > MAX_FILES:
+                # A run of cache hits ahead of the first missing target: one call.
+                files = MAX_FILES
+            calls += 1
+            # The targets this call can reach: the window compares their sets
+            # before and after a call stopped by its own deadline.
+            reach = targets[status['cursor']:status['cursor'] + files]
+            mark = _schema3_embedded(store, reach, recipe_id, profile_id) if window else None
             try:
                 step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
                                        embedder=embedder, write_fence=fence,
@@ -1960,20 +2110,33 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                     raise
                 # Content sets committed before the deadline stay (cache hits
                 # next pass); the lexical publish of this pass goes on.
-                return {'state': 'pending', 'reason': 'schema3_vector_deadline', 'filled': filled,
-                        'cacheHits': hits, 'remaining': len(targets) - status['cursor']}
+                if window and _schema3_embedded(store, reach, recipe_id, profile_id) > mark:
+                    # Inside the vector window, a call that added sets before its
+                    # own deadline does not end the window: the next call passes
+                    # those as cache hits. A call that added none ends it.
+                    status = store.fill_status(handle, manifest, recipe_id, profile_id)
+                    continue
+                return pending('schema3_vector_deadline', status['cursor'])
             filled += step['filled']; hits += step['cache_hits']
             if step['status'] == 'deferred':
-                return {'state': 'pending', 'reason': 'schema3_vector_content_busy', 'filled': filled,
-                        'cacheHits': hits, 'remaining': len(targets) - step['cursor']}
+                return pending('schema3_vector_content_busy', step['cursor'])
             status = step
     except ResourceDeferred as exc:
+        if pending is not None:
+            # A deferral (a priority yield before a provider call, a provider
+            # failure, a moved selection) after this pass committed embedding
+            # sets: those stay, and the pass reports its progress like a
+            # deadline stop, so the wake is not counted as a failure.
+            stopped = pending(str(exc), status['cursor'])
+            if stopped['progress'] > 0:
+                return stopped
         return {'state': 'deferred', 'reason': str(exc)}
     except _VectorMemberBlocked as exc:
         return {'state': 'blocked', 'reason': str(exc)}
     except _VectorProviderBlocked as exc:
         return {'state': 'provider_blocked', 'reason': str(exc)}
-    return {'state': 'complete', 'filled': filled, 'cacheHits': hits, 'targets': len(targets)}
+    return {'state': 'complete', 'filled': filled, 'cacheHits': hits, 'targets': len(targets),
+            'providerMs': vectors.get('stats', {}).get('providerMs', 0)}
 
 
 def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snapshot=None):
@@ -2060,7 +2223,7 @@ def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snaps
 # the first step of a pass, on its own SHADOW_PREPARE_SECONDS budget; due
 # later in a pass, the pass ends and the next one starts with it.
 SHADOW_STEPS_PER_PASS = 32
-SHADOW_PASS_SECONDS = 10.0
+SHADOW_PASS_SECONDS = 60.0
 SHADOW_PREPARE_SECONDS = 60.0
 # ``off`` stops the driver before it reads or writes anything.
 SHADOW_KILL_SWITCH = 'MEMVANE_SHADOW_MIGRATION'
@@ -2790,10 +2953,30 @@ def _run_capacity(decision, proof, source_root, capacity, provider, controller,
     except ReaderWindowBusy as exc:
         if getattr(exc, 'rollback_pending', False) or str(exc) not in (
                 'reader_write_deadline', 'reader_publish_busy',
-                'reader_mutation_busy', 'reader_lifetime_busy', 'reader_physical_busy'):
+                'reader_mutation_busy', 'reader_lifetime_busy', 'reader_physical_busy',
+                'writer_proof_deadline', 'writer_proof_physical_busy'):
             raise
-        return {'state': 'deferred', 'reason': str(exc)}, state['proof']
+        result = {'state': 'deferred', 'reason': str(exc)}
+        detail = _mark_detail(getattr(exc, 'mark_timings', None))
+        if detail:
+            result['detail'] = detail
+        return result, state['proof']
     return _checked(result), state['proof']
+
+
+def _mark_detail(timings):
+    """``mark_new_write`` stage times (ms) as one fixed code, e.g.
+    ``p1_lock12_sql81:img20:p2_lock1950_sql0``; None without any."""
+    if not isinstance(timings, dict):
+        return None
+    parts = []
+    for stage in ('p1', 'img', 'p2'):
+        if stage == 'img':
+            if type(timings.get('img')) is int:
+                parts.append('img%d' % timings['img'])
+        elif type(timings.get(stage + '_lock')) is int and type(timings.get(stage + '_sql')) is int:
+            parts.append('%s_lock%d_sql%d' % (stage, timings[stage + '_lock'], timings[stage + '_sql']))
+    return ':'.join(parts) or None
 
 
 def _observe_member_block(decision, result):

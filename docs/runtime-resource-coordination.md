@@ -31,9 +31,31 @@ development execution guard is separate; see
   takes the same provider activity only when a view's vector fill has content no
   stored set holds (`_schema3_vectors`); one pass embeds content shared by two
   views once, and a refused lane or service leaves the lexical generation
-  published and the wake `deferred`. The shadow migration driver
+  published and the wake `deferred`. Before each provider call the fill
+  yields (`laya_sync_yield_priority`) to another project's initial build
+  waiting on the owner (`_initial_build_waiting`, as the v6 capacity path
+  does between rounds), whose wake is pulled ahead. A pass whose main-view
+  fill added embedding sets but did not finish (including a stop on that
+  yield or on a provider failure) is acknowledged and offers its own wake
+  again 30 seconds later (`WakeQueue.offer(delay=)`), inside the worker's
+  reclaim window; another due wake runs before it. A pass with no
+  fill progress stays `pending` and backs off; after 144 consecutive counted
+  attempts the wake policy drops it (`retry_cap`) until the next natural wake.
+  A pass whose main view has nothing to ingest (unchanged cards and sources)
+  fills vectors, and publishes the vector generation it completes, within a
+  240-second window (`SCHEMA3_VECTOR_SECONDS`, publish reserve included); in
+  that window a fill call stopped by its own deadline after adding embedding
+  sets is followed by the next call. The pass holds the sync owner, writer
+  scope and provider lane for that window; the yields above still apply at
+  each provider call. A pass that ingests, and linked views, keep the pass
+  budget.
+  The first cold target of a pass (no stored chunk set) gets the resume budget
+  once, so the last provider call can run past the pass deadline by that one
+  document; that pass publishes its generation (lexical, or vector when the
+  fill completed) with a fresh publish reserve. A linked view held only by
+  the pass budget after such a pass gets the same re-offer. The shadow migration driver
   (`shadow_pass`) runs after the sync owner is released, inside the same wake,
-  about 10 seconds of steps, at most 32. A pass that can go on re-offers its own
+  about 60 seconds of steps, at most 32. A pass that can go on re-offers its own
   wake due 30 seconds later (`WakeQueue.offer(delay=)`); the drain releases the
   lease and the lease-free timer runs it, so the next pass takes the same sync
   admission and owner checks. The reader switch step holds the install,
@@ -116,6 +138,9 @@ development execution guard is separate; see
   installation's proof fails outright (the code, or only the exception class
   when it is not a plain code), so a binding that never happens is named in
   the installation's own log.
+- A `laya-sync` pending result with committed schema3 ingest or vector progress uses the exact detail `deferred:pending:schema3_progress_ingest` or `deferred:pending:schema3_progress_vector`. The wake retries in 30 seconds without incrementing its attempt count; pending without durable progress keeps the ordinary retry policy.
+- When no worker is ready and full proof is loading or deferred, a drifted installation waiting as `read_only_no_worker` defers reproof for up to 30 seconds. A ready worker wakes the waiting installation; the usual proof and identity checks still apply.
+- A shadow switch step has a maximum 30-second proof budget, bounded by its caller deadline. `index-reader-status --rehearse-switch` reports read-only checks and marks checks requiring writes or leases unavailable; it does not authorize a switch.
 - On the capacity path every sync wake rescans, so the pending fill offers
   each cached member again. A member whose sidecar row is already identical,
   or an unverified card, skips the route proof, the journal write fence and the
@@ -148,6 +173,16 @@ development execution guard is separate; see
   A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
+- A v6 capacity sync marks its first write through
+  `laya_writer_scope.mark_new_write`. Validation with the first writer proof,
+  the journal image CAS with the plan recapture after it, and the reproof each
+  get their own operation deadline
+  (2 seconds for the worker writer); each proof first waits for the physical
+  windows readers hold. A proof that runs out (`writer_proof_deadline`,
+  `writer_proof_physical_busy`) ends the wake `deferred`, and its `wake.sync`
+  detail names each stage's milliseconds
+  (`p1_lock<ms>_sql<ms>:img<ms>:p2_lock<ms>_sql<ms>`: the window wait, then the
+  reads inside).
 - A selected sync yields (`laya_sync_yield_priority`) to a due `index` or
   `update` wake that has failed fewer than 3 times (those retired kinds are
   acknowledged on dispatch without work), and, between rounds, to another

@@ -195,6 +195,61 @@ class ShadowSwitchChecks(unittest.TestCase):
     def schema3_generation(self):
         return self.intent()['published']['generation']
 
+    def test_10_switch_proof_budget_is_thirty_seconds(self):
+        self.assertEqual(self.M._SWITCH_SECONDS, 30.0)
+
+    def test_11_rehearsal_reports_gates_without_any_persistent_write(self):
+        import sqlite3
+        with self.driver():
+            self.drive_to('shadow_verified')
+            self.loaded()
+        self.assertTrue(callable(getattr(self.M, 'switch_rehearsal', None)),
+                        'read-only switch rehearsal is not implemented')
+
+        def snapshot(root):
+            result = {}
+            for path in [root] + sorted(root.rglob('*')):
+                info = path.lstat()
+                value = path.read_bytes() if path.is_file() else None
+                result[str(path.relative_to(root))] = (info.st_ino, info.st_mtime_ns, value)
+            return result
+
+        def pins():
+            with sqlite3.connect('file:%s?mode=ro' % self.case.db, uri=True) as db:
+                return db.execute('SELECT count(*) FROM pins').fetchone()[0]
+
+        self.assertEqual(pins(), 0)
+        with self.driver(), mock.patch.object(self.reader, 'seal_current_reader',
+                                               side_effect=AssertionError('recovery path used')):
+            before = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+            result = self.M.switch_rehearsal(self.case.project, executing_root=self.case.plugin)
+            after = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+        emit('rehearsal-file-differences', paths=[(i, name) for i in range(2)
+             for name in sorted(set(before[i]) | set(after[i])) if before[i].get(name) != after[i].get(name)])
+        self.assertEqual(after, before)
+        self.assertEqual(pins(), 0)
+        checks = result['checks']
+        for name in ('record_comparison', 'parity_receipt', 'claude_receipt',
+                     'codex_receipt', 'bundle_match'):
+            self.assertIn(name, checks)
+            self.assertIn(checks[name]['status'], ('pass', 'fail', 'unavailable'))
+        self.assertNotEqual(checks['record_comparison']['status'], 'unavailable')
+        with self.driver(), \
+             mock.patch.object(self.reader, 'records_agree', return_value=False), \
+             mock.patch.object(self.reader, 'rollback_pair', return_value=False), \
+             mock.patch.object(self.reader, 'upgraded_pair', return_value=False), \
+             mock.patch.object(self.reader, 'seal_current_reader',
+                               side_effect=AssertionError('recovery path used')):
+            before_mismatch = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+            mismatch = self.M.switch_rehearsal(self.case.project, executing_root=self.case.plugin)
+            after_mismatch = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+        self.assertEqual(mismatch['checks']['record_comparison']['reason'], 'reader_install_changed')
+        self.assertEqual(after_mismatch, before_mismatch)
+        self.assertEqual(pins(), 0)
+        emit('rehearsal-read-only-proof', stateAndStoreFilesBytesInodesMtimesUnchanged=True,
+             beforePins=0, afterPins=0, mismatchReason='reader_install_changed')
+
+
     # ---- completion: passes alone reach switched ---------------------------
     def test_01_sync_passes_reach_switched_and_main_recall_reads_schema3(self):
         case = self.case
@@ -516,12 +571,14 @@ class ShadowSwitchChecks(unittest.TestCase):
         emit('switch-settled-active-receipt', passes=[first['migration_state'], second['migration_state']])
 
     # ---- U15b: ordinary recall hooks of both hosts record the receipts ------
-    def hook(self, host, *, wakes=None, probes=None, fail=False):
+    def hook(self, host, *, wakes=None, probes=None, fail=False, elapse=0.0, budget=None):
         """One registered recall hook through ``laya_host_response.main`` (serve-stdin).
 
         Synthetic authority as in ``loaded``: the companion's executing root,
-        its host cache layout and the host process identity. Returns
-        ``(exit, stdout)``.
+        its host cache layout and the host process identity. ``elapse`` makes
+        the reader probe as slow as that many seconds on the observer's clock
+        (no sleep); ``budget`` sets the hook's total budget in seconds.
+        Returns ``(exit, stdout)``.
         """
         case = self.case
         host_response = self.u11.host
@@ -538,13 +595,16 @@ class ShadowSwitchChecks(unittest.TestCase):
                         start=1000.5 + (host == 'codex'), start_key=(1000, 5), argv=(host,),
                         executable=str(Path(sys.executable).resolve()))
         real_probe = observer._probe_hook_reader
+        offset = [0.0]
 
         def probe(*args, **kwargs):
             if probes is not None:
                 probes.append(kwargs['deadline'] - time.monotonic())
             if fail:
                 raise ValueError('reader_hosts_pending')
-            return real_probe(*args, **kwargs)
+            value = real_probe(*args, **kwargs)
+            offset[0] += elapse
+            return value
 
         def request(kind, target='', **kwargs):
             if wakes is not None:
@@ -564,6 +624,11 @@ class ShadowSwitchChecks(unittest.TestCase):
             stack.enter_context(redirect_stdout(out))
             stack.enter_context(redirect_stderr(err))
             stack.enter_context(mock.patch.object(hook_budget, '_deadline', None))
+            if elapse:
+                stack.enter_context(mock.patch.object(observer, 'time', mock.Mock(
+                    time=time.time, sleep=time.sleep, monotonic=lambda: time.monotonic() + offset[0])))
+            if budget is not None:
+                stack.enter_context(mock.patch.dict(os.environ, {'QMD_HOOK_TOTAL_SECONDS': str(budget)}))
             code = host_response.main(['serve-stdin', 'recall', host, str(case.project)])
         self.assertEqual(code, 0, err.getvalue())
         return code, out.getvalue()
@@ -816,6 +881,26 @@ class ShadowSwitchChecks(unittest.TestCase):
         self.assertEqual(switched['switched']['endpoint_id'], recorded['endpoint_id'])
         self.assertEqual(self.store_format(), 'schema3')
         emit('switch-after-epoch-bump', marks=len(bumps), stale=stale)
+
+    # ---- a reader probe slower than two seconds, bounded by the hook budget --
+    def test_10_slow_reader_probe_records_within_the_remaining_hook_budget(self):
+        """A warm v6 probe that takes 5.5 s (a 4,000-card install measures
+        5.2-5.5 s) still records its receipt; the probe deadline never exceeds
+        what is left of the hook budget, so the same probe under a 5 s budget
+        records nothing."""
+        observer = importlib.import_module('laya_bridge_observer')
+        self.challenges()
+        with self.driver():
+            self.drive_to('shadow_verified')
+        probes = []
+        code, _ = self.hook('claude', probes=probes, elapse=5.5, budget=5)
+        self.assertEqual((code, len(probes), self.challenges()), (0, 1, []))
+        self.assertLessEqual(probes[0], 5.0)
+        code, _ = self.hook('claude', probes=probes, elapse=5.5)
+        self.assertEqual((code, len(probes), len(self.challenges())), (0, 2, 1))
+        self.assertGreater(probes[1], 5.5)
+        self.assertLessEqual(probes[1], observer.HOOK_RECEIPT_SECONDS)
+        emit('slow-probe-hook-receipt', probe_budget=probes, challenges=len(self.challenges()))
 
 
 if __name__ == '__main__':

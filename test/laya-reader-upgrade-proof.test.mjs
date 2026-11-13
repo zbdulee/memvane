@@ -17,7 +17,7 @@ test('upgrade old-bundle absence preserves read-only evidence',()=>{
         PYTHONDONTWRITEBYTECODE:'1',QMD_RECALL_LOG:''}});
     if(result.stdout)process.stdout.write(result.stdout);
     assert.ifError(result.error);assert.equal(result.status,0,result.stdout+result.stderr);
-    assert.match(result.stderr,selected?/Ran 1 test\b/:/Ran 12 tests\b/);assert.match(result.stderr,/\nOK\b/);
+    assert.match(result.stderr,selected?/Ran 1 test\b/:/Ran 13 tests\b/);assert.match(result.stderr,/\nOK\b/);
   } finally {removeTemp(home);}
 });
 

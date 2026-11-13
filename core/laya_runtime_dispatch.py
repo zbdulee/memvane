@@ -267,6 +267,8 @@ def _member_path(value):
 
 def _deferred_detail(result):
     """Fixed-code why of a not-done target result, for the failure record."""
+    if result.get('state') == 'pending' and result.get('progressKind') in ('ingest', 'vector'):
+        return 'deferred:pending:schema3_progress_' + result['progressKind']
     parts = ['deferred', _code(result.get('state')) or 'unlabeled',
              _code(result.get('reason')) or 'unlabeled']
     extra = _code(result.get('detail'))

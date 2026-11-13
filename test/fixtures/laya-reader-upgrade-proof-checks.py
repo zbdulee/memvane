@@ -413,6 +413,55 @@ class UpgradeProofChecks(unittest.TestCase):
             self.assertEqual(envelope['endpoint_id'],result['endpoint_id'])
             self.assertNotIn('otter',json.dumps(envelope))
 
+    def test_loaded_qa_probe_deadline_is_bounded_by_the_remaining_hook_budget(self):
+        """The QA probe gets the receipt probe bound (a warm 4,000-card v6 probe
+        takes 5.2-5.5 s), cut to what is left of the hook budget; the
+        serve-qa-stdin entry arms that budget, and an exhausted one refuses."""
+        cards=fixture.base.published.CARDS
+        with mock.patch.dict(cards,{'concepts/otter-ledger.md':
+                ('Otter ledger','otter memvaneqa bridge reader sentinel')}):
+            seed=fixture.MoveSealChecks('runTest');self.addCleanup(seed.doCleanups);seed.setUp()
+        case,reader=seed.case,seed.reader
+        observer=importlib.import_module('laya_bridge_observer')
+        opens=importlib.import_module('laya_reader_open')
+        hook_budget=importlib.import_module('hook_budget')
+        host_response=importlib.import_module('laya_host_response')
+        path=case.WIKI+'/concepts/otter-ledger.md'
+        with reader._readonly(case.db,case.state) as db:
+            sha=db.execute('SELECT hash FROM membership WHERE path=? AND gen=?',
+                           (path,case.head()[0])).fetchone()[0]
+        real=opens.inspect_warm_snapshot
+        budgets=[]
+        def inspect(*args,**kwargs):
+            budgets.append(kwargs['deadline']-time.monotonic())
+            return real(*args,**kwargs)
+        def probe():
+            return observer._probe_loaded_reader(case.project,case.plugin,sentinel_path=path,sentinel_sha256=sha)
+        with seed.authority(), mock.patch.object(opens,'inspect_warm_snapshot',side_effect=inspect):
+            with mock.patch.object(hook_budget,'_deadline',None):
+                self.assertEqual(probe()['sentinel_sha256'],sha)
+            with mock.patch.object(hook_budget,'_deadline',time.monotonic()+4):
+                self.assertEqual(probe()['sentinel_sha256'],sha)
+            with mock.patch.object(hook_budget,'_deadline',time.monotonic()-1), \
+                 self.assertRaisesRegex(ValueError,'reader_hosts_pending'):
+                probe()
+        self.assertEqual(len(budgets),2,budgets)
+        self.assertGreater(budgets[0],5.5)
+        self.assertLessEqual(budgets[0],observer.HOOK_RECEIPT_SECONDS)
+        self.assertLessEqual(budgets[1],4)
+        armed=[]
+        def reply(*_args):
+            armed.append(hook_budget.deadline()-time.monotonic())
+            return None
+        out=io.StringIO()
+        with mock.patch.object(hook_budget,'_deadline',None), \
+             mock.patch.object(observer,'qa_hook_reply',side_effect=reply), \
+             mock.patch.object(sys,'stdin',mock.Mock(buffer=io.BytesIO(b'{}'))), redirect_stdout(out):
+            self.assertEqual(host_response.main(['serve-qa-stdin','recall','claude',str(case.project)]),0)
+        self.assertEqual(len(armed),1)
+        self.assertLessEqual(armed[0],hook_budget.MAX_SECONDS)
+        self.assertEqual(json.loads(out.getvalue())['decision'],'block')
+
     def test_v5_linked_worktree_uses_main_persisted_reader(self):
         seed=fixture.MoveSealChecks('runTest');self.addCleanup(seed.doCleanups);seed.setUp()
         case,reader=seed.case,seed.reader
@@ -1649,5 +1698,6 @@ if __name__=='__main__':
         UpgradeProofChecks('test_v5_prefence_intent_retargets_after_its_bundle_disappears'),
         UpgradeProofChecks('test_v4_missing_old_bundle_bootstrap_is_conversion_only'),
         UpgradeProofChecks('test_v4_upgrade_driver_requires_preflight_and_converts_before_fence'),
-        UpgradeProofChecks('test_current_v4_bundle_still_converts_after_preflight')]))
+        UpgradeProofChecks('test_current_v4_bundle_still_converts_after_preflight'),
+        UpgradeProofChecks('test_loaded_qa_probe_deadline_is_bounded_by_the_remaining_hook_budget')]))
     raise SystemExit(not result.wasSuccessful())

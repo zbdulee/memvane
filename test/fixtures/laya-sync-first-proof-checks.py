@@ -89,6 +89,8 @@ class SyncFirstProofChecks(unittest.TestCase):
                 'test_capacity_worker_propagates_pending_rollback',
                 'test_capacity_worker_defers_physical_window_busy',
                 'test_capacity_worker_propagates_physical_busy_pending_rollback',
+                'test_capacity_worker_defers_new_write_proof_deadline_with_stage_timings',
+                'test_capacity_worker_defers_new_write_proof_physical_busy',
             }
             if self._testMethodName in absent_sidecar_cases:
                 import laya_incremental_docs
@@ -1212,7 +1214,8 @@ class SyncFirstProofChecks(unittest.TestCase):
             for suffix in ('', '-wal', '-shm', '-journal'):
                 Path(str(sidecar)+suffix).unlink(missing_ok=True)
             if recovery not in ('create', 'interrupt', 'closefail', 'busy', 'busy_pending',
-                                'physical_busy', 'physical_busy_pending', 'lost'):
+                                'physical_busy', 'physical_busy_pending', 'lost',
+                                'proof_deadline', 'proof_physical_busy'):
                 import laya_initial_build
                 identity = laya_initial_build.read(self.case.state)['identity']
                 with closing(sqlite3.connect(sidecar, isolation_level=None)) as db:
@@ -1238,6 +1241,12 @@ class SyncFirstProofChecks(unittest.TestCase):
             controller = SimpleNamespace(activity=lambda *_args: nullcontext())
             observed = []
             def capacity(*_args, **_kwargs):
+                if recovery in ('proof_deadline', 'proof_physical_busy'):
+                    # mark_new_write's reproof ran out of its deadline.
+                    error = self.W.ReaderWindowBusy('writer_' + recovery)
+                    error.mark_timings = {'p1_lock': 1500, 'p1_sql': 90, 'img': 12,
+                                          'p2_lock': 1500, 'p2_sql': 1000}
+                    raise error
                 if recovery in ('busy', 'busy_pending', 'physical_busy', 'physical_busy_pending'):
                     reason = 'reader_physical_busy' if recovery.startswith('physical_') else 'reader_write_deadline'
                     error = self.W.ReaderWindowBusy(reason)
@@ -1254,6 +1263,12 @@ class SyncFirstProofChecks(unittest.TestCase):
                     mock.patch.object(laya_wiki_discovery, 'observe_grants', return_value=None), \
                     mock.patch.object(self.worker, '_member_diagnosis', return_value=None), \
                     mock.patch.object(self.worker, '_sync_capacity', side_effect=capacity):
+                if recovery in ('proof_deadline', 'proof_physical_busy'):
+                    result = self.worker.run(self.case.project, coordinator=controller,
+                                             report={}, start_service=lambda *_a, **_kw: None)
+                    self.assertEqual(result, {'state': 'deferred', 'reason': 'writer_' + recovery,
+                        'detail': 'p1_lock1500_sql90:img12:p2_lock1500_sql1000'})
+                    return
                 if recovery in ('busy', 'physical_busy'):
                     result = self.worker.run(self.case.project, coordinator=controller,
                                              report={}, start_service=lambda *_a, **_kw: None)
@@ -1365,6 +1380,12 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_capacity_worker_propagates_physical_busy_pending_rollback(self):
         self._capacity_sidecar_fixture(recovery='physical_busy_pending')
+
+    def test_capacity_worker_defers_new_write_proof_deadline_with_stage_timings(self):
+        self._capacity_sidecar_fixture(recovery='proof_deadline')
+
+    def test_capacity_worker_defers_new_write_proof_physical_busy(self):
+        self._capacity_sidecar_fixture(recovery='proof_physical_busy')
 
     def test_capacity_worker_resumes_empty_cold_sidecar_after_fence(self):
         self._capacity_sidecar_fixture(recovery='empty')

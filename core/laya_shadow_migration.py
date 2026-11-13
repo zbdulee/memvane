@@ -3687,7 +3687,7 @@ def shadow_parity_receipt(state, *, candidate, candidate_incarnation):
 # Lock bundle (design 4.3-2): installer -> build owner -> operation ->
 # provider lane -> sync owner, never waiting. cas_reader takes the journal
 # transition lock itself. Each step holds it for at most _SWITCH_SECONDS.
-_SWITCH_SECONDS = 10.0
+_SWITCH_SECONDS = 30.0
 _SWITCH_HOSTS = frozenset(('claude', 'codex'))
 _READY_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'parity_seal', 'observation',
                  'source_revision', 'release_commit', 'capability', 'endpoint_id', 'store_incarnation',
@@ -4197,6 +4197,102 @@ def reader_status(project):
             'rollback': _last_rollback(history), 'held': rollback_hold(state) is not None}
 
 
+def switch_rehearsal(project, *, executing_root=None):
+    """Read-only diagnostic; none of these observations authorize a switch."""
+    import laya_install_journal as install
+    with install.read_only_journals():
+        return _switch_rehearsal(project, executing_root=executing_root)
+
+
+def _switch_rehearsal(project, *, executing_root=None):
+    from pathlib import Path
+    import laya_bridge_readiness as bridge
+    import laya_install_journal as install
+    import laya_ledger_common as ledger
+    project = Path(project).resolve(strict=True)
+    root = Path(executing_root or Path(__file__).resolve().parent.parent)
+    checks = {}
+
+    def run(name, operation):
+        try:
+            value = operation()
+            checks[name] = {'status': 'pass'}
+            return value
+        except Exception as exc:
+            reason = str(exc) or type(exc).__name__
+            checks[name] = {'status': ('unavailable' if reason == 'candidate_rehearsal_unavailable'
+                                       else 'fail'), 'reason': reason}
+            return None
+
+    decision = journal.journal.select_route(str(project), action='recall')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('migration_route_invalid')
+    state = journal._state(Path(decision['journalPath']).parent)
+    journal_path = state / 'install-journal.sqlite'
+    if any(Path(str(journal_path) + suffix).exists() for suffix in ('-wal', '-journal')):
+        raise IndexContractError('reader_journal_rehearsal_unavailable')
+    run('preconditions', lambda: _switch_preconditions(project, state))
+    intent = run('intent', lambda: ledger._read_json(state / _INTENT))
+    selection = run('selection', lambda: _read_history(state / 'install-journal.sqlite'))
+    proof = None
+    def selected():
+        import laya_fresh_wiki_origin as fresh
+        with install.read_only_journals():
+            proof = install.verify_notification_target(decision)
+            info = install.inspect_journal(state / 'install-journal.sqlite')
+            owner = install._inspect_identity(info['selected'])
+            if (proof['sourceCommit'] != info['selected']['sourceCommit']
+                    or str(install._verified_executing_root(info['selected'], owner)) != str(root)):
+                raise IndexContractError('switch_bundle_mismatch')
+            return state, project, decision, proof, fresh._load(state / fresh.LEDGER), info
+    selected_state = run('bundle_match', selected)
+    if selected_state is not None:
+        proof = selected_state[3]
+    receipt = None
+    if isinstance(intent, dict):
+        def parity():
+            value = shadow_parity_receipt(state, candidate=intent['candidate'],
+                                          candidate_incarnation=intent['candidate_incarnation'])
+            if value is None:
+                raise IndexContractError('switch_parity_missing')
+            return value
+        receipt = run('parity_receipt', parity)
+    else:
+        checks['parity_receipt'] = {'status': 'unavailable'}
+    if proof is None:
+        checks['claude_receipt'] = checks['codex_receipt'] = {'status': 'unavailable'}
+    else:
+        def bridges():
+            paths = bridge.find_loaded_bridge(state, release_commit=proof['sourceCommit'])
+            result = bridge.check_loaded_bridge(paths, release_commit=proof['sourceCommit'],
+                                                expected_hosts=_SWITCH_HOSTS)
+            if selection is None or (result['endpoint_id'], result['reader_epoch']) != (
+                    selection[0].preferred_endpoint, selection[0].epoch):
+                raise IndexContractError('switch_bridge_missing')
+        run('claude_receipt', bridges)
+        checks['codex_receipt'] = dict(checks['claude_receipt'])
+    if proof is None or receipt is None or selection is None or not isinstance(intent, dict):
+        checks['record_comparison'] = {'status': 'unavailable'}
+    else:
+        def compare():
+            candidate = Path(intent['candidate'])
+            if any(Path(str(candidate) + suffix).exists() for suffix in ('-wal', '-journal')):
+                raise IndexContractError('candidate_rehearsal_unavailable')
+            draft = {'db_path': intent['candidate'], 'worktree_id': intent['worktree_id'],
+                     'head_floor': None, 'parity': {k: receipt[k] for k in journal.PARITY_KEYS},
+                     'vector_profile': None, 'vector_recipe': None}
+            with install.read_only_journals():
+                target, _raw, _proof = journal._schema3_record(*selected_state, draft)
+            target['creation_epoch'] = _proof['selectionEpoch']
+            base = selection[1]
+            if not (journal.records_agree(target, base, journal.stable_fields(base, target))
+                    or journal.rollback_pair(base, target) or journal.upgraded_pair(base, target)):
+                raise IndexContractError('reader_install_changed')
+        run('record_comparison', compare)
+    checks['catchup_and_head'] = {'status': 'unavailable', 'reason': 'requires_pinned_snapshot'}
+    return {'status': 'inspected', 'checks': checks}
+
+
 def _rollback_transition_id(expected_endpoint, endpoint_id, epoch):
     # Fixed per (base, target, epoch): a retry after a committed CAS is its replay.
     return hashlib.sha256(('memvane-reader-rollback-v1\0%s\0%s\0%d' % (expected_endpoint, endpoint_id, epoch))
@@ -4293,7 +4389,10 @@ def rollback_reader(project, *, executing_root):
                 raise IndexContractError('rollback_not_switched')
             target = installer.endpoint
             current = journal._recheck(target)[0]
-            if (any(current.get(key) != before.get(key) for key in _ROLLBACK_STORE)
+            # Re-issued in this boot: store nodes compare by inode.
+            now, then = ({k: r.get(k) for k in _ROLLBACK_STORE} for r in (current, before))
+            if (any(now[k] != then[k] and not journal.records_agree(now, then, (k,))
+                    for k in _ROLLBACK_STORE)
                     or any(Path(current[key]).name != Path(before[key]).name for key in _ROLLBACK_PATHS)):
                 raise IndexContractError('rollback_v6_changed')
             transition = _rollback_transition_id(selection.preferred_endpoint, target.endpoint_id,
