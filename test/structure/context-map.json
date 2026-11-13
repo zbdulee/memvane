@@ -761,11 +761,6 @@
       "layer": "application",
       "pinned": false
     },
-    "core/laya_v6_reader.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": false
-    },
     "core/laya_vector_block.py": {
       "context": "sync",
       "layer": "application",
@@ -1005,11 +1000,6 @@
       "context": "host",
       "layer": "application",
       "pinned": true
-    },
-    "core/sqlite_read.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": false
     },
     "core/wiki_activity_log.py": {
       "context": "wiki",
