@@ -140,7 +140,7 @@ development execution guard is separate; see
   the installation's own log.
 - A `laya-sync` pending result with committed schema3 ingest or vector progress uses the exact detail `deferred:pending:schema3_progress_ingest` or `deferred:pending:schema3_progress_vector`. The wake retries in 30 seconds without incrementing its attempt count; pending without durable progress keeps the ordinary retry policy.
 - When no worker is ready and full proof is loading or deferred, a drifted installation waiting as `read_only_no_worker` defers reproof for up to 30 seconds. A ready worker wakes the waiting installation; the usual proof and identity checks still apply.
-- A shadow switch step has a maximum 30-second proof budget, bounded by its caller deadline. `index-reader-status --rehearse-switch` reports read-only checks and marks checks requiring writes or leases unavailable; it does not authorize a switch.
+- A shadow switch step has a maximum 30-second proof budget, bounded by its caller deadline.
 - On the capacity path every sync wake rescans, so the pending fill offers
   each cached member again. A member whose sidecar row is already identical,
   or an unverified card, skips the route proof, the journal write fence and the

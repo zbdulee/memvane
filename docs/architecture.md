@@ -489,10 +489,7 @@ rollback, or with `MEMVANE_SHADOW_MIGRATION=off`.
 
 A schema3-selected sync pass publishes changed cards (64 per pass, 45 seconds)
 into the main view and then the linked worktree views, lexical first, and fills
-vectors from the install provider into a later vector generation. Rollback to the
-v6 reader is an explicit setup action (`rollback-index-reader`); it deletes
-nothing, wakes a v6 full-scan sync, and holds the migration until
-`resume-index-reader-migration`, which restarts the copy in a new candidate file.
+vectors from the install provider into a later vector generation..
 
 ### 3. PreToolUse Gate
 
