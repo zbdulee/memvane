@@ -450,7 +450,7 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
         spec = self._attestation(member['trust_digest'], cache=cache)
         if spec['blob_sha'] != member['blob_sha'] or spec['policy_digest'] != handle.policy_digest:
             v.fail('card_trust_mismatch')
-        # A writer-ingested legacy_verified card keeps the v6 reader rule: its
+        # A writer-ingested legacy_verified card keeps its reader rule: its
         # unbound sources are not compared with the current scan (no HEAD or
         # raw reread is claimed); anything but fully unbound sources is ineligible.
         unbound = spec['verification_kind'] == 'legacy_verified'

@@ -1118,8 +1118,7 @@ class RowsMixin:
                                      verified=record['verified'], ordinal=head.ordinal)
         return pin
 
-    def _rows_search(self, pin, fts_query, limit, *, path_prefixes, excluded_paths, deadline_seconds,
-                     ):
+    def _rows_search(self, pin, fts_query, limit, *, path_prefixes, excluded_paths, deadline_seconds):
         import sqlite3
         from laya_view_reader import _query, _remaining
         deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)

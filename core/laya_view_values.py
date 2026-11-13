@@ -12,7 +12,7 @@ import re
 import time
 
 import laya_blob_values as v
-import laya_store_primitives as legacy
+import laya_store_primitives as primitives
 
 MAX_MEMBERS = 20000
 MAX_SOURCES = 20000
@@ -193,8 +193,8 @@ def skipped(path, patterns):
     return False
 
 
-def fts_rows(bodies, titles=None, fts_paths=None, *, deadline=None):
-    """CJK-spaced view path/title/body; identical inputs retain v6 ranking."""
+def fts_rows(bodies, titles=None, *, deadline=None):
+    """CJK-spaced view path, title and body."""
     if deadline is not None and time.monotonic() >= deadline:
         v.fail('fts_deadline_exceeded')
     normalized, rows = {}, []
@@ -202,9 +202,9 @@ def fts_rows(bodies, titles=None, fts_paths=None, *, deadline=None):
         if deadline is not None and time.monotonic() >= deadline:
             v.fail('fts_deadline_exceeded')
         if body not in normalized:
-            normalized[body] = legacy._qmd_fts_text(body, deadline=deadline)
-        rows.append(dict(filepath=legacy._qmd_fts_text(path if fts_paths is None else fts_paths[path], deadline=deadline),
-                         title=legacy._qmd_fts_text(titles[path] if titles is not None else legacy._qmd_title(body, path), deadline=deadline),
+            normalized[body] = primitives._qmd_fts_text(body, deadline=deadline)
+        rows.append(dict(filepath=primitives._qmd_fts_text(path, deadline=deadline),
+                         title=primitives._qmd_fts_text(titles[path] if titles is not None else primitives._qmd_title(body, path), deadline=deadline),
                          body=normalized[body], path_key=path))
     if deadline is not None and time.monotonic() >= deadline:
         v.fail('fts_deadline_exceeded')
