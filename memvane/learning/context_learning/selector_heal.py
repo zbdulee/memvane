@@ -437,7 +437,7 @@ def warm(project, *, home=None, state=None):
 def selector_projects(home=None):
     """Projects of installs that have a prepared selector."""
     from memvane.kernel import memvane_paths
-    from memvane.install import initial_build as build
+    from memvane.journal.api import read_v1_build
     found = []
     for base in (memvane_paths.installs_base(home),):
         try:
@@ -446,7 +446,7 @@ def selector_projects(home=None):
             continue
         for name in names:
             try:
-                record = build.read(base / name)
+                record = read_v1_build(base / name)
             except Exception:
                 continue
             project = record['identity']['projectRoot'] if record else None
