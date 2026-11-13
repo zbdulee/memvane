@@ -6,7 +6,7 @@ def row_delta_statements():
     result = [
       '''CREATE TABLE s_deltas (
         view_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
-        rel TEXT NOT NULL CHECK(rel IN ('card','source','card_source','legacy_fts')),
+        rel TEXT NOT NULL CHECK(rel IN ('card','source','card_source')),
         key_json TEXT NOT NULL CHECK(json_valid(key_json)),
         old_json TEXT CHECK(old_json IS NULL OR json_valid(old_json)),
         new_json TEXT CHECK(new_json IS NULL OR json_valid(new_json)),
@@ -117,8 +117,8 @@ def row_generation_statements():
       '''CREATE TABLE s_generations (
         ordinal INTEGER PRIMARY KEY AUTOINCREMENT, gen_id TEXT NOT NULL UNIQUE,
         view_id TEXT NOT NULL REFERENCES views(view_id), epoch INTEGER NOT NULL CHECK(epoch>0),
-        prior_ordinal INTEGER, kind TEXT NOT NULL CHECK(kind IN ('normal','legacy','rollback')),
-        sidecar_present INTEGER NOT NULL DEFAULT 0 CHECK(sidecar_present IN (0,1)),
+        prior_ordinal INTEGER, kind TEXT NOT NULL CHECK(kind IN ('normal','rollback')),
+        sidecar_present INTEGER NOT NULL DEFAULT 0 CHECK(sidecar_present=0),
         capture_json TEXT NOT NULL CHECK(json_valid(capture_json)), policy_digest TEXT NOT NULL,
         skip_digest TEXT NOT NULL, recipe_id TEXT REFERENCES chunk_recipes(recipe_id),
         profile_id TEXT REFERENCES vector_profiles(profile_id),
@@ -126,8 +126,7 @@ def row_generation_statements():
         member_digest TEXT NOT NULL, source_digest TEXT NOT NULL, logical_fts_digest TEXT NOT NULL,
         physical_fts_digest TEXT NOT NULL,
         member_acc TEXT NOT NULL CHECK(json_valid(member_acc)), fts_acc TEXT NOT NULL CHECK(json_valid(fts_acc)),
-        legacy_json TEXT CHECK((kind='legacy')=(legacy_json IS NOT NULL)
-          AND (legacy_json IS NULL OR json_valid(legacy_json))),
+        legacy_json TEXT CHECK(legacy_json IS NULL),
         seal_digest TEXT NOT NULL, UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal), UNIQUE(gen_id,view_id),
         CHECK((recipe_id IS NULL)=(profile_id IS NULL)),
         CHECK(coverage='lexical' OR recipe_id IS NOT NULL))''',
@@ -294,10 +293,6 @@ def row_statements():
         WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
           ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
         BEGIN SELECT RAISE(ABORT,'view_row_retained'); END''',
-      '''CREATE TRIGGER s_legacy_fts_retained BEFORE DELETE ON s_legacy_fts
-        WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
-          ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
-        BEGIN SELECT RAISE(ABORT,'view_row_retained'); END''',
       '''CREATE TRIGGER s_card_sources_retained BEFORE DELETE ON s_card_sources
         WHEN OLD.gen_to IS NULL OR OLD.gen_to>COALESCE((SELECT COALESCE(g.prior_ordinal,g.ordinal) FROM s_heads h JOIN s_generations g
           ON g.view_id=h.view_id AND g.ordinal=h.ordinal WHERE h.view_id=OLD.view_id),0)
@@ -334,33 +329,6 @@ def row_statements():
         view_id TEXT NOT NULL REFERENCES views(view_id), origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')),
         path_key TEXT NOT NULL COLLATE BINARY, fts_rowid INTEGER NOT NULL,
         PRIMARY KEY(view_id,origin,path_key), UNIQUE(view_id,origin,fts_rowid))''',
-      # Legacy FTS corpus rows: same interval rules as card rows.
-      '''CREATE TABLE s_legacy_fts (
-        view_id TEXT NOT NULL REFERENCES views(view_id),
-        origin TEXT NOT NULL CHECK(origin IN ('base','sidecar')), path_key TEXT NOT NULL COLLATE BINARY,
-        gen_from INTEGER NOT NULL, gen_to INTEGER, blob_sha TEXT NOT NULL REFERENCES wiki_blobs(blob_sha),
-        title TEXT, position INTEGER, active INTEGER NOT NULL CHECK(active IN (0,1)),
-        PRIMARY KEY(view_id,origin,path_key,gen_from), CHECK(gen_to IS NULL OR gen_to>gen_from),
-        CHECK((origin='sidecar')=(title IS NOT NULL AND position IS NOT NULL)))''',
-      'CREATE UNIQUE INDEX s_legacy_fts_open ON s_legacy_fts(view_id,origin,path_key) WHERE gen_to IS NULL',
-      'CREATE INDEX s_legacy_fts_gc ON s_legacy_fts(view_id,gen_to) WHERE gen_to IS NOT NULL',
-      '''CREATE TRIGGER s_legacy_fts_no_overlap BEFORE INSERT ON s_legacy_fts
-        WHEN EXISTS(SELECT 1 FROM s_legacy_fts f WHERE f.view_id=NEW.view_id AND f.origin=NEW.origin
-          AND f.path_key=NEW.path_key AND (NEW.gen_to IS NULL OR f.gen_from<NEW.gen_to)
-          AND (f.gen_to IS NULL OR NEW.gen_from<f.gen_to))
-        BEGIN SELECT RAISE(ABORT,'legacy_fts_interval_overlap'); END''',
-      '''CREATE TRIGGER s_legacy_fts_close_only BEFORE UPDATE ON s_legacy_fts
-        WHEN OLD.gen_to IS NOT NULL OR NEW.gen_to IS NULL OR NEW.view_id IS NOT OLD.view_id
-          OR NEW.origin IS NOT OLD.origin OR NEW.path_key IS NOT OLD.path_key
-          OR NEW.gen_from IS NOT OLD.gen_from OR NEW.blob_sha IS NOT OLD.blob_sha
-          OR NEW.title IS NOT OLD.title OR NEW.position IS NOT OLD.position OR NEW.active IS NOT OLD.active
-        BEGIN SELECT RAISE(ABORT,'legacy_fts_interval_immutable'); END''',
-      f'''CREATE TRIGGER s_legacy_fts_in_flight BEFORE INSERT ON s_legacy_fts
-        WHEN NEW.gen_from IS NOT {view_new}
-        BEGIN SELECT RAISE(ABORT,'legacy_fts_generation_invalid'); END''',
-      f'''CREATE TRIGGER s_legacy_fts_close_in_flight BEFORE UPDATE ON s_legacy_fts
-        WHEN NEW.gen_to IS NOT {_IN_FLIGHT.format(view='OLD.view_id')}
-        BEGIN SELECT RAISE(ABORT,'legacy_fts_generation_invalid'); END''',
       '''CREATE INDEX s_generations_by_view ON s_generations(view_id,ordinal)''',
       '''CREATE INDEX s_cards_by_blob ON s_cards(blob_sha,view_id)''',
     ])
