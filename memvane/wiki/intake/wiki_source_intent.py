@@ -27,11 +27,10 @@ POST_TOOL_TRIGGER = "post_tool_source"
 SYNC_TRIGGER = "post_sync_source"
 # SessionStart sync 경유 라벨. 이 경로는 자기 grant만 인정한다 — `post_tool_source`
 # 동의를 SessionStart 자동 컴파일로 넓히지 않는다.
-SESSION_START_TRIGGER = "session_start_source"
+from memvane.wiki.intake.types import SESSION_START_TRIGGER, SESSION_START_ACCEPTED_TRIGGERS
 # 수동 sync는 `post_tool_source`만 켜 둔 프로젝트도 동등 grant로 인정한다
 # (근거는 wiki_compile_enqueue의 COMPILE_ACCEPTED_TRIGGERS 주석).
 SYNC_ACCEPTED_TRIGGERS = (SYNC_TRIGGER, POST_TOOL_TRIGGER)
-SESSION_START_ACCEPTED_TRIGGERS = (SESSION_START_TRIGGER,)
 
 
 def trigger_policy(session_start):

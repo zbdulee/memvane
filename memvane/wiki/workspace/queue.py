@@ -73,7 +73,7 @@ def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue
         "requeue_count": requeue_count,
     }
     if queue_name == cp.SOURCE_QUEUE:
-        from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
+        from memvane.wiki.intake import api as laya_wiki_backfill
         receipt = laya_wiki_backfill.write_discard_receipt(job)
         if receipt is not None:
             payload['backfillReceipt'] = receipt

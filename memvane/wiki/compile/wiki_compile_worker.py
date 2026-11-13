@@ -31,8 +31,8 @@ from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import api as source_text
 from memvane.settings.api import select_collections
-from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as append_source_jobs
-from memvane.wiki.intake.wiki_compile_enqueue import _source_record
+from memvane.wiki.intake.api import append_source_jobs
+from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
                                         requeue_lines, now_iso, append_jsonl, read_queue, claim_queue)
 from memvane.wiki.compile import wiki_compile as wc
@@ -882,7 +882,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                                            'selected_route_unavailable'))
         return False, True, []
     if job.get('initialBackfill') is not None:
-        from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
+        from memvane.wiki.intake import api as laya_wiki_backfill
         if laya_wiki_backfill.settled_job(selected_route, job):
             append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_already_settled'))
             return True, False, []
@@ -936,10 +936,10 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             # One forced refresh per surviving source. The wait marker and its
             # source jobs enter the same durable queue append, so a replay
             # sees the marker before it could schedule another paid refresh.
-            from memvane.wiki.intake import wiki_compile_enqueue as enqueue
+            from memvane.wiki.intake import api as enqueue
             records = []
             for survivor_collection, survivor_path in outcome['survivors']:
-                record = enqueue._source_record(
+                record = enqueue.source_record(
                     str(root / survivor_path), str(root), str(root), config,
                     job.get('engine', qmd_config.UNKNOWN_ENGINE),
                     trigger=job.get('trigger', 'post_sync_source'))
@@ -953,7 +953,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 records.append(record)
             if not records:
                 return False, True, []
-            wait = {**job, 'sharedEnqueued': True, 'ts': enqueue._utc_now()}
+            wait = {**job, 'sharedEnqueued': True, 'ts': enqueue.utc_now()}
             queue = _safe_queue_path(str(root), cp.rel(cp.SOURCE_QUEUE))
             if queue is None:
                 return False, True, []
@@ -962,8 +962,8 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             try:
                 if queue.exists() and queue.stat().st_size > enqueue.QUEUE_SCAN_MAX_BYTES:
                     return False, True, []
-                marker_key = enqueue.intent.revision_key(wait)
-                if marker_key in enqueue._queued_revision_keys(queue):
+                marker_key = enqueue.revision_key(wait)
+                if marker_key in enqueue.queued_revision_keys(queue):
                     return True, False, []
             except OSError:
                 return False, True, []
@@ -1692,7 +1692,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     claimed = claim_queue(queue)
     # Reaping holds the source-queue lock. ACK outside it to preserve discovery
     # -> enqueue lock order, including the empty-queue/crash-recovery path.
-    from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
+    from memvane.wiki.intake import api as laya_wiki_backfill
     laya_wiki_backfill.reconcile_discards(selected_route)
     if claimed is None:
         if selected_route is not None:
@@ -1764,7 +1764,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                 finally:
                     _EXTRACTOR_BUDGET.reset(budget_token)
                 if processed and not preserve:
-                    from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
+                    from memvane.wiki.intake import api as laya_wiki_backfill
                     laya_wiki_backfill.settle_job(selected_route, job)
             except Exception:
                 remaining.append(raw_line)

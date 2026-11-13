@@ -883,7 +883,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
     queue capacity). Without that wake the grant is withdrawn, never left
     for an unrelated later wake.
     """
-    from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
+    from memvane.wiki.intake import api as laya_wiki_discovery
     from memvane.runtime import api as runtime_work
     try:
         accepted = laya_wiki_discovery.activate_grant(decision, kind, grant)
@@ -1380,7 +1380,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             _verified_edit(decision, payload, 'posttool')
         if verify_selected_route(decision) != proof:
             _fail('selected_proof_changed')
-        from memvane.wiki.intake import wiki_compile_enqueue
+        from memvane.wiki.intake import api as wiki_compile_enqueue
         from memvane.kernel.resource_deferred import ResourceDeferred
         try:
             if 'journalPath' in decision:
@@ -1398,7 +1398,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 raise
             # The existing discovery grant is a durable scan hint, not proof
             # of a source or route. Its worker re-proves both before enqueue.
-            from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
+            from memvane.wiki.intake import api as laya_wiki_discovery
             grant=laya_wiki_discovery.record_grant(decision,'sync',engine=host)
             _accept_wiki_grant(decision,'sync',grant)
             _trace_fields(queued=0, deferred='owner_busy')
@@ -1432,7 +1432,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             if outside:
                 if verify_selected_route(decision) != proof:
                     _fail("selected_proof_changed")
-                from memvane.wiki.intake import external_edits as laya_external_edits
+                from memvane.wiki.intake import api as laya_external_edits
                 external = laya_external_edits.notify(
                     outside, cwd=current, host=host, origin=decision['projectRoot'])
                 _trace_fields(external_edits=external)
@@ -1459,7 +1459,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             # consent stays the existing trigger gate, applied off-hook when
             # raw changes are discovered; index, stale recall and wiki-card
             # sync grant nothing.
-            from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
+            from memvane.wiki.intake import api as laya_wiki_discovery
             try:
                 grant = laya_wiki_discovery.record_grant(decision, grant_kind, engine=host)
             except Exception:

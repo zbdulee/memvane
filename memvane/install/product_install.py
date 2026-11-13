@@ -717,7 +717,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.journal import install_journal as journal_module
     from memvane.journal import journal_reader as reader
     from memvane.sync import product_sync_worker as sync
-    from memvane.wiki.intake import wiki_discovery as discovery
+    from memvane.wiki.intake import api as discovery
     from memvane.settings import api as project_dir
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing

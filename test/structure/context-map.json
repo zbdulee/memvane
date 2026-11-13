@@ -1239,6 +1239,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/intake/api.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/intake/external_edits.py": {
       "context": "wiki/intake",
       "layer": "adapter",
@@ -1247,6 +1252,11 @@
     "memvane/wiki/intake/posttool.py": {
       "context": "wiki/intake",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/types.py": {
+      "context": "wiki/intake",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/wiki/intake/wiki_backfill.py": {

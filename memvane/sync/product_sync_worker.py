@@ -309,7 +309,7 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
     grants = None
     if not isinstance(source_root, str):
         # Snapshot hook grants before the scan, as on the v6 path.
-        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
+        from memvane.wiki.intake import api as laya_wiki_discovery
         grants = laya_wiki_discovery.observe_grants(decision)
     # One raw scan per pass: the main view's D2 observation is also the
     # discovery snapshot (laya_wiki_discovery._raw_snapshot, same roots and bounds).
@@ -1158,7 +1158,7 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
     """
     from memvane.kernel import paths as git_branch_safety
     from memvane.sync.source_scan import scan_collections
-    from memvane.wiki.intake.wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
+    from memvane.wiki.intake.types import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
     project = Path(decision['projectRoot'])
     roots = {item['name']: item['sourceRoot'] for item in decision['collections'] if item.get('role') == 'raw'}
     if not roots:
@@ -1620,7 +1620,7 @@ def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
             def recheck():
                 if _owned_selected_proof(decision, owner) != proof:
                     raise IndexContractError('selected_proof_changed')
-            from memvane.wiki.intake import external_edits as laya_external_edits
+            from memvane.wiki.intake import api as laya_external_edits
             from memvane.wiki.workspace.wiki_selected_laya import _owner_scope
             with _owner_scope((decision, proof), owner):
                 external = laya_external_edits.drain(decision, recheck=recheck, owner=owner)
@@ -1628,7 +1628,7 @@ def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
                     return {**result, 'state': 'pending', 'reason': 'external_edits_pending'}
                 if grants is None:
                     return result
-                from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
+                from memvane.wiki.intake import api as laya_wiki_discovery
                 outcome = laya_wiki_discovery.drain_after_sync(
                     decision, grants, recheck=recheck, view_generation=result.get('generation'),
                     raw_snapshot=raw_snapshot)

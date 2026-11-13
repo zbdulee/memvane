@@ -1910,7 +1910,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                             and type(first.get('observed_ns')) is int):
                         fingerprints = {**observed, 'scanId': first['scan_id'],
                                         'observedNs': first['observed_ns']}
-            from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl
+            from memvane.wiki.intake.api import append_source_jobs as _append_jsonl
             _append_jsonl(verify_queue_path, [{
                 "ts": now_iso(),
                 "targetPath": record["targetPath"],

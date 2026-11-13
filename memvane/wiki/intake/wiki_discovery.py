@@ -71,8 +71,7 @@ MAX_MEMBERS = 50_000
 # defaults (200 files / 5 MB) would block larger, otherwise valid projects at
 # activation and on every subsequent wake. This separate finite budget leaves
 # the indexed wiki catalog and vector budget unchanged.
-RAW_SCAN_MAX_FILES = 4096
-RAW_SCAN_MAX_BYTES = 64_000_000
+from memvane.wiki.intake.types import RAW_SCAN_MAX_FILES, RAW_SCAN_MAX_BYTES, DiscoveryBlocked, GrantUncertain
 MAX_GRANT_COUNT = 1000
 HOOK_LOCK_SECONDS = 1.0
 WORKER_LOCK_SECONDS = 5.0
@@ -86,12 +85,8 @@ _GRANT_KEYS = frozenset({'schema', 'scopeId', 'storeIncarnation', 'grants', 'pro
 SOURCE_ENGINES = frozenset(('claude', 'codex', 'hermes', 'gemini', 'unknown'))
 
 
-class DiscoveryBlocked(Exception):
-    """Fail-closed reason code; never a path or source byte."""
 
 
-class GrantUncertain(DiscoveryBlocked):
-    """A failed write left an id that may still be active."""
 
 
 class DiscoveryBusy(Exception):

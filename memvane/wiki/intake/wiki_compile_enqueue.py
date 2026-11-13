@@ -54,7 +54,7 @@ COMPILE_ACCEPTED_TRIGGERS = intent.SYNC_ACCEPTED_TRIGGERS
 DEFAULT_COMPILE_MAX_FILES = 50
 # queue lock 안에서 revision 키를 찾으려고 live 큐를 읽는 상한. worker가 오래 멈춰 큐가
 # 이보다 커지면 키를 찾지 않고 기존처럼 append만 한다(중복은 가능, 유실은 없음).
-QUEUE_SCAN_MAX_BYTES = 8 * 1024 * 1024
+from memvane.wiki.intake.types import QUEUE_SCAN_MAX_BYTES
 
 
 def compile_max_files():
