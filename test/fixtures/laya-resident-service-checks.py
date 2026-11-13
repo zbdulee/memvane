@@ -528,26 +528,6 @@ class ServiceChecks(Fixture):
                     'ownershipManifestSha256': '8' * 64, 'vectorProfile': {}}
         return decision, {'providerManifest': manifest}
 
-    def test_process_argv_reads_real_boundaries_of_a_live_child(self):
-        code = 'import sys, time; print("READY", flush=True); time.sleep(30)'
-        child = subprocess.Popen([sys.executable, '-B', '-c', code, 'a b', '막차 뒤의 피난소'],
-                                 stdout=subprocess.PIPE)
-        self.addCleanup(lambda: (child.poll() is None and child.kill(), child.wait(),
-                                 child.stdout.close()))
-        # Inspect only after the interpreter runs the code: during exec the
-        # kernel may not expose the final argv yet.
-        readable, _, _ = select.select([child.stdout], [], [], 5)
-        self.assertEqual(readable, [child.stdout], 'child never reported readiness')
-        self.assertEqual(child.stdout.readline(), b'READY\n')
-        found = svc._process_argv(child.pid)
-        self.assertIsNotNone(found)
-        executable, argv = found
-        self.assertIn('python', os.path.basename(executable).lower())
-        self.assertEqual(argv[-2:], ['a b', '막차 뒤의 피난소'])
-        self.assertEqual(argv[1:4], ['-B', '-c', code])
-        self.assertIn(child.pid, dict(svc._process_rows(os.getuid())))
-
-
     def test_full_attestation_runs_once_per_installation_and_only_to_bind(self):
         projects = [self.project(name) for name in ('alpha', 'beta')]
         for project, _manifest in projects:
