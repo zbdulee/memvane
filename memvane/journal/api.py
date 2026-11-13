@@ -29,6 +29,11 @@ def owned_selected_proof(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def selected_project_proof(*args, **kwargs):
+    from memvane.journal.application.selected_proof import selected_project_proof as implementation
+    return implementation(*args, **kwargs)
+
+
 def verify_dispatch_target(*args, **kwargs):
     from memvane.journal.install_journal import verify_dispatch_target as implementation
     return implementation(*args, **kwargs)

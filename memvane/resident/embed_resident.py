@@ -350,7 +350,7 @@ def wait_for_release(socket_path, timeout=3):
 
 def _owned_route(project):
     """Prove one selected or pending installation using its own route contract."""
-    from memvane.sync.api import selected as _selected
+    from memvane.journal.api import selected_project_proof as _selected
     try:
         decision, proof = _selected(project)
         return decision, proof, 'selected'

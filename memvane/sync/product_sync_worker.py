@@ -28,7 +28,7 @@ from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError
-from memvane.journal.api import cas_mark_new_write, inspect_journal
+from memvane.journal.api import cas_mark_new_write, inspect_journal, selected_project_proof as _selected
 from memvane.provider.api import reviewed_provider_class
 ReviewedLocalQmdProvider = reviewed_provider_class()
 from memvane.provider.api import start_owned_embed_service
@@ -150,21 +150,6 @@ def _initial_build_waiting(controller, project):
         except (OSError, ValueError, sqlite3.Error):
             pass
     return bool(waiting)
-
-
-def _selected(project, *, owner_wait=False):
-    """Prove the selected v1 route before acquiring the writer owner."""
-    from memvane.journal.api import verify_selected_route_for_write
-    project = Path(project)
-    if not project.is_absolute() or project.is_symlink() or not project.is_dir():
-        raise IndexContractError('selected_project_unavailable')
-    decision = select_route(str(project), action='update')
-    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
-        raise IndexContractError('selected_route_unavailable')
-    proof = verify_selected_route_for_write(decision)
-    if proof.get('productRouteAllowed') is not True or not isinstance(proof.get('providerManifest'), dict):
-        raise IndexContractError('selected_provider_unavailable')
-    return decision, proof
 
 
 def _selected_service(decision, manifest, admit, start_service):

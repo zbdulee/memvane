@@ -12,11 +12,6 @@ def select_route(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def selected(*args, **kwargs):
-    from memvane.sync.product_sync_worker import _selected as implementation
-    return implementation(*args, **kwargs)
-
-
 def schema3_head_same(*args, **kwargs):
     from memvane.sync.product_sync_worker import _schema3_head_same as implementation
     return implementation(*args, **kwargs)
