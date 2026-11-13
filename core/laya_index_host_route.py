@@ -610,6 +610,22 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
         if build is None:
             return None
         identity = build['identity']
+        if build.get('schema') == laya_initial_build.V1_BUILD_SCHEMA:
+            if build['phase'] not in ('registered', 'building', 'ready'):
+                return _decision('blocked', 'initial_preview_build_unavailable')
+            state = Path(identity['stateRoot'])
+            raw = _read_regular(state / 'route.json', MAX_RECORD_BYTES)
+            if hashlib.sha256(raw).hexdigest() != identity['routeSha256']:
+                return _decision('blocked', 'initial_preview_route_changed')
+            route = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
+            candidate = _classify_v4(root, project_dir.settings_path(root), route)
+            if candidate['state'] != 'candidate':
+                return candidate
+            if any(candidate.get(key) != identity[key] for key in
+                   ('projectRoot', 'stateRoot', 'storePath', 'storeIncarnation',
+                    'scopeId', 'installId', 'journalPath')):
+                return _decision('blocked', 'initial_preview_route_mismatch')
+            return {**candidate, 'state': 'preview', 'reason': 'initial_build_preview'}
         if build['phase'] not in ('registered', 'building', 'sealed'):
             return _decision('blocked', 'initial_preview_build_unavailable')
         state = Path(identity['stateRoot'])

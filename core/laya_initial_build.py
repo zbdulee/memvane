@@ -389,7 +389,12 @@ def pointer_path(project_root, directory):
 
 def register_project(identity):
     """Point the project's runtime wake at this build; never at a second one."""
-    _validate_identity(identity)
+    if isinstance(identity, dict) and set(identity) == V1_BUILD_IDENTITY:
+        record = read_v1(identity['stateRoot'])
+        if record is None or record['identity'] != identity:
+            _fail('initial_build_identity_invalid')
+    else:
+        _validate_identity(identity)
     pointer = {'schema': POINTER_SCHEMA, 'projectRoot': identity['projectRoot'],
                'stateRoot': identity['stateRoot'], 'installId': identity['installId']}
     path = pointer_path(identity['projectRoot'], _pointer_dir(create=True))
@@ -501,7 +506,9 @@ def lookup(project_root):
             or pointer['schema'] != POINTER_SCHEMA
             or pointer['projectRoot'] != str(project_root)):
         _fail('initial_build_pointer_invalid')
-    record = read(pointer['stateRoot'])
+    record = read_v1(pointer['stateRoot'])
+    if record is None:
+        record = read(pointer['stateRoot'])
     if (record is None or record['identity']['projectRoot'] != str(project_root)
             or record['identity']['stateRoot'] != pointer['stateRoot']
             or record['identity']['installId'] != pointer['installId']):
