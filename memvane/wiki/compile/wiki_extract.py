@@ -257,8 +257,8 @@ def to_candidate(payload: dict[str, Any], item: dict[str, Any]) -> dict[str, Any
 
 def run_compile(cwd: str, candidate: dict[str, Any], regenerate: bool = False,
                 budget_final: bool = False) -> str:
-    script = Path(__file__).resolve().parents[3] / "entry/run.py"
-    argv = [sys.executable, str(script), "wiki-compile", "--cwd", cwd]
+    from memvane.kernel.bundle_paths import entry_argv
+    argv = entry_argv("wiki-compile", "--cwd", cwd)
     if regenerate:
         argv.append("--regenerate")
     if budget_final:

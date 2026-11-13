@@ -1926,9 +1926,9 @@ def _spawn_owned(root, project, command, lease_fd, spawn, *, job, job_id):
                                           "MEMVANE_TEST_RUNTIME_ROOT") if k in os.environ}
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1", **job)
-        entry = Path(__file__).resolve().parents[3] / "entry/run.py"
+        from memvane.kernel.bundle_paths import entry_argv
         try:
-            spawn([sys.executable, "-B", str(entry), "learning-shared", command, str(project), str(lease_fd)],
+            spawn(entry_argv("learning-shared", command, str(project), str(lease_fd)),
                   stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
                   start_new_session=True, close_fds=True, pass_fds=(lease_fd,))
         except Exception:

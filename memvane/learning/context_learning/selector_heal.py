@@ -239,12 +239,12 @@ def attest(state, policy):
 
 def prepare(state, policy):
     """``prepare_laya_inference.py`` in the policy interpreter (it must be ``sys.executable``)."""
-    script = Path(__file__).resolve().parents[3] / 'entry/run.py'
+    from memvane.kernel.bundle_paths import entry_argv
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
                                             'MEMVANE_TEST_RUNTIME_ROOT')
            if key in os.environ}
-    result = subprocess.run([policy['trainerArgv'][0], '-I', '-B', str(script), 'prepare-inference', str(state),
-                             '--max-seconds', str(PREPARE_SECONDS)],
+    result = subprocess.run(entry_argv('prepare-inference', str(state), '--max-seconds', str(PREPARE_SECONDS),
+                                        python=policy['trainerArgv'][0], isolated=True),
                             stdin=subprocess.DEVNULL, capture_output=True, text=True,
                             timeout=PREPARE_SECONDS + 60, env=env, cwd=str(state),
                             check=False)

@@ -49,7 +49,8 @@ def _project(value):
 
 def _bootstrap():
     """The executing plugin's one-wake bootstrap."""
-    return Path(__file__).resolve().parents[2] / 'entry/run.py'
+    from memvane.kernel.bundle_paths import entry_path
+    return entry_path()
 
 
 def resolve(kind, value):
@@ -465,7 +466,8 @@ def run(kind, value, *, owner_fd=None):
 
 
 def _run_target(kind, value, target, owner_fd):
-    argv = [sys.executable, '-B', str(_bootstrap()), 'wake', kind, target['project']]
+    from memvane.kernel.bundle_paths import entry_argv
+    argv = entry_argv('wake', kind, target['project'])
     try:
         options = {'owner_fd': owner_fd} if owner_fd is not None else {}
         child = _run_child(argv, target['project'],

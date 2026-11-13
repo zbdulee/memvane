@@ -714,7 +714,8 @@ def _builtin_adapter_argv(engine: str) -> list[str] | None:
     adapter = Path(__file__).resolve().parents[3] / "memvane/wiki/engines/extractors" / f"{engine}_adapter.py"
     if not adapter.is_file():
         return None
-    return [sys.executable, str(Path(__file__).resolve().parents[3] / "entry/run.py"), f"extractor-{engine}"]
+    from memvane.kernel.bundle_paths import entry_argv
+    return entry_argv(f"extractor-{engine}")
 
 
 def extractor_engine_pool(compile_cfg: dict) -> list[str]:
@@ -908,7 +909,8 @@ def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None =
     ``final_reason``: the trusted final pass of the card budget (``--budget-final``).
     ``check``: validate only (``--check``); nothing is written.
     """
-    argv = [sys.executable, str(Path(__file__).resolve().parents[3] / "entry/run.py"), "wiki-compile", "--cwd", str(root)]
+    from memvane.kernel.bundle_paths import entry_argv
+    argv = entry_argv("wiki-compile", "--cwd", str(root))
     if final_reason is not None:
         argv += ["--budget-final", final_reason]
     if check:

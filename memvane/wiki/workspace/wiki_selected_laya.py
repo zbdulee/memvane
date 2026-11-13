@@ -288,9 +288,9 @@ def _run(project: Path):
         if idle:
             # A lifecycle pass that left nothing to compile skips the worker.
             return {'state': 'drained', 'processed': 0}
+    from memvane.kernel.bundle_paths import entry_argv
     proc = subprocess.run(
-        [sys.executable, '-B', str(Path(__file__).resolve().parents[3] / 'entry/run.py'), 'wiki-compile-worker',
-         '--cwd', str(project), '--json', '--flush-all'],
+        entry_argv('wiki-compile-worker', '--cwd', str(project), '--json', '--flush-all'),
         stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
         env={**os.environ, 'QMD_RUNTIME_DISPATCH': '1'})
     recheck(bound)
