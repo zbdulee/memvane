@@ -100,6 +100,11 @@ def main(argv=None):
             'provision-index-runtime', 'gc-index-runtime'):
         parser.error('--project is required for ' + args.action)
     try:
+        if args.action not in ('plan-learning-profile', 'plan-fresh-wiki-origin',
+                               'review-index-provider', 'index-runtime-status',
+                               'index-origin-status', 'index-build-status', 'onboarding-status'):
+            from memvane_execution_guard import require_cached_plugin_for_live_write
+            require_cached_plugin_for_live_write()
         if args.action.startswith('onboarding-'):
             # The user's answer to the SessionStart onboarding notice. It
             # hides or shows that notice only; it never selects a route.

@@ -138,6 +138,8 @@ def _snapshot(project, executing_root):
                 and decision.get('projectRoot') == str(project), 'writer_route_unavailable')
         path = R._journal(Path(decision['journalPath']))
         state = path.parent
+        from memvane_execution_guard import require_cached_plugin_for_live_write
+        require_cached_plugin_for_live_write(state)
         R._need(path.stat().st_size <= R._MAX_IMAGE, 'writer_plan_journal_too_large')
         with R._readonly(path, state) as db:
             R._need(J._schema_version_read(db) == 5, 'writer_plan_v5_required')

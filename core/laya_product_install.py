@@ -1761,6 +1761,9 @@ def main(argv=None):
     retire.add_argument('--state-root', required=True)
     retire.add_argument('--approve-retire', action='store_true')
     args = parser.parse_args(argv)
+    if args.action not in ('plan-fresh-wiki', 'review-provider', 'status', 'build-status'):
+        from memvane_execution_guard import require_cached_plugin_for_live_write
+        require_cached_plugin_for_live_write()
     root = _installed_root()
     state_root = (_private_parent(args.state_root)
                   if args.action in ('status', 'activate', 'recover') else None)
