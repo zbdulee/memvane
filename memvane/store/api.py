@@ -24,6 +24,26 @@ def register_worktree(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def provider_spec(*args, **kwargs):
+    from memvane.store.view.view_vectors import provider_spec as implementation
+    return implementation(*args, **kwargs)
+
+
+def qmd_first_pass(*args, **kwargs):
+    from memvane.store.view.view_vectors import qmd_first_pass as implementation
+    return implementation(*args, **kwargs)
+
+
+def query_values(*args, **kwargs):
+    from memvane.store.view.view_vectors import query_values as implementation
+    return implementation(*args, **kwargs)
+
+
+def register_provider_spec(*args, **kwargs):
+    from memvane.store.view.view_vectors import register_provider_spec as implementation
+    return implementation(*args, **kwargs)
+
+
 def attestation(*args, **kwargs):
     from memvane.store.blob.blob_values import attestation as implementation
     return implementation(*args, **kwargs)

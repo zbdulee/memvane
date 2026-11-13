@@ -1234,7 +1234,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
     ends; a refusal is remembered for the rest of the pass. The spec is None
     when the provider recipe has no view recipe (the view stays lexical).
     """
-    from memvane.store.view.view_vectors import provider_spec
+    from memvane.store.api import provider_spec
     spec = _schema3_vector_spec(proof)
     context = {'spec': spec, 'provider': None, 'refused': None, 'calls': 0, 'stash': {}}
     if spec is None:
@@ -1322,7 +1322,7 @@ def _code(exc):
 
 
 def _schema3_vector_spec(proof):
-    from memvane.store.view.view_vectors import provider_spec
+    from memvane.store.api import provider_spec
     return provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
 
 
@@ -1354,7 +1354,8 @@ def _schema3_chunker(context, current):
     embedder embeds each window alone.
     """
     from memvane.store import api as v
-    from memvane.store.view.view_vectors import FALLBACK_CHARS, qmd_first_pass
+    from memvane.store.types import FALLBACK_CHARS
+    from memvane.store.api import qmd_first_pass
 
     stats = context.setdefault('stats', {'providerMs': 0})
 
@@ -1521,7 +1522,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         if not registered:
             vectors['acquire'](current())
             _mark_schema3_write(writer, proof, marks)
-            from memvane.store.view.view_vectors import register_provider_spec
+            from memvane.store.api import register_provider_spec
             if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
                 v.fail('vector_spec_mismatch')
         _entry, _saved, _job, targets, stored = store._rows_fill_plan(handle, recipe_id, profile_id)

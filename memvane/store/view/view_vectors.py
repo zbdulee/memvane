@@ -20,17 +20,13 @@ from pathlib import Path
 
 from memvane.store.blob import blob_values as v
 from memvane.store.blob.blob_values import BlobStoreError
+from memvane.store.types import WORK_EXCEEDED, DEADLINE_EXCEEDED, DEFERRED, FALLBACK_CHARS
 
 SPEC_FIELDS = ('recipe_id', 'profile_id')
 DEFAULT_WORK = 4000000
 MAX_DEADLINE = 30
 MAX_LIMIT = 100
 MAX_DIMENSION = 2048
-WORK_EXCEEDED = 'vector_work_exceeded'
-DEADLINE_EXCEEDED = 'vector_deadline_exceeded'
-# Only explicit budget/deadline reasons may defer the semantic lane of hybrid.
-DEFERRED = {WORK_EXCEEDED: 'deferred_work_budget', DEADLINE_EXCEEDED: 'deferred_deadline',
-            'fts_deadline_exceeded': 'deferred_deadline'}
 
 
 def spec(value):
@@ -62,7 +58,6 @@ def spec(value):
 # and that fallback rule.
 PROVIDER_CHUNK_RECIPE = 'qmd-regex-token-chunks-candidate-v1'
 QMD_CHUNK_TOKENS = (900, 135, 200)
-FALLBACK_CHARS = (600, 90, 135)  # max/overlap/window UTF-16 code units
 # Increment when _QMD_BREAKS or qmd_first_pass changes.
 CHUNK_RULES = 1
 

@@ -570,7 +570,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.store.blob.blob_store import _regular
     from memvane.install.ledger_common import _read_json, _write
     from memvane.store.view.view_store import ViewStore, _skip_patterns
-    from memvane.store.view.view_vectors import provider_spec
+    from memvane.store.api import provider_spec
     from memvane.sync.api import sync_owner
     state = _private_parent(state_root)
     project = _checked_project(project_root)
