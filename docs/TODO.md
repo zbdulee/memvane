@@ -32,7 +32,7 @@
 owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세션이라면 세션을 어디서 열었든, 작업 대상 프로젝트의 카드가 만들어지고 그 프로젝트의 recall도 주입돼야 한다. 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다.
 
 - **현재 동작.**
-  - route 선택은 hook payload의 `cwd` 기준이다(`laya_host_response.select_route(cwd, …)`, `config._project_search_dirs`). cwd에서 HOME까지 위로만 올라가며 가장 가까운 `.memvane/settings.json`을 찾고, 하위 디렉터리는 보지 않는다.
+  - route 선택은 hook payload의 `cwd` 기준이다(`host_response.select_route(cwd, …)`, `config._project_search_dirs`). cwd에서 HOME까지 위로만 올라가며 가장 가까운 `.memvane/settings.json`을 찾고, 하위 디렉터리는 보지 않는다.
   - 편집 hook(`_edit_targets`)은 세션 cwd가 선택된 프로젝트 안에 있어야 동작한다.
   - 프로젝트 밖 원문 편집 라우팅([계약](out-of-project-edit-routing.md))은 선택된 A 세션에서 선택된 B 원문을 고칠 때 B 워커에 알림을 보낸다. 그래서 B 카드는 만들어진다. 하지만 recall 컨텍스트는 A 색인만 쓰므로 그 세션에서 B 카드는 보이지 않는다.
   - 미온보딩 A 세션은 라우팅에서 빠진다. 예: 여러 작품을 하위 폴더로 둔 monorepo 루트(`.memvane` 없음)에서 연 세션은 활성화된 하위 프로젝트 파일을 고쳐도 카드도 recall도 없다.
@@ -65,7 +65,7 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
 - **현재 동작.**
   - 세션 프로젝트는 hook payload `cwd`에서 위로 올라가며 `.memvane/settings.json`을 찾아 정한다(`config._project_search_dirs`).
   - 선택 프로젝트 레지스트리 v1(`memvane/registry/memvane_registry.py`, `docs/project-registry.md`)이 선택된 main checkout과 연결 worktree 경로를 조회 색인으로 가진다. 활성화 성공 뒤 등록, restore·retire·abandon 성공 뒤 해제 반영, 선택 route SessionStart·대시보드 조회의 유계 reconcile까지다.
-  - 프로젝트 밖 원문 편집 라우팅(`laya_external_edits`)은 backfill이 완료된 레지스트리의 `active` main 행만 후보로 증명하고 state base를 훑지 않는다. 레지스트리가 없거나 읽을 수 없으면 라우팅하지 않는다.
+  - 프로젝트 밖 원문 편집 라우팅(`external_edits`)은 backfill이 완료된 레지스트리의 `active` main 행만 후보로 증명하고 state base를 훑지 않는다. 레지스트리가 없거나 읽을 수 없으면 라우팅하지 않는다.
   - 세션 프로젝트 해석은 레지스트리를 쓰지 않는다. 활성 선택 해제(첫 선택 쓰기 뒤 uninstall), 프로젝트 root 이전, schema3 worktree view ID·준비 상태 기록은 남아 있다.
   - resident service는 레지스트리를 reconcile하지 않는다. resident 연결은 resident 변경 승인 시 `memvane_registry.reconcile()` 1줄 호출로 붙인다.
   - 외부 편집의 완료 조회는 편집 경로와 owner root 사이에 다른 프로젝트 폴더가 있으면 라우팅하지 않는다. 열거 경로(backfill 미완료)는 레지스트리 도입 전과 같아서 등록되지 않은 중첩 프로젝트 아래 편집도 바깥 owner로 전달될 수 있다. 열거 경로에도 같은 검사를 둘지는 별도로 정한다.
@@ -79,7 +79,7 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
   - 등록: 온보딩 activate가 성공하면 프로젝트 root를 등록한다. 연결 worktree view가 처음 게시되면 그 worktree root를 같은 install의 하위 항목으로 등록한다.
   - 해제: uninstall(선택 해제)이 끝나면 그 install의 프로젝트·worktree 항목을 지운다. worktree는 `git worktree remove`·prune이 관측되면 해제한다.
   - 프로젝트 폴더 삭제: 등록된 프로젝트·worktree root가 사라지면 그 항목을 해제 대상으로 표시한다. uninstall과 같은 정리 범위를 적용하되, state 디렉터리·저장소·학습 상태 삭제는 uninstall의 승인 규칙을 따른다. 폴더가 다시 나타나면(같은 경로 재생성, 볼륨 재연결) 자동으로 다시 선택하지 않는다. 같은 install로 되살릴지 새 온보딩으로 볼지 정한다.
-  - reconcile 시점: 상주 서비스(`laya_resident_service`)가 시작할 때 레지스트리 항목을 실제 폴더와 맞춘다. root 존재 여부, `.memvane` 존재 여부, inode 변경, journal 선택 상태, worktree 등록 상태(`git worktree list`)를 본다. 서비스가 오래 떠 있으면 주기적으로도 맞춘다. 맞추는 동안 공유 lock을 쥐지 않고(`context/pr10-decision-draft.md` §6 원칙), 항목마다 짧게 끝낸다.
+  - reconcile 시점: 상주 서비스(`resident_service`)가 시작할 때 레지스트리 항목을 실제 폴더와 맞춘다. root 존재 여부, `.memvane` 존재 여부, inode 변경, journal 선택 상태, worktree 등록 상태(`git worktree list`)를 본다. 서비스가 오래 떠 있으면 주기적으로도 맞춘다. 맞추는 동안 공유 lock을 쥐지 않고(`context/pr10-decision-draft.md` §6 원칙), 항목마다 짧게 끝낸다.
   - 외장·네트워크 볼륨처럼 잠시 사라지는 경로는 즉시 해제하지 않는다. 유예 기간(또는 연속 관측 횟수)을 둔다.
 - **먼저 정할 계약.**
   - 권한: 레지스트리는 조회 색인일 뿐 권한을 주지 않는다. 조회한 뒤 기존 selected route 증명(journal·route·attestation)을 그대로 통과해야 한다. 항목과 증명이 어긋나면 그 항목을 건너뛰고 백그라운드 reconcile이 고친다.

@@ -1,10 +1,10 @@
 # Git-blob candidate 저장 계약
 
-`laya_blob_store.BlobStore`는 명시적인 private SQLite 파일에 위키 카드와
+`blob_store.BlobStore`는 명시적인 private SQLite 파일에 위키 카드와
 recipe/profile, 완전한 chunk/vector set, 원문 지문과 카드 attestation을 저장한다.
 형식은 `memvane-git-blob-candidate-v4`, application id는 `0x4d564231`, schema는 `4`다.
 다른 형식의 파일은 읽기 전용 preflight에서 거절한다.
-`BlobStore`는 내용·provenance API를 소유하고 `laya_view_store.ViewStore`가 같은 형식의
+`BlobStore`는 내용·provenance API를 소유하고 `view_store.ViewStore`가 같은 형식의
 view generation·FTS·lexical reader를 제공한다. 세대 API는
 [`development-view-candidate.md`](development-view-candidate.md)에 있다.
 `BlobStore`에는 hook·route·reader 선택·GC API가 없다. sync 게시와 recall·dedup
@@ -12,7 +12,7 @@ retrieval은 설치 journal의 endpoint record와 writer scope에 따라 store�
 
 ## 소유권과 위키 소속
 
-호출자는 `laya_checkout_view`의 repository/worktree 등록 JSON과 scope UUID를 제공한다.
+호출자는 `checkout_view`의 repository/worktree 등록 JSON과 scope UUID를 제공한다.
 저장소는 common Git dir의 경로·dev/ino와 프로젝트 상대 위치에 묶이며,
 worktree는 checkout·Git admin 정체성, settings 정체성, wiki root 디렉터리 노드를 묶는다.
 settings 정체성은 `settings_identity_digest`와 같은 범위다: 프로젝트 root와
@@ -99,7 +99,7 @@ lookup·동일 replay 확인·삽입은 한 `BEGIN IMMEDIATE` transaction이다.
 
 ## Content 채우기와 재사용
 
-`laya_blob_fill.ContentFiller(store)`는 content별 complete set을 재사용한다.
+`blob_fill.ContentFiller(store)`는 content별 complete set을 재사용한다.
 `ensure_content(blob_sha, recipe_id, profile_id, *, chunker, embedder, write_fence,
 deadline_seconds=30)`의 결과는 `status`(`cache_hit` 또는 `filled`), 세 ID,
 `set_digest`, `chunk_count`다. blob·recipe·profile은 같은 store에 등록되어 있어야 한다.
@@ -164,7 +164,7 @@ hash·완전성·참조 의미를 검증한다. 내부 connection과 직접 SQL 
 **trust digest와 candidate 검증 성공은 compiler 실행 사실·원문 일치·운영 권한의 증명이 아니다.**
 candidate의 generation seal도 같은 구조적 commitment다. 운영 owner의 증명·policy·
 publication 권한은 journal endpoint record와 sync owner의 writer scope
-(`laya_writer_scope`)가 확인한다.
+(`writer_scope`)가 확인한다.
 
 ## 유한 입력
 
@@ -176,6 +176,6 @@ publication 권한은 journal endpoint record와 sync owner의 writer scope
 | recipe token window | 1–8,192, overlap은 window 미만 |
 | attestation source / source별 spans | 64개 / 256개 |
 | SQL busy | 2초 |
-| Git capture | `laya_checkout_view`의 유한 예산·버전 조건 |
+| Git capture | `checkout_view`의 유한 예산·버전 조건 |
 
 schema·등록 정체성·수명 주기·운영 데이터의 자동 전환이나 삭제는 이 인터페이스에 없다.

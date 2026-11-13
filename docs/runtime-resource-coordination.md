@@ -24,7 +24,7 @@ development execution guard is separate; see
   `laya-compile` through `runtime_work.request`. Both are kinds in
   `runtime_wake_policy.KINDS`; `needs_compute_admission` is false for them
   because their handlers own admission. `runtime_handlers.laya_sync` and
-  `laya_compile` call `laya_runtime_dispatch.run`, which routes the wake into the
+  `laya_compile` call `runtime_dispatch.run`, which routes the wake into the
   sealed installed bundle with the wake's lease FD; the target process repeats
   the full owner proof before any model or store work.
 - Selected view sync: a schema3-selected `laya-sync` pass
@@ -53,13 +53,13 @@ development execution guard is separate; see
   document; that pass publishes its generation (lexical, or vector when the
   fill completed) with a fresh publish reserve. A linked view held only by
   the pass budget after such a pass gets the same re-offer.
-- Selected Laya route sync: `laya_product_sync_worker.py` holds a Coordinator
+- Selected Laya route sync: `product_sync_worker.py` holds a Coordinator
   `activity('provider', EMBED_POLICY)` around embedding work and rechecks the
   policy immediately before the embed service loads its model. `EMBED_POLICY`
   (`maxRssMib` 2048, `minAvailableMib` 768, `maxLoadPerCpu` 1,
   `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
   measured peak. One per-user resident service
-  (`laya_resident_service.py`, private root
+  (`resident_service.py`, private root
   `<account home>/.local/state/memvane/service/`, same-owner peer check on every
   socket) hosts the embedding model for every selected or pending
   installation and the learning inference service. It loads one exact worker
@@ -145,7 +145,7 @@ development execution guard is separate; see
   owner (`_initial_build_waiting`); that build's existing wake is pulled to
   due 0 first. An initial build waits up to `SYNC_OWNER_WAIT_SECONDS` for the
   owner on each round.
-- Selected Laya route queries: `laya_embed_resident.admit_query` checks
+- Selected Laya route queries: `embed_resident.admit_query` checks
   `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
   budget and acquires no compute lease. Refusal reports
   `laya_query_resource_deferred`, keeps the loaded model, and persists no prompt.
@@ -257,7 +257,7 @@ starts one handoff contender (`runtime-worker-handoff.lock`, at most 180
 seconds). The contender releases that lock as soon as it holds the worker
 lease. A child already running is not interrupted.
 
-Learning retries recheck `laya_learning.ready` and retain the existing history
+Learning retries recheck `learning.ready` and retain the existing history
 worker fence. The runtime dispatcher starts at most one owned learning child
 per private learning root and returns immediately, so `laya-sync` wakes
 can progress while the child runs. A general/legacy full request is persisted
@@ -382,7 +382,7 @@ teacher, create new training examples, broaden grants or scan arbitrary projects
 Jobs lacking a registered wake hint still need the ordinary enqueue/hook flow.
 No login/reboot service is installed; the monitor stops when its daemon stops.
 
-The real v2 trainer path is `laya_adapter.train -> run_updates -> TrainingGuard`.
+The real v2 trainer path is `adapter.train -> run_updates -> TrainingGuard`.
 Each full optimizer group holds compute through its two-slot head/RNG cursor
 commit. Resource admission can reduce microbatch2to1 while retaining effective
 batch2. The next group reevaluates system memory/load and foreground demand.
@@ -622,7 +622,7 @@ from injected analytical tests; the shared OS reporter always attaches it.
   is adopted after the shared worker is ready: the service signals only the
   one Python process whose real argv (macOS `KERN_PROCARGS2`, Linux
   `/proc/<pid>/cmdline`, never a space-joined `ps` string) is exactly that
-  installation's `laya_embed_resident.py serve <project> <socket>` owner,
+  installation's `embed_resident.py serve <project> <socket>` owner,
   re-verified by UID, executable and argv just before SIGTERM.
 - Learning: the hosted inference service refuses the socket `shutdown`
   command; an idle learning-only service of an earlier bundle is retired.

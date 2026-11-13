@@ -53,7 +53,7 @@ revision을 이미 증명하면 trigger와 무관하게 extractor를 실행하�
 
 route record와 selection marker는 추적되지 않는 런타임 파일이라 linked worktree에는
 자체 route가 없다. 다음 조건이 모두 맞으면 worktree cwd는 `worktree` route로
-분류된다(`laya_index_host_route._worktree_route`).
+분류된다(`index_host_route._worktree_route`).
 
 - git이 linked worktree로 보고하고, 공통 git dir이 main checkout의 git dir이다.
 - cwd와 worktree 루트 사이에 route record나 selection marker가 없다.

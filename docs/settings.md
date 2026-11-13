@@ -110,7 +110,7 @@ Laya 온보딩(`plan-fresh-wiki-origin`)은 minimal settings만 받습니다. ca
 
 **route의 settings binding.** route record의 `settingsSha256`은 settings 파일 바이트가 아니라
 해석된 settings identity(프로젝트 루트와 collection별 이름·role·루트, wiki 루트 포함)의
-digest입니다(`laya_index_host_route.settings_identity_digest`). 그래서 `skipPaths`를 손으로
+digest입니다(`index_host_route.settings_identity_digest`). 그래서 `skipPaths`를 손으로
 고쳐도 route는 그대로 선택되고, `name`을 바꿔 collection 이름이 달라지면
 `route_settings_changed`로 막힙니다. 다른 digest(예: settings 파일 바이트)를 묶은 route도
 같은 사유로 막힙니다.

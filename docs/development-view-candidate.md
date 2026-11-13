@@ -1,6 +1,6 @@
 # View candidate 세대와 lexical·vector reader 계약
 
-`laya_view_store.ViewStore`는 `BlobStore`를 확장하는 schema3 view store API다.
+`view_store.ViewStore`는 `BlobStore`를 확장하는 schema3 view store API다.
 형식은 `memvane-git-blob-candidate-v4`, application id는 `0x4d564231`, schema는 `4`다.
 지원하지 않는 형식은 읽기 전용 preflight에서 거절한다. recall pin, sync 게시, vector fill과
 dedup retrieval이 이 API를 쓴다.
@@ -10,8 +10,8 @@ dedup retrieval이 이 API를 쓴다.
 내용 admission·recipe·profile·provenance 계약은
 [`development-blob-candidate.md`](development-blob-candidate.md), checkout 등록·capture는
 [`development-checkout-capture.md`](development-checkout-capture.md)에 있다.
-원문 body API는 없다. reader 선택은 `laya_journal_reader`,
-운영 게시 순서는 `laya_product_sync_worker`가 소유한다. lifecycle, frontmatter 변경,
+원문 body API는 없다. reader 선택은 `journal_reader`,
+운영 게시 순서는 `product_sync_worker`가 소유한다. lifecycle, frontmatter 변경,
 retention·GC는 이 API에 없다.
 
 ## 내부 API와 수명

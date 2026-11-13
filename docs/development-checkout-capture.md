@@ -2,8 +2,8 @@
 
 `memvane/store/checkout/checkout_view.py`는 Git checkout의 정체성과 상태를 읽는 내부 API다.
 호출자가 보관하는 등록 JSON으로 저장소·워크트리를 식별하고, 관측한 branch에서
-view identity를 계산한다. 직접 호출자는 view store(`laya_blob_store`·`laya_view_store`·
-`laya_view_reader`)와 sync 게시(`laya_product_sync_worker`, 연결 워크트리 등록 포함)다.
+view identity를 계산한다. 직접 호출자는 view store(`blob_store`·`view_store`·
+`view_reader`)와 sync 게시(`product_sync_worker`, 연결 워크트리 등록 포함)다.
 recall은 view pin을 통해 이 capture를
 거친다. 등록 JSON은 store의 `store_meta`·`worktrees` 행이 보관하고, journal endpoint record는
 main worktree의 binding digest를 고정한다.

@@ -78,7 +78,7 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 - main checkout은 자기 route 기록으로만 분류한다(`_select_route`). 연결 worktree
   분류는 git을 쓰므로 main 증명에 쓰지 않는다.
 - setup·`snapshot()` 경로에서 main 행을 확인하거나 등록할 때 유계 `git worktree list`와
-  `laya_index_host_route.select_route`의 `worktree` 판정(같은 common git dir, 자기
+  `index_host_route.select_route`의 `worktree` 판정(같은 common git dir, 자기
   route 없음, 같은 settings 정체성)으로 연결 worktree를 `worktree` 행으로 등록한다.
   성공한 목록에서 사라진 worktree만 `detached`(`released`)다. git이 답하지 못하면
   worktree 행을 바꾸지 않는다. main이 `detached`가 되면 그 install의 worktree 행도
@@ -93,7 +93,7 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
   `conflict`면 `ambiguous`다.
 - `snapshot()`: 대시보드용 전체 행·base별 완료 시각·`stale` 표시. 손상·미지원
   schema·안전하지 않은 경로는 `recovery_required`로 보인다.
-- `laya_external_edits`의 대상 탐색은 backfill이 완료된 정상 레지스트리에서 state
+- `external_edits`의 대상 탐색은 backfill이 완료된 정상 레지스트리에서 state
   base를 열거하지 않고 `active` main 행의 state root만 증명한다. 행은 state root가
   HOME state base 바로 아래이고 그 이름·journal project root·route install ID가 행과
   같을 때만 후보다. backfill이 미완료면 기존 유계 열거를 쓴다. 두 경우 모두
@@ -118,7 +118,7 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 - SQLite 기본 rollback journal 모드를 써서 py3.9 hook이 새 python이 쓴 파일을 읽는다.
 - 레지스트리의 journal 읽기는 `read_only_journals()` 안에서 한다. 중단된 v3/v4
   journal의 rollback 복구를 하지 않고 그 설치를 이번 pass에서 건너뛴다. journal
-  busy 대기는 `laya_install_journal.reader_deadline`으로 그 pass의 예산에 묶인다.
+  busy 대기는 `install_journal.reader_deadline`으로 그 pass의 예산에 묶인다.
 - 같은 프로젝트의 직접 세션은 레지스트리와 무관하게 기존 route 증명으로 동작한다.
 
 ## 진단

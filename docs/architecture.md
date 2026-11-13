@@ -159,8 +159,8 @@ Hermes does not read Claude/Codex hook JSON. It uses:
 - `hermes_adapter/plugin.py`
 - `hermes_adapter/core_bridge.py`
 
-Hermes mapping (each call goes through `laya_index_host_route.select_route`
-and, on a selected route, `laya_host_response.serve_selected`):
+Hermes mapping (each call goes through `index_host_route.select_route`
+and, on a selected route, `host_response.serve_selected`):
 
 | Hermes callback | Bridge function | Selected-route action |
 |---|---|---|

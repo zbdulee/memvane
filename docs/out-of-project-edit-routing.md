@@ -20,7 +20,7 @@
 - `verify_notification_target`은 B의 journal·route·번들·봉인된 attestation
   메타데이터를 검증한다. B의 색인·claim DB를 열거나 provider·모델을 실행하지
   않는다. 반환값의 `notificationOnly`는 작업 권한을 부여하지 않는다.
-- 성공한 sync 뒤 B 워커가 `laya_external_edits.drain`을 호출한다. discovery grant가
+- 성공한 sync 뒤 B 워커가 `external_edits.drain`을 호출한다. discovery grant가
   없어도 알림을 읽으며 실제 enqueue 전에 기존 전체 write 증명, 현재 설정과 파일
   버전을 다시 확인한다. 증명이 바뀌면 알림을 남겨 재시도한다.
 

@@ -41,7 +41,7 @@ Unreadable admission evidence refuses with
 source-commit backoff. The capture layer shares the pure version predicate;
 product proof does not call checkout capture.
 
-The shared Git helper lives in the existing required `laya_package.py` artifact.
+The shared Git helper lives in the existing required `package.py` artifact.
 The engine subbundle's artifact list, manifest and ownership schemas keep their
 exact existing contracts. Inspection accepts a historical sealed bundle without
 rewriting its bytes or identity; a new bundle imports and calls the helper from
