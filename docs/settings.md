@@ -129,7 +129,7 @@ revision 판정, 원문 삭제 시 카드 정리, wiki lifecycle)이 같은 규�
 settings에 없는 이름은 경로를 담은 현재 raw collection으로 해석하고(`core/source_label.py`),
 wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥니다.
 
-### 임베딩 런타임과 retired QMD 정리 (유지보수 명령)
+### 임베딩 런타임 (유지보수 명령)
 
 MemVane 색인의 임베딩 provider는 `~/.local/state/memvane/embed-runtime`의 로컬 런타임입니다
 (`active.json`·`previous.json`·`generations/`). 사용자는 setup skill에 자연어로 요청하고,
@@ -140,8 +140,6 @@ MemVane 색인의 임베딩 provider는 `~/.local/state/memvane/embed-runtime`�
 python3 -B "$ROOT/core/setup_entry.py" index-runtime-status
 python3 -B "$ROOT/core/setup_entry.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]
 python3 -B "$ROOT/core/setup_entry.py" gc-index-runtime [--approve-index-runtime-gc]
-python3 -B "$ROOT/core/setup_entry.py" plan-legacy-cleanup [--include-user-qmd-data]
-python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cleanup [--include-user-qmd-data]
 ```
 
 - **`provision-index-runtime`** — 이전 설치가 없는 머신에서 런타임을 만듭니다. Node는 `PATH`를
@@ -157,26 +155,6 @@ python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cle
   아니고 `~/.local/state/memvane/*/production-provider-attestation.json`도 가리키지 않는 세대를 지웁니다.
   attestation의 `profileDependencyClosure` 기록은 참조로 세지 않습니다. 읽을 수 없는 attestation이
   있으면 `attestation_unreadable`로 막힙니다.
-- **`plan-legacy-cleanup`** — 읽기 전용입니다. 플러그인 QMD 데몬 pid 파일
-  (`~/Library/Application Support/qmd-auto-context/backend/daemon-*.pid`)과 각 pid가 검증된 살아 있는
-  데몬인지, `managed-by: qmd-auto-context` 마커가 있는 LaunchAgent(`com.qmd-mcp-daemon`·
-  `com.qmd-keepalive`·`com.qmd-logrotate`·`com.qmd-index-worker`), 대상 트리와 크기, blocker를
-  보여 줍니다.
-- **`apply-legacy-cleanup --approve-legacy-cleanup`** — 명령줄이 정확히
-  `<node> <플러그인 QMD runtime>/generations/g-<id>/qmd-native.mjs mcp --http --port <pid 파일의 port>`인
-  데몬만 신호 직전에 다시 확인한 뒤 `SIGTERM`으로 멈춥니다(`SIGKILL`·패턴 검색은 쓰지 않습니다).
-  마커가 있는 LaunchAgent plist만 bootout 후 지우고(`.bak` 사본은 그대로), 이어서
-  `~/Library/Application Support/qmd-auto-context/`의 `runtimes/qmd`·`shared-qmd`·`backend`를 지웁니다.
-  `~/.cache/qmd`·`~/.config/qmd`에는 사용자 자신의 QMD 인덱스·설정·모델 캐시도 있으므로
-  `--include-user-qmd-data`를 함께 줄 때만 지웁니다. 같은 디렉터리의 `learning`·`laya-inference`·
-  `live-selection`·`runtimes/laya`는 남깁니다.
-- **blocker** — 설치 attestation이 대상 트리 안의 파일을 아직 가리키면
-  `attestation_references_legacy_path`, `~/.local/state/memvane/*/reviewed-route.json`의 `pluginRoot`가
-  `core/backend_manager.sh`를 가진 이전 번들을 가리키면 `older_host_bundle_bound`입니다. plan은 blocker를
-  보고하고 apply는 아무것도 바꾸지 않고 `blocked`로 끝납니다(이전 번들은 `~/.cache/qmd`·`~/.config/qmd`를 다시 만듭니다). 그래서 정리는 Claude·Codex
-  host 캐시가 모두 이 릴리스를 로드하고, 모든 설치가 SessionStart 번들 업그레이드로 이 번들로 옮겨
-  가고, 모든 설치가 Laya 임베딩 런타임으로 재attest된 뒤에 한 번 실행합니다.
-
 ## 기본 예시
 
 ```json

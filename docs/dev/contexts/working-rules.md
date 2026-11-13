@@ -42,8 +42,6 @@ bash skills/wiki-compile/scripts/wiki-compile.sh <프로젝트> < compact.json  
 python3 -B "$ROOT/core/setup_entry.py" index-runtime-status                    # Laya embed runtime 상태(read-only)
 python3 -B "$ROOT/core/setup_entry.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]  # 새 머신의 runtime 구성(npm registry·모델 다운로드)
 python3 -B "$ROOT/core/setup_entry.py" gc-index-runtime [--approve-index-runtime-gc]  # 지울 세대 목록 / 승인 시 삭제
-python3 -B "$ROOT/core/setup_entry.py" plan-legacy-cleanup --include-user-qmd-data    # 은퇴한 QMD 백엔드 정리 계획(read-only)
-python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cleanup --include-user-qmd-data  # owner 1회 정리 실행
 ```
 
 개발 중에는 변경한 로직과 영향 범위의 focused 검사를 우선 실행한다. 전체 검사는 변경과 focused 검사가 준비된 뒤 머지 직전 최종 커밋을 대상으로 한 번 실행한다. 검사는 해당 커밋의 별도 worktree에서 비동기로 시작할 수 있으며, 실행 중에는 그 worktree를 수정하지 않고 다른 독립 작업을 진행할 수 있다. 단독 가드를 쓰는 전체 검사 중에는 다른 검사·리뷰를 시작하지 않는다. 검사 결과를 확인하고 필요한 독립 리뷰와 후속 조치가 끝나기 전에는 머지하지 않는다. 실패를 고치는 등 제품 코드나 검사에 영향을 주는 변경으로 최종 커밋이 달라지면 새 커밋에 필요한 전체 검증을 다시 실행한다. 동일 커밋에서 필수 Python 버전과 허용된 분할 검사 각각의 결과를 확인한다.

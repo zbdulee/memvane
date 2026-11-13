@@ -765,64 +765,6 @@ that fails (a mount point inside it, a permission error) is reported in
 `failed` with `status: partial`, and the generations already removed stay in
 the report.
 
-### Retired QMD backend cleanup
-
-`core/legacy_cleanup.py` is an owner-run, one-time removal of the retired QMD
-backend; no hook, worker or plugin update runs it.
-
-```bash
-python3 -B "$ROOT/core/setup_entry.py" plan-legacy-cleanup --include-user-qmd-data
-python3 -B "$ROOT/core/setup_entry.py" apply-legacy-cleanup --approve-legacy-cleanup --include-user-qmd-data
-```
-
-The plan is read only. It lists the QMD daemon pid files under
-`~/Library/Application Support/qmd-auto-context/backend/daemon-*.pid` (and the
-port-less legacy `daemon.pid`) with whether each names a verified live daemon, the LaunchAgents carrying
-`managed-by: qmd-auto-context` (`com.qmd-mcp-daemon`, `com.qmd-keepalive`,
-`com.qmd-logrotate`, `com.qmd-index-worker`; `.bak` copies stay), every target
-tree with its size, and blockers. Apply sends `SIGTERM` only to a daemon whose
-exact command line is
-`<node> <plugin QMD runtime>/generations/g-<id>/qmd-native.mjs mcp --http --port <port of its pid file>`
-(for `daemon.pid`, the port its process carries),
-re-read right before the signal (no `SIGKILL`, no pattern kill), boots out and
-deletes only marker-bearing plists, and removes
-`~/Library/Application Support/qmd-auto-context/{runtimes/qmd,shared-qmd,backend}`.
-`~/.cache/qmd` and `~/.config/qmd` also hold the user's own QMD index,
-configuration and model cache, so they are removed only with
-`--include-user-qmd-data`. Other trees under
-`~/Library/Application Support/qmd-auto-context` (`learning`, `laya-inference`,
-`live-selection`, `runtimes/laya`) are kept: an account whose learning runtime
-lives there keeps using that group (see [continual learning](continual-learning.md)).
-
-Both actions refuse while an install attestation still names a file inside a
-target, and with `older_host_bundle_bound` while any
-`~/.local/state/memvane/*/reviewed-route.json` `pluginRoot` points at a bundle that
-still contains `core/backend_manager.sh` (that bundle would recreate
-`~/.cache/qmd` and `~/.config/qmd`). They also refuse with
-`qmd_daemon_unverified` while a live node process (from a pid file or the
-read-only process table) runs an executable or script inside a plugin target
-without passing that exact identity; a process that only mentions a target
-path (an editor, a `backend-backup` copy) does not count. They refuse with
-`legacy_cleanup_target_unsafe` when a directory between HOME and an in-scope
-target is a link or not the user's. User QMD data outside the approval is
-`preserved` and never inspected, so a user-managed `~/.config` link does not
-block. Removal walks directory descriptors from HOME without following links
-and refuses a target that contains a mount point (device change or mount table
-entry) before deleting anything in it. A target that fails is reported in
-`failed` with `status: partial` (exit 1); the targets already removed stay in
-`completed`.
-
-Known limits: these checks guard against accidents (dotfile links, mounted
-volumes, stale layouts, reused pids), not against another process of the same
-user. Such a process can rename directories between the checks and the
-deletes, and on macOS (no pidfd) a pid can be reused between the last identity
-read and `SIGTERM`.
-
-Run the cleanup only after both host
-caches (Claude and Codex) load this release, every install has moved to it
-through the SessionStart bundle upgrade, and every install is re-attested onto
-the Laya embedding runtime.
-
 ## Concurrency and Isolation
 
 The runtime uses multiple short-lived processes, so the architecture depends on

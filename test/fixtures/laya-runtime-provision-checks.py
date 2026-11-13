@@ -703,24 +703,6 @@ class SetupEntryActions(unittest.TestCase):
             code = setup_entry.main(list(argv))
         return code, json.loads(out.getvalue())
 
-    def test_cleanup_plan_and_refused_apply(self):
-        code, plan = self.main('plan-legacy-cleanup')
-        self.assertEqual((code, plan['changesApplied']), (0, 0))
-        self.assertEqual(plan['home'], str(self.home))
-        code, refused = self.main('apply-legacy-cleanup')
-        self.assertEqual((code, refused['reason']), (1, 'legacy_cleanup_approval_required'))
-
-    def test_partial_cleanup_reports_through_setup_entry(self):
-        support = self.home / 'Library' / 'Application Support' / 'qmd-auto-context'
-        write(support / 'runtimes' / 'qmd' / 'generations' / 'x', 'qmd')
-        locked_dir(self, support / 'shared-qmd' / 'locked')
-        code, result = self.main('apply-legacy-cleanup', '--approve-legacy-cleanup')
-        self.assertEqual((code, result['status'], result['partial']), (1, 'partial', True))
-        self.assertEqual(result['completed'], [{'path': str(support / 'runtimes' / 'qmd')}])
-        self.assertEqual([row['path'] for row in result['failed']],
-                         [str(support / 'shared-qmd')])
-        self.assertEqual(result['changesApplied'], 1)
-
     def test_runtime_actions_need_their_approval(self):
         code, refused = self.main('provision-index-runtime')
         self.assertEqual((code, refused['reason']),

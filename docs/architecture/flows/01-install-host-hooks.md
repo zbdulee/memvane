@@ -66,7 +66,7 @@ flowchart TD
 - [`hooks/run-hook:55-75`](../../../hooks/run-hook#L55-L75): `legacy`는 작업 없이 exit 0입니다. `update-queued`에서만 `context_learning_host_ack.py`로 소유자가 요청한 history cutover를 확인하고(실패는 무시, history를 선택하거나 프로젝트 콘텐츠를 건드리지 않음), `laya_index_host_route.py onboarding-notice`가 돌려준 안내(사용자용 한 줄과 거절 명령을 담은 `onboarding-answer` JSON 한 줄)를 출력합니다. 사용자가 그 세션을 건너뛰었거나(`onboarding-skip`) 그 프로젝트를 거절한(`onboarding-never`) 기록이 `~/.local/state/memvane/onboarding/`에 있으면 안내를 내지 않습니다. Codex에는 `hookSpecificOutput` SessionStart JSON으로 감싸 출력합니다.
 - [`hooks/run-hook`](../../../hooks/run-hook): `engine=gemini`를 받아들입니다. 하지만 공식 Antigravity의 자동 posttool·index·compile은 공식 payload adapter가 생길 때까지 비활성입니다.
 - Hermes: 별도 Python plugin으로, `post_tool_call`을 관찰만 합니다. 이 문서의 `run-hook` route·enqueue·compile 경로에는 속하지 않습니다.
-- [`core/setup_entry.py:56-106`](../../../core/setup_entry.py#L56-L106): 설치자 action 목록과 `--approve-*` 승인 플래그입니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`·`plan-legacy-cleanup`·`apply-legacy-cleanup`은 `--project` 없이 실행합니다.
+- [`core/setup_entry.py:56-106`](../../../core/setup_entry.py#L56-L106): 설치자 action 목록과 `--approve-*` 승인 플래그입니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`은 `--project` 없이 실행합니다.
 - [`core/setup_entry.py:131-279`](../../../core/setup_entry.py#L131-L279): index-origin 계열 action을 `laya_product_install`에 위임합니다.
 - `core/laya_product_install.py` `plan_fresh_wiki_origin`: 프로젝트 활성 폴더(`.memvane`, 옮기기 전 프로젝트는 `.auto-context`) 아래에 route record나 selection marker가 이미 있으면 계획을 거부합니다.
 - [`core/laya_product_install.py:565-566`](../../../core/laya_product_install.py#L565-L566): 설치 state root 아래의 `install-journal.sqlite`와 `runtime/laya-embed.sock`입니다.

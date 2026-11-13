@@ -58,7 +58,6 @@ def _exception_detail(exc):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
-                                          'plan-legacy-cleanup', 'apply-legacy-cleanup',
                                           'gc-index-runtime',
                                           'state-root-status', 'move-state-roots',
                                           'plan-fresh-wiki-origin',
@@ -103,16 +102,14 @@ def main(argv=None):
     parser.add_argument('--approve-active-index-upgrade', action='store_true')
     parser.add_argument('--approve-index-runtime-download', action='store_true')
     parser.add_argument('--approve-index-runtime-gc', action='store_true')
-    parser.add_argument('--approve-legacy-cleanup', action='store_true')
     parser.add_argument('--approve-index-reader-rollback', action='store_true')
     parser.add_argument('--approve-index-reader-migration-resume', action='store_true')
     parser.add_argument('--rehearse-switch', action='store_true')
-    parser.add_argument('--include-user-qmd-data', action='store_true')
     parser.add_argument('--wake-revision', type=int)
     parser.add_argument('--session')
     args = parser.parse_args(argv)
     if args.project is None and args.action not in (
-            'plan-legacy-cleanup', 'apply-legacy-cleanup', 'index-runtime-status',
+            'index-runtime-status',
             'provision-index-runtime', 'gc-index-runtime', 'state-root-status',
             'move-state-roots'):
         parser.error('--project is required for ' + args.action)
@@ -169,15 +166,6 @@ def main(argv=None):
             # What each project's SessionStart worker does, for every project now.
             import laya_bundle_upgrade
             result = laya_bundle_upgrade.move_all()
-        elif args.action in ('plan-legacy-cleanup', 'apply-legacy-cleanup'):
-            # The owner's one-time removal of the retired QMD backend.
-            import legacy_cleanup
-            if args.action == 'plan-legacy-cleanup':
-                result = {'status': 'planned', **legacy_cleanup.plan(
-                    include_user_data=args.include_user_qmd_data)}
-            else:
-                result = legacy_cleanup.apply(approved=args.approve_legacy_cleanup,
-                                              include_user_data=args.include_user_qmd_data)
         elif args.action in ('index-runtime-status', 'provision-index-runtime',
                              'gc-index-runtime'):
             # The Laya embedding runtime the provider review reads.
