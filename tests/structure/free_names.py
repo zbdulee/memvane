@@ -102,6 +102,26 @@ def _symbols(path):
 
 
 _PROXIES = {}
+_MODULE_ALIASES = {}
+
+
+def _module_aliases(dotted):
+    """Top-level names of a module bound to another product module by import."""
+    if dotted not in _MODULE_ALIASES:
+        found = {}
+        path = _module_file(dotted)
+        tree = ast.parse(path.read_text(encoding='utf8'), str(path)) if path else ast.Module(body=[])
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                for item in node.names:
+                    if item.asname and item.name.startswith('memvane.'):
+                        found[item.asname] = item.name
+            elif isinstance(node, ast.ImportFrom) and not node.level and (node.module or '').startswith('memvane'):
+                for item in node.names:
+                    if _module_file(node.module + '.' + item.name):
+                        found[item.asname or item.name] = node.module + '.' + item.name
+        _MODULE_ALIASES[dotted] = found
+    return _MODULE_ALIASES[dotted]
 
 
 def _proxies(dotted):
@@ -210,9 +230,14 @@ def check_attributes(source, filename):
                 if not answers(aliases[node.value.id], node.attr):
                     findings.add(f'{filename}:{node.lineno}:{node.value.id}.{node.attr}')
             elif (isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name)
-                    and isinstance(aliases.get(node.value.value.id), str)
-                    and node.value.attr in _proxies(aliases[node.value.value.id])):
-                target = (aliases[node.value.value.id], node.value.attr)
+                    and isinstance(aliases.get(node.value.value.id), str)):
+                outer = aliases[node.value.value.id]
+                if node.value.attr in _proxies(outer):
+                    target = (outer, node.value.attr)
+                elif node.value.attr in _module_aliases(outer):
+                    target = _module_aliases(outer)[node.value.attr]
+                else:
+                    continue
                 if not answers(target, node.attr):
                     findings.add(f'{filename}:{node.lineno}:{node.value.value.id}.{node.value.attr}.{node.attr}')
         for child in nested:
