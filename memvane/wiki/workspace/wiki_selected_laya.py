@@ -191,7 +191,7 @@ def request_compile(root: Path, bound, *, owner=None):
     if bound is None:
         return
     recheck(bound, owner=owner)
-    from memvane.runtime.runtime_work import request
+    from memvane.runtime.api import request
     result = request('laya-compile', str(Path(root).resolve()))
     if not isinstance(result, dict) or result.get('status') not in ('queued', 'busy'):
         raise ValueError('selected_compile_wake_enqueue_failed')
@@ -202,7 +202,7 @@ def request_sync(root: Path, bound=None):
     if bound is None:
         return False
     recheck(bound)
-    from memvane.runtime.runtime_work import request
+    from memvane.runtime.api import request
     result = request('laya-sync', str(Path(root).resolve()))
     if not isinstance(result, dict) or result.get('status') not in ('queued', 'busy'):
         raise ValueError('selected_wiki_sync_enqueue_failed')

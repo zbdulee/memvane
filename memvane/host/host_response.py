@@ -805,7 +805,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     start=False records the durable wakes without starting the owner; the
     caller then starts it on every exit path.
     """
-    from memvane.runtime import runtime_work
+    from memvane.runtime import api as runtime_work
     from memvane.journal.install_journal import verify_selected_route
     _request_wiki_lifecycle(action, decision)
     # Pass start only when deferring, so the default path keeps the
@@ -865,7 +865,7 @@ def _start_owner() -> None:
     runtime_work.request's own start.
     """
     try:
-        from memvane.runtime import runtime_work
+        from memvane.runtime import api as runtime_work
         if os.environ.get('QMD_RUNTIME_DISPATCH') != '1':
             runtime_work.hook_wake()
     except Exception:
@@ -884,7 +884,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
     for an unrelated later wake.
     """
     from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
-    from memvane.runtime import runtime_work
+    from memvane.runtime import api as runtime_work
     try:
         accepted = laya_wiki_discovery.activate_grant(decision, kind, grant)
     except laya_wiki_discovery.GrantUncertain as exc:
@@ -1241,7 +1241,7 @@ def _recall_sync_wake(project_root: str, **kwargs):
     Each request bumps the wake revision; a retried recall reuses the first
     recorded result instead of asking for another sync run.
     """
-    from memvane.runtime import runtime_work
+    from memvane.runtime import api as runtime_work
     state = _RECALL_STATE.get()
     if state is not None and state.get('writer_allowed') is False:
         return None
@@ -1445,7 +1445,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         # resource admission, document embedding and the journal-fenced sync.
         # Loading a model or building a vector batch here would occupy the
         # prompt/SessionStart deadline and leave an unowned child on timeout.
-        from memvane.runtime import runtime_work
+        from memvane.runtime import api as runtime_work
         from memvane.host.host_rules import discovery_grant_kind
         move_notice = None
         if verify_selected_route(decision) != proof:
@@ -1583,7 +1583,7 @@ def _request_worktree_sync(main: dict, proof: dict, recheck) -> None:
     Its owner publishes the main view and then each linked worktree's own
     view. No compile, lifecycle or discovery grant is recorded from here.
     """
-    from memvane.runtime import runtime_work
+    from memvane.runtime import api as runtime_work
     result = runtime_work.request('laya-sync', main['projectRoot'])
     refreshed = recheck(main)
     stable = lambda row: {key: value for key, value in row.items() if key != 'selectionEpoch'}

@@ -19,7 +19,7 @@ def reserve_qa_budget(*args, **kwargs):
     return reserve_from_env(*args, **kwargs)
 
 
-def request_wake(*args, **kwargs):
+def request(*args, **kwargs):
     from memvane.runtime.runtime_work import request
     return request(*args, **kwargs)
 
@@ -80,4 +80,21 @@ def provider_checkpoint(*args, **kwargs):
 
 def hash_file(*args, **kwargs):
     from memvane.runtime.runtime_admission import hash_file as implementation
+    return implementation(*args, **kwargs)
+
+
+def hook_wake(*args, **kwargs):
+    from memvane.runtime.runtime_work import hook_wake as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def wake_queue(*args, **kwargs):
+    from memvane.runtime.runtime_work import WakeQueue as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def runtime_main(*args, **kwargs):
+    from memvane.runtime.runtime_work import main as implementation
     return implementation(*args, **kwargs)

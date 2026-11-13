@@ -728,7 +728,7 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
             progress = backfill.summary(initial)
             if progress['pending'] and not progress['dispatched']:
                 recheck()
-                from memvane.runtime import runtime_work
+                from memvane.runtime import api as runtime_work
                 runtime_work.request('laya-sync', decision['projectRoot'])
         return report(_outcome('pending' if pending else 'drained',
                               'capped' if pending else None, generation=head,

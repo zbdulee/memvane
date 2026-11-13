@@ -17,7 +17,7 @@ def runtime_work_main(argv):
     if argv[:1]==['build-wake-status'] and len(argv)==3 and argv[1]=='--project':
         from memvane.install import runtime_wake_cancel
         print(json.dumps(runtime_wake_cancel.status(argv[2]),sort_keys=True,default=str));return 0
-    from memvane.runtime.runtime_work import main
+    from memvane.runtime.api import runtime_main as main
     return main(argv)
 
 

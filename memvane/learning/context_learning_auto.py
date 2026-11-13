@@ -108,7 +108,7 @@ def run(project: Path) -> dict:
         summary["reason"] = result["reason"]
     _atomic_json(state / RESULT, summary)
     if summary['status']=='deferred_resource':
-        from memvane.runtime import runtime_work
+        from memvane.runtime import api as runtime_work
         runtime_work.request('auto',str(project))
     return summary
 
