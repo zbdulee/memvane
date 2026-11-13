@@ -1403,10 +1403,16 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     if (isinstance(version_route, dict) and version_route.get('routeSchema') == 'memvane-route-v4'
             and not _major_allowed(version_route)):
         return _major_mismatch_response(action, host)
+    from laya_install_journal import JournalEvidenceError
     with _event_scope(action, host, decision, payload):
-        if action != 'recall':
-            return _serve_selected_once(action, host, decision, payload)
-        return _serve_selected_recall(action, host, decision, payload)
+        try:
+            if action != 'recall':
+                return _serve_selected_once(action, host, decision, payload)
+            return _serve_selected_recall(action, host, decision, payload)
+        except JournalEvidenceError as exc:
+            if str(exc) != 'provider_identity_changed':
+                raise
+            return _provider_mismatch_response(action, host)
 
 
 def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -1578,6 +1584,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         return _major_mismatch_response(action, host)
     from laya_install_journal import verify_selected_route
     proof = verify_selected_route(decision)
+    if proof.get('providerAvailable') is False:
+        return _provider_mismatch_response(action, host)
     # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
@@ -1847,6 +1855,21 @@ def _major_mismatch_response(action, host):
     return {}
 
 
+def _provider_mismatch_response(action, host):
+    if action == 'recall':
+        return host_payload(host, '')
+    if action in ('update', 'update-queued'):
+        notice = '[memvane] 임베딩 환경이 바뀌었습니다. 기존 설치를 복원한 뒤 다시 온보딩해 주세요.'
+        if host == 'hermes':
+            return {'status': 'provider_identity_changed', 'notice': notice}
+        return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
+                                       'additionalContext': notice}}
+    if action == 'gate':
+        from laya_host_rules import gate_response
+        return gate_response(host)
+    return {}
+
+
 def _writer_floor_response(action, host):
     if action not in ('update', 'update-queued'):
         return {}
@@ -1866,6 +1889,8 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     if main.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(main):
         return _major_mismatch_response(action, host)
     proof = recheck(main)
+    if proof.get('providerAvailable') is False:
+        return _provider_mismatch_response(action, host)
     if proof.get('productRouteAllowed') is not True:
         _fail('worktree_selection_unapproved')
     if not _major_allowed(proof):

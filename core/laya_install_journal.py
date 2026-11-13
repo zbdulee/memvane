@@ -1481,6 +1481,8 @@ def verify_selected_route_for_write(decision, action='update'):
     """Prove the selected route before a write."""
     proof = verify_selected_route(decision)
     if decision.get('routeSchema') == 'memvane-route-v4':
+        if not proof.get('providerAvailable'):
+            _fail('provider_identity_changed')
         from memvane_version import writer_floor_allows
         from memvane_execution_guard import require_cached_plugin_for_live_write
         if not writer_floor_allows(proof['writerFloor']):
@@ -1635,12 +1637,24 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
             if allow_local_unavailable:
                 return manifest, False
             _fail('worker_attestation_invalid')
-        for path_key, hash_key in (('nodePath', 'nodeSha256'),
-                                   ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
-            if _hash_file(manifest[path_key]) != manifest[hash_key]:
-                _fail('worker_attestation_invalid')
-        _verify_runtime_files(record)
+        import laya_embed_runtime
+        try:
+            for path_key, hash_key in (('nodePath', 'nodeSha256'),
+                                       ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
+                if _hash_file(manifest[path_key]) != manifest[hash_key]:
+                    _fail('provider_identity_changed')
+            _verify_runtime_files(record)
+            active = laya_embed_runtime.select()
+            if any(active[key] != manifest[key] for key in
+                   ('runtimeId', 'nodeSha256', 'moduleEntrySha256', 'modelSha256')):
+                _fail('provider_identity_changed')
+            if active[laya_embed_runtime.FILES_SHA] != record[RUNTIME_FILES_FIELD]:
+                _fail('provider_identity_changed')
+        except (JournalEvidenceError, laya_embed_runtime.RuntimeUnavailable, OSError):
+            _fail('provider_identity_changed')
     except (OSError, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, JournalEvidenceError):
+            raise
         raise JournalEvidenceError('worker_attestation_invalid') from exc
     return (manifest, True) if allow_local_unavailable else manifest
 
