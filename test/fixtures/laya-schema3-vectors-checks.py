@@ -1342,6 +1342,9 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
                 self.shared_clock({m: 12.0 for m in markers}) as seen, self.offers():
             result, _ingests, _calls = self.run_vector_pass(rc.Coordinator(root))
         self.assertGreaterEqual(len(seen), 10, (result, seen))
+        # The window went on past a fill call stopped by its own deadline (a
+        # card asked again), and admission held through it.
+        self.assertGreater(len(seen), len(set(seen)), seen)
         # Every provider call of the pass (seeded cards' included) was admitted.
         self.assertGreaterEqual(len(admitted), len(seen))
         self.assertEqual(deferred, admitted)
@@ -1383,7 +1386,9 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertEqual(order, [project, str(other)])
         self.assertEqual(first['vector'].get('reason'), 'laya_sync_yield_priority', first)
         # Every card asked for before the yield keeps its sets (a call discarded
-        # at its own deadline asks for the same card again).
+        # at its own deadline asks for the same card again: the yield came
+        # after the window went on past it).
+        self.assertGreater(len(seen), len(set(seen)), seen)
         self.assertEqual(self.embedded_count(markers), len(set(seen)), seen)
         emit('schema3-vector-window-initial-build', calls=len(seen), filled=len(set(seen)))
 
@@ -1414,6 +1419,28 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
                          [('pending', 'schema3_pass_budget')], result)
         self.assertIn(('laya-sync', str(self.case.project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
         emit('schema3-linked-after-window', state=result['state'])
+
+    def test_31_window_ends_at_a_deadline_call_that_adds_no_set(self):
+        """Inside the vector window a fill call stopped by its own deadline goes
+        on only when it added embedding sets: a card whose single provider call
+        outlasts every fill call ends the pass ``pending`` after at most one
+        repeat, and the cards behind it are not asked for."""
+        self.select_schema3()
+        self.card('window/aaa-fast.md', 'aaafastprobe')
+        self.card('window/bbb-slow.md', 'bbbslowprobe')
+        self.card('window/ccc-later.md', 'ccclaterprobe')
+        self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        cost = {'aaafastprobe': 1.0, 'bbbslowprobe': 40.0, 'ccclaterprobe': 1.0}
+        with self.shared_clock(cost) as seen, self.offers():
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual((result['vector']['state'], result['vector']['reason']),
+                         ('pending', 'schema3_vector_deadline'), result)
+        self.assertLessEqual(seen.count('bbbslowprobe'), 2, seen)
+        self.assertNotIn('ccclaterprobe', seen)
+        gen = self.head()[0]
+        self.assertEqual(self.embedded(gen, 'window/bbb-slow.md')[1], False)
+        self.assertEqual(self.embedded(gen, 'window/ccc-later.md')[1], False)
+        emit('schema3-vector-window-ends', slow=seen.count('bbbslowprobe'), calls=len(seen))
 
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
