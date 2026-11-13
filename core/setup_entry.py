@@ -100,9 +100,11 @@ def main(argv=None):
             'provision-index-runtime', 'gc-index-runtime'):
         parser.error('--project is required for ' + args.action)
     try:
-        if args.action not in ('plan-learning-profile', 'plan-fresh-wiki-origin',
-                               'review-index-provider', 'index-runtime-status',
-                               'index-origin-status', 'index-build-status', 'onboarding-status'):
+        read_only = (args.action in ('plan-learning-profile', 'plan-fresh-wiki-origin',
+                                    'review-index-provider', 'index-runtime-status',
+                                    'index-origin-status', 'index-build-status', 'onboarding-status')
+                     or (args.action == 'gc-index-runtime' and not args.approve_index_runtime_gc))
+        if not read_only:
             from memvane_execution_guard import require_cached_plugin_for_live_write
             require_cached_plugin_for_live_write()
         if args.action.startswith('onboarding-'):
