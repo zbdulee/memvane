@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
 from memvane.diagnostics import event_log
 from memvane.host import host_response as response
 from memvane.wiki.card import api as card_api
+from memvane.recall import api as recall_api
 import laya_index_vector as vector
 
 SCOPE = "6" * 32
@@ -486,7 +487,7 @@ class ResponseChecks(unittest.TestCase):
     def test_qmd_rrf_weights_first_nonempty_list_and_uses_position_score(self):
         # The general query can be empty. QMD pushes only nonempty lists, so
         # the EP list then receives the first-list 2x contribution.
-        found = response._fuse_verified_lists([
+        found = recall_api.fuse_verified_lists([
             [], [row(path="z-ep.md", body="ep")],
             [row(path="a-vector.md", body="semantic")]])
         self.assertEqual([item["path"] for item in found],
@@ -498,12 +499,12 @@ class ResponseChecks(unittest.TestCase):
                  ("b-first.md", "x.md", "y.md", "a-both-fourth.md")]
         second = [row(path=p, body=p) for p in
                   ("z.md", "x.md", "y.md", "a-both-fourth.md")]
-        found = response._fuse_verified_lists([first, second])
+        found = recall_api.fuse_verified_lists([first, second])
         self.assertEqual(found[0]["path"], "b-first.md")
         self.assertEqual(found[0]["score"], 1.0)
 
     def test_qmd_rrf_equal_scores_retain_first_seen_list_order(self):
-        found = response._fuse_verified_lists([
+        found = recall_api.fuse_verified_lists([
             [row(path="x-double.md", body="x")],
             [row(path="z-seen-first.md", body="z")],
             [row(path="a-seen-later.md", body="a")]])
@@ -1257,9 +1258,9 @@ class ResponseChecks(unittest.TestCase):
                 self.assertEqual(str(caught.exception), 'result_context_too_large')
 
     def test_fts_atom_matches_qmd_compound_and_cjk_policy(self):
-        self.assertEqual(response._fts_atom('PIO-1384'), '"pio 1384"')
-        self.assertEqual(response._fts_atom('한국어'), '"한 국 어"')
-        self.assertEqual(response._fts_atom('target'), '"target"*')
+        self.assertEqual(recall_api.fts_atom('PIO-1384'), '"pio 1384"')
+        self.assertEqual(recall_api.fts_atom('한국어'), '"한 국 어"')
+        self.assertEqual(recall_api.fts_atom('target'), '"target"*')
 
     def test_v2_df_probes_share_one_batch_and_source_scan(self):
         from memvane.recall import keywords

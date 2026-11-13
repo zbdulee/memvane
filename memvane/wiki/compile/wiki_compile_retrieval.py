@@ -170,7 +170,7 @@ def terms(text: str) -> set[str]:
 def lexical_atoms(text: str) -> list[str]:
     """Bounded query atoms shared by overlay retrieval and live-body evidence."""
     from memvane.recall.keywords import EN_STOPWORDS, KO_STOPWORDS, strip_ko_suffix
-    from memvane.host.host_response import _fts_atom
+    from memvane.recall.api import fts_atom
     words = list(dict.fromkeys(strip_ko_suffix(word) for word in
                                re.findall(r'\w+', text.casefold())))
     words = [word for word in words if 2 <= len(word) <= 128
@@ -180,7 +180,7 @@ def lexical_atoms(text: str) -> list[str]:
     if len(words) > 24:
         words = list(dict.fromkeys(words[:6] +
                      [words[i * (len(words) - 1) // 17] for i in range(18)]))
-    return [atom for word in words if (atom := _fts_atom(word))]
+    return [atom for word in words if (atom := fts_atom(word))]
 
 
 @contextmanager

@@ -684,6 +684,21 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/recall/api.py": {
+      "context": "recall",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/recall/domain/__init__.py": {
+      "context": "recall",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/recall/domain/rules.py": {
+      "context": "recall",
+      "layer": "domain",
+      "pinned": false
+    },
     "memvane/recall/keywords.py": {
       "context": "recall",
       "layer": "adapter",
@@ -692,6 +707,11 @@
     "memvane/recall/reader_dispatch.py": {
       "context": "recall",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/recall/types.py": {
+      "context": "recall",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/registry/__init__.py": {
