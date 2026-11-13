@@ -987,7 +987,7 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
 
 def onboarding_lines(root: str, session: str | None) -> str:
     """The user notice line plus the agent's answer commands as one JSON line."""
-    entry = str(Path(__file__).resolve().parent / "setup_entry.py")
+    entry = str(Path(__file__).resolve().parent.parent / "entry" / "setup.py")
     base = ["python3", "-B", entry]
 
     def command(*args):

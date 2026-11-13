@@ -43,7 +43,7 @@ def _record_seal_write(root):
 
 FULL_SCHEMA = 'laya-full-plugin-bundle-v1'
 FULL_OWNER_SCHEMA = 'laya-full-plugin-ownership-v1'
-PLUGIN_PREFIXES = ('core/', 'hooks/', 'hermes_adapter/', 'backend/',
+PLUGIN_PREFIXES = ('memvane/', 'entry/', 'core/', 'hooks/', 'hermes_adapter/', 'backend/',
                    'skills/', 'scripts/', 'agents/', 'locks/',
                    '.claude-plugin/', '.codex-plugin/', '.agents/plugins/')
 PLUGIN_ROOT_FILES = frozenset(('__init__.py', 'plugin.yaml', 'plugin.json',
@@ -477,7 +477,7 @@ def _plugin_paths(source, commit_id, *, required_paths=None):
                            'oid': oid.decode('ascii')}
     except UnicodeError as exc:
         raise BundleEvidenceError('invalid_commit_path') from exc
-    required = ({'hooks/run-hook', 'core/source_scan.py',
+    required = ({'hooks/run-hook', 'memvane/sync/source_scan.py',
                  'core/laya_local_embed_provider.py',
                  'core/laya_local_embed_service.py',
                  'core/laya_local_embed_worker.mjs',
@@ -485,7 +485,7 @@ def _plugin_paths(source, commit_id, *, required_paths=None):
                  'core/laya_index_host_route.py', 'core/laya_host_response.py',
                  'core/laya_initial_build.py',
                  'core/laya_product_sync_worker.py',
-                 'core/sync_owner_lock.py', 'core/laya_store_primitives.py',
+                 'memvane/sync/sync_owner_lock.py', 'core/laya_store_primitives.py',
                  'core/laya_vector_primitives.py',
                  'core/laya_product_install.py',
                  'core/laya_product_bundle.py', 'core/laya_install_journal.py',
@@ -867,7 +867,7 @@ def inspect_full_plugin_candidate(plugin_root):
     expected_files = set(manifest['artifacts'])
     profile = validate_vector_profile(manifest.get('vectorProfile'),
                                       manifest['artifacts'])
-    if (not {'hooks/run-hook', 'core/source_scan.py',
+    if (not {'hooks/run-hook', 'memvane/sync/source_scan.py',
              'core/laya_local_embed_provider.py',
              'core/laya_local_embed_service.py',
              'core/laya_local_embed_worker.mjs',
@@ -875,7 +875,7 @@ def inspect_full_plugin_candidate(plugin_root):
              'core/laya_index_host_route.py', 'core/laya_host_response.py',
              'core/laya_initial_build.py',
              'core/laya_product_sync_worker.py',
-             'core/sync_owner_lock.py', 'core/laya_store_primitives.py',
+             'memvane/sync/sync_owner_lock.py', 'core/laya_store_primitives.py',
              'core/laya_vector_primitives.py',
              'core/laya_product_install.py',
              'core/laya_product_bundle.py', 'core/laya_install_journal.py',

@@ -17,6 +17,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+_PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+if str(_PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_ROOT))
+
 logger = logging.getLogger(__name__)
 
 # SessionStart notices (project folder move, folder conflict) per cwd. Hermes
@@ -78,7 +82,7 @@ def _is_noop_env() -> bool:
 
 def _laya_route_state(action: str, cwd: str) -> str:
     """Read the installed adapter's own selector before any QMD side effect."""
-    selector = Path(__file__).resolve().parent.parent / "core" / "laya_index_host_route.py"
+    selector = _PLUGIN_ROOT / "entry" / "run.py"
     try:
         if action == "recall":
             # Only the hook classifier distinguishes an upgrade fence from an
@@ -88,7 +92,7 @@ def _laya_route_state(action: str, cwd: str) -> str:
                 json.dump({"cwd": cwd}, payload)
                 payload.flush()
                 result = subprocess.run(
-                    [sys.executable, str(selector), "classify-hook", action,
+                    [sys.executable, str(selector), "hook-classify", action,
                      payload.name, cwd],
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
                     # Recall classification may wait up to 1.5s for an
