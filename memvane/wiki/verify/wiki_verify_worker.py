@@ -53,7 +53,7 @@ import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.kernel.atomic_rename import fsync_dir
+from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.wiki.verify.intent_ack import _supersede_compile_intent
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.card import wiki_markers
@@ -800,7 +800,7 @@ def _write_compile_intent(checkout, result, verdict_digest, result_digest):
     try:
         ledger.ledger_write(path, intent, replace=False)
     except CutoverBlocked as exc:
-        if str(exc) != 'cutover_record_exists' or ledger.ledger_private_file(path) != ledger.ledger_canonical(intent):
+        if str(exc) != 'cutover_record_exists' or ledger.ledger_private_file(path) != canonical_json_bytes(intent):
             raise
     return path
 

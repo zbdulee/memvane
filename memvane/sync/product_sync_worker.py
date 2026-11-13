@@ -21,6 +21,7 @@ import time
 
 from memvane.sync.intent_ack import _ack_compile_intent
 from memvane.kernel.resource_deferred import ResourceDeferred
+from memvane.kernel.atomic_rename import canonical_json_bytes
 from memvane.learning.context_learning.resource_coordination import Coordinator
 from memvane.learning.api import resource_report
 from memvane.kernel.errors import IndexContractError
@@ -642,7 +643,7 @@ def _read_compile_intent(fd):
         return result
     value = json.loads(raw.decode('utf8'), object_pairs_hook=unique,
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite')))
-    if len(raw) != info.st_size or not isinstance(value, dict) or ledger.ledger_canonical(value) != raw:
+    if len(raw) != info.st_size or not isinstance(value, dict) or canonical_json_bytes(value) != raw:
         raise ValueError('provenance_intent_invalid')
     return value, info
 

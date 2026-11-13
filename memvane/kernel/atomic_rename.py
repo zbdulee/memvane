@@ -86,3 +86,8 @@ def fsync_dir(path):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def canonical_json_bytes(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False,
+                      separators=(',', ':')).encode('utf-8')

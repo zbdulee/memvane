@@ -113,9 +113,6 @@ def read_v1_build(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def ledger_canonical(*args, **kwargs):
-    from memvane.journal.ledger_io import _canon as implementation
-    return implementation(*args, **kwargs)
 
 
 def ledger_private_file(*args, **kwargs):

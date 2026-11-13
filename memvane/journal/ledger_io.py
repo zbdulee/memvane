@@ -8,15 +8,12 @@ import stat
 import tempfile
 
 from memvane.journal.types import CutoverBlocked
-from memvane.kernel.atomic_rename import fsync_dir as _fsync_dir
+from memvane.kernel.atomic_rename import fsync_dir as _fsync_dir, canonical_json_bytes as _canon
 
 
 def _fail(reason):
     raise CutoverBlocked(reason)
 
-def _canon(value):
-    return json.dumps(value, sort_keys=True, ensure_ascii=False,
-                      separators=(',', ':')).encode('utf-8')
 
 def _private_file(path, limit=65536):
     path = Path(path)

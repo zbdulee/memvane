@@ -7,9 +7,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from memvane.kernel.atomic_rename import fsync_dir as _fsync_dir
+from memvane.kernel.atomic_rename import fsync_dir as _fsync_dir, canonical_json_bytes as _canon
 from memvane.journal.types import CutoverBlocked
-from memvane.journal.api import (ledger_canonical as _canon, ledger_private_file as _private_file,
+from memvane.journal.api import (ledger_private_file as _private_file,
     ledger_read_json as _read_json, ledger_write as _write)
 import stat
 
