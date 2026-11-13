@@ -17,7 +17,7 @@ import time
 
 from memvane.settings import api as project_dir
 
-from memvane.journal.install_journal import inspect_journal
+from memvane.journal.api import inspect_journal
 
 
 class InstallBlocked(RuntimeError):

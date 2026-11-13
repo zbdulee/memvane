@@ -27,7 +27,8 @@ from memvane.route.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.sync.sync_owner_lock import sync_owner
-from memvane.journal.install_journal import JournalEvidenceError, cas_mark_new_write, inspect_journal
+from memvane.journal.types import JournalEvidenceError
+from memvane.journal.api import cas_mark_new_write, inspect_journal
 from memvane.provider.api import reviewed_provider_class
 ReviewedLocalQmdProvider = reviewed_provider_class()
 from memvane.provider.api import start_owned_embed_service
@@ -154,7 +155,7 @@ def _initial_build_waiting(controller, project):
 def _owned_selected_proof(decision, owner):
     """Reprove the selected route while the sync owner is held."""
     from memvane.sync.sync_owner_lock import validate_sync_owner
-    from memvane.journal.install_journal import verify_selected_route_for_write
+    from memvane.journal.api import verify_selected_route_for_write
     validate_sync_owner(owner, Path(decision['storePath']))
     proof = verify_selected_route_for_write(decision)
     validate_sync_owner(owner, Path(decision['storePath']))
@@ -163,7 +164,7 @@ def _owned_selected_proof(decision, owner):
 
 def _selected(project, *, owner_wait=False):
     """Prove the selected v1 route before acquiring the writer owner."""
-    from memvane.journal.install_journal import verify_selected_route_for_write
+    from memvane.journal.api import verify_selected_route_for_write
     project = Path(project)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')

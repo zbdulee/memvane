@@ -110,7 +110,7 @@ def ownership_proof(project_raw):
     if (identity.get('projectRoot') != str(project) or journal_path.parent != state
             or record.get('phase') in ('bound', 'retired')):
         _refuse('initial_build_not_inactive')
-    from memvane.journal.install_journal import inspect_journal
+    from memvane.journal.api import inspect_journal
     try:
         journal = inspect_journal(journal_path)
     except (OSError, ValueError) as exc:

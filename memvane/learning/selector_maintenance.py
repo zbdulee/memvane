@@ -28,7 +28,7 @@ def _missing_warm_receipt(project):
 
 def _request_owned(decision, owner, *, force):
     """Apply the existing ten-minute per-install request floor under sync owner."""
-    from memvane.journal.install_journal import inspect_journal
+    from memvane.journal.api import inspect_journal
     from memvane.install.ledger_common import _read_json, _write
     from memvane.kernel.memvane_version import plugin_version, version_key
     from memvane.sync.api import validate_sync_owner

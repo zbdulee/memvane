@@ -157,7 +157,7 @@ def main(argv=None):
                 state = product.private_parent(args.state_root)
                 journal = state / 'journal.sqlite'
                 if args.action == 'index-origin-status':
-                    from memvane.journal.install_journal import inspect_journal
+                    from memvane.journal.api import inspect_journal
                     result = {'status': 'inspected', 'journal': inspect_journal(journal),
                               'routeFile': str(state / 'route.json')}
                     from memvane.install.initial_build import read_v1 as read_build

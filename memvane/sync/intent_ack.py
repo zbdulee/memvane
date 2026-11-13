@@ -2,7 +2,7 @@
 import os
 
 from memvane.kernel.errors import IndexContractError
-from memvane.journal.install_journal import JournalEvidenceError
+from memvane.journal.types import JournalEvidenceError
 
 
 def _ack_compile_intent(path, fd, initial, outcome):

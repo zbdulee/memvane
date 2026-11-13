@@ -30,7 +30,7 @@ def selected(project_root, *, action='recall'):
     if (state != 'candidate' or decision.get('projectRoot') != str(root)
             or 'collections' not in decision):
         raise ValueError('laya_learning_route_unavailable')
-    from memvane.journal.install_journal import verify_selected_route
+    from memvane.journal.api import verify_selected_route
     proof = verify_selected_route(decision)
     if not isinstance(proof, dict) or proof.get('productRouteAllowed') is not True:
         raise ValueError('laya_learning_route_unverified')

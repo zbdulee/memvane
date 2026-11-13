@@ -23,7 +23,7 @@ def _supersede_compile_intent(path):
             try:
                 rename_noreplace(parent_fd, path.name, path.stem + '.superseded.json')
             except AtomicRenameUnavailable as exc:
-                from memvane.journal.install_journal import JournalEvidenceError
+                from memvane.journal.types import JournalEvidenceError
                 raise JournalEvidenceError(str(exc)) from exc
             os.fsync(parent_fd)
         finally:

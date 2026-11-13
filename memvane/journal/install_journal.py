@@ -21,6 +21,7 @@ import threading
 import time
 
 from memvane.kernel.errors import IndexContractError
+from memvane.journal.types import JournalEvidenceError
 from memvane.route.types import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
@@ -125,10 +126,6 @@ _FIELDS_V4 = ('id', 'schema', 'epoch', 'state', 'selected', 'selected_route_sha'
               'new_write_seen', 'provider_attestation_sha',
               'previous_provider_attestation_sha', 'provider_file_identity',
               'previous_provider_file_identity')
-
-
-class JournalEvidenceError(ValueError):
-    pass
 
 
 def _fail(reason):

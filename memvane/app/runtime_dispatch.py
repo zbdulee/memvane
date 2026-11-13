@@ -61,7 +61,7 @@ def resolve(kind, value):
     from memvane.route.api import select_route
     route = select_route(str(project), action='update')
     if route.get('state') == 'candidate':
-        from memvane.journal.install_journal import verify_dispatch_target
+        from memvane.journal.api import verify_dispatch_target
         try:
             proof = verify_dispatch_target(route)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -82,7 +82,7 @@ def resolve(kind, value):
         identity = record['identity']
         if record['phase'] in ('bound', 'retired'):
             return {'terminal': True, 'project': str(project)}
-        from memvane.journal.install_journal import inspect_journal
+        from memvane.journal.api import inspect_journal
         try:
             journal = inspect_journal(identity['journalPath'])
         except (OSError, RuntimeError, ValueError) as exc:

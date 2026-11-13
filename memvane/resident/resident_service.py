@@ -633,7 +633,7 @@ def default_attest(decision, proof, mode):
         if service_worker_attestation(decision, proof) != proof['providerManifest']:
             _fail('provider_attestation_invalid')
     elif mode == 'preview':
-        from memvane.journal.install_journal import verify_preview_worker_attestation
+        from memvane.journal.api import verify_preview_worker_attestation
         if verify_preview_worker_attestation(decision['journalPath'],
                                              proof['providerManifest']) \
                 != proof['providerManifest']:
