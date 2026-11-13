@@ -70,7 +70,7 @@ flowchart TD
 - [`core/setup_entry.py:131-279`](../../../core/setup_entry.py#L131-L279): index-origin 계열 action을 `laya_product_install`에 위임합니다.
 - `core/laya_product_install.py` `plan_fresh_wiki_origin`: 프로젝트 활성 폴더(`.memvane`, 옮기기 전 프로젝트는 `.auto-context`) 아래에 route record나 selection marker가 이미 있으면 계획을 거부합니다.
 - [`core/laya_product_install.py:565-566`](../../../core/laya_product_install.py#L565-L566): 설치 state root 아래의 `journal.sqlite`와 `runtime/laya-embed.sock`입니다.
-- `core/laya_fresh_wiki_origin.py`: ledger(`fresh-wiki-cutover.json`, state root)·marker(`laya-index-selection.json`)·route(`laya-index-route.json`, 둘 다 프로젝트 폴더 `.memvane/`) 파일 이름입니다.
+- `core/laya_fresh_wiki_origin.py`: ledger(`fresh-wiki-cutover.json`, state root)·marker(`selection.json`)·route(`route.json`, 둘 다 프로젝트 폴더 `.memvane/`) 파일 이름입니다.
 
 ### QA 증거와 미검증
 

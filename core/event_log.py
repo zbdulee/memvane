@@ -1,7 +1,7 @@
 """Install-scoped structured event log: ``<install state root>/events.jsonl``.
 
-Every hook action, recall, wiki card write, index publish, off-hook wake,
-resident service transition and bundle upgrade of one memvane-db install
+Every hook action, recall, wiki card write, index publish, off-hook wake and
+resident service transition of one memvane-db install
 appends one JSON line here. It is a debugging log for the owner and the
 ``memvane:logs`` skill; no code path reads it back except the compile
 worker's ``wiki_tail`` (recent wiki card writes for the extractor prompt).
