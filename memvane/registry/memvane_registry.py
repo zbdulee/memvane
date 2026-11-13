@@ -332,7 +332,7 @@ def is_home_install(state, home=None):
 @contextmanager
 def _journal_reads(deadline):
     """Registry journal reads: never legacy recovery, busy waits bounded by ``deadline``."""
-    from memvane.journal import install_journal as journal
+    from memvane.journal import api as journal
     with journal.read_only_journals(), journal.reader_deadline(deadline):
         yield
 
@@ -368,7 +368,7 @@ def _within(root, path):
 
 
 def _journal_state(state_root):
-    from memvane.journal import install_journal as journal
+    from memvane.journal import api as journal
     return journal.inspect_journal(Path(state_root) / 'journal.sqlite')
 
 
@@ -795,7 +795,7 @@ def _check_main(home, row, now, deadline):
 
 def _backfill(home, now, page, clock, deadline, git_deadline):
     """Page through the state base with a cursor and completion marker."""
-    from memvane.journal import install_journal as journal
+    from memvane.journal import api as journal
     done = 0
     for key, base in _bases(home):
         if done >= page or clock() >= deadline:

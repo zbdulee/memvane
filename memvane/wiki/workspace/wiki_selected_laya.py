@@ -34,7 +34,7 @@ def _compile_proof(decision, *, owner=None):
         return _owned_selected_proof(decision,owner)
     if 'journalPath' not in decision:
         return verify_selected_route_for_write(decision,'compile')
-    from memvane.journal import install_journal as journal
+    from memvane.journal import api as journal
     from memvane.sync.api import sync_owner
     from memvane.kernel.resource_deferred import ResourceDeferred
     with sync_owner(Path(decision['storePath'])) as acquired:
@@ -91,7 +91,7 @@ def schema3_checkout(bound):
     if bound is None:
         return None
     decision = bound[0]
-    from memvane.journal import install_journal as journal
+    from memvane.journal import api as journal
     from memvane.journal import journal_reader as reader
     path = decision.get('journalPath')
     if not isinstance(path, str) or journal.journal_version(path) != 5:
@@ -146,7 +146,7 @@ class _Schema3Checkout:
         self.worktree = worktree
 
     def _selection_current(self):
-        from memvane.journal import install_journal as journal
+        from memvane.journal import api as journal
         from memvane.journal import journal_reader as reader
         from memvane.route.api import select_route
         if select_route(self.decision['projectRoot'], action='compile') != self.decision:

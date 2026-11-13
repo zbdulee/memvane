@@ -37,6 +37,26 @@ def verify_preview_worker_attestation(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def read_only_journals(*args, **kwargs):
+    from memvane.journal.install_journal import read_only_journals as implementation
+    return implementation(*args, **kwargs)
+
+
+def reader_deadline(*args, **kwargs):
+    from memvane.journal.install_journal import reader_deadline as implementation
+    return implementation(*args, **kwargs)
+
+
+def journal_version(*args, **kwargs):
+    from memvane.journal.install_journal import journal_version as implementation
+    return implementation(*args, **kwargs)
+
+
+def legacy_identity_reads(*args, **kwargs):
+    from memvane.journal.install_journal import legacy_identity_reads as implementation
+    return implementation(*args, **kwargs)
+
+
 def service_worker_attestation(*args, **kwargs):
     from memvane.journal.application.service_proof import service_worker_attestation as implementation
     return implementation(*args, **kwargs)
