@@ -1974,13 +1974,6 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
     return {}
 
 
-WORKTREE_NOTICE = ('[memvane] linked git worktree: search serves the main checkout\'s '
-                   'last published wiki index read-only. Sync, wiki compile, wiki lifecycle '
-                   'and learning run only from the main checkout.')
-
-
-# A schema3-selected install gives each linked worktree its own view, filled
-# by the main checkout's sync owner (laya_product_sync_worker).
 WORKTREE_VIEW_NOTICE = ('[memvane] linked git worktree: search serves this worktree\'s own '
                         'published wiki view; the main checkout\'s sync owner updates it. Wiki '
                         'compile, wiki lifecycle and learning run only from the main checkout.')
