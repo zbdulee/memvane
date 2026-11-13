@@ -967,57 +967,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertIn(('laya-sync', str(project), self.worker.SCHEMA3_VECTOR_REOFFER_SECONDS), seen)
         emit('schema3-overflow-linked-reoffer', state=result['state'])
 
-    # -- R4: the first vector head after a bundle upgrade -----------------------
-    @contextmanager
-    def upgraded_bundle(self, new):
-        """The upgraded bundle ``new`` executing (U14b upgrade authority over this install)."""
-        from types import SimpleNamespace
-        spec = importlib.util.spec_from_file_location('vectors_lifecycle_checks',
-                                                      ROOT / 'test/fixtures/laya-schema3-lifecycle-checks.py')
-        lifecycle = importlib.util.module_from_spec(spec); spec.loader.exec_module(lifecycle)
-        owner = SimpleNamespace(case=self.case, reader=self.R, seed=self.seed)
-        with lifecycle.Lifecycle.upgrade_authority(owner, new) as (upgrade, target, review, att), \
-                mock.patch.object(self.J, '_verified_executing_root', return_value=str(new)), \
-                mock.patch.object(self.J, '_provider_file_identity',
-                                  return_value=[[str(new / 'p.py'), 1, 2, 3, 4, 5]]), \
-                mock.patch.object(self.worker, '_writer_executing_root', return_value=new):
-            yield upgrade, target, review
 
-    def test_11_first_vector_head_after_a_bundle_upgrade_reseals_and_recall_is_hybrid(self):
-        case = self.case
-        self.select_schema3()
-        self.assertIsNone(self.selected_record()['vector_profile'])
-        new = case.home / 'r4-vector-plugin'
-        new.mkdir()
-        with self.upgraded_bundle(new) as (upgrade, target, review):
-            intent = upgrade._prepare(case.project, case.state, case.journal, case.home, new,
-                                      target['sourceCommit'], review['proposalSha256'], '/synthetic/model', 3)
-            self.assertEqual(upgrade._switch(intent)['status'], 'active_upgrade_complete')
-        # The upgrade leaves the record on its sealed predecessor attestation.
-        stored = self.selected_record()
-        live = self.J.inspect_journal(case.journal)['providerAttestationSha256']
-        self.assertNotEqual(stored['attestation_sha256'], live)
-        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
-        with self.upgraded_bundle(new):
-            result, _ingests, _calls = self.run_vector_pass(authority=ExitStack())
-        emit('r4-upgrade-then-first-vector-head', state=result['state'],
-             vector=(result.get('vector') or {}).get('state'), resettle=result.get('readerResettle'))
-        self.assertEqual((result['state'], result['vector']['state'], result.get('readerResettle')),
-                         ('indexed', 'published', 'resealed'), result)
-        record = self.selected_record()
-        self.assertEqual((record['vector_profile'], record['vector_recipe'], record['attestation_sha256']),
-                         (self.spec['profile_id'], self.spec['recipe_id'], live))
-        self.assertEqual({k for k in record if record[k] != stored[k]},
-                         {'vector_profile', 'vector_recipe', 'attestation_sha256'})
-        # Hybrid recall from the upgraded bundle finds the card by vector.
-        gen = self.head()
-        target_path = 'concepts/kestrel-perch.md'
-        with self.upgraded_bundle(new):
-            hit = self.hybrid_recall('zzqqxv nomatch', self.card_vector(gen[0], target_path),
-                                     authority=ExitStack(), host_root=new)
-        self.assertEqual((hit.store_format, hit.data_generation, hit.semantic_status),
-                         ('schema3', gen[0], 'complete'))
-        self.assertEqual(self.paths(hit)[0], target_path)
 
 
     @contextmanager

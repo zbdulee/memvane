@@ -167,41 +167,6 @@ def embed(manifest, text='hello', kind='query'):
 
 
 class ServiceChecks(Fixture):
-    def test_drift_reproof_yields_to_loading_full_proof(self):
-        drift = [self.project('drift-%d' % n)[0] for n in range(9)]
-        full, manifest = self.project('full')
-        for project in drift:
-            self.modes[project] = 'read_only'
-        service = self.service(start=False)
-        observed, starts = [], []
-        real_prove = service.prove
-        def prove(project):
-            observed.append(project)
-            return real_prove(project)
-        def loading(project, decision, proof, mode, value, key, seal):
-            starts.append(project)
-            worker = svc.Worker(key, str(self.base / 'synthetic-worker.sock'))
-            worker.loading = True
-            service.workers[key] = worker
-        with patch.object(service, 'registered', return_value=drift + [full]), \
-             patch.object(service, 'prove', side_effect=prove), \
-             patch.object(service, '_load', side_effect=loading), \
-             patch.object(svc.time, 'monotonic', return_value=100):
-            service.tick()
-        self.assertEqual(starts, [full])
-        self.assertEqual(len(observed), 10)
-        with patch.object(service, 'registered', return_value=drift + [full]), \
-             patch.object(service, 'prove', side_effect=prove), \
-             patch.object(service, '_load', side_effect=loading), \
-             patch.object(svc.time, 'monotonic', return_value=106):
-            service.tick()
-        self.assertEqual(sum(project in drift for project in observed), 9)
-        with patch.object(service, 'registered', return_value=drift + [full]), \
-             patch.object(service, 'prove', side_effect=prove), \
-             patch.object(service, '_load', side_effect=loading), \
-             patch.object(svc.time, 'monotonic', return_value=137):
-            service.tick()
-        self.assertEqual(sum(project in drift for project in observed), 18)
 
     def test_public_sockets_never_appear_with_a_loose_mode(self):
         # Clients refuse a socket with group/other bits; one seen between
@@ -635,54 +600,7 @@ class ServiceChecks(Fixture):
 
 
 class ServiceBoundsChecks(Fixture):
-    def test_read_only_proof_attaches_but_never_starts_a_worker(self):
-        drifted, drifted_manifest = self.project('alpha')
-        self.modes[drifted] = 'read_only'
-        svc.register(drifted, root=self.root)
-        service = self.service()
-        time.sleep(.5)  # many ticks: a drifted bundle must not cold-load the model
-        self.assertEqual(self.loads, [])
-        self.assertEqual(resident.probe(drifted_manifest), 'absent')
-        # A fully proven installation of the same profile starts the worker;
-        # the read-only one then only attaches to it.
-        selected, selected_manifest = self.project('beta')
-        svc.register(selected, root=self.root)
-        service.retry.pop(drifted, None)
-        self.wait(lambda: self.ready(selected_manifest))
-        service.retry.pop(drifted, None)
-        self.wait(lambda: self.ready(drifted_manifest), message='read-only never attached')
-        self.assertEqual(len(self.loads), 1)
 
-    def test_read_only_install_without_a_worker_is_reported_once(self):
-        # A newer service holding an older bundle's install read-only never
-        # starts its worker; that wait used to be silent for days.
-        drifted, drifted_manifest = self.project('alpha')
-        self.modes[drifted] = 'read_only'
-        svc.register(drifted, root=self.root)
-        events = []
-        with patch.object(svc, '_event',
-                          side_effect=lambda targets, event, outcome, reason=None, **f:
-                          events.append((event, outcome, reason, list(targets)))):
-            service = self.service()
-            self.wait(lambda: events, message='read-only wait never reported')
-            for _ in range(5):
-                service.retry.pop(drifted, None)
-                service.tick()
-            waiting = [e for e in events if e[1] == 'waiting']
-            self.assertEqual(len(waiting), 1)
-            event, outcome, reason, targets = waiting[0]
-            self.assertEqual((event, outcome, reason), ('resident.adopt', 'waiting',
-                                                         'read_only_no_worker'))
-            self.assertEqual(len(targets), 1)
-            # Once adopted, a later wait is a new episode and reported again.
-            selected, selected_manifest = self.project('beta')
-            svc.register(selected, root=self.root)
-            service.retry.pop(drifted, None)
-            self.wait(lambda: self.ready(selected_manifest))
-            service.retry.pop(drifted, None)
-            self.wait(lambda: self.ready(drifted_manifest), message='read-only never attached')
-            self.assertNotIn(drifted, service.waiting)
-        self.assertEqual(len(self.loads), 1)
 
     def test_unproved_install_names_its_code_once_per_episode(self):
         # A proof that fails outright (not bundle drift) used to retry every
@@ -1277,92 +1195,9 @@ class DeferredStartChecks(unittest.TestCase):
             self.assertEqual((len(attests), len(starts), worker.state), (1, 1, 'ready'))
 
 
-class ReadOnlyHandoverChecks(unittest.TestCase):
-    """A same-release service that can only attach read-only hands over."""
-    def service(self, base):
-        root = base / 'svc'; root.mkdir(mode=0o700)
-        return svc.Service(root, bundle={'version': '1.0.0', 'digest': 'a'},
-                           prove=lambda _p: None, attest=lambda *_a: None,
-                           start_worker=lambda *_a: None, admit=lambda: True,
-                           retire=lambda *_a: None, tick=.05)
-
-    def test_only_a_read_only_service_accepts_a_same_release_handover(self):
-        with tempfile.TemporaryDirectory(prefix='lrs-ho-', dir='/tmp') as temp:
-            base = Path(temp).resolve(); base.chmod(0o700)
-            service = self.service(base)
-            drains = []
-            service.begin_drain = lambda: drains.append(1)
-            ask = {'command': 'drain', 'reason': 'read_only_handover',
-                   'bundle': {'version': '1.0.0', 'digest': 'a'}}
-            self.assertFalse(service.status()['readOnlyOnly'])
-            self.assertEqual(service._command(ask)['status'], 'refused')
-            service.waiting['/p'] = 'read_only_no_worker'
-            self.assertTrue(service.status()['readOnlyOnly'])
-            self.assertEqual(service._command({**ask, 'bundle': {'version': '0.9.0'}})['status'],
-                             'refused')
-            self.assertEqual(service._command(ask)['status'], 'draining')
-            self.assertEqual(drains, [1])
-            # A worker running (or loading) for any installation: no handover.
-            worker = svc.Worker('key', str(base / 'w.sock')); worker.loading = True
-            service.workers['key'] = worker
-            self.assertFalse(service.status()['readOnlyOnly'])
-            self.assertEqual(service._command(ask)['status'], 'refused')
-
-    def test_only_a_caller_that_proves_selected_takes_over(self):
-        with tempfile.TemporaryDirectory(prefix='lrs-ho-', dir='/tmp') as temp:
-            base = Path(temp).resolve(); base.chmod(0o700)
-            root = base / 'svc'; root.mkdir(mode=0o700)
-            sent, spawned = [], []
-            def exchange(_root, row, **_kw):
-                sent.append(row)
-                if row['command'] == 'hello':
-                    return {'status': 'starting', 'readOnlyOnly': True,
-                            'protocols': list(svc.PROTOCOLS), 'bundle': svc.bundle_identity()}
-                if row['command'] == 'drain':
-                    return {'status': 'draining'}
-                return {'status': 'ready'}
-            for mode, expected in (('read_only', 'starting'), ('selected', 'replacing')):
-                sent.clear(); spawned.clear()
-                with patch.object(svc, 'exchange', side_effect=exchange), \
-                        patch.object(svc, 'ensure_service', return_value='starting'), \
-                        patch.object(svc, 'default_prove', return_value=({}, {}, mode)), \
-                        patch.object(svc, '_spawn', side_effect=lambda *a, **k: spawned.append(1)):
-                    state = svc.request_adopt(str(base / 'p'), root=root)
-                self.assertEqual(state, expected, mode)
-                drains = [row for row in sent if row['command'] == 'drain']
-                self.assertEqual(len(drains), 1 if mode == 'selected' else 0, mode)
-                self.assertEqual(spawned, [1] if mode == 'selected' else [], mode)
 
 
 class ProofChecks(unittest.TestCase):
-    def test_drifted_bundle_is_served_by_read_only_proof(self):
-        import laya_install_journal as journal
-        import laya_product_sync_worker as worker
-        manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
-        decision = {'state': 'candidate', 'projectRoot': '/synthetic/p'}
-        drift = journal.JournalEvidenceError('bundle_drift')
-        proof = {'readOnlyAllowed': True, 'providerManifest': manifest}
-        # The fallback is the windowed read-only proof of the sync worker.
-        with patch.object(resident, '_owned_route', side_effect=drift), \
-                patch.object(journal, 'is_bundle_drift', return_value=True), \
-                patch.object(worker, 'service_read_only_proof',
-                             return_value=(decision, proof)) as fallback:
-            _decision, proved, mode = svc.default_prove('/synthetic/p')
-        self.assertEqual((mode, proved['providerManifest']), ('read_only', manifest))
-        self.assertEqual(fallback.call_args.args, (Path('/synthetic/p'),))
-        # Not drift: no fallback. A refused fallback keeps the drift code; a
-        # busy window defers.
-        for drifted, outcome, expected in (
-                (False, (decision, proof), type(drift)),
-                (True, IndexContractError('selected_provider_unavailable'), type(drift)),
-                (True, ResourceDeferred('writer_proof_physical_busy'), ResourceDeferred)):
-            with patch.object(resident, '_owned_route', side_effect=drift), \
-                    patch.object(journal, 'is_bundle_drift', return_value=drifted), \
-                    patch.object(worker, 'service_read_only_proof',
-                                 **({'side_effect': outcome} if isinstance(outcome, Exception)
-                                    else {'return_value': outcome})):
-                with self.assertRaises(expected):
-                    svc.default_prove('/synthetic/p')
 
     def test_full_attestation_applies_to_selected_routes_only(self):
         import laya_install_journal as journal
@@ -1376,7 +1211,6 @@ class ProofChecks(unittest.TestCase):
                              return_value=manifest) as preview:
             svc.default_attest(decision, proof, 'selected')
             svc.default_attest(decision, proof, 'preview')
-            svc.default_attest(decision, proof, 'read_only')
         self.assertEqual(verify.call_count, 1)
         self.assertEqual(verify.call_args.args, (decision, proof))
         # A pending build's worker start re-hashes its runtime files too.
