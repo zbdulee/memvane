@@ -7,11 +7,6 @@ def run(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def canonical(*args, **kwargs):
-    from memvane.host.onboarding_choice import canonical as implementation
-    return implementation(*args, **kwargs)
-
-
 def never(*args, **kwargs):
     from memvane.host.onboarding_choice import never as implementation
     return implementation(*args, **kwargs)
