@@ -33,7 +33,7 @@ BUILD = runpy.run_path(str(HERE / 'laya-initial-build-checks.py'))
 from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 import laya_host_response as response  # noqa: E402
-import laya_index_host_route as host_route  # noqa: E402
+from memvane.route import index_host_route as host_route  # noqa: E402
 import laya_initial_build as initial_build  # noqa: E402
 import laya_install_journal as journal_mod  # noqa: E402
 import laya_product_install as product  # noqa: E402

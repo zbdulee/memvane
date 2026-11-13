@@ -117,7 +117,7 @@ def _write(path, value, *, replace):
 def _preflight_multi_settings(route, project_root):
     """Refuse a route the selected host cannot serve before publication."""
     from memvane.settings import config
-    from laya_index_host_route import (_multi_compile_supported,
+    from memvane.route.index_host_route import (_multi_compile_supported,
                                        _multi_settings_supported, _pairs,
                                        _read_regular, _source_for_collection,
                                        settings_identity_digest)

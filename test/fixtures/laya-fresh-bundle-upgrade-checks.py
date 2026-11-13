@@ -33,7 +33,7 @@ import laya_product_install as product  # noqa: E402
 import laya_product_sync_worker as worker  # noqa: E402
 from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
-from laya_index_host_route import (SCHEMA_V2 as ROUTE_V2,  # noqa: E402
+from memvane.route.index_host_route import (SCHEMA_V2 as ROUTE_V2,  # noqa: E402
                                    settings_identity_digest)
 from laya_install_journal import PRODUCTION_ATTESTATION, _canon  # noqa: E402
 from laya_product_bundle import BundleEvidenceError  # noqa: E402
@@ -726,7 +726,7 @@ class ActiveUpgradeTests(UpgradeCase):
     def test_a_fenced_recall_asks_for_recovery_and_a_stalled_fence_stays_quiet(self):
         import laya_bundle_upgrade
         import laya_host_response as response
-        import laya_index_host_route as host
+        from memvane.route import index_host_route as host
         self.fence()
         project = str(self.project)
         payload = self.state.parent / 'recall-payload.json'
@@ -842,7 +842,7 @@ class ActiveUpgradeTests(UpgradeCase):
         import subprocess
         import tempfile
         import laya_host_response as response
-        import laya_index_host_route as host
+        from memvane.route import index_host_route as host
         self.bound()
         self.activate()
         real = active.inactive._atomic_expected

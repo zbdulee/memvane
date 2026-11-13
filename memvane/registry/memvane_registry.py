@@ -382,7 +382,7 @@ def _prove_main(project, state=None):
     (``_select_route``): the linked-worktree fallback of ``select_route``
     runs git and never classifies a selected main checkout.
     """
-    import laya_index_host_route as routes
+    from memvane.route import index_host_route as routes
     decision = routes._select_route(str(project), action='index')
     if decision.get('state') != 'candidate':
         raise _Unproved('route_' + str(decision.get('state')))
@@ -405,7 +405,7 @@ def _prove_main(project, state=None):
 
 def _released(project, state):
     """A proved release: no route of this install, and its journal is not selected."""
-    import laya_index_host_route as routes
+    from memvane.route import index_host_route as routes
     try:
         decision = routes._select_route(str(project), action='index')
         route_state = decision.get('state')
@@ -427,7 +427,7 @@ def _linked(project, deadline, clock=time.monotonic):
     nothing is registered or released.
     """
     from memvane.wiki.lifecycle import git_branch_safety as git
-    import laya_index_host_route as routes
+    from memvane.route import index_host_route as routes
     try:
         facts = git.repo_facts(project, deadline=deadline)
         if facts is None:

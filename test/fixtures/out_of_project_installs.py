@@ -22,7 +22,7 @@ sys.path.insert(0, str(FIXTURES.parents[1] / 'core'))
 sys.path.insert(1, str(FIXTURES))
 from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
-import laya_index_host_route as host_route  # noqa: E402
+from memvane.route import index_host_route as host_route  # noqa: E402
 import laya_install_journal as journal  # noqa: E402
 from memvane.kernel import memvane_paths  # noqa: E402
 from memvane.settings import project_dir  # noqa: E402

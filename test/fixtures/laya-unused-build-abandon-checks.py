@@ -20,7 +20,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import laya_index_host_route
+from memvane.route import index_host_route as laya_index_host_route
 import laya_initial_build as initial_build
 import laya_install_journal
 from laya_index_a import IndexContractError, LayaIndexA

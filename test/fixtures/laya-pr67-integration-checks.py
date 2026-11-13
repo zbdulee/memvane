@@ -362,7 +362,7 @@ class Pr67IntegrationChecks(unittest.TestCase):
     def linked_recall(self, cwd, prompt='heron route northern marsh', host='claude'):
         import io
         from contextlib import redirect_stderr
-        route = importlib.import_module('laya_index_host_route')
+        route = importlib.import_module('memvane.route.index_host_route')
         event_log = importlib.import_module('event_log')
         events, err = [], io.StringIO()
         with self.u11.loaded(), redirect_stderr(err), \

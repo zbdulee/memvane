@@ -357,7 +357,7 @@ def _owned_route(project):
     except IndexContractError as exc:
         if str(exc) != 'selected_route_unavailable':
             raise
-    from laya_index_host_route import select_route, verify_preview_route
+    from memvane.route.index_host_route import select_route, verify_preview_route
     decision = select_route(str(project), action='recall')
     if (decision.get('state') != 'preview'
             or decision.get('projectRoot') != str(project)):

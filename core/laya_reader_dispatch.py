@@ -217,7 +217,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         deadline=min(deadline,valid[-1][6])
     from laya_host_response import (HYBRID_LIST_LIMIT, _fuse_verified_lists, _hybrid_fts_queries,
                                     _fail)
-    from laya_index_host_route import wiki_index_roots
+    from memvane.route.index_host_route import wiki_index_roots
     from memvane.sync.source_scan import auxiliary_wiki_row
     from memvane.store.blob_values import BlobStoreError
     from laya_view_vectors import DEFERRED

@@ -91,7 +91,7 @@ class Contract(Base):
         decision = {'state': 'candidate', 'projectRoot': str(root),
                     'installId': 'install-route',
                     'journalPath': str(root / '.memvane-state' / 'install-journal.sqlite')}
-        import laya_index_host_route
+        from memvane.route import index_host_route as laya_index_host_route
         with patch.object(laya_index_host_route, 'select_route', return_value=decision):
             self.assertEqual(self.real_route_for(root)['install_id'], 'install-route')
         with patch.object(laya_index_host_route, 'select_route', return_value={**decision, 'projectRoot': str(self.work)}):

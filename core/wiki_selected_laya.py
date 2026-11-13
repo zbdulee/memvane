@@ -53,7 +53,7 @@ def _compile_proof(decision, *, owner=None):
 
 
 def selected(root: Path):
-    from laya_index_host_route import select_route
+    from memvane.route.index_host_route import select_route
 
     root = Path(root).resolve()
     decision = select_route(str(root), action='compile')
@@ -152,7 +152,7 @@ class _Schema3Checkout:
     def _selection_current(self):
         import laya_install_journal as journal
         from memvane.journal import journal_reader as reader
-        from laya_index_host_route import select_route
+        from memvane.route.index_host_route import select_route
         if select_route(self.decision['projectRoot'], action='compile') != self.decision:
             return False
         with journal.read_only_journals():

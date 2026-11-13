@@ -223,7 +223,7 @@ def recall_context(
             core = Path(__file__).resolve().parent.parent / "core"
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
+            from memvane.route.index_host_route import select_route
             from laya_host_response import serve_selected, serve_preview
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
@@ -258,7 +258,7 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
             core = Path(__file__).resolve().parent.parent / "core"
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
+            from memvane.route.index_host_route import select_route
             from laya_host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             answer = serve_selected("update-queued", "hermes",
@@ -296,7 +296,7 @@ def pre_edit_gate(
             core = Path(__file__).resolve().parent.parent / "core"
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
+            from memvane.route.index_host_route import select_route
             from laya_host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
@@ -343,7 +343,7 @@ def post_edit_sync(
             core = Path(__file__).resolve().parent.parent / "core"
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
+            from memvane.route.index_host_route import select_route
             from laya_host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped

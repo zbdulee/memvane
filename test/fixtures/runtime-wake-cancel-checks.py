@@ -19,7 +19,7 @@ from memvane.runtime import runtime_wake_cancel as cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
 import laya_initial_build as initial_build
 import laya_install_journal
-import laya_index_host_route
+from memvane.route import index_host_route as laya_index_host_route
 
 
 def forbidden(*_a, **_k):

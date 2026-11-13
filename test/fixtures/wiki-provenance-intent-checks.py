@@ -118,7 +118,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
 
     def test_checkout_refuses_route_fence_after_issuance(self):
         selected = importlib.import_module('wiki_selected_laya')
-        routes = importlib.import_module('laya_index_host_route')
+        routes = importlib.import_module('memvane.route.index_host_route')
         worker = importlib.import_module('laya_product_sync_worker')
         self.select_schema3()
         with self.F.warm(), self.seed.authority(), \

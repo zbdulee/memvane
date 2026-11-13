@@ -1082,7 +1082,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_foreign_queue_or_journal_route_is_rejected_before_owner_lock_or_rw(self):
         access=importlib.import_module('laya_worker_journal')
-        host=importlib.import_module('laya_index_host_route')
+        host=importlib.import_module('memvane.route.index_host_route')
         foreign=self.case.home/'foreign-journal-namespace';foreign.mkdir(mode=0o700)
         route=next(host._candidate_paths(self.case.project))[2];original=route.read_bytes()
         with self.seed.authority():
@@ -1159,7 +1159,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_markerless_hot_foreign_route_is_denied_before_queue_owner_creation(self):
         access=importlib.import_module('laya_worker_journal')
-        host=importlib.import_module('laya_index_host_route')
+        host=importlib.import_module('memvane.route.index_host_route')
         with self.fixture.F.warm(),self.seed.authority(),self.markerless():
             self.publish_v4();self.crash_hot()
             route=next(host._candidate_paths(self.case.project))[2];original=route.read_bytes()

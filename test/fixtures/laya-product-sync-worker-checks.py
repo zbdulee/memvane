@@ -23,7 +23,7 @@ from context_learning.local_cycle import ResourceDeferred
 import laya_host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue
-import laya_index_host_route as host_route
+from memvane.route import index_host_route as host_route
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import prepare_candidate_batch_off_hook
 from laya_index_vector import profile_identity, qmd_markdown_title

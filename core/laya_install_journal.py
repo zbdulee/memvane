@@ -22,7 +22,7 @@ import threading
 import time
 
 from memvane.kernel.errors import IndexContractError
-from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
+from memvane.route.index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
                                    SCHEMA_V3 as ROUTE_SCHEMA_V3, select_route,
@@ -356,7 +356,7 @@ def _route(raw, journal_path):
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise JournalEvidenceError('invalid_route_bytes') from exc
     schema = route.get('schema') if isinstance(route, dict) else None
-    from laya_index_host_route import FIELDS_V4, SCHEMA_V4
+    from memvane.route.index_host_route import FIELDS_V4, SCHEMA_V4
     if schema == SCHEMA_V4:
         state = Path(journal_path).parent
         if (set(route) != FIELDS_V4 or route.get('status') != 'active'
@@ -375,7 +375,7 @@ def _route(raw, journal_path):
                        for key in ('stateNode', 'storeNode'))):
             _fail('route_contract_mismatch')
         try:
-            from laya_index_host_route import settings_identity_digest, wiki_index_roots
+            from memvane.route.index_host_route import settings_identity_digest, wiki_index_roots
             wiki_index_roots(route['collections'])
             if (len({item['name'] for item in route['collections']}) != 2
                     or next(item['sourceRoot'] for item in route['collections']
@@ -902,7 +902,7 @@ def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
     from memvane.settings import project_dir
     from memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane_version import plugin_version, same_major
-    from laya_index_host_route import _classify_v4
+    from memvane.route.index_host_route import _classify_v4
     path = _private_parent(journal_path)
     require_cached_plugin_for_live_write(path.parent)
     if path.exists() or path.is_symlink():
@@ -1504,7 +1504,7 @@ def verify_dispatch_target(decision):
 def verify_notification_target(decision):
     """Prove an external-edit hint using only local metadata and the journal."""
     from memvane.settings import project_dir
-    from laya_index_host_route import select_notification_route
+    from memvane.route.index_host_route import select_notification_route
     from laya_initial_build import read_v1
     from memvane.install.ledger_common import _private_file, _read_json
     from memvane_version import same_major, writer_floor_allows

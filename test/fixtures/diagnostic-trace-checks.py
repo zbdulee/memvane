@@ -167,7 +167,7 @@ class ConfigNormalization(Base):
                                      {k: v for k, v in plain.items() if k != 'diagnostics'})
 
     def test_settings_identity_unchanged_by_diagnostics(self):
-        import laya_index_host_route as route
+        from memvane.route import index_host_route as route
         for make in (full_settings, minimal_settings):
             with self.subTest(shape=make.__name__):
                 plain_project = self.project('identity-plain-' + make.__name__)

@@ -213,7 +213,7 @@ FAILED = frozenset(('refused', 'failed', 'error', 'interrupted', 'exited'))
 def _state_root(args):
     if args.state_root:
         return Path(args.state_root), None
-    from laya_index_host_route import select_route
+    from memvane.route.index_host_route import select_route
     try:
         decision = select_route(str(Path(args.cwd).resolve()), action='recall')
     except Exception as exc:  # noqa: BLE001 - reported, never raised

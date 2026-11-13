@@ -29,7 +29,7 @@ PROFILE = _BASE['PROFILE']
 
 import laya_host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
-import laya_index_host_route as host_route
+from memvane.route import index_host_route as host_route
 from laya_index_vector import profile_identity
 import laya_product_sync_worker as worker
 from memvane.wiki.intake import wiki_discovery as discovery

@@ -18,7 +18,7 @@ import time
 import unicodedata
 
 from memvane.diagnostics import event_log
-from laya_index_host_route import (MAX_HOOK_BYTES, select_hook_payload,
+from memvane.route.index_host_route import (MAX_HOOK_BYTES, select_hook_payload,
                                    select_hook_route, select_route)
 
 MAX_ROWS = 5
@@ -535,7 +535,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
     infrastructure; ``fallback`` names why. An invalid pool serves nothing.
     """
     from context_learning.selection_read import select_published, selector_prepared
-    from laya_index_host_route import wiki_index_roots
+    from memvane.route.index_host_route import wiki_index_roots
     roots = wiki_index_roots(decision['collections'])
     names = tuple(sorted(roots))
     if not names:

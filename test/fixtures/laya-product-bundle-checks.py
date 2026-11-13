@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
-import laya_index_host_route as host
+from memvane.route import index_host_route as host
 import laya_install_journal as journal
 import laya_product_install as product_install
 import laya_product_bundle as bundle

@@ -31,7 +31,7 @@ sys.path.insert(1, str(FIXTURES))
 from memvane.wiki.workspace import compile_paths  # noqa: E402
 import laya_embed_resident  # noqa: E402
 import laya_host_response as response  # noqa: E402
-import laya_index_host_route as routes  # noqa: E402
+from memvane.route import index_host_route as routes  # noqa: E402
 import laya_install_journal as journal  # noqa: E402
 import laya_product_sync_worker as sync  # noqa: E402
 from memvane.host import onboarding_choice  # noqa: E402

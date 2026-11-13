@@ -27,7 +27,7 @@ sys.path.insert(0, str(CORE))
 
 from memvane.settings import config
 import laya_host_response as response
-import laya_index_host_route
+from memvane.route import index_host_route as laya_index_host_route
 import laya_install_journal
 from laya_index_a import LayaIndexA, _digest as manifest_digest
 from laya_index_vector import LayaVectorIndex, profile_identity, qmd_markdown_title

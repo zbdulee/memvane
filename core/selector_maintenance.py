@@ -79,7 +79,7 @@ def run(project, *, force=False):
     """Serialize selector repair and monotonic version publication off-hook."""
     from contextlib import closing
     from context_learning import selector_heal
-    from laya_index_host_route import select_route
+    from memvane.route.index_host_route import select_route
     from laya_install_journal import (_open, _inspect_v1_row, inspect_journal,
                                       verify_selected_route_for_write)
     from memvane_version import plugin_version, version_key

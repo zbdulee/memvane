@@ -13,9 +13,9 @@ sys.path.insert(1, str(ROOT / 'core'))
 sys.dont_write_bytecode = True
 
 TARGETS = {
-    'hook-classify': ('core/laya_index_host_route.py', 'classify-hook'),
-    'classify': ('core/laya_index_host_route.py', 'classify'),
-    'onboarding-notice': ('core/laya_index_host_route.py', 'onboarding-notice'),
+    'hook-classify': ('memvane/route/index_host_route.py', 'classify-hook'),
+    'classify': ('memvane/route/index_host_route.py', 'classify'),
+    'onboarding-notice': ('memvane/route/index_host_route.py', 'onboarding-notice'),
     'hook-serve': ('core/laya_host_response.py', 'serve-stdin'),
     'host-ack': ('core/context_learning_host_ack.py', None),
     'setup': ('core/setup_entry.py', None),

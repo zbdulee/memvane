@@ -57,7 +57,7 @@ def resolve(kind, value):
     if kind not in KINDS:
         raise DispatchFailure('kind_invalid')
     project = _project(value)
-    from laya_index_host_route import select_route
+    from memvane.route.index_host_route import select_route
     route = select_route(str(project), action='update')
     if route.get('state') == 'candidate':
         from laya_install_journal import verify_dispatch_target
@@ -88,7 +88,7 @@ def resolve(kind, value):
             raise DispatchFailure('target_journal_changed') from exc
         if record.get('schema') == 'memvane-initial-build-v1':
             from laya_install_journal import _attestation, _route, _v1_provider_manifest
-            from laya_index_host_route import _classify_v4, _read_regular, MAX_RECORD_BYTES
+            from memvane.route.index_host_route import _classify_v4, _read_regular, MAX_RECORD_BYTES
             import hashlib
             from memvane.settings import project_dir
             try:
@@ -309,7 +309,7 @@ def _diagnostic_route(target):
     """
     try:
         from memvane.diagnostics import event_log
-        import laya_index_host_route
+        from memvane.route import index_host_route as laya_index_host_route
         route = laya_index_host_route.select_route(target['project'], action='update')
         main = (route.get('mainRoute') if isinstance(route, dict)
                 and route.get('state') == 'worktree' else route)
@@ -406,7 +406,7 @@ def drop_event(kind, value, *, reason, attempts=None):
         if not Path(value).is_dir():
             return False
         from memvane.diagnostics import event_log
-        from laya_index_host_route import select_route
+        from memvane.route.index_host_route import select_route
         decision = select_route(str(value), action='update')
         return event_log.emit('wake.drop', outcome='dropped', reason=reason,
                               decision=decision, host='worker', session=None,
@@ -425,7 +425,7 @@ def stall_event(kind, value, *, since, observations, retry_in):
         if not Path(value).is_dir():
             return False
         from memvane.diagnostics import event_log
-        from laya_index_host_route import select_route
+        from memvane.route.index_host_route import select_route
         decision = select_route(str(value), action='update')
         return event_log.emit('wake.' + kind.removeprefix('laya-'), outcome='failed',
                               reason='target_preparing_stalled', decision=decision,

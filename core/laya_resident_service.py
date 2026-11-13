@@ -613,7 +613,7 @@ def _proof_code(exc):
 def _route_hint(project):
     """The route decision naming an install's event log; never a proof."""
     import laya_install_journal as journal
-    from laya_index_host_route import select_route
+    from memvane.route.index_host_route import select_route
     # Classification must never repair a hot journal image on this path.
     with journal.read_only_journals():
         return select_route(str(project), action='update')

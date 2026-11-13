@@ -12,7 +12,7 @@ import unittest
 
 CORE = Path(__file__).resolve().parents[2] / "core"
 sys.path.insert(0, str(CORE))
-import laya_index_host_route as route
+from memvane.route import index_host_route as route
 
 
 def vector_profile():

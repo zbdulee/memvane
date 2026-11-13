@@ -21,7 +21,7 @@ _POLICY_KEYS = ('collections', 'collectionPaths', 'collectionRoles', 'recallStra
 
 def selected(project_root, *, action='recall'):
     """``(decision, proof)`` for a verified selected v2 route, ``None`` if legacy."""
-    from laya_index_host_route import select_route
+    from memvane.route.index_host_route import select_route
     root = Path(project_root).resolve(strict=True)
     decision = select_route(str(root), action=action)
     state = decision.get('state') if isinstance(decision, dict) else None
@@ -46,7 +46,7 @@ def ready(project) -> bool:
 
 
 def wiki_names(decision):
-    from laya_index_host_route import wiki_index_roots
+    from memvane.route.index_host_route import wiki_index_roots
     return tuple(sorted(wiki_index_roots(decision['collections'])))
 
 

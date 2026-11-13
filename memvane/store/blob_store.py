@@ -229,7 +229,7 @@ def _settings_identity(root):
     readers take ``skipPaths`` from ``config`` here at each use.
     """
     from memvane.settings import config
-    import laya_index_host_route as routes
+    from memvane.route import index_host_route as routes
     from memvane.settings import project_dir
     from pathlib import PurePosixPath
     settings = project_dir.settings_path(root)

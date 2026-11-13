@@ -148,7 +148,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     root. No QMD database is read, copied, or selected.
     """
     from memvane.settings import config
-    from laya_index_host_route import (_multi_settings_supported,
+    from memvane.route.index_host_route import (_multi_settings_supported,
                                        _multi_compile_supported,
                                        selected_collection_roots,
                                        _source_for_collection, _read_regular,
@@ -214,7 +214,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
 def _settings_identity(plan):
     """A new route binds the resolved settings identity, not the file bytes;
     the reviewed plan proposal keeps binding the exact bytes."""
-    from laya_index_host_route import settings_identity_digest
+    from memvane.route.index_host_route import settings_identity_digest
     return settings_identity_digest(plan['projectRoot'], plan['collections'])
 
 
@@ -457,7 +457,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     """Stage a route bound to a validated local store and project settings."""
     from memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane_version import same_major
-    from laya_index_host_route import SCHEMA_V4, _classify_v4
+    from memvane.route.index_host_route import SCHEMA_V4, _classify_v4
     from laya_install_journal import _route
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
@@ -721,7 +721,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.settings import project_dir
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
-    from laya_index_host_route import _classify_v4, SELECTION_SCHEMA_V1
+    from memvane.route.index_host_route import _classify_v4, SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write
     from memvane.journal.reader_lease import reader_lifetime
     from memvane.sync.sync_owner_lock import sync_owner
@@ -846,7 +846,7 @@ def _restore_v1_locked(project, state):
     import laya_initial_build as build
     import laya_install_journal as journal
     from contextlib import closing
-    from laya_index_host_route import SELECTION_SCHEMA_V1
+    from memvane.route.index_host_route import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write, _fsync_dir
     from memvane.journal.reader_lease import reader_lifetime
     from memvane.sync.sync_owner_lock import sync_owner

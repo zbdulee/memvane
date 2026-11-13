@@ -30,7 +30,7 @@ REPO = FIXTURES.parents[1]
 sys.path.insert(0, str(REPO / 'core'))
 sys.path.insert(1, str(FIXTURES))
 from memvane.wiki.intake import external_edits as external  # noqa: E402
-import laya_index_host_route as routes  # noqa: E402
+from memvane.route import index_host_route as routes  # noqa: E402
 import laya_install_journal as journal  # noqa: E402
 from memvane.kernel import memvane_paths  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402

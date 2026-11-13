@@ -205,7 +205,7 @@ def _vector_profile(value: object) -> dict:
             or not PROVIDER_ID.fullmatch(value["approvedProviderId"])
             or not isinstance(value["providerArtifactSha256"], str)
             or not SHA256.fullmatch(value["providerArtifactSha256"])
-            or not isinstance(relative, str) or not relative.startswith("core/")
+            or not isinstance(relative, str) or not relative.startswith("memvane/provider/adapters/")
             or not relative.endswith(".py")
             or "\\" in relative or any(part in ("", ".", "..") for part in relative.split("/"))):
         raise ValueError("invalid_vector_profile")
@@ -987,7 +987,7 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
 
 def onboarding_lines(root: str, session: str | None) -> str:
     """The user notice line plus the agent's answer commands as one JSON line."""
-    entry = str(Path(__file__).resolve().parent.parent / "entry" / "setup.py")
+    entry = str(Path(__file__).resolve().parents[2] / "entry" / "setup.py")
     base = ["python3", "-B", entry]
 
     def command(*args):

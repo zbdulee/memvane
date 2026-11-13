@@ -21,7 +21,7 @@ from memvane.diagnostics import diagnostic_trace as diag
 from memvane.diagnostics import event_log
 import laya_bundle_upgrade as upgrade
 import laya_host_response as host_response
-import laya_index_host_route as routes
+from memvane.route import index_host_route as routes
 import laya_project_dir_move
 import laya_state_move
 from hermes_adapter import core_bridge
