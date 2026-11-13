@@ -111,6 +111,14 @@ def _account_home():
 def service_dir(*, create=False, home=None):
     """``<account home>/.local/state/memvane/v1/service``: private, same owner."""
     import memvane_paths
+    if home is None and 'MEMVANE_TEST_RUNTIME_ROOT' in os.environ:
+        from laya_journal_paths import journal_directory
+        try:
+            return journal_directory('resident-service', create=create)
+        except FileNotFoundError:
+            if not create:
+                return None
+            raise
     cursor = Path(home).resolve() if home is not None else _account_home()
     for name in (*memvane_paths.STATE_PARTS, 'service'):
         cursor = cursor / name
