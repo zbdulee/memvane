@@ -363,6 +363,25 @@ def _diagnostic_fields(target, kind, exc):
         return fields
 
 
+def _provenance(result):
+    """Compile intents settled by a sync pass, summed over its views; None when nothing settled."""
+    total = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
+    views = [result] + [item for item in result.get('worktrees') or () if isinstance(item, dict)]
+    for view in views:
+        counts = view.get('provenance')
+        if not isinstance(counts, dict):
+            continue
+        for key in ('consumed', 'waiting', 'superseded'):
+            if isinstance(counts.get(key), int):
+                total[key] += counts[key]
+        for reason, count in (counts.get('rejected') or {}).items():
+            if isinstance(count, int):
+                total['rejected'][reason] = total['rejected'].get(reason, 0) + count
+    if not (total['consumed'] or total['rejected'] or total['superseded']):
+        return None
+    return total
+
+
 def _event(target, kind, started, *, outcome, reason=None, result=None, extra=None):
     """One ``wake.*`` event (and ``index.publish``) in the target install's log."""
     try:
@@ -378,7 +397,7 @@ def _event(target, kind, started, *, outcome, reason=None, result=None, extra=No
                        generation=result.get('generation'),
                        previousGeneration=target.get('generation'),
                        detail=result.get('detail'), path=result.get('path'),
-                       cause=result.get('cause'),
+                       cause=result.get('cause'), provenance=_provenance(result),
                        **(extra if isinstance(extra, dict) else {}), **common)
         if result.get('state') == 'indexed':
             event_log.emit('index.publish', outcome='published',

@@ -497,7 +497,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
                 # Retrying cannot clear these; that view keeps its last head.
                 outcome = {**outcome, 'state': 'held'}
             linked.append({'root': str(project), **{k: outcome[k] for k in
-                           ('state', 'reason', 'generation', 'ingested', 'pending', 'vector')
+                           ('state', 'reason', 'generation', 'ingested', 'pending', 'vector', 'provenance')
                            if k in outcome}})
     finally:
         store.close()
