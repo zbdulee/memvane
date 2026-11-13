@@ -1304,6 +1304,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/workspace/lifecycle_requests.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/workspace/queue.py": {
       "context": "wiki/workspace",
       "layer": "adapter",

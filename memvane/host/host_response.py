@@ -850,10 +850,10 @@ def _request_wiki_lifecycle(action: str, decision: dict) -> None:
     changes the hook's answer.
     """
     try:
-        from memvane.wiki.lifecycle import wiki_lifecycle_request
+        from memvane.wiki.workspace import api as wiki_lifecycle_request
         trigger = ('session_start' if action in ('update', 'update-queued')
                    else 'source_edit')
-        wiki_lifecycle_request.request(decision, trigger)
+        wiki_lifecycle_request.request_lifecycle(decision, trigger)
     except Exception:
         pass
 

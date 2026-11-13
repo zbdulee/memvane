@@ -290,7 +290,7 @@ class SessionStartRunsLifecycle(SelectedLifecycle):
     def test_long_pending_request_offers_its_wake_again(self):
         self.three_cards()
         self.session_start()
-        from memvane.wiki.lifecycle import wiki_lifecycle_request
+        from memvane.wiki.workspace import lifecycle_requests as wiki_lifecycle_request
         with mock.patch.object(wiki_lifecycle_request.time, 'time_ns',
                                return_value=wiki_lifecycle_request.time.time_ns()
                                + (wiki_lifecycle_request.STALE_SECONDS + 1) * 10**9):
@@ -300,7 +300,7 @@ class SessionStartRunsLifecycle(SelectedLifecycle):
     def test_lifecycle_request_failure_never_changes_the_hook_answer(self):
         self.three_cards()
         baseline = self.session_start()
-        from memvane.wiki.lifecycle import wiki_lifecycle_request
+        from memvane.wiki.workspace import lifecycle_requests as wiki_lifecycle_request
         with mock.patch.object(wiki_lifecycle_request, 'record',
                                side_effect=OSError('state dir unwritable')):
             self.assertEqual(self.session_start(), baseline)
@@ -372,7 +372,7 @@ class GitSafety(SelectedLifecycle):
         git(self.root, 'worktree', 'add', '-q', '-b', 'side', str(worktree))
         decision = {**self.decision, 'state': 'worktree', 'worktreeRoot': str(worktree),
                     'mainRoute': self.decision}
-        from memvane.wiki.lifecycle import wiki_lifecycle_request
+        from memvane.wiki.workspace import lifecycle_requests as wiki_lifecycle_request
         edit = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write',
                 'tool_input': {'file_path': str(worktree / 'a.md')}, 'cwd': str(worktree)}
         with self.selected_runtime(), \

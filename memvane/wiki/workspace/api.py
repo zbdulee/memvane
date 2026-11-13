@@ -44,3 +44,14 @@ def claim_queue(*args, **kwargs):
 def reclaim_orphaned_claimed(*args, **kwargs):
     from memvane.wiki.workspace.queue import reclaim_orphaned_claimed as implementation
     return implementation(*args, **kwargs)
+
+
+def request_lifecycle(*args, **kwargs):
+    from memvane.wiki.workspace.lifecycle_requests import request as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def claim_lifecycle(*args, **kwargs):
+    from memvane.wiki.workspace.lifecycle_requests import claim as implementation
+    return implementation(*args, **kwargs)

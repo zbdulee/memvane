@@ -274,8 +274,9 @@ def _run(project: Path):
     if source is None or verify is None:
         return {'state': 'deferred', 'reason': 'unsafe_compile_queues'}
     from memvane.wiki.lifecycle import wiki_lifecycle_request
+    from memvane.wiki.workspace.lifecycle_requests import claim as claim_lifecycle
     try:
-        lifecycle = wiki_lifecycle_request.claim(project)
+        lifecycle = claim_lifecycle(project)
     except (OSError, ValueError):
         lifecycle = None
     if lifecycle is not None:

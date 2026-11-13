@@ -461,9 +461,9 @@ def drain(decision, *, recheck, owner=None):
             else:
                 wiki_selected_laya.request_compile(project, (decision, proof), owner=owner)
         if deleted:
-            from memvane.wiki.lifecycle import wiki_lifecycle_request
+            from memvane.wiki.workspace import api as wiki_lifecycle_request
             checked()
-            wiki_lifecycle_request.request(decision, 'source_edit')
+            wiki_lifecycle_request.request_lifecycle(decision, 'source_edit')
         checked()
         with _locked(inbox.with_suffix('.lock'), 1.0):
             latest = _read_box(inbox, decision)

@@ -181,7 +181,7 @@ class SelectedWikiChecks(unittest.TestCase):
         with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': '4242421'}), \
              patch.object(selected, 'selected', return_value=(self.decision, self.proof)), \
              patch.object(selected, 'recheck'), \
-             patch('wiki_lifecycle_request.claim', return_value={'claimed': True}), \
+             patch('memvane.wiki.workspace.lifecycle_requests.claim', return_value={'claimed': True}), \
              patch('wiki_lifecycle_request.run_lifecycle'), \
              patch('wiki_freshness.unresolved_pending_refreshes_strict', return_value=[]), \
              patch.object(selected.subprocess, 'run', return_value=SimpleNamespace(

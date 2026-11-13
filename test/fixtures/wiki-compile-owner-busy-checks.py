@@ -88,7 +88,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
         with mock.patch.object(wiki_selected_laya, 'selected', return_value=bound), \
              mock.patch.object(wiki_selected_laya, 'recheck'), \
              mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
-             mock.patch('wiki_lifecycle_request.claim', return_value=None), \
+             mock.patch('memvane.wiki.workspace.lifecycle_requests.claim', return_value=None), \
              mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
             result = wiki_selected_laya.run(project)
         self.assertEqual(result, {'state': 'deferred', 'reason': 'owner_busy'})
@@ -106,7 +106,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
                  mock.patch.object(wiki_selected_laya, 'selected', return_value=bound), \
                  mock.patch.object(wiki_selected_laya, 'recheck'), \
                  mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
-                 mock.patch('wiki_lifecycle_request.claim', return_value=None), \
+                 mock.patch('memvane.wiki.workspace.lifecycle_requests.claim', return_value=None), \
                  mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
                 self.assertEqual(wiki_selected_laya.run(project),
                                  {'state': 'deferred', 'reason': 'compile_worker_result_invalid'})
@@ -177,7 +177,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
                  mock.patch.object(wiki_selected_laya, 'selected', return_value=bound), \
                  mock.patch.object(wiki_selected_laya, 'recheck'), \
                  mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
-                 mock.patch('wiki_lifecycle_request.claim', return_value=None), \
+                 mock.patch('memvane.wiki.workspace.lifecycle_requests.claim', return_value=None), \
                  mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
                 result = wiki_selected_laya.run(project)
             self.assertEqual(result['reason'], 'compile_worker_failed')

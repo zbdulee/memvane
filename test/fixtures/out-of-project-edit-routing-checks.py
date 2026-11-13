@@ -687,10 +687,10 @@ class OwnerDrain(Routing):
         self.assertEqual(self.queue_rows(self.b), [])
 
     def test_current_deletion_requests_existing_owner_lifecycle(self):
-        from memvane.wiki.lifecycle import wiki_lifecycle_request
+        from memvane.wiki.workspace import api as wiki_lifecycle_request
         self.file.unlink()
         self.index()
-        with patch.object(wiki_lifecycle_request, 'request') as request:
+        with patch.object(wiki_lifecycle_request, 'request_lifecycle') as request:
             self.drain()
         request.assert_called_once()
         self.assertEqual(request.call_args.args[0]['projectRoot'], str(self.b.project))
