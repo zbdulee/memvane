@@ -220,6 +220,8 @@ def _upsert(db,key,kind,target,now,*,pull_due=False,delay=0):
 def _promote_overflow(db,now):
     """Move capacity-deferred wakes into free slots, oldest first."""
     for row in db.execute('SELECT id,kind,target FROM wake_overflow ORDER BY at,id').fetchall():
+        if row['kind'] not in wake_policy.KINDS:
+            continue
         exists=db.execute('SELECT 1 FROM wakes WHERE id=?',(row['id'],)).fetchone()
         if not exists and db.execute('SELECT COUNT(*) FROM wakes').fetchone()[0]>=wake_policy.capacity_limit(row['kind'],MAX_WAKES):
             continue
@@ -234,7 +236,9 @@ def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.tim
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return {'status':'busy','runs':0}
-        with queue.connect() as db:db.execute("UPDATE wakes SET status='pending' WHERE status='running'")
+        with queue.connect() as db:
+            for kind in wake_policy.KINDS:
+                db.execute("UPDATE wakes SET status='pending' WHERE status='running' AND kind=?",(kind,))
         controller=Coordinator(queue.root);deadline=clock()+max_seconds;runs=0
         def admitted(row):
             if not wake_policy.needs_compute_admission(row['kind']):
@@ -412,6 +416,7 @@ def _wake(queue=None):
     queue=WakeQueue() if queue is None else queue
     if not queue.path.exists():return 'idle'
     rows=queue.pending()
+    rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
     if not rows:return 'idle'
     # Backed-off rows alone never start a worker that would only wait: the
     # lease-free timer runs them once they are due.
@@ -479,6 +484,7 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
     while clock()<deadline:
         try:rows=queue.pending()
         except (OSError,ValueError,sqlite3.Error):return 'gone'
+        rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
         if not rows:return 'empty'
         now=wall();earliest=min(row['due'] for row in rows)
         if earliest<=now:

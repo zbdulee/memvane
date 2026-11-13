@@ -158,12 +158,12 @@ def needs_compute_admission(kind):
 
 
 def due_rows(rows, now):
-    return [row for row in rows if row['due'] <= now]
+    return [row for row in rows if row['kind'] in KINDS and row['due'] <= now]
 
 
 def any_due(rows, now):
     """Whether a worker has anything to run now; backed-off rows alone do not count."""
-    return any(row['due'] <= now for row in rows)
+    return any(row['kind'] in KINDS and row['due'] <= now for row in rows)
 
 
 def next_row(due):
