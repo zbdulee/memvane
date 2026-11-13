@@ -174,7 +174,7 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
     from memvane.journal import journal_reader as reader
     from memvane.journal import reader_lease as lease
     from memvane.kernel.bundle_paths import plugin_root
-    from memvane.wiki.lifecycle import wiki_source_retire
+    from memvane.wiki.card.types import MAX_CARDS
     root = Path(decision["projectRoot"])
     deadline = min(deadline, time.monotonic() + SCHEMA3_READ_SECONDS)
     with lease.resolve_endpoint(root, action="recall", host_root=plugin_root()) as endpoint:
@@ -189,8 +189,8 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
                 dimension = store._profile(vector["profile_id"])["dimension"]
             with store._reading(deadline):
                 # Either store format: the pinned generation's eligible cards in binary path order.
-                rows = store._eligible_members(generation, limit=wiki_source_retire.MAX_CARDS + 1)
-            if len(rows) > wiki_source_retire.MAX_CARDS:
+                rows = store._eligible_members(generation, limit=MAX_CARDS + 1)
+            if len(rows) > MAX_CARDS:
                 raise ValueError("selected_dedup_card_capacity")
             cards, total = {}, 0
             for path, blob in rows:

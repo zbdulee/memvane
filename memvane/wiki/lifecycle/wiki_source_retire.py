@@ -16,7 +16,7 @@ from memvane.wiki.workspace import wiki_selected_laya
 from memvane.wiki.card import yaml_scalars
 from memvane.settings.source_text import is_wiki_meta_page
 
-MAX_CARDS = 2_048
+from memvane.wiki.card.types import MAX_CARDS
 MAX_CARD_BYTES = 5_000_000
 MAX_TOTAL_BYTES = 24_000_000
 

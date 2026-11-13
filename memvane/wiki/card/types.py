@@ -1,1 +1,3 @@
-"""Value types for wiki card admission."""
+"""Value types and bounds for wiki cards."""
+
+MAX_CARDS = 2_048
