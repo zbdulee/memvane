@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from memvane.wiki.card import api as wiki_card
+from memvane.wiki.card.types import SOURCE_KIND_FILE
 from memvane.settings import api as qmd_resolve_paths
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import api as wiki_freshness
@@ -67,7 +68,7 @@ def compiler_provenance(cwd: str, sources: Any) -> tuple[list[dict], list[dict]]
     - **두 필드는 한 번의 읽기에서 함께 나온다**(`snapshot_bytes`는 fstat 를 같은 fd 에서
       두 번 떠 안정 이미지만 돌려준다). 소스 집합을 두 벌로 만들면 "검증은 A 를 보는데
       provenance 는 B 를 가리킨다"가 된다.
-    - **`kind: file` 만**(`wiki_card.SOURCE_KIND_FILE`). url/slack 등 비파일 출처는 스냅샷
+    - **`kind: file` 만**(`SOURCE_KIND_FILE`). url/slack 등 비파일 출처는 스냅샷
       대상이 아니고, 그런 항목만 있는 카드는 기존대로 provenance 없이 나간다.
     - **전부 아니면 전무.** 나열된 파일 소스 중 하나라도 스냅샷하지 못하면 아무것도 내지
       않는다 — `yaml_scalars.dump_source_revisions`가 형제 하나가 깨지면 목록 전체를
@@ -92,7 +93,7 @@ def compiler_provenance(cwd: str, sources: Any) -> tuple[list[dict], list[dict]]
     allow_roots = qmd_resolve_paths.allowed_roots(project_config or {})
     file_sources = [
         item for item in sources
-        if isinstance(item, dict) and item.get("kind") == wiki_card.SOURCE_KIND_FILE
+        if isinstance(item, dict) and item.get("kind") == SOURCE_KIND_FILE
     ]
     if not file_sources or len(file_sources) > MAX_PROVENANCE_SOURCE_SCAN:
         return [], []

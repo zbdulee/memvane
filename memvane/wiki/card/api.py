@@ -6,7 +6,14 @@ def bounded_snapshot(*args, **kwargs):
     from memvane.wiki.card.snapshot import bounded_snapshot as implementation
     return implementation(*args, **kwargs)
 
-from memvane.wiki.card.types import FRONTMATTER_RE, SOURCE_KIND_FILE
+def parse_frontmatter(*args, **kwargs):
+    from memvane.wiki.card.ownership import parse_frontmatter as implementation
+    return implementation(*args, **kwargs)
+
+
+def auto_writable_text(*args, **kwargs):
+    from memvane.wiki.card.ownership import auto_writable_text as implementation
+    return implementation(*args, **kwargs)
 
 
 def unresolved_pending_refreshes_strict(*args, **kwargs):

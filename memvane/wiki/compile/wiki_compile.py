@@ -25,6 +25,7 @@ from memvane.settings import api as source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
+from memvane.wiki.card.api import parse_frontmatter, auto_writable_text
 from memvane.wiki.card import api as yaml_scalars
 
 ALLOWED_TYPES = {
@@ -104,13 +105,7 @@ def has_secret_like(text: str) -> bool:
 TRANSCRIPT_RE = re.compile(r"(?im)^\s*(user|assistant|system|human|ai)\s*:")
 # 마커 리터럴은 core/wiki_markers.py가 SSOT다 — recall의 읽기 스캐너와 같은 문자열을
 # 쓰게 해서 형식 변경이 한쪽만 깨는 일을 막는다(엄격도 차이는 그 모듈 docstring 참고).
-AUTO_START_RE = re.compile(wiki_markers.AUTO_START_PATTERN)
-AUTO_BLOCK_RE = re.compile(
-    wiki_markers.AUTO_START_PATTERN + r"\n.*?\n" + re.escape(wiki_markers.AUTO_END), re.S
-)
-# 정의는 yaml_scalars 가 SSOT다 — 카드 본문 지문(`card_body_hash`)이 이 경계로
-# 자르므로 쓰는 쪽과 읽는 쪽이 같은 객체를 봐야 한다.
-FRONTMATTER_RE = yaml_scalars.FRONTMATTER_RE
+from memvane.wiki.card.types import AUTO_START_RE, AUTO_BLOCK_RE, FRONTMATTER_RE
 
 
 def now_iso() -> str:
@@ -207,64 +202,12 @@ def clean_canonical_key(value: object) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
-def unquote_yaml(value: str) -> str:
-    # 인용/역인용 규칙은 core/yaml_scalars.py가 SSOT다 — recall의 읽기 파서가 같은
-    # 함수를 쓰게 해서 이스케이프 규칙이 갈리지 않게 한다(title 오염의 원인).
-    return yaml_scalars.load(value)
 
 
-def parse_yaml_scalar(value: str):
-    text = unquote_yaml(value)
-    if text.lower() == "true":
-        return True
-    if text.lower() == "false":
-        return False
-    return text
 
 
-def parse_yaml_inline_list(value: str) -> list:
-    text = value.strip()
-    if not (text.startswith("[") and text.endswith("]")):
-        return []
-    inner = text[1:-1].strip()
-    if not inner:
-        return []
-    return [parse_yaml_scalar(part.strip()) for part in inner.split(",") if part.strip()]
 
 
-def parse_frontmatter(text: str) -> tuple[dict, bool]:
-    match = FRONTMATTER_RE.match(text)
-    if not match:
-        return {}, False
-    meta = {}
-    current_key = None
-    for raw_line in match.group(1).splitlines():
-        if not raw_line.strip():
-            continue
-        if raw_line.startswith("  - "):
-            if current_key is None:
-                return {}, False
-            meta.setdefault(current_key, []).append(parse_yaml_scalar(raw_line[4:]))
-            continue
-        if raw_line.startswith(" ") or ":" not in raw_line:
-            return {}, False
-        key, raw_value = raw_line.split(":", 1)
-        key = key.strip()
-        if not key:
-            return {}, False
-        if key in meta:
-            return {}, False
-        raw_value = raw_value.strip()
-        if raw_value == "":
-            meta[key] = []
-            current_key = key
-        elif raw_value.startswith("[") and raw_value.endswith("]"):
-            meta[key] = parse_yaml_inline_list(raw_value)
-            current_key = None
-        else:
-            meta[key] = parse_yaml_scalar(raw_value)
-            current_key = None
-    return meta, True
 
 
 def identity_values_from_meta(meta: dict) -> list[str]:
@@ -1441,21 +1384,6 @@ def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
     return auto_writable_text(text)
 
 
-def auto_writable_text(text: str) -> tuple[bool, list[str]]:
-    """Plugin ownership of one card's bytes (createdBy + managed block, not superseded)."""
-    meta, ok = parse_frontmatter(text)
-    if not ok:
-        return False, ["frontmatter_unparseable"]
-    findings = []
-    # verified remains auto-writable so source changes reset it to generated.
-    # superseded alone is historical and must never be revived by a refresh.
-    if str(meta.get("status") or "").strip().lower() == "superseded":
-        findings.append("protected_status")
-    if meta.get("createdBy") not in wiki_markers.CREATED_BY_NAMES:
-        findings.append("non_qmd_created_by")
-    if not AUTO_BLOCK_RE.search(text):
-        findings.append("managed_section_missing")
-    return not findings, findings
 
 
 def main() -> int:

@@ -98,7 +98,8 @@ from memvane.settings import config as qmd_config
 from memvane.kernel import memvane_paths
 from memvane.wiki.workspace import api as scan_state
 from memvane.settings import api as source_text
-from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.card import api as wc
+from memvane.wiki.card.types import FRONTMATTER_RE, SOURCE_KIND_FILE
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.lifecycle import wiki_source_retire
 
@@ -280,14 +281,14 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
     seen = set()
     files = []
     for record in records:
-        if record.get("kind") != wiki_card.SOURCE_KIND_FILE:
+        if record.get("kind") != SOURCE_KIND_FILE:
             continue
         collection = record.get("collection")
         collection = collection if isinstance(collection, str) else ""
         key = (record["path"], collection)
         if key not in seen:
             seen.add(key)
-            files.append({"kind": wiki_card.SOURCE_KIND_FILE, "path": record["path"],
+            files.append({"kind": SOURCE_KIND_FILE, "path": record["path"],
                           "collection": collection})
     if not files:
         if records and all(record.get("kind") == "session" for record in records):
@@ -340,7 +341,7 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
     owned, _ = wc.auto_writable_text(text)
     if not owned:
         return None
-    match = wc.FRONTMATTER_RE.match(text)
+    match = FRONTMATTER_RE.match(text)
     if match is None:
         return None
     block = match.group(1)

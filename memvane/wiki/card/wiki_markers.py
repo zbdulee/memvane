@@ -14,8 +14,7 @@ wiki_compile은 이 마커를 **쓰고**, recall은 주입할 본문을 뽑기 �
 
 AUTO_START_OPEN = "<!-- qmd:auto:start"
 AUTO_START_TEMPLATE = '<!-- qmd:auto:start id="main" sourceHash="{source_hash}" -->'
-AUTO_START_PATTERN = r'<!-- qmd:auto:start id="main" sourceHash="([a-f0-9]+)" -->'
-AUTO_END = "<!-- qmd:auto:end -->"
+from memvane.wiki.card.types import AUTO_START_PATTERN, AUTO_END
 COMMENT_OPEN = "<!--"
 COMMENT_CLOSE = "-->"
 

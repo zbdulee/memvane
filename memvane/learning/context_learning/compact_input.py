@@ -19,7 +19,8 @@ def derive(source_text, source_sha256):
     encoded = source_text.encode('utf-8')
     if len(encoded) > MAX_SOURCE_BYTES or digest(source_text) != source_sha256:
         raise ValueError('compact_source_mismatch_or_limit')
-    match = yaml_scalars.FRONTMATTER_RE.match(source_text)
+    from memvane.wiki.card.types import FRONTMATTER_RE
+    match = FRONTMATTER_RE.match(source_text)
     if match is None: raise ValueError('missing_compact_frontmatter')
     body = source_text[match.end():]
     if not body.strip() or '\x00' in body or len(body.encode('utf-8')) > MAX_COMPACT_BODY_BYTES:
@@ -34,7 +35,8 @@ def derive_for_selection(source_text, source_sha256):
         return derive(source_text, source_sha256)
     except ValueError as exc:
         if str(exc) != 'compact_body_limit_or_empty': raise
-    match = yaml_scalars.FRONTMATTER_RE.match(source_text)
+    from memvane.wiki.card.types import FRONTMATTER_RE
+    match = FRONTMATTER_RE.match(source_text)
     body = source_text[match.end():]
     if not body.strip() or '\x00' in body: raise ValueError('compact_body_limit_or_empty')
     # Decoding the byte prefix with errors='ignore' drops only a partial
