@@ -98,7 +98,7 @@ def compile_candidates(project_root, config, compile_cfg, changed_files, *, trig
         candidates.append((name, rel, record))
     # The selected wiki-only index owns retirement too. A deleted source has
     # no bytes to read, but the last scanned hash is an exact replay key.
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     if wiki_selected_laya.selected(Path(project_root)) is not None:
         for name in sorted(changed_files):
             entry = changed_files[name]
@@ -183,7 +183,7 @@ def enqueue_changed_sources(project_root, config, changed_files,
         plan = intent.plan_enqueue(candidates, cap)
         _append_jsonl(queue_path, plan["records"])
     if plan["records"] or plan["result"].get("wakePending"):
-        from memvane.wiki.workspace import wiki_selected_laya
+        from memvane.wiki.workspace import api as wiki_selected_laya
         wiki_selected_laya.request_compile(Path(project_root),
             wiki_selected_laya.selected(Path(project_root)))
     if initial_backfill is not None:
@@ -352,7 +352,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
         inner_rel = rel_path
     if _is_hidden_source_path(inner_rel):
         return None
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     selected_route = wiki_selected_laya.selected(Path(project_root))
     skip_paths = qmd_config.generation_skip_paths(config, selected_route)
     if skip_paths is not None:
@@ -425,7 +425,7 @@ def enqueue_payload(payload):
         queued.append(record)
     _append_jsonl(queue_path, queued)
     if queued:
-        from memvane.wiki.workspace import wiki_selected_laya
+        from memvane.wiki.workspace import api as wiki_selected_laya
         wiki_selected_laya.request_compile(Path(project_root),
             wiki_selected_laya.selected(Path(project_root)))
     return {"queued": len(queued), "reason": "queued" if queued else "no_sources"}

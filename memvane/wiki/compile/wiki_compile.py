@@ -1280,7 +1280,7 @@ def find_wiki_collection(config: dict) -> tuple[str | None, str | None]:
 
 
 def shared_collection_owned(root: Path, config: dict, collection: str) -> bool:
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
         return any(item['name'] == collection and item['role'] == 'wiki'
@@ -1308,7 +1308,7 @@ def query_wiki_candidates(
     text = f"{candidate.get('title') or ''} {summary}".strip()
     if not text:
         return []
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     from memvane.wiki.compile import selected_execution as compile_execution
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
@@ -1546,7 +1546,7 @@ def main() -> int:
 def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                     wiki_root: Path, candidate: dict, regenerate: bool, *,
                     budget_final: str | None = None, check: bool = False) -> int:
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
         from memvane.settings.api import excluded_source

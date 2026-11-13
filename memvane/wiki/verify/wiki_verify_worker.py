@@ -431,7 +431,7 @@ def record_verify_suppression(
 def reindex_wiki(root: Path, config: dict) -> None:
     collection, collection_path = wc.find_wiki_collection(config)
     if collection and collection_path:
-        from memvane.wiki.workspace import wiki_selected_laya
+        from memvane.wiki.workspace import api as wiki_selected_laya
         selected = wiki_selected_laya.selected(root)
         if selected is not None:
             wiki_selected_laya.request_sync(root, selected)
@@ -439,7 +439,7 @@ def reindex_wiki(root: Path, config: dict) -> None:
 
 def wake_pending_retirement(root: Path) -> None:
     """Recheck a held deletion only after a successful replacement review."""
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is None:
         return
@@ -957,7 +957,7 @@ def process_verify_job(
     *, snapshots: dict | None = None,
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     checkout = None
     if selected_route is not None and isinstance(job.get('sourceFingerprints'), dict):
@@ -1553,7 +1553,7 @@ def run(
     """
     result = {"processed": 0, "remaining": 0}
     vcfg = verify_cfg_of(compile_cfg)
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     if selected_route is not None:
         # Selected Laya keeps wiki bytes for recovery. The legacy default

@@ -67,6 +67,26 @@ def recheck(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def request_compile(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import request_compile as implementation
+    return implementation(*args, **kwargs)
+
+
+def request_sync(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import request_sync as implementation
+    return implementation(*args, **kwargs)
+
+
+def route_identity(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import route_identity as implementation
+    return implementation(*args, **kwargs)
+
+
+def schema3_checkout(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import schema3_checkout as implementation
+    return implementation(*args, **kwargs)
+
+
 def queue_busy(*args, **kwargs):
     from memvane.wiki.workspace.wiki_selected_laya import _queue_busy as implementation
     return implementation(*args, **kwargs)

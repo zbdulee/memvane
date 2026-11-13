@@ -25,7 +25,7 @@ from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
-from memvane.wiki.workspace import wiki_selected_laya
+from memvane.wiki.workspace import api as wiki_selected_laya
 from memvane.wiki.workspace.api import claim_queue, requeue_lines
 
 ACTIONS = {"merge", "skip"}

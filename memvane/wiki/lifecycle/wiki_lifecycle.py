@@ -550,7 +550,7 @@ def run(cwd: str) -> dict:
             result["gitOperation"] = operation
             return result
 
-    from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.workspace import api as wiki_selected_laya
     try:
         selected = wiki_selected_laya.selected(root)
     except ValueError as exc:
