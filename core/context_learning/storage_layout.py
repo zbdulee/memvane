@@ -162,40 +162,6 @@ def register_project(project_root, *, story_root=None, display_name, home=None):
         return project_id
 
 
-def relocate_project(project_id, old_root, new_root, *, home=None):
-    """Explicitly preserve identity; never infer relocation from a folder name."""
-    uuid.UUID(project_id)
-    old = str(Path(old_root).resolve(strict=False))
-    new = _absolute_existing_directory(new_root)
-    with registry(home) as db, db:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT current_root,story_root FROM projects WHERE project_id=?', (project_id,)).fetchone()
-        if row is None or row[0] != old or old == new:
-            raise ValueError('project_relocation_mismatch')
-        if db.execute('SELECT 1 FROM project_paths WHERE path=?', (new,)).fetchone():
-            raise ValueError('project_path_already_registered')
-        story = row[1]
-        if story is not None:
-            relative = Path(story).relative_to(old)
-            try:
-                moved_story = _absolute_existing_directory(Path(new) / relative)
-            except ValueError as exc:
-                raise ValueError('story_relocation_unverified') from exc
-            if Path(new) not in Path(moved_story).parents:
-                raise ValueError('story_relocation_unverified')
-            story = moved_story
-        now = time.time()
-        db.execute('UPDATE projects SET current_root=?,story_root=?,updated_at=? WHERE project_id=?',
-                   (new, story, now, project_id))
-        db.execute('UPDATE project_paths SET role=\'former\' WHERE path=? AND project_id=?', (old, project_id))
-        db.execute('INSERT INTO project_paths VALUES (?,?,?)', (new, project_id, 'current'))
-        settings = {'schema_version': SCHEMA_VERSION, 'story_root': story,
-                    'external_data_scope': 'separate-owner-consent'}
-        db.execute('UPDATE project_settings SET body=?,updated_at=? WHERE project_id=?',
-                   (json.dumps(settings, sort_keys=True, separators=(',', ':')), now, project_id))
-        return story
-
-
 def project_view(project_id, *, home=None):
     uuid.UUID(project_id)
     with registry(home) as db:

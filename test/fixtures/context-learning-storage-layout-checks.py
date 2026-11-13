@@ -3,7 +3,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,7 +10,7 @@ import time
 import uuid
 
 from context_learning.storage_layout import (
-    project_view, register_project, registry, relocate_project, root,
+    project_view, register_project, registry, root,
 )
 
 
@@ -43,28 +42,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-', dir='/tmp') as d
                            (project_id,)).fetchone()[0] == 1
         assert app.execute('SELECT count(*) FROM run_quality WHERE project_id=?',
                            (other_id,)).fetchone()[0] == 0
-    moved = home / 'workspace' / 'renamed-novel'
-    project.rename(moved)
-    new_story = relocate_project(project_id, project, moved, home=home)
-    assert new_story == str(moved / 'allowed-story')
-    assert project_view(project_id, home=home)['current_root'] == str(moved)
-    with registry(home) as db:
-        assert db.execute('SELECT role FROM project_paths WHERE path=?',
-                          (str(project),)).fetchone()[0] == 'former'
-        assert db.execute('SELECT project_id FROM project_paths WHERE path=?',
-                          (str(moved),)).fetchone()[0] == project_id
-        assert db.execute('SELECT count(*) FROM run_quality WHERE project_id=?',
-                          (project_id,)).fetchone()[0] == 1
-        settings = json.loads(db.execute('SELECT body FROM project_settings WHERE project_id=?',
-                                         (project_id,)).fetchone()[0])
-        assert settings['story_root'] == str(moved / 'allowed-story')
-    try:
-        register_project(project, display_name='Reuse forbidden', home=home)
-    except ValueError as exc:
-        assert str(exc) == 'missing_project_path'
-    else:
-        raise AssertionError('former path accepted as new project')
-
 with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-link-', dir='/tmp') as directory:
     home = Path(directory).resolve()
     (home / 'Library').symlink_to(home / 'elsewhere', target_is_directory=True)
@@ -120,22 +97,3 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-process-', dir='/tm
         output.append(stdout.strip())
     assert len(set(output)) == 1
 
-with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-escape-', dir='/tmp') as directory:
-    home = Path(directory).resolve()
-    project = home / 'project'
-    story = project / 'sub' / 'story'
-    story.mkdir(parents=True)
-    project_id = register_project(project, story_root=story,
-                                  display_name='Nested story', home=home)
-    moved = home / 'moved'
-    project.rename(moved)
-    outside = home / 'outside'
-    shutil.move(str(moved / 'sub'), str(outside))
-    (moved / 'sub').symlink_to(outside, target_is_directory=True)
-    try:
-        relocate_project(project_id, project, moved, home=home)
-    except ValueError as exc:
-        assert str(exc) == 'story_relocation_unverified'
-    else:
-        raise AssertionError('nested story symlink escape accepted')
-    assert project_view(project_id, home=home)['current_root'] == str(project)
