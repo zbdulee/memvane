@@ -38,16 +38,18 @@ test('no product module reads a name that no scope binds', t => {
   assert.ok(report.files > 250, `only ${report.files} files checked`);
 });
 
-test('the free-name check flags a name bound only in another scope', t => {
+test('the free-name check flags unbound names and missing module attributes', t => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mv-free-')));
   t.after(() => rmSync(dir, {recursive: true, force: true}));
   const sample = join(dir, 'sample.py');
-  writeFileSync(sample, 'def a():\n    from pathlib import Path\n    return Path\n\n' +
-    'def b():\n    return Path(1), json\n');
+  writeFileSync(sample, 'from memvane.kernel import bundle_paths\n\n' +
+    'def a():\n    from pathlib import Path\n    return Path, bundle_paths.entry_path\n\n' +
+    'def b(config):\n    return Path(1), json, config.get, bundle_paths.removed_name\n\n' +
+    'def c():\n    bundle_paths = {}\n    return bundle_paths.get\n');
   const {result} = run(t, 'free_names.py', [sample]);
   assert.equal(result.status, 1, result.stdout);
   const names = JSON.parse(result.stdout).findings.map(x => x.split(':').pop()).sort();
-  assert.deepEqual(names, ['Path', 'json']);
+  assert.deepEqual(names, ['Path', 'bundle_paths.removed_name', 'json']);
 });
 
 test('product modules satisfy structure rules G1 to G7', t => {
