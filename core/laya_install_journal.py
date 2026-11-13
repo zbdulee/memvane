@@ -1622,6 +1622,17 @@ def _worker_attestation_manifest(selected):
     with closing(db):
         db.execute('BEGIN')
         try:
+            if _schema_version(db) == 1:
+                row = _inspect_v1_row(db)
+                if (row['epoch'] != selected['selectionEpoch'] or row['state'] != 'selected'
+                        or any(row[key] != selected.get(key) for key in
+                               ('installId', 'scopeId', 'storeIncarnation', 'stateFormat'))):
+                    _fail('worker_selection_changed')
+                db.commit()
+                record, digest = _attestation(path)
+                if digest != row['attestationSha256']:
+                    _fail('worker_attestation_changed')
+                return _v1_provider_manifest(record, row['vectorProfile'])
             row = _row(db)
             if (row['epoch'] != selected['selectionEpoch'] or
                     row['provider_attestation_sha'] is None or
@@ -1643,6 +1654,42 @@ def _worker_attestation_manifest(selected):
     except BundleEvidenceError as exc:
         raise JournalEvidenceError('worker_attestation_invalid') from exc
     _verify_runtime_files(record)
+    return manifest
+
+
+def _v1_provider_manifest(record, profile):
+    """Verify provider bytes and runtime identity using this plugin copy."""
+    from laya_local_embed_provider import ReviewedLocalQmdProvider, _hash_file
+    if (not isinstance(record, dict) or record.get('vectorProfile') != profile
+            or not isinstance(record.get('providerManifest'), dict)
+            or not isinstance(record.get('dependencyClosure'), list)
+            or type(record.get(RUNTIME_FILES_FIELD)) is not str
+            or not SHA.fullmatch(record[RUNTIME_FILES_FIELD])):
+        _fail('worker_attestation_invalid')
+    root = Path(__file__).resolve().parent
+    manifest = {**record['providerManifest'],
+                'providerPath': str(root / 'laya_local_embed_provider.py'),
+                'workerPath': str(root / 'laya_local_embed_worker.mjs')}
+    try:
+        if (hashlib.sha256(_canon(record['dependencyClosure']).encode('utf-8')).hexdigest()
+                != manifest['dependencyClosureSha256']
+                or manifest['serviceSocketPath'] != str(Path(record['journalPath']).parent /
+                                                        'runtime' / 'laya-embed.sock')):
+            _fail('worker_attestation_invalid')
+        for path_key, hash_key in (('providerPath', 'providerArtifactSha256'),
+                                   ('workerPath', 'workerSha256'), ('nodePath', 'nodeSha256'),
+                                   ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
+            if _hash_file(manifest[path_key]) != manifest[hash_key]:
+                _fail('worker_attestation_invalid')
+        provider = ReviewedLocalQmdProvider(manifest)
+        if (provider.profile['profile_id'] != profile['profileId']
+                or manifest['providerArtifactSha256'] != profile['providerArtifactSha256']
+                or manifest['approvedProviderId'] != profile['approvedProviderId']
+                or manifest['providerRelativePath'] != profile['providerRelativePath']):
+            _fail('worker_attestation_invalid')
+        _verify_runtime_files(record)
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise JournalEvidenceError('worker_attestation_invalid') from exc
     return manifest
 
 
