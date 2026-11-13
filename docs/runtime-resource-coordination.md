@@ -52,7 +52,7 @@ development execution guard is separate; see
   once, so the last provider call can run past the pass deadline by that one
   document; that pass publishes its generation (lexical, or vector when the
   fill completed) with a fresh publish reserve. A linked view held only by
-  the pass budget after such a pass gets the same re-offer..
+  the pass budget after such a pass gets the same re-offer.
 - Selected Laya route sync: `laya_product_sync_worker.py` holds a Coordinator
   `activity('provider', EMBED_POLICY)` around embedding work and rechecks the
   policy immediately before the embed service loads its model. `EMBED_POLICY`
