@@ -217,7 +217,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         deadline=min(deadline,valid[-1][6])
     from memvane.recall.types import HYBRID_LIST_LIMIT
     from memvane.recall.domain.rules import _fuse_verified_lists, _hybrid_fts_queries, _fail
-    from memvane.route.index_host_route import wiki_index_roots
+    from memvane.route.api import wiki_index_roots
     from memvane.settings.api import auxiliary_wiki_row
     from memvane.store.blob.blob_values import BlobStoreError
     from memvane.store.view.view_vectors import DEFERRED

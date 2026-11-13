@@ -371,7 +371,7 @@ def _route(raw, journal_path):
                        for key in ('stateNode', 'storeNode'))):
             _fail('route_contract_mismatch')
         try:
-            from memvane.route.index_host_route import settings_identity_digest, wiki_index_roots
+            from memvane.route.api import settings_identity_digest, wiki_index_roots
             wiki_index_roots(route['collections'])
             if (len({item['name'] for item in route['collections']}) != 2
                     or next(item['sourceRoot'] for item in route['collections']

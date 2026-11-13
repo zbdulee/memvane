@@ -214,7 +214,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
 def _settings_identity(plan):
     """A new route binds the resolved settings identity, not the file bytes;
     the reviewed plan proposal keeps binding the exact bytes."""
-    from memvane.route.index_host_route import settings_identity_digest
+    from memvane.route.api import settings_identity_digest
     return settings_identity_digest(plan['projectRoot'], plan['collections'])
 
 

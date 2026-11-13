@@ -46,7 +46,7 @@ def ready(project) -> bool:
 
 
 def wiki_names(decision):
-    from memvane.route.index_host_route import wiki_index_roots
+    from memvane.route.api import wiki_index_roots
     return tuple(sorted(wiki_index_roots(decision['collections'])))
 
 

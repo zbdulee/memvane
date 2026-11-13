@@ -531,7 +531,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
     infrastructure; ``fallback`` names why. An invalid pool serves nothing.
     """
     from memvane.learning.context_learning.selection_read import select_published, selector_prepared
-    from memvane.route.index_host_route import wiki_index_roots
+    from memvane.route.api import wiki_index_roots
     roots = wiki_index_roots(decision['collections'])
     names = tuple(sorted(roots))
     if not names:

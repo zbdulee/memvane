@@ -794,9 +794,19 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/route/api.py": {
+      "context": "route",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/route/index_host_route.py": {
       "context": "route",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/route/types.py": {
+      "context": "route",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/runtime/__init__.py": {
