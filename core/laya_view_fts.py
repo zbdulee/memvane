@@ -28,7 +28,7 @@ def head_table(view_id):
     return PREFIX+'h_'+view_id
 
 
-def head_ddl(view_id, ):
+def head_ddl(view_id):
     return (f'CREATE VIRTUAL TABLE {head_table(view_id)} USING '
             "fts5(filepath,title,body,path_key UNINDEXED,tokenize='porter unicode61')")
 
@@ -148,16 +148,16 @@ def _entries(rows, *, insertion_order=False):
 
 
 
-def create_head(db,view_id,):
+def create_head(db,view_id):
     _execute(db,head_ddl(view_id))
 
 
-def populate_head(db,view_id,rows,):
+def populate_head(db,view_id,rows):
     for row in _entries(rows,insertion_order=False):
         _execute(db,f'INSERT INTO {head_table(view_id)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
 
 
-def head_map_matches(db,view_id,rows,):
+def head_map_matches(db,view_id,rows):
     """True when the rowid map names exactly the head FTS table's ``rows`` rows (path and rowid).
 
     ``rows`` is the row count the caller already proved for the table.
@@ -170,7 +170,7 @@ def head_map_matches(db,view_id,rows,):
     return table==mapped==joined
 
 
-def head_map_rows(db,view_id,):
+def head_map_rows(db,view_id):
     """(path_key, rowid) of the head FTS table and of its map, both path-ordered."""
     name=head_table(view_id)
     table=[tuple(r) for r in _execute(db,f'SELECT path_key,rowid FROM {name} ORDER BY path_key COLLATE BINARY,rowid')]
@@ -179,7 +179,7 @@ def head_map_rows(db,view_id,):
     return table,mapped
 
 
-def map_head(db,view_id,):
+def map_head(db,view_id):
     """Record every current head FTS row in the rowid map (fresh head FTS only)."""
     origin='base'
     for path,rowid in head_map_rows(db,view_id)[0]:
@@ -317,10 +317,10 @@ def _expected_head_schema(view_id):
     finally:db.close()
 
 
-def _one_head_schema(db,view_id,):
+def _one_head_schema(db,view_id):
     base=head_table(view_id)
     actual=[r for r in _schema(db) if r[1]==base or r[1].startswith(base+'_') or r[2]==base or r[2].startswith(base+'_')]
-    expected=list(_expected_head_schema(view_id,sidecar))
+    expected=list(_expected_head_schema(view_id))
     if sorted(actual)!=sorted(expected):v.fail('fts_schema_mismatch')
     return expected
 
@@ -359,7 +359,7 @@ def _typed(value):
 
 
 
-def head_storage_digest(db,view_id,deadline=None,):
+def head_storage_digest(db,view_id,deadline=None):
     metadata=_one_head_schema(db,view_id)
     return _storage_digest(db,head_table(view_id),metadata,deadline)
 
@@ -393,7 +393,7 @@ def _storage_digest(db,base,metadata,deadline):
 
 
 
-def verify_head_index(db,view_id,):
+def verify_head_index(db,view_id):
     name=head_table(view_id)
     try:
         _execute(db,f"INSERT INTO {name}({name}) VALUES('integrity-check')")
@@ -401,7 +401,7 @@ def verify_head_index(db,view_id,):
         v.fail('fts_integrity_failed')
 
 
-def head_logical_digest(rows,deadline=None,):
+def head_logical_digest(rows,deadline=None):
     """The logical digest ``head_proof`` returns for the same rows (path order)."""
     logical=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0')
     previous=None;size=0
