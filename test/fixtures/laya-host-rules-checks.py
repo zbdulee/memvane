@@ -110,9 +110,6 @@ class ActionRulesChecks(unittest.TestCase):
         for action in ('update', 'update-queued', 'index', 'file-change-event'):
             with self.subTest(action=action):
                 self.assertEqual(rules.is_session(action), action in ('update', 'update-queued'))
-                for host in ('claude', 'codex', 'hermes'):
-                    self.assertEqual(rules.codex_seal_notice(action, host),
-                                     action == 'update-queued' and host == 'claude')
 
     def test_grant_is_scoped_to_collection_and_action(self):
         for roots, action, expected in [(False, 'update', None), (True, 'index', None),

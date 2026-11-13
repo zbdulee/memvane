@@ -152,7 +152,6 @@ class RebootChecks(unittest.TestCase):
              mock.patch.object(response, '__file__', str(case.plugin / 'core/laya_host_response.py')), \
              mock.patch('runtime_work.request', return_value={'status': 'queued'}), \
              mock.patch.object(response, '_start_owner'), \
-             mock.patch.object(response, '_move_notices', return_value=None), \
              mock.patch('wiki_compile_enqueue.enqueue_payload', return_value={'queued': 0}):
             # A full selected proof must work before any read-only fallback.
             J.verify_selected_route(decision)

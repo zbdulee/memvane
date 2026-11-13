@@ -2156,12 +2156,10 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     install, project, scope, journal or store identity keeps the refusal.
     """
     from laya_install_journal import JournalEvidenceError
-    moved = _install_moved(decision) or _project_dir_moved(decision)
     if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
             (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES) or
             (type(exc) in (JournalEvidenceError, ValueError) and
-             str(exc) in _RETRYABLE_READER_CODES) or
-            moved):
+             str(exc) in _RETRYABLE_READER_CODES)):
         return None
     needed = time.monotonic() - started + _RETRY_MARGIN_SECONDS
     if _retry_time_left(started) <= needed:
@@ -2177,78 +2175,13 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
         return None
     try:
         fresh = select_route(target, action='recall')
-        # A move fences readers for a few writes: the re-read waits it out.
-        if fresh.get('state') == 'blocked':
-            from laya_index_host_route import _settle_moves
-            fresh = _settle_moves(target, 'recall', fresh)
     except Exception:
         return None
-    if moved:
-        if not _relocated(decision, fresh):
-            return None
-    elif _decision_identity(fresh) != identity:
+    if _decision_identity(fresh) != identity:
         return None
     if _retry_time_left(started) <= needed:
         return None
     return fresh
-
-
-def _install_moved(decision) -> bool:
-    """The decision's install directory left the pre-rename base under this recall.
-
-    Any failure of such a recall may come from the move (a store path that
-    vanished between the proof and a read); one retry re-selects the route,
-    which must name the same install at its MemVane location.
-    """
-    if not isinstance(decision, dict) or decision.get('state') != 'candidate':
-        return False
-    try:
-        import laya_state_move
-        state = Path(decision['journalPath']).parent
-        return (laya_state_move.legacy_root(state) and not os.path.lexists(state)
-                and laya_state_move.target_root(state).is_dir())
-    except Exception:
-        return False
-
-
-def _project_dir_moved(decision) -> bool:
-    """The decision's wiki root left ``.auto-context/`` for ``.memvane/`` under this recall."""
-    try:
-        import laya_project_dir_move
-        return laya_project_dir_move.moved_away(decision)
-    except Exception:
-        return False
-
-
-def _codex_seal_notice(decision):
-    """Best-effort recent event notice; it does not observe hook trust."""
-    from datetime import datetime, timezone
-    state = event_log.state_root_for_decision(decision)
-    if state is None:
-        return None
-    try:
-        now = datetime.now(timezone.utc).timestamp()
-        pending = False
-        for row in event_log.read(state, max_bytes=1024 * 1024):
-            if row.get('event') != 'bundle.upgrade':
-                continue
-            try:
-                stamp = datetime.fromisoformat(row['ts'].replace('Z', '+00:00')).timestamp()
-            except (KeyError, TypeError, ValueError, OverflowError):
-                continue
-            if not 0 <= now - stamp <= 86400:
-                continue
-            if row.get('codexSealWritten') is True:
-                pending = True
-            elif row.get('outcome') == 'codex_hook_notice':
-                pending = False
-        if not pending:
-            return None
-        event_log.emit('bundle.upgrade', outcome='codex_hook_notice', state_root=state,
-                       host='claude')
-        return '[memvane] Codex hook approval may need to be renewed after the bundle seal.'
-    except Exception:
-        return None
 
 
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -2348,10 +2281,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         # Loading a model or building a vector batch here would occupy the
         # prompt/SessionStart deadline and leave an unowned child on timeout.
         import runtime_work
-        from laya_host_rules import is_session, discovery_grant_kind, codex_seal_notice
+        from laya_host_rules import discovery_grant_kind
         move_notice = None
-        if is_session(action):
-            move_notice = _move_notices(decision)
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         grant_failed = False
@@ -2399,10 +2330,6 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             if block_notice:
                 move_notice = (move_notice + "\n" + block_notice if move_notice
                                else block_notice)
-            if codex_seal_notice(action, host):
-                trust_notice = _codex_seal_notice(decision)
-                if trust_notice:
-                    move_notice = (move_notice + "\n" + trust_notice if move_notice else trust_notice)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
@@ -2473,32 +2400,6 @@ def _selected_store_format(decision: dict) -> str:
     return record['store_format']
 
 
-def _state_move_notice(decision: dict, *, request_move: bool = True):
-    """SessionStart line while the install's state moves to the MemVane base.
-
-    Records at most one detached worker request; never waits.
-    """
-    try:
-        import laya_bundle_upgrade
-        return laya_bundle_upgrade.move_notice(decision['projectRoot'],
-                                               decision['journalPath'],
-                                               request_move=request_move)
-    except Exception:
-        return None
-
-
-def _project_dir_move_notice(decision: dict, *, request_move: bool = True):
-    """SessionStart lines while the project folder moves to ``.memvane/`` and,
-    once it moved, what the owner commits. Never waits."""
-    try:
-        import laya_bundle_upgrade
-        return laya_bundle_upgrade.project_dir_notice(decision['projectRoot'],
-                                                      decision['journalPath'],
-                                                      request_move=request_move)
-    except Exception:
-        return None
-
-
 def _vector_block_notice(decision: dict, payload: dict):
     """One SessionStart line while the vector fill is stuck on one card.
 
@@ -2510,14 +2411,6 @@ def _vector_block_notice(decision: dict, payload: dict):
         return laya_vector_block.notice(decision, event_log.session_id(payload))
     except Exception:
         return None
-
-
-def _move_notices(decision: dict, *, request_move: bool = True):
-    """Both move notices; one worker request per SessionStart (it runs both)."""
-    state = _state_move_notice(decision, request_move=request_move)
-    folder = _project_dir_move_notice(decision,
-                                      request_move=request_move and state is None)
-    return '\n'.join(line for line in (state, folder) if line) or None
 
 
 def _trace_fields(**fields) -> None:
@@ -2555,18 +2448,8 @@ def _bundle_drift_proof(decision: dict, exc: BaseException) -> dict:
 
 
 def _bundle_upgrade_notice(decision: dict, code: str) -> str:
-    try:
-        import laya_bundle_upgrade
-        state = laya_bundle_upgrade.request(decision['projectRoot'],
-                                            decision['journalPath'], code)
-    except Exception as exc:
-        state = {'status': 'failed', 'reason': _drift_code(exc)}
-    try:
-        import laya_bundle_upgrade
-        return laya_bundle_upgrade.notice_line(state, code)
-    except Exception:
-        return ('[memvane] plugin bundle changed (' + code + '); search serves '
-                'the last published index read-only; sync waits for the upgrade.')
+    return ('[memvane] plugin bundle changed (' + code + '); search serves '
+            'the last published index read-only; sync waits for the upgrade.')
 
 
 def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
@@ -2577,7 +2460,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
     wakes one full-scan sync that catches up every source change.
     """
     from laya_install_journal import verify_selected_route_read_only
-    from laya_host_rules import drift_action, codex_seal_notice, gate_response
+    from laya_host_rules import drift_action, gate_response
     policy = drift_action(action)
     if policy == 'recall':
         try:
@@ -2590,16 +2473,9 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
         notice = _bundle_upgrade_notice(decision, code)
-        move_notice = _move_notices(decision, request_move=False)
-        if move_notice:
-            notice += '\n' + move_notice
         _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
-        if codex_seal_notice(action, host):
-            trust_notice = _codex_seal_notice(decision)
-            if trust_notice:
-                notice += '\n' + trust_notice
         if host == 'hermes':
             return {'status': 'bundle_upgrade_pending', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
@@ -2770,8 +2646,7 @@ def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top
                          vector_fallback, allow_mixed_generation):
     """Selector, trace, learning capture, recheck and render of verified rows.
 
-    Shared by the v6 recall and the journal-selected schema3 endpoint, so
-    both leave the same context and event fields. ``still_current(chosen)``
+    ``still_current(chosen)``
     is the store's own proof/view recheck after selection.
     """
     chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
@@ -2803,30 +2678,11 @@ def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top
 
 
 def _reselect(cwd, action):
-    """The hook's second route read, waiting out a state-move window.
-
-    It must equal the classified decision, or be exactly that install after a
-    state move landed between the two reads (``_relocated``).
-    """
     decision = select_route(cwd, action=action)
-    if decision.get('state') == 'blocked':
-        if action == 'recall':
-            from laya_index_host_route import select_route_settled
-            return select_route_settled(cwd, action=action)
-        from laya_index_host_route import _settle_moves
-        decision = _settle_moves(cwd, action, decision)
+    if decision.get('state') == 'blocked' and action == 'recall':
+        from laya_index_host_route import select_route_settled
+        return select_route_settled(cwd, action=action)
     return decision
-
-
-def _relocated(selection, decision):
-    """``decision`` is ``selection`` after a state-root or project folder move."""
-    try:
-        import laya_project_dir_move
-        import laya_state_move
-        return (laya_state_move.relocated_decision(selection, decision) or
-                laya_project_dir_move.relocated_decision(selection, decision))
-    except Exception:
-        return False
 
 
 _UPGRADE_NOTICES = {
@@ -2897,7 +2753,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             _fail("selected_route_unavailable")
         decision = _reselect(cwd, action)
-        if decision != selection and not _relocated(selection, decision):
+        if decision != selection:
             if (action == 'recall' and decision.get('state') == 'reader' and
                     decision.get('projectRoot') == _decision_project_root(selection)):
                 reader_attempt = True

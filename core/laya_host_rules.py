@@ -64,10 +64,6 @@ def is_session(action):
     return action in ('update', 'update-queued')
 
 
-def codex_seal_notice(action, host):
-    return action == 'update-queued' and host == 'claude'
-
-
 def discovery_grant_kind(has_roots, action):
     if not has_roots or action == 'index':
         return None

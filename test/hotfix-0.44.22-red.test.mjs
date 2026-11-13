@@ -6,13 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const cases = [
-  ['switch budget', 'laya-shadow-switch-checks.py', 'ShadowSwitchChecks.test_10_switch_proof_budget_is_thirty_seconds'],
-  ['switch rehearsal', 'laya-shadow-switch-checks.py', 'ShadowSwitchChecks.test_11_rehearsal_reports_gates_without_any_persistent_write'],
   ['resident starvation', 'laya-resident-service-checks.py', 'ServiceChecks.test_drift_reproof_yields_to_loading_full_proof'],
   ['progress retry', 'runtime-wake-policy-checks.py', 'PolicyDecisions.test_sync_durable_progress_retries_without_counting_only_new_details'],
   ['ingest progress', 'laya-schema3-sync-publish-checks.py', 'Schema3SyncPublishChecks.test_ingest_pending_detail_requires_committed_progress'],
-  ['Codex notice', 'laya-host-response-checks.py', 'ResponseChecks.test_codex_seal_is_announced_once_in_claude_session_start'],
-  ['Codex notice during drift', 'laya-host-response-checks.py', 'BundleDriftChecks.test_claude_drift_session_includes_pending_codex_seal_notice'],
 ];
 for (const [name, file, method] of cases) {
   test(name, () => {
