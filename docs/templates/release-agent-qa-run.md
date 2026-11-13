@@ -110,12 +110,8 @@ Exact trust scope (one row per host; no wildcard or "trust all"):
 | RQA-ID-00 | Codex | NOT RUN | | | 15 min | | |
 | RQA-INST-01 | Claude | NOT RUN | | | 45 min | | |
 | RQA-INST-01 | Codex | NOT RUN | | | 45 min | | |
-| RQA-INST-02 | Claude | NOT RUN | | | 60 min | | |
-| RQA-INST-02 | Codex | NOT RUN | | | 60 min | | |
 | RQA-INST-03 | Claude | NOT RUN | | | 20 min | | |
 | RQA-INST-03 | Codex | NOT RUN | | | 20 min | | |
-| RQA-INST-04 | Claude | NOT RUN | | | 60 min | | |
-| RQA-INST-04 | Codex | NOT RUN | | | 60 min | | |
 | RQA-HOOK-01 | Claude | NOT RUN | | | 45 min | | |
 | RQA-HOOK-02 | Codex | NOT RUN | | | 45 min | | |
 | RQA-SYNC-01 | Claude | NOT RUN | | | 45 min | | |
