@@ -1,5 +1,6 @@
-"""Internal read-only adapter for the inactive schema3 candidate."""
+"""Internal read-only adapter for the selected view."""
 import copy
+from dataclasses import dataclass
 from contextlib import contextmanager
 from contextvars import ContextVar
 import math
@@ -8,13 +9,20 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from types import MappingProxyType
-import weakref
 
 import laya_journal_reader as journal
-from laya_v6_reader import ReaderResult
 
-_candidates=weakref.WeakKeyDictionary()
+@dataclass(frozen=True)
+class ReaderResult:
+    store_format: str
+    endpoint_id: str
+    reader_epoch: int
+    data_generation: str
+    rows: list
+    semantic_status: str
+    title_only: frozenset
+    source_locations: dict
+
 _approved_vectors=ContextVar('schema3_approved_vectors',default=())
 _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch','provider_result_invalid',
     'provider_socket_invalid','provider_socket_changed','provider_text_invalid','provider_timeout_invalid',
@@ -164,122 +172,14 @@ def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline
         _approved_vectors.reset(token)
 
 
-def _issue_candidate(path, *, repository, scope_id, worktree_id, checkout, deadline):
-    """Issue an in-process candidate descriptor, without production authority."""
-    from laya_view_store import ViewStore
-    path=Path(path)
-    checkout=Path(checkout)
-    if not path.is_absolute() or not checkout.is_absolute() or time.monotonic()>=deadline:
-        raise ValueError('reader_endpoint_invalid')
-    repository=copy.deepcopy(repository)
-    store=ViewStore.open_reader(path,repository=repository,scope_id=scope_id,deadline=deadline)
-    try:
-        handle=store.capture_view(worktree_id,deadline=deadline)
-        capture=store._handles[handle.token]['capture']
-        if capture['projectRoot']!=str(checkout):
-            raise ValueError('reader_checkout_changed')
-        pin=store.pin_view(handle,deadline=deadline)
-        try:
-            vector=store._pinned(pin)['vector']
-            record=dict(store_format='schema3',capability='schema3-ro-v1',
-                        checkout=str(checkout),worktree=worktree_id,scope=scope_id,
-                        path=str(path),view=pin.view_id,generation=pin.gen_id,
-                        incarnation=pin.incarnation,checkout_digest=handle.checkout_digest,
-                        vector_profile=None if vector is None else vector['profile_id'],
-                        vector_recipe=None if vector is None else vector['recipe_id'])
-        finally:
-            store.release(pin)
-    finally:
-        store.close()
-    endpoint=object.__new__(journal.VerifiedEndpoint)
-    packed=journal._raw(record)
-    object.__setattr__(endpoint,'endpoint_id',journal._sha(b'memvane-schema3-reader-v1\0'+packed))
-    object.__setattr__(endpoint,'record',MappingProxyType(record))
-    _candidates[endpoint]=(repository,packed)
-    return endpoint
-
-
 def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
                    snapshot=None, decision=None, provider=None, authority=None, linked=None):
-    """Read a pinned v6 snapshot or a verified inactive candidate checkout.
-
-    ``linked`` (a ``worktree`` route decision) reads that linked worktree's
-    own view of a journal-selected schema3 endpoint; any other endpoint
-    refuses it.
-    """
-    from laya_view_store import ViewStore
-    if type(endpoint) is not journal.VerifiedEndpoint:
+    """Read the journal-selected view for this checkout."""
+    if not _persisted_schema3(endpoint):
         raise ValueError('reader_endpoint_not_issued')
-    if endpoint in journal._issued and endpoint.record.get('store_format')=='schema3':
-        return _query_persisted_schema3(endpoint,checkout=checkout,prompt=prompt,query_vector=query_vector,
-            deadline=deadline,snapshot=snapshot,decision=decision,provider=provider,authority=authority,
-            linked=linked)
-    if linked is not None:
-        raise ValueError('reader_endpoint_invalid')
-    if endpoint in journal._issued:
-        if (endpoint.record.get('store_format')!='v6' or snapshot is None or decision is None or query_vector is not None
-                or Path(checkout)!=Path(endpoint.record['project'])):
-            raise ValueError('reader_endpoint_invalid')
-        from laya_v6_reader import query_v6_snapshot
-        return query_v6_snapshot(snapshot,endpoint=endpoint,prompt=prompt,decision=decision,
-                                 provider=provider,deadline=deadline)
-    saved=_candidates.get(endpoint)
-    if saved is None:
-        raise ValueError('reader_endpoint_not_issued')
-    repository,packed=saved
-    record=endpoint.record
-    if (journal._raw(dict(record))!=packed
-            or endpoint.endpoint_id!=journal._sha(b'memvane-schema3-reader-v1\0'+packed)
-            or Path(checkout)!=Path(record['checkout'])
-            or time.monotonic()>=deadline):
-        raise ValueError('reader_endpoint_changed')
-    if query_vector is not None:
-        from laya_view_vectors import query_values
-        query_values(query_vector)
-        valid=[entry for entry in _approved_vectors.get()
-               if entry[0] is authority and entry[1] is snapshot and entry[2]==decision
-               and entry[3] is provider and entry[4]==prompt and entry[5]==tuple(query_vector)
-               and entry[8][0] and time.monotonic()<entry[6]]
-        if not valid:
-            raise ValueError('reader_vector_caller_unproved')
-        if (authority.record['project']!=record['checkout']
-                or authority.record['scope']!=record['scope']):
-            raise ValueError('reader_vector_caller_unproved')
-        deadline=min(deadline,valid[-1][6])
-    store=ViewStore.open_reader(record['path'],repository=repository,scope_id=record['scope'],deadline=deadline)
-    try:
-        handle=store.capture_view(record['worktree'],deadline=deadline)
-        if handle.checkout_digest!=record['checkout_digest']:
-            raise ValueError('reader_checkout_changed')
-        pin=store.pin_view(handle,deadline=deadline)
-        try:
-            if (pin.view_id,pin.gen_id,pin.incarnation)!=(record['view'],record['generation'],record['incarnation']):
-                raise ValueError('reader_endpoint_changed')
-            vector=store._pinned(pin)['vector']
-            if ((None if vector is None else vector['profile_id'])!=record['vector_profile'] or
-                    (None if vector is None else vector['recipe_id'])!=record['vector_recipe']):
-                raise ValueError('reader_endpoint_changed')
-            if query_vector is not None:
-                proof=_vector_proof(authority,snapshot,decision,provider,deadline)
-                if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)
-                        or proof!=valid[-1][7]):
-                    raise ValueError('reader_vector_caller_unproved')
-            left=min(30,deadline-time.monotonic())
-            if left<=0:raise ValueError('reader_snapshot_deadline')
-            result=store.search_hybrid(pin,prompt,query_vector,10,deadline_seconds=left)
-            if time.monotonic()>=deadline:
-                raise ValueError('reader_snapshot_deadline')
-            if query_vector is not None and _vector_proof(authority,snapshot,decision,provider,deadline)!=proof:
-                raise ValueError('reader_vector_caller_unproved')
-            rows=list(result['lexical'])
-            paths={row['path'] for row in rows}
-            rows.extend(row for row in result['semantic'] if row['path'] not in paths)
-            return ReaderResult('schema3',endpoint.endpoint_id,pin.epoch,pin.gen_id,
-                                rows[:10],result['semantic_status'],frozenset(),{})
-        finally:
-            store.release(pin)
-    finally:
-        store.close()
+    return _query_persisted_schema3(endpoint, checkout=checkout, prompt=prompt,
+        query_vector=query_vector, deadline=deadline, snapshot=snapshot,
+        decision=decision, provider=provider, authority=authority, linked=linked)
 
 
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
@@ -324,7 +224,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
             raise ValueError('reader_vector_caller_unproved')
         deadline=min(deadline,valid[-1][6])
     from laya_host_response import (HYBRID_LIST_LIMIT, _fuse_verified_lists, _hybrid_fts_queries,
-                                    _fail, merge_incremental_rows)
+                                    _fail)
     from laya_index_host_route import wiki_index_roots
     from laya_index_source_port import auxiliary_wiki_row
     from laya_blob_values import BlobStoreError
@@ -349,22 +249,6 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
             with store._reading(time.monotonic()+left()) as db:
                 saved=db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
                                  (handle.worktree_id,)).fetchone()
-                if store._rows:
-                    # Row format: the pinned head generation says whether a sidecar corpus is present.
-                    paired=bool(store._pinned(pin)['verified']['generation']['sidecar_present'])
-                else:
-                    legacy=store._read_pinned(db,pin,time.monotonic()+left())[3].get('legacy',{})
-                    paired='sidecar_corpus' in legacy
-            # A migration head imported while a completed v6 sidecar shadowed its
-            # base keeps both sealed FTS corpora (paired); every active card is in
-            # exactly one. Each corpus is fused on its own and the two are merged
-            # by the v6 incremental merge rule (merge_incremental_rows).
-            origins=True if paired else None
-            # The migration prepares that head without a vector spec (lexical
-            # only); vectors arrive with the next ordinary schema3 generation.
-            if origins is not None and vector is not None:
-                raise ValueError('migration_vector_spec_invalid')
-
             def rooted(source):
                 if linked is None:
                     return str(Path(source))
@@ -388,10 +272,8 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                     answer.append({'scope':decision['scopeId'],'generation':pin.gen_id,'path':full,
                                    'hash':row['blob_sha'],'body':row['body'],'score':row['score']})
                 return answer
-            lexical={origin:[shaped(store.search(pin,query,HYBRID_LIST_LIMIT,deadline_seconds=left(),
-                                                 **({} if origin is None else {'_legacy_origin':origin})))
-                             for query in queries]
-                     for origin in ((None,) if origins is None else ('base','sidecar'))}
+            lexical=[shaped(store.search(pin, query, HYBRID_LIST_LIMIT, deadline_seconds=left()))
+                     for query in queries]
             status='provider_absent' if query_vector is None else 'lexical_only' if vector is None else 'complete'
             nearest=None
             if semantic:
@@ -406,8 +288,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
 
             def fused(lists):
                 return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
-            rows=(fused(lexical[None]+([] if nearest is None else [nearest])) if origins is None
-                  else merge_incremental_rows(fused(lexical['sidecar']),fused(lexical['base'])))
+            rows=fused(lexical+([] if nearest is None else [nearest]))
             spans=store.card_locations(pin,[row['path'][len(name)+1:] for row in rows],
                                        deadline_seconds=left())
             if time.monotonic()>=deadline:
