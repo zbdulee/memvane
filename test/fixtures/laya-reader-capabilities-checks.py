@@ -280,7 +280,7 @@ class VectorCapabilityChecks(vector_fixture.VectorCase):
                 self.calls.append((kind,text,timeout))
                 if self.failure is not None:raise self.failure
                 return [1.0,0.0,0.0]
-        provider_module=importlib.import_module('laya_local_embed_provider')
+        provider_module=importlib.import_module('memvane.provider.adapters.local_embed_provider')
         with seed.authority(),seed.lease.resolve_endpoint(self.root,action='recall',host_root=seed.case.plugin) as authority:
             decision=seed.reader.journal.select_route(str(self.root),action='recall')
             with opens.inspect_warm_snapshot(authority,deadline=time.monotonic()+10) as observed:

@@ -136,7 +136,7 @@ class _BuildWriterContext:
         import laya_runtime_dispatch as dispatch
         from laya_install_journal import _attestation, _v1_provider_manifest, inspect_journal
         from memvane.store.view_store import ViewStore
-        from laya_store_primitives import _query_only_uri
+        from memvane.kernel.errors import _query_only_uri
         import sqlite3
         from contextlib import closing
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread()

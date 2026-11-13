@@ -113,7 +113,7 @@ class _SealedManifestMismatch(Exception):
 
 
 def _is_sealed_manifest_stale(exc: BaseException) -> bool:
-    from laya_store_primitives import IndexContractError
+    from memvane.kernel.errors import IndexContractError
     return (type(exc) is IndexContractError and str(exc) == 'index_stale'
             and type(exc.__cause__) is _SealedManifestMismatch)
 
@@ -444,7 +444,7 @@ _TRACE: contextvars.ContextVar = contextvars.ContextVar('memvane_event_trace', d
 
 def _refusal_code(exc: BaseException) -> str:
     """Fixed refusal code of a hook failure; never a path, body or secret."""
-    from laya_store_primitives import IndexContractError
+    from memvane.kernel.errors import IndexContractError
     from laya_install_journal import JournalEvidenceError
     bounded_reader = (type(exc) is IndexContractError and str(exc) in (
         'vector_deadline_exceeded', 'vector_budget_exceeded',
@@ -601,7 +601,7 @@ def _fts_atom(term: str) -> str:
         _fail("invalid_lexical_term")
     # QMD's porter unicode61 index spaces CJK runs by character. A compound
     # term becomes an adjacent phrase; a plain term retains prefix matching.
-    from laya_store_primitives import _qmd_fts_text
+    from memvane.kernel.errors import _qmd_fts_text
     cjk = any(_qmd_fts_text(ch) != ch for ch in term)
     parts = []
     current = []
@@ -945,7 +945,7 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     try:
         _failure_decision(proof['providerManifest'])
     except Exception as exc:
-        from laya_store_primitives import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         from memvane.kernel.resource_deferred import ResourceDeferred
         if type(exc) is IndexContractError and str(exc) == 'provider_start_failed':
             _fail('selected_provider_start_failed')
@@ -1011,7 +1011,7 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
     if not isinstance(path, str) or os.path.lexists(path):
         return None
     from laya_embed_resident import ensure_running
-    from laya_store_primitives import IndexContractError
+    from memvane.kernel.errors import IndexContractError
     from memvane.kernel.resource_deferred import ResourceDeferred
     try:
         ensure_running(decision['projectRoot'], manifest)
@@ -1272,8 +1272,8 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     from memvane.settings import config
     from memvane.journal import journal_reader as reader
     import laya_reader_dispatch as dispatch
-    from laya_store_primitives import IndexContractError
-    from laya_local_embed_provider import ReviewedLocalQmdProvider
+    from memvane.kernel.errors import IndexContractError
+    from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     degraded = main_proof is None
     _recall_epoch(proof)
     _trace_fields(store_format='schema3', reader_endpoint=endpoint.endpoint_id)

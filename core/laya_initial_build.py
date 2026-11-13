@@ -12,7 +12,7 @@ import stat
 import tempfile
 import time
 
-from laya_store_primitives import IndexContractError
+from memvane.kernel.errors import IndexContractError
 
 SCHEMA = 'laya-initial-build-v1'
 POINTER_SCHEMA = 'laya-initial-build-pointer-v1'

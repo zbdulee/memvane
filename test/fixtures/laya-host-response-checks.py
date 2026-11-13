@@ -97,7 +97,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
     from memvane.recall import keywords
     import laya_install_journal
     import laya_index_runtime
-    import laya_local_embed_provider
+    from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
     import laya_index_source_port as source_port
     import runtime_work
     calls = [] if provider_calls is None else provider_calls
@@ -215,7 +215,7 @@ class ResponseChecks(unittest.TestCase):
         from contextlib import nullcontext
         import laya_install_journal
         import laya_index_runtime
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import laya_embed_resident
         from memvane.settings import config
         from memvane.kernel.resource_deferred import ResourceDeferred
@@ -1444,7 +1444,7 @@ class ResponseChecks(unittest.TestCase):
         # A legacy v1 candidate cannot bypass the required published-wiki selector.
         import laya_install_journal
         import laya_index_runtime
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from memvane.settings import config
         import runtime_work
         from contextlib import nullcontext
@@ -1692,7 +1692,7 @@ class BundleDriftChecks(unittest.TestCase):
         from contextlib import ExitStack, nullcontext
         from memvane.settings import config
         import laya_index_runtime
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from laya_index_a import IndexContractError
 
         def cold_provider(_text, _profile):
@@ -1985,7 +1985,7 @@ class ProofRetryChecks(unittest.TestCase):
         import laya_incremental_docs_query
         import laya_install_journal
         import laya_index_runtime
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import runtime_work
         calls = {'query': []}
         digest = hashlib.sha256(self.BODY.encode('utf-8')).hexdigest()

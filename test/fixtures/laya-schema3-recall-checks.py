@@ -204,7 +204,7 @@ class Schema3RecallChecks(unittest.TestCase):
     def test_02_unsealed_view_and_admission_refusal_serve_lexical_with_named_fallback(self):
         self.u10.switched()
         resident = importlib.import_module('laya_embed_resident')
-        embed = importlib.import_module('laya_local_embed_provider')
+        embed = importlib.import_module('memvane.provider.adapters.local_embed_provider')
 
         class UsableManifest:
             # Synthetic: the sealed manifest constructs a provider. It is never
@@ -347,7 +347,7 @@ class Schema3RecallChecks(unittest.TestCase):
 
     # ---- hot rollback journal ----------------------------------------------
     def test_07_hot_journal_refuses_recall_with_recovery_reason_and_offers_sync(self):
-        from laya_store_primitives import _query_only_uri
+        from memvane.kernel.errors import _query_only_uri
         import runtime_work
         case = self.case
         self.u10.switched()

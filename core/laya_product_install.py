@@ -241,8 +241,8 @@ def review_local_provider(*, plugin_root, state_root,
     """
     import platform
     import laya_embed_runtime
-    from laya_vector_primitives import profile_identity
-    from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
+    from memvane.provider.domain.profile import profile_identity
+    from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                            _hash_file, recipe_fingerprint)
     from laya_product_bundle import _read, MAX_FILE, _canonical
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
@@ -262,8 +262,8 @@ def review_local_provider(*, plugin_root, state_root,
             (state.parent != memvane_paths.installs_base() or
              not re.fullmatch(r'[0-9a-f]{32}', state.name))):
         _fail('unsupported_state_root_creation')
-    provider_files = ('core/laya_local_embed_provider.py',
-                      'core/laya_local_embed_worker.mjs')
+    provider_files = ('memvane/provider/adapters/local_embed_provider.py',
+                      'memvane/provider/adapters/laya_local_embed_worker.mjs')
     artifacts = {}
     for name in provider_files:
         installed, _ = _read(root / name, MAX_FILE)
@@ -299,8 +299,8 @@ def review_local_provider(*, plugin_root, state_root,
                                              runtime['moduleEntrySha256']):
         _fail('provider_review_laya_embed_runtime_corrupt')
     closure_sha = hashlib.sha256(_canonical(closure)).hexdigest()
-    provider_sha = artifacts['core/laya_local_embed_provider.py']
-    worker_sha = artifacts['core/laya_local_embed_worker.mjs']
+    provider_sha = artifacts['memvane/provider/adapters/local_embed_provider.py']
+    worker_sha = artifacts['memvane/provider/adapters/laya_local_embed_worker.mjs']
     model_id = DEFAULT_EMBED_MODEL_URI
     runtime_id = runtime['runtimeId']
     fingerprint = recipe_fingerprint(
@@ -317,12 +317,12 @@ def review_local_provider(*, plugin_root, state_root,
                'dimension': dimension, 'metric': 'cosine',
                'approvedProviderId': approved_id,
                'providerArtifactSha256': provider_sha,
-               'providerRelativePath': 'core/laya_local_embed_provider.py'}
+               'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py'}
     manifest = {'approvedProviderId': approved_id,
                 'providerArtifactSha256': provider_sha,
                 'providerRelativePath': profile['providerRelativePath'],
                 'providerPath': str(root / profile['providerRelativePath']),
-                'workerPath': str(root / 'core/laya_local_embed_worker.mjs'),
+                'workerPath': str(root / 'memvane/provider/adapters/laya_local_embed_worker.mjs'),
                 'workerSha256': worker_sha,
                 'serviceSocketPath': str(socket_path),
                 'nodePath': str(node), 'nodeSha256': node_sha,
@@ -418,7 +418,7 @@ def _create_v1_store(project_root, state_root, scope_id):
     path = state / 'store.sqlite'
     if path.exists() or path.is_symlink():
         from contextlib import closing
-        from laya_store_primitives import _query_only_uri
+        from memvane.kernel.errors import _query_only_uri
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
@@ -599,7 +599,7 @@ def finalize_initial_build(*, project_root, state_root):
                 decision = sync.select_route(str(project), action='recall')
                 if decision.get('state') != 'preview':
                     _fail('initial_build_route_changed')
-                from laya_store_primitives import _query_only_uri
+                from memvane.kernel.errors import _query_only_uri
                 with closing(sqlite3.connect(_query_only_uri(Path(identity['storePath'])), uri=True)) as db:
                     db.execute('PRAGMA query_only=ON')
                     meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()

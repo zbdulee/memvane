@@ -181,7 +181,7 @@ class Checks(unittest.TestCase):
     def serve(self, *, chosen):
         """The real selected recall entry with only provider/runtime faked."""
         import laya_index_runtime
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import laya_embed_resident
         import laya_incremental_docs_query
         rows = self.laya.rows()

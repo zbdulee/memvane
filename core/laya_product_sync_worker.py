@@ -20,7 +20,7 @@ import time
 from memvane.kernel.resource_deferred import ResourceDeferred
 from context_learning.resource_coordination import Coordinator
 from context_learning.shared import resource_report
-from laya_store_primitives import IndexContractError
+from memvane.kernel.errors import IndexContractError
 from laya_index_host_route import (select_route, selected_collection_roots,
                                    wiki_index_roots)
 from memvane.sync.source_scan import _collection_roots
@@ -29,8 +29,8 @@ from laya_install_journal import (JournalEvidenceError, cas_mark_new_write, insp
                                   preflight_product_candidate,
                                   verify_selected_route_for_write as verify_selected_route,
                                   verify_worker_attestation)
-from laya_local_embed_provider import ReviewedLocalQmdProvider
-from laya_local_embed_service import start_owned_embed_service
+from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
+from memvane.provider.adapters.local_embed_service import start_owned_embed_service
 
 # A conservative cold-start proxy, not a measured GGUF/native peak. The
 # installed-candidate resource QA must measure and review this envelope.

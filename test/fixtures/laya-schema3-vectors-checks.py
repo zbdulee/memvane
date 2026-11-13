@@ -150,7 +150,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
     @contextmanager
     def query_vector(self, endpoint, decision, prompt, vector):
         """The reader's approved query vector, with the warm provider call injected."""
-        provider_module = importlib.import_module('laya_local_embed_provider')
+        provider_module = importlib.import_module('memvane.provider.adapters.local_embed_provider')
         record, _raw, proof = self.R._recheck(endpoint)
         provider = object.__new__(provider_module.ReviewedLocalQmdProvider)
         profile = proof['vectorProfile']
@@ -800,7 +800,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
             return True
         decision = self.J.select_route(str(self.case.project), action='recall')
         payload = {'cwd': str(self.case.project), 'prompt': 'kestrelprobe', 'session_id': 'drift-probe'}
-        provider_module = importlib.import_module('laya_local_embed_provider')
+        provider_module = importlib.import_module('memvane.provider.adapters.local_embed_provider')
         resident = importlib.import_module('laya_embed_resident')
         def degraded_recall():
             with self.seed.authority(), \

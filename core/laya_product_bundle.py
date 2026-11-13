@@ -127,7 +127,7 @@ def validate_vector_profile(profile, artifacts):
     provider_id = profile['approvedProviderId']
     if (type(profile['profileId']) is not str or profile['profileId'] != derived or
             type(provider_id) is not str or not PROVIDER_ID.fullmatch(provider_id) or
-            type(relative) is not str or not relative.startswith('core/') or
+            type(relative) is not str or not relative.startswith('memvane/provider/adapters/') or
             not relative.endswith('.py') or
             Path(relative).is_absolute() or '\\' in relative or
             any(part in ('', '.', '..') for part in relative.split('/')) or
@@ -261,7 +261,7 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
     relative = profile['providerRelativePath']
     expected_provider_path = str(root / relative)
     if (provider['providerPath'] != expected_provider_path or
-            provider['workerPath'] != str(root / 'core' / 'laya_local_embed_worker.mjs') or
+            provider['workerPath'] != str(root / 'memvane/provider/adapters/laya_local_embed_worker.mjs') or
             provider['providerRelativePath'] != relative or
             provider['providerArtifactSha256'] != profile['providerArtifactSha256'] or
             provider['approvedProviderId'] != profile['approvedProviderId'] or
@@ -322,8 +322,8 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
             raise BundleEvidenceError('production_runtime_files_mismatch') from exc
         if type(sealed) is not str or not SHA.fullmatch(sealed) or observed != sealed:
             _fail('production_runtime_files_mismatch')
-    from laya_local_embed_provider import recipe_fingerprint
-    from laya_vector_primitives import profile_identity
+    from memvane.provider.adapters.local_embed_provider import recipe_fingerprint
+    from memvane.provider.domain.profile import profile_identity
     try:
         fingerprint = recipe_fingerprint(
             model_id=provider['modelId'], model_sha256=provider['modelSha256'],
@@ -478,15 +478,15 @@ def _plugin_paths(source, commit_id, *, required_paths=None):
     except UnicodeError as exc:
         raise BundleEvidenceError('invalid_commit_path') from exc
     required = ({'hooks/run-hook', 'memvane/sync/source_scan.py',
-                 'core/laya_local_embed_provider.py',
-                 'core/laya_local_embed_service.py',
-                 'core/laya_local_embed_worker.mjs',
-                 'core/laya_qmd_chunking.mjs',
+                 'memvane/provider/adapters/local_embed_provider.py',
+                 'memvane/provider/adapters/local_embed_service.py',
+                 'memvane/provider/adapters/laya_local_embed_worker.mjs',
+                 'memvane/provider/adapters/laya_qmd_chunking.mjs',
                  'core/laya_index_host_route.py', 'core/laya_host_response.py',
                  'core/laya_initial_build.py',
                  'core/laya_product_sync_worker.py',
-                 'memvane/sync/sync_owner_lock.py', 'core/laya_store_primitives.py',
-                 'core/laya_vector_primitives.py',
+                 'memvane/sync/sync_owner_lock.py', 'memvane/kernel/errors.py',
+                 'memvane/provider/domain/profile.py',
                  'core/laya_product_install.py',
                  'core/laya_product_bundle.py', 'core/laya_install_journal.py',
                  'hermes_adapter/core_bridge.py', 'plugin.yaml',
@@ -868,15 +868,15 @@ def inspect_full_plugin_candidate(plugin_root):
     profile = validate_vector_profile(manifest.get('vectorProfile'),
                                       manifest['artifacts'])
     if (not {'hooks/run-hook', 'memvane/sync/source_scan.py',
-             'core/laya_local_embed_provider.py',
-             'core/laya_local_embed_service.py',
-             'core/laya_local_embed_worker.mjs',
-             'core/laya_qmd_chunking.mjs',
+             'memvane/provider/adapters/local_embed_provider.py',
+             'memvane/provider/adapters/local_embed_service.py',
+             'memvane/provider/adapters/laya_local_embed_worker.mjs',
+             'memvane/provider/adapters/laya_qmd_chunking.mjs',
              'core/laya_index_host_route.py', 'core/laya_host_response.py',
              'core/laya_initial_build.py',
              'core/laya_product_sync_worker.py',
-             'memvane/sync/sync_owner_lock.py', 'core/laya_store_primitives.py',
-             'core/laya_vector_primitives.py',
+             'memvane/sync/sync_owner_lock.py', 'memvane/kernel/errors.py',
+             'memvane/provider/domain/profile.py',
              'core/laya_product_install.py',
              'core/laya_product_bundle.py', 'core/laya_install_journal.py',
              'hermes_adapter/core_bridge.py', 'plugin.yaml',

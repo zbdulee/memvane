@@ -292,7 +292,7 @@ class ServeRuntimeTests(unittest.TestCase):
         from memvane.settings import config
         import laya_index_runtime
         import laya_install_journal
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         # Runtime argument checks use a synthetic provider, not OS admission.
         with mock.patch.object(laya_install_journal, 'verify_selected_route',
                                return_value=proof), \
@@ -322,7 +322,7 @@ class ServeRuntimeTests(unittest.TestCase):
         from memvane.settings import config
         import laya_index_runtime
         import laya_install_journal
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import runtime_work
         with tempfile.TemporaryDirectory(prefix='laya-host-refusal-') as raw:
             project = Path(raw).resolve()

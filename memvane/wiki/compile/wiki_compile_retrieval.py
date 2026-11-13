@@ -191,7 +191,7 @@ def lexical_probe(text: str, deadline: float):
     The exact-overlap fast path needs no SQL; this probe preserves Korean
     suffix normalization and English Porter/prefix hits when vectors are cold.
     """
-    from laya_store_primitives import IndexContractError, _qmd_fts_text
+    from memvane.kernel.errors import IndexContractError, _qmd_fts_text
     db = sqlite3.connect(':memory:')
     try:
         db.execute("CREATE VIRTUAL TABLE probe USING fts5(body, tokenize='porter unicode61')")
@@ -352,7 +352,7 @@ def refresh(db, wiki_fd, bound, wiki, deadline):
                    (rel, files[rel], live[1] if live else ''))
         if live and live[2] == files[rel] and card_sources_allowed(
                 live[0], decision['recallSettings']['skipPaths']):
-            from laya_store_primitives import _qmd_fts_text
+            from memvane.kernel.errors import _qmd_fts_text
             db.execute('INSERT INTO search VALUES (?, ?)',
                        (rel, _qmd_fts_text(meaningful(live[0]))))
         refreshed += 1
@@ -390,8 +390,8 @@ def overlay_paths(db, text, deadline, exclusions, name):
 def query_provider(bound):
     """Only ask an already warm reviewed provider; no model is started here."""
     import laya_host_response as response
-    from laya_store_primitives import IndexContractError
-    from laya_local_embed_provider import ReviewedLocalQmdProvider
+    from memvane.kernel.errors import IndexContractError
+    from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     from laya_embed_resident import admit_query
     provider = ReviewedLocalQmdProvider(bound[1]['providerManifest'])
     try:
@@ -490,7 +490,7 @@ def _schema3_cosines(bound, record, current, text, generation):
             profile = store._profile(vector['profile_id'])
         if not _approved_profile_matches(profile, current):
             return {}
-        from laya_store_primitives import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         try:
             answer = query_provider(bound)(text, current['vectorProfile'])
         except (response._VectorUnavailable, IndexContractError):

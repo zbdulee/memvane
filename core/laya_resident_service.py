@@ -93,7 +93,7 @@ _BUNDLE = None
 
 
 def _fail(code):
-    from laya_store_primitives import IndexContractError
+    from memvane.kernel.errors import IndexContractError
     raise IndexContractError(code)
 
 
@@ -737,10 +737,10 @@ def default_admit():
 
 
 def default_start_worker(manifest, admit):
-    from laya_local_embed_provider import _hash_file
-    from laya_local_embed_service import start_owned_embed_service
-    root = Path(__file__).resolve().parent
-    provider, worker = root / 'laya_local_embed_provider.py', root / 'laya_local_embed_worker.mjs'
+    from memvane.provider.adapters.local_embed_provider import _hash_file
+    from memvane.provider.adapters.local_embed_service import start_owned_embed_service
+    root = Path(__file__).resolve().parent.parent / 'memvane/provider/adapters'
+    provider, worker = root / 'local_embed_provider.py', root / 'laya_local_embed_worker.mjs'
     if (_hash_file(str(provider)) != manifest['providerArtifactSha256']
             or _hash_file(str(worker)) != manifest['workerSha256']):
         _fail('provider_attestation_invalid')
@@ -813,7 +813,7 @@ class Service:
             _socket_ok(path)
             path.unlink()  # only the lease holder removes a stale socket
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        from laya_local_embed_service import bind_private
+        from memvane.provider.adapters.local_embed_service import bind_private
         try:
             bind_private(server, path)
         except BaseException:
@@ -1176,7 +1176,7 @@ class Service:
 
     def _adopt(self, project):
         from laya_embed_resident import _owner_identity, _write_state
-        from laya_local_embed_service import (_private_parent, _remove_stale_socket,
+        from memvane.provider.adapters.local_embed_service import (_private_parent, _remove_stale_socket,
                                               bind_private)
         try:
             decision, proof, mode = self.prove(project)

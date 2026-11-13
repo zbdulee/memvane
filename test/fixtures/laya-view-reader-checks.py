@@ -317,7 +317,7 @@ class ReaderChecks(helpers.GenerationCase):
         self.refused(store.search,pin,'hello',1)
 
     def test_13_cjk_bm25_matches_reference_fts(self):
-        import laya_store_primitives as legacy
+        from memvane.kernel import errors as legacy
         store,_,h=self.seeded();m=self.snapshot(store,h)
         texts={'public/한글.md':('# 한글 제목\n한글 검색 내용\n','한글 제목'),
                'public/second.md':('# Other\n한글 한글 검색\n','Other')}

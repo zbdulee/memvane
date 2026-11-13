@@ -595,7 +595,7 @@ class V2WorkerChecks(unittest.TestCase):
     @contextmanager
     def hook_world(self):
         import laya_install_journal
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import laya_bundle_upgrade
         from context_learning import seam,live_select
         real_queue=runtime_work.WakeQueue

@@ -163,7 +163,7 @@ def _readonly(path, state, *, recover=False):
         if os.path.lexists(side):
             _file(side, state)
     try:
-        from laya_store_primitives import _query_only_uri
+        from memvane.kernel.errors import _query_only_uri
         uri = Path(path).as_uri() + '?mode=rw' if recover else _query_only_uri(path)
         with closing(sqlite3.connect(uri, uri=True,
                                      timeout=2, isolation_level=None)) as db:

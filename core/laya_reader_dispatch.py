@@ -32,8 +32,8 @@ _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch',
 _PROVIDER_CHILD='''
 import json,sys
 sys.path.insert(0,sys.argv[1])
-from laya_local_embed_provider import ReviewedLocalQmdProvider
-from laya_store_primitives import IndexContractError
+from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
+from memvane.kernel.errors import IndexContractError
 request=json.load(sys.stdin)
 try:
     value=ReviewedLocalQmdProvider(request['manifest'])._embed('query',request['prompt'],timeout=request['timeout'])
@@ -75,7 +75,7 @@ def _persisted_schema3(endpoint):
 
 def _vector_proof(authority,snapshot,decision,provider,deadline):
     from memvane.journal import reader_lease as leases
-    from laya_local_embed_provider import ReviewedLocalQmdProvider
+    from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline or not _persisted_schema3(authority)
             or type(provider) is not ReviewedLocalQmdProvider or snapshot is not None):
@@ -99,12 +99,12 @@ def _vector_proof(authority,snapshot,decision,provider,deadline):
 
 def _provider_vector(provider,prompt,budget):
     """Use the existing provider in a child with an absolute completion bound."""
-    from laya_store_primitives import IndexContractError
+    from memvane.kernel.errors import IndexContractError
     deadline=time.monotonic()+budget
     payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,
                         'allowed':sorted(_PROVIDER_ERRORS)},
                        ensure_ascii=True,separators=(',',':'))
-    child=subprocess.Popen([sys.executable,'-B','-I','-c',_PROVIDER_CHILD,str(Path(__file__).resolve().parent)],
+    child=subprocess.Popen([sys.executable,'-B','-I','-c',_PROVIDER_CHILD,str(Path(__file__).resolve().parent.parent)],
                            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
         remaining=deadline-time.monotonic()
@@ -138,7 +138,7 @@ def _provider_vector(provider,prompt,budget):
 def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline):
     """Bind one provider result to the live v6 snapshot and calling context."""
     from laya_view_vectors import query_values
-    from laya_store_primitives import IndexContractError
+    from memvane.kernel.errors import IndexContractError
     proof=_vector_proof(authority,snapshot,decision,provider,deadline)
     remaining=min(2,deadline-time.monotonic())
     if remaining<=0:raise ValueError('reader_snapshot_deadline')

@@ -37,7 +37,7 @@ SYNC = load('admission_sync_fixture', 'laya-product-sync-worker-checks.py')
 import laya_embed_resident as owner
 import laya_host_response as response
 import laya_install_journal as journal
-import laya_local_embed_provider as provider
+from memvane.provider.adapters import local_embed_provider as provider
 from context_learning import shared
 
 REAL_ADMIT = owner.admit_query

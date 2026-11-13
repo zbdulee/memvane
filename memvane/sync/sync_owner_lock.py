@@ -7,7 +7,7 @@ from pathlib import Path
 import stat
 import threading
 import time
-from laya_store_primitives import IndexContractError
+from memvane.kernel.errors import IndexContractError
 
 
 def _file_identity(path: Path):

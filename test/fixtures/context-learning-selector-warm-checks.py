@@ -90,7 +90,7 @@ class WarmTests(unittest.TestCase):
 
 class ExactVectorMathTests(unittest.TestCase):
     def test_sums_equal_the_generator_forms_bit_for_bit(self):
-        import laya_vector_primitives as vector
+        from memvane.provider.domain import profile as vector
         rng = random.Random(7)
         for dimension in (3, 384, 768):
             for _ in range(20):
@@ -99,8 +99,8 @@ class ExactVectorMathTests(unittest.TestCase):
                 self.assertEqual(vector._sum_squares(values), math.fsum(v * v for v in values))
 
     def test_non_finite_or_zero_blobs_are_still_refused(self):
-        import laya_vector_primitives as vector
-        from laya_store_primitives import IndexContractError
+        from memvane.provider.domain import profile as vector
+        from memvane.kernel.errors import IndexContractError
         for bad in (float('nan'), float('inf'), float('-inf')):
             with self.assertRaises(IndexContractError):
                 vector._unpack(struct.pack('<3f', 1.0, bad, 0.5), 3)

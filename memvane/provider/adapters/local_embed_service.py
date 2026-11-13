@@ -14,8 +14,8 @@ import stat
 import subprocess
 import time
 
-from laya_store_primitives import IndexContractError
-from laya_local_embed_provider import ReviewedLocalQmdProvider
+from memvane.kernel.errors import IndexContractError
+from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
 
 
 def _private_parent(path):

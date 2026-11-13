@@ -128,8 +128,8 @@ def reattest(old_attestation, reviewed_provider):
 
 def _fingerprint_reproduced(old_manifest, new_manifest, old_profile):
     """New content plus the reviewed closure digest gives the old profile."""
-    from laya_vector_primitives import profile_identity
-    from laya_local_embed_provider import recipe_fingerprint
+    from memvane.provider.domain.profile import profile_identity
+    from memvane.provider.adapters.local_embed_provider import recipe_fingerprint
     try:
         fingerprint = recipe_fingerprint(
             model_id=new_manifest['modelId'], model_sha256=new_manifest['modelSha256'],

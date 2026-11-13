@@ -659,7 +659,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         emit('schema3-sync-removal', removedOne=1, heldRemoval=held['removed'], headUnchanged=True)
 
     def test_12_hot_rollback_journal_is_recovered_by_the_owner_pass(self):
-        from laya_store_primitives import _query_only_uri
+        from memvane.kernel.errors import _query_only_uri
         self.select_schema3()
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
         first, _calls = self.run_pass()

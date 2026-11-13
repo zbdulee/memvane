@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 
 from memvane.kernel.resource_deferred import ResourceDeferred
-from laya_store_primitives import IndexContractError
+from memvane.kernel.errors import IndexContractError
 from laya_embed_resident import (_write_state, admit_query, ensure_running,
                                  read_owner_state, wait_for_release)
 

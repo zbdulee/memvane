@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 
-from laya_store_primitives import IndexContractError
+from memvane.kernel.errors import IndexContractError
 from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
@@ -1598,7 +1598,7 @@ def _worker_attestation_manifest(selected):
 
 def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
     """Verify provider bytes and runtime identity using this plugin copy."""
-    from laya_local_embed_provider import ReviewedLocalQmdProvider, _hash_file
+    from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider, _hash_file
     if (not isinstance(record, dict)
             or set(record) != {'schema', 'journalPath', 'vectorProfile', 'providerManifest',
                                'dependencyClosure', RUNTIME_FILES_FIELD}
@@ -1609,9 +1609,9 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
             or type(record.get(RUNTIME_FILES_FIELD)) is not str
             or not SHA.fullmatch(record[RUNTIME_FILES_FIELD])):
         _fail('worker_attestation_invalid')
-    root = Path(__file__).resolve().parent
+    root = Path(__file__).resolve().parent.parent / 'memvane/provider/adapters'
     manifest = {**record['providerManifest'],
-                'providerPath': str(root / 'laya_local_embed_provider.py'),
+                'providerPath': str(root / 'local_embed_provider.py'),
                 'workerPath': str(root / 'laya_local_embed_worker.mjs')}
     try:
         from memvane.kernel import memvane_paths

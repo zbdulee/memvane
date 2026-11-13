@@ -27,7 +27,7 @@ import laya_active_upgrade as active_upgrade
 prepare_v4_bridge = active_upgrade._prepare_v4_bridge
 import laya_fresh_wiki_origin as fresh_wiki
 import laya_inactive_upgrade as inactive_upgrade
-from laya_local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
+from memvane.provider.adapters.local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
 
 
 def _git(root, *args):

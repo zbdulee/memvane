@@ -63,7 +63,7 @@ class RecoveryChecks(unittest.TestCase):
                 adopt.assert_not_called()
 
     def test_real_worker_path_security_failures_are_terminal(self):
-        import laya_local_embed_service as local
+        from memvane.provider.adapters import local_embed_service as local
         class SyntheticArtifacts:
             def __init__(self, manifest):
                 self.manifest = manifest
@@ -150,7 +150,7 @@ class RecoveryChecks(unittest.TestCase):
 
     def test_private_lock_resource_error_keeps_its_transient_os_code(self):
         import errno
-        import laya_local_embed_service as local
+        from memvane.provider.adapters import local_embed_service as local
         class SyntheticArtifacts:
             def __init__(self, manifest):
                 self.manifest = manifest

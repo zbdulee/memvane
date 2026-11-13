@@ -483,7 +483,7 @@ class ReproofBase(unittest.TestCase):
 
     def setUp(self):
         from laya_index_vector import profile_identity
-        from laya_local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
+        from memvane.provider.adapters.local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
         # Short base: the provider socket path is limited to 100 bytes.
         tmp = tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp')
         self.addCleanup(tmp.cleanup)
@@ -614,7 +614,7 @@ class ProviderReproof(ReproofBase):
         self.validate(self.old_att)
 
     def test_moved_runtime_model_socket_and_closure_reattest_under_old_profile(self):
-        from laya_local_embed_provider import ReviewedLocalQmdProvider
+        from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
         from laya_provider_reproof import attestation_record, reattest
         new, closure, socket = self.moved()
         review = self.review(new, closure, socket)

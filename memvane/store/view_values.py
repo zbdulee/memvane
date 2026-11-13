@@ -12,7 +12,7 @@ import re
 import time
 
 from memvane.store import blob_values as v
-import laya_store_primitives as primitives
+from memvane.kernel import errors as primitives
 
 MAX_MEMBERS = 20000
 MAX_SOURCES = 20000

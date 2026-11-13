@@ -7,7 +7,7 @@ import operator
 import re
 import struct
 import unicodedata
-from laya_store_primitives import IndexContractError
+from memvane.kernel.errors import IndexContractError
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 MAX_DIMENSION = 2048

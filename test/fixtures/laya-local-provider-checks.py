@@ -18,10 +18,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'core'))
 
-from laya_store_primitives import IndexContractError
-from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
+from memvane.kernel.errors import IndexContractError
+from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                        ReviewedLocalQmdProvider, recipe_fingerprint)
-from laya_local_embed_service import start_owned_embed_service
+from memvane.provider.adapters.local_embed_service import start_owned_embed_service
 from laya_embed_resident import probe
 
 
@@ -413,7 +413,7 @@ export async function getLlama() {
 
     def test_worker_and_provider_agree_on_member_refusals(self):
         import re
-        import laya_local_embed_provider
+        from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         source = (Path(__file__).resolve().parents[2] / 'core' /
                   'laya_local_embed_worker.mjs').read_text(encoding='utf-8')
         block = re.search(r'MEMBER_REFUSALS = new Set\(\[(.*?)\]\)', source, re.S).group(1)

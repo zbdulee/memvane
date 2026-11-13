@@ -19,8 +19,8 @@ import stat
 import tempfile
 import time
 
-from laya_store_primitives import IndexContractError
-from laya_local_embed_service import _private_parent
+from memvane.kernel.errors import IndexContractError
+from memvane.provider.adapters.local_embed_service import _private_parent
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 
