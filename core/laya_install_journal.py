@@ -1647,21 +1647,89 @@ def _verify_selected_route(decision, *, dispatch_target=False):
 
 
 
+def _verify_v1_selected(decision):
+    """Reprove the selected v1 journal, route, ledger and provider."""
+    import project_dir
+    from laya_initial_build import read_v1
+    from laya_ledger_common import _private_file, _read_json
+    from memvane_version import same_major
+    if not isinstance(decision, dict) or decision.get('state') != 'candidate':
+        _fail('unselected_host_route')
+    path = _private_parent(decision.get('journalPath'))
+    project = Path(decision.get('projectRoot', ''))
+    route_path = project_dir.runtime_file(project, 'route.json')
+    raw = _private_file(route_path, 8192)
+    route, digest = _route(raw, path)
+    if route.get('schema') != 'memvane-route-v4' or not same_major(route['stateFormat']):
+        _fail('state_format_mismatch')
+    current = select_route(str(project), action='recall')
+    if current != decision:
+        _fail('host_decision_changed')
+    row = inspect_journal(path)
+    build = read_v1(path.parent)
+    if build is None or build['phase'] != 'ready':
+        _fail('initial_build_missing')
+    identity = build['identity']
+    ledger = _read_json(path.parent / 'ledger.json')
+    if (not isinstance(ledger, dict)
+            or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
+            or ledger['schema'] != 'memvane-install-ledger-v1'
+            or type(ledger['epoch']) is not int or ledger['epoch'] < 1
+            or ledger['phase'] != 'selected' or ledger['identity'] != identity
+            or row['state'] != 'selected' or row['reader'] is None
+            or digest != row['routeSha256'] or digest != identity['routeSha256']
+            or row['attestationSha256'] != identity['attestationSha256']
+            or row['projectInode'] != project.stat().st_ino
+            or row['storeInode'] != identity['storeNode'][1]
+            or any(row[key] != identity[key] for key in
+                   ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))
+            or any(decision.get(key) != identity[key] for key in
+                   ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation', 'journalPath'))
+            or row['vectorProfile'] != decision['vectorProfile']):
+        _fail('selected_route_changed')
+    attestation, sha = _attestation(path)
+    if sha != row['attestationSha256']:
+        _fail('worker_attestation_changed')
+    manifest = _v1_provider_manifest(attestation, row['vectorProfile'])
+    if (inspect_journal(path) != row or read_v1(path.parent) != build
+            or _read_json(path.parent / 'ledger.json') != ledger
+            or _private_file(route_path, 8192) != raw
+            or select_route(str(project), action='recall') != decision):
+        _fail('selected_route_changed')
+    return {'status': 'installer_v1_selected_verified', 'productRouteAllowed': True,
+            'journalPath': str(path), 'selectionEpoch': row['epoch'],
+            'projectRoot': str(project), 'installId': row['installId'],
+            'scopeId': row['scopeId'], 'storePath': row['storePath'],
+            'storeIncarnation': row['storeIncarnation'], 'stateFormat': row['stateFormat'],
+            'writerFloor': row['writerFloor'], 'vectorProfile': row['vectorProfile'],
+            'providerManifest': manifest}
+
+
 def verify_selected_route(decision):
     """Full selected-route proof, including the currently executing bundle."""
+    if isinstance(decision, dict) and decision.get('routeSchema') == 'memvane-route-v4':
+        return _verify_v1_selected(decision)
     return _verify_selected_route(decision)
 
 
 def verify_selected_route_for_write(decision, action='update'):
     """Prove the selected route before a write."""
-    return verify_selected_route(decision)
+    proof = verify_selected_route(decision)
+    if decision.get('routeSchema') == 'memvane-route-v4':
+        from memvane_version import writer_floor_allows
+        from memvane_execution_guard import require_cached_plugin_for_live_write
+        if not writer_floor_allows(proof['writerFloor']):
+            _fail('writer_floor')
+        require_cached_plugin_for_live_write(Path(proof['journalPath']).parent)
+    return proof
 
 
 
 
 def verify_dispatch_target(decision):
     """Read-only owner proof for choosing a child; never authorizes work here."""
-    proof = _verify_selected_route(decision, dispatch_target=True)
+    proof = (verify_selected_route(decision) if decision.get('routeSchema') == 'memvane-route-v4'
+             else _verify_selected_route(decision, dispatch_target=True))
     if proof['productRouteAllowed'] is not True:
         _fail('dispatch_target_unapproved')
     return proof
