@@ -11,10 +11,12 @@ stay commitment-only. Elapsed checks never preempt arbitrary Python.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import math
 import operator
 import struct
 import time
+from pathlib import Path
 
 import laya_blob_values as v
 from laya_blob_values import BlobStoreError
@@ -61,12 +63,16 @@ def spec(value):
 PROVIDER_CHUNK_RECIPE = 'qmd-regex-token-chunks-candidate-v1'
 QMD_CHUNK_TOKENS = (900, 135, 200)
 FALLBACK_CHARS = (600, 90, 135)  # max/overlap/window UTF-16 code units
+# Increment when _QMD_BREAKS or qmd_first_pass changes.
+CHUNK_RULES = 1
 
 
 def chunker_sha(embedding_fingerprint):
     max_chars, overlap, window = FALLBACK_CHARS
     return v.digest('memvane-provider-chunker-v1', {
         'embedding_fingerprint': v.identifier(embedding_fingerprint),
+        'chunker_js_sha256': hashlib.sha256(Path(__file__).with_name('laya_qmd_chunking.mjs').read_bytes()).hexdigest(),
+        'chunk_rules': CHUNK_RULES,
         'resplit_fallback': {'rule': 'qmd-first-pass', 'max_chars': max_chars, 'overlap_chars': overlap,
                              'window_chars': window, 'unit': 'utf16-code-unit'}})
 
@@ -94,7 +100,7 @@ def provider_specs(manifest, vector_profile):
             'dimension': vector_profile['dimension'], 'metric': 'cosine',
             'document_input_recipe': 'blob-input-v1', 'query_input_recipe': 'qmd-query-v1',
             'query_template': 'task: search result | query: {text}'})
-    except (AttributeError, KeyError, TypeError, BlobStoreError):
+    except (AttributeError, KeyError, OSError, TypeError, BlobStoreError):
         return None
     if profile['dimension'] > MAX_DIMENSION:
         return None
