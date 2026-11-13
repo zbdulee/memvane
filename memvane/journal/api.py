@@ -137,3 +137,8 @@ def ledger_fsync_dir(*args, **kwargs):
 def ledger_write(*args, **kwargs):
     from memvane.journal.ledger_io import _write as implementation
     return implementation(*args, **kwargs)
+
+
+def reader_state(*args, **kwargs):
+    from memvane.journal.journal_reader import _state as implementation
+    return implementation(*args, **kwargs)

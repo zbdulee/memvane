@@ -780,9 +780,8 @@ def _compile_intent_id(result):
 
 
 def _write_compile_intent(checkout, result, verdict_digest, result_digest):
-    from memvane.journal import journal_reader as reader
     from memvane.journal import api as ledger
-    state = reader._state(Path(checkout.decision['journalPath']).parent)
+    state = ledger.reader_state(Path(checkout.decision['journalPath']).parent)
     directory = state / 'provenance-intents'
     try:
         directory.mkdir(mode=0o700)
@@ -810,7 +809,6 @@ def _supersede_job_intent(root, config, job, target, decision):
     spec = job.get('sourceFingerprints')
     if decision is None or not isinstance(spec, dict):
         return
-    from memvane.journal import journal_reader as reader
     from memvane.journal import api as ledger
     try:
         wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
@@ -821,7 +819,7 @@ def _supersede_job_intent(root, config, job, target, decision):
         path = (root / job['targetPath']).resolve().relative_to(wiki_root).as_posix()
         identity = _compile_intent_id(dict(viewId=spec['viewId'], targetPath=path,
                                            cardSha=card_sha, sourceFingerprints=spec))
-        state = reader._state(Path(decision['journalPath']).parent)
+        state = ledger.reader_state(Path(decision['journalPath']).parent)
         directory = state / 'provenance-intents'
         info = directory.lstat()
         if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
