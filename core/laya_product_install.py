@@ -262,7 +262,7 @@ def _unique(pairs):
     return result
 
 
-def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
+def review_local_provider(*, plugin_root, state_root,
                           model_path=None, dimension=None, runtime_generation=None):
     """Read-only exact local artifact proposal for human/release review.
 
@@ -279,15 +279,12 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
     from laya_vector_primitives import profile_identity
     from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                            _hash_file, recipe_fingerprint)
-    from laya_product_bundle import (_git, _CommitSource, _read, COMMIT,
-                                     MAX_FILE, _canonical)
+    from laya_product_bundle import _read, MAX_FILE, _canonical
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         _fail('reviewed_native_platform_unsupported')
-    source, root, state = map(Path, (source_root, plugin_root, state_root))
+    root, state = map(Path, (plugin_root, state_root))
     if (not all(path.is_absolute() and not path.is_symlink()
-                for path in (source, root, state)) or
-            source.resolve(strict=True) == root.resolve(strict=True) or
-            type(commit_id) is not str or not COMMIT.fullmatch(commit_id) or
+                for path in (root, state)) or
             str(state.resolve(strict=False)) != str(state) or
             len(str(state / 'runtime' / 'laya-embed.sock').encode()) > 100):
         _fail('provider_review_paths_invalid')
@@ -297,16 +294,11 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
             (state.parent != memvane_paths.installs_base() or
              not re.fullmatch(r'[0-9a-f]{32}', state.name))):
         _fail('unsupported_state_root_creation')
-    if (_git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id or
-            _git(source, 'rev-parse', '--show-toplevel').decode().strip() != str(source)):
-        _fail('provider_review_commit_changed')
     provider_files = ('core/laya_local_embed_provider.py',
                       'core/laya_local_embed_worker.mjs')
-    committed_source = _CommitSource(source, commit_id, required_paths=provider_files)
     artifacts = {}
     for name in provider_files:
         installed, _ = _read(root / name, MAX_FILE)
-        committed_source.verify(name, installed)
         artifacts[name] = hashlib.sha256(installed).hexdigest()
     try:
         runtime = (laya_embed_runtime.select() if runtime_generation is None else
@@ -375,7 +367,6 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
                 'dependencyClosureApproved': True,
                 'dependencyClosureSha256': closure_sha}
     proposal = {'schema': 'laya-local-provider-review-v2',
-                'sourceCommit': commit_id, 'pluginRoot': str(root),
                 'stateRoot': str(state),
                 'embedRuntimeGeneration': runtime['generation'],
                 'reviewedProvider': {'vectorProfile': profile,
@@ -578,8 +569,7 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
         if plan['proposalSha256'] != expected_proposal_sha256:
             _fail('reviewed_origin_plan_changed')
         review = review_local_provider(
-            source_root=source_root, plugin_root=plugin_root,
-            state_root=state, commit_id=commit_id,
+            plugin_root=plugin_root, state_root=state,
             model_path=model_path, dimension=dimension)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
@@ -1779,8 +1769,7 @@ def main(argv=None):
                                         state_root=args.state_root)
     elif args.action == 'review-provider':
         result = review_local_provider(
-            source_root=args.source_root, plugin_root=root,
-            state_root=args.state_root, commit_id=args.commit,
+            plugin_root=root, state_root=args.state_root,
             model_path=args.model_file, dimension=args.dimension)
     elif args.action == 'prepare-fresh-wiki':
         result = prepare_fresh_wiki_origin(

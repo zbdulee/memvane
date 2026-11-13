@@ -152,8 +152,7 @@ def main(argv=None):
                     result['pendingRetirement'] = pending
             elif args.action == 'review-index-provider':
                 result = product.review_local_provider(
-                    source_root=args.source_root, plugin_root=installed,
-                    state_root=args.state_root, commit_id=args.commit,
+                    plugin_root=installed, state_root=args.state_root,
                     model_path=args.provider_model_file,
                     dimension=args.provider_dimension)
             elif args.action == 'prepare-fresh-wiki-origin':
