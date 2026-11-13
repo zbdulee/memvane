@@ -33,7 +33,8 @@ class ViewSchemaChecks(helpers.BlobStoreCase):
         self.assertEqual((int.from_bytes(data[68:72],'big'),int.from_bytes(data[60:64],'big')),
                          (0x4D564231,4))
         expected={'views','s_generations','s_cards','s_sources','s_card_sources','s_heads'}
-        self.assertTrue(expected.issubset(store.counts()))
+        actual = {row[0] for row in store._db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertTrue(expected.issubset(actual))
         self.assertTrue(store.verify())
 
     def test_02_unsupported_headers_are_refused_without_writes(self):
