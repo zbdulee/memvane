@@ -11,7 +11,6 @@ import hashlib
 import os
 import shutil
 import stat
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
@@ -429,22 +428,3 @@ def enqueue_payload(payload):
         wiki_selected_laya.request_compile(Path(project_root),
             wiki_selected_laya.selected(Path(project_root)))
     return {"queued": len(queued), "reason": "queued" if queued else "no_sources"}
-
-
-def main():
-    if os.environ.get("QMD_SANDBOX") or "--sandbox" in sys.argv:
-        return 0
-    raw = sys.stdin.read().strip()
-    if not raw:
-        return 0
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return 0
-    enqueue_payload(payload)
-    return 0
-
-
-if __name__ == "__main__":
-    from memvane.host import api as hook_main
-    sys.exit(hook_main.run(main))

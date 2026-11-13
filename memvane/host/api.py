@@ -2,11 +2,6 @@
 from __future__ import annotations
 
 
-def run(*args, **kwargs):
-    from memvane.host.hook_main import run as implementation
-    return implementation(*args, **kwargs)
-
-
 def never(*args, **kwargs):
     from memvane.host.onboarding_choice import never as implementation
     return implementation(*args, **kwargs)

@@ -134,11 +134,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/host/hook_main.py": {
-      "context": "host",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/host/host_response.py": {
       "context": "host",
       "layer": "adapter",
