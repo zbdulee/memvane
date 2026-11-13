@@ -12,8 +12,8 @@ sys.dont_write_bytecode = True
 
 # Each row is (module:function, prepended arguments, pass argv to function).
 TARGETS = {
-    'hook-classify': ('memvane.route.index_host_route:main', ('classify-hook',), True),
-    'classify': ('memvane.route.index_host_route:main', ('classify',), True),
+    'hook-classify': ('memvane.host.route_input:main', ('classify-hook',), True),
+    'classify': ('memvane.host.route_input:main', ('classify',), True),
     'onboarding-notice': ('memvane.host.onboarding_notice:main', (), True),
     'hook-serve': ('memvane.host.host_response:main', ('serve-stdin',), True),
     'host-ack': ('memvane.app.entry_commands:host_ack', (), False),

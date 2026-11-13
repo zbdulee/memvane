@@ -135,7 +135,7 @@ Actions: `recall`, `update`, `update-queued`, `gate`, `posttool`, `index`,
 
 The dispatcher resolves the plugin root from its own location, applies
 sandbox/headless no-op guards, and classifies the event cwd with
-`memvane/route/index_host_route.py classify-hook`:
+`entry/run.py hook-classify`:
 
 | Route state | Behavior |
 |---|---|
@@ -209,7 +209,7 @@ details live in [settings](settings.md).
 
 ```text
 hooks/run-hook update-queued <engine>
-  -> memvane/route/index_host_route.py classify-hook
+  -> entry/run.py hook-classify
   -> memvane/host/host_response.py serve-stdin
        -> record a laya-sync wake (runtime_work) and a session_start compile grant
        -> return one "update queued" notice
@@ -255,7 +255,7 @@ timeout kills the work itself rather than a waiting shell.
 
 ```text
 hooks/run-hook recall <engine>
-  -> memvane/route/index_host_route.py classify-hook
+  -> entry/run.py hook-classify
   -> memvane/host/host_response.py serve-stdin (recall)
 ```
 

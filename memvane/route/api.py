@@ -39,14 +39,8 @@ def source_for_collection(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def select_hook_payload(*args, **kwargs):
-    from memvane.route.index_host_route import select_hook_payload as implementation
-    return implementation(*args, **kwargs)
 
 
-def select_hook_route(*args, **kwargs):
-    from memvane.route.index_host_route import select_hook_route as implementation
-    return implementation(*args, **kwargs)
 
 
 def verify_preview_route(*args, **kwargs):

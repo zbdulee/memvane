@@ -17,7 +17,8 @@ import sys
 import time
 
 from memvane.diagnostics import api as event_log
-from memvane.route.api import select_hook_payload, select_hook_route, select_route
+from memvane.host.route_input import select_hook_payload, select_hook_route
+from memvane.route.api import select_route
 from memvane.route.types import MAX_HOOK_BYTES
 
 MAX_BODY_CHARS = 1200
