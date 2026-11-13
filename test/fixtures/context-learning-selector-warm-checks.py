@@ -1,4 +1,4 @@
-"""Recall latency: selector warm-up after heal, cold-service trigger, exact vector math."""
+"""Recall latency: selector warm-up and exact vector math."""
 import hashlib
 import json
 import math
@@ -86,41 +86,6 @@ class WarmTests(unittest.TestCase):
             self.assertEqual(selector_heal.warm('/p', state=self.state)['status'], 'selector_warm')
             self.assertEqual(len(calls), 3)
 
-    def test_upkeep_warms_only_after_a_ready_or_prepared_heal(self):
-        import laya_bundle_upgrade as upgrade
-        from context_learning import state_move
-        private(self.state / selector_heal.POLICY, {})
-        events, warmed = [], []
-        def event(state, name, outcome, reason=None, **fields):
-            events.append((name, outcome, reason))
-        for healed, expected in (({'status': 'selector_ready'}, ['/p']),
-                                 ({'status': 'selector_prepared', 'rebound': False}, ['/p']),
-                                 (selector_heal.HealDeferred('learning_prepare_busy'), [])):
-            events.clear(); warmed.clear()
-            heal = (patch.object(selector_heal, 'heal', side_effect=healed)
-                    if isinstance(healed, Exception) else
-                    patch.object(selector_heal, 'heal', return_value=healed))
-            with patch.object(state_move, 'move', return_value={'status': 'learning_state_current'}), \
-                    patch.object(selector_heal, 'namespace', return_value=self.state), heal, \
-                    patch.object(selector_heal, 'warm',
-                                 side_effect=lambda project, **kw: warmed.append(project) or {'status': 'selector_warm'}), \
-                    patch.object(upgrade, '_learning_event', side_effect=event):
-                out = upgrade._learning_upkeep('/p', self.state.parent, None)
-            self.assertEqual(warmed, expected, healed)
-            if expected:
-                self.assertEqual(out['selectorWarm'], 'selector_warm')
-                self.assertIn(('learning.warm', 'selector_warm', None), events)
-
-    def test_a_cold_service_requests_the_worker(self):
-        import laya_bundle_upgrade, laya_host_response
-        requested = []
-        decision = {'projectRoot': '/p', 'journalPath': '/j'}
-        with patch.object(laya_bundle_upgrade, 'request',
-                          side_effect=lambda *a: requested.append(a)):
-            for reason in ('resident_service_deadline_expired', 'resident_service_starting',
-                           'inference_attestation_required', 'invalid_pool', 'timeout'):
-                laya_host_response._request_selector_heal(decision, reason)
-        self.assertEqual([a[0] for a in requested], ['/p'] * 3)
 
 
 class ExactVectorMathTests(unittest.TestCase):

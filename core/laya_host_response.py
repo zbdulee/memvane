@@ -590,7 +590,6 @@ def _select_verified_cards(decision, settings, prompt, rows):
             return [], reason, None
         fallback = 'laya_selector_' + reason
         _write_selection_log(project, fallback, [])
-        _request_selector_heal(decision, reason)
         print('[memvane] local selection unavailable (' + reason + '); serving hybrid rank',
               file=sys.stderr)
     else:
@@ -605,22 +604,6 @@ def _select_verified_cards(decision, settings, prompt, rows):
               file=sys.stderr)
         return [], 'candidate_invalid', None
     return pool, 'ranked', fallback
-
-
-def _request_selector_heal(decision, reason):
-    """Ask the background worker to re-prepare a selector a release left stale.
-
-    Never waits; the worker request is throttled per install.
-    """
-    try:
-        from context_learning.selector_heal import HEALABLE, WARMABLE
-        if reason not in HEALABLE and reason not in WARMABLE:
-            return
-        import laya_bundle_upgrade
-        laya_bundle_upgrade.request(decision['projectRoot'], decision['journalPath'],
-                                    'learning_selector')
-    except Exception:
-        pass
 
 
 def _selection_view_unchanged(decision, chosen, expected_head=None):
