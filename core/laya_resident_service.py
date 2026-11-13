@@ -428,41 +428,12 @@ def request_adopt(project, *, root=None, spawn=None):
         # A service-side problem never fails a query or a sync: the owner
         # state still says preparing and lexical results are served.
         raise _deferred('laya_service_unavailable') from exc
-    if state in ('ready', 'starting'):
-        with suppress(Exception):
-            if _handover_read_only(project, root=root, spawn=spawn):
-                return 'replacing'
     if state == 'ready':
         with suppress(Exception):
             exchange(root, {'command': 'adopt', 'project': str(project)})
     return state
 
 
-def _handover_read_only(project, *, root, spawn=None, prove=None):
-    """Replace a same-release service that can only attach read-only proofs.
-
-    A service started from a cache the installations' journals do not approve
-    (the other host's copy of one release) proves each installation as bundle
-    drift, never starts a model worker, and equal versions never drain each
-    other. A caller whose own code proves this project ``selected`` (or
-    ``preview``) asks it to hand over and starts the successor; a caller that
-    would itself only read-only attach does nothing, so hosts never alternate.
-    """
-    answer = hello(root)
-    if not isinstance(answer, dict) or answer.get('readOnlyOnly') is not True:
-        return False
-    try:
-        _decision, _proof, mode = (prove or default_prove)(project)
-    except Exception:
-        return False
-    if mode not in ('selected', 'preview'):
-        return False
-    reply = exchange(root, {'command': 'drain', 'reason': 'read_only_handover',
-                            'protocols': list(PROTOCOLS), 'bundle': bundle_identity()})
-    if not isinstance(reply, dict) or reply.get('status') not in ('draining', 'stopped'):
-        return False
-    _spawn(root, spawn=spawn)
-    return True
 
 
 
@@ -610,24 +581,9 @@ def _worker_socket(root, key):
 
 
 def default_prove(project):
-    """(decision, proof, mode) for one selected, preview or drifted install."""
+    """Prove one selected or preview installation."""
     from laya_embed_resident import _owned_route
-    try:
-        return _owned_route(Path(project))
-    except Exception as exc:
-        from laya_install_journal import is_bundle_drift
-        if not is_bundle_drift(exc):
-            raise
-        # Same queue owner and v5 windows as the selected proof.
-        from laya_product_sync_worker import service_read_only_proof
-        try:
-            decision, proof = service_read_only_proof(Path(project))
-        except Exception as fallback:
-            from resource_deferred import ResourceDeferred
-            if isinstance(fallback, ResourceDeferred):
-                raise
-            raise exc from fallback
-        return decision, proof, 'read_only'
+    return _owned_route(Path(project))
 
 
 # Consecutive moved-selection deferrals before they count as start failures.
@@ -662,7 +618,6 @@ def default_attest(decision, proof, mode):
     a v5 journal's re-proofs take the queue owner and the v5 windows of the
     journal-bound root, and a busy window defers (``ResourceDeferred``).
     Preview: the preview proof validated the record; re-hash its runtime files.
-    Read-only proofs never start a worker and attach without re-hashing.
     """
     if mode == 'selected':
         from laya_product_sync_worker import service_worker_attestation
@@ -798,7 +753,6 @@ class Service:
         # Why an installation is not adopted yet, reported once per episode.
         self.waiting = {}
         self.full_proof_deferred = set()
-        self.drift_yielded = set()
         # Codes already reported per installation since its last bind.
         self.unproved = {}
         # Consecutive moved-selection deferrals per installation (fingerprint, n).
@@ -894,11 +848,6 @@ class Service:
             os.close(self.lease)
             self.lease = None
 
-    def _read_only_only(self):
-        """Under ``self.lock``: no worker runs or loads, and an install waits read-only."""
-        return (not any(w.alive() or w.loading for w in self.workers.values())
-                and 'read_only_no_worker' in self.waiting.values())
-
     def status(self):
         with self.lock:
             return {'status': ('draining' if self.draining.is_set() else
@@ -907,7 +856,7 @@ class Service:
                     'protocol': PROTOCOL, 'protocols': list(PROTOCOLS),
                     'bundle': self.bundle, 'python': sys.executable, 'pid': os.getpid(),
                     'projects': len(self.bindings), 'workers': len(self.workers),
-                    'inflight': self.inflight, 'readOnlyOnly': self._read_only_only()}
+                    'inflight': self.inflight}
 
     # -------------------------------------------------------------- control
     def _control_loop(self):
@@ -938,17 +887,6 @@ class Service:
                     self.retry.pop(project, None)
             return {**self.status(), 'accepted': True}
         if command == 'drain':
-            if row.get('reason') == 'read_only_handover':
-                # Same release from the approved cache: only a service that
-                # cannot start any worker (read-only proofs) hands over.
-                with self.lock:
-                    stuck = self._read_only_only()
-                bundle = row.get('bundle') or {}
-                if (stuck and isinstance(bundle, dict)
-                        and bundle.get('version') == self.bundle.get('version')):
-                    self.begin_drain()
-                    return {'status': 'draining'}
-                return {'status': 'refused', 'reason': 'not_read_only', 'bundle': self.bundle}
             if row.get('reason') == 'learning_state_move':
                 # The learning state moves once: every lane holder drains so
                 # the old and new locations are never used together.
@@ -1095,14 +1033,6 @@ class Service:
             with self.lock:
                 if project in self.bindings or self.retry.get(project, 0) > now:
                     continue
-                no_ready = not any(w.alive() for w in self.workers.values())
-                full_pending = any(w.loading for w in self.workers.values()) or bool(self.full_proof_deferred)
-                if (no_ready and full_pending and self.waiting.get(project) == 'read_only_no_worker'
-                        and project not in self.drift_yielded):
-                    self.retry[project] = now + 30
-                    self.drift_yielded.add(project)
-                    continue
-                self.drift_yielded.discard(project)
             self._adopt(project)
         self._reclaim()
 
@@ -1164,7 +1094,6 @@ class Service:
             self.unproved.pop(project, None)
             self.moved.pop(project, None)
             self.full_proof_deferred.discard(project)
-            self.drift_yielded.discard(project)
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
         with suppress(OSError):
             os.unlink(self.root / PROJECTS / name)
@@ -1264,17 +1193,7 @@ class Service:
         seal = hashlib.sha256(json.dumps([project, identity], sort_keys=True,
                                          default=str).encode()).hexdigest()
         worker = self.workers.get(key)
-        if mode == 'read_only':
-            with self.lock:
-                self.full_proof_deferred.discard(project)
         if worker is None or not worker.alive():
-            if mode == 'read_only':
-                # A drifted bundle only attaches to a worker that a full proof
-                # started. Changed native or JS files also read as bundle
-                # drift, so a read-only proof never starts a model process.
-                self._report_waiting(project, decision, 'read_only_no_worker')
-                self._later(project, 5)
-                return
             self._load(project, decision, proof, mode, manifest, key, seal)
             return
         owner_fd = _private_lock(path + '.resident.lock')
@@ -1476,10 +1395,6 @@ class Service:
                     return
                 worker.handle, worker.state, worker.failures = handle, 'ready', 0
                 self.retry.pop(project, None)
-                for waiting_project, reason in self.waiting.items():
-                    if reason == 'read_only_no_worker':
-                        self.retry.pop(waiting_project, None)
-                        self.drift_yielded.discard(waiting_project)
             elif reason == 'resource_deferred':
                 worker.state = 'resource_deferred'
                 # Keep real admission observations inside RECOVERY_MAX_GAP,

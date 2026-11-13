@@ -346,59 +346,11 @@ def wait_for_release(socket_path, timeout=3):
         time.sleep(.05)
 
 
-def _companion_selected(project):
-    """(decision, proof) of a v5 install bound to another host copy, or None.
-
-    Two host caches of one release can each hold installs: the upgrade worker
-    binds an install to whichever host ran it first, and the other host's copy
-    is then sealed as its companion. The per-user service runs from one of
-    them. The v5 writer plan pins the journal's own plugin root, so a service
-    on the other copy could never prove those installs and never adopted
-    them. The service only embeds and opens no index store for writing. It
-    takes the same queue owner and v5 lifetime and physical windows as the
-    owner-copy proof (the plan captured for the journal-bound root) and,
-    inside them, the full selected proof the hooks take: the journal-bound
-    owner copy and this executing copy proven as the same sealed bundle
-    (``_verified_executing_root``). The worker still starts from the attested
-    provider paths. None when the install is bound to this copy, is not a
-    selected v5 install, or the journal says otherwise; writers keep the
-    exact-root plan.
-    """
-    import laya_install_journal as journal
-    from laya_index_host_route import select_route
-    from laya_product_sync_worker import _selected
-    executing = str(journal._executing_root())
-    with journal.read_only_journals():
-        decision = select_route(str(project), action='update')
-        if (decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project)
-                or type(decision.get('journalPath')) is not str
-                or type(decision.get('pluginRoot')) is not str
-                or decision.get('pluginRoot') == executing):
-            return None
-        try:
-            version = journal.journal_version(decision['journalPath'])
-        except journal.JournalEvidenceError:
-            return None  # the owned-route path reports its own journal state
-        if version != 5:
-            return None
-    # The same queue owner and v5 lifetime and physical windows as a writer's
-    # proof, captured for the journal-bound root; the proof inside them is
-    # the companion-accepting full selected proof.
-    decision, proof = _selected(project, companion_of=decision['pluginRoot'])
-    if (proof.get('productRouteAllowed') is not True
-            or proof.get('executingPluginRoot') != executing
-            or proof.get('pluginRoot') != decision.get('pluginRoot')
-            or not isinstance(proof.get('providerManifest'), dict)):
-        raise IndexContractError('selected_provider_unavailable')
-    return decision, proof
 
 
 def _owned_route(project):
     """Prove one selected or pending installation using its own route contract."""
     from laya_product_sync_worker import _selected
-    companion = _companion_selected(project)
-    if companion is not None:
-        return companion[0], companion[1], 'selected'
     try:
         decision, proof = _selected(project)
         return decision, proof, 'selected'

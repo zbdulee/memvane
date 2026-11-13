@@ -215,20 +215,9 @@ def _owned_worker_attestation(decision, owner, expected):
         return manifest
 
 
-def _selected(project, *, owner_wait=False, companion_of=None):
-    """(decision, proof) of the selected route under its v5 reader windows.
-
-    ``companion_of`` is only for the per-user embedding service running from
-    another host's sealed copy of the journal's bundle (``laya_embed_resident.
-    _companion_selected``): it names the journal-bound plugin root the v5 plan
-    and its lifetime and physical windows are captured for, and the full
-    selected proof taken inside those windows proves this executing copy as
-    the same sealed bundle. Writers never pass it; their plan pins the root
-    they execute from.
-    """
+def _selected(project, *, owner_wait=False):
+    """Prove the selected route under its reader windows."""
     project = Path(project)
-    if companion_of is not None:
-        return _companion_v5_selected(project, Path(companion_of), owner_wait=owner_wait)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')
     import laya_install_journal as journal
@@ -274,23 +263,6 @@ def _selected(project, *, owner_wait=False, companion_of=None):
     return decision, proof
 
 
-def _companion_v5_selected(project, plugin_root, *, owner_wait=False):
-    import laya_install_journal as journal
-    from laya_worker_journal import worker_journal_access
-    if not project.is_absolute() or project.is_symlink() or not project.is_dir():
-        raise IndexContractError('selected_project_unavailable')
-    with worker_journal_access(project, wait=owner_wait) as access:
-        with journal.read_only_journals():
-            decision = select_route(str(project), action='update')
-            if (decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project)
-                    or decision.get('pluginRoot') != str(plugin_root)
-                    or journal.journal_version(decision['journalPath']) != 5):
-                raise IndexContractError('selected_route_unavailable')
-            proof = _selected_v5_proof(project, decision, access.owner, plan_root=plugin_root)
-    if (proof.get('productRouteAllowed') is not True
-            or not isinstance(proof.get('providerManifest'), dict)):
-        raise IndexContractError('selected_provider_unavailable')
-    return decision, proof
 
 
 def service_worker_attestation(decision, expected):
@@ -298,8 +270,7 @@ def service_worker_attestation(decision, expected):
 
     A v5 journal is re-proved before and after the runtime-file hashing, each
     time under the queue owner and the v5 lifetime and physical windows of
-    the journal-bound plugin root (the same plan the service's selected or
-    companion proof uses); the hashing itself holds neither, as in
+    the journal-bound plugin root; the hashing itself holds neither, as in
     ``_owned_worker_attestation``. Other journal versions keep
     ``verify_worker_attestation``. Returns the attested provider manifest.
 
@@ -402,37 +373,6 @@ def _without_epoch(proof):
     return {key: value for key, value in proof.items() if key != 'selectionEpoch'}
 
 
-def service_read_only_proof(project):
-    """(decision, proof) of a drifted install for a read-only service attach.
-
-    The bundle-drift fallback of the service's proof. A v5 journal is proved
-    read-only under the queue owner and the v5 lifetime and physical windows
-    of the journal-bound root, like the selected proof; a busy window defers.
-    If that root's cache is gone the plan cannot be captured and the install
-    is not attached until its bundle upgrade binds it again. Other journal
-    versions keep the legacy read-only proof.
-    """
-    import laya_install_journal as journal
-    from laya_worker_journal import worker_journal_access
-    project = Path(project)
-    with journal.read_only_journals():
-        decision = select_route(str(project), action='update')
-        if (decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project)
-                or type(decision.get('pluginRoot')) is not str):
-            raise IndexContractError('selected_route_unavailable')
-        version = journal.journal_version(decision['journalPath'])
-    if version != 5:
-        with journal.read_only_journals(), journal.legacy_identity_reads():
-            proof = journal.verify_selected_route_read_only(decision)
-    else:
-        with worker_journal_access(project) as access, journal.read_only_journals():
-            proof = _selected_v5_proof(project, decision, access.owner,
-                                       plan_root=Path(decision['pluginRoot']),
-                                       verify=journal.verify_selected_route_read_only)
-    if (proof.get('readOnlyAllowed') is not True
-            or not isinstance(proof.get('providerManifest'), dict)):
-        raise IndexContractError('selected_provider_unavailable')
-    return decision, proof
 
 
 def _selected_service(decision, manifest, admit, start_service):
