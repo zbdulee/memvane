@@ -128,7 +128,7 @@ def _compile_idle(project: Path, source: Path, verify: Path, bound):
 
 
 def _idle_locked(project: Path, source: Path, verify: Path, bound):
-    from memvane.wiki.card import wiki_freshness
+    from memvane.wiki.card import api as wiki_freshness
     unresolved = wiki_freshness.unresolved_pending_refreshes_strict(project)
     if unresolved is None:
         return None

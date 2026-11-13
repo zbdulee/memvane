@@ -171,7 +171,7 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
             continue
         cards.append(({'path': identity['targetPath'], 'score': score, 'content': ''},
                       header, body, len(raw) >= cap_chars))
-    marker = wiki_card.SUMMARY_TRUNCATION_MARK
+    from memvane.wiki.card.types import SUMMARY_TRUNCATION_MARK as marker
     # Recalculate after excluding oversized identities; all retained cards get
     # the same content allowance regardless of retrieval rank or body length.
     while cards:

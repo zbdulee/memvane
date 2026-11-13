@@ -6,8 +6,22 @@ def bounded_snapshot(*args, **kwargs):
     from memvane.wiki.card.snapshot import bounded_snapshot as implementation
     return implementation(*args, **kwargs)
 
-from memvane.wiki.card.types import (SOURCE_SPANS_KEY, MAX_SOURCE_SPANS, FRONTMATTER_RE,
-                                     SOURCE_KIND_FILE, SUMMARY_TRUNCATION_MARK)
+from memvane.wiki.card.types import FRONTMATTER_RE, SOURCE_KIND_FILE
+
+
+def unresolved_pending_refreshes_strict(*args, **kwargs):
+    from memvane.wiki.card.wiki_freshness import unresolved_pending_refreshes_strict as implementation
+    return implementation(*args, **kwargs)
+
+
+def record_pending_refresh(*args, **kwargs):
+    from memvane.wiki.card.wiki_freshness import record_pending_refresh as implementation
+    return implementation(*args, **kwargs)
+
+
+def snapshot_bytes(*args, **kwargs):
+    from memvane.wiki.card.wiki_freshness import snapshot_bytes as implementation
+    return implementation(*args, **kwargs)
 
 
 def verified_wiki_row(*args, **kwargs):

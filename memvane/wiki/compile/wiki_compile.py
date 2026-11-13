@@ -58,7 +58,7 @@ ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 # frontmatter flow mapping의 키로 허용할 형태. 모델이 준 키가 개행·구두점을 담으면
 # 매핑을 벗어나 새 줄을 만들 수 있다. 정의는 yaml_scalars(emit/parse 쌍의 SSOT)에 있다 —
 # 읽는 쪽(recall.parse_frontmatter_sources)이 같은 화이트리스트를 써야 한다.
-from memvane.wiki.card.types import SAFE_KEY_RE as SAFE_YAML_KEY_RE
+from memvane.wiki.card.types import SAFE_KEY_RE as SAFE_YAML_KEY_RE, SOURCE_SPANS_KEY
 SECRET_LITERAL_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
 ]
@@ -994,7 +994,7 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
     replace_sources = new_by_key["sources"] != ["sources:", "  - {kind: unknown}"]
     for key, lines in old_sections:
         # 줄 span 은 옛 본문을 검수한 verifier 인용의 위치다 — 재생성된 본문에 남기면 안 된다.
-        if key in proof_keys or key in {"sourceRevisions", "reviewed", yaml_scalars.SOURCE_SPANS_KEY}:
+        if key in proof_keys or key in {"sourceRevisions", "reviewed", SOURCE_SPANS_KEY}:
             continue
         if key == "status":
             merged.extend(new_by_key["status"])
@@ -1141,7 +1141,7 @@ def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = No
 def _render_frontmatter_fields(text: str, updates: dict, blocks: dict | None = None) -> str | None:
     blocks = dict(blocks or {})
     if "status" in updates:
-        blocks.setdefault(yaml_scalars.SOURCE_SPANS_KEY, None)
+        blocks.setdefault(SOURCE_SPANS_KEY, None)
     match = FRONTMATTER_RE.match(text)
     if not match:
         return None
@@ -1257,7 +1257,7 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
         # None 이면 키를 쓰지 않는다(`patch_frontmatter_fields` 규약) = 결속 없는 legacy
         # 형태이고, 그것이 필요한 경로는 지금 없다(양 호출부 모두 값을 넘긴다).
         "verifiedBodyHash": body_hash,
-    }, blocks={yaml_scalars.SOURCE_SPANS_KEY: emitted})
+    }, blocks={SOURCE_SPANS_KEY: emitted})
 
 
 def write_rendered_verification(path: Path, rendered: str, expected_text: str) -> bool:

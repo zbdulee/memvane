@@ -18,7 +18,7 @@ from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.wiki.intake import posttool
-from memvane.wiki.card import wiki_freshness
+from memvane.wiki.card import api as wiki_freshness
 from memvane.wiki.intake import wiki_source_intent as intent
 from memvane.settings.api import select_collections
 from memvane.settings import api as source_text

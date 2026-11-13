@@ -10,6 +10,7 @@ import struct
 import unicodedata
 
 from memvane.store.types import BlobStoreError, MAX_BODY, MAX_CHUNKS, SHA, UUID
+from memvane.wiki.card.types import MAX_SOURCE_SPANS
 
 MAX_SET_BYTES = 16 * 1024 * 1024
 
@@ -84,7 +85,7 @@ def compile_result_digest(result, verdict_digest):
             paths[row['path']] = row['source_sha']
         from memvane.wiki.card import api as yaml_scalars
         seen = set()
-        if len(result['sourceSpans']) > yaml_scalars.MAX_SOURCE_SPANS:
+        if len(result['sourceSpans']) > MAX_SOURCE_SPANS:
             fail('invalid_compile_result')
         for span in result['sourceSpans']:
             if yaml_scalars.normalize_source_span(span) != span:
@@ -421,11 +422,11 @@ def attestation(spec):
                     fail('source_spans_invalid')
                 from memvane.wiki.card import api as yaml_scalars
                 line_count += 1
-                if line_count > yaml_scalars.MAX_SOURCE_SPANS:
+                if line_count > MAX_SOURCE_SPANS:
                     fail('source_spans_invalid')
                 original = {key: value for key, value in span.items() if key != 'kind'}
                 if (yaml_scalars.normalize_source_span(original) != original
-                        or len(spans) > yaml_scalars.MAX_SOURCE_SPANS):
+                        or len(spans) > MAX_SOURCE_SPANS):
                     fail('source_spans_invalid')
                 line_key = (original['path'], original['startLine'], original['endLine'])
                 if line_key in line_keys:

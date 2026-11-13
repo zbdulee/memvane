@@ -810,7 +810,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     from memvane.host.host_rules import check_compile_queue
     if check_compile_queue('collections' in decision, action):
         from memvane.wiki.workspace import api as compile_paths, types as compile_types
-        from memvane.wiki.card import wiki_freshness
+        from memvane.wiki.card import api as wiki_freshness
         root = Path(decision['projectRoot'])
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
         if pending is None:
