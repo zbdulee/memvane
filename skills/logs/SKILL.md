@@ -53,7 +53,25 @@ that attempt (best effort; the selector scores it by its leading part).
 `measure_failed` (no selector runtime could count) and `unmeasured` (no selector
 tokenizer on the machine) mark cards written without a size check.
 `merge_kept_separate` is a dedup merge refused because the keeper is over the
-budget.
+budget. `measured_after_failure` (`reason` `runtime_fallback`) is a card that fit
+after one selector runtime failed and another counted it; this and every other
+`wiki.card` outcome measured after such a failure carry `measureId`, `attempts`
+and the `failure` codes.
+
+A `wake.sync` line that settled compile intents carries `provenance`:
+`consumed` (verified cards whose compile evidence the sync recorded in the
+index), `superseded` (an older intent for the same card path replaced by a
+newer consumed one), `waiting` (the card on disk is not yet the verified bytes)
+and `rejected` counts by fixed reason: `provenance_parity_mismatch` (the card's
+`sourceRevisions`/`sourceSpans` differ from the intent),
+`provenance_conflict` (the index already holds different evidence under the
+same identity) and `provenance_value_invalid` (a corrupt, misnamed or invalid
+intent). The field appears only when an intent was consumed, superseded or
+rejected in a pass that finished publishing. Recorded evidence does not change
+which cards recall serves or their trust. The verify side's provenance reasons
+(`provenance_checkout_unavailable`, `provenance_checkout_changed`,
+`provenance_value_invalid`, `provenance_intent_write_failed`) are in the
+project's `verify-log.jsonl`, not in this log.
 
 ## Detailed diagnostics
 

@@ -866,6 +866,14 @@ backlog에 예산을 다 쓰고 새 카드는 `generated`로 남습니다. 그�
 검수되지 않습니다). `verify.builtins`를 좁혀도 **카드를 만든 엔진은 `prefer`의 최후
 후보로 남습니다** — 목록을 좁히거나 이름을 잘못 적어도 self 폴백이 사라지지 않습니다.
 
+**검수를 통과한 카드는 index에 출처 기록을 남깁니다.** memvane-db가 선택된 프로젝트에서
+검수가 통과하면, 카드를 만든 compile이 읽은 원문 지문(경로·해시·크기·브랜치·HEAD)과 인용
+줄 범위를 담은 intent가 설치 상태 디렉터리에 남고, 다음 sync가 그것을 index의 compiled
+attestation으로 기록합니다. 카드 frontmatter의 `sourceRevisions`·`sourceSpans`와 같을 때만
+기록하므로 두 기록은 같은 내용입니다. 이 기록은 recall이 고르는 카드나 신뢰도를 바꾸지
+않고, 켜고 끄는 설정은 없습니다. 브랜치가 compile과 검수 사이에 바뀌었거나 git이 답하지
+못하면 기록 없이 검수만 진행합니다.
+
 #### `onInconclusive` 기본값이 `delete`인 이유
 
 이 플러그인은 **사람 검수를 전제하지 않습니다.** 사람의 개입은 승인이 아니라 삭제이고,
@@ -1059,7 +1067,8 @@ cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카�
 ### wiki 수명 주기 (원문 소실·변경)
 
 `memvane/wiki/lifecycle/wiki_lifecycle.py`가 생성 카드마다 기록된 원문 경로와 해시(`sourceRevisions`)로
-카드를 판정합니다. embed·LLM에 의존하지 않습니다.
+카드를 판정합니다. embed·LLM에 의존하지 않습니다. 판정은 카드 frontmatter만 보고, 검수 뒤
+index에 남는 출처 기록(compiled attestation)은 읽지 않습니다.
 
 | 원문 상태 | 처리 |
 |---|---|
