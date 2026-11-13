@@ -1,5 +1,7 @@
 """Shared intake bounds and discovery errors."""
+from __future__ import annotations
 
+MAX_DEPTH = 32
 RAW_SCAN_MAX_FILES = 4096
 RAW_SCAN_MAX_BYTES = 64_000_000
 QUEUE_SCAN_MAX_BYTES = 8 * 1024 * 1024

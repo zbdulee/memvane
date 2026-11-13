@@ -42,11 +42,6 @@ def schema3_wiki_cards(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def scan_collections(*args, **kwargs):
-    from memvane.sync.source_scan import scan_collections as implementation
-    return implementation(*args, **kwargs)
-
-
 def sync_owner(*args, **kwargs):
     from memvane.sync.sync_owner_lock import sync_owner as implementation
     return implementation(*args, **kwargs)

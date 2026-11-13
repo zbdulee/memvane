@@ -1074,11 +1074,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/sync/source_scan.py": {
-      "context": "sync",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/sync/sync_owner_lock.py": {
       "context": "sync",
       "layer": "adapter",
@@ -1280,6 +1275,11 @@
       "pinned": false
     },
     "memvane/wiki/intake/posttool.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/source_scan.py": {
       "context": "wiki/intake",
       "layer": "adapter",
       "pinned": false

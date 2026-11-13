@@ -25,7 +25,7 @@ from memvane.learning.context_learning.shared import resource_report
 from memvane.kernel.errors import IndexContractError
 from memvane.route.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots
-from memvane.sync.source_scan import _collection_roots
+from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.sync.sync_owner_lock import sync_owner
 from memvane.journal.install_journal import JournalEvidenceError, cas_mark_new_write, inspect_journal
 from memvane.provider.api import reviewed_provider_class
@@ -1157,7 +1157,7 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
     none, so discovery scans (and blocks) on its own.
     """
     from memvane.kernel import paths as git_branch_safety
-    from memvane.sync.source_scan import scan_collections
+    from memvane.wiki.intake.api import scan_collections
     from memvane.wiki.intake.types import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
     project = Path(decision['projectRoot'])
     roots = {item['name']: item['sourceRoot'] for item in decision['collections'] if item.get('role') == 'raw'}

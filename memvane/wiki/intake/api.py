@@ -5,6 +5,16 @@ from memvane.wiki.intake.types import (RAW_SCAN_MAX_FILES, RAW_SCAN_MAX_BYTES, Q
                                         SESSION_START_ACCEPTED_TRIGGERS, GrantUncertain)
 
 
+def scan_collections(*args, **kwargs):
+    from memvane.wiki.intake.source_scan import scan_collections as implementation
+    return implementation(*args, **kwargs)
+
+
+def collection_roots(*args, **kwargs):
+    from memvane.wiki.intake.source_scan import _collection_roots as implementation
+    return implementation(*args, **kwargs)
+
+
 
 def record_grant(*args, **kwargs):
     from memvane.wiki.intake.wiki_discovery import record_grant as implementation

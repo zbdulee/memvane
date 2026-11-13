@@ -1,7 +1,7 @@
 """Bounded source scans for configured collection roots."""
 
 from __future__ import annotations
-from memvane.sync.types import MAX_DEPTH
+from memvane.wiki.intake.types import MAX_DEPTH
 
 import hashlib
 import os

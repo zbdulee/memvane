@@ -477,7 +477,7 @@ def _plugin_paths(source, commit_id, *, required_paths=None):
                            'oid': oid.decode('ascii')}
     except UnicodeError as exc:
         raise BundleEvidenceError('invalid_commit_path') from exc
-    required = ({'hooks/run-hook', 'memvane/sync/source_scan.py',
+    required = ({'hooks/run-hook', 'memvane/wiki/intake/source_scan.py',
                  'memvane/provider/adapters/local_embed_provider.py',
                  'memvane/provider/adapters/local_embed_service.py',
                  'memvane/provider/adapters/laya_local_embed_worker.mjs',
@@ -867,7 +867,7 @@ def inspect_full_plugin_candidate(plugin_root):
     expected_files = set(manifest['artifacts'])
     profile = validate_vector_profile(manifest.get('vectorProfile'),
                                       manifest['artifacts'])
-    if (not {'hooks/run-hook', 'memvane/sync/source_scan.py',
+    if (not {'hooks/run-hook', 'memvane/wiki/intake/source_scan.py',
              'memvane/provider/adapters/local_embed_provider.py',
              'memvane/provider/adapters/local_embed_service.py',
              'memvane/provider/adapters/laya_local_embed_worker.mjs',

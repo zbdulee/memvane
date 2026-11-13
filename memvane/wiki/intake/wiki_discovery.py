@@ -489,7 +489,7 @@ class _PendingOverflow(Exception):
 def _raw_snapshot(decision, raw):
     """Scan bounded raw roots without opening an index or retaining bodies."""
     from memvane.kernel.errors import IndexContractError
-    from memvane.sync.api import scan_collections
+    from memvane.wiki.intake.source_scan import scan_collections
     roots = {name: decision['collectionRoots'][name] for name in raw}
     try:
         scan = scan_collections(roots, decision['scopeId'], None,
