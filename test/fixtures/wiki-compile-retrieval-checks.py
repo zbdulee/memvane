@@ -162,7 +162,7 @@ class OverlayChecks(unittest.TestCase):
         from memvane.settings import config
         from memvane.wiki.compile import wiki_compile_worker as worker
         from memvane.wiki.dedup import wiki_dedup_judge
-        from extractors.lib import build_prompt, render_existing_context_section
+        from memvane.wiki.engines.extractors.lib import build_prompt, render_existing_context_section
         docs = self.root / 'docs'
         docs.mkdir()
         (docs / 'source.md').write_text('starship archive source', encoding='utf-8')

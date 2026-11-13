@@ -389,7 +389,7 @@ def resolve_bin(name: str, env_override: str) -> str | None:
 
 def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int, str]:
     # The adapter may be launched directly, without wiki_compile_worker.
-    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    sys.path.insert(0,str(Path(__file__).resolve().parents[4]))
     from memvane.runtime.runtime_admission import provider
     from memvane.kernel.resource_deferred import ResourceDeferred
     try:

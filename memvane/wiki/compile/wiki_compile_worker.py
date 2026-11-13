@@ -355,7 +355,7 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     rather than consuming every other card's summary allowance.
     """
     from memvane.wiki.card import wiki_card
-    from extractors.lib import render_existing_context_section
+    from memvane.wiki.engines.extractors.lib import render_existing_context_section
     cards = []
     for path, score, raw in rows[:qmd_config.DEDUP_TOP_K]:
         text = wiki_card.normalize_newlines(raw)
@@ -637,7 +637,7 @@ def is_hidden_source_path(rel_path: str) -> bool:
     return any(part.startswith(".") for part in Path(rel_path).parts)
 
 
-CARD_RULES_DIR = Path(__file__).resolve().parents[3] / "core/wiki_card_rules"
+CARD_RULES_DIR = Path(__file__).resolve().parents[3] / "memvane/wiki/card/rules"
 CARD_RULES_PRESETS = ("default", "novel")
 # Primary novel marker: a numbered manuscript directory at the project root
 # (`04_Manuscript/`, `03_Manuscript/`). Minimal settings carry no preset key.
@@ -711,10 +711,10 @@ def _argv_list(value) -> list[str] | None:
 def _builtin_adapter_argv(engine: str) -> list[str] | None:
     if engine not in BUILTIN_EXTRACTOR_ENGINES:
         return None
-    adapter = Path(__file__).resolve().parents[3] / "core/extractors" / f"{engine}_adapter.py"
+    adapter = Path(__file__).resolve().parents[3] / "memvane/wiki/engines/extractors" / f"{engine}_adapter.py"
     if not adapter.is_file():
         return None
-    return [sys.executable, str(adapter)]
+    return [sys.executable, str(Path(__file__).resolve().parents[3] / "entry/run.py"), f"extractor-{engine}"]
 
 
 def extractor_engine_pool(compile_cfg: dict) -> list[str]:
