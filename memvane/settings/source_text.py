@@ -14,10 +14,10 @@ names that narrower set for wiki-only scans.
 from __future__ import annotations
 
 from pathlib import PurePath, PurePosixPath
+from memvane.settings.types import (SOURCE_TEXT_EXTENSIONS, WIKI_TEXT_EXTENSIONS,
+                                     WIKI_META_PAGES, DENIED_SOURCE_SEGMENTS)
 
 # Case-insensitive suffix match on the file name.
-SOURCE_TEXT_EXTENSIONS = ('.md', '.markdown', '.mdx', '.txt', '.rst', '.adoc')
-WIKI_TEXT_EXTENSIONS = ('.md',)
 
 # Wiki-root pages that earlier plugin releases created beside the cards. The
 # plugin no longer creates or reads them, but existing projects keep them, so
@@ -26,7 +26,6 @@ WIKI_TEXT_EXTENSIONS = ('.md',)
 # `log.md` stays out of the index itself; the others stay indexed so the
 # generation digest does not depend on this list. A card with the same name
 # below the root (`concepts/index.md`) is an ordinary card.
-WIKI_META_PAGES = ('SCHEMA.md', 'index.md', 'log.md')
 
 
 def is_wiki_meta_page(path, wiki_root=None) -> bool:
@@ -47,13 +46,6 @@ def is_wiki_meta_page(path, wiki_root=None) -> bool:
 # separate rule in every walker; the MemVane project folders (`.memvane` and
 # the `.auto-context` read fallback), `.git`, `.hg` and `.svn` stay listed
 # because the enqueue gate also applies this set to collection roots.
-DENIED_SOURCE_SEGMENTS = frozenset({
-    '.memvane', '.auto-context', '.git', '.hg', '.svn',
-    'node_modules', 'bower_components', 'vendor', 'Pods',
-    'venv', 'site-packages', '__pycache__',
-    'dist', 'build', 'out', 'target', 'coverage', 'DerivedData',
-    'Library', 'Temp', 'obj',  # Unity project caches
-})
 
 
 def is_source_text(name: str, extensions: tuple[str, ...] = SOURCE_TEXT_EXTENSIONS) -> bool:

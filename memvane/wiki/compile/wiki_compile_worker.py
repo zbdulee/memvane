@@ -29,7 +29,7 @@ from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
-from memvane.settings import source_text
+from memvane.settings import api as source_text
 from memvane.settings.collection_match import select_collections
 from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from memvane.wiki.intake.wiki_compile_enqueue import _source_record

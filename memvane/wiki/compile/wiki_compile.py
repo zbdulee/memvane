@@ -21,7 +21,7 @@ from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
-from memvane.settings import source_text
+from memvane.settings import api as source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections

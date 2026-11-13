@@ -22,7 +22,7 @@ import sys
 import time
 
 from memvane.wiki.workspace import compile_paths as cp
-from memvane.settings import source_text
+from memvane.settings import api as source_text
 from memvane.wiki.card import wiki_card
 from memvane.settings.source_exclusion import card_sources_allowed
 

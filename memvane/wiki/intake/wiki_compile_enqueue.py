@@ -22,7 +22,7 @@ from memvane.wiki.intake import posttool
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.intake import wiki_source_intent as intent
 from memvane.settings.collection_match import select_collections
-from memvane.settings import source_text
+from memvane.settings import api as source_text
 
 
 DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE

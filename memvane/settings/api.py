@@ -1,7 +1,8 @@
 """Public project settings operations."""
 from __future__ import annotations
 
-from memvane.settings.types import CURRENT, NAMES, SETTINGS, WIKI
+from memvane.settings.types import (CURRENT, NAMES, SETTINGS, WIKI, SOURCE_TEXT_EXTENSIONS,
+                                     WIKI_TEXT_EXTENSIONS, WIKI_META_PAGES, DENIED_SOURCE_SEGMENTS)
 
 
 def auxiliary_wiki_row(*args, **kwargs):
@@ -64,4 +65,21 @@ def settings_path(*args, **kwargs):
 
 def settings_candidates(*args, **kwargs):
     from memvane.settings.project_dir import settings_candidates as implementation
+    return implementation(*args, **kwargs)
+
+
+def is_source_text(*args, **kwargs):
+    from memvane.settings.source_text import is_source_text as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def is_denied_source_path(*args, **kwargs):
+    from memvane.settings.source_text import is_denied_source_path as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def is_wiki_meta_page(*args, **kwargs):
+    from memvane.settings.source_text import is_wiki_meta_page as implementation
     return implementation(*args, **kwargs)
