@@ -11,7 +11,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-CORE = Path(__file__).resolve().parents[2] / 'core'
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
 from memvane.app import runtime_dispatch as dispatch
 from memvane.app import wake_entry as entry
@@ -60,8 +60,8 @@ class DispatchBoundary(unittest.TestCase):
                     calls.append((argv, project, seconds))
                     return types.SimpleNamespace(returncode=0,
                                                  stdout=json.dumps({'state': state}).encode())
-                with patch('laya_index_host_route.select_route', return_value=self.route()), \
-                     patch('laya_install_journal.verify_dispatch_target',
+                with patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+                     patch('memvane.journal.install_journal.verify_dispatch_target',
                            return_value=self.proof(self.bundles[target])), \
                      patch.object(dispatch, '_run_child', side_effect=child):
                     self.assertEqual(dispatch.run(kind, self.project)['state'], state)
@@ -91,24 +91,24 @@ class DispatchBoundary(unittest.TestCase):
                    'projectRoot': str(self.project), 'epoch': 1}
         approval = {'pendingRouteSha256': identity['routeSha256'],
                     'attestationSha256': identity['attestationSha256']}
-        with patch('laya_index_host_route.select_route', return_value=self.route('legacy')), \
-             patch('laya_initial_build.lookup', return_value=record), \
-             patch('laya_install_journal.inspect_journal', return_value=journal), \
-             patch('laya_install_journal.preflight_product_candidate', return_value=approval):
+        with patch('memvane.journal.route_selection.select_route', return_value=self.route('legacy')), \
+             patch('memvane.journal.initial_build.lookup', return_value=record), \
+             patch('memvane.journal.install_journal.inspect_journal', return_value=journal), \
+             patch('memvane.journal.install_journal.preflight_product_candidate', return_value=approval):
             self.assertEqual(dispatch.resolve('laya-sync', self.project)['root'], str(root))
 
     def test_tamper_and_foreign_identity_fail_closed(self):
         root = self.bundles[0]
-        worker = root / 'core' / 'laya_product_sync_worker.py'
+        worker = root / 'memvane/sync/product_sync_worker.py'
         worker.chmod(0o666)
-        with patch('laya_index_host_route.select_route', return_value=self.route()), \
-             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)):
+        with patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+             patch('memvane.journal.install_journal.verify_dispatch_target', return_value=self.proof(root)):
             with self.assertRaises(DispatchFailure) as caught:
                 dispatch.resolve('laya-sync', self.project)
             self.assertEqual(failure_reason(caught.exception),
                              'dispatch:target_entry_invalid:' + 'a' * 40 + ':' + 'c' * 64)
         worker.chmod(0o644)
-        bootstrap = root / 'core' / 'laya_wake_entry.py'
+        bootstrap = root / 'memvane/app/wake_entry.py'
         foreign = self.base / 'foreign_entry.py'
         foreign.write_text('pass\n')
         for shape, expected in (('missing', 'target_entry_unavailable'),
@@ -121,8 +121,8 @@ class DispatchBoundary(unittest.TestCase):
             elif shape == 'symlink':
                 bootstrap.symlink_to(foreign)
             with self.subTest(entry=shape), \
-                 patch('laya_index_host_route.select_route', return_value=self.route()), \
-                 patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+                 patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+                 patch('memvane.journal.install_journal.verify_dispatch_target', return_value=self.proof(root)), \
                  patch.object(dispatch, '_run_child') as child:
                 with self.assertRaises(DispatchFailure) as caught:
                     dispatch.run('laya-sync', self.project)
@@ -132,8 +132,8 @@ class DispatchBoundary(unittest.TestCase):
                 child.assert_not_called()
         bootstrap.unlink()
         bootstrap.write_text('pass\n')
-        with patch('laya_index_host_route.select_route', return_value=self.route()), \
-             patch('laya_install_journal.verify_dispatch_target', side_effect=ValueError('private path')):
+        with patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+             patch('memvane.journal.install_journal.verify_dispatch_target', side_effect=ValueError('private path')):
             with self.assertRaises(DispatchFailure) as caught:
                 dispatch.resolve('laya-sync', self.project)
             self.assertEqual(failure_reason(caught.exception), 'dispatch:target_journal_changed:none:none')
@@ -157,8 +157,8 @@ class DispatchBoundary(unittest.TestCase):
 
     def test_deferred_result_cannot_ack(self):
         root = self.bundles[0]
-        with patch('laya_index_host_route.select_route', return_value=self.route()), \
-             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+        with patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+             patch('memvane.journal.install_journal.verify_dispatch_target', return_value=self.proof(root)), \
              patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
                  returncode=0, stdout=b'{"state":"deferred"}')):
             with self.assertRaises(DispatchFailure) as caught:
@@ -179,13 +179,13 @@ class DispatchBoundary(unittest.TestCase):
                                  'cause': 'chunk_pos_not_increasing'},
                                 ensure_ascii=False).encode()
             with self.subTest(path=path), \
-                 patch('laya_index_host_route.select_route', return_value=self.route()), \
-                 patch('laya_install_journal.verify_dispatch_target',
+                 patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+                 patch('memvane.journal.install_journal.verify_dispatch_target',
                        return_value=self.proof(root)), \
                  patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
                      returncode=0, stdout=stdout)), \
-                 patch('event_log.state_root_of', return_value=self.base), \
-                 patch('event_log.emit', side_effect=lambda name, **f: events.append((name, f))):
+                 patch('memvane.diagnostics.event_log.state_root_of', return_value=self.base), \
+                 patch('memvane.diagnostics.event_log.emit', side_effect=lambda name, **f: events.append((name, f))):
                 with self.assertRaises(DispatchFailure) as caught:
                     dispatch.run('laya-sync', self.project)
                 self.assertEqual(caught.exception.detail,
@@ -204,8 +204,8 @@ class DispatchBoundary(unittest.TestCase):
                              (b'{"reason":"laya_service_backoff","state":"deferred"}',
                               'target_deferred')):
             with self.subTest(code=code), \
-                 patch('laya_index_host_route.select_route', return_value=self.route()), \
-                 patch('laya_install_journal.verify_dispatch_target',
+                 patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+                 patch('memvane.journal.install_journal.verify_dispatch_target',
                        return_value=self.proof(root)), \
                  patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
                      returncode=0, stdout=stdout)):
@@ -216,8 +216,8 @@ class DispatchBoundary(unittest.TestCase):
                     # The child's fixed reason code survives for the failure record.
                     self.assertEqual(caught.exception.detail,
                                      'deferred:deferred:laya_service_backoff')
-        with patch('laya_index_host_route.select_route', return_value=self.route()), \
-             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+        with patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+             patch('memvane.journal.install_journal.verify_dispatch_target', return_value=self.proof(root)), \
              patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
                  returncode=0, stdout=json.dumps({'state': 'deferred',
                      'reason': 'laya_sync_yield_priority', 'detail': 'Private Path/x.md'}).encode())):
@@ -225,8 +225,8 @@ class DispatchBoundary(unittest.TestCase):
                 dispatch.run('laya-sync', self.project)
         self.assertEqual(caught.exception.detail,
                          'deferred:deferred:laya_sync_yield_priority:_rivate__ath_x.md')
-        with patch('laya_index_host_route.select_route', return_value=self.route()), \
-             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+        with patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+             patch('memvane.journal.install_journal.verify_dispatch_target', return_value=self.proof(root)), \
              patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
                  returncode=0, stdout=b'{"state":"pending"}')):
             with self.assertRaises(DispatchFailure) as caught:
@@ -235,8 +235,8 @@ class DispatchBoundary(unittest.TestCase):
 
     def test_failed_child_keeps_a_bounded_stderr_tail(self):
         root = self.bundles[0]
-        with patch('laya_index_host_route.select_route', return_value=self.route()), \
-             patch('laya_install_journal.verify_dispatch_target', return_value=self.proof(root)), \
+        with patch('memvane.journal.route_selection.select_route', return_value=self.route()), \
+             patch('memvane.journal.install_journal.verify_dispatch_target', return_value=self.proof(root)), \
              patch.object(dispatch, '_run_child', return_value=types.SimpleNamespace(
                  returncode=1, stdout=b'',
                  stderr=b'Traceback\nIndexContractError: provider_unavailable\n')):
@@ -341,12 +341,12 @@ class DispatchBoundary(unittest.TestCase):
 class StallEvent(unittest.TestCase):
     def test_stalled_preparing_streak_is_logged_once_as_a_failure(self):
         from memvane.diagnostics import event_log
-        from memvane.route import index_host_route as laya_index_host_route
+        from memvane.route import index_host_route as laya_index_host_route; import memvane.journal.route_selection as laya_index_host_route_route_selection
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary).resolve()
             decision = {'state': 'candidate', 'projectRoot': str(project)}
             emitted = []
-            with patch.object(laya_index_host_route, 'select_route', return_value=decision), \
+            with patch.object(laya_index_host_route_route_selection, 'select_route', return_value=decision), \
                  patch.object(event_log, 'emit',
                               side_effect=lambda *a, **k: emitted.append((a, k)) or True):
                 self.assertTrue(dispatch.stall_event('laya-sync', str(project), since=0,
@@ -384,16 +384,16 @@ class SealedChildSubprocess(unittest.TestCase):
                     shutil.copy2(original, destination)
             subprocess.run(['git', 'init', '-q', str(source)], check=True)
             def commit(label):
-                stub = (source / 'core' / 'laya_product_sync_worker.py')
+                stub = (source / 'memvane/sync/product_sync_worker.py')
                 stub.write_text('import os,time\nfrom pathlib import Path\n'
                                 'marker=os.environ.get("SEALED_STUB_MARKER")\n'
                                 'if marker: Path(marker).write_text("imported")\n'
                                 'def run(_project):\n'
                                 # The real sync worker's first proof: every
                                 # loaded Laya module is this bundle's file.
-                                ' import config, laya_index_a, laya_index_claim_queue\n'
-                                ' import laya_index_host_route, laya_package\n'
-                                ' import laya_product_bundle, laya_install_journal\n'
+                                ' import laya_index_a, laya_index_claim_queue; import memvane.settings.config as config\n'
+                                ' import memvane.route.index_host_route as laya_index_host_route; import memvane.kernel.package as laya_package\n'
+                                ' import laya_product_bundle; import memvane.journal.install_journal as laya_install_journal\n'
                                 ' laya_install_journal._executing_from_candidate(\n'
                                 '  Path(__file__).resolve().parent.parent)\n'
                                 ' hold=os.environ.get("SEALED_STUB_HOLD")\n'
@@ -429,7 +429,7 @@ class SealedChildSubprocess(unittest.TestCase):
                 marker = base / ('marker-' + label)
                 marker.unlink(missing_ok=True)
                 args = [sys.executable, '-B',
-                        str(Path(proof['pluginRoot']) / 'core' / 'laya_wake_entry.py'),
+                        str(Path(proof['pluginRoot']) / 'entry' / 'run.py'), 'wake',
                         'laya-sync', str(project), proof['pluginRoot'],
                         proof['sourceCommit'], proof['bundleManifestSha256'],
                         proof['ownershipManifestSha256']]
@@ -458,13 +458,13 @@ class SealedChildSubprocess(unittest.TestCase):
                     watched.wait(timeout=2)
                 watched.stdout.close()
                 watched.stderr.close()
-            worker = Path(old['pluginRoot']) / 'core' / 'laya_product_sync_worker.py'
+            worker = Path(old['pluginRoot']) / 'memvane/sync/product_sync_worker.py'
             worker.chmod(0o600)
             worker.write_text(worker.read_text() + '\n# altered after seal\n')
             marker = base / 'tampered-marker'
             env['SEALED_STUB_MARKER'] = str(marker)
             refused = subprocess.run([sys.executable, '-B',
-                                      str(Path(old['pluginRoot']) / 'core' / 'laya_wake_entry.py'),
+                                      str(Path(old['pluginRoot']) / 'entry' / 'run.py'), 'wake',
                                       'laya-sync', str(project), old['pluginRoot'],
                                       old['sourceCommit'], old['bundleManifestSha256'],
                                       old['ownershipManifestSha256']],

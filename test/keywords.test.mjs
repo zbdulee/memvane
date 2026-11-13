@@ -104,7 +104,7 @@ test('경로·dotted 토큰은 quoted phrase 를 만들지 않는다 (lex 0건 �
   // `"settings md"` phrase 는 실측에서 0건이었고 AND 결합이라 lex 전체를 죽였다.
   const prompts = [
     'docs/settings.md 파일 구조 설명해줘',
-    'core/wiki_verify_worker.py 동작 확인해줘',
+    'memvane/wiki/compile/wiki_verify_worker.py 동작 확인해줘',
     '`verify-queue.jsonl` 에 enqueue 되는 조건이 뭐야',
     '.auto-context/settings.json 의 recallStrategy 기본값',
     'config.load_project_config 가 어디서 불리나',
@@ -249,8 +249,8 @@ test('adversarial 입력에도 추출이 50ms 이내 (UserPromptSubmit blocking 
   // 인터프리터 기동 시간이 섞이지 않게 in-process 로 측정한다.
   const script = `
 import sys, time, json
-sys.path.insert(0, "core")
-import keywords as K
+sys.path.insert(0, ".")
+import memvane.recall.keywords as K
 out = {}
 for label, text in [("a", "a"*10000), ("paren", "("*5000), ("dots", "a."*5000), ("log", ("2026-07-29 12:00:00 WARN core/recall.py:123 query_failed retry=3\\n"*140))]:
     start = time.perf_counter()

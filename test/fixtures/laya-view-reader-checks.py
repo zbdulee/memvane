@@ -85,7 +85,7 @@ class ReaderChecks(helpers.GenerationCase):
         def observe(*args,**kwargs):
             opened.append(str(args[0]))
             return connect(*args,**kwargs)
-        with mock.patch('laya_blob_store.sqlite3.connect',side_effect=observe):
+        with mock.patch('memvane.store.blob.blob_store.sqlite3.connect',side_effect=observe):
             reader=type(store).open_reader(store._path,repository=repository,scope_id=store._scope,
                                            deadline=time.monotonic()+10)
         self.addCleanup(reader.close)
@@ -140,7 +140,7 @@ class ReaderChecks(helpers.GenerationCase):
             with reader._session(write=True):
                 self.fail('reader granted a write session')
         calls=[]
-        with mock.patch('laya_blob_store._regular',side_effect=AssertionError('source reread')):
+        with mock.patch('memvane.store.blob.blob_store._regular',side_effect=AssertionError('source reread')):
             with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
                 reader.ingest_card(handle.worktree_id,'cards/a.md')
         with self.assertRaisesRegex(ValueError,'reader_write_forbidden'):
@@ -513,7 +513,7 @@ class ReaderChecks(helpers.GenerationCase):
         # The default compiled card carries byte spans: no line locator exists.
         self.assertEqual(self.refused(store.card_locations,pin,['cards/a.md']).reason,
                          'legacy_card_trust_invalid')
-        reader=sys.modules['laya_view_reader']
+        reader=sys.modules['memvane.store.view.view_reader']
         db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
         self.addCleanup(db.close)
         db.execute('CREATE TABLE card_sources(gen_id,wiki_path,ordinal,spans_json)')
@@ -521,7 +521,7 @@ class ReaderChecks(helpers.GenerationCase):
             value=dict(kind=kind,path='notes/src.md',sourceSha256='a'*64,startLine=1,endLine=1,spanSha256='d'*64)
             db.execute('DELETE FROM card_sources')
             db.execute('INSERT INTO card_sources VALUES(?,?,?,?)',('g','cards/a.md',ordinal,
-                       sys.modules['laya_blob_values'].canonical([value])))
+                       sys.modules['memvane.store.blob.blob_values'].canonical([value])))
             with self.subTest(kind=kind):
                 self.assertEqual(self.refused(reader._card_locations,db,'g',['cards/a.md']).reason,
                                  'legacy_card_trust_invalid')

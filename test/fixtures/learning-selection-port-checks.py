@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path.cwd() / 'core'))
+sys.path.insert(0, str(Path.cwd()))
 from memvane.learning.context_learning import selection_port as P
 from memvane.learning.context_learning.seam import _snapshot
 

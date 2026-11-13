@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 
 from memvane.kernel.errors import IndexContractError
 from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
@@ -57,10 +57,10 @@ class ProviderChecks(unittest.TestCase):
         core = self.root / 'core'
         core.mkdir()
         self.worker = core / 'laya_local_embed_worker.mjs'
-        shutil.copyfile(ROOT / 'core/laya_local_embed_worker.mjs', self.worker)
+        shutil.copyfile(ROOT / 'memvane/provider/adapters/laya_local_embed_worker.mjs', self.worker)
         self.provider_file = core / 'laya_local_embed_provider.py'
-        shutil.copyfile(ROOT / 'core/laya_local_embed_provider.py', self.provider_file)
-        shutil.copyfile(ROOT / 'core/laya_qmd_chunking.mjs', core / 'laya_qmd_chunking.mjs')
+        shutil.copyfile(ROOT / 'memvane/provider/adapters/local_embed_provider.py', self.provider_file)
+        shutil.copyfile(ROOT / 'memvane/provider/adapters/laya_qmd_chunking.mjs', core / 'laya_qmd_chunking.mjs')
         self.node = self.root / 'synthetic-node'
         self.node.write_text('#!/bin/sh\nprintf \'{"vector":[1.0,0.0]}\'\n', encoding='utf-8')
         self.node.chmod(0o700)
@@ -78,7 +78,7 @@ class ProviderChecks(unittest.TestCase):
         self.manifest = {
             'approvedProviderId': 'synthetic-provider',
             'providerArtifactSha256': sha(self.provider_file),
-            'providerRelativePath': 'core/laya_local_embed_provider.py',
+            'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py',
             'providerPath': str(self.provider_file),
             'workerPath': str(self.worker), 'workerSha256': sha(self.worker),
             'nodePath': str(self.node),
@@ -414,7 +414,7 @@ export async function getLlama() {
     def test_worker_and_provider_agree_on_member_refusals(self):
         import re
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-        source = (Path(__file__).resolve().parents[2] / 'core' /
+        source = (Path(__file__).resolve().parents[2] / 'memvane/provider/adapters' /
                   'laya_local_embed_worker.mjs').read_text(encoding='utf-8')
         block = re.search(r'MEMBER_REFUSALS = new Set\(\[(.*?)\]\)', source, re.S).group(1)
         self.assertEqual(frozenset(re.findall(r"'([a-z_]+)'", block)),

@@ -4,7 +4,7 @@ import {
   CHUNK_SIZE_TOKENS, CHUNK_OVERLAP_TOKENS, CHUNK_WINDOW_TOKENS,
   chunkDocument, chunkDocumentByTokens, extractQmdMarkdownTitle,
   findCodeFences, scanBreakPoints,
-} from '../core/laya_qmd_chunking.mjs';
+} from '../memvane/provider/adapters/laya_qmd_chunking.mjs';
 
 const syntheticTokenizer = {
   async tokenize(text) { return Array.from({length: text.length}, (_, i) => i); },

@@ -1,6 +1,6 @@
 """Disposable general project grants and corpus-independent cohort checks."""
 import importlib.util
-assert importlib.util.find_spec('context_learning.project_scope') is not None, 'general project authorization implementation missing'
+assert importlib.util.find_spec('memvane.learning.context_learning.project_scope') is not None, 'general project authorization implementation missing'
 import hashlib,json,os,shutil,sqlite3,sys,tempfile,time
 from collections import Counter
 from pathlib import Path
@@ -45,8 +45,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
  version='0.1-test'
  for host in ('claude','codex'):
   p=home/('.'+host)/'plugins/cache/memvane-marketplace/memvane'/version
-  p.mkdir(parents=True);shutil.copytree(Path(scope.__file__).parents[1],p/'core',ignore=shutil.ignore_patterns('__pycache__'))
-  shutil.copytree(Path(scope.__file__).parents[2]/'hooks',p/'hooks')
+  p.mkdir(parents=True);shutil.copytree(Path(scope.__file__).parents[2],p/'memvane',ignore=shutil.ignore_patterns('__pycache__'))
+  shutil.copytree(Path(scope.__file__).parents[3]/'hooks',p/'hooks')
   save(p/('.'+host+'-plugin')/'plugin.json',{'name':'memvane','version':version})
   installs[host]=[p]
  adapter=installs['codex'][0]/'memvane/learning/context_learning/adapter.py'
@@ -64,12 +64,12 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   assert {entry['codeSha256'] for entry in row['binding']['installations']}=={scope.code_identity()}
   # Observe real byte reads, without replacing any ownership/hash/admission check.
   reads=Counter();observing=[True]
-  code_root=Path(scope.__file__).parents[2]
+  code_root=Path(scope.__file__).parents[3]
   bases=[code_root,*[installs[host][0] for host in ('claude','codex')]]
   def byte_reads(event,args):
    if observing[0] and event=='open' and isinstance(args[0],str) and args[0].endswith('.py'):
     for base_path in bases:
-     if args[0].startswith(str(base_path/'core')+os.sep):reads[args[0]]+=1
+     if args[0].startswith(str(base_path/'memvane')+os.sep):reads[args[0]]+=1
   sys.addaudithook(byte_reads)
   try:
    assert scope._installed_binding([{'host':host,'root':str(installs[host][0])} for host in ('claude','codex')])==row['binding']['installations']
@@ -99,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   cached_source=installs['codex'][0]/'core/__pycache__/extra.py'
   cached_source.parent.mkdir(exist_ok=True);cached_source.write_text('extra executable source')
   expect('changed',lambda:scope.require(root,policy,'local_train'));cached_source.unlink()
-  with patch('context_learning.project_scope.time.time',return_value=expiry/1000+1):expect('expired',lambda:scope.require(root,policy,'local_train'))
+  with patch('memvane.learning.context_learning.project_scope.time.time',return_value=expiry/1000+1):expect('expired',lambda:scope.require(root,policy,'local_train'))
   expect('operation',lambda:scope.require(root,policy,'apply'))
   # Official enablement changes revoke a grant even if old code remains.
   save(home/'.claude/settings.json',{'enabledPlugins':{'memvane@memvane-marketplace':False}})
@@ -130,7 +130,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   expect('invalid',lambda:scope.require(root,policy,'local_train'));save(path,original)
   # Explicit general enrollment prepares the final settings flip, defaults preserve false.
   save(root/'live-selector.json',{'prepared':True})
-  with patch('context_learning.shared._policy',return_value=policy):
+  with patch('memvane.learning.context_learning.shared._policy',return_value=policy):
    plan=learning_profile.proposal(project,root,choice='local-auto-apply',mode='preserve',expires_at_unix_ms=expiry,enable_learning=True)
    assert plan['localTrain'] and plan['autoApply'] and plan['minFreshTrainCases']==5
    assert plan['settings']['contextLearning']['capture'] is True
@@ -240,7 +240,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   if isinstance(out,int):return SimpleNamespace(returncode=out,stdout='',stderr='')
   return SimpleNamespace(returncode=0,stdout=json.dumps(out),stderr='')
  resolve=lambda:ha._project_host_roots(home,project)
- with patch('context_learning.history_activation.subprocess.run',fake_run),patch.dict(os.environ,{'PATH':str(trusted)}):
+ with patch('memvane.learning.context_learning.history_activation.subprocess.run',fake_run),patch.dict(os.environ,{'PATH':str(trusted)}):
   for name in ('CLAUDE_CONFIG_DIR','CODEX_HOME'):os.environ.pop(name,None)
   # Single effective root per host; the stale marketplace is never read.
   listing.update(claude=claude_list(),codex=codex_list(0))
@@ -350,8 +350,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   target=home/('.'+host)/'plugins/cache/qmd-laya-fixture-qa/memvane'/VER
   target.parent.mkdir(parents=True,exist_ok=True)
   target.mkdir()
-  shutil.copytree(Path(scope.__file__).parents[1],target/'core',ignore=shutil.ignore_patterns('__pycache__'))
-  shutil.copytree(Path(scope.__file__).parents[2]/'hooks',target/'hooks')
+  shutil.copytree(Path(scope.__file__).parents[2],target/'memvane',ignore=shutil.ignore_patterns('__pycache__'))
+  shutil.copytree(Path(scope.__file__).parents[3]/'hooks',target/'hooks')
   save(target/('.'+host+'-plugin/plugin.json'),{'name':'memvane','version':VER})
   qa_roots[host]=[target]
  with patch.object(Path,'home',return_value=home),patch.object(ha,'_project_host_roots',return_value=qa_roots):

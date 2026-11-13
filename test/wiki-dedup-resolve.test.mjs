@@ -62,16 +62,16 @@ function readDedupSkipped(work) {
 function bodyHashOf(absPath) {
   return execFileSync('python3', ['-c', [
     'import sys',
-    "sys.path.insert(0, 'core')",
+    "sys.path.insert(0, '.')",
     'from pathlib import Path',
-    'from wiki_dedup_scan import body_hash',
+    'from memvane.wiki.dedup.wiki_dedup_scan import body_hash',
     "print(body_hash(Path(sys.argv[1]).read_text(encoding='utf-8')), end='')",
   ].join('\n'), absPath], { encoding: 'utf8' });
 }
 
 function runResolve(work, index, action, extra = [], env = {}) {
   return execFileSync('python3', [
-    'core/wiki_dedup_resolve.py', '--cwd', work, '--index', String(index), '--action', action, ...extra,
+    'entry/run.py', 'wiki-dedup-resolve', '--cwd', work, '--index', String(index), '--action', action, ...extra,
   ], { encoding: 'utf8', env: { ...process.env, ...env } });
 }
 
@@ -228,7 +228,7 @@ test('wiki_dedup_resolve: a crash mid-resolve leaves the queue exactly as it was
     const originalMode = 0o755;
     try {
       chmodSync(entitiesDir, 0o555);
-      execFileSync('python3', ['core/wiki_dedup_resolve.py', '--cwd', work, '--index', '0', '--action', 'merge', '--delete', 'entities/loser.md'], { encoding: 'utf8' });
+      execFileSync('python3', ['entry/run.py', 'wiki-dedup-resolve', '--cwd', work, '--index', '0', '--action', 'merge', '--delete', 'entities/loser.md'], { encoding: 'utf8' });
     } catch {
       threw = true;
     } finally {

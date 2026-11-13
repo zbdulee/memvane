@@ -20,7 +20,7 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 from memvane.diagnostics import event_log  # noqa: E402
 
 SCHEMA_KEYS = {'ts', 'v', 'install', 'host', 'session', 'event', 'outcome', 'reason', 'ms'}
@@ -223,7 +223,7 @@ class WriterChecks(Base):
                          ('resident.adopt', 'full', 'install-1'))
 
     def test_learning_capture_status(self):
-        from memvane.learning.context_learning import laya_learning
+        from memvane.learning.context_learning import learning as laya_learning
         status = laya_learning.capture_recall('claude', self.decision, {}, {}, [], [])
         (row,) = self.events('learning.capture')
         self.assertEqual((row['outcome'], row['host']), (status, 'claude'))
@@ -384,7 +384,7 @@ class SkillChecks(Base):
 def child(code, *, timeout=20):
     """Run ``code`` in a fresh interpreter with core/ importable."""
     return subprocess.run([sys.executable, '-B', '-c',
-                           f'import sys; sys.path.insert(0, {str(REPO / "core")!r})\n' + code],
+                           f'import sys; sys.path.insert(0, {str(REPO)!r})\n' + code],
                           capture_output=True, text=True, timeout=timeout)
 
 
@@ -393,7 +393,7 @@ class ConcurrencyChecks(Base):
         """A writer that opened the live file keeps it until its write lands."""
         self.assertTrue(event_log.emit('seed', state_root=self.state))
         real_write = os.write
-        rotator = (f'import event_log\nevent_log.LOG_LIMIT = 1\n'
+        rotator = (f'import memvane.diagnostics.event_log as event_log\nevent_log.LOG_LIMIT = 1\n'
                    f'for _ in range(3): event_log.emit("rotator", state_root={str(self.state)!r})')
         fired = []
 
@@ -411,13 +411,13 @@ class ConcurrencyChecks(Base):
 
     def test_concurrent_appends_while_rotating_lose_no_written_line(self):
         writers, per = 4, 150
-        code = ('import event_log, json, sys\n'
+        code = ('import json, sys; import memvane.diagnostics.event_log as event_log\n'
                 'event_log.LOG_LIMIT = 70000\n'
                 'ok = [n for n in range(%d) if event_log.emit("c", state_root=sys.argv[1],'
                 ' writer=sys.argv[2], n=n, pad="x" * 120)]\n'
                 'print(json.dumps(ok))\n') % per
         procs = [subprocess.Popen([sys.executable, '-B', '-c',
-                                   f'import sys; sys.path.insert(0, {str(REPO / "core")!r})\n' + code,
+                                   f'import sys; sys.path.insert(0, {str(REPO)!r})\n' + code,
                                    str(self.state), str(index)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                  for index in range(writers)]
@@ -449,11 +449,11 @@ class ConcurrencyChecks(Base):
                        else self.state / 'events.lock', os.O_RDWR | os.O_CREAT, 0o600)
         self.addCleanup(os.close, lock)
         fcntl.flock(lock, fcntl.LOCK_EX)
-        code = ('import event_log, json, sys, time\nstarted = time.monotonic()\n'
+        code = ('import json, sys, time; import memvane.diagnostics.event_log as event_log\nstarted = time.monotonic()\n'
                 'ok = event_log.emit("x", state_root=sys.argv[1])\n'
                 'print(json.dumps([ok, time.monotonic() - started]))')
         done = subprocess.run([sys.executable, '-B', '-c',
-                               f'import sys; sys.path.insert(0, {str(REPO / "core")!r})\n' + code,
+                               f'import sys; sys.path.insert(0, {str(REPO)!r})\n' + code,
                                str(self.state)], capture_output=True, text=True, timeout=20)
         ok, seconds = json.loads(done.stdout)
         self.assertFalse(ok)
@@ -461,7 +461,7 @@ class ConcurrencyChecks(Base):
 
     def test_busy_refusal_counter_never_blocks_an_emit(self):
         import fcntl
-        code = ('import event_log, json, sys, time\nstarted = time.monotonic()\n'
+        code = ('import json, sys, time; import memvane.diagnostics.event_log as event_log\nstarted = time.monotonic()\n'
                 'ok = event_log.emit("x", state_root=sys.argv[1])\n'
                 'print(json.dumps([ok, time.monotonic() - started]))')
         # A refusal counter held by another process: the increment is dropped.
@@ -471,7 +471,7 @@ class ConcurrencyChecks(Base):
         fcntl.flock(counter, fcntl.LOCK_EX)
         try:
             done = subprocess.run([sys.executable, '-B', '-c',
-                                   f'import sys; sys.path.insert(0, {str(REPO / "core")!r})\n' + code,
+                                   f'import sys; sys.path.insert(0, {str(REPO)!r})\n' + code,
                                    str(self.state)], capture_output=True, text=True, timeout=5)
             blocked = False
         except subprocess.TimeoutExpired:
@@ -539,12 +539,12 @@ class ReaderChecks(Base):
     def test_fifo_generation_never_blocks_a_reader(self):
         os.mkfifo(self.state / (event_log.NAME + '.1'), 0o600)
         self.assertTrue(event_log.emit('gate', state_root=self.state))
-        code = ('import event_log, json, sys\n'
+        code = ('import json, sys; import memvane.diagnostics.event_log as event_log\n'
                 'print(json.dumps([len(event_log.read(sys.argv[1])),'
                 ' event_log.inspect(sys.argv[1])["refused"]]))')
         try:
             done = subprocess.run([sys.executable, '-B', '-c',
-                                   f'import sys; sys.path.insert(0, {str(REPO / "core")!r})\n'
+                                   f'import sys; sys.path.insert(0, {str(REPO)!r})\n'
                                    + code, str(self.state)],
                                   capture_output=True, text=True, timeout=5)
         except subprocess.TimeoutExpired:
@@ -568,7 +568,7 @@ class PreviewChecks(Base):
     def test_preview_recall_is_logged(self):
         from memvane.host import host_response as response
         decision = {**self.decision, 'state': 'preview'}
-        with patch('laya_index_host_route.verify_preview_route',
+        with patch('memvane.journal.preview_proof.verify_preview_route',
                    side_effect=response.HostResponseError('initial_preview_proof_changed')):
             with self.assertRaises(response.HostResponseError):
                 response.serve_preview('recall', 'claude', decision,
@@ -649,7 +649,7 @@ class ReviewTwoChecks(Base):
 class RetiredLogChecks(unittest.TestCase):
     def test_qmd_recall_log_is_not_read(self):
         hits = []
-        for directory in ('core', 'hooks', 'hermes_adapter', 'skills', 'scripts'):
+        for directory in ('memvane', 'entry', 'hooks', 'hermes_adapter', 'skills', 'scripts'):
             for path in (REPO / directory).rglob('*'):
                 if path.is_file() and path.suffix in ('.py', '.mjs', '.sh', '') and \
                         'QMD_RECALL_LOG' in path.read_text(errors='ignore'):
@@ -658,7 +658,7 @@ class RetiredLogChecks(unittest.TestCase):
 
     def test_folded_logs_have_no_writer(self):
         for name in ('wiki-activity.log', 'bundle-auto-upgrade.log', 'extractor.log'):
-            hits = [str(path.relative_to(REPO)) for path in (REPO / 'core').rglob('*.py')
+            hits = [str(path.relative_to(REPO)) for path in (REPO / 'memvane').rglob('*.py')
                     if name in path.read_text(errors='ignore')]
             self.assertEqual(hits, [], name)
 

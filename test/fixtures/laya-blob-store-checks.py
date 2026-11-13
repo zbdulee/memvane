@@ -26,7 +26,7 @@ import uuid
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 from memvane.store.checkout import checkout_view as view  # noqa: E402  (PR 1, present at base)
 
 APP_ID, FORMAT = 0x4D564231, b'memvane-git-blob-candidate-v3'
@@ -85,7 +85,7 @@ class BlobStoreCase(unittest.TestCase):
         except ModuleNotFoundError as exc:
             if exc.name != 'laya_blob_store':
                 raise
-            self.fail('core/laya_blob_store.py is absent: PR 2 candidate blob store not implemented')
+            self.fail('memvane/store/blob/blob_store.py is absent: PR 2 candidate blob store not implemented')
         self.Store, self.Error = self.mod.BlobStore, self.mod.BlobStoreError
         temp = tempfile.TemporaryDirectory(prefix='laya-blob-store-')
         self.addCleanup(temp.cleanup)

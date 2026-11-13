@@ -13,10 +13,10 @@ from unittest import mock
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 
 from memvane.runtime import runtime_wake_policy as policy
-from memvane.wiki.workspace import wiki_selected_laya
+from memvane.wiki.workspace import wiki_selected_laya; import memvane.wiki.compile.selected_execution as wiki_selected_laya_selected_execution
 from memvane.wiki.compile import wiki_compile_worker
 from memvane.kernel.resource_deferred import ResourceDeferred
 
@@ -33,15 +33,15 @@ os.close(fd)
 WAKE = r'''
 import sys
 from unittest.mock import patch
-sys.path.insert(0, sys.argv[1] + '/core')
-import laya_product_bundle, laya_index_host_route, laya_wake_entry
+sys.path.insert(0, sys.argv[1])
+import laya_product_bundle; import memvane.route.index_host_route as laya_index_host_route; import memvane.journal.route_selection as laya_index_host_route_route_selection; import memvane.app.wake_entry as laya_wake_entry
 root, project, queue = sys.argv[1:]
 proof = {'sourceCommit': 'a'*40, 'bundleManifestSha256': 'b'*64,
          'ownershipManifestSha256': 'c'*64, 'pluginRoot': root}
 decision = {'state': 'candidate', 'projectRoot': project,
             'queuePath': queue, 'journalPath': project + '/journal.sqlite'}
 with patch.object(laya_product_bundle, 'inspect_full_plugin_candidate', return_value=proof), \
-     patch.object(laya_index_host_route, 'select_route', return_value=decision):
+     patch.object(laya_index_host_route_route_selection, 'select_route', return_value=decision):
     sys.exit(laya_wake_entry.main(['laya-compile', project, root, 'a'*40, 'b'*64, 'c'*64]))
 '''
 
@@ -90,7 +90,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
              mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
              mock.patch('memvane.wiki.workspace.lifecycle_requests.claim', return_value=None), \
              mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
-            result = wiki_selected_laya.run(project)
+            result = wiki_selected_laya_selected_execution.run(project)
         self.assertEqual(result, {'state': 'deferred', 'reason': 'owner_busy'})
         from memvane.app import runtime_dispatch as laya_runtime_dispatch
         self.assertEqual(laya_runtime_dispatch._deferred_detail(result),
@@ -108,7 +108,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
                  mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
                  mock.patch('memvane.wiki.workspace.lifecycle_requests.claim', return_value=None), \
                  mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
-                self.assertEqual(wiki_selected_laya.run(project),
+                self.assertEqual(wiki_selected_laya_selected_execution.run(project),
                                  {'state': 'deferred', 'reason': 'compile_worker_result_invalid'})
 
     def test_post_lock_worker_proof_deferral_is_not_swallowed(self):
@@ -179,16 +179,16 @@ class CompileOwnerBusyChecks(unittest.TestCase):
                  mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
                  mock.patch('memvane.wiki.workspace.lifecycle_requests.claim', return_value=None), \
                  mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
-                result = wiki_selected_laya.run(project)
+                result = wiki_selected_laya_selected_execution.run(project)
             self.assertEqual(result['reason'], 'compile_worker_failed')
             self.assertIn(result.get('detail'), {'worker_value_error', 'worker_runtime_error'})
             self.assertNotIn('private', json.dumps(result))
             self.assertNotIn('secret', json.dumps(result))
 
     def test_unknown_deferral_reason_does_not_leak_message(self):
-        with mock.patch.object(wiki_selected_laya, '_run',
+        with mock.patch.object(wiki_selected_laya_selected_execution, '_run',
                                side_effect=ResourceDeferred('/private/secret')):
-            self.assertEqual(wiki_selected_laya.run(Path(os.environ['HOME'])),
+            self.assertEqual(wiki_selected_laya_selected_execution.run(Path(os.environ['HOME'])),
                              {'state': 'deferred', 'reason': 'resource_deferred'})
 
 

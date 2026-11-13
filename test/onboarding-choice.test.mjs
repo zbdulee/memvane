@@ -42,7 +42,7 @@ function sessionStart(home, project, session) {
 }
 
 function choice(home, action, project, ...extra) {
-  const result = spawnSync('python3', ['-B', 'core/setup_entry.py', action, '--project', project, ...extra], {
+  const result = spawnSync('python3', ['-B', 'entry/setup.py', action, '--project', project, ...extra], {
     encoding: 'utf8', timeout: 30000, env: env(home),
   });
   let body = null;
@@ -180,7 +180,7 @@ test('declining never selects a route or creates index, wiki or learning state',
     assert.equal(choice(home, 'onboarding-skip', project, '--session', 'sess-1').status, 0);
     assert.equal(choice(home, 'onboarding-never', project).status, 0);
 
-    const classify = spawnSync('python3', ['-B', 'core/laya_index_host_route.py', 'classify', 'update-queued', project],
+    const classify = spawnSync('python3', ['-B', 'entry/run.py', 'classify', 'update-queued', project],
       { encoding: 'utf8', env: env(home) });
     assert.equal(classify.stdout.trim(), 'legacy', classify.stderr);
     for (const action of OTHER_ACTIONS) {

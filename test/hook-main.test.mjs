@@ -14,7 +14,7 @@ import { removeTemp } from './helpers/temp.mjs';
 // The exception lands in the install event log bound by the entry point
 // (core/event_log.py); nothing reads a QMD_RECALL_LOG path any more.
 function cleanEnv(env = {}) {
-  return { ...process.env, PYTHONPATH: 'core', ...env };
+  return { ...process.env, PYTHONPATH: '.', ...env };
 }
 
 function runPy(code, env = {}) {
@@ -39,7 +39,7 @@ test('hook_main.run: 예외를 바인딩된 설치 이벤트 로그에 hook.erro
   const log = join(dir, 'recall.log');
   try {
     const out = runPy(`
-import hook_main, event_log
+import hook_main; import memvane.diagnostics.event_log as event_log
 event_log.bind(${JSON.stringify(dir)}, install="i1", host="claude", session="s-1")
 def boom():
     raise ValueError("distinct-marker-42")
@@ -118,8 +118,8 @@ for (const script of ['wiki_compile_enqueue.py']) {
     // its own hook_main wrapper the same way `python3 core/<script>` would.
     const code = `
 import sys, io, json
-sys.path.insert(0, 'core')
-import config as qmd_config
+sys.path.insert(0, '.')
+import memvane.settings.config as qmd_config
 def boom(*a, **k):
     raise PermissionError("simulated sandboxed fs error")
 qmd_config.load_project_config = boom

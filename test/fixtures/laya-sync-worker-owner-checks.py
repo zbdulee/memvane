@@ -9,12 +9,12 @@ import unittest
 from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[2]
-sys.path.insert(0,str(ROOT/'core'))
+sys.path.insert(0,str(ROOT))
 spec=importlib.util.spec_from_file_location('worker_owner_seed',ROOT/'test/fixtures/laya-product-sync-worker-checks.py')
 seed=importlib.util.module_from_spec(spec);spec.loader.exec_module(seed)
-from memvane.sync import product_sync_worker as worker
+from memvane.sync import product_sync_worker as worker; import memvane.journal.install_journal as worker_install_journal
 from laya_index_runtime import LayaIndexRuntime
-from laya_index_sync import sync_owner
+from memvane.runtime.sync_owner_lock import sync_owner
 from memvane.wiki.intake import wiki_discovery as discovery
 from memvane.resident import embed_resident as resident
 from memvane.resident import resident_service as resident_service
@@ -34,7 +34,7 @@ import json,signal,sys
 from pathlib import Path
 signal.alarm(20)
 sys.path.insert(0,sys.argv[1])
-from laya_index_sync import sync_owner
+from memvane.runtime.sync_owner_lock import sync_owner
 with sync_owner(Path(sys.argv[2])) as owner:
     print(json.dumps(dict(owned=owner is not None)),flush=True)
     if owner is not None:assert sys.stdin.readline()=='RELEASE\n'
@@ -45,7 +45,7 @@ class WorkerOwnerChecks(unittest.TestCase):
     @contextmanager
     def held_owner(self,queue):
         import select
-        child=subprocess.Popen([sys.executable,'-B','-I','-c',HOLDER,str(ROOT/'core'),str(queue)],
+        child=subprocess.Popen([sys.executable,'-B','-I','-c',HOLDER,str(ROOT),str(queue)],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
         try:
             if not select.select([child.stdout],[],[],6)[0]:raise RuntimeError('owner readiness timeout')
@@ -66,7 +66,7 @@ class WorkerOwnerChecks(unittest.TestCase):
             mock.patch.object(journal,'journal_version',return_value=4),
             mock.patch.object(worker,'ReviewedLocalQmdProvider',fixture.provider_class()),
             mock.patch.object(worker,'resource_report',return_value={'ready':True}),
-            mock.patch.object(worker,'verify_selected_route',side_effect=lambda _d:fixture.proof()),
+            mock.patch.object(worker_install_journal,'verify_selected_route_for_write',side_effect=lambda _d:fixture.proof()),
             mock.patch.object(resident,'probe',return_value='absent'),
             mock.patch.object(resident,'read_owner_state',return_value=None),
             mock.patch.object(discovery,'observe_grants',return_value=None)]
@@ -79,7 +79,7 @@ class WorkerOwnerChecks(unittest.TestCase):
         return fixture
 
     def available(self,queue):
-        result=subprocess.run([sys.executable,'-B','-I','-c',PROBE,str(ROOT/'core'),str(queue)],
+        result=subprocess.run([sys.executable,'-B','-I','-c',PROBE,str(ROOT),str(queue)],
             encoding='utf8',capture_output=True,timeout=6)
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)['available']
@@ -174,7 +174,7 @@ class WorkerOwnerChecks(unittest.TestCase):
         import select
         import laya_index_sync as sync
         fixture=self.fixture(True)
-        child=subprocess.Popen([sys.executable,'-B','-I','-c',HOLDER,str(ROOT/'core'),str(fixture.queue_path)],
+        child=subprocess.Popen([sys.executable,'-B','-I','-c',HOLDER,str(ROOT),str(fixture.queue_path)],
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,encoding='utf8')
         attempts=[];original=sync._sync_anchor
         @contextmanager

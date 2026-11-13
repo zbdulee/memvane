@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { isolatedHomeProject, removeTemp, tempCacheDir } from './helpers/temp.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const CORE = join(REPO_ROOT, 'core');
+const CORE = REPO_ROOT;
 const LIVE_DIR = join(REPO_ROOT, 'test', 'fixtures', 'live-settings');
 
 const CACHE = tempCacheDir('deprecated-keys');
@@ -37,7 +37,7 @@ function childEnv(home) {
 
 const DEPRECATED_PY = `import json, sys
 sys.path.insert(0, sys.argv[1])
-import config as qmd_config
+import memvane.settings.config as qmd_config
 with open(sys.argv[2], encoding="utf-8") as fh:
     raw = json.load(fh)
 print(json.dumps({
@@ -76,7 +76,7 @@ const WRITERS = {
     mkdirSync(join(dir, '.auto-context'), { recursive: true });
     const py = `import json, sys
 sys.path.insert(0, sys.argv[1])
-import wiki_compile_defaults as d
+import memvane.wiki.compile.wiki_compile_defaults as d
 with open(sys.argv[2], "w", encoding="utf-8") as fh:
     json.dump({"compile": d.compile_block(sys.argv[1])}, fh, ensure_ascii=False)
 `;

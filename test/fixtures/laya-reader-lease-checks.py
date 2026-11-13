@@ -26,7 +26,7 @@ spec.loader.exec_module(base)
 CHILD=r'''
 import json,signal,sys
 sys.path.insert(0,sys.argv[1])
-import laya_reader_lease as lease
+import memvane.journal.reader_lease as lease
 signal.alarm(12)
 try:
     if sys.argv[3]=='prepare':
@@ -42,7 +42,7 @@ except (ValueError,OSError) as exc:
 CAS_CHILD=r'''
 import json,pathlib,sys
 sys.path.insert(0,sys.argv[1])
-import laya_install_journal as journal,laya_journal_reader as reader,laya_product_bundle as bundle
+import laya_product_bundle as bundle; import memvane.journal.install_journal as journal; import memvane.journal.journal_reader as reader
 p=json.loads(pathlib.Path(sys.argv[2]).read_text())
 plugin=pathlib.Path(p['plugin'])
 def inspect(root):
@@ -71,7 +71,7 @@ class ReaderLeaseChecks(unittest.TestCase):
         self.install=base.J.inspect_journal(self.case.journal)['selected']['installId']
 
     def api(self):
-        if importlib.util.find_spec('laya_reader_lease') is None:
+        if importlib.util.find_spec('memvane.journal.reader_lease') is None:
             self.fail('T2 feature RED: lifetime API absent after actual v5 conversion; not a T1 regression')
         api=importlib.import_module('memvane.journal.reader_lease')
         for name in ('reader_lifetime','resolve_endpoint'):
@@ -284,7 +284,7 @@ class ReaderLeaseChecks(unittest.TestCase):
         def race(db):
             result=actual(db)
             if not published:
-                run=subprocess.run([sys.executable,'-B','-I','-c',CAS_CHILD,str(ROOT/'core'),str(payload)],
+                run=subprocess.run([sys.executable,'-B','-I','-c',CAS_CHILD,str(ROOT),str(payload)],
                     capture_output=True,encoding='utf8',timeout=15)
                 self.assertEqual(run.returncode,0,run.stderr)
                 published.append(json.loads(run.stdout))
@@ -332,7 +332,7 @@ class ReaderLeaseChecks(unittest.TestCase):
                 copy=self.case.state/'old-journal-image.sqlite'
                 copy.write_bytes(ancestor);copy.chmod(0o600);os.replace(copy,self.case.journal)
             elif reads==2:
-                run=subprocess.run([sys.executable,'-B','-I','-c',CAS_CHILD,str(ROOT/'core'),str(payload)],
+                run=subprocess.run([sys.executable,'-B','-I','-c',CAS_CHILD,str(ROOT),str(payload)],
                     capture_output=True,encoding='utf8',timeout=15)
                 self.assertEqual(run.returncode,0,run.stderr)
                 branched.append(json.loads(run.stdout))

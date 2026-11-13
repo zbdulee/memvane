@@ -29,8 +29,8 @@ from memvane.settings import config  # noqa: E402
 import laya_bundle_upgrade as upgrade  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
-from memvane.route import index_host_route as host_route  # noqa: E402
-from memvane.install import initial_build as build  # noqa: E402
+from memvane.route import index_host_route as host_route; import memvane.journal.route_selection as host_route_route_selection  # noqa: E402
+from memvane.journal import initial_build as build  # noqa: E402
 from memvane.journal import install_journal as journal_mod  # noqa: E402
 import laya_project_dir_move as dir_move  # noqa: E402
 import laya_state_move  # noqa: E402
@@ -104,7 +104,7 @@ class MoveCase(SelectedProject):
         self.publish_all(roots)
         self.rebind_fixture_ledger(roots)
         # The raw discovery cursor names both collection roots.
-        decision = host_route.select_route(str(self.project), action='recall')
+        decision = host_route_route_selection.select_route(str(self.project), action='recall')
         self.assertEqual(decision['state'], 'candidate', decision)
         self.cursor, _grants, _lock = discovery._paths(decision)
         discovery._write(self.cursor, discovery._state_doc(decision, self.head()[0], {}, {}))
@@ -324,7 +324,7 @@ class MigrationTests(MoveCase):
         self.assertEqual(again[0]['status'], 'current', again)
 
     def test_queued_verify_jobs_follow_the_folder(self):
-        from memvane.wiki.verify import wiki_verify_worker as verify
+        from memvane.wiki.compile import wiki_verify_worker as verify
         self.move()
         tag = 'a' * 16
         job = {'targetPath': '.auto-context/wiki/concepts/otter-ledger.md',
@@ -483,9 +483,9 @@ class GitBranchTests(MoveCase):
         self.assertEqual(project_dir.layout(self.project), 'split')
         self.assertTrue((self.auto / 'settings.json').is_file())
         # Writers hold: no sync publishes the partial .memvane/wiki as deletions.
-        update = host_route.select_route(str(self.project), action='update')
+        update = host_route_route_selection.select_route(str(self.project), action='update')
         self.assertEqual(update, {'state': 'blocked', 'reason': 'project_dir_split'})
-        self.assertEqual(host_route.select_route(str(self.project), action='index')['reason'],
+        self.assertEqual(host_route_route_selection.select_route(str(self.project), action='index')['reason'],
                          'project_dir_split')
         # Search keeps the published index (deterministic precedence: .memvane).
         decision = self.decision()
@@ -526,9 +526,9 @@ class GitBranchTests(MoveCase):
         self.assertEqual(decision['state'], 'candidate', decision)
         _gen, rows = self.recall(decision)
         self.assertEqual(rows[0]['path'], self.WIKI + '/concepts/otter-ledger.md')
-        self.assertEqual(host_route.select_route(str(self.project), action='gate')['state'],
+        self.assertEqual(host_route_route_selection.select_route(str(self.project), action='gate')['state'],
                          'candidate')
-        self.assertEqual(host_route.select_route(str(self.project), action='update')['reason'],
+        self.assertEqual(host_route_route_selection.select_route(str(self.project), action='update')['reason'],
                          'project_dir_split')
         self.assertEqual(self.head(), (gen, members))
         git(self.project, 'checkout', '-q', 'moved')
@@ -543,9 +543,9 @@ class GitBranchTests(MoveCase):
         git(self.project, 'checkout', '-q', 'before')
         self.assertFalse((self.project / '.memvane/wiki').exists())
         self.assertEqual(project_dir.layout(self.project), 'split')
-        self.assertEqual(host_route.select_route(str(self.project), action='gate')['state'],
+        self.assertEqual(host_route_route_selection.select_route(str(self.project), action='gate')['state'],
                          'candidate')
-        self.assertEqual(host_route.select_route(str(self.project), action='update')['reason'],
+        self.assertEqual(host_route_route_selection.select_route(str(self.project), action='update')['reason'],
                          'project_dir_split')
         self.assertEqual(self.head(), (gen, members))
         git(self.project, 'checkout', '-q', 'moved')
@@ -559,7 +559,7 @@ class GitBranchTests(MoveCase):
         self.assertTrue(rows)
 
     def test_writers_recheck_with_their_own_action_and_stop_mid_run(self):
-        from memvane.sync import product_sync_worker as sync_worker
+        from memvane.sync import product_sync_worker as sync_worker; import memvane.journal.install_journal as sync_worker_install_journal
         from memvane.wiki.workspace import wiki_selected_laya
         # The fixture has no sealed plugin bundle: prove routes read-only.
         stack = ExitStack()
@@ -573,15 +573,15 @@ class GitBranchTests(MoveCase):
         self.commit_move()
         gen, members = self.head()
         # A sync and a compile run proved the route before the branch switch.
-        decision = host_route.select_route(str(self.project), action='update')
-        proof = sync_worker.verify_selected_route(decision)
+        decision = host_route_route_selection.select_route(str(self.project), action='update')
+        proof = sync_worker_install_journal.verify_selected_route_for_write(decision)
         bound = wiki_selected_laya.selected(self.project)
         extra = self.project / '.memvane/wiki/concepts/untracked-note.md'
         extra.write_text(card('Untracked note', 'untracked kingfisher note'))
         git(self.project, 'checkout', '-q', 'before')
         # Their next recheck before any publish or card write refuses.
         with self.assertRaisesRegex(Exception, 'project_dir_split'):
-            sync_worker.verify_selected_route(decision)
+            sync_worker_install_journal.verify_selected_route_for_write(decision)
         with self.assertRaises(ValueError):
             wiki_selected_laya.recheck(bound)
         self.assertTrue(proof['productRouteAllowed'])
@@ -603,7 +603,7 @@ class GitBranchTests(MoveCase):
         git(self.project, 'checkout', '-q', 'before')
         tree = self.home / 'wt-side'
         git(self.project, 'worktree', 'add', '-q', str(tree), 'side')
-        before = host_route.select_route(str(tree), action='recall')
+        before = host_route_route_selection.select_route(str(tree), action='recall')
         self.assertEqual(before['state'], 'worktree', before)
         seen, inside = [], threading.Event()
 
@@ -620,7 +620,7 @@ class GitBranchTests(MoveCase):
         self.move(step=pause)
         thread.join()
         self.assertEqual(seen[0]['state'], 'worktree', seen[0])
-        after = host_route.select_route(str(tree), action='recall')
+        after = host_route_route_selection.select_route(str(tree), action='recall')
         self.assertTrue(response._relocated(before, after))
         self.assertTrue(response._project_dir_moved(before))
         _gen, rows = self.recall(after['mainRoute'])
@@ -635,7 +635,7 @@ class GitBranchTests(MoveCase):
         for tree, folder in ((old_tree, '.auto-context'), (new_tree, '.memvane')):
             with self.subTest(folder=folder):
                 self.assertTrue((tree / folder / 'settings.json').is_file())
-                decision = host_route.select_route(str(tree), action='recall')
+                decision = host_route_route_selection.select_route(str(tree), action='recall')
                 self.assertEqual(decision['state'], 'worktree', decision)
                 main = decision['mainRoute']
                 self.assertEqual(main['projectRoot'], str(self.project))

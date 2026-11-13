@@ -13,7 +13,7 @@ function runLib(pyBody, input) {
 test('extractor CLI resolution preserves PATH choice before fnm/bun fallback', () => {
   const out = JSON.parse(runLib(`import sys,os,json,tempfile
 from pathlib import Path
-sys.path.insert(0,'core/extractors');import lib
+sys.path.insert(0,'.');import memvane.wiki.engines.extractors.lib as lib
 with tempfile.TemporaryDirectory() as tmp:
  home=Path(tmp);os.environ['HOME']=tmp
  preferred=home/'host-bin';preferred.mkdir()
@@ -37,7 +37,7 @@ test('adapter reports a bounded CLI signal failure without exposing prompt body'
     writeFileSync(fake, '#!/bin/sh\nkill -KILL $$\n', { mode: 0o700 });
     let failure;
     try {
-      execFileSync('python3', ['core/extractors/codex_adapter.py'], {
+      execFileSync('python3', ['entry/run.py', 'extractor-codex'], {
         input: JSON.stringify({ task: 'verify', card: { content: 'PRIVATE_SYNTHETIC_BODY' }, sources: [] }),
         encoding: 'utf8', env: { ...process.env, QMD_EXTRACTOR_CODEX_BIN: fake }, stdio: 'pipe',
       });
@@ -64,7 +64,7 @@ test('adapter records successful native child identity without exposing the prom
   try {
     const fake = join(d, 'success-codex');
     writeFileSync(fake, '#!/bin/sh\nprintf warning >&2\nprintf \'{"verdict":"pass","reason":"synthetic"}\\n\'\n', { mode: 0o700 });
-    const result = spawnSync('python3', ['core/extractors/codex_adapter.py'], {
+    const result = spawnSync('python3', ['entry/run.py', 'extractor-codex'], {
       input: JSON.stringify({ task: 'verify', card: {content:'PRIVATE_SYNTHETIC_BODY'}, sources: [] }),
       encoding: 'utf8', env: { ...process.env, QMD_EXTRACTOR_CODEX_BIN: fake },
     });
@@ -87,7 +87,7 @@ test('adapter does not forward child stderr containing source or credentials', (
   try {
     const fake = join(d, 'private-codex');
     writeFileSync(fake, '#!/bin/sh\nprintf "PRIVATE_SOURCE FAKE_CREDENTIAL" >&2\nprintf \'{"verdict":"pass","reason":"synthetic"}\\n\'\n', { mode: 0o700 });
-    const result = spawnSync('python3', ['core/extractors/codex_adapter.py'], {
+    const result = spawnSync('python3', ['entry/run.py', 'extractor-codex'], {
       input: JSON.stringify({task:'verify',card:{content:'PRIVATE_SOURCE'},sources:[]}),
       encoding:'utf8', env:{...process.env,QMD_EXTRACTOR_CODEX_BIN:fake,MEMVANE_EVENT_LOG_PROMPTS:'1'},
     });
@@ -102,7 +102,7 @@ test('adapter diagnostic resolves a bare-name override through the child PATH', 
   try {
     const fake = join(d, 'fake-codex');
     writeFileSync(fake, '#!/bin/sh\nexit 7\n', { mode: 0o700 });
-    const result = spawnSync('python3', ['core/extractors/codex_adapter.py'], {
+    const result = spawnSync('python3', ['entry/run.py', 'extractor-codex'], {
       input: JSON.stringify({ task: 'verify', card: {}, sources: [] }), encoding: 'utf8',
       env: { ...process.env, PATH: `${d}:${process.env.PATH}`, QMD_EXTRACTOR_CODEX_BIN: 'fake-codex' },
     });
@@ -115,7 +115,7 @@ test('adapter diagnostic resolves a bare-name override through the child PATH', 
 
 test('adapter timeout records its own cleanup separately from an unexplained SIGKILL', () => {
   const result=spawnSync('python3',['-c',`import sys,json
-sys.path.insert(0,'core/extractors');import lib
+sys.path.insert(0,'.');import memvane.wiki.engines.extractors.lib as lib
 out,code,err=lib.run_isolated_detailed([sys.executable,'-c','import time;time.sleep(2)'],0.05)
 print(json.dumps({'code':code}))`],{encoding:'utf8'});
   assert.equal(result.status,0,'timeout helper must return its classified code');
@@ -130,7 +130,7 @@ print(json.dumps({'code':code}))`],{encoding:'utf8'});
 });
 
 test('extract_candidates pulls JSON object from fenced/prose output', () => {
-  const py = `import sys; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 text = 'Here you go:\\n\\u0060\\u0060\\u0060json\\n{"candidates":[{"title":"T"}]}\\n\\u0060\\u0060\\u0060\\nDone.'
 import json; print(json.dumps(lib.extract_candidates(text)))`;
   const out = JSON.parse(runLib(py, ''));
@@ -138,14 +138,14 @@ import json; print(json.dumps(lib.extract_candidates(text)))`;
 });
 
 test('extract_candidates returns empty dict when no JSON present', () => {
-  const py = `import sys; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 import json; print(json.dumps(lib.extract_candidates('no json here')))`;
   assert.deepEqual(JSON.parse(runLib(py, '')), {});
 });
 
 test('extract_candidates handles unbalanced braces inside string values', () => {
   // summary contains a lone "{" — a naive brace counter would never close the object
-  const py = `import sys,json; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys,json; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 text = json.dumps({"candidates":[{"title":"T","summary":"code: function foo() {"}]})
 out = lib.extract_candidates('here:\\n' + text + '\\nthanks')
 print(json.dumps(out))`;
@@ -155,7 +155,7 @@ print(json.dumps(out))`;
 });
 
 test('build_prompt embeds source content and a candidates-only instruction', () => {
-  const py = `import sys,json; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys,json; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 p=lib.build_prompt({'source':{'path':'docs/x.md','content':'UNIQ_SRC_BODY'},'wiki':{'schema':'S','logTail':''}})
 print(json.dumps({'has_body':'UNIQ_SRC_BODY' in p,'has_candidates':'candidates' in p,'has_identity':'canonicalKey' in p and 'aliases' in p and 'targetPath' in p,'no_tools':'tool' in p.lower()}))`;
   const out = JSON.parse(runLib(py, ''));
@@ -168,8 +168,8 @@ print(json.dumps({'has_body':'UNIQ_SRC_BODY' in p,'has_candidates':'candidates' 
 test('build_prompt renders similarPages section and omits EXISTING WIKI INDEX when present', () => {
   const script = `
 import sys
-sys.path.insert(0, 'core/extractors')
-import lib
+sys.path.insert(0, '.')
+import memvane.wiki.engines.extractors.lib as lib
 payload = {
     'source': {'path': 'docs/a.md', 'content': 'new source text'},
     'wiki': {
@@ -193,8 +193,8 @@ print(lib.build_prompt(payload))
 test('build_prompt has no index section and ignores a stale wiki.index when similarPages is absent', () => {
   const scriptWithout = `
 import sys
-sys.path.insert(0, 'core/extractors')
-import lib
+sys.path.insert(0, '.')
+import memvane.wiki.engines.extractors.lib as lib
 payload = {
     'source': {'path': 'docs/a.md', 'content': 'new source text'},
     'wiki': {'schema': 'SCHEMA', 'index': '- some/old/index/line.md - Old Title'},
@@ -209,8 +209,8 @@ print(lib.build_prompt(payload))
 
   const scriptEmpty = `
 import sys
-sys.path.insert(0, 'core/extractors')
-import lib
+sys.path.insert(0, '.')
+import memvane.wiki.engines.extractors.lib as lib
 payload = {
     'source': {'path': 'docs/a.md', 'content': 'new source text'},
     'wiki': {'schema': 'SCHEMA', 'similarPages': []},
@@ -222,7 +222,7 @@ print(lib.build_prompt(payload))
 });
 
 test('build_verify_prompt embeds card/sources and adversarial verdict instruction', () => {
-  const py = `import sys,json; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys,json; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 p=lib.build_verify_prompt({'task':'verify','card':{'path':'.auto-context/wiki/concepts/x.md','content':'CARD_BODY'},'sources':[{'path':'docs/src.md','content':'SRC_BODY','truncated':True}]})
 print(json.dumps({'has_card':'CARD_BODY' in p,'has_src':'SRC_BODY' in p,'has_trunc':'truncated: true' in p,'has_verdict':'"verdict"' in p,'has_refute':'REFUTE' in p,'no_tools':'Do NOT use any tools' in p}))`;
   const out = JSON.parse(runLib(py, ''));
@@ -235,7 +235,7 @@ print(json.dumps({'has_card':'CARD_BODY' in p,'has_src':'SRC_BODY' in p,'has_tru
 });
 
 test('extract_verdict pulls last valid verdict object, ignores invalid verdict values', () => {
-  const py = `import sys,json; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys,json; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 text = 'thinking {"verdict":"maybe"} then\\n{"verdict":"fail","claims":[{"claim":"c","supported":False if 0 else False}],"reasons":["contradicts"]}'
 text = 'thinking {"verdict":"maybe"} then\\n' + json.dumps({"verdict":"fail","claims":[{"claim":"c","supported":False}],"reasons":["contradicts"]})
 print(json.dumps(lib.extract_verdict(text)))`;
@@ -254,7 +254,7 @@ test('claude adapter: task=verify payload → verify prompt 사용 + verdict JSO
     card: { path: '.auto-context/wiki/concepts/x.md', content: 'CARD_BODY' },
     sources: [{ path: 'docs/s.md', content: 'SRC_BODY', truncated: false }],
   });
-  const out = execFileSync('python3', ['core/extractors/claude_adapter.py'], {
+  const out = execFileSync('python3', ['entry/run.py', 'extractor-claude'], {
     cwd: process.cwd(), input: payload, encoding: 'utf8',
     env: { ...process.env, QMD_EXTRACTOR_CLAUDE_BIN: fakeCli },
   });
@@ -269,7 +269,7 @@ test('claude adapter: task=verify payload → verify prompt 사용 + verdict JSO
 });
 
 test('run_isolated injects QMD_SANDBOX=1 into the child env', () => {
-  const py = `import sys; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 out, code = lib.run_isolated(['bash','-lc','printf %s "$QMD_SANDBOX"'], 10)
 print(out)`;
   assert.equal(runLib(py, '').trim(), '1');
@@ -284,7 +284,7 @@ test('claude adapter calls its CLI in a temp cwd and emits candidates', () => {
   // fake CLI: record the cwd it ran in, its args, and the QMD_SANDBOX env it inherited
   writeFileSync(fakeCli, `#!/usr/bin/env bash\npwd > "${cwdLog}"\necho "$@" > "${argsLog}"\nprintf '%s' "$QMD_SANDBOX" > "${sandboxLog}"\necho 'sure:'\necho '{"candidates":[{"title":"C","summary":"Durable claude.","suggestedType":"concept","confidence":"high"}]}'\n`, { mode: 0o755 });
   const payload = JSON.stringify({ source: { path: 'docs/x.md', content: 'body' }, wiki: {} });
-  const out = execFileSync('python3', ['core/extractors/claude_adapter.py'], {
+  const out = execFileSync('python3', ['entry/run.py', 'extractor-claude'], {
     cwd: process.cwd(), input: payload, encoding: 'utf8',
     env: { ...process.env, QMD_EXTRACTOR_CLAUDE_BIN: fakeCli },
   });
@@ -304,7 +304,7 @@ test('claude adapter calls its CLI in a temp cwd and emits candidates', () => {
 test('claude adapter exits 127 when its CLI is absent', () => {
   let code = 0;
   try {
-    execFileSync('python3', ['core/extractors/claude_adapter.py'], {
+    execFileSync('python3', ['entry/run.py', 'extractor-claude'], {
       cwd: process.cwd(), input: '{"source":{"path":"x","content":"y"},"wiki":{}}', encoding: 'utf8',
       env: { ...process.env, QMD_EXTRACTOR_CLAUDE_BIN: '/nonexistent/claude-xyz', PATH: '/usr/bin:/bin' },
     });
@@ -317,7 +317,7 @@ test('codex adapter passes read-only sandbox and emits candidates', () => {
   const argsLog = join(d, 'args.txt');
   const fakeCli = join(d, 'fake-codex');
   writeFileSync(fakeCli, `#!/usr/bin/env bash\necho "$@" > "${argsLog}"\necho '{"candidates":[{"title":"CX","summary":"Durable codex.","suggestedType":"decision","confidence":"medium"}]}'\n`, { mode: 0o755 });
-  const out = execFileSync('python3', ['core/extractors/codex_adapter.py'], {
+  const out = execFileSync('python3', ['entry/run.py', 'extractor-codex'], {
     cwd: process.cwd(), input: '{"source":{"path":"docs/x.md","content":"b"},"wiki":{}}', encoding: 'utf8',
     env: { ...process.env, QMD_EXTRACTOR_CODEX_BIN: fakeCli },
   });
@@ -336,7 +336,7 @@ test('hermes adapter passes safe-mode/no-tools and emits candidates', () => {
   const argsLog = join(d, 'args.txt');
   const fakeCli = join(d, 'fake-hermes');
   writeFileSync(fakeCli, `#!/usr/bin/env bash\necho "$@" > "${argsLog}"\necho '{"candidates":[{"title":"HM","summary":"Durable hermes.","suggestedType":"entity","confidence":"low"}]}'\n`, { mode: 0o755 });
-  const out = execFileSync('python3', ['core/extractors/hermes_adapter.py'], {
+  const out = execFileSync('python3', ['entry/run.py', 'extractor-hermes'], {
     cwd: process.cwd(), input: '{"source":{"path":"docs/x.md","content":"b"},"wiki":{}}', encoding: 'utf8',
     env: { ...process.env, QMD_EXTRACTOR_HERMES_BIN: fakeCli },
   });
@@ -362,15 +362,15 @@ test('built-in adapters apply requested effort and emit bounded _qmd audit metad
   const hermes = make('hermes', hermesArgs, '{"candidates":[]}');
   const base = { source: { path: 'docs/x.md', content: 'body' }, wiki: {} };
   try {
-    const claudeOut = JSON.parse(execFileSync('python3', ['core/extractors/claude_adapter.py'], {
+    const claudeOut = JSON.parse(execFileSync('python3', ['entry/run.py', 'extractor-claude'], {
       cwd: process.cwd(), input: JSON.stringify({ ...base, _qmd: { reasoningEffort: { requested: 'high' } } }), encoding: 'utf8',
       env: { ...process.env, QMD_EXTRACTOR_CLAUDE_BIN: claude },
     }));
-    const codexOut = JSON.parse(execFileSync('python3', ['core/extractors/codex_adapter.py'], {
+    const codexOut = JSON.parse(execFileSync('python3', ['entry/run.py', 'extractor-codex'], {
       cwd: process.cwd(), input: JSON.stringify({ ...base, _qmd: { reasoningEffort: { requested: 'xhigh' } } }), encoding: 'utf8',
       env: { ...process.env, QMD_EXTRACTOR_CODEX_BIN: codex },
     }));
-    const hermesOut = JSON.parse(execFileSync('python3', ['core/extractors/hermes_adapter.py'], {
+    const hermesOut = JSON.parse(execFileSync('python3', ['entry/run.py', 'extractor-hermes'], {
       cwd: process.cwd(), input: JSON.stringify({ ...base, _qmd: { reasoningEffort: { requested: 'medium' } } }), encoding: 'utf8',
       env: { ...process.env, QMD_EXTRACTOR_HERMES_BIN: hermes },
     }));
@@ -396,7 +396,7 @@ test('effort-option rejection retries exactly once without effort and records re
   const fake = join(d, 'claude');
   writeFileSync(fake, `#!/usr/bin/env bash\ncount=$(cat ${JSON.stringify(count)} 2>/dev/null || echo 0)\ncount=$((count + 1))\nprintf '%s' "$count" > ${JSON.stringify(count)}\nif printf '%s' "$*" | grep -q -- '--effort'; then echo "unknown option '--effort'" >&2; exit 2; fi\nprintf '%s' '{"candidates":[]}'\n`, { mode: 0o755 });
   try {
-    const out = JSON.parse(execFileSync('python3', ['core/extractors/claude_adapter.py'], {
+    const out = JSON.parse(execFileSync('python3', ['entry/run.py', 'extractor-claude'], {
       cwd: process.cwd(), input: JSON.stringify({ source: { path: 'x', content: 'y' }, wiki: {}, _qmd: { reasoningEffort: { requested: 'high' } } }), encoding: 'utf8',
       env: { ...process.env, QMD_EXTRACTOR_CLAUDE_BIN: fake },
     }));
@@ -425,10 +425,10 @@ test('generic failure and a different engine rejection are never retried', () =>
     } catch (error) { assert.equal(error.status, 2); }
   };
   try {
-    run('core/extractors/claude_adapter.py', 'QMD_EXTRACTOR_CLAUDE_BIN', make('generic', 'network failure'));
+    run('memvane/wiki/engines/extractors/claude_adapter.py', 'QMD_EXTRACTOR_CLAUDE_BIN', make('generic', 'network failure'));
     assert.equal(readFileSync(count, 'utf8'), '1');
     writeFileSync(count, '0');
-    run('core/extractors/codex_adapter.py', 'QMD_EXTRACTOR_CODEX_BIN', make('wrong-engine', "unknown option '--effort'"));
+    run('memvane/wiki/engines/extractors/codex_adapter.py', 'QMD_EXTRACTOR_CODEX_BIN', make('wrong-engine', "unknown option '--effort'"));
     assert.equal(readFileSync(count, 'utf8'), '1');
   } finally { removeTemp(d); }
 });

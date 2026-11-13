@@ -9,9 +9,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.install import initial_build as laya_initial_build
-from memvane.install import product_install as product
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.journal import initial_build as laya_initial_build
+from memvane.app import setup_workflow as product
 from memvane.app import setup_entry
 
 

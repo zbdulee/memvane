@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[2]
 # Test-only OS observation provider, also installed in sanitized worker children.
 # The product still evaluates freshness, pressure, memory and load itself.
 RESOURCE_OBSERVER = '''
-import resource_platform
+import memvane.runtime.resource_platform as resource_platform
 from unittest.mock import patch
 class FixtureObserver:
     level = 'normal'
@@ -154,7 +154,7 @@ else:
     for host in ('claude', 'codex'):
         target = home/('.'+host)/'plugins/cache/qmd-auto-context-marketplace/qmd-auto-context'/version
         target.mkdir(parents=True, mode=0o700)
-        for directory in ('core', 'hooks'):
+        for directory in ('memvane', 'entry', 'hooks'):
             shutil.copytree(REPO/directory, target/directory,
                 ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         for relative in ('package.json', '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
@@ -162,13 +162,13 @@ else:
         installs[host] = target
     # Execute the copied installed code, exactly as an enrolled host does;
     # a source checkout is correctly rejected as an execution target.
-    sys.path.insert(0,str(installs['codex']/'core'))
-    isolate(home,observation_bootstrap='\nsys.path.insert(0,'+repr(str(installs['codex']/'core'))+')\n'
+    sys.path.insert(0,str(installs['codex']))
+    isolate(home,observation_bootstrap='\nsys.path.insert(0,'+repr(str(installs['codex']))+')\n'
         +RESOURCE_OBSERVER+'\nsys.path.pop(0)\n')
     from memvane.runtime import resource_platform
     resource_observer=resource_platform.adapter_for(sys.platform)
     from memvane.learning.context_learning import general_teacher, shared, project_scope
-    from memvane.learning.context_learning.resource_coordination import Coordinator
+    from memvane.runtime.resource_coordination import Coordinator
     from memvane.runtime.runtime_work import WakeQueue
     assert Coordinator().root.is_relative_to(home)
     assert WakeQueue().root.is_relative_to(home)
@@ -261,13 +261,13 @@ def audit(event,args):
   raise AssertionError('isolated service/model subprocess forbidden')
 sys.addaudithook(audit)
 sys.path.insert(0,sys.argv[1])
-import resource_platform
+import memvane.runtime.resource_platform as resource_platform
 assert resource_platform.adapter_for(sys.platform).level=='normal'
 from pathlib import Path
 import os,pwd
 assert Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()==Path.home().resolve()
-from memvane.learning.context_learning.resource_coordination import Coordinator
-from runtime_work import WakeQueue
+from memvane.runtime.resource_coordination import Coordinator
+from memvane.runtime.runtime_work import WakeQueue
 assert Coordinator().root.is_relative_to(Path.home())
 assert WakeQueue().root.is_relative_to(Path.home())
 import recall,hook_main
@@ -276,7 +276,7 @@ assert not attempts,attempts
 '''
     def recall(project,fixture,host,prompt):
         env = {**os.environ,'QMD_QUERY_FIXTURE':str(fixture),'QMD_ENGINE':host}
-        result = subprocess.run([sys.executable,'-B','-c',child,str(installs[host]/'core')],
+        result = subprocess.run([sys.executable,'-B','-c',child,str(installs[host])],
             input=canonical({'cwd':str(project),'prompt':prompt,'hook_event_name':'UserPromptSubmit'}),
             text=True,capture_output=True,env=env,cwd=project,timeout=20,check=True)
         assert 'Synthetic Cobalt' in result.stdout, (result.stdout,result.stderr)
@@ -371,7 +371,7 @@ assert not attempts,attempts
         policies={str(namespace):shared._policy(namespace) for _,namespace,_ in projects}
         resource_observer.level = 'warning'
         resource_observer.free = 5  # warning alone no longer defers; scarce memory does
-        from memvane.learning.context_learning.resource_coordination import decision
+        from memvane.runtime.resource_coordination import decision
         from memvane.runtime import runtime_admission
         observed = runtime_admission.sample(runtime_admission.POLICY)
         assert observed['memory_pressure']['level']=='warning' and observed['ready'] is False

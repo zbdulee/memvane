@@ -16,7 +16,7 @@ import tempfile
 import tracemalloc
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_compile_worker as worker
 from memvane.wiki.card import wiki_freshness

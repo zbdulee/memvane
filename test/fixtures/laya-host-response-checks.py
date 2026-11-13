@@ -13,7 +13,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.diagnostics import event_log
 from memvane.host import host_response as response
 from memvane.wiki.card import api as card_api
@@ -82,7 +82,7 @@ def v2_decision(project="/synthetic/project"):
                 "minScore": 0, "rawFallbackMinScore": 0, "skipPaths": []}
     roots = {"raw": project + "/docs", "wiki": project + "/wiki"}
     return {**DECISION,
-            "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
+            "pluginRoot": str(Path(response.__file__).resolve().parents[2]),
             "projectRoot": project, "dbPath": "/synthetic/index.sqlite",
             "queuePath": "/synthetic/queue.sqlite", "dbIncarnation": "a" * 32,
             "vectorProfile": VECTOR_PROFILE, "collectionRoots": roots,
@@ -100,7 +100,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
     from memvane.journal import install_journal as laya_install_journal
     import laya_index_runtime
     from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-    import laya_index_source_port as source_port
+    import memvane.wiki.intake.source_scan as source_port
     from memvane.runtime import runtime_work
     calls = [] if provider_calls is None else provider_calls
 
@@ -199,7 +199,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_companion_root_requires_verifier_proof(self):
         from memvane.journal import install_journal as laya_install_journal
-        local = str(Path(response.__file__).resolve().parents[1])
+        local = str(Path(response.__file__).resolve().parents[2])
         decision = {**DECISION, 'pluginRoot': '/synthetic/owner'}
         accepted = {'productRouteAllowed': True, 'executingPluginRoot': local}
         with patch.object(laya_install_journal, 'verify_selected_route',
@@ -222,7 +222,7 @@ class ResponseChecks(unittest.TestCase):
         from memvane.settings import config
         from memvane.kernel.resource_deferred import ResourceDeferred
         decision = {**DECISION,
-                    "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
+                    "pluginRoot": str(Path(response.__file__).resolve().parents[2]),
                     "projectRoot": "/synthetic/project",
                     "dbPath": "/synthetic/index.sqlite",
                     "queuePath": "/synthetic/queue.sqlite",
@@ -258,7 +258,7 @@ class ResponseChecks(unittest.TestCase):
         from memvane.journal import install_journal as laya_install_journal
         from memvane.runtime import runtime_work
         decision = {**DECISION,
-                    "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
+                    "pluginRoot": str(Path(response.__file__).resolve().parents[2]),
                     "projectRoot": "/synthetic/project"}
         proof = {"productRouteAllowed": True, "selectionEpoch": 4,
                  "providerManifest": {"approvedProviderId": "synthetic-provider"}}
@@ -275,7 +275,7 @@ class ResponseChecks(unittest.TestCase):
         from memvane.journal import install_journal as laya_install_journal
         from memvane.runtime import runtime_work
         decision = {**DECISION,
-                    "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
+                    "pluginRoot": str(Path(response.__file__).resolve().parents[2]),
                     "projectRoot": "/synthetic/project", "collections": []}
         proof = {"productRouteAllowed": True, "selectionEpoch": 2}
         bash = {"hook_event_name": "PostToolUse", "tool_name": "Bash",
@@ -302,7 +302,7 @@ class ResponseChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='laya-host-compile-') as temp:
             root = str(Path(temp).resolve())
             decision = {**DECISION,
-                        'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
+                        'pluginRoot': str(Path(response.__file__).resolve().parents[2]),
                         'projectRoot': root}
             event = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write',
                      'tool_input': {'file_path': 'docs/a.md'}, 'cwd': root}
@@ -323,7 +323,7 @@ class ResponseChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='laya-host-wake-') as temp:
             root = Path(temp).resolve()
             decision = {**DECISION,
-                        'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
+                        'pluginRoot': str(Path(response.__file__).resolve().parents[2]),
                         'projectRoot': str(root), 'collections': []}
             proof = {'productRouteAllowed': True, 'selectionEpoch': 1}
             with patch.object(laya_install_journal, 'verify_selected_route',
@@ -428,7 +428,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertTrue(index.released)
 
     def test_same_pin_hybrid_promotes_exact_identifier_lexical_hit(self):
-        import laya_index_source_port as source_port
+        import memvane.wiki.intake.source_scan as source_port
         index = FakeIndex()
         runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT)
         seen = []
@@ -455,7 +455,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertTrue(index.released)
 
     def test_same_pin_ep_variants_are_independent_and_fused(self):
-        import laya_index_source_port as source_port
+        import memvane.wiki.intake.source_scan as source_port
         index = FakeIndex()
         runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT)
         seen = []
@@ -641,7 +641,7 @@ class ResponseChecks(unittest.TestCase):
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch('event_log.state_root_for_decision', return_value=log), \
+                 patch('memvane.diagnostics.event_log.state_root_for_decision', return_value=log), \
                  response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
@@ -680,7 +680,7 @@ class ResponseChecks(unittest.TestCase):
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch('event_log.state_root_for_decision', return_value=log), \
+                 patch('memvane.diagnostics.event_log.state_root_for_decision', return_value=log), \
                  response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
@@ -719,7 +719,7 @@ class ResponseChecks(unittest.TestCase):
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch('event_log.state_root_for_decision', return_value=log), \
+                 patch('memvane.diagnostics.event_log.state_root_for_decision', return_value=log), \
                  response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
@@ -775,7 +775,7 @@ class ResponseChecks(unittest.TestCase):
             with patch.object(response, '_v2_phase', side_effect=phase), \
                  patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                               return_value=FakeBoundCandidates()), \
-                 patch('event_log.state_root_for_decision', return_value=log), \
+                 patch('memvane.diagnostics.event_log.state_root_for_decision', return_value=log), \
                  response._event_scope('recall', 'codex', decision, {}), \
                  patch('sys.stderr', new_callable=io.StringIO) as stderr:
                 found, _ = response.query_selected_v2(
@@ -839,7 +839,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_refills_before_fusion_and_reports_exclusion_cap(self):
         from memvane.recall import keywords
-        import laya_index_source_port as source_port
+        import memvane.wiki.intake.source_scan as source_port
         runtime = SimpleNamespace(index=FakeIndex())
         seal = (SCOPE, 'generation-7', 'manifest')
         excluded = [row(path=f'wiki/excluded-{n}.md') for n in range(20)]
@@ -915,7 +915,7 @@ class ResponseChecks(unittest.TestCase):
                             general=('alpha', 'beta', 'gamma')):
         """Real ``_pinned_vector`` with a provider that is unavailable."""
         from memvane.recall import keywords
-        import laya_index_source_port as source_port
+        import memvane.wiki.intake.source_scan as source_port
         import laya_index_vector
 
         class Pinned:
@@ -969,7 +969,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(diagnostics['probeOnlyPaths'], frozenset())
 
     def test_v2_lexical_only_floor_uses_one_or_query_after_probe_deadline(self):
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
 
         class TimedIndex(FakeIndex):
             calls = []
@@ -988,7 +988,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_probe_only_rejections_are_not_counted_as_matches(self):
         from memvane.recall import keywords
-        import laya_index_source_port as source_port
+        import memvane.wiki.intake.source_scan as source_port
 
         class ProbeIndex(FakeIndex):
             def search_many(self, token, queries, limit, **_kw):
@@ -1013,7 +1013,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_lexical_full_page_with_few_proved_rows_is_capped(self):
         from memvane.recall import keywords
-        import laya_index_source_port as source_port
+        import memvane.wiki.intake.source_scan as source_port
         seal = (SCOPE, 'generation-7', 'manifest')
         page = ([row(path=f'wiki/excluded-{n}.md') for n in range(99)]
                 + [row(path='wiki/keep.md')])
@@ -1264,7 +1264,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_df_probes_share_one_batch_and_source_scan(self):
         from memvane.recall import keywords
-        import laya_index_source_port as source_port
+        import memvane.wiki.intake.source_scan as source_port
 
         class BatchedIndex:
             calls = []
@@ -1297,8 +1297,8 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_df_timeout_discards_probe_batch_and_primary_timeout_fails(self):
         from memvane.recall import keywords
-        import laya_index_source_port as source_port
-        from laya_index_a import IndexContractError
+        import memvane.wiki.intake.source_scan as source_port
+        from memvane.kernel.errors import IndexContractError
 
         class TimedIndex:
             calls = []
@@ -1331,8 +1331,8 @@ class ResponseChecks(unittest.TestCase):
                                    lambda *_: None, {'raw': ROOT}, ('raw',), (), 0, ())
 
     def test_only_completed_scan_vs_seal_mismatch_is_wakeable_stale(self):
-        import laya_index_source_port as source_port
-        from laya_index_a import IndexContractError
+        import memvane.wiki.intake.source_scan as source_port
+        from memvane.kernel.errors import IndexContractError
         runtime = SimpleNamespace(index=FakeIndex())
         with patch.object(source_port, '_seal',
                           return_value=(SCOPE, 'generation-7', 'sealed-manifest')), \
@@ -1414,8 +1414,8 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(str(exc), 'selected_proof_rolled_back')
 
     def test_v2_budget_row_corruption_and_legacy_stale_do_not_wake(self):
-        import laya_index_source_port as source_port
-        from laya_index_a import IndexContractError
+        import memvane.wiki.intake.source_scan as source_port
+        from memvane.kernel.errors import IndexContractError
         decision = v2_decision()
 
         def budget(*_a, **_k):
@@ -1544,7 +1544,7 @@ class ResponseChecks(unittest.TestCase):
         from memvane.journal import install_journal as laya_install_journal
         from memvane.resident import embed_resident as laya_embed_resident
         from memvane.runtime import runtime_work
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         from memvane.kernel.resource_deferred import ResourceDeferred
         decision = v2_decision()
         with tempfile.TemporaryDirectory(prefix='laya-host-owner-') as temp:
@@ -1601,7 +1601,7 @@ class ResponseChecks(unittest.TestCase):
     def test_main_reports_stale_sync_codes_with_exit_3_and_no_fallback(self):
         import contextlib
         import io
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         selection = {'state': 'candidate'}
         with tempfile.TemporaryDirectory(prefix='laya-host-main-') as temp:
             payload = Path(temp) / 'payload.json'
@@ -1695,7 +1695,7 @@ class BundleDriftChecks(unittest.TestCase):
         from memvane.settings import config
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
 
         def cold_provider(_text, _profile):
             raise IndexContractError('provider_unavailable')
@@ -1747,7 +1747,7 @@ class BundleDriftChecks(unittest.TestCase):
         with patch.object(laya_index_vector, 'LayaVectorIndex', Pinned):
             self.assertEqual(response._pinned_vector(runtime, 't', 'q', VECTOR_PROFILE,
                                                      unavailable, 5), [])
-            from laya_index_a import IndexContractError
+            from memvane.kernel.errors import IndexContractError
 
             def broken(_prompt, _profile):
                 raise IndexContractError('provider_unavailable')
@@ -1855,7 +1855,7 @@ class EndpointRecallChecks(unittest.TestCase):
         from memvane.recall import reader_dispatch as laya_reader_dispatch
         from memvane.journal import reader_lease as laya_reader_lease
         import laya_reader_open
-        from laya_v6_reader import ReaderResult
+        from memvane.recall.reader_dispatch import ReaderResult
         with tempfile.TemporaryDirectory(prefix='laya-endpoint-recall-') as temp:
             project = Path(temp).resolve()
             decision = v2_decision(str(project))
@@ -1917,7 +1917,7 @@ class EndpointRecallChecks(unittest.TestCase):
 class ProofRetryChecks(unittest.TestCase):
     """A proof or view change during one recall (sync publish, upgrade)."""
 
-    LOCAL = str(Path(response.__file__).resolve().parents[1])
+    LOCAL = str(Path(response.__file__).resolve().parents[2])
     BODY = '---\ntitle: Alpha card\n---\n## Summary\nalpha fact.\n'
 
     def setUp(self):
@@ -2062,7 +2062,7 @@ class ProofRetryChecks(unittest.TestCase):
     def test_vector_off_recall_serves_completed_incremental_cards_on_the_pinned_base(self):
         # No query vector: the completed incremental card (on the pinned base
         # generation) still serves next to the base generation's rows.
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         digest = hashlib.sha256(self.BODY.encode('utf-8')).hexdigest()
         offered = []
 
@@ -2227,7 +2227,7 @@ class ProofRetryChecks(unittest.TestCase):
     def test_retried_recall_records_one_sync_wake(self):
         # A cold provider wakes the owner once; the retried attempt reuses
         # that wake instead of bumping the wake revision again.
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
 
         def cold(*_args):
             raise IndexContractError('provider_unavailable')

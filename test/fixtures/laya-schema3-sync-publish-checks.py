@@ -399,13 +399,13 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         from contextlib import redirect_stderr
         host = importlib.import_module('memvane.host.host_response')
         runtime_work = importlib.import_module('memvane.runtime.runtime_work')
-        event_log = importlib.import_module('event_log')
+        event_log = importlib.import_module('memvane.diagnostics.event_log')
         decision = self.J.select_route(str(self.case.project), action='recall')
         payload = {'cwd': str(self.case.project), 'prompt': prompt, 'session_id': 'u15c-settings',
                    'hook_event_name': 'UserPromptSubmit'}
         wakes, events, stderr = [], [], io.StringIO()
         with self.seed.authority(), redirect_stderr(stderr), \
-                mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
+                mock.patch.object(host, '__file__', str(self.case.plugin / 'memvane/host/host_response.py')), \
                 mock.patch.object(runtime_work, 'request',
                                   side_effect=lambda kind, target='', **kw: wakes.append((kind, target))), \
                 mock.patch.object(event_log, 'emit',

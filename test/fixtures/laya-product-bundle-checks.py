@@ -16,12 +16,12 @@ import unittest
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
-from memvane.route import index_host_route as host
+from memvane.route import index_host_route as host; import memvane.journal.route_selection as host_route_selection
 from memvane.journal import install_journal as journal
-from memvane.install import product_install as product_install
+from memvane.app import setup_workflow as product_install
 from memvane.install import product_bundle as bundle
 import laya_active_upgrade as active_upgrade
 prepare_v4_bridge = active_upgrade._prepare_v4_bridge
@@ -65,12 +65,12 @@ class ProductBundleChecks(unittest.TestCase):
         (self.source / 'core').mkdir()
         for name in names:
             shutil.copy2(REPO / 'core' / name, self.source / 'core' / name)
-        shutil.copy2(REPO / 'core' / 'laya_local_embed_worker.mjs',
-                     self.source / 'core' / 'laya_local_embed_worker.mjs')
+        shutil.copy2(REPO / 'memvane/provider/adapters/laya_local_embed_worker.mjs',
+                     self.source / 'memvane/provider/adapters/laya_local_embed_worker.mjs')
         self.worker_sha = hashlib.sha256(
-            (self.source / 'core' / 'laya_local_embed_worker.mjs').read_bytes()).hexdigest()
-        shutil.copy2(REPO / 'core' / 'laya_qmd_chunking.mjs',
-                     self.source / 'core' / 'laya_qmd_chunking.mjs')
+            (self.source / 'memvane/provider/adapters/laya_local_embed_worker.mjs').read_bytes()).hexdigest()
+        shutil.copy2(REPO / 'memvane/provider/adapters/laya_qmd_chunking.mjs',
+                     self.source / 'memvane/provider/adapters/laya_qmd_chunking.mjs')
         provider_path = self.source / 'core' / 'laya_test_query_provider.py'
         provider_path.write_text('# synthetic inert provider artifact\n', encoding='utf-8')
         for name in ('LICENSE', 'README.md'):
@@ -211,8 +211,8 @@ class ProductBundleChecks(unittest.TestCase):
     def prove_in_candidate_process(self, proof, approval=None):
         script = '''import json,sys
 sys.path.insert(0,sys.argv[1])
-from laya_index_host_route import select_route
-from laya_install_journal import verify_selected_route,verify_development_vector_approval
+from memvane.journal.route_selection import select_route
+from memvane.journal.install_journal import verify_selected_route, verify_development_vector_approval
 decision=select_route(sys.argv[2])
 result=(verify_development_vector_approval(decision,sys.argv[3]) if len(sys.argv)>3
         else verify_selected_route(decision))
@@ -236,7 +236,7 @@ print(json.dumps(result))'''
             'providerPath': str(Path(proof['pluginRoot']) /
                                 self.vector_profile['providerRelativePath']),
             'workerPath': str(Path(proof['pluginRoot']) /
-                              'core/laya_local_embed_worker.mjs'),
+                              'memvane/provider/adapters/laya_local_embed_worker.mjs'),
             'workerSha256': self.worker_sha,
             'nodePath': str(self.node), 'nodeSha256': self.node_sha,
             'moduleEntryPath': str(self.module),
@@ -609,7 +609,7 @@ print(json.dumps(result))'''
 
     def test_active_journal_and_candidate_loaded_code(self):
         proof, route, raw = self.initial()
-        self.assertEqual(host.select_route(str(self.project))['state'], 'candidate')
+        self.assertEqual(host_route_selection.select_route(str(self.project))['state'], 'candidate')
         done = self.prove_in_candidate_process(proof)
         self.assertEqual(done.returncode, 0, done.stderr)
         checked = json.loads(done.stdout)
@@ -634,7 +634,7 @@ print(json.dumps(result))'''
         approval_path.write_text(json.dumps(approval), encoding='utf-8')
         self.assertNotEqual(self.prove_in_candidate_process(proof, approval_path).returncode, 0)
         self.route_path.write_bytes(raw.replace(b'"active"', b'"broken"'))
-        self.assertEqual(host.select_route(str(self.project))['state'], 'blocked')
+        self.assertEqual(host_route_selection.select_route(str(self.project))['state'], 'blocked')
         done = self.prove_in_candidate_process(proof)
         self.assertNotEqual(done.returncode, 0)
         self.assertEqual((self.user_qmd / 'preserve-me').read_text(), 'user-owned')
@@ -714,7 +714,7 @@ print(json.dumps(result))'''
         script = '''import json,sys,time
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
-import laya_install_journal as journal
+import memvane.journal.install_journal as journal
 args=json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
 go=Path(sys.argv[3]); deadline=time.monotonic()+10
 while not go.exists():

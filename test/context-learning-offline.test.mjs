@@ -11,10 +11,10 @@ test('reviewed labels, frozen manifests, family splits and deletion use syntheti
  const result=execFileSync('python3',['-c',`
 import sys,json,sqlite3
 from pathlib import Path
-sys.path.insert(0,'core')
-from context_learning.contracts import request,digest,CLASS_ORDER,validate_label
-from context_learning.store import capture
-from context_learning.offline import save_label,build_manifest,load_manifest,delete_case
+sys.path.insert(0,'.')
+from memvane.learning.context_learning.contracts import request, digest, CLASS_ORDER, validate_label
+from memvane.learning.context_learning.store import capture
+from memvane.learning.context_learning.offline import save_label, build_manifest, load_manifest, delete_case
 root=Path(sys.argv[1]).resolve()
 def bad(fn):
  try: fn()

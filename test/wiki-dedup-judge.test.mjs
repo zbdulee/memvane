@@ -77,7 +77,7 @@ print(json.dumps({
 // 리터럴을 테스트에 복제하면 상수를 옮기는 순간 이 파일이 조용히 다른 세계를 검증하므로
 // 실제 값을 읽어 픽스처 score가 그 위/아래임을 명시적으로 단정한다.
 const [DEDUP_SCORE_THRESHOLD, DEDUP_AUTO_MERGE_THRESHOLD] = execFileSync('python3', ['-c',
-  "import sys; sys.path.insert(0, 'core'); import config;"
+  "import sys; sys.path.insert(0, '.'); import memvane.settings.config as config;"
   + " print(config.DEDUP_SCORE_THRESHOLD); print(config.DEDUP_AUTO_MERGE_THRESHOLD)",
 ], { cwd: process.cwd(), encoding: 'utf8' }).trim().split('\n').map(Number);
 
@@ -98,7 +98,7 @@ function runLib(py) {
 }
 
 test('build_dedup_prompt embeds both card bodies and demands a reason, not a bare yes/no', () => {
-  const py = `import sys,json; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys,json; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 p=lib.build_dedup_prompt({'task':'dedup','pageA':{'path':'entities/a.md','content':'BODY_A'},'pageB':{'path':'entities/b.md','content':'BODY_B'}})
 print(json.dumps({
  'has_a':'BODY_A' in p,'has_b':'BODY_B' in p,
@@ -112,7 +112,7 @@ print(json.dumps({
 });
 
 test('extract_dedup_verdict takes the last valid verdict and rejects verify-only values', () => {
-  const py = `import sys,json; sys.path.insert(0,'core/extractors'); import lib
+  const py = `import sys,json; sys.path.insert(0,'.'); import memvane.wiki.engines.extractors.lib as lib
 text = 'noise {"verdict":"pass"} more ' + json.dumps({'verdict':'distinct','reason':'different events'})
 print(json.dumps({'picked': lib.extract_dedup_verdict(text), 'verify_scanner': lib.extract_verdict('{"verdict":"duplicate"}')}))`;
   const out = JSON.parse(runLib(py));
@@ -127,7 +127,7 @@ test('claude adapter: task=dedup uses the dedup prompt and emits a dedup verdict
   const promptLog = join(d, 'prompt.txt');
   const fakeCli = join(d, 'fake-claude');
   writeFileSync(fakeCli, `#!/usr/bin/env bash\nprintf '%s' "$@" > "${promptLog}"\necho '{"verdict":"duplicate","reason":"same rule","sharedFacts":["r"],"uniqueToA":[],"uniqueToB":["extra"]}'\n`, { mode: 0o755 });
-  const out = execFileSync('python3', ['core/extractors/claude_adapter.py'], {
+  const out = execFileSync('python3', ['entry/run.py', 'extractor-claude'], {
     cwd: process.cwd(),
     input: JSON.stringify({
       task: 'dedup',
@@ -154,7 +154,7 @@ test('judge_engine_pool: backends-only config resolves without a producer (retro
   // config using extractor.backends WITHOUT builtins resolved to "" -> backends[""]
   // missed -> judge permanently "unavailable" -> every scan silently degraded to the
   // legacy score gate. Both dogfood projects use exactly that shape.
-  const py = `import json,os,sys; sys.path.insert(0,'core'); import wiki_dedup_judge as j
+  const py = `import json,os,sys; sys.path.insert(0,'.'); import memvane.wiki.dedup.wiki_dedup_judge as j
 cfg_backends = {'extractor': {'backends': {'codex': ['/x/codex'], 'claude': ['/x/claude']}}, 'semanticDedup': {'judge': {'crossEngine': 'prefer'}}}
 cfg_builtins = {'extractor': {'builtins': ['codex'], 'backends': {'claude': ['/x/claude']}}}
 out = {}
@@ -214,8 +214,8 @@ function writeCompileSettings(work, compile = {}) {
 }
 
 test('default dedup uses the producing host only and never guesses another installed host', () => {
-  const out = JSON.parse(runLib(`import json,sys; sys.path.insert(0,'core')
-import config, wiki_dedup_judge as j
+  const out = JSON.parse(runLib(`import json,sys; sys.path.insert(0,'.')
+import memvane.settings.config as config; import memvane.wiki.dedup.wiki_dedup_judge as j
 cfg = config.normalize_config({'compile': {'extractor': {'backends': {
     'claude': ['/x/claude'], 'codex': ['/x/codex'], 'hermes': ['/x/hermes']}}}})['compile']
 out = {}
@@ -258,7 +258,7 @@ function writeExistingCard(work, rel, body = 'The stalker asked for CCTV footage
 }
 
 function runCompile(work, payload, env = {}) {
-  return JSON.parse(execFileSync('python3', ['core/wiki_compile.py', '--cwd', work], {
+  return JSON.parse(execFileSync('python3', ['entry/run.py', 'wiki-compile', '--cwd', work], {
     encoding: 'utf8',
     input: JSON.stringify(payload),
     // QMD_DIRTY_QUEUE를 임시 경로로 격리하지 않으면 dirty queue 유출 시 사용자 실제 qmd 인덱스에 고아 컬렉션이 등록되며(복구 불가 고아 등록), 자동으로 정리할 수 있는 경로가 없다.
@@ -432,7 +432,7 @@ const scanSkipped = (work) => jsonl(join(work, '.auto-context/compile/dedup-skip
 // docs/settings.md 는 "scan 은 확장하지 않고 예전 선택을 그대로 쓴다"고 서술해 그 상실을 부정했다.
 
 test('MAJOR 1 — 귀속 가능성은 경로의 성질이다: scan 은 waive, write-time 은 그대로 fail-closed', () => {
-  const py = `import json,sys; sys.path.insert(0,'core'); import wiki_dedup_judge as j
+  const py = `import json,sys; sys.path.insert(0,'.'); import memvane.wiki.dedup.wiki_dedup_judge as j
 cfg = {'extractor': {'backends': {'claude': ['/x/claude'], 'codex': ['/x/codex']}},
        'semanticDedup': {'judge': {'crossEngine': 'require'}}}
 out = {}

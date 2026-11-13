@@ -23,7 +23,7 @@ import json,signal,sys
 from pathlib import Path
 signal.alarm(8)
 sys.path.insert(0,sys.argv[1])
-import laya_install_journal as J
+import memvane.journal.install_journal as J
 with J._identity_connection(Path(sys.argv[2])) as db:
     value=db.execute('SELECT value FROM fixture').fetchone()[0]
 assert not any(n in sys.modules for n in ('laya_writer_open_plan','laya_writer_proof_reader','laya_journal_reader'))
@@ -199,7 +199,7 @@ class WriterJournalProofChecks(unittest.TestCase):
         self.api()
         # The fixed engine's pre-existing project_dir import failure is tracked
         # separately by the minimal previous-head comparison, not as a pass.
-        core = ROOT / 'core'
+        core = ROOT
         path = self.case.home / 'identity-engine.sqlite'
         with sqlite3.connect(path) as db:
             db.execute('CREATE TABLE fixture(value TEXT)')

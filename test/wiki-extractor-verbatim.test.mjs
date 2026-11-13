@@ -12,8 +12,8 @@ import { removeTemp } from './helpers/temp.mjs';
 function buildPrompt(payload) {
   return execFileSync('python3', ['-c', `
 import sys, json
-sys.path.insert(0, 'core/extractors')
-import lib
+sys.path.insert(0, '.')
+import memvane.wiki.engines.extractors.lib as lib
 print(lib.build_prompt(json.loads(sys.stdin.read())))
 `], { cwd: process.cwd(), input: JSON.stringify(payload), encoding: 'utf8' });
 }
@@ -21,8 +21,8 @@ print(lib.build_prompt(json.loads(sys.stdin.read())))
 function pyCompile(body) {
   return execFileSync('python3', ['-c', `
 import sys
-sys.path.insert(0, 'core')
-import wiki_compile as wc
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile as wc
 ${body}
 `], { cwd: process.cwd(), encoding: 'utf8' });
 }
@@ -124,7 +124,7 @@ print(json.dumps({'candidates': []}))
       source: { kind: 'file', path: 'docs/source.md', collection: 'proj-docs' },
     }) + '\n');
 
-    execFileSync('python3', ['core/wiki_compile_worker.py', '--cwd', dir], {
+    execFileSync('python3', ['entry/run.py', 'wiki-compile-worker', '--cwd', dir], {
       cwd: process.cwd(), encoding: 'utf8',
       env: { ...process.env, QMD_DIRTY_QUEUE: join(dir, 'queue') },
     });
@@ -194,7 +194,7 @@ test('wiki_compile writes an identifier-dense technical card but still rejects a
       mode: 'auto-wiki', defaultStatus: 'generated',
     },
   };
-  const run = (payload) => execFileSync('python3', ['core/wiki_compile.py', '--cwd', work], {
+  const run = (payload) => execFileSync('python3', ['entry/run.py', 'wiki-compile', '--cwd', work], {
     cwd: process.cwd(), encoding: 'utf8', input: JSON.stringify(payload),
     env: { ...process.env, QMD_DIRTY_QUEUE: join(work, 'queue') },
   });

@@ -18,7 +18,7 @@ import { removeTemp } from './helpers/temp.mjs';
 
 const ROOT_FILES = ['SCHEMA.md', 'index.md', 'log.md'];
 const SENTINEL = 'PROJECT_ROOT_FILE_SENTINEL_7f3a';
-const bundled = (name) => readFileSync(join('core', 'wiki_card_rules', `${name}.md`), 'utf8');
+const bundled = (name) => readFileSync(join('memvane', 'wiki', 'card', 'rules', `${name}.md`), 'utf8');
 
 // Real paths: the activity log refuses any symlinked ancestor (macOS /var).
 function realTemp(prefix) {
@@ -105,8 +105,8 @@ function captureExtractor(capture) {
   writeFileSync(extractor, `#!/usr/bin/env python3
 import json, sys
 payload = json.loads(sys.stdin.read())
-sys.path.insert(0, ${JSON.stringify(join(process.cwd(), 'core', 'extractors'))})
-import lib
+sys.path.insert(0, ${JSON.stringify(join(process.cwd()))})
+import memvane.wiki.engines.extractors.lib as lib
 assert payload.get('task') != 'verify', 'verify is disabled in this fixture'
 open(${JSON.stringify(capture)}, 'w', encoding='utf-8').write(json.dumps({
   'payload': payload, 'prompt': lib.build_prompt(payload)}))
@@ -130,15 +130,15 @@ function runCompile(home, project, extractor) {
     source: { kind: 'file', path: 'docs/source.md', collection: 'proj-docs' },
   }) + '\n');
   const pending = JSON.parse(py(home, [
-    'import json, sys', 'from pathlib import Path', 'sys.path.insert(0, "core")',
-    'import wiki_freshness as F',
+    'import json, sys', 'from pathlib import Path', 'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_freshness as F',
     `print(json.dumps(F.record_pending_refresh(Path(${JSON.stringify(project)}), "docs/source.md", "claude")))`,
   ]));
   const queue = join(project, '.auto-context', 'compile', 'source-queue.jsonl');
   const job = JSON.parse(readFileSync(queue, 'utf8').trim());
   job.pendingRefresh = { eventId: pending.eventId, ts: pending.ts, engine: pending.engine };
   writeFileSync(queue, JSON.stringify(job) + '\n');
-  execFileSync('python3', ['core/wiki_compile_worker.py', '--cwd', project, '--flush-all'], {
+  execFileSync('python3', ['entry/run.py', 'wiki-compile-worker', '--cwd', project, '--flush-all'], {
     cwd: process.cwd(), encoding: 'utf8',
     env: env(home, { QMD_DIRTY_QUEUE: join(project, '.auto-context', 'compile', 'dirty-queue') }),
   });
@@ -202,7 +202,7 @@ test('wiki_compile never targets a leftover root meta page, by identity or by ex
         + 'aliases: [config layout]\nstatus: generated\ncreatedBy: memvane\n---\n'
         + `${SENTINEL}\n`;
       for (const name of ROOT_FILES) writeFileSync(join(wiki, name), leftover);
-      const run = (candidate) => JSON.parse(execFileSync('python3', ['core/wiki_compile.py', '--cwd', project], {
+      const run = (candidate) => JSON.parse(execFileSync('python3', ['entry/run.py', 'wiki-compile', '--cwd', project], {
         encoding: 'utf8', input: JSON.stringify({
           trigger: 'manual', title: 'Config Layout Decision', canonicalKey: 'config-layout',
           summary: 'Canonical config lives in .auto-context/settings.json.',
@@ -239,8 +239,8 @@ test('dedup merge with a selected install logs to its state root and leaves a le
       writeFileSync(join(wiki, 'index.md'), leftover);
       const out = JSON.parse(py(home, [
         'import json, sys', 'from pathlib import Path', 'from unittest.mock import patch',
-        'sys.path.insert(0, "core")',
-        'import wiki_dedup_resolve as R, wiki_selected_laya as S',
+        'sys.path.insert(0, ".")',
+        'import memvane.wiki.dedup.wiki_dedup_resolve as R; import memvane.wiki.workspace.wiki_selected_laya as S',
         `root = Path(${JSON.stringify(project)}); wiki = root / ".auto-context" / "wiki"`,
         `bound = ({"journalPath": ${JSON.stringify(join(state, 'install-journal.sqlite'))}}, {})`,
         'compile_dir = root / ".auto-context" / "compile"',
@@ -272,8 +272,8 @@ test('wiki activity: event log in the state root only, no-follow walk, owner-onl
     const project = realTemp('wiki-activity-project-');
     try {
       const out = JSON.parse(py(home, [
-        'import json, os, sys', 'from pathlib import Path', 'sys.path.insert(0, "core")',
-        'import event_log as E, wiki_activity_log as L, wiki_compile_worker as W',
+        'import json, os, sys', 'from pathlib import Path', 'sys.path.insert(0, ".")',
+        'import memvane.diagnostics.event_log as E; import memvane.wiki.workspace.wiki_activity_log as L; import memvane.wiki.compile.wiki_compile_worker as W',
         `base = Path(${JSON.stringify(base)}); project = Path(${JSON.stringify(project)})`,
         'def bound(d): return ({"journalPath": str(d / "install-journal.sqlite"), "installId": "i1"}, {})',
         'state = base / "state"; state.mkdir(mode=0o700); os.chmod(state, 0o700)',
@@ -358,8 +358,8 @@ test('card_rules_preset: a numbered *_Manuscript root dir means novel; other nea
         for (const [target, link] of spec.links || []) symlinkSync(join(root, target), join(root, link));
       }
       const out = JSON.parse(py(home, [
-        'import json, os, sys', 'from pathlib import Path', 'sys.path.insert(0, "core")',
-        'import wiki_compile_worker as w',
+        'import json, os, sys', 'from pathlib import Path', 'sys.path.insert(0, ".")',
+        'import memvane.wiki.compile.wiki_compile_worker as w',
         `base = Path(${JSON.stringify(base)})`,
         'before = {p: sorted(os.listdir(base / p)) for p in os.listdir(base)}',
         'result = {p: w.card_rules_preset(base / p, base / p / ".auto-context" / "wiki", {}) for p in sorted(os.listdir(base))}',

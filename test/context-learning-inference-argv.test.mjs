@@ -6,7 +6,7 @@ test('historical trainer path resolves only to reviewed edit inference adapter',
   const result = JSON.parse(execFileSync('python3',
     ['test/fixtures/context-learning-inference-argv-checks.py'], {
       encoding: 'utf8', timeout: 10000,
-      env: {...process.env, PYTHONPATH: 'core', PYTHONDONTWRITEBYTECODE: '1',
+      env: {...process.env, PYTHONPATH: '.', PYTHONDONTWRITEBYTECODE: '1',
         QMD_RECALL_LOG: ''},
     }));
   assert.equal(result.missingOldCacheResolved, true);

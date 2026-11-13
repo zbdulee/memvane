@@ -8,8 +8,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.diagnostics import diagnostic_trace as diag
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.diagnostics import diagnostic_trace as diag; import memvane.settings.diagnostic_consent as diag_diagnostic_consent
 from memvane.diagnostics import event_log
 
 
@@ -76,14 +76,14 @@ class Capture(unittest.TestCase):
         self.assertIsNone(self.capture(self.thrown(sentinel)))
         self.assertEqual(self.rows(), [])
         self.opt_in(True)
-        original = diag.enabled
+        original = diag_diagnostic_consent.enabled
         calls = []
         def turn_off(decision):
             calls.append(1)
             if len(calls) == 2:
                 self.opt_in(False)
             return original(decision)
-        with patch.object(diag, 'enabled', side_effect=turn_off):
+        with patch.object(diag_diagnostic_consent, 'enabled', side_effect=turn_off):
             self.assertIsNone(self.capture(self.thrown(sentinel)))
         self.assertGreaterEqual(len(calls), 2)
         self.assertEqual(self.rows(), [])

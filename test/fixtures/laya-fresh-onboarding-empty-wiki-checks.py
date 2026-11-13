@@ -21,12 +21,12 @@ E2E = runpy.run_path(str(HERE / 'laya-fresh-onboarding-e2e-checks.py'))
 from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
-from memvane.route import index_host_route as host_route  # noqa: E402
+from memvane.route import index_host_route as host_route; import memvane.journal.route_selection as host_route_route_selection  # noqa: E402
 from memvane.journal import install_journal as journal_mod  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 import laya_incremental_docs as incremental  # noqa: E402
 from laya_index_runtime import LayaIndexRuntime  # noqa: E402
-from memvane.install import product_install as product  # noqa: E402
+from memvane.app import setup_workflow as product  # noqa: E402
 from memvane.sync import product_sync_worker as worker  # noqa: E402
 
 BUILD = E2E['BUILD']
@@ -89,16 +89,16 @@ class EmptyWikiOnboarding(E2E['FreshOnboarding']):
                                                        route_bytes)
         self.assertEqual(active['phase'], 'active', active)
         self.assertEqual((self.auto / fresh.ROUTE).read_bytes(), route_bytes)
-        decision = host_route.select_route(str(self.project), action='recall')
+        decision = host_route_route_selection.select_route(str(self.project), action='recall')
         self.assertEqual(decision['state'], 'candidate', decision)
         return decision
 
     def recall(self, decision, prompt):
         proof = journal_mod.verify_selected_route_read_only(decision)
         self.assertTrue(proof['readOnlyAllowed'])
-        with mock.patch('laya_local_embed_provider.ReviewedLocalQmdProvider',
+        with mock.patch('memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
                         E2E['QueryProvider']), \
-                mock.patch('laya_embed_resident.admit_query', lambda **_kw: None):
+                mock.patch('memvane.resident.embed_resident.admit_query', lambda **_kw: None):
             return response._serve_recall('claude', decision, {'prompt': prompt}, proof,
                                           journal_mod.verify_selected_route_read_only)
 

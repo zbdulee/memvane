@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from memvane.learning.context_learning.contracts import digest, request
 from memvane.learning.context_learning.store import capture, database, canonical
 from memvane.learning.context_learning.offline import save_provisional_batch, review_view, approve_review, delete_case, build_manifest
@@ -109,7 +109,7 @@ if mode=='nonzero':sys.exit(2)
             r=run_teacher(self.sample,enabled=True,**opts)
             self.assertEqual(r['cli_invocations'],0)
             self.assertEqual(r['status'],'failed')
-        with patch('context_learning.transport.shutil.which',return_value=None):
+        with patch('memvane.learning.context_learning.transport.shutil.which',return_value=None):
             self.assertEqual(self.teacher()['reason'],'missing_cli')
         self.assertEqual(self.teacher('claude',disabled_plugin_ids=['*'])['cli_invocations'],0)
         self.assertEqual(self.teacher('claude',disabled_plugin_ids=['cc-plugin-sec-default@builtin'])['reason'],'security_policy_override_forbidden')

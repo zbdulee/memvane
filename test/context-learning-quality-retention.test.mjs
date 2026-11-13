@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 test('fresh holdout regression retains incumbent and fences reviewed families', () => {
   const raw = execFileSync('python3',
     ['test/fixtures/context-learning-quality-retention-checks.py'], {
-      env: {...process.env, PYTHONPATH: 'core', QMD_RECALL_LOG: '',
+      env: {...process.env, PYTHONPATH: '.', QMD_RECALL_LOG: '',
         PYTHONDONTWRITEBYTECODE: '1'},
       encoding: 'utf8', timeout: 15000,
     });

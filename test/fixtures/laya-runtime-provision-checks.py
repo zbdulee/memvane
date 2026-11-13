@@ -21,7 +21,7 @@ import unittest
 from unittest import mock
 
 FIXTURES = Path(__file__).resolve().parent
-CORE = FIXTURES.parents[1] / 'core'
+CORE = FIXTURES.parents[1]
 REPO = FIXTURES.parents[1]
 sys.path.insert(0, str(CORE))
 EMBED = runpy.run_path(str(FIXTURES / 'laya-embed-runtime-checks.py'))

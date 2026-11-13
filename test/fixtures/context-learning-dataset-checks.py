@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0,'core')
+sys.path.insert(0,'.')
 from memvane.learning.context_learning.contracts import CLASS_ORDER, digest, request
 from memvane.learning.context_learning.store import canonical, capture, database
 from memvane.learning.context_learning.offline import approve_review, build_manifest, delete_case, save_label
@@ -90,7 +90,7 @@ class Checks(unittest.TestCase):
         self.assertEqual(report['promotion'],'none')
         self.assertEqual(report,self.command('evaluate','fixture-v1','--revisions-json',self.revisions_path,'--predictions-json',prediction_path))
         self.assertTrue(Path(report['report_path']).is_file())
-        with patch('context_learning.transport.run_teacher',side_effect=AssertionError('provider forbidden')):
+        with patch('memvane.learning.context_learning.transport.run_teacher',side_effect=AssertionError('provider forbidden')):
             self.assertEqual(evaluate_predictions(self.state,'fixture-v1',self.revisions,predictions)['cases'],3)
 
     def test_metrics_abstention_and_prediction_contract(self):
@@ -201,11 +201,11 @@ class Checks(unittest.TestCase):
         path.write_text('{"x":NaN}')
         with self.assertRaises(ValueError):read_private_json(path)
         path.write_text('x'*1025)
-        with patch('context_learning.dataset.MAX_BYTES',1024):
+        with patch('memvane.learning.context_learning.dataset.MAX_BYTES',1024):
             with self.assertRaises(ValueError):read_private_json(path)
-        with patch('context_learning.dataset.MAX_CASES',1):
+        with patch('memvane.learning.context_learning.dataset.MAX_CASES',1):
             with self.assertRaises(ValueError):export_dataset(self.state,'fixture-v1',self.revisions)
-        with patch('context_learning.dataset.MAX_BYTES',100):
+        with patch('memvane.learning.context_learning.dataset.MAX_BYTES',100):
             with self.assertRaises(ValueError):export_dataset(self.state,'fixture-v1',self.revisions)
         export=export_dataset(self.state,'fixture-v1',self.revisions)
         target=Path(export['directory'])/'train.jsonl'

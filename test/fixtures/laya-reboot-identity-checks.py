@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / 'core'))
+sys.path.insert(0, str(HERE.parents[1]))
 spec = importlib.util.spec_from_file_location('reboot_seed', HERE / 'laya-journal-reader-checks.py')
 seed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seed)
@@ -149,10 +149,10 @@ class RebootChecks(unittest.TestCase):
                    'tool_input': {'file_path': str(case.project / 'notes.md')},
                    'tool_response': {'success': True}}
         with self.helper.full_authority(case), simulated_reboot(), \
-             mock.patch.object(response, '__file__', str(case.plugin / 'core/laya_host_response.py')), \
-             mock.patch('runtime_work.request', return_value={'status': 'queued'}), \
+             mock.patch.object(response, '__file__', str(case.plugin / 'memvane/host/host_response.py')), \
+             mock.patch('memvane.runtime.runtime_work.request', return_value={'status': 'queued'}), \
              mock.patch.object(response, '_start_owner'), \
-             mock.patch('wiki_compile_enqueue.enqueue_payload', return_value={'queued': 0}):
+             mock.patch('memvane.wiki.intake.wiki_compile_enqueue.enqueue_payload', return_value={'queued': 0}):
             # A full selected proof must work before any read-only fallback.
             J.verify_selected_route(decision)
             for action in ('recall', 'gate', 'posttool', 'index', 'compile',
@@ -207,7 +207,7 @@ class RebootChecks(unittest.TestCase):
         import laya_worker_journal as worker
         import laya_writer_open_plan as plans
         from memvane.journal import writer_scope as writers
-        from laya_index_sync import sync_owner
+        from memvane.runtime.sync_owner_lock import sync_owner
         case = self.case_from('laya-reader-move-seal-checks.py', 'MoveSealChecks')
         project = case.case
         selected = case.reader.read_selection(project.journal)

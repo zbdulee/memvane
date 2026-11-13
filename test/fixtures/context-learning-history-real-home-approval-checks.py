@@ -26,8 +26,8 @@ assert Path.home().resolve() == real_parent
 from memvane.learning.context_learning.contracts import digest, request
 from memvane.learning.context_learning.history_activation import (
     HOST_FILES, REAL_HOME_APPROVAL_SCHEMA, activate, rollback, selected_database)
-import context_learning.history_activation as activation_module
-import context_learning.history_lifecycle as lifecycle_module
+import memvane.learning.context_learning.history_activation as activation_module
+import memvane.learning.context_learning.history_lifecycle as lifecycle_module
 from memvane.learning.context_learning.history_lifecycle import acknowledge_host, request as lifecycle_request
 from memvane.learning.context_learning.history_migration import prepare
 from memvane.learning.context_learning.shared import _db

@@ -48,7 +48,7 @@ function setupProject(extraCompile = {}) {
 
 function runWorker(project, env = {}, extraArgs = []) {
   const dirtyQueue = env.QMD_DIRTY_QUEUE || join(project, '.auto-context', 'compile', 'dirty-queue');
-  return execFileSync('python3', ['core/wiki_compile_worker.py', '--cwd', project, ...extraArgs], {
+  return execFileSync('python3', ['entry/run.py', 'wiki-compile-worker', '--cwd', project, ...extraArgs], {
     cwd: process.cwd(),
     encoding: 'utf8',
     env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue, ...env },
@@ -64,8 +64,8 @@ function seedPending(project, engine = 'claude') {
   return JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_freshness as F',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_freshness as F',
     'print(json.dumps(F.record_pending_refresh(Path(sys.argv[1]), "docs/source.md", sys.argv[2])))',
   ].join('\n'), project, engine], { cwd: process.cwd(), encoding: 'utf8' }));
 }
@@ -170,8 +170,8 @@ test('process_job binds the latest unresolved event before capture and rejects a
     const latest = seedPending(project, 'codex');
     const out = JSON.parse(execFileSync('python3', ['-c', `
 import json, pathlib, sys
-sys.path.insert(0, 'core')
-import config, wiki_compile_worker as w
+sys.path.insert(0, '.')
+import memvane.settings.config as config; import memvane.wiki.compile.wiki_compile_worker as w
 root = pathlib.Path(${JSON.stringify(project)}).resolve()
 found = config.find_project_config(str(root))
 job = json.loads((root / '.auto-context/compile/source-queue.jsonl').read_text().splitlines()[0])
@@ -288,11 +288,11 @@ print(json.dumps({'candidates': [{
   try {
     const out = execFileSync('python3', ['-c', `
 import json, pathlib, sys
-sys.path.insert(0, 'core')
-import config as qmd_config
-import wiki_compile as wc
-import wiki_compile_worker as worker
-import wiki_freshness
+sys.path.insert(0, '.')
+import memvane.settings.config as qmd_config
+import memvane.wiki.compile.wiki_compile as wc
+import memvane.wiki.compile.wiki_compile_worker as worker
+import memvane.wiki.card.wiki_freshness as wiki_freshness
 root = pathlib.Path(${JSON.stringify(project)}).resolve()
 source = root / 'docs/source.md'
 real_snapshot = wiki_freshness.snapshot_bytes
@@ -454,7 +454,7 @@ test('worker appends preserved jobs instead of overwriting concurrently-created 
     const rawLine = JSON.stringify({ ts: 'old', source: { kind: 'file', path: 'docs/source.md', collection: 'proj-docs' } });
     execFileSync('python3', ['-c', `
 from pathlib import Path
-from core import wiki_compile_worker as w
+from memvane.wiki.compile import wiki_compile_worker as w
 w.requeue_lines(Path(${JSON.stringify(queue)}), [${JSON.stringify(rawLine)}])
 `], { cwd: process.cwd() });
     const content = readFileSync(queue, 'utf8');
@@ -635,8 +635,8 @@ test('worker restores claimed queue if processing raises unexpectedly', () => {
 from pathlib import Path
 import sys
 sys.argv = ['wiki_compile_worker.py', '--cwd', ${JSON.stringify(project)}]
-sys.path.insert(0, ${JSON.stringify(process.cwd() + '/core')})
-import wiki_compile_worker as w
+sys.path.insert(0, ${JSON.stringify(process.cwd())})
+import memvane.wiki.compile.wiki_compile_worker as w
 
 def boom(*args, **kwargs):
     raise RuntimeError('boom')
@@ -655,8 +655,8 @@ except RuntimeError:
 });
 
 test('source queue enqueue and claim share fcntl lock to avoid rename/open append loss', () => {
-  const enqueue = readFileSync('core/wiki_compile_enqueue.py', 'utf8');
-  const worker = readFileSync('core/wiki_compile_worker.py', 'utf8');
+  const enqueue = readFileSync('memvane/wiki/intake/wiki_compile_enqueue.py', 'utf8');
+  const worker = readFileSync('memvane/wiki/compile/wiki_compile_worker.py', 'utf8');
   assert.match(enqueue, /fcntl\.flock/);
   assert.match(worker, /fcntl\.flock/);
   assert.match(worker, /os\.replace/);
@@ -671,8 +671,8 @@ test('source queue enqueue and claim share fcntl lock to avoid rename/open appen
 test('resolver resolves argv only from the named engine (no global argv, no default)', () => {
   const code = `
 import json, sys
-sys.path.insert(0, 'core')
-import wiki_compile_worker as w
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile_worker as w
 # 'argv'/'default' are dead keys; they must not resurrect as a cross-engine override.
 cfg = {'extractor': {'argv': ['python3', 'legacy.py'], 'backends': {'codex': ['python3', 'custom.py']}, 'default': ['python3', 'fallback.py']}}
 print(json.dumps({
@@ -690,8 +690,8 @@ print(json.dumps({
 test('resolver keeps explicit engine backend ahead of built-in backend', () => {
   const code = `
 import json, sys
-sys.path.insert(0, 'core')
-import wiki_compile_worker as w
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile_worker as w
 cfg = {'extractor': {'backends': {'codex': ['python3', 'custom.py']}, 'builtins': ['codex']}}
 print(json.dumps(w.resolve_extractor_argv(cfg, 'codex')))
 `;
@@ -704,8 +704,8 @@ test('resolver maps built-in engine to adapter path from worker location without
 import json, os, sys
 os.environ.pop('CLAUDE_PLUGIN_ROOT', None)
 os.environ.pop('PLUGIN_ROOT', None)
-sys.path.insert(0, 'core')
-import wiki_compile_worker as w
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile_worker as w
 cfg = {'extractor': {'backends': {}, 'builtins': ['codex']}}
 print(json.dumps({'primary': w.resolve_extractor_argv(cfg, 'codex'), 'executable': sys.executable}))
 `;
@@ -911,11 +911,11 @@ function writeFixture(dir, results) {
 function callGatherSimilarPages(project, contentPath, env = {}) {
   const script = `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 import json
 from pathlib import Path
-import config as qmd_config
-import wiki_compile_worker as w
+import memvane.settings.config as qmd_config
+import memvane.wiki.compile.wiki_compile_worker as w
 found = qmd_config.find_project_config(${JSON.stringify(project)})
 root = Path(found['projectRoot']).resolve()
 cfg = found['config']
@@ -936,11 +936,11 @@ function callGatherSimilarPagesAsync(project, contentPath, env = {}) {
   // spawn instead so the server can actually respond.
   const script = `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 import json
 from pathlib import Path
-import config as qmd_config
-import wiki_compile_worker as w
+import memvane.settings.config as qmd_config
+import memvane.wiki.compile.wiki_compile_worker as w
 found = qmd_config.find_project_config(${JSON.stringify(project)})
 root = Path(found['projectRoot']).resolve()
 cfg = found['config']
@@ -1167,8 +1167,8 @@ test('reclaim: orphan claimed queue file is requeued into queue', () => {
     const resultClaimed = execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 res = claim_queue(Path('${compileDir}/source-queue.jsonl'))
 print(res if res else "")
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue, QMD_FORCE_DEAD_PIDS: String(deadPid) } }]).toString().trim();
@@ -1195,8 +1195,8 @@ test('reclaim: active process filename pid prevents stealing claimed files', () 
     execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 claim_queue(Path('${compileDir}/source-queue.jsonl'))
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue } }]);
     assert.ok(existsSync(claimedPath), 'claimed file must NOT be stolen when owner process pid is alive');
@@ -1223,8 +1223,8 @@ test('reclaim: max requeue count exceeded discards job and logs to discard-ledge
     execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 claim_queue(Path('${compileDir}/source-queue.jsonl'))
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue, QMD_FORCE_DEAD_PIDS: String(deadPid) } }]);
 
@@ -1302,8 +1302,8 @@ test('reclaim: corrupted _requeue_count does not wedge queue and converges', () 
     const res = execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 res = claim_queue(Path('${compileDir}/source-queue.jsonl'))
 print(res if res else "")
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue, QMD_FORCE_DEAD_PIDS: String(deadPid) } }]).toString().trim();
@@ -1327,8 +1327,8 @@ test('worker preserves claimed file on requeue failure for reaper recovery', () 
     const script = `
 from pathlib import Path
 import sys
-sys.path.insert(0, 'core')
-import wiki_compile_worker as w
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile_worker as w
 queue = Path('${compileDir}/source-queue.jsonl')
 claimed = w.claim_queue(queue)
 def bad_requeue(*args, **kwargs):
@@ -1367,8 +1367,8 @@ test('reclaim: orphan claimed file with future mtime is reclaimed', () => {
     const res = execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 res = claim_queue(Path('${compileDir}/source-queue.jsonl'))
 print(res if res else "")
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue, QMD_FORCE_DEAD_PIDS: String(deadPid) } }]).toString().trim();
@@ -1397,8 +1397,8 @@ test('reclaim: 24h mtime backstop reclaims pid-alive claimed files if stale >= 2
     const res = execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 res = claim_queue(Path('${compileDir}/source-queue.jsonl'))
 print(res if res else "")
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue } }]).toString().trim();
@@ -1426,8 +1426,8 @@ test('reclaim: pid-alive claimed file within 24h is NOT stolen', () => {
     execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 claim_queue(Path('${compileDir}/source-queue.jsonl'))
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue } }]);
 
@@ -1450,8 +1450,8 @@ test('reclaim: I/O failure on orphan child does not crash claim_queue', () => {
     const script = `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-import wiki_compile_worker as w
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile_worker as w
 
 orig_unlink = Path.unlink
 def mock_unlink(self, *args, **kwargs):
@@ -1492,8 +1492,8 @@ test('reclaim: discard ledger extracts targetPath for all 4 queues including ded
       execFileSync('python3', ['-c', `
 import sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-from wiki_compile_worker import claim_queue
+sys.path.insert(0, '.')
+from memvane.wiki.compile.wiki_compile_worker import claim_queue
 claim_queue(Path('${compileDir}/${q.name}'))
 `, { env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue, QMD_FORCE_DEAD_PIDS: '9999999' } }]);
     }

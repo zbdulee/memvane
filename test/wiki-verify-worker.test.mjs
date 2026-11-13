@@ -254,7 +254,7 @@ test('an append to an already claimed queue remains queued and preserves its pen
     writeFileSync(join(project,pending(a)),cardText('generated').replaceAll(HASH,a));
     const script=[
       'import json,sys', 'from pathlib import Path', 'from unittest import mock',
-      'sys.path.insert(0,"core")', 'import wiki_verify_worker as v,config',
+      'sys.path.insert(0,".")', 'import memvane.wiki.compile.wiki_verify_worker as v; import memvane.settings.config as config',
       'root=Path(sys.argv[1]).resolve(); job=json.loads(sys.argv[2]); content=sys.argv[3]',
       'cfg=config.find_project_config(str(root))["config"]; orig=v.read_queue; fired=[False]',
       'def read(path):',
@@ -304,7 +304,7 @@ test('a transient unlink error retries cleanup without another verifier call', (
     writeFileSync(join(project,pending),cardText('generated').replaceAll(HASH,hash));
     const script=[
       'import sys', 'from pathlib import Path', 'from unittest import mock',
-      'sys.path.insert(0,"core")', 'import wiki_verify_worker as v,config',
+      'sys.path.insert(0,".")', 'import memvane.wiki.compile.wiki_verify_worker as v; import memvane.settings.config as config',
       'root=Path(sys.argv[1]).resolve(); target=root/sys.argv[2]',
       'cfg=config.find_project_config(str(root))["config"]; orig=Path.unlink',
       'def unlink(self,*args,**kwargs):',
@@ -391,8 +391,8 @@ test('actual compiler pending job verifies and publishes its 16-character source
     };
     const script = [
       'import json,sys', 'from pathlib import Path', 'from unittest.mock import patch',
-      'sys.path.insert(0,"core")',
-      'import wiki_compile as wc, wiki_selected_laya, config',
+      'sys.path.insert(0,".")',
+      'import memvane.wiki.compile.wiki_compile as wc; import memvane.wiki.workspace.wiki_selected_laya as wiki_selected_laya; import memvane.settings.config as config',
       'from memvane.wiki.card import api as card_api',
       'root=Path(sys.argv[1]).resolve(); candidate=json.loads(sys.argv[2])',
       'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
@@ -533,9 +533,9 @@ print(json.dumps({'verdict': 'pass', 'claims': [{'claim': 'c', 'supported': True
   try {
     const out = execFileSync('python3', ['-c', `
 import pathlib, sys
-sys.path.insert(0, 'core')
-import wiki_freshness
-import wiki_verify_worker as worker
+sys.path.insert(0, '.')
+import memvane.wiki.card.wiki_freshness as wiki_freshness
+import memvane.wiki.compile.wiki_verify_worker as worker
 root = pathlib.Path(${JSON.stringify(project)}).resolve()
 source = root / 'docs/source.md'
 real_snapshot = wiki_freshness.snapshot_bytes
@@ -845,9 +845,9 @@ test('trim_jsonl: 상한 초과 시 최근 절반만 유지', () => {
   try {
     execFileSync('python3', ['-c', `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as w
+import memvane.wiki.compile.wiki_compile as w
 w.trim_jsonl(Path(${JSON.stringify(log)}), max_bytes=1024)
 `], { cwd: process.cwd(), encoding: 'utf8' });
     const rows = jsonl(log);
@@ -921,7 +921,7 @@ test('루프 방지: 같은 소스·같은 body-hash 재후보는 extractor 호�
       source: { kind: 'file', path: 'docs/source.md', collection: 'proj-docs' },
     }) + '\n',
   );
-  const runWorker = () => execFileSync('python3', ['core/wiki_compile_worker.py', '--cwd', dir, '--flush-all'], {
+  const runWorker = () => execFileSync('python3', ['entry/run.py', 'wiki-compile-worker', '--cwd', dir, '--flush-all'], {
     cwd: process.cwd(), encoding: 'utf8',
     env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue },
   });
@@ -1010,7 +1010,7 @@ else:
   }) + '\n');
   const dirtyQueue = join(mkdtempSync(join(tmpdir(), 'dirty-e2e-')), 'queue');
   try {
-    execFileSync('python3', ['core/wiki_compile_worker.py', '--cwd', dir, '--flush-all'], {
+    execFileSync('python3', ['entry/run.py', 'wiki-compile-worker', '--cwd', dir, '--flush-all'], {
       cwd: process.cwd(), encoding: 'utf8',
       env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue },
     });
@@ -1425,8 +1425,8 @@ test('verify.builtins를 좁혀도 prefer에서 생성 엔진은 최후 후보�
   });
   try {
     const plan = execFileSync('python3', ['-c', `
-import json, sys; sys.path.insert(0, 'core')
-import wiki_verify_worker as w
+import json, sys; sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_verify_worker as w
 cfg = {"extractor": {"builtins": ["claude", "codex"], "backends": {}}}
 attempts, mode, reason = w.plan_verify_attempts(cfg, {"builtins": ["codex"], "crossEngine": "prefer"}, "claude")
 print(json.dumps([[a["engine"], a["mode"]] for a in attempts]))
@@ -1602,8 +1602,8 @@ function changedDuringVerify({ jobHash, status = 'generated', createdBy = 'qmd-a
                               // 이 축을 검증하는 케이스만 명시로 어긋나게 준다.
                               payloadText = 'card-text', freshText = 'card-text' }) {
   const py = `import json, sys
-sys.path.insert(0, "core")
-import wiki_verify_worker as vw
+sys.path.insert(0, ".")
+import memvane.wiki.compile.wiki_verify_worker as vw
 args = json.loads(sys.argv[1])
 print(json.dumps(vw.card_changed_during_verify(
     args["jobHash"], {"createdBy": args["createdBy"]}, args["status"], args["freshHash"],

@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 
 test('shared queue keeps project provenance and trains one reversible local trial', () => {
   const output = execFileSync('python3', ['test/fixtures/context-learning-shared-local-checks.py'], {
-    env: {...process.env, PYTHONPATH: 'core', PYTHONDONTWRITEBYTECODE: '1'},
+    env: {...process.env, PYTHONPATH: '.', PYTHONDONTWRITEBYTECODE: '1'},
     encoding: 'utf8', timeout: 30000,
   });
   const report = JSON.parse(output);
@@ -15,7 +15,7 @@ test('shared queue keeps project provenance and trains one reversible local tria
 
 test('shared fact families keep independent holdouts and reject gold overlap', () => {
   const output = execFileSync('python3', ['test/fixtures/context-learning-shared-family-checks.py'], {
-    env: {...process.env, PYTHONPATH: 'core', PYTHONDONTWRITEBYTECODE: '1'},
+    env: {...process.env, PYTHONPATH: '.', PYTHONDONTWRITEBYTECODE: '1'},
     encoding: 'utf8', timeout: 30000,
   });
   const report = JSON.parse(output);

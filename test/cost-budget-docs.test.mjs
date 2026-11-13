@@ -15,8 +15,8 @@ const DOC = readFileSync('docs/settings.md', 'utf8');
 
 function pyJson(expr) {
   const out = execFileSync('python3', ['-c', `import sys, json
-sys.path.insert(0, ${JSON.stringify(resolve('core'))})
-import config as c
+sys.path.insert(0, ${JSON.stringify(resolve('.'))})
+import memvane.settings.config as c
 print(json.dumps(${expr}))
 `], { cwd: process.cwd(), encoding: 'utf8' });
   return JSON.parse(out.trim());

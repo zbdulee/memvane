@@ -46,7 +46,7 @@ function fileSource(path) {
 // 테스트가 아무것도 검증하지 않는 거짓 통과가 된다.
 function runPy(dir, lines, { ulimit } = {}) {
   const script = join(dir, `run-${Math.random().toString(36).slice(2)}.py`);
-  writeFileSync(script, ['import sys', 'sys.path.insert(0, "core")', ...lines].join('\n') + '\n');
+  writeFileSync(script, ['import sys', 'sys.path.insert(0, ".")', ...lines].join('\n') + '\n');
   const cmd = ulimit ? `ulimit -f ${ulimit}; exec python3 ${JSON.stringify(script)}`
     : `exec python3 ${JSON.stringify(script)}`;
   return execFileSync('bash', ['-c', cmd], { cwd: process.cwd(), encoding: 'utf8' });
@@ -65,7 +65,7 @@ test('자동 경로(patch_frontmatter_fields)도 쓰기 실패에서 원본을 �
       + 'x'.repeat(40 * 1024) + '\n';
     writeFileSync(card, body);
     const out = runPy(dir, [
-      'import wiki_compile as wc',
+      'import memvane.wiki.compile.wiki_compile as wc',
       'from pathlib import Path',
       `ok = wc.patch_frontmatter_fields(Path(${JSON.stringify(card)}), {"status": "verified"})`,
       'print("ok" if ok else "failed")',
@@ -87,7 +87,7 @@ test('verify pass 스탬프(자동, 사람 개입 없음)가 쓰기 실패로 �
       '---', '', 'claim body', ''].join('\n') + 'y'.repeat(40 * 1024) + '\n';
     writeFileSync(card, body);
     const out = runPy(dir, [
-      'import wiki_compile as wc',
+      'import memvane.wiki.compile.wiki_compile as wc',
       'from pathlib import Path',
       `ok = wc.patch_frontmatter_fields(Path(${JSON.stringify(card)}), {"status": "verified", "verifiedBy": "claude", "verifiedAt": "2026-07-30T00:00:00Z"})`,
       'print("ok" if ok else "failed")',
@@ -98,7 +98,7 @@ test('verify pass 스탬프(자동, 사람 개입 없음)가 쓰기 실패로 �
     assert.equal(readFileSync(card, 'utf8'), body, '카드가 바이트 그대로여야 한다');
     // 상한을 풀면 정상 스탬프된다(원자적 경로가 기능을 깨지 않았다).
     assert.equal(runPy(dir, [
-      'import wiki_compile as wc',
+      'import memvane.wiki.compile.wiki_compile as wc',
       'from pathlib import Path',
       `wc.patch_frontmatter_fields(Path(${JSON.stringify(card)}), {"status": "verified"})`,
       'print("done")',
@@ -114,7 +114,7 @@ test('원자적 쓰기가 원본 권한을 보존한다 (0600 → 0600)', () => 
     chmodSync(card, 0o600);
     // 자동 경로(frontmatter 패치). os.replace가 임시파일 권한을 남기면 회귀다.
     runPy(dir, [
-      'import wiki_compile as wc',
+      'import memvane.wiki.compile.wiki_compile as wc',
       'from pathlib import Path',
       `wc.patch_frontmatter_fields(Path(${JSON.stringify(card)}), {"status": "contested"})`,
     ]);

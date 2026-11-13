@@ -18,13 +18,13 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 E2E = runpy.run_path(str(HERE / 'laya-fresh-onboarding-e2e-checks.py'))
 import laya_fresh_wiki_origin as fresh
 from memvane.host import host_response as response
-from memvane.route import index_host_route as route
+from memvane.route import index_host_route as route; import memvane.journal.route_selection as route_route_selection; import memvane.journal.preview_proof as route_preview_proof
 from memvane.journal import install_journal as journal
-from memvane.install import product_install as product
+from memvane.app import setup_workflow as product
 from hermes_adapter import core_bridge as bridge, plugin
 
 REAL_RUN = subprocess.run
@@ -46,7 +46,7 @@ class HermesRouteChecks(unittest.TestCase):
             model_path='/models/m.gguf', dimension=2)
         self.assertEqual(prepared['status'], 'initial_build_registered')
         self.assertEqual(case.until_settled()[-1]['initialBuild'], 'sealed')
-        self.assertEqual(route.select_route(str(case.project))['state'], 'preview')
+        self.assertEqual(route_route_selection.select_route(str(case.project))['state'], 'preview')
         return case
 
     def invoke(self, case, *, after_classify=None, classifier_start_delay=0):
@@ -57,7 +57,7 @@ class HermesRouteChecks(unittest.TestCase):
         plugin.register(Context())
         self.assertIn('pre_llm_call', hooks)
         calls, previews = [], []
-        selector = ROOT / 'core' / 'laya_index_host_route.py'
+        selector = ROOT / 'entry/run.py'
 
         def observed_run(argv, *args, **kwargs):
             try:
@@ -95,9 +95,9 @@ class HermesRouteChecks(unittest.TestCase):
             # the reused E2E fixture; the journal/pending proof remains real.
             stack.enter_context(mock.patch.object(journal, '_verified_executing_root',
                                                    return_value=str(case.plugin)))
-            stack.enter_context(mock.patch('laya_local_embed_provider.ReviewedLocalQmdProvider',
+            stack.enter_context(mock.patch('memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
                                            E2E['QueryProvider']))
-            stack.enter_context(mock.patch('laya_embed_resident.admit_query',
+            stack.enter_context(mock.patch('memvane.resident.embed_resident.admit_query',
                                            lambda **_kw: None))
             stack.enter_context(mock.patch.object(bridge.subprocess, 'run', observed_run))
             stack.enter_context(mock.patch.object(response, 'serve_preview', observed_preview))
@@ -119,12 +119,12 @@ class HermesRouteChecks(unittest.TestCase):
         # Establish core/Hermes compatibility independently of the adapter's
         # current missing preview branch, so that branch's RED cannot conceal
         # an invalid pending journal or an unservable fixture card.
-        decision = route.select_route(str(case.project))
+        decision = route_route_selection.select_route(str(case.project))
         with mock.patch.object(journal, '_verified_executing_root',
                                return_value=str(case.plugin)), \
-                mock.patch('laya_local_embed_provider.ReviewedLocalQmdProvider',
+                mock.patch('memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
                            E2E['QueryProvider']), \
-                mock.patch('laya_embed_resident.admit_query', lambda **_kw: None):
+                mock.patch('memvane.resident.embed_resident.admit_query', lambda **_kw: None):
             baseline = response.serve_preview('recall', 'hermes', decision,
                 {'prompt': 'emerald heron', 'cwd': str(case.project)})
         print(json.dumps({'case': 'real-core-hermes-preview', 'answer': baseline}), flush=True)
@@ -164,12 +164,12 @@ class HermesRouteChecks(unittest.TestCase):
         case = self.fixture()
         attestation = case.state / journal.PRODUCTION_ATTESTATION
         attestation.write_bytes(b'{}')
-        decision = route.select_route(str(case.project))
+        decision = route_route_selection.select_route(str(case.project))
         self.assertEqual(decision['state'], 'preview')
         with mock.patch.object(journal, '_verified_executing_root',
                                return_value=str(case.plugin)):
             with self.assertRaises(journal.JournalEvidenceError):
-                route.verify_preview_route(decision)
+                route_preview_proof.verify_preview_route(decision)
         answer, calls, _previews = self.invoke(case)
         self.assertEqual(calls[0]['stdout'], 'preview')
         self.assertIn('request refused', (answer or {}).get('context', ''))
@@ -177,7 +177,7 @@ class HermesRouteChecks(unittest.TestCase):
     def test_ordinary_blocked_route_is_a_refusal(self):
         case = self.fixture()
         (case.auto / fresh.ROUTE).write_bytes(b'{}')
-        self.assertEqual(route.select_route(str(case.project))['state'], 'blocked')
+        self.assertEqual(route_route_selection.select_route(str(case.project))['state'], 'blocked')
         answer, calls, previews = self.invoke(case)
         self.assertEqual(calls[0]['stdout'], 'blocked')
         self.assertIn('request refused', (answer or {}).get('context', ''))
@@ -193,7 +193,7 @@ class HermesRouteChecks(unittest.TestCase):
                     (case.auto / fresh.ROUTE).write_bytes(raw)
                 answer, calls, previews = self.invoke(case, after_classify=mutate)
                 self.assertEqual(calls[0]['stdout'], 'preview')
-                self.assertEqual(route.select_route(str(case.project))['state'], next_state)
+                self.assertEqual(route_route_selection.select_route(str(case.project))['state'], next_state)
                 self.assertIn('request refused', (answer or {}).get('context', ''))
                 self.assertEqual(previews, [])
                 # Independent fixture HOME and authority patches per subcase.

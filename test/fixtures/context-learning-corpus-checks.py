@@ -7,7 +7,7 @@ import sqlite3
 import sys
 import tempfile
 
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.corpus import snapshot, reconcile, current_evaluation_ready
 from memvane.learning.context_learning.seam import observe

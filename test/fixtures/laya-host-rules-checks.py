@@ -3,8 +3,8 @@ import sys
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.host import host_rules as rules
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.host import host_rules as rules; import memvane.recall.domain.rules as rules_rules
 
 class RecallRulesChecks(unittest.TestCase):
     def test_pool_preserves_first_fifteen(self):
@@ -44,7 +44,7 @@ class RecallRulesChecks(unittest.TestCase):
         for code, present, expected in [('reader_endpoint_changed', True, True),
                                         ('reader_endpoint_changed', False, False),
                                         ('selected_route_changed', True, False)]:
-            self.assertEqual(rules.reader_reseal_candidate(code, present), expected)
+            self.assertEqual(rules_rules.reader_reseal_candidate(code, present), expected)
 
 class ActionRulesChecks(unittest.TestCase):
     def test_session_and_queued_notice(self):

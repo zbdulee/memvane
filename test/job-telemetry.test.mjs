@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, w
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const CORE = resolve(import.meta.dirname, '../core');
+const CORE = resolve(import.meta.dirname, '..');
 
 function python(code, args = []) {
   return new Promise((resolveRun, reject) => {
@@ -33,7 +33,7 @@ test('concurrent writers append complete private JSONL lines without content fie
   const dir = privateDir(t);
   const path = join(dir, 'job-telemetry.jsonl');
   const script = `
-from job_telemetry import emit
+from memvane.diagnostics.job_telemetry import emit
 import sys
 path, worker = sys.argv[1:]
 print(all(emit(path, 'queued', job_id=f'job:{worker}:{i}', episode=i+1,
@@ -55,7 +55,7 @@ test('malformed and unavailable metrics become null; local process aliases are n
   const dir = privateDir(t);
   const path = join(dir, 'job-telemetry.jsonl');
   const result = await python(`
-from job_telemetry import emit
+from memvane.diagnostics.job_telemetry import emit
 import sys
 path = sys.argv[1]
 print(emit(path, 'finished', job_id='sample:1', op='train', status='success',
@@ -97,8 +97,8 @@ test('failed local trainer keeps its original error, exit code, elapsed time and
   writeFileSync(script, 'import time, sys\ntime.sleep(0.35)\nsys.exit(17)\n');
   const path = join(dir, 'job-telemetry.jsonl');
   const output = await python(`
-from context_learning.local_cycle import LocalTrainer
-from job_telemetry import emit, replay
+from memvane.learning.context_learning.local_cycle import LocalTrainer
+from memvane.diagnostics.job_telemetry import emit, replay
 from pathlib import Path
 import json, sys
 root, script = Path(sys.argv[1]), sys.argv[2]
@@ -132,7 +132,7 @@ test('live zero-RSS snapshots stay unknown and exited failures keep their error'
   const script = join(dir, 'zero-snapshot.py');
   writeFileSync(script, 'import time, sys\ntime.sleep(0.35)\nsys.exit(17)\n');
   const output = await python(`
-from context_learning.local_cycle import LocalTrainer
+from memvane.learning.context_learning.local_cycle import LocalTrainer
 from pathlib import Path
 from unittest.mock import patch
 import json, subprocess, sys
@@ -177,8 +177,8 @@ test('detached worker records a failed cycle and a pre-lock exception as errors'
   const dir = privateDir(t);
   const path = join(dir, 'job-telemetry.jsonl');
   const result = await python(`
-from context_learning.shared import run
-from job_telemetry import emit, replay
+from memvane.learning.context_learning.shared import run
+from memvane.diagnostics.job_telemetry import emit, replay
 from pathlib import Path
 from unittest.mock import patch
 import json, os, sys, time
@@ -187,13 +187,13 @@ for number, outcome in ((1, 'failed'), (2, 'raise')):
     os.environ['QMD_JOB_ID'] = f'worker:{number}'
     os.environ['QMD_JOB_QUEUED_AT'] = str(time.time() - 0.1)
     emit(path, 'queued', job_id=f'worker:{number}', op='shared_worker')
-    with patch('context_learning.shared._policy', return_value={}):
+    with patch('memvane.learning.context_learning.shared._policy', return_value={}):
         if outcome == 'raise':
-            with patch('context_learning.shared._run_impl', side_effect=ValueError('early')):
+            with patch('memvane.learning.context_learning.shared._run_impl', side_effect=ValueError('early')):
                 try: run(root)
                 except ValueError: pass
         else:
-            with patch('context_learning.shared._run_impl', return_value={'status': outcome}):
+            with patch('memvane.learning.context_learning.shared._run_impl', return_value={'status': outcome}):
                 run(root)
 print(json.dumps([(r['job_id'], r['status'], r['queue_wait_ms'], r['run_ms'])
                   for r in replay(path.read_text().splitlines())]))
@@ -217,7 +217,7 @@ test('unsafe destination and logging failure return false without touching anoth
   mkdirSync(publicDir, { mode: 0o755 });
   chmodSync(publicDir, 0o755);
   const result = await python(`
-from job_telemetry import emit
+from memvane.diagnostics.job_telemetry import emit
 import sys
 print(emit(sys.argv[1], 'queued', job_id='safe:1'))
 print(emit(sys.argv[2], 'queued', job_id='safe:2'))
@@ -231,7 +231,7 @@ test('replay separates attempts, derives durations, and leaves crashed jobs inco
   const dir = privateDir(t);
   const path = join(dir, 'job-telemetry.jsonl');
   const output = await python(`
-from job_telemetry import emit, replay
+from memvane.diagnostics.job_telemetry import emit, replay
 from pathlib import Path
 import json, sys
 path = sys.argv[1]
@@ -271,7 +271,7 @@ test('replay rejects malformed finish rows before mutating an attempt', async t 
   const dir = privateDir(t);
   const path = join(dir, 'job-telemetry.jsonl');
   const output = await python(`
-from job_telemetry import emit, replay, SCHEMA
+from memvane.diagnostics.job_telemetry import emit, replay, SCHEMA
 from pathlib import Path
 import json, sys
 path = sys.argv[1]

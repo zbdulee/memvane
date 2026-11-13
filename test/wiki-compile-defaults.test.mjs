@@ -7,7 +7,7 @@ function run(py) {
 }
 
 test('builtin_engines filters to known engines and stores symbolic names only', () => {
-  const py = `import json,sys; sys.path.insert(0,'core'); import wiki_compile_defaults as d
+  const py = `import json,sys; sys.path.insert(0,'.'); import memvane.wiki.compile.wiki_compile_defaults as d
 print(json.dumps([d.builtin_engines(('claude','bogus','hermes')), d.builtin_engines(('bogus',))]))`;
   const out = JSON.parse(run(py));
   assert.deepEqual(out[0], ['claude', 'hermes']);
@@ -15,7 +15,7 @@ print(json.dumps([d.builtin_engines(('claude','bogus','hermes')), d.builtin_engi
 });
 
 test('parse_engines filters to known engines, empty = all', () => {
-  const py = `import json,sys; sys.path.insert(0,'core'); import wiki_compile_defaults as d
+  const py = `import json,sys; sys.path.insert(0,'.'); import memvane.wiki.compile.wiki_compile_defaults as d
 print(json.dumps([list(d.parse_engines('codex,bogus')), list(d.parse_engines('')), list(d.parse_engines(None))]))`;
   const [filtered, empty, none] = JSON.parse(run(py));
   assert.deepEqual(filtered, ['codex']);
@@ -26,8 +26,8 @@ print(json.dumps([list(d.parse_engines('codex,bogus')), list(d.parse_engines('')
 // 생성기가 **의도하는** 값은 full_compile_block()이 SSOT다. 파일로 나가는 것은
 // compile_block()의 delta이므로, 의도는 여기서 보고 delta 여부는 아래 테스트가 본다.
 test('full_compile_block has post_tool_source trigger, portable builtins (no dispatch gate), batch', () => {
-  const py = `import json,sys; sys.path.insert(0,'core')
-import wiki_compile_defaults as d, wiki_compile_worker as wcw
+  const py = `import json,sys; sys.path.insert(0,'.')
+import memvane.wiki.compile.wiki_compile_defaults as d; import memvane.wiki.compile.wiki_compile_worker as wcw
 b=d.full_compile_block('/PR'); print(json.dumps({
  'mode':b['mode'],
  'trig':'post_tool_source' in b['triggers'],
@@ -57,8 +57,8 @@ b=d.full_compile_block('/PR'); print(json.dumps({
 });
 
 test('emitted inference policy follows runtime defaults without sharing mutable nested values', () => {
-  const out = JSON.parse(run(`import json,sys; sys.path.insert(0,'core')
-import config as c, wiki_compile_defaults as d
+  const out = JSON.parse(run(`import json,sys; sys.path.insert(0,'.')
+import memvane.settings.config as c; import memvane.wiki.compile.wiki_compile_defaults as d
 first=d.full_compile_block('/PR')
 same = first['reasoningEffort'] == c.DEFAULT_CONFIG['compile']['reasoningEffort'] and first['verify'] == c.DEFAULT_CONFIG['compile']['verify']
 first['reasoningEffort']['engines']['codex'] = {'verify':'high'}
@@ -75,8 +75,8 @@ print(json.dumps({'same':same,'effort':again['reasoningEffort'],'verify':again['
 // **남긴** 키는 전부 기본값과 다르거나 기본값에 아예 없는 키여야 한다. 한쪽이라도 어긋나면
 // 생성기가 조용히 동작을 바꾸는 것이므로, effective 동결 테스트보다 먼저 여기서 깨진다.
 test('compile_block은 delta다 — 생략한 키는 기본값과 같고, 남긴 키는 기본값과 다르다', () => {
-  const py = `import json,sys; sys.path.insert(0,'core')
-import wiki_compile_defaults as d, config as c
+  const py = `import json,sys; sys.path.insert(0,'.')
+import memvane.wiki.compile.wiki_compile_defaults as d; import memvane.settings.config as c
 full=d.full_compile_block('/PR'); delta=d.compile_block('/PR'); dflt=c.DEFAULT_CONFIG['compile']
 
 def walk(f, dl, df, path=''):
@@ -107,8 +107,8 @@ print(json.dumps({'omittedWrong': omitted_wrong, 'keptWrong': kept_wrong,
   assert.deepEqual(r.deltaKeys, ['extractor', 'mode', 'triggers']);
   // dispatch 게이트가 사라진 뒤 extractor delta에 남아야 하는 것은 builtins 하나뿐이고,
   // 그것만으로 엔진이 해석돼야 한다(게이트 키를 빠뜨려 죽는 경로가 더는 없다).
-  const ext = JSON.parse(run(`import json,sys; sys.path.insert(0,'core')
-import wiki_compile_defaults as d, wiki_compile_worker as wcw
+  const ext = JSON.parse(run(`import json,sys; sys.path.insert(0,'.')
+import memvane.wiki.compile.wiki_compile_defaults as d; import memvane.wiki.compile.wiki_compile_worker as wcw
 delta=d.compile_block('/PR')
 print(json.dumps({'keys':sorted(delta['extractor']),
                   'resolved':wcw.resolve_extractor_argv(delta,'claude') is not None}))`));
@@ -118,7 +118,7 @@ print(json.dumps({'keys':sorted(delta['extractor']),
 });
 
 test('compile_block --engines codex limits portable builtins', () => {
-  const py = `import json,sys; sys.path.insert(0,'core'); import wiki_compile_defaults as d
+  const py = `import json,sys; sys.path.insert(0,'.'); import memvane.wiki.compile.wiki_compile_defaults as d
 b=d.compile_block('/PR', d.parse_engines('codex'))
 print(json.dumps({'extractor':b['extractor'],
                   'fullBackends':d.full_compile_block('/PR', d.parse_engines('codex'))['extractor']['backends']}))`;

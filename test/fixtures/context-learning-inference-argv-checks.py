@@ -22,7 +22,7 @@ def rejected(callback, code):
 reviewed = Path(__file__).resolve().parents[2] / 'memvane/learning/context_learning/adapter.py'
 candidate_sha = hashlib.sha256(reviewed.read_bytes()).hexdigest()
 # Candidate approval is local to this disposable fixture, never the production pin.
-with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.parents[2]) as name:
+with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.parents[3]) as name:
     root = Path(name)
     installed = root / 'installed/context_learning'
     installed.mkdir(parents=True)
@@ -50,8 +50,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
 
     with patch.object(Path, 'home', return_value=root), \
             patch.object(shared, '__file__', str(installed / 'shared.py')), \
-            patch('context_learning.local_cycle.LocalTrainer', SegmentTrainer), \
-            patch('hook_budget.remaining', return_value=8):
+            patch('memvane.learning.context_learning.local_cycle.LocalTrainer', SegmentTrainer), \
+            patch('memvane.kernel.hook_budget.remaining', return_value=8):
         old = root / 'retired' / 'adapter.py'
         policy = {'trainerArgv': [sys.executable, str(adapter), str(model)],
                   'modelInputView': EDIT_INPUT_VIEW, 'maxRssMib': 512}

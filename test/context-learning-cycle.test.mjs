@@ -11,7 +11,7 @@ for (const [name, fixture] of [
 ]) {
   test(name, () => {
     const raw = execFileSync('python3', [`test/fixtures/${fixture}`], {
-      env: {...process.env, PYTHONPATH: 'core'}, encoding: 'utf8', timeout: 30000,
+      env: {...process.env, PYTHONPATH: '.'}, encoding: 'utf8', timeout: 30000,
     });
     const report = JSON.parse(raw);
     assert.ok(report);

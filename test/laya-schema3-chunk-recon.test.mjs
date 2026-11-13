@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chunkDocumentByTokens } from '../core/laya_qmd_chunking.mjs';
+import { chunkDocumentByTokens } from '../memvane/provider/adapters/laya_qmd_chunking.mjs';
 
 const tokenizer = {
   tokenize(text) {
@@ -21,18 +21,18 @@ const tokenizer = {
 };
 
 function python(script, input) {
-  const r = spawnSync('python3', ['-B', '-c', 'import json,sys;sys.path.insert(0,"core");' + script],
+  const r = spawnSync('python3', ['-B', '-c', 'import json,sys;sys.path.insert(0,".");' + script],
     { input, encoding: 'utf8', timeout: 60000, env: { ...process.env, QMD_SANDBOX: '1' } });
   assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
 }
 
 const firstPass = (body) => python(
-  'import laya_view_vectors as v;print(json.dumps([p for p,_ in v.qmd_first_pass(sys.stdin.read())]))', body);
+  'import memvane.store.view.view_vectors as v;print(json.dumps([p for p,_ in v.qmd_first_pass(sys.stdin.read())]))', body);
 
 // The worker's view chunker over the actual provider positions.
 const viewChunker = (body, positions) => python(
-  'import laya_product_sync_worker as w, laya_view_vectors as v;d=json.loads(sys.stdin.read());' +
+  'import memvane.sync.product_sync_worker as w; import memvane.store.view.view_vectors as v;d=json.loads(sys.stdin.read());' +
   'P=type("P",(),{"embed_document_chunks":lambda s,b,p:[{"seq":i,"pos":x,"vector":[1.0,0.0,0.0]} ' +
   'for i,x in enumerate(d["positions"])]});ctx={"stash":{},"acquire":lambda c:P()};' +
   'chunker,_e=w._schema3_chunker(ctx,lambda:{});' +

@@ -15,13 +15,13 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO))
 from memvane.diagnostics import diagnostic_trace as diag
 from memvane.diagnostics import event_log
 import laya_bundle_upgrade as upgrade
 from memvane.host import host_response as host_response
-from memvane.route import index_host_route as routes
+from memvane.route import index_host_route as routes; import memvane.journal.route_selection as routes_route_selection
 import laya_project_dir_move
 import laya_state_move
 from hermes_adapter import core_bridge
@@ -95,7 +95,7 @@ class BundleUpgrade(Base):
                                              return_value=False))
             stack.enter_context(patch.object(laya_project_dir_move, 'needed',
                                              return_value=None))
-            stack.enter_context(patch.object(routes, 'select_route', return_value=selected))
+            stack.enter_context(patch.object(routes_route_selection, 'select_route', return_value=selected))
             if capture_error:
                 stack.enter_context(patch.object(
                     diag, 'capture', side_effect=RuntimeError('synthetic logger failure')))
@@ -188,7 +188,7 @@ class HermesRecall(Base):
             stack.enter_context(patch.object(core_bridge, '_is_noop_env', return_value=False))
             stack.enter_context(patch.object(core_bridge, '_laya_route_state',
                                              return_value='candidate'))
-            stack.enter_context(patch.object(routes, 'select_route',
+            stack.enter_context(patch.object(routes_route_selection, 'select_route',
                                              return_value=self.decision))
             stack.enter_context(patch.object(host_response, 'serve_selected',
                                              side_effect=serve))

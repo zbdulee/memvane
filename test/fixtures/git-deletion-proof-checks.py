@@ -26,7 +26,7 @@ from unittest import mock
 import uuid
 
 HERE = Path(__file__).resolve().parent
-CORE = HERE.parents[1] / 'core'
+CORE = HERE.parents[1]
 sys.path.insert(0, str(CORE))
 from memvane.wiki.lifecycle import git_branch_safety as gbs  # noqa: E402
 from memvane.kernel import paths as git_paths  # noqa: E402

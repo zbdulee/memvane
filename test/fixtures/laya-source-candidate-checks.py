@@ -15,10 +15,10 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import laya_source_catalog as catalog_mod
 from laya_index_a import IndexContractError, LayaIndexA
-from laya_index_source_port import scan_collections
+from memvane.wiki.intake.source_scan import scan_collections
 from laya_source_catalog import (CandidateQuery, CatalogPending,
                                  GenerationSourceBinding, LayaSourceCatalog,
                                  capture_generation_binding, publish_from_catalog,

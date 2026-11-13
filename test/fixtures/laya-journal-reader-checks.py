@@ -23,9 +23,9 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 from laya_selected_project import SelectedProject
-from memvane.journal import install_journal as J
+from memvane.journal import install_journal as J; import memvane.route.index_host_route as J_index_host_route
 from memvane.install import product_bundle as bundle
 
 spec = importlib.util.spec_from_file_location('reader_v4_fixture', HERE / 'laya-journal-v4-checks.py')
@@ -42,7 +42,7 @@ def emit(case, **evidence):
 
 class JournalReaderChecks(unittest.TestCase):
     def test_conversion_waits_for_existing_provider_writer_outside_queue_lock(self):
-        from memvane.learning.context_learning.resource_coordination import Coordinator
+        from memvane.runtime.resource_coordination import Coordinator
         from memvane.kernel.resource_deferred import ResourceDeferred
         case=self.published_case()
         reader,bridge=self.reader_api(),self.bridge_api()
@@ -61,7 +61,7 @@ class JournalReaderChecks(unittest.TestCase):
         self.assertEqual(reader.read_selection(case.journal).preferred_endpoint,selected.preferred_endpoint)
 
     def test_initial_recovery_waits_for_existing_provider_writer(self):
-        from memvane.learning.context_learning.resource_coordination import Coordinator
+        from memvane.runtime.resource_coordination import Coordinator
         from memvane.kernel.resource_deferred import ResourceDeferred
         case=self.published_case()
         reader,bridge=self.reader_api(),self.bridge_api()
@@ -154,7 +154,7 @@ class JournalReaderChecks(unittest.TestCase):
     @staticmethod
     def metadata_snapshot(case):
         return {str(path.relative_to(case.home)): path.read_bytes() for path in
-                (case.auto / J.ROUTE_FILE, case.state / 'reviewed-route.json',
+                (case.auto / J_index_host_route.RECORD, case.state / 'reviewed-route.json',
                  case.state / J.PRODUCTION_ATTESTATION, case.state / case.ledger_name)}
 
     def test_new_selected_journal_defaults_to_v4_and_reading_changes_no_data(self):

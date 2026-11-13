@@ -104,8 +104,8 @@ test('pending append failure keeps the hook silent and does not queue an unguard
     const oldRevision = JSON.parse(execFileSync('python3', ['-c', [
       'import json, sys',
       'from pathlib import Path',
-      'sys.path.insert(0, "core")',
-      'import wiki_freshness as F',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.wiki_freshness as F',
       'print(json.dumps(F.snapshot_file(Path(sys.argv[1]) / "docs/source.md")))',
     ].join('\n'), project], { cwd: process.cwd(), encoding: 'utf8' }));
     mkdirSync(join(project, '.auto-context', 'compile'), { recursive: true });
@@ -121,8 +121,8 @@ test('pending append failure keeps the hook silent and does not queue an unguard
     const freshness = JSON.parse(execFileSync('python3', ['-c', [
       'import json, sys',
       'from pathlib import Path',
-      'sys.path.insert(0, "core")',
-      'import wiki_freshness as F',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.wiki_freshness as F',
       'root = Path(sys.argv[1])',
       'revision = json.loads(sys.argv[2])',
       'card = {"sourceRevisions": [{"kind": "file", "path": "docs/source.md", "collection": "proj-docs", **revision}]}',

@@ -6,7 +6,7 @@ import sqlite3
 import sys
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.store.checkout import worktree_wiki_membership as membership
 from memvane.store.checkout import worktree_query_slice as query
 

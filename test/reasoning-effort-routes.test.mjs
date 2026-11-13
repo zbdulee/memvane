@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 
 function run(py) {
   return JSON.parse(execFileSync('python3', ['-c', py], {
-    cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, PYTHONPATH: 'core', QMD_SANDBOX: '' },
+    cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, PYTHONPATH: '.', QMD_SANDBOX: '' },
   }));
 }
 
@@ -12,7 +12,7 @@ test('generation route propagates generation effort and keeps extractor audit me
   const out = run(`
 import json, shutil, sys, tempfile
 from pathlib import Path
-import config, wiki_compile_worker as w
+import memvane.settings.config as config; import memvane.wiki.compile.wiki_compile_worker as w
 root = Path(tempfile.mkdtemp(prefix='effort-generation-')).resolve()
 try:
     (root / 'docs').mkdir()
@@ -44,7 +44,7 @@ test('verify route propagates verify effort and persists only bounded audit meta
   const out = run(`
 import json, os, shutil, tempfile
 from pathlib import Path
-import config, wiki_verify_worker as v
+import memvane.settings.config as config; import memvane.wiki.compile.wiki_verify_worker as v
 root = Path(tempfile.mkdtemp(prefix='effort-verify-')).resolve()
 try:
     os.environ['QMD_DIRTY_QUEUE'] = str(root / 'dirty-queue')
@@ -78,7 +78,7 @@ test('semantic dedup route propagates semanticDedup effort and exposes audit met
   const out = run(`
 import json, shutil, tempfile
 from pathlib import Path
-import config, wiki_dedup_judge as j
+import memvane.settings.config as config; import memvane.wiki.dedup.wiki_dedup_judge as j
 root = Path(tempfile.mkdtemp(prefix='effort-dedup-')).resolve()
 try:
     cfg = config.normalize_config({'compile': {'mode':'auto-wiki', 'extractor': {'backends': {'claude': ['python3','stub']}}, 'reasoningEffort': {'generation':'low','verify':'medium','semanticDedup':'low','engines': {'claude': {'semanticDedup':'xhigh'}}}, 'semanticDedup': {'judge': {'enabled':True}}}})['compile']
@@ -86,7 +86,7 @@ try:
     def fake_run(argv, payload, timeout, project):
         seen['payload'] = payload
         return {'verdict':'distinct','reason':'different','_qmd': {'reasoningEffort': {'requested':'xhigh','applied':'xhigh','status':'applied','reason':'capability_flag'}}}, None, 0
-    import wiki_compile_worker as w
+    import memvane.wiki.compile.wiki_compile_worker as w
     old = w.run_extractor
     w.run_extractor = fake_run
     try:

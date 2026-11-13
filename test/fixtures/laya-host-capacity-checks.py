@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-CORE = Path(__file__).resolve().parents[2] / 'core'
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
-from memvane.host import host_response as response
-import laya_index_source_port as source_port
+from memvane.host import host_response as response; import memvane.wiki.card.trust as response_trust
+import memvane.wiki.intake.source_scan as source_port
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_capacity import GenerationBindingStore, open_pinned_candidate_query
 from laya_index_claim_queue import ClaimQueue
@@ -208,7 +208,7 @@ class HostCapacityTests(HostCapacityCase):
             from memvane.wiki.card import wiki_freshness
             with mock.patch.object(response, '_v2_phase',
                                    return_value=([{'path': 'raw/a.md'}], True)), \
-                    mock.patch.object(response, '_verified_wiki_row', return_value=True), \
+                    mock.patch.object(response_trust, '_verified_wiki_row', return_value=True), \
                     mock.patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
                                       return_value=[]):
                 with self.assertRaisesRegex(IndexContractError, 'index_stale'):
@@ -229,7 +229,7 @@ class HostCapacityTests(HostCapacityCase):
         from laya_source_catalog import CandidateQuery
         with mock.patch.object(response, '_v2_phase',
                                return_value=([{'path': 'wiki/a.md'}], True)), \
-             mock.patch.object(response, '_verified_wiki_row', return_value=True), \
+             mock.patch.object(response_trust, '_verified_wiki_row', return_value=True), \
              mock.patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
                                return_value=[]), \
              mock.patch.object(CandidateQuery, 'require_returned_verified',
@@ -296,7 +296,7 @@ class ServeRuntimeTests(unittest.TestCase):
         # Runtime argument checks use a synthetic provider, not OS admission.
         with mock.patch.object(laya_install_journal, 'verify_selected_route',
                                return_value=proof), \
-                mock.patch('laya_embed_resident.admit_query', return_value=None), \
+                mock.patch('memvane.resident.embed_resident.admit_query', return_value=None), \
                 mock.patch.object(laya_local_embed_provider, 'ReviewedLocalQmdProvider'), \
                 mock.patch.object(config, 'load_project_config', return_value=settings), \
                 mock.patch.object(laya_index_runtime, 'LayaIndexRuntime', side_effect=runtime), \

@@ -88,7 +88,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-process-', dir='/tm
     children = [subprocess.Popen(
         [sys.executable, '-c', program, str(project), str(home), str(barrier)],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        env={**os.environ, 'PYTHONPATH': 'core'}) for _ in range(4)]
+        env={**os.environ, 'PYTHONPATH': '.'}) for _ in range(4)]
     barrier.touch()
     output = []
     for child in children:

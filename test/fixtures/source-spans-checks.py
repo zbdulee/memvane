@@ -12,7 +12,7 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.wiki.card import source_spans
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import yaml_scalars

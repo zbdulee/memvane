@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 test('Codex lean descriptor preserves policies and rejects actual actions',()=>{
 const out=execFileSync('python3',['-c',`
 import sys,json
-sys.path.insert(0,'core')
-from context_learning.codex_adapter import argv,child_environment,inspect_event
+sys.path.insert(0,'.')
+from memvane.learning.context_learning.codex_adapter import argv, child_environment, inspect_event
 args=argv();assert args[args.index('--model')+1]=='gpt-6-luna'
 assert '--ignore-user-config' in args and '--ignore-rules' in args and '--ephemeral' in args
 assert args[args.index('--sandbox')+1]=='read-only'

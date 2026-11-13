@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PR 1 checkout identity and view capture against real temporary git repos.
 
-Pins only the public contract of ``core/laya_checkout_view.py``: caller-owned
+Pins only the public contract of ``memvane/store/checkout/checkout_view.py``: caller-owned
 repository/worktree registrations, ``capture_view`` and ``capture_matches``.
 Registration field names, evidence layout and digest inputs stay free. Every
 repository lives under one temp root; fixture git runs sequentially with no
@@ -28,7 +28,7 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 from memvane.host import onboarding_choice  # noqa: E402
 
 MODULES_BEFORE = set(sys.modules)
@@ -83,7 +83,7 @@ def flip(digest: str) -> str:
 class CheckoutCase(unittest.TestCase):
     def setUp(self):
         if view is None:
-            self.fail('core/laya_checkout_view.py is absent: PR 1 checkout capture not implemented')
+            self.fail('memvane/store/checkout/checkout_view.py is absent: PR 1 checkout capture not implemented')
         temp = tempfile.TemporaryDirectory(prefix='laya-checkout-view-')
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name).resolve()
@@ -878,7 +878,7 @@ class NoActivation(CheckoutCase):
                              'laya_view_values', 'laya_view_store', 'laya_view_reader',
                              'laya_view_fill', 'laya_view_rows', 'laya_view_vectors', 'laya_shadow_migration'}
         users = sorted(str(path.relative_to(REPO))
-                       for path in [*(REPO / 'core').rglob('*.py'), REPO / 'hooks/run-hook',
+                       for path in [*(REPO / 'memvane').rglob('*.py'), REPO / 'hooks/run-hook',
                                     *(REPO / 'hermes_adapter').rglob('*.py')]
                        if path.stem not in candidate_modules
                        and any(name in path.read_text(encoding='utf-8', errors='replace')
@@ -944,7 +944,7 @@ class NoActivation(CheckoutCase):
         for rel, functions in reaches.items():
             tree = ast.parse((REPO / rel).read_text(encoding='utf8'))
             self.assertEqual(importing_functions(tree, None, set()), functions, rel)
-        adapter=ast.parse((REPO/'core/laya_reader_dispatch.py').read_text(encoding='utf8'))
+        adapter=ast.parse((REPO / 'memvane/recall/reader_dispatch.py').read_text(encoding='utf8'))
         # BlobStoreError and DEFERRED are the persisted schema3 query's error
         # class and its deferred-reason set: values, not writers.
         allowed={'laya_blob_values':{'profile','BlobStoreError'},

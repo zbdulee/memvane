@@ -12,9 +12,9 @@ import time
 import unittest
 from unittest.mock import Mock,patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from memvane.learning.context_learning.local_cycle import ResourceDeferred
-from memvane.learning.context_learning.resource_coordination import Coordinator
+from memvane.runtime.resource_coordination import Coordinator
 
 
 class RunningTraining(unittest.TestCase):
@@ -29,7 +29,7 @@ class RunningTraining(unittest.TestCase):
             'memory_pressure':{'level':'normal','system_free_percent':70}}
 
     def watch(self):
-        self.assertIsNotNone(importlib.util.find_spec('context_learning.training_watch'),'running watchdog missing')
+        self.assertIsNotNone(importlib.util.find_spec('memvane.learning.context_learning.training_watch'),'running watchdog missing')
         from memvane.learning.context_learning import training_watch
         return training_watch
 
@@ -131,27 +131,27 @@ class RunningTraining(unittest.TestCase):
         module=self.watch();process=Mock(pid=999991)
         process.poll.return_value=None;process.wait.return_value=-9
         with patch.object(module.os,'killpg',side_effect=self.group_gone_after_signal) as send:
-            self.assertTrue(module.stop_owned(process,emergency=True))
+            self.assertTrue(importlib.import_module('memvane.kernel.process').stop_owned_checked(process,emergency=True))
         self.assertEqual(send.call_args_list,[unittest.mock.call(999991,signal.SIGKILL),unittest.mock.call(999991,0)])
         self.assertTrue(process.wait.call_args.kwargs['timeout']<=1)
 
     def test_cleanup_denial_is_not_success(self):
         module=self.watch();process=Mock(pid=999991);process.poll.return_value=None
         with patch.object(module.os,'killpg',side_effect=PermissionError('denied')):
-            self.assertFalse(module.stop_owned(process,emergency=True))
+            self.assertFalse(importlib.import_module('memvane.kernel.process').stop_owned_checked(process,emergency=True))
 
     def test_exited_leader_does_not_hide_surviving_descendants(self):
         module=self.watch();process=Mock(pid=999991)
         process.poll.return_value=0;process.wait.return_value=0
         with patch.object(module.os,'killpg',side_effect=PermissionError('descendant denied')) as send:
-            self.assertFalse(module.stop_owned(process))
+            self.assertFalse(importlib.import_module('memvane.kernel.process').stop_owned_checked(process))
         send.assert_called()
 
     def test_lingering_group_after_kill_is_unknown_with_bounded_wait(self):
         module=self.watch();process=Mock(pid=999991)
         process.wait.return_value=0
         with patch.object(module.os,'killpg'),patch.object(module.time,'monotonic',side_effect=lambda:self.clock[0]),patch.object(module.time,'sleep',side_effect=lambda n:self.clock.__setitem__(0,self.clock[0]+n)):
-            self.assertFalse(module.stop_owned(process,emergency=True))
+            self.assertFalse(importlib.import_module('memvane.kernel.process').stop_owned_checked(process,emergency=True))
         self.assertLessEqual(self.clock[0],.51)
 
     def test_cleanup_unknown_blocks_new_common_compute_after_claim_release(self):
@@ -175,7 +175,7 @@ class RunningTraining(unittest.TestCase):
             output=Path(argv[-1]);output.write_text('{}');output.chmod(0o600)
             return process
         trainer=local_cycle.LocalTrainer([sys.executable])
-        with patch('context_learning.resource_coordination.Coordinator',return_value=Coordinator(self.root)),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch.object(local_cycle.os,'killpg',side_effect=PermissionError('denied')):
+        with patch('memvane.runtime.resource_coordination.Coordinator',return_value=Coordinator(self.root)),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch.object(local_cycle.os,'killpg',side_effect=PermissionError('denied')):
             with self.assertRaisesRegex(ResourceDeferred,'trainer_cleanup_unavailable'):
                 trainer._call('smoke',{},self.root/'result',cwd=self.root)
         self.assertFalse((self.root/'result').exists())
@@ -194,7 +194,7 @@ class RunningTraining(unittest.TestCase):
         trainer=local_cycle.LocalTrainer([sys.executable],max_seconds=1,pressure_probe=lambda **options:next(reports),require_monitor=True)
         trainer.learning_control={'policy':{'maxLoadPerCpu':1}}
         stats=subprocess.CompletedProcess([],0,stdout='999991 1.0 1024\n')
-        with patch('context_learning.resource_coordination.Coordinator',return_value=Coordinator(self.root)),patch.object(local_cycle.subprocess,'Popen',return_value=process),patch.object(local_cycle.subprocess,'run',return_value=stats),patch.object(local_cycle.time,'monotonic',side_effect=lambda:self.clock[0]),patch.object(local_cycle.time,'sleep',side_effect=lambda n:self.clock.__setitem__(0,self.clock[0]+n)),patch.object(local_cycle.os,'killpg',side_effect=self.group_gone_after_signal) as send:
+        with patch('memvane.runtime.resource_coordination.Coordinator',return_value=Coordinator(self.root)),patch.object(local_cycle.subprocess,'Popen',return_value=process),patch.object(local_cycle.subprocess,'run',return_value=stats),patch.object(local_cycle.time,'monotonic',side_effect=lambda:self.clock[0]),patch.object(local_cycle.time,'sleep',side_effect=lambda n:self.clock.__setitem__(0,self.clock[0]+n)),patch.object(local_cycle.os,'killpg',side_effect=self.group_gone_after_signal) as send:
             with self.assertRaises(ResourceDeferred):
                 trainer._call('train',{'artifact_path':str(self.root/'head')},self.root/'result',cwd=self.root)
         self.assertIn(unittest.mock.call(999991,signal.SIGKILL),send.call_args_list)
@@ -214,7 +214,7 @@ class RunningTraining(unittest.TestCase):
         coordinator=Coordinator(self.root);coordinator.demand=Mock(return_value=True)
         stats=subprocess.CompletedProcess([],0,stdout='999991 1.0 1024\n')
         try:
-            with patch('context_learning.resource_coordination.Coordinator',return_value=coordinator),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch.object(local_cycle.subprocess,'run',return_value=stats),patch.object(local_cycle.time,'monotonic',side_effect=lambda:self.clock[0]),patch.object(local_cycle.time,'sleep',side_effect=lambda n:self.clock.__setitem__(0,self.clock[0]+n)),patch.object(local_cycle.os,'killpg',side_effect=self.group_gone_after_signal) as send:
+            with patch('memvane.runtime.resource_coordination.Coordinator',return_value=coordinator),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch.object(local_cycle.subprocess,'run',return_value=stats),patch.object(local_cycle.time,'monotonic',side_effect=lambda:self.clock[0]),patch.object(local_cycle.time,'sleep',side_effect=lambda n:self.clock.__setitem__(0,self.clock[0]+n)),patch.object(local_cycle.os,'killpg',side_effect=self.group_gone_after_signal) as send:
                 with self.assertRaises(ResourceDeferred):trainer._call('train',{},self.root/'result',cwd=self.root)
             self.assertEqual(os.read(held[0],1),b'y')
             self.assertEqual(send.call_args_list,[unittest.mock.call(999991,signal.SIGTERM),unittest.mock.call(999991,signal.SIGKILL),unittest.mock.call(999991,0)])
@@ -223,7 +223,7 @@ class RunningTraining(unittest.TestCase):
             for fd in held:os.close(fd)
 
     def test_real_training_guard_reads_parent_stop_pipe(self):
-        self.watch();from memvane.learning.context_learning import resource_coordination as coordination
+        self.watch();from memvane.runtime import resource_coordination as coordination
         read,write=os.pipe()
         try:
             c=Coordinator(self.root)
@@ -235,7 +235,7 @@ class RunningTraining(unittest.TestCase):
 
     def test_training_guard_yields_before_next_group_for_due_update(self):
         from memvane.runtime import runtime_work
-        from memvane.learning.context_learning import resource_coordination as coordination
+        from memvane.runtime import resource_coordination as coordination
         controller=Coordinator(self.root)
         with controller._gate('trainer.lock') as fd,patch.object(coordination,'default_root',return_value=self.root),patch.dict(os.environ,{'QMD_TRAINER_COORD_FD':str(fd),'QMD_TRAINER_STOP_FD':''}):
             guard=coordination.TrainingGuard({'schema':1,'root':str(self.root),'policy':{},'namespace':'synthetic','job_id':'job'})
@@ -300,7 +300,7 @@ class RunningTraining(unittest.TestCase):
 class DaemonMonitor(unittest.TestCase):
     setUp=RunningTraining.setUp
     def monitor(self):
-        self.assertIsNotNone(importlib.util.find_spec('runtime_monitor'),'daemon monitor missing')
+        self.assertIsNotNone(importlib.util.find_spec('memvane.runtime.runtime_monitor'),'daemon monitor missing')
         from memvane.runtime import runtime_monitor
         return runtime_monitor
 

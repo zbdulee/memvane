@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.kernel.errors import IndexContractError
@@ -30,31 +30,31 @@ class ResidentChecks(unittest.TestCase):
                          'providerArtifactSha256': 'b' * 64}
 
     def test_warm_service_is_reused_without_new_owner(self):
-        with patch('laya_embed_resident.probe', return_value='ready'), \
-             patch('laya_embed_resident.owner_lock_held', return_value=True), \
-             patch('laya_resident_service.request_adopt') as spawn:
+        with patch('memvane.resident.embed_resident.probe', return_value='ready'), \
+             patch('memvane.resident.embed_resident.owner_lock_held', return_value=True), \
+             patch('memvane.resident.resident_service.request_adopt') as spawn:
             handle = ensure_running('/synthetic/project', self.manifest)
             handle.stop()
         spawn.assert_not_called()
 
     def test_transient_warm_service_is_not_treated_as_resident(self):
-        with patch('laya_embed_resident.probe', return_value='ready'), \
-             patch('laya_embed_resident.owner_lock_held', return_value=False), \
-             patch('laya_resident_service.request_adopt') as spawn:
+        with patch('memvane.resident.embed_resident.probe', return_value='ready'), \
+             patch('memvane.resident.embed_resident.owner_lock_held', return_value=False), \
+             patch('memvane.resident.resident_service.request_adopt') as spawn:
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_preparing'):
                 ensure_running('/synthetic/project', self.manifest)
         spawn.assert_not_called()
 
     def test_cold_service_wakes_owner_and_defers_current_sync(self):
-        with patch('laya_embed_resident.probe', return_value='absent'), \
-             patch('laya_resident_service.request_adopt') as spawn:
+        with patch('memvane.resident.embed_resident.probe', return_value='absent'), \
+             patch('memvane.resident.resident_service.request_adopt') as spawn:
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_preparing'):
                 ensure_running('/synthetic/project', self.manifest)
         spawn.assert_called_once()
 
     def test_other_identity_never_reused(self):
-        with patch('laya_embed_resident.probe', return_value='mismatch'), \
-             patch('laya_resident_service.request_adopt') as spawn:
+        with patch('memvane.resident.embed_resident.probe', return_value='mismatch'), \
+             patch('memvane.resident.resident_service.request_adopt') as spawn:
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_identity_transition'):
                 ensure_running('/synthetic/project', self.manifest)
         spawn.assert_not_called()
@@ -113,14 +113,14 @@ class ResidentChecks(unittest.TestCase):
             manifest = {**self.manifest,
                         'serviceSocketPath': str(runtime / 'laya-embed.sock')}
             _write_state(manifest, 'startup_failed', attempts=2)
-            with patch('laya_embed_resident.probe', return_value='absent'), \
-                 patch('laya_resident_service.request_adopt') as spawn:
+            with patch('memvane.resident.embed_resident.probe', return_value='absent'), \
+                 patch('memvane.resident.resident_service.request_adopt') as spawn:
                 with self.assertRaisesRegex(ResourceDeferred, 'laya_service_backoff'):
                     ensure_running('/synthetic/project', manifest)
             spawn.assert_not_called()
             _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
-            with patch('laya_embed_resident.probe', return_value='absent'), \
-                 patch('laya_resident_service.request_adopt') as spawn:
+            with patch('memvane.resident.embed_resident.probe', return_value='absent'), \
+                 patch('memvane.resident.resident_service.request_adopt') as spawn:
                 with self.assertRaisesRegex(IndexContractError, 'provider_start_failed'):
                     ensure_running('/synthetic/project', manifest)
             spawn.assert_not_called()
@@ -134,15 +134,15 @@ class ResidentChecks(unittest.TestCase):
         self.assertIsNone(admit_query(coordinator=controller, report={'synthetic': True}))
 
     def test_cold_service_asks_the_user_service_once_per_call(self):
-        with patch('laya_embed_resident.probe', return_value='absent'), \
-             patch('laya_resident_service.request_adopt') as adopt:
+        with patch('memvane.resident.embed_resident.probe', return_value='absent'), \
+             patch('memvane.resident.resident_service.request_adopt') as adopt:
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_preparing'):
                 ensure_running('/synthetic/project', self.manifest)
         adopt.assert_called_once_with('/synthetic/project', root=None, spawn=None)
 
     def test_service_deferral_is_reported_not_raised_as_failure(self):
-        with patch('laya_embed_resident.probe', return_value='absent'), \
-             patch('laya_resident_service.request_adopt',
+        with patch('memvane.resident.embed_resident.probe', return_value='absent'), \
+             patch('memvane.resident.resident_service.request_adopt',
                    side_effect=ResourceDeferred('laya_service_protocol_mismatch')):
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_protocol_mismatch'):
                 ensure_running('/synthetic/project', self.manifest)
@@ -150,8 +150,8 @@ class ResidentChecks(unittest.TestCase):
     def test_failure_budget_backs_off_even_without_an_exit_record(self):
         manifest = self.manifest
         _write_state(manifest, 'worker_exited', terminal=True, attempts=3)
-        with patch('laya_embed_resident.probe', return_value='absent'), \
-             patch('laya_resident_service.request_adopt') as adopt:
+        with patch('memvane.resident.embed_resident.probe', return_value='absent'), \
+             patch('memvane.resident.resident_service.request_adopt') as adopt:
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_backoff'):
                 ensure_running('/synthetic/project', manifest)
         adopt.assert_not_called()
@@ -159,9 +159,9 @@ class ResidentChecks(unittest.TestCase):
         # third launch must still enter cooldown once its socket is absent.
         _write_state(manifest, 'ready', attempts=3)
         now = read_owner_state(manifest)['at']
-        with patch('laya_embed_resident.probe', return_value='absent'), \
-             patch('laya_resident_service.request_adopt') as adopt, \
-             patch('laya_embed_resident.time.time', return_value=now + 21):
+        with patch('memvane.resident.embed_resident.probe', return_value='absent'), \
+             patch('memvane.resident.resident_service.request_adopt') as adopt, \
+             patch('memvane.resident.embed_resident.time.time', return_value=now + 21):
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_backoff'):
                 ensure_running('/synthetic/project', manifest)
         self.assertTrue(read_owner_state(manifest)['terminal'])
@@ -169,7 +169,7 @@ class ResidentChecks(unittest.TestCase):
 
     def test_pending_and_selected_route_share_one_owner_identity(self):
         from memvane.sync import product_sync_worker as sync
-        from memvane.route import index_host_route as route
+        from memvane.route import index_host_route as route; import memvane.journal.route_selection as route_route_selection; import memvane.journal.preview_proof as route_preview_proof
         from memvane.resident.embed_resident import _owned_route, _owner_identity
         with tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp') as root:
             project = Path(root).resolve() / 'project'
@@ -183,8 +183,8 @@ class ResidentChecks(unittest.TestCase):
             with patch.object(sync, '_selected', side_effect=[
                     IndexContractError('selected_route_unavailable'),
                     ({**identity, 'state': 'candidate'}, proof)]), \
-                 patch.object(route, 'select_route', return_value={**identity, 'state': 'preview'}), \
-                 patch.object(route, 'verify_preview_route', return_value=proof):
+                 patch.object(route_route_selection, 'select_route', return_value={**identity, 'state': 'preview'}), \
+                 patch.object(route_preview_proof, 'verify_preview_route', return_value=proof):
                 pending = _owned_route(project)
                 selected = _owned_route(project)
         self.assertEqual((pending[2], selected[2]), ('preview', 'selected'))

@@ -125,7 +125,7 @@ class Checks(unittest.TestCase):
    engine=service.GenerationEngine(load=lambda _:None,forward=forward,admission=lambda *a,**kw:({},{}),rss=lambda:100)
    with self.assertRaises(ValueError):engine.run(job,cancelled=lambda:False,revalidate=lambda:service._validate_request(env))
  def test_stale_completed_quality_rechecks_without_a_training_call(self):
-  from memvane.learning.context_learning.resource_coordination import Coordinator
+  from memvane.runtime.resource_coordination import Coordinator
   from types import SimpleNamespace
   self.stage['metrics']['evaluatedAt']=time.time()-7200
   with self.db(None) as conn:conn.execute('UPDATE cycles SET evidence=?',(canonical(self.stage),))

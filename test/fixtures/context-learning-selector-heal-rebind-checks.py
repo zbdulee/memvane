@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.learning.context_learning import adapter_binding, selector_heal
 
 
@@ -96,7 +96,7 @@ class HealTests(Fixture):
                 patch.object(selector_heal, 'pressure', return_value=None), \
                 patch.object(selector_heal, 'prepare', side_effect=lambda state, policy: prepared.append(policy)), \
                 patch.object(local_cycle, 'VerifiedLayaTrainer', Trainer), \
-                patch('memvane_paths.state_base', return_value=home):
+                patch('memvane.kernel.memvane_paths.state_base', return_value=home):
             result = selector_heal.heal('/synthetic/project', home=home, state=self.state)
         self.assertEqual(result, {'status': 'selector_prepared', 'rebound': False})
         self.assertEqual((self.state / selector_heal.POLICY).read_bytes(), before)

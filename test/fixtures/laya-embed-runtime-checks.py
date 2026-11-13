@@ -27,13 +27,13 @@ import unittest
 from unittest import mock
 
 FIXTURES = Path(__file__).resolve().parent
-CORE = FIXTURES.parents[1] / 'core'
+CORE = FIXTURES.parents[1]
 sys.path.insert(0, str(FIXTURES))
 sys.path.insert(0, str(CORE))
 import laya_bundle_upgrade as auto  # noqa: E402
 from memvane.provider import embed_runtime as R  # noqa: E402
 from memvane.install import product_bundle as bundle  # noqa: E402
-from memvane.install import product_install as product  # noqa: E402
+from memvane.app import setup_workflow as product  # noqa: E402
 from memvane.kernel.errors import IndexContractError  # noqa: E402
 from memvane.provider.domain.profile import profile_identity  # noqa: E402
 from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,  # noqa: E402
@@ -45,7 +45,7 @@ REAL_REVIEW = product.review_local_provider
 RUNTIME_ID = 'qmd-2.5.3-node-llama-cpp-3.18.1'
 RECIPE = 'qmd-regex-token-chunks-candidate-v1'
 DIM = 4
-PROVIDER_FILES = ('core/laya_local_embed_provider.py', 'core/laya_local_embed_worker.mjs')
+PROVIDER_FILES = ('memvane/provider/adapters/local_embed_provider.py', 'memvane/provider/adapters/laya_local_embed_worker.mjs')
 
 # A stand-in for the node binary: binds the manifest socket, answers the
 # worker protocol, and embeds from the model and module-entry bytes.
@@ -683,13 +683,13 @@ class UpgradeFence(unittest.TestCase):
                 return intent['newLedger']
         waited = []
         with mock.patch.object(active, '_intent_ledger', return_value=Ledger), \
-                mock.patch('laya_embed_resident.wait_for_release',
+                mock.patch('memvane.resident.embed_resident.wait_for_release',
                            side_effect=lambda path, timeout: waited.append(path) or True):
             active._fence(intent)
         self.assertEqual(waited, ['/install/runtime/laya-embed.sock',
                                   '/service/install.sock'])
         with mock.patch.object(active, '_intent_ledger', return_value=Ledger), \
-                mock.patch('laya_embed_resident.wait_for_release',
+                mock.patch('memvane.resident.embed_resident.wait_for_release',
                            side_effect=lambda path, timeout: path.startswith('/install')):
             with self.assertRaisesRegex(Exception, '^active_upgrade_resident_busy$'):
                 active._fence(intent)
@@ -833,9 +833,9 @@ class OnboardingWithOnlyLayaRuntime(E2E['FreshOnboarding']):
         self.assertEqual(active['phase'], 'active', active)
         decision = E2E['host_route'].select_route(str(self.project), action='recall')
         proof = E2E['journal_mod'].verify_selected_route_read_only(decision)
-        with mock.patch('laya_local_embed_provider.ReviewedLocalQmdProvider',
+        with mock.patch('memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
                         QueryProvider), \
-                mock.patch('laya_embed_resident.admit_query', lambda **_kw: None):
+                mock.patch('memvane.resident.embed_resident.admit_query', lambda **_kw: None):
             served = E2E['response']._serve_recall(
                 'claude', decision, {'prompt': 'emerald heron'}, proof,
                 E2E['journal_mod'].verify_selected_route_read_only)

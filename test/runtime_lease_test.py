@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-CORE=Path(__file__).resolve().parents[1]/'core'
+CORE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(CORE))
 
 from memvane.runtime import runtime_lease as lease
@@ -21,7 +21,7 @@ from memvane.runtime import runtime_lease as lease
 class ImportBoundary(unittest.TestCase):
     def test_runtime_work_queue_with_explicit_root_does_not_load_context_learning(self):
         # A fresh interpreter: sibling runtime tests already import learning code.
-        probe=('import sys;sys.path.insert(0,sys.argv[1]);import runtime_work;'
+        probe=('import sys;sys.path.insert(0,sys.argv[1]);import memvane.runtime.runtime_work as runtime_work;'
                "q=runtime_work.WakeQueue(sys.argv[2]);key=q.put('index','');rows=q.pending();"
                "print(repr((key is not None,[r['kind'] for r in rows],"
                "sorted(m for m in sys.modules if m=='context_learning' or m.startswith('context_learning.')))))")
@@ -36,7 +36,7 @@ class ImportBoundary(unittest.TestCase):
 class Aliases(unittest.TestCase):
     def test_learning_modules_re_export_the_same_objects(self):
         from memvane.runtime import runtime_work
-        from memvane.learning.context_learning import local_cycle,resident,resource_coordination
+        from memvane.learning.context_learning import local_cycle, resident; from memvane.runtime import resource_coordination
         self.assertIs(resident._private_state,lease.private_state)
         self.assertIs(resident._private_lock,lease.private_lock)
         self.assertIs(resource_coordination._lock,lease.coordination_lock)
@@ -47,7 +47,7 @@ class Aliases(unittest.TestCase):
 
     def test_runtime_work_shims_reach_the_real_coordinator_and_root_on_call(self):
         from memvane.runtime import runtime_work
-        from memvane.learning.context_learning import resource_coordination
+        from memvane.runtime import resource_coordination
         with tempfile.TemporaryDirectory() as raw:
             root=Path(os.path.realpath(raw));os.chmod(root,0o700)
             with patch.object(resource_coordination,'default_root',return_value=root):

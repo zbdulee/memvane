@@ -79,7 +79,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     (root / "shared-policy.json").write_text(canonical(policy))
     (root / "shared-policy.json").chmod(0o600)
     assert _policy(root) == policy
-    inspected = subprocess.run([sys.executable, "core/context_learning_shared.py",
+    inspected = subprocess.run([sys.executable, "entry/run.py", "learning-shared",
         "status", str(root)], capture_output=True, text=True, check=False,
         env={**os.environ, 'HOME': str(base), 'PYTHONDONTWRITEBYTECODE': '1'})
     assert inspected.returncode == 0 and not inspected.stderr
@@ -153,15 +153,15 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
         "projects": {"a": {"exact": 4}}}) == (5, "project_regression")
     assert _cadence(policy, 10, before, {"exact": 10, "exact_rate": .95,
         "projects": {"a": {"exact": 5}}}) == (20, "at_target")
-    with patch("context_learning.shared.resource_report", return_value={
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={
         "ready": False, "available_mib": 100, "load_per_cpu": 4, "gpu": "unknown"}):
         assert train_due(root, policy)["status"] == "deferred_resource"
-    with patch("context_learning.shared.resource_report", return_value={
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={
         "ready": True, "available_mib": 8192, "load_per_cpu": 0, "gpu": "mps-possible"}):
         from memvane.learning.context_learning.local_cycle import _atomic_json
         ready = {"ready": True, "available_mib": 8192,
                  "load_per_cpu": 0, "gpu": "mps-possible"}
-        with patch("context_learning.shared.resource_report",
+        with patch("memvane.learning.context_learning.shared.resource_report",
                    side_effect=[ready, RuntimeError("synthetic_postflight_failure")]):
             interrupted_after_predict = train_due(root, policy,
                 trainer_factory=lambda _: FakeTrainer())
@@ -178,7 +178,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
             def call(self, mode, payload, result_path, *, cwd):
                 assert mode == "predict" and "model_input_view" not in payload
                 return super().call(mode, payload, result_path, cwd=cwd)
-        with patch("context_learning.shared.resource_report",
+        with patch("memvane.learning.context_learning.shared.resource_report",
                    side_effect=[ready, RuntimeError("legacy_resume_after_predict")]):
             legacy_resume = train_due(root, policy,
                                       trainer_factory=lambda _: LegacyResumeTrainer())
@@ -195,7 +195,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
             _atomic_json(path, value)
             if Path(path).name == "experimental-checkpoint.json":
                 raise RuntimeError("synthetic_post_publish_crash")
-        with patch("context_learning.shared._atomic_json", side_effect=interrupted_publish):
+        with patch("memvane.learning.context_learning.shared._atomic_json", side_effect=interrupted_publish):
             interrupted = train_due(root, policy, trainer_factory=lambda _: FakeTrainer())
         assert interrupted["status"] == "failed"
         assert TRAINER_CALLS.count("train") == 1
@@ -230,7 +230,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     checkpoint_path.write_text(canonical({key: value for key, value in pointer.items()
                                           if key != "trainingProvenance"}))
     assert not trial_eligible(root)
-    with patch("context_learning.shared.resource_report", return_value={"ready": True}):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={"ready": True}):
         assert observe_trial(root, policy,
                              trainer_factory=lambda _: FakeTrainer())["status"] == "uncertain_training_provenance"
     checkpoint_path.write_text(canonical(pointer))
@@ -249,7 +249,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
             protected.write_bytes(b"r" * len(original_source))
             changed_on_read.append(True)
         return original_read(fd, count)
-    with patch("context_learning.safe_source.os.read", side_effect=raced_read):
+    with patch("memvane.learning.context_learning.safe_source.os.read", side_effect=raced_read):
         try:
             snapshot_beneath(a, ".auto-context/wiki/case-0.md")
         except ValueError as exc:
@@ -273,8 +273,8 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     def timed_active(*args, **kwargs):
         simulated_clock[0] += .0003
         return True
-    with patch("context_learning.shared._case_active", side_effect=timed_active), patch(
-            "context_learning.shared.time.monotonic", side_effect=lambda: simulated_clock[0]):
+    with patch("memvane.learning.context_learning.shared._case_active", side_effect=timed_active), patch(
+            "memvane.learning.context_learning.shared.time.monotonic", side_effect=lambda: simulated_clock[0]):
         assert not trial_eligible(root)
         assert trial_eligible(root, max_seconds=5)
     pointer_path.write_text(canonical(pointer))
@@ -300,8 +300,8 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
             "request_id": case["request_id"], "input_sha256": case["input_sha256"],
             "selected_ids": [cid]}]}, {"elapsed_seconds": .01})
     from memvane.learning.context_learning.live_select import choose
-    with patch("context_learning.live_select.VerifiedLayaTrainer", FakeSelector), patch(
-            "context_learning.inference_service.predict", side_effect=shared_prediction):
+    with patch("memvane.learning.context_learning.live_select.VerifiedLayaTrainer", FakeSelector), patch(
+            "memvane.learning.context_learning.inference_service.predict", side_effect=shared_prediction):
         selected, reason, _ = choose(root, "What bridge?", [
             {"id": cid, "revision_sha256": digest(source), "source_text": source}],
             corpus_fingerprint=digest("synthetic corpus"),
@@ -320,7 +320,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
         "contextLearning": {"capture": True, "stateRoot": str(state_parent)}}
     os.environ["QMD_ENGINE"] = "codex"
     try:
-        with patch("context_learning.shared.launch", return_value={"status": "fixture_no_worker"}):
+        with patch("memvane.learning.context_learning.shared.launch", return_value={"status": "fixture_no_worker"}):
             observed = observe({"prompt": "Where is the synthetic blue bridge?"},
                 observed_config, a, [{"file": "qmd://wiki/bridge.md"}],
                 phases=[{"name": "primary", "results": [{"file": "qmd://wiki/bridge.md"}],
@@ -408,14 +408,14 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     calls_before_observation = list(TRAINER_CALLS)
     with _db(root) as db:
         db.execute("UPDATE cases SET split='train' WHERE request_id=?", (rid,))
-    with patch("context_learning.shared.resource_report", return_value={"ready": True}):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={"ready": True}):
         only_leaked = observe_trial(root, policy, trainer_factory=lambda _: FakeTrainer())
     assert only_leaked["status"] == "insufficient_independent_holdout_families"
     assert only_leaked["independent_holdout"] == 0
     assert TRAINER_CALLS == calls_before_observation and pointer_path.exists()
     with _db(root) as db:
         db.execute("UPDATE cases SET split='holdout' WHERE request_id=?", (rid,))
-    with patch("context_learning.shared.resource_report", return_value={
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={
         "ready": True, "available_mib": 8192, "load_per_cpu": 0, "gpu": "mps-possible"}):
         uncertain = observe_trial(root, policy, trainer_factory=lambda _: FakeTrainer())
         restarted = observe_trial(root, policy, trainer_factory=lambda _: FakeTrainer())
@@ -432,7 +432,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     # Tombstoning that contaminated local capture removes it from later
     # observations without deleting the retained historical snapshot.
     assert delete_case(local_a, leaked["request_id"]) == "deleted"
-    with patch("context_learning.shared.resource_report", return_value={"ready": True}):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={"ready": True}):
         after_delete = observe_trial(root, policy, trainer_factory=lambda _: FakeTrainer())
     assert after_delete["status"] == "insufficient_independent_holdout_families"
     with _db(root) as db:
@@ -453,7 +453,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
                    (canonical({"selected_ids": [],
                                "input_sha256": digest(canonical(fresh)),
                                "review": "fixture_only"}), fresh["request_id"]))
-    with patch("context_learning.shared.resource_report", return_value={
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={
         "ready": True, "available_mib": 8192, "load_per_cpu": 0, "gpu": "mps-possible"}):
         observed_regression = observe_trial(root, policy, trainer_factory=lambda _: FakeTrainer())
     assert observed_regression["status"] == "regressed", observed_regression
@@ -468,12 +468,12 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     (consents / (digest(str(a)) + ".json")).unlink()
     assert not trial_eligible(root)
     calls_before_revoke = list(TRAINER_CALLS)
-    with patch("context_learning.shared.resource_report", return_value={"ready": True}):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={"ready": True}):
         revoked_observation = observe_trial(root, policy,
                                             trainer_factory=lambda _: FakeTrainer())
     assert revoked_observation["status"] == "source_revoked_before_observation"
     assert TRAINER_CALLS == calls_before_revoke
-    with patch("context_learning.shared.resource_report", return_value={
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={
         "ready": False, "available_mib": 0, "load_per_cpu": 4, "gpu": "unknown"}):
         assert run(root)["status"] == "deferred_resource"
     assert not (root / "experimental-checkpoint.json").exists()

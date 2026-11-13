@@ -18,9 +18,9 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
-sys.path.insert(0, str(REPO / 'core' / 'extractors'))
-from memvane.wiki.compile import wiki_card_budget as budget  # noqa: E402
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO))
+from memvane.learning import wiki_card_budget as budget  # noqa: E402
 from memvane.learning.context_learning.compact_input import derive  # noqa: E402
 from memvane.learning.context_learning.contracts import digest  # noqa: E402
 
@@ -113,7 +113,7 @@ class Project:
         self.tokenizer = install_selector(self.home) if selector else None
 
     def compile(self, candidate, *flags):
-        proc = subprocess.run([sys.executable, str(REPO / 'core' / 'wiki_compile.py'),
+        proc = subprocess.run([sys.executable, str(REPO / 'entry' / 'run.py'), 'wiki-compile',
                                '--cwd', str(self.root), *flags], input=json.dumps(candidate),
                               text=True, capture_output=True, env=self.env, cwd=str(REPO))
         lines = proc.stdout.strip().splitlines()
@@ -272,7 +272,7 @@ class MeasureChecks(unittest.TestCase):
         self.assertEqual((measured['method'], measured['fits']), (budget.METHOD_TOKENIZER, True))
 
     def test_budget_arithmetic_and_prompt_agree(self):
-        import lib
+        import memvane.wiki.engines.extractors.lib as lib
         self.assertEqual(budget.PAIR_OVERHEAD + budget.BODY_BUDGET + budget.QUERY_ROOM,
                          budget.MODEL_MAX_LEN)
         self.assertEqual((budget.MODEL_MAX_LEN, budget.BODY_BUDGET), (1024, 700))
@@ -288,7 +288,7 @@ class MeasureChecks(unittest.TestCase):
         self.assertIn('SPLIT REQUEST', split)
         self.assertIn('- Big (canonicalKey: big): body 900 tokens', split)
         for name in ('default', 'novel'):
-            rules = (REPO / 'core' / 'wiki_card_rules' / f'{name}.md').read_text()
+            rules = (REPO / 'memvane/wiki/card/rules' / f'{name}.md').read_text()
             self.assertIn('fits 700 tokens', rules)
             self.assertIn('`related`', rules)
             self.assertLess(len(rules), 4000, 'lib.build_prompt keeps the first 4000 chars')
@@ -516,7 +516,7 @@ class CompileChecks(unittest.TestCase):
                                'type': 'decision', 'confidence': 'high'}}
 
         def run(*flags):
-            proc = subprocess.run([sys.executable, str(REPO / 'core' / 'wiki_extract.py'),
+            proc = subprocess.run([sys.executable, str(REPO / 'entry' / 'run.py'), 'wiki-extract',
                                    '--cwd', str(self.p.root), *flags], input=json.dumps(compact),
                                   text=True, capture_output=True, env=self.p.env, cwd=str(REPO))
             return json.loads(proc.stdout.strip().splitlines()[-1])
@@ -756,7 +756,7 @@ class WorkerRunChecks(unittest.TestCase):
         self.assertIsNotNone(wiki_freshness.record_pending_refresh(p.root, 'docs/source.md', 'claude'))
 
         def run():
-            proc = subprocess.run([sys.executable, str(REPO / 'core' / 'wiki_compile_worker.py'),
+            proc = subprocess.run([sys.executable, str(REPO / 'entry' / 'run.py'), 'wiki-compile-worker',
                                    '--cwd', str(p.root), '--flush-all', '--json'],
                                   text=True, capture_output=True, env=p.env, cwd=str(REPO))
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -822,7 +822,7 @@ class DedupChecks(unittest.TestCase):
 
     def test_cli_measures_cards_and_their_combined_body(self):
         self.keeper.write_text(card_text('\nwinner fact\n', 'Winner Card'))
-        proc = subprocess.run([sys.executable, str(REPO / 'core' / 'wiki_card_budget.py'),
+        proc = subprocess.run([sys.executable, str(REPO / 'entry' / 'run.py'), 'wiki-card-budget',
                                '--cwd', str(self.p.root), str(self.keeper), str(self.loser)],
                               text=True, capture_output=True, env=self.p.env)
         out = json.loads(proc.stdout)

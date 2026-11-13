@@ -13,8 +13,8 @@ test('verification render is deterministic and leaves the card untouched', () =>
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-sys.path.insert(0, 'core')
-import wiki_compile as wc
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile as wc
 card = Path.home() / 'card.md'
 original = '---\\ntitle: Test\\nstatus: generated\\n---\\nbody\\n'
 card.write_text(original, encoding='utf8')
@@ -39,8 +39,8 @@ test('verdict and compile result digests bind their inputs with separate domains
   try {
     const code = `
 import re, sys
-sys.path.insert(0, 'core')
-import laya_blob_values as verify
+sys.path.insert(0, '.')
+import memvane.store.blob.blob_values as verify
 assert hasattr(verify, 'provenance_digests'), 'provenance digest contract missing'
 verdict = {'verdict': 'pass', 'claims': [{'claim': 'one', 'supported': True}], 'reasons': []}
 fingerprint = {'worktree_id': '1' * 32, 'branch_key': 'refs/heads/main', 'path': 'notes/x',

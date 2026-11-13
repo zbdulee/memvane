@@ -2,12 +2,12 @@
 import fcntl,hashlib,importlib.util,json,os,sys,tempfile,unittest
 from unittest.mock import patch
 from pathlib import Path
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 class Calibration(unittest.TestCase):
     def setUp(self):
-        self.assertIsNotNone(importlib.util.find_spec('context_learning.bounded_calibration'),'explicit calibration policy missing')
-        from memvane.learning.context_learning import bounded_calibration as calibration
+        self.assertIsNotNone(importlib.util.find_spec('memvane.runtime.bounded_calibration'),'explicit calibration policy missing')
+        from memvane.runtime import bounded_calibration as calibration
         self.m=calibration;calibration.reset_test_state()
         permit=patch.object(calibration,'capability',return_value=None);permit.start();self.addCleanup(permit.stop)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -79,7 +79,7 @@ class Calibration(unittest.TestCase):
             with self.assertRaises(ValueError):self.m.create(self.samples,{**self.policy,'adaptiveMemory':{**self.profile,**change}},self.request,command=[],files={},now=16.)
 
     def test_common_admission_and_watch_consume_the_same_scope(self):
-        from memvane.learning.context_learning.resource_coordination import decision
+        from memvane.runtime.resource_coordination import decision
         from memvane.learning.context_learning.training_watch import Watch
         row=decision(self.scoped,self.row(17),now=17.)
         self.assertTrue(row['ready'],row)
@@ -142,7 +142,7 @@ class Calibration(unittest.TestCase):
 
 class GuardCapability(unittest.TestCase):
     def setUp(self):
-        from memvane.learning.context_learning import bounded_calibration as calibration
+        from memvane.runtime import bounded_calibration as calibration
         self.m=calibration
         # Use the policy test's builder without its capability mock.
         fixture=Calibration();fixture.setUp();self.addCleanup(fixture.doCleanups)
@@ -204,7 +204,7 @@ class GuardCapability(unittest.TestCase):
         args=types.SimpleNamespace(command=command,kind='test',max_seconds=30,sample_seconds=2,calibration_envelope=str(self.path))
         with patch.object(self.m,'claim_root',return_value=runtime),patch.object(guard,'execution_hold',return_value=False), \
              patch.object(guard,'system_sample',return_value=system),patch.object(guard,'processes',return_value=[]), \
-             patch.object(guard,'OwnedTree',return_value=tree),patch('context_learning.shared.resource_report',return_value=row), \
+             patch.object(guard,'OwnedTree',return_value=tree),patch('memvane.learning.context_learning.shared.resource_report',return_value=row), \
              patch.object(guard.subprocess,'Popen',side_effect=spawn) as launch:
             self.assertEqual(guard.run_job(args,runtime),0)
             with self.assertRaises(ValueError):self.m.capability(policy)

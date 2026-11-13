@@ -31,7 +31,7 @@ class WriterScopeChecks(unittest.TestCase):
         self.plan = self.F.fixture.plan
 
     def api(self):
-        if importlib.util.find_spec('laya_writer_scope') is None:
+        if importlib.util.find_spec('memvane.journal.writer_scope') is None:
             emit('normal-writer-feature-absence', actualV5=True, actualManagedProof=True)
             self.fail('normal writer admission absent after owned journal proof baseline')
         module = importlib.import_module('memvane.journal.writer_scope')

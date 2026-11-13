@@ -18,7 +18,7 @@ class Contract:
     def prepare_intent(self):
         from memvane.store.blob import blob_values as values
         from memvane.install import ledger_common as ledger
-        from memvane.wiki.verify import wiki_verify_worker
+        from memvane.wiki.compile import wiki_verify_worker
         self.select_schema3()
         self.card('cards/c3.md', 'c3source')
         result, _ = self.run_pass()
@@ -92,7 +92,7 @@ class Contract:
 
     def test_intent_with_absent_card_waits_without_write(self):
         from memvane.install import ledger_common as ledger
-        from memvane.wiki.verify import wiki_verify_worker
+        from memvane.wiki.compile import wiki_verify_worker
         head, trust, data, intent, path, before = self.prepare_intent()
         path.unlink()
         intent['cardSha'] = 'd' * 64
@@ -108,7 +108,7 @@ class Contract:
     def test_newer_consumed_supersedes_older_waiting(self):
         from memvane.install import ledger_common as ledger
         from memvane.store.blob import blob_values as values
-        from memvane.wiki.verify import wiki_verify_worker
+        from memvane.wiki.compile import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
         old = copy.deepcopy(current)
         old['cardSha'] = 'd' * 64
@@ -127,7 +127,7 @@ class Contract:
 
     def test_waiting_queue_rotates_to_valid_intent(self):
         from memvane.install import ledger_common as ledger
-        from memvane.wiki.verify import wiki_verify_worker
+        from memvane.wiki.compile import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
         n = 0
         added = 0
@@ -162,7 +162,7 @@ class Contract:
     def test_forged_consumed_marker_cannot_supersede_waiting(self):
         from memvane.install import ledger_common as ledger
         from memvane.store.blob import blob_values as values
-        from memvane.wiki.verify import wiki_verify_worker
+        from memvane.wiki.compile import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
         path.rename(path.with_suffix('.consumed.json'))
         old = copy.deepcopy(current)
@@ -180,7 +180,7 @@ class Contract:
 
     def test_swapped_intent_is_never_acknowledged(self):
         from memvane.install import ledger_common as ledger
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         head, trust, data, intent, path, before = self.prepare_intent()
         real = self.views.ViewStore.put_compiled_attestation
         def swap(store, *args, **kwargs):

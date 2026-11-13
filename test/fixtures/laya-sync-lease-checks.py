@@ -15,8 +15,8 @@ import unittest
 from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[2]
-sys.path.insert(0,str(ROOT/'core'))
-from memvane.sync import sync_owner_lock as sync
+sys.path.insert(0,str(ROOT))
+from memvane.runtime import sync_owner_lock as sync
 
 PROBE=r'''
 import fcntl,json,os,signal,sys
@@ -34,8 +34,8 @@ import json,signal,sys
 from pathlib import Path
 signal.alarm(4)
 sys.path.insert(0,sys.argv[1])
-from laya_index_a import IndexContractError
-from sync_owner_lock import sync_owner
+from memvane.kernel.errors import IndexContractError
+from memvane.runtime.sync_owner_lock import sync_owner
 try:
     with sync_owner(Path(sys.argv[2])) as owner:
         result=dict(acquired=owner is not None,error=None)
@@ -49,7 +49,7 @@ from pathlib import Path
 signal.alarm(8)
 sys.path.insert(0,sys.argv[1])
 try:
-    import sync_owner_lock as sync
+    import memvane.runtime.sync_owner_lock as sync
     with sync._owner_lock(Path(sys.argv[2])) as owned:
         result=dict(owned=owned,exactBool=type(owned) is bool,error=None,module=sync.__file__)
 except Exception as exc:result=dict(owned=False,error=type(exc).__name__+': '+str(exc))

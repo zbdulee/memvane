@@ -17,7 +17,7 @@ import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-CORE = ROOT / 'core'
+CORE = ROOT
 FORBIDDEN = (r'^(qmd_.*|shared_install|shared_qmd_setup|install_update|install_maintenance'
              r'|install_evidence|install_deadline|setup_guard|setup_readiness|recall|sync'
              r'|update_hook_queue|dirty_queue|dirty_queue_claim|crowding_probe'
@@ -61,12 +61,12 @@ def run(body, *args):
 class SelectedNoQmdImport(unittest.TestCase):
     def test_selected_entry_modules_import_without_qmd(self):
         out = run('''
-            import laya_index_host_route, laya_host_response, laya_wake_entry
-            import laya_runtime_dispatch, laya_product_sync_worker, wiki_selected_laya
-            import laya_bundle_upgrade, laya_resident_service, runtime_work
-            import wiki_card, wiki_compile, wiki_verify_worker, wiki_dedup_resolve
-            import wiki_lifecycle, wiki_source_missing, wiki_extract, wiki_dedup_scan
-            import context_learning.learning
+            import memvane.route.index_host_route as laya_index_host_route; import memvane.host.host_response as laya_host_response; import memvane.app.wake_entry as laya_wake_entry
+            import memvane.app.runtime_dispatch as laya_runtime_dispatch; import memvane.sync.product_sync_worker as laya_product_sync_worker; import memvane.wiki.workspace.wiki_selected_laya as wiki_selected_laya
+            import laya_bundle_upgrade; import memvane.resident.resident_service as laya_resident_service; import memvane.runtime.runtime_work as runtime_work
+            import memvane.wiki.card.wiki_card as wiki_card; import memvane.wiki.compile.wiki_compile as wiki_compile; import memvane.wiki.compile.wiki_verify_worker as wiki_verify_worker; import memvane.wiki.dedup.wiki_dedup_resolve as wiki_dedup_resolve
+            import memvane.wiki.lifecycle.wiki_lifecycle as wiki_lifecycle; import memvane.wiki.card.wiki_source_missing as wiki_source_missing; import memvane.wiki.compile.wiki_extract as wiki_extract; import memvane.wiki.dedup.wiki_dedup_scan as wiki_dedup_scan
+            import memvane.learning.context_learning.learning; import memvane.learning.context_learning as context_learning
             report(loaded=loaded())
         ''')
         self.assertEqual(out['loaded'], [])

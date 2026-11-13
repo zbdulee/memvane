@@ -13,8 +13,8 @@ import unittest
 from unittest.mock import patch
 
 from memvane.learning.context_learning.contracts import digest, request
-import context_learning.jobs as jobs_module
-import context_learning.store as store_module
+import memvane.learning.context_learning.jobs as jobs_module
+import memvane.learning.context_learning.store as store_module
 from memvane.learning.context_learning.jobs import JobLease, cancel_job, job_status
 from memvane.learning.context_learning.store import capture, database
 

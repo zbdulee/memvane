@@ -12,10 +12,10 @@ test('shared enqueue failure retains safe diagnostics and the private capture', 
 import json,sys,sqlite3
 from pathlib import Path
 from unittest.mock import patch
-sys.path.insert(0,'core')
-from context_learning.seam import observe
-from context_learning.contracts import digest
-from context_learning.local_cycle import ResourceDeferred
+sys.path.insert(0,'.')
+from memvane.learning.context_learning.seam import observe
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.local_cycle import ResourceDeferred
 base=Path(sys.argv[1]).resolve();project=base/'project';private=base/'private'
 (project/'docs').mkdir(parents=True);private.mkdir(mode=0o700)
 (project/'docs/guide.md').write_text('synthetic evidence')
@@ -24,7 +24,7 @@ state=private/digest(str(project))
 class Unprintable(ValueError):
  def __str__(self):raise RuntimeError('diagnostic formatting failed')
 for error,reason in [(ResourceDeferred('preparation_budget'),'preparation_budget'),(ValueError('synthetic body /private/path TOKEN=secret'),'enqueue_unavailable'),(Unprintable('private message'),'enqueue_unavailable'),(ValueError('project_scope_installation_changed'),'project_scope_installation_changed')]:
- with patch('context_learning.corpus.snapshot',return_value=None),patch('context_learning.shared.enqueue',side_effect=error),patch('context_learning.shared.launch') as launch:
+ with patch('memvane.learning.context_learning.corpus.snapshot',return_value=None),patch('memvane.learning.context_learning.shared.enqueue',side_effect=error),patch('memvane.learning.context_learning.shared.launch') as launch:
   assert observe({'prompt':'synthetic question'},config,project,[{'file':'sample/guide.md'}])=='stored'
   launch.assert_not_called()
  status=json.loads((state/'shared-last-status.json').read_text())
@@ -33,7 +33,7 @@ for error,reason in [(ResourceDeferred('preparation_budget'),'preparation_budget
  assert status['stage']=='enqueue' and status['errorType']==type(error).__name__
  assert 'TOKEN' not in json.dumps(status) and '/private/path' not in json.dumps(status)
 for error,reason in [(ResourceDeferred('learning_compute_busy'),'learning_compute_busy'),(ValueError('private message'),'launch_unavailable')]:
- with patch('context_learning.corpus.snapshot',return_value=None),patch('context_learning.shared.enqueue',return_value='queued'),patch('context_learning.shared.launch',side_effect=error) as launch:
+ with patch('memvane.learning.context_learning.corpus.snapshot',return_value=None),patch('memvane.learning.context_learning.shared.enqueue',return_value='queued'),patch('memvane.learning.context_learning.shared.launch',side_effect=error) as launch:
   assert observe({'prompt':'synthetic question'},config,project,[{'file':'sample/guide.md'}])=='stored'
   launch.assert_called_once()
  status=json.loads((state/'shared-last-status.json').read_text())
@@ -84,9 +84,9 @@ test('offline contracts and storage are isolated, explicit and fail open', () =>
 import sys, sqlite3
 from pathlib import Path
 from unittest.mock import patch
-sys.path.insert(0, 'core')
-from context_learning.contracts import request, validate_label, digest
-from context_learning.store import capture
+sys.path.insert(0, '.')
+from memvane.learning.context_learning.contracts import request, validate_label, digest
+from memvane.learning.context_learning.store import capture
 root=Path(sys.argv[1])
 c=[dict(candidate_id='c1',revision_sha256=digest('source'),excerpt='evidence'*100,eligible=True)]
 for host in ('claude','codex','hermes'):
@@ -113,7 +113,7 @@ with sqlite3.connect(root/'learning.sqlite3') as db:
  assert db.execute('select count(*) from samples').fetchone()[0]==3
  db.execute('BEGIN EXCLUSIVE')
  assert capture(s,enabled=True,state_dir=root)=='storage_unavailable'
-with patch('context_learning.store.sqlite3.connect',side_effect=sqlite3.OperationalError('disk full')):
+with patch('memvane.learning.context_learning.store.sqlite3.connect',side_effect=sqlite3.OperationalError('disk full')):
  assert capture(s,enabled=True,state_dir=root)=='storage_unavailable'
 assert capture(s,enabled=True)=='missing_state_dir'
 assert capture(dict(s,schema_version=99),enabled=True,state_dir=root)=='invalid_schema'
@@ -136,8 +136,8 @@ test('source snapshot rejects non-regular files without blocking', () => {
  const out = execFileSync('python3', ['-c', `
 import sys,os
 from pathlib import Path
-sys.path.insert(0,'core')
-from context_learning.seam import _snapshot
+sys.path.insert(0,'.')
+from memvane.learning.context_learning.seam import _snapshot
 root=Path(sys.argv[1]); fifo=root/'fifo';os.mkfifo(fifo)
 assert _snapshot(fifo) is None
 regular=root/'regular';regular.write_text('snapshot')

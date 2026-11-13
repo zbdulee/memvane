@@ -32,7 +32,7 @@ function writeSettings(work, compile = {}) {
 
 function runExtract(work, payload, env = {}) {
   // QMD_DIRTY_QUEUE를 임시 경로로 격리하지 않으면 dirty queue 유출 시 사용자 실제 qmd 인덱스에 고아 컬렉션이 등록되며(복구 불가 고아 등록), 자동으로 정리할 수 있는 경로가 없다.
-  return execFileSync('python3', ['core/wiki_extract.py', '--cwd', work], {
+  return execFileSync('python3', ['entry/run.py', 'wiki-extract', '--cwd', work], {
     encoding: 'utf8',
     input: JSON.stringify(payload),
     env: { QMD_DIRTY_QUEUE: join(work, 'dirty-queue'), ...process.env, ...env },
@@ -244,8 +244,8 @@ test('wiki_extract: 검수가 읽는 파일 소스 폭은 wiki_verify_worker.MAX
   // 갈리면 수동 카드 하나가 그 폭을 넘겨 읽게 되므로 코드에서 유도해 단정한다.
   const values = JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
-    'sys.path.insert(0, "core")',
-    'import wiki_extract as we, wiki_verify_worker as vw',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.compile.wiki_extract as we; import memvane.wiki.compile.wiki_verify_worker as vw',
     'print(json.dumps([we.MAX_PROVENANCE_FILE_SOURCES, vw.MAX_SOURCES]))',
   ].join('\n')], { cwd: process.cwd(), encoding: 'utf8' }));
   assert.equal(values[0], values[1]);
@@ -324,8 +324,8 @@ test('wiki_extract: provenance 조사 예산은 파일 소스 상한의 2배로 
   // 무한히 조사하면 caller 목록 길이가 곧 syscall 수가 되므로 예산을 코드에서 유도해 단정한다.
   const values = JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
-    'sys.path.insert(0, "core")',
-    'import wiki_extract as we',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.compile.wiki_extract as we',
     'print(json.dumps([we.MAX_PROVENANCE_FILE_SOURCES, we.MAX_PROVENANCE_SOURCE_SCAN]))',
   ].join('\n')], { cwd: process.cwd(), encoding: 'utf8' }));
   assert.equal(values[1], values[0] * 2);

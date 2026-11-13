@@ -1,6 +1,6 @@
 """Owner-private disposable setup transactions; no model/teacher execution."""
 import importlib.util
-assert importlib.util.find_spec('project_learning_setup') is not None, 'project learning setup implementation missing'
+assert importlib.util.find_spec('memvane.learning.project_learning_setup') is not None, 'project learning setup implementation missing'
 import json,os,shutil,sqlite3,tempfile,time,subprocess,sys
 from pathlib import Path
 from unittest.mock import patch
@@ -17,9 +17,9 @@ if 'QMD_SETUP_FIXTURE_PACKAGE' not in os.environ:
   outer=Path(outer).resolve();home=outer/'home'
   package=home/'.codex/plugins/cache/memvane-marketplace/memvane/test'
   package.mkdir(parents=True)
-  shutil.copytree(Path(setup.__file__).parent,package/'core',ignore=shutil.ignore_patterns('__pycache__'))
-  shutil.copytree(Path(setup.__file__).parents[1]/'hooks',package/'hooks')
-  result=subprocess.run([sys.executable,__file__],env={**os.environ,'PYTHONPATH':str(package/'core'),'QMD_SETUP_FIXTURE_PACKAGE':str(package)},capture_output=True,text=True)
+  shutil.copytree(Path(setup.__file__).parents[1],package/'memvane',ignore=shutil.ignore_patterns('__pycache__'))
+  shutil.copytree(Path(setup.__file__).parents[2]/'hooks',package/'hooks')
+  result=subprocess.run([sys.executable,__file__],env={**os.environ,'PYTHONPATH':str(package),'QMD_SETUP_FIXTURE_PACKAGE':str(package)},capture_output=True,text=True)
   print(result.stdout,end='');print(result.stderr,end='',file=sys.stderr)
   raise SystemExit(result.returncode)
 
@@ -49,8 +49,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  installs={}
  for host in ('claude','codex'):
   p=home/('.'+host)/'plugins/cache/memvane-marketplace/memvane/test';p.mkdir(parents=True,exist_ok=True)
-  if host=='claude':shutil.copytree(Path(project_scope.__file__).parents[1],p/'core',ignore=shutil.ignore_patterns('__pycache__'))
-  if host=='claude':shutil.copytree(Path(project_scope.__file__).parents[2]/'hooks',p/'hooks')
+  if host=='claude':shutil.copytree(Path(project_scope.__file__).parents[2],p/'memvane',ignore=shutil.ignore_patterns('__pycache__'))
+  if host=='claude':shutil.copytree(Path(project_scope.__file__).parents[3]/'hooks',p/'hooks')
   save(p/('.'+host+'-plugin/plugin.json'),{'name':'memvane','version':'test'})
   save(p/'package.json',{'name':'memvane','version':'test'})
   installs[host]=[p]
@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  for name in ('laya-inference-binding.json','laya-inference-manifest.json','laya-inference-proof.json'):save(root/name,{'original':name})
  original_settings=(project/'.auto-context/settings.json').read_bytes();original_pointer=(root/'active-checkpoint.json').read_bytes()
  expiry=int(time.time()*1000)+3600000;cutoff=int(time.time()*1000)
- with patch.object(Path,'home',return_value=home),patch('context_learning.history_activation._project_host_roots',return_value=installs),patch('context_learning.adapter_binding._codex_installed',return_value=codex):
+ with patch.object(Path,'home',return_value=home),patch('memvane.learning.context_learning.history_activation._project_host_roots',return_value=installs),patch('memvane.learning.context_learning.adapter_binding._codex_installed',return_value=codex):
   # Preparation must reject runtime identities that scoped activation refuses,
   # before writing a journal, policy, settings or namespace data.
   live_path=root/'live-selector.json';original_live=live_path.read_bytes()

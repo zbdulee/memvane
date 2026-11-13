@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.resident import embed_resident as owner
 from memvane.resident import resident_service as svc
-from laya_index_a import IndexContractError
+from memvane.kernel.errors import IndexContractError
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 
@@ -136,7 +136,7 @@ class RecoveryChecks(unittest.TestCase):
         self.stamp('startup_failed')
         proof = {'providerManifest': self.manifest, 'selectionEpoch': 1}
         decision = {'projectRoot': '/synthetic/project',
-                    'pluginRoot': str(Path(host.__file__).resolve().parents[1])}
+                    'pluginRoot': str(Path(host.__file__).resolve().parents[2])}
         for now, expected_calls in ((1299, 0), (1301, 1)):
             with self.subTest(now=now):
                 probe, clock = self.cold(now)

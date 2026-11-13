@@ -178,7 +178,7 @@ class SyncFirstProofChecks(unittest.TestCase):
                     mock.patch.object(self.worker, '_capacity_paths', return_value=None), \
                     mock.patch.object(self.worker, 'qa_sync_barrier', return_value=None), \
                     mock.patch.object(self.worker, 'ReviewedLocalQmdProvider', return_value=provider), \
-                    mock.patch('laya_embed_resident.ensure_running', side_effect=ReachedPrewarm):
+                    mock.patch('memvane.resident.embed_resident.ensure_running', side_effect=ReachedPrewarm):
                 with self.assertRaises(ReachedPrewarm):
                     self.worker.run(self.case.project)
             emit('worker-prewarm-reproof', contentConnects=calls)
@@ -201,7 +201,7 @@ class SyncFirstProofChecks(unittest.TestCase):
                     mock.patch.object(self.worker, 'qa_sync_barrier', return_value=None), \
                     mock.patch.object(self.worker, 'ReviewedLocalQmdProvider', return_value=provider), \
                     mock.patch.object(self.worker, 'sync_owner') as owner, \
-                    mock.patch('laya_embed_resident.ensure_running') as ensure:
+                    mock.patch('memvane.resident.embed_resident.ensure_running') as ensure:
                 with self.assertRaisesRegex(Exception, 'selected_provider_proof_changed'):
                     self.worker.run(self.case.project)
                 owner.assert_not_called()
@@ -653,7 +653,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             source.write_text('# Synthetic edit\ncontent\n',encoding='utf8')
             payload={'cwd':str(self.case.project),'hook_event_name':'PostToolUse',
                      'tool_name':'Write','tool_input':{'file_path':str(source)},'engine':'codex'}
-            with mock.patch.object(response,'__file__',str(self.case.plugin/'core/laya_host_response.py')), \
+            with mock.patch.object(response,'__file__',str(self.case.plugin / 'memvane/host/host_response.py')), \
                     mock.patch.object(runtime_work,'request',return_value={'status':'queued'}) as request, \
                     mock.patch.object(laya_external_edits,'drain',return_value={}):
                 with self.sync.sync_owner(self.queue) as owner:
@@ -686,7 +686,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             path=cp.under(self.case.project,cp.SOURCE_QUEUE)
             actual=enqueue._append_jsonl;raced=[]
             with ExitStack() as rival, \
-                    mock.patch.object(response,'__file__',str(self.case.plugin/'core/laya_host_response.py')), \
+                    mock.patch.object(response,'__file__',str(self.case.plugin / 'memvane/host/host_response.py')), \
                     mock.patch.object(runtime_work,'request',return_value={'status':'queued'}), \
                     mock.patch.object(laya_external_edits,'drain',return_value={}):
                 def append(queue,rows):
@@ -718,7 +718,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             source.write_text('# Synthetic legacy edit\ncontent\n',encoding='utf8')
             payload={'cwd':str(self.case.project),'hook_event_name':'PostToolUse',
                      'tool_name':'Write','tool_input':{'file_path':str(source)},'engine':'codex'}
-            with mock.patch.object(response,'__file__',str(self.case.plugin/'core/laya_host_response.py')), \
+            with mock.patch.object(response,'__file__',str(self.case.plugin / 'memvane/host/host_response.py')), \
                     mock.patch.object(runtime_work,'request',return_value={'status':'queued'}) as request:
                 self.assertEqual(response._serve_selected_once('compile','codex',decision,payload),{})
             rows=[json.loads(line) for line in cp.under(self.case.project,cp.SOURCE_QUEUE).read_text().splitlines()]
@@ -727,13 +727,13 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_full_selected_compile_retrieval_rechecks_with_owned_connections(self):
         from memvane.wiki.compile import wiki_compile_retrieval as retrieval
-        from memvane.wiki.workspace import wiki_selected_laya as selected
+        from memvane.wiki.workspace import wiki_selected_laya as selected; import memvane.wiki.compile.selected_execution as selected_selected_execution
         from memvane.host import host_response as response
         with self._compile_warm(),self.seed.authority():
             calls=[]
             def cold(*_args):raise response._VectorUnavailable('synthetic_no_query_vector')
             with self.trace(calls),mock.patch.object(retrieval,'query_provider',return_value=cold):
-                selected.wiki_matches(self.case.project,self.case.auto/'wiki','synthetic',3,200)
+                selected_selected_execution.wiki_matches(self.case.project,self.case.auto/'wiki','synthetic',3,200)
             self.assertGreaterEqual(len(calls),4)
             self.assertTrue(all(call['managed'] for call in calls),calls)
 
@@ -802,7 +802,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.intake import wiki_discovery as discovery
         from memvane.wiki.intake import wiki_backfill as backfill
-        from memvane.wiki.workspace import wiki_selected_laya as selected
+        from memvane.wiki.workspace import wiki_selected_laya as selected; import memvane.wiki.compile.selected_execution as selected_selected_execution
         with self.fixture.F.warm(),self.seed.authority():
             decision,proof=self.selected()
             state,_grants,_lock=discovery._paths(decision)
@@ -1053,7 +1053,7 @@ class SyncFirstProofChecks(unittest.TestCase):
                     except Exception as exc:error=exc
                     self.assertTrue(attempts,'actual first proof must use native-owned readers')
                     self.assertIsNotNone(error)
-                    self.assertNotIsInstance(error,importlib.import_module('resource_deferred').ResourceDeferred)
+                    self.assertNotIsInstance(error,importlib.import_module('memvane.kernel.resource_deferred').ResourceDeferred)
                     self.assertGreater(readers.pending_proof_readers(),0)
                     with self.sync.sync_owner(self.queue) as busy:self.assertIsNone(busy)
                     blocked[0]=False

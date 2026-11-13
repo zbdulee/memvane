@@ -10,9 +10,9 @@ import sys
 import tempfile
 import unittest
 
-CORE = Path(__file__).resolve().parents[2] / "core"
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
-from memvane.route import index_host_route as route
+from memvane.route import index_host_route as route; import memvane.route.types as route_types; import memvane.journal.route_selection as route_route_selection
 
 
 def vector_profile():
@@ -83,7 +83,7 @@ class HostRouteChecks(unittest.TestCase):
         self.path.write_text(json.dumps({**row, "settingsSha256": self.identity(row)}))
 
     def state(self, cwd=None, action="recall"):
-        return route.select_route(str(cwd or self.root), action=action)["state"]
+        return route_route_selection.select_route(str(cwd or self.root), action=action)["state"]
 
     def test_absent_marker_keeps_legacy(self):
         self.assertEqual(self.state(), "legacy")
@@ -92,7 +92,7 @@ class HostRouteChecks(unittest.TestCase):
     def test_exact_record_is_candidate_for_each_data_action(self):
         self.record()
         nested = self.root / "docs"
-        for action in route.ROUTED_ACTIONS:
+        for action in route_types.ROUTED_ACTIONS:
             with self.subTest(action=action):
                 self.assertEqual(self.state(nested, action), "candidate")
         self.assertFalse((self.root / "private-index.sqlite").exists())
@@ -105,13 +105,13 @@ class HostRouteChecks(unittest.TestCase):
         cfg = json.loads(self.settings.read_text())
         cfg["collectionPaths"] = {"docs": "."}
         self.settings.write_text(json.dumps(cfg))
-        decision = route.select_route(str(self.root))
+        decision = route_route_selection.select_route(str(self.root))
         self.assertEqual((decision["state"], decision["reason"]),
                          ("blocked", "route_settings_changed"))
 
     def test_byte_bound_route_is_blocked(self):
         self.record(settingsSha256=hashlib.sha256(self.settings.read_bytes()).hexdigest())
-        decision = route.select_route(str(self.root))
+        decision = route_route_selection.select_route(str(self.root))
         self.assertEqual((decision["state"], decision["reason"]),
                          ("blocked", "route_settings_changed"))
 
@@ -139,7 +139,7 @@ class HostRouteChecks(unittest.TestCase):
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
         self.write(record)
-        decision = route.select_route(str(self.root))
+        decision = route_route_selection.select_route(str(self.root))
         self.assertEqual(decision['state'], 'candidate', decision)
         self.assertEqual(decision['scopeId'], '6' * 32)
         self.assertEqual(decision['journalPath'],
@@ -186,7 +186,7 @@ class HostRouteChecks(unittest.TestCase):
                     {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
                     {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
                 self.write(record)
-                decision = route.select_route(str(self.root))
+                decision = route_route_selection.select_route(str(self.root))
                 self.assertEqual(decision['state'], 'candidate', decision)
                 self.assertEqual(decision['recallSettings']['recallStrategy'], 'wikiOnly')
                 self.assertEqual(decision['recallSettings']['skipPaths'], skip_paths or [])
@@ -195,7 +195,7 @@ class HostRouteChecks(unittest.TestCase):
         settings['skipPaths'] = ['build', 3]
         self.settings.write_text(json.dumps(settings))
         self.write(record)
-        self.assertEqual(route.select_route(str(self.root))['reason'],
+        self.assertEqual(route_route_selection.select_route(str(self.root))['reason'],
                          'selected_recall_settings_unsupported')
 
     def test_v2_current_auto_wiki_compile_remains_blocked(self):
@@ -211,7 +211,7 @@ class HostRouteChecks(unittest.TestCase):
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
         self.write(record)
-        self.assertEqual(route.select_route(str(self.root))['reason'],
+        self.assertEqual(route_route_selection.select_route(str(self.root))['reason'],
                          'selected_compile_unsupported')
 
     def test_v2_auto_wiki_requires_verified_local_compile_contract(self):
@@ -232,12 +232,12 @@ class HostRouteChecks(unittest.TestCase):
             {'name': 'docs', 'role': 'raw', 'sourceRoot': str(self.root / 'docs')},
             {'name': 'wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
         self.write(record)
-        self.assertEqual(route.select_route(str(self.root))['state'], 'candidate')
+        self.assertEqual(route_route_selection.select_route(str(self.root))['state'], 'candidate')
         changed = json.loads(self.settings.read_text())
         changed['compile']['recallVerifiedOnly'] = False
         self.settings.write_text(json.dumps(changed))
         self.write(record)
-        self.assertEqual(route.select_route(str(self.root))['reason'],
+        self.assertEqual(route_route_selection.select_route(str(self.root))['reason'],
                          'selected_compile_unsupported')
 
     def test_unsupported_recall_settings_block_selected_route(self):

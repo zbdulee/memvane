@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import Mock,patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 
 class CpuThreads(unittest.TestCase):
@@ -20,7 +20,7 @@ class CpuThreads(unittest.TestCase):
         self.root=Path(self.temp.name).resolve();self.root.chmod(0o700)
 
     def cpu(self):
-        self.assertIsNotNone(importlib.util.find_spec('runtime_cpu'),'CPU policy missing')
+        self.assertIsNotNone(importlib.util.find_spec('memvane.runtime.runtime_cpu'),'CPU policy missing')
         from memvane.runtime import runtime_cpu
         return runtime_cpu
 
@@ -55,7 +55,7 @@ class CpuThreads(unittest.TestCase):
 
     def test_fixture_mode_does_not_open_the_real_coordination_root(self):
         cpu=self.cpu()
-        with patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'1'}),patch('context_learning.resource_coordination.Coordinator',side_effect=AssertionError('fixture touched live root')):
+        with patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'1'}),patch('memvane.runtime.resource_coordination.Coordinator',side_effect=AssertionError('fixture touched live root')):
             with cpu.lease(self.root) as budget:self.assertEqual(budget.fds,())
 
     def test_environment_overrides_unsafe_parent_parallelism(self):
@@ -90,7 +90,7 @@ class CpuThreads(unittest.TestCase):
 
     def test_provider_cpu_refusal_precedes_dispatch_intent(self):
         cpu=self.cpu();from memvane.runtime import runtime_admission as admission
-        from memvane.learning.context_learning.resource_coordination import Coordinator
+        from memvane.runtime.resource_coordination import Coordinator
         c=Coordinator(self.root);before=Mock()
         report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
         with patch.object(cpu.os,'cpu_count',return_value=4),patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'','QMD_PROVIDER_COORD_FD':''}),patch.object(admission,'Coordinator',return_value=c),patch.object(admission,'sample',return_value=report),patch.object(admission.subprocess,'Popen',side_effect=AssertionError('must not send')):
@@ -100,7 +100,7 @@ class CpuThreads(unittest.TestCase):
 
     def test_provider_child_retains_share_after_popen_returns(self):
         cpu=self.cpu();from memvane.runtime import runtime_admission as admission
-        from memvane.learning.context_learning.resource_coordination import Coordinator
+        from memvane.runtime.resource_coordination import Coordinator
         c=Coordinator(self.root);held=[]
         report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
 
@@ -118,9 +118,9 @@ class CpuThreads(unittest.TestCase):
 
     def test_standalone_adapter_finds_cpu_policy_before_request_guard(self):
         import runpy
-        core=str(Path(__file__).resolve().parents[1]/'core')
+        core=str(Path(__file__).resolve().parents[1])
         with patch.object(sys,'path',[p for p in sys.path if p!=core]):
-            module=runpy.run_path(str(Path(core)/'context_learning/adapter.py'),run_name='synthetic_adapter')
+            module=runpy.run_path(str(Path(core)/'memvane/learning/context_learning/adapter.py'),run_name='synthetic_adapter')
             self.assertIn(core,sys.path)
             with patch.dict(os.environ):
                 with self.assertRaisesRegex(ValueError,'invalid_adapter_mode'):
@@ -137,7 +137,7 @@ class CpuThreads(unittest.TestCase):
 
 
     def test_adapter_configures_before_any_model_import_work(self):
-        cpu=self.cpu();from memvane.learning.context_learning import laya_adapter as adapter
+        cpu=self.cpu();from memvane.learning.context_learning import adapter
         fake=Mock();fake.get_num_threads.return_value=1;fake.get_num_interop_threads.return_value=1
         with patch.dict(sys.modules,{'torch':fake}),patch.dict(os.environ,{'OMP_NUM_THREADS':'99'}):
             self.assertIs(adapter._torch(),fake)
@@ -146,7 +146,7 @@ class CpuThreads(unittest.TestCase):
 
     def test_local_trainer_passes_limits_and_live_share_to_mock_child(self):
         cpu=self.cpu();from memvane.learning.context_learning import local_cycle
-        from memvane.learning.context_learning.resource_coordination import Coordinator
+        from memvane.runtime.resource_coordination import Coordinator
         child=Mock(pid=999991,returncode=0);child.poll.return_value=0
         captured={}
         def spawn(argv,**options):
@@ -159,7 +159,7 @@ class CpuThreads(unittest.TestCase):
             path=Path(argv[-1]);path.write_text('{}');path.chmod(0o600)
             return child
         trainer=local_cycle.LocalTrainer([sys.executable])
-        with patch.object(cpu.os,'cpu_count',return_value=4),patch('context_learning.resource_coordination.Coordinator',return_value=Coordinator(self.root)),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch('context_learning.training_watch.stop_owned',return_value=True):
+        with patch.object(cpu.os,'cpu_count',return_value=4),patch('memvane.runtime.resource_coordination.Coordinator',return_value=Coordinator(self.root)),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch('memvane.kernel.process.stop_owned_checked',return_value=True):
             answer,_=trainer._call('smoke',{},self.root/'result',cwd=self.root)
         self.assertEqual(answer,{})
         self.assertTrue(captured['pass_fds'])
@@ -171,7 +171,7 @@ class CpuThreads(unittest.TestCase):
             self.assertEqual(options['pass_fds'],())
             path=Path(argv[-1]);path.write_text('{}');path.chmod(0o600)
             return child
-        with patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'1'}),patch('context_learning.resource_coordination.Coordinator',side_effect=AssertionError('fixture touched live root')),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch('context_learning.training_watch.stop_owned',return_value=True):
+        with patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'1'}),patch('memvane.runtime.resource_coordination.Coordinator',side_effect=AssertionError('fixture touched live root')),patch.object(local_cycle.subprocess,'Popen',side_effect=spawn),patch('memvane.kernel.process.stop_owned_checked',return_value=True):
             answer,_=local_cycle.LocalTrainer([sys.executable])._call('smoke',{},self.root/'result',cwd=self.root)
         self.assertEqual(answer,{})
 

@@ -155,7 +155,7 @@ def add_gold(root, start, count, *, contaminate=0):
 with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as name:
     base = Path(name).resolve()
     common_root, common_policy, _ = scenario(base / "common", focus_common=True)
-    with patch("context_learning.shared.resource_report", return_value={"ready": True}):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={"ready": True}):
         common_cycle = train_due(common_root, common_policy,
                                  trainer_factory=lambda _: FakeTrainer())
     assert common_cycle["status"] == "complete", common_cycle
@@ -266,7 +266,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
     # A later holdout containing even a negative trained card is excluded.
     contaminated_distinct = add_gold(distinct_root, 5, 5, contaminate=1)
     assert len(contaminated_distinct) == 1
-    with patch("context_learning.shared.resource_report", return_value={"ready": True}):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value={"ready": True}):
         recovered = train_due(distinct_root, distinct_policy,
                               trainer_factory=lambda _: FakeTrainer())
     assert recovered["status"] == "complete", recovered
@@ -277,14 +277,14 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
     # new independent families support the next cadence/quality observation.
     progressive_root, progressive_policy, _ = scenario(base / "progressive", focus_common=False)
     ready = {"ready": True}
-    with patch("context_learning.shared.resource_report", return_value=ready):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value=ready):
         first = train_due(progressive_root, progressive_policy,
                           trainer_factory=lambda _: FakeTrainer())
     assert first["status"] == "complete", first
     assert first["metrics"]["fresh_holdout_questions"] == 1
     assert first["metrics"]["fixed_validation_questions"] == 0
     add_gold(progressive_root, 5, 10)
-    with patch("context_learning.shared.resource_report", return_value=ready):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value=ready):
         second = train_due(progressive_root, progressive_policy,
                            trainer_factory=lambda _: FakeTrainer())
     assert second["status"] == "complete", second
@@ -292,7 +292,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
     assert second["metrics"]["fixed_validation_questions"] == 1
     second_pointer = json.loads((progressive_root / "experimental-checkpoint.json").read_text())
     assert len(second_pointer["validationCases"]) == 3
-    restarted = subprocess.run([sys.executable, "core/context_learning_shared.py",
+    restarted = subprocess.run([sys.executable, "entry/run.py", "learning-shared",
         "status", str(progressive_root)], capture_output=True, text=True, check=True,
         env={**os.environ, 'HOME': str(base), 'PYTHONDONTWRITEBYTECODE': '1'})
     assert json.loads(restarted.stdout)["status"] == "ok"
@@ -301,7 +301,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
     contaminated = add_gold(progressive_root, 15, 7, contaminate=2)
     assert len(contaminated) == 2
     calls_before_wait = list(FakeTrainer.calls)
-    with patch("context_learning.shared.resource_report", return_value=ready):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value=ready):
         waiting = train_due(progressive_root, progressive_policy,
                             trainer_factory=lambda _: FakeTrainer())
     assert waiting["status"] == "insufficient_independent_holdout_families", waiting
@@ -311,7 +311,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
         "training_family_overlap"}
     assert FakeTrainer.calls == calls_before_wait
     add_gold(progressive_root, 30, 5)
-    with patch("context_learning.shared.resource_report", return_value=ready):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value=ready):
         observed = observe_trial(progressive_root, progressive_policy,
                                  trainer_factory=lambda _: FakeTrainer())
         repeated_observation = observe_trial(progressive_root, progressive_policy,
@@ -319,7 +319,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
     assert observed == repeated_observation
     assert observed["status"] == "observed" and observed["independent_holdout"] == 2
     assert len(observed["excluded"]) == 2
-    with patch("context_learning.shared.resource_report", return_value=ready):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value=ready):
         third = train_due(progressive_root, progressive_policy,
                           trainer_factory=lambda _: FakeTrainer())
     assert third["status"] == "complete", third
@@ -330,7 +330,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-family-", dir="/tmp") as nam
     assert third["metrics"]["fresh_candidate"]["questions"] == 2
     assert len(json.loads((progressive_root / "experimental-checkpoint.json").read_text())[
         "validationCases"]) == 5
-    with patch("context_learning.shared.resource_report", return_value=ready):
+    with patch("memvane.learning.context_learning.shared.resource_report", return_value=ready):
         assert train_due(progressive_root, progressive_policy,
                          trainer_factory=lambda _: FakeTrainer())["status"] == "waiting"
     print(json.dumps({"independent_holdout": True, "no_false_quality": True}))

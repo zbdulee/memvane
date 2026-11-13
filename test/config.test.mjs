@@ -34,13 +34,13 @@ function loadConfig(json, cwd = '/tmp/x') {
 function findProjectConfig(cwd, env = {}) {
   const code = `
 import json
-import config
+import memvane.settings.config as config
 result = config.find_project_config(${JSON.stringify(cwd)})
 print(json.dumps(result, ensure_ascii=False))
 `;
   const out = execFileSync('python3', ['-c', code], {
     encoding: 'utf8',
-    env: { ...process.env, PYTHONPATH: 'core', ...env },
+    env: { ...process.env, PYTHONPATH: '.', ...env },
   });
   return JSON.parse(out);
 }
@@ -48,12 +48,12 @@ print(json.dumps(result, ensure_ascii=False))
 function loadProjectConfig(cwd) {
   const code = `
 import json
-import config
+import memvane.settings.config as config
 print(json.dumps(config.load_project_config(${JSON.stringify(cwd)}), ensure_ascii=False))
 `;
   const out = execFileSync('python3', ['-c', code], {
     encoding: 'utf8',
-    env: { ...process.env, PYTHONPATH: join(cwd, 'core') },
+    env: { ...process.env, PYTHONPATH: cwd },
   });
   return JSON.parse(out);
 }
@@ -77,7 +77,7 @@ test('dogfood project pins the wiki extractor reasoning-effort policy', () => {
 
 test('generation host plan tries unknown hosts once in a fixed order and preserves a known host', () => {
   const plan = JSON.parse(execFileSync('python3', ['-c', `
-import json,sys; sys.path.insert(0, 'core'); import config
+import json,sys; sys.path.insert(0, '.'); import memvane.settings.config as config
 values = ['unknown', '', None, 'codex', 'claude', 'hermes', 'gemini', 'custom-engine', ' codex ']
 print(json.dumps([config.generation_engine_order(value) for value in values]))
 `], { cwd: process.cwd(), encoding: 'utf8' }));
@@ -91,13 +91,13 @@ print(json.dumps([config.generation_engine_order(value) for value in values]))
 function migrateLegacyConfig(cwd, env = {}) {
   const code = `
 import json
-import config
+import memvane.settings.config as config
 result = config.migrate_legacy_config(${JSON.stringify(cwd)})
 print(json.dumps(result, ensure_ascii=False))
 `;
   const out = execFileSync('python3', ['-c', code], {
     encoding: 'utf8',
-    env: { ...process.env, PYTHONPATH: 'core', ...env },
+    env: { ...process.env, PYTHONPATH: '.', ...env },
   });
   return JSON.parse(out);
 }
@@ -242,7 +242,7 @@ test('compile.reasoningEffort resolves phase defaults and symbolic engine overri
       futureEngine: { semanticDedup: 'medium' },
     },
   });
-  const py = `import json,sys; sys.path.insert(0,'core'); import config
+  const py = `import json,sys; sys.path.insert(0,'.'); import memvane.settings.config as config
 cfg = config.normalize_config(json.loads(${JSON.stringify(JSON.stringify({ compile: { reasoningEffort: { generation: 'low', verify: 'medium', semanticDedup: 'medium', engines: { claude: { verify: 'high' }, codex: { generation: 'high' } } } } }))}))
 print(json.dumps({k: config.resolve_reasoning_effort(cfg['compile'], *pair) for k, pair in {'claudeVerify': ('claude','verify'), 'claudeGeneration': ('claude','generation'), 'codexGeneration': ('codex','generation'), 'hermesDedup': ('hermes','semanticDedup'), 'unknownPhase': ('claude','unknown')}.items()}))`;
   const resolved = JSON.parse(execFileSync('python3', ['-c', py], { encoding: 'utf8' }));
@@ -477,7 +477,7 @@ test('find_project_config: 내부 경로 탐색에서 예상 못한 예외가 �
   try {
     const code = `
 import json
-import config
+import memvane.settings.config as config
 
 def boom(cwd):
     raise PermissionError("simulated sandboxed fs error")
@@ -488,7 +488,7 @@ print(json.dumps(result, ensure_ascii=False))
 `;
     const out = execFileSync('python3', ['-c', code], {
       encoding: 'utf8',
-      env: { ...process.env, PYTHONPATH: 'core', HOME: home },
+      env: { ...process.env, PYTHONPATH: '.', HOME: home },
     });
     const result = JSON.parse(out);
     assert.equal(result.configPath, null);
@@ -565,8 +565,8 @@ test('compile.sourceScan: enabled는 bool만, maxCardsPerScan은 클램프된다
   const scanOf = (v) => loadConfig(JSON.stringify({ compile: { sourceScan: v } })).compile.sourceScan;
   const maxScan = JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
-    "sys.path.insert(0, 'core')",
-    'import config as c',
+    "sys.path.insert(0, '.')",
+    'import memvane.settings.config as c',
     'print(json.dumps(c.MAX_SOURCE_SCAN_CARDS))',
   ].join('\n')], { encoding: 'utf8' }).trim());
 
@@ -615,8 +615,8 @@ test('coerce_int 계약: bool·비정수 실수는 거부하고 기본값으로 
 test('invalid_compile_flags: 값 미지 스위치를 표면화한다 (키 없음과 구분)', () => {
   const flagsOf = (compile) => JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
-    "sys.path.insert(0, 'core')",
-    'import config as c',
+    "sys.path.insert(0, '.')",
+    'import memvane.settings.config as c',
     'print(json.dumps(c.invalid_compile_flags(json.loads(sys.argv[1]))))',
   ].join('\n'), JSON.stringify(compile)], { encoding: 'utf8' }).trim());
 
@@ -698,8 +698,8 @@ test('compile.semanticDedup는 enabled/maxPairsPerScan/candidateMinScore만 정�
 test('dedup score thresholds stay fixed and retrieval has a 20-card context budget', () => {
   const consts = JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
-    "sys.path.insert(0, 'core')",
-    'import config as c',
+    "sys.path.insert(0, '.')",
+    'import memvane.settings.config as c',
     'print(json.dumps({',
     '  "threshold": c.DEDUP_SCORE_THRESHOLD,',
     '  "autoMerge": c.DEDUP_AUTO_MERGE_THRESHOLD,',

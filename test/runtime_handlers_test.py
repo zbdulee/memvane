@@ -4,7 +4,7 @@ import subprocess
 import sys
 import unittest
 
-CORE=Path(__file__).resolve().parents[1]/'core'
+CORE=Path(__file__).resolve().parents[1]
 
 
 class HandlerImportBoundary(unittest.TestCase):

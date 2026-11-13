@@ -8,10 +8,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock,patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from memvane.learning.context_learning import memory_policy
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from memvane.runtime import memory_policy
 from memvane.learning.context_learning.local_cycle import ResourceDeferred
-from memvane.learning.context_learning.resource_coordination import Coordinator,decision
+from memvane.runtime.resource_coordination import Coordinator, decision
 
 
 class MemoryBudget(unittest.TestCase):
@@ -167,7 +167,7 @@ class FakeFile:
 
 class PlatformObservation(unittest.TestCase):
     def module(self):
-        self.assertIsNotNone(importlib.util.find_spec('resource_platform'),'platform adapters missing')
+        self.assertIsNotNone(importlib.util.find_spec('memvane.runtime.resource_platform'),'platform adapters missing')
         from memvane.runtime import resource_platform
         return resource_platform
 
@@ -261,7 +261,7 @@ class PlatformObservation(unittest.TestCase):
         self.assertEqual(row['platform']['support'],'unsupported')
 
     def test_mps_controls_are_memory_checks_not_utilization_or_gpu_quotas(self):
-        self.assertIsNotNone(importlib.util.find_spec('resource_controls'),'control adapters missing')
+        self.assertIsNotNone(importlib.util.find_spec('memvane.runtime.resource_controls'),'control adapters missing')
         from memvane.runtime.resource_controls import MpsMemoryControl
         torch=Mock();torch.mps.driver_allocated_memory.return_value=901
         torch.mps.recommended_max_memory.return_value=1000

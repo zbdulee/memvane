@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, str(Path.cwd() / 'core'))
+sys.path.insert(0, str(Path.cwd()))
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.workspace import wiki_mutation_lock as wl
 
@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-wiki-mutation-lock-') as temporary:
     child = '''import sys
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
-import wiki_compile as wc
+import memvane.wiki.compile.wiki_compile as wc
 Path(sys.argv[3]).write_text('started')
 path=Path(sys.argv[2])
 if sys.argv[4]=='compile':
@@ -36,7 +36,7 @@ else:
         marker = root / (action + '.started')
         with wl.lock(root):
             proc = subprocess.Popen([sys.executable, '-c', child,
-                str(Path.cwd() / 'core'), str(path), str(marker), action],
+                str(Path.cwd()), str(path), str(marker), action],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             deadline = time.monotonic() + 5
             while not marker.exists() and time.monotonic() < deadline:

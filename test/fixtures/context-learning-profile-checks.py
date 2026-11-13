@@ -20,7 +20,7 @@ class Checks(unittest.TestCase):
   self.write(self.settings,self.raw)
   self.expiry=int(time.time()*1000)+3600000
   self.addCleanup(patch.stopall)
-  patch('context_learning.shared._policy',return_value=self.policy).start()
+  patch('memvane.learning.context_learning.shared._policy',return_value=self.policy).start()
   self.permission=patch.object(runtime_authorization,'require_operation',return_value=self.grant).start()
   patch.object(laya_adapter,'model_identity',return_value='a'*64).start()
  def write(self,path,row):path.write_text(json.dumps(row));path.chmod(0o600)

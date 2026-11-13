@@ -27,16 +27,16 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / 'core'))
+sys.path.insert(0, str(HERE.parents[1]))
 BUILD = runpy.run_path(str(HERE / 'laya-initial-build-checks.py'))
 
 from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
-from memvane.route import index_host_route as host_route  # noqa: E402
-from memvane.install import initial_build as initial_build  # noqa: E402
+from memvane.route import index_host_route as host_route; import memvane.journal.route_selection as host_route_route_selection  # noqa: E402
+from memvane.journal import initial_build  # noqa: E402
 from memvane.journal import install_journal as journal_mod  # noqa: E402
-from memvane.install import product_install as product  # noqa: E402
+from memvane.app import setup_workflow as product  # noqa: E402
 from memvane.sync import product_sync_worker as worker  # noqa: E402
 
 PROFILE_ID = BUILD['PROFILE_ID']
@@ -45,7 +45,7 @@ PROFILE = {'profileId': PROFILE_ID, 'modelId': BUILD['PROFILE']['model_id'],
            'dimension': BUILD['PROFILE']['dimension'], 'metric': 'cosine',
            'approvedProviderId': 'synthetic-provider',
            'providerArtifactSha256': 'b' * 64,
-           'providerRelativePath': 'core/laya_local_embed_provider.py'}
+           'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py'}
 COMMIT = 'c' * 40
 
 
@@ -125,9 +125,9 @@ class FreshOnboarding(BUILD['BuildCase']):
                       'ownershipManifestSha256': 'e' * 64, 'vectorProfile': PROFILE}
         manifest = {'approvedProviderId': 'synthetic-provider',
                     'providerArtifactSha256': 'b' * 64,
-                    'providerRelativePath': 'core/laya_local_embed_provider.py',
-                    'providerPath': str(self.plugin / 'core/laya_local_embed_provider.py'),
-                    'workerPath': str(self.plugin / 'core/laya_local_embed_worker.mjs'),
+                    'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py',
+                    'providerPath': str(self.plugin / 'memvane/provider/adapters/local_embed_provider.py'),
+                    'workerPath': str(self.plugin / 'memvane/provider/adapters/laya_local_embed_worker.mjs'),
                     'serviceSocketPath': str(self.state / 'runtime' / 'laya-embed.sock'),
                     'modelPath': '/models/m.gguf', 'modelSha256': 'f' * 64,
                     'dimension': 2}
@@ -202,7 +202,7 @@ class FreshOnboarding(BUILD['BuildCase']):
         bound = self.finalize()
         self.assertEqual(bound['status'], 'cutover_prepared', bound)
         self.assertEqual(self.record()['phase'], 'bound')
-        self.assertEqual(host_route.select_route(str(self.project))['state'], 'legacy')
+        self.assertEqual(host_route_route_selection.select_route(str(self.project))['state'], 'legacy')
 
         # 4. Explicit activation publishes the reviewed route.
         with product._install_lock(self.state):
@@ -213,14 +213,14 @@ class FreshOnboarding(BUILD['BuildCase']):
         self.assertEqual(journal_mod.inspect_journal(self.journal_path)['state'], 'active')
 
         # 5. The selector binds the route; the read-only proof serves recall.
-        decision = host_route.select_route(str(self.project), action='recall')
+        decision = host_route_route_selection.select_route(str(self.project), action='recall')
         self.assertEqual(decision['state'], 'candidate', decision)
         self.assertEqual(decision['projectRoot'], str(self.project))
         proof = journal_mod.verify_selected_route_read_only(decision)
         self.assertTrue(proof['readOnlyAllowed'])
-        with mock.patch('laya_local_embed_provider.ReviewedLocalQmdProvider',
+        with mock.patch('memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
                         QueryProvider), \
-                mock.patch('laya_embed_resident.admit_query', lambda **_kw: None):
+                mock.patch('memvane.resident.embed_resident.admit_query', lambda **_kw: None):
             served = response._serve_recall(
                 'claude', decision, {'prompt': 'emerald heron'}, proof,
                 journal_mod.verify_selected_route_read_only)
@@ -231,7 +231,7 @@ class FreshOnboarding(BUILD['BuildCase']):
         # 6. A skipPaths edit keeps the identity-bound route selected.
         self.settings.write_text(json.dumps({'name': 'onboard',
                                              'skipPaths': ['drafts']}) + '\n')
-        self.assertEqual(host_route.select_route(str(self.project))['state'], 'candidate')
+        self.assertEqual(host_route_route_selection.select_route(str(self.project))['state'], 'candidate')
         self.settings.write_bytes(settings_before)
 
         # Onboarding writes only the MemVane roots: the route, the project
@@ -250,7 +250,7 @@ class FreshOnboarding(BUILD['BuildCase']):
 
         # 7. Renaming the project changes the identity and blocks the route.
         self.settings.write_text(json.dumps({'name': 'renamed', 'skipPaths': []}) + '\n')
-        renamed = host_route.select_route(str(self.project))
+        renamed = host_route_route_selection.select_route(str(self.project))
         self.assertEqual((renamed['state'], renamed['reason']),
                          ('blocked', 'route_settings_changed'))
         self.settings.write_bytes(settings_before)
@@ -260,7 +260,7 @@ class FreshOnboarding(BUILD['BuildCase']):
         _write(self.auto / fresh.MARKER, {'schema': 'laya-qmd-selection-marker-v1',
                                           'projectRoot': str(self.project)},
                replace=False)
-        decision = host_route.select_route(str(self.project))
+        decision = host_route_route_selection.select_route(str(self.project))
         self.assertEqual((decision['state'], decision['reason']),
                          ('blocked', 'qmd_origin_detach_required'))
         (self.state / 'qmd-cutover.json').write_text('{}')

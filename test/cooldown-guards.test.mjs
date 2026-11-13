@@ -1,4 +1,4 @@
-// 시간 게이트(cooldown·TTL·stale lock)의 "영구 정지" 방어 — `core/cooldown.py` 계약과
+// 시간 게이트(cooldown·TTL·stale lock)의 "영구 정지" 방어 — `memvane/kernel/cooldown.py` 계약과
 // 그것을 쓰는 판정 지점들.
 //
 // 계약 한 줄: **어떤 시간 게이트도 한 번 잘못 닫히면 영구히 닫혀 있어서는 안 된다.**
@@ -10,7 +10,7 @@
 //       이관)에서 나이가 음수가 되어 창이 영원히 끝나지 않는다(방향은 지점마다 다르지만
 //       병리는 하나다: dedup scan 영구 skip, orphan 회수 영구 skip, sync lock 회수 불가,
 //       notice_once 전 알림 영구 억제, skip 마커 gate 영구 우회).
-// 판정은 `core/cooldown.py` 한 벌이고 이 파일이 그 계약과 각 호출부를 함께 못박는다.
+// 판정은 `memvane/kernel/cooldown.py` 한 벌이고 이 파일이 그 계약과 각 호출부를 함께 못박는다.
 //
 // 유료 호출 0회: 이 테스트는 python 모듈 함수와 bash 함수만 부른다(extractor/verifier/
 // judge 를 스폰하는 경로가 없다).
@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const CORE = join(process.cwd(), 'core');
+const CORE = process.cwd();
 
 // test/update.test.mjs 의 재시도 패턴(ENOTEMPTY/EBUSY) — detached 자식이 workdir에
 // 쓰는 동안 rmSync가 경합해 간헐 실패한 이력이 있다.
@@ -61,7 +61,7 @@ const FUTURE = Math.floor(Date.now() / 1000) + 365 * 24 * 3600;
 
 test('cooldown 계약: 거대·비정상 만료값은 식힘으로 보지 않는다 (영구 활성 방지)', () => {
   const out = py([
-    'import cooldown as c',
+    'import memvane.kernel.cooldown as c',
     'now = 1_000_000.0',
     // 정상값은 그대로 활성.
     'print("normal", c.expiry_active(now + 600, now))',
@@ -92,7 +92,7 @@ test('cooldown 계약: 거대·비정상 만료값은 식힘으로 보지 않는
 
 test('cooldown 계약: 미래 mtime은 창을 영구화하지 않고, 관용 범위 안의 시계 오차는 존중한다', () => {
   const out = py([
-    'import cooldown as c',
+    'import memvane.kernel.cooldown as c',
     'now = 1_000_000.0',
     // 창 안 → 아직 안 지났다.
     'print("inside", c.window_elapsed(now - 10, now, 600))',
@@ -133,25 +133,25 @@ test('compile cooldown: 오염된 만료값(1e300)이 compile을 영구 정지�
     const path = join(dir, '.auto-context', 'compile', 'cooldown');
     writeFileSync(path, '1e300\n');
     assert.equal(py([
-      'import wiki_compile_worker as wcw',
+      'import memvane.wiki.compile.wiki_compile_worker as wcw',
       'from pathlib import Path',
       `print(wcw.cooldown_active(Path(${JSON.stringify(dir)})))`,
     ]), 'False', '이 값이 True면 그 프로젝트의 compile은 다시 돌지 않는다');
 
     // 정상 경로는 그대로 동작해야 한다(가드가 cooldown 자체를 무력화하면 안 된다).
     py([
-      'import wiki_compile_worker as wcw',
+      'import memvane.wiki.compile.wiki_compile_worker as wcw',
       'from pathlib import Path',
       `wcw.set_cooldown(Path(${JSON.stringify(dir)}), 600)`,
     ]);
     assert.equal(py([
-      'import wiki_compile_worker as wcw',
+      'import memvane.wiki.compile.wiki_compile_worker as wcw',
       'from pathlib import Path',
       `print(wcw.cooldown_active(Path(${JSON.stringify(dir)})))`,
     ]), 'True', '정상 cooldown은 여전히 활성이어야 한다');
     // 쓰기 클램프: 파일에 상한 초과값이 남지 않는다.
     py([
-      'import wiki_compile_worker as wcw',
+      'import memvane.wiki.compile.wiki_compile_worker as wcw',
       'from pathlib import Path',
       `wcw.set_cooldown(Path(${JSON.stringify(dir)}), 10**9)`,
     ]);
@@ -167,17 +167,17 @@ test('dedup judge cooldown: 오염된 만료값이 판정을 영구 정지시키
     writeFileSync(join(dir, '.auto-context', 'compile', 'dedup-judge-cooldown'), '1e300\n');
     // 전역 식힘은 후보 소진의 **종점**이라 여기서 영구화되면 복구 경로가 없다.
     assert.equal(py([
-      'import wiki_dedup_judge as j',
+      'import memvane.wiki.dedup.wiki_dedup_judge as j',
       'from pathlib import Path',
       `print(j.cooldown_active(Path(${JSON.stringify(dir)})))`,
     ]), 'False');
     py([
-      'import wiki_dedup_judge as j',
+      'import memvane.wiki.dedup.wiki_dedup_judge as j',
       'from pathlib import Path',
       `j.set_cooldown(Path(${JSON.stringify(dir)}), 600)`,
     ]);
     assert.equal(py([
-      'import wiki_dedup_judge as j',
+      'import memvane.wiki.dedup.wiki_dedup_judge as j',
       'from pathlib import Path',
       `print(j.cooldown_active(Path(${JSON.stringify(dir)})))`,
     ]), 'True');

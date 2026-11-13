@@ -25,7 +25,7 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-CORE = HERE.parents[1] / 'core'
+CORE = HERE.parents[1]
 sys.path.insert(0, str(CORE))
 from memvane.wiki.lifecycle import wiki_lifecycle as lifecycle  # noqa: E402
 from memvane.wiki.workspace import wiki_selected_laya  # noqa: E402
@@ -304,8 +304,7 @@ class WorktreeRecallReadOnly(unittest.TestCase):
                 self.assertEqual(decision['worktreeRoot'], str(worktree))
             payload = self.selected.home / ('payload-' + worktree.name + '.json')
             payload.write_text(json.dumps({'cwd': str(worktree), 'prompt': 'q'}))
-            out = subprocess.run([sys.executable, '-B', str(CORE / 'laya_index_host_route.py'),
-                                  'classify-hook', 'recall', str(payload), '/'],
+            out = subprocess.run([sys.executable, '-B', str(CORE / 'entry/run.py'), 'hook-classify', 'recall', str(payload), '/'],
                                  capture_output=True, text=True, env=os.environ.copy())
             self.assertEqual(out.stdout.strip(), 'worktree', out.stderr)
 

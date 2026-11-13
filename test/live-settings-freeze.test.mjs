@@ -19,7 +19,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const CORE = join(REPO_ROOT, 'core');
+const CORE = REPO_ROOT;
 const LIVE_DIR = join(REPO_ROOT, 'test', 'fixtures', 'live-settings');
 const FIXTURE = join(REPO_ROOT, 'test', 'fixtures', 'live-settings-effective-freeze.json');
 const UPDATE = process.env.QMD_FREEZE_UPDATE === '1';
@@ -28,7 +28,7 @@ const UPDATE = process.env.QMD_FREEZE_UPDATE === '1';
 // 그래서 이 파일은 프로젝트 디렉터리를 만들지 않고 파일 내용만 통과시킨다.
 const NORMALIZE_ALL_PY = `import json, os, sys
 sys.path.insert(0, sys.argv[1])
-import config as qmd_config
+import memvane.settings.config as qmd_config
 out = {}
 for name in sorted(os.listdir(sys.argv[2])):
     if not name.endswith(".json"):
@@ -128,7 +128,7 @@ test('§7.2 마이그레이션 부채: 옛 위치의 손편집 budget 값은 더
 test('§7.2 마이그레이션 명세: 새 위치로 옮기면 클램프까지 포함해 복원된다', () => {
   const py = `import json, sys
 sys.path.insert(0, sys.argv[1])
-import config as qmd_config
+import memvane.settings.config as qmd_config
 raw = {"compile": {"mode": "auto-wiki", "budget": json.loads(sys.argv[2])}}
 print(json.dumps(qmd_config.normalize_config(raw)["compile"]["budget"]))`;
   const budgetOf = (v) => JSON.parse(execFileSync(

@@ -6,7 +6,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from memvane.learning.context_learning import live_select, shared, inference_service
 from memvane.learning.context_learning.resident import ResidentFailure
 from memvane.learning.context_learning.contracts import digest
@@ -101,11 +101,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
         return {'schema_version': 1, 'predictions': [{
             'request_id': case['request_id'], 'input_sha256': case['input_sha256'],
             'selected_ids': ['wiki/card.md']}]}, {'rerank_wall_seconds': .2}
-    with patch('context_learning.shared._policy', return_value={
+    with patch('memvane.learning.context_learning.shared._policy', return_value={
             'modelInputView': EDIT_INPUT_VIEW,
             'trainerArgv': [sys.executable, str(adapter), str(multilingual_dir)],
             'maxRssMib': 4096}), patch(
-            'context_learning.inference_service.predict', side_effect=resident_stub) as resident:
+            'memvane.learning.context_learning.inference_service.predict', side_effect=resident_stub) as resident:
         for unapproved in (production_pin, different_pin):
             with patch.object(shared, 'REVIEWED_ADAPTER_SHA256', unapproved):
                 ids, reason, _ = live_select.choose(state, 'Synthetic edit content', rows,
@@ -121,11 +121,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
             assert edit_ids == ['wiki/card.md'] and edit_reason == 'selected'
             assert edit_resources['model_input_view'] == EDIT_INPUT_VIEW
         assert resident.call_count == 1
-    with patch('context_learning.shared._policy', return_value={
+    with patch('memvane.learning.context_learning.shared._policy', return_value={
             'modelInputView': EDIT_INPUT_VIEW,
             'trainerArgv': [sys.executable, str(adapter), str(multilingual_dir)],
             'maxRssMib': 4096}), patch(
-            'context_learning.inference_service.predict', side_effect=ResidentFailure(
+            'memvane.learning.context_learning.inference_service.predict', side_effect=ResidentFailure(
                 'input_budget_exceeded', {'queue_wait_seconds': .123})), patch.object(
             shared, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
         missed, reason, metrics = live_select.choose(state,

@@ -46,7 +46,7 @@ function setupProject({ compile: compileOverrides = {} } = {}) {
 }
 
 function compile(dir, candidate) {
-  const out = execFileSync('python3', ['core/wiki_compile.py', '--cwd', dir], {
+  const out = execFileSync('python3', ['entry/run.py', 'wiki-compile', '--cwd', dir], {
     cwd: process.cwd(), encoding: 'utf8', input: JSON.stringify(candidate),
     env: { ...process.env, QMD_DIRTY_QUEUE: join(dir, 'dirty-queue') },
   });
@@ -308,8 +308,8 @@ test('compile_paths.ledger refuses a symlink escape out of the compile dir', () 
     mkdirSync(join(dir, 'elsewhere'), { recursive: true });
 
     const probe = execFileSync('python3', ['-c', `import sys, json, pathlib
-sys.path.insert(0, ${JSON.stringify(process.cwd() + '/core')})
-import compile_paths as cp
+sys.path.insert(0, ${JSON.stringify(process.cwd())})
+import memvane.wiki.workspace.compile_paths as cp
 root = pathlib.Path(${JSON.stringify(dir)}).resolve()
 out = {
   'escaped': cp.ledger(root, cp.VERIFY_DELETED),
@@ -376,8 +376,8 @@ test('a mid-run ledger failure leaves a trace instead of an rc=1 traceback', () 
   try {
     const py = `import json, sys, pathlib
 sys.argv = ['wiki_verify_worker.py', '--cwd', ${JSON.stringify(dir)}, '--json']
-sys.path.insert(0, ${JSON.stringify(process.cwd() + '/core')})
-import wiki_verify_worker as v
+sys.path.insert(0, ${JSON.stringify(process.cwd())})
+import memvane.wiki.compile.wiki_verify_worker as v
 real = v.wc.append_jsonl
 def boom(path, payload):
     if 'verify-deleted' in str(path):
@@ -411,8 +411,8 @@ test('inconclusive: 억제 원장 쓰기 실패면 카드를 지우지 않는다
   try {
     const py = `import sys
 sys.argv = ['wiki_verify_worker.py', '--cwd', ${JSON.stringify(dir)}, '--json']
-sys.path.insert(0, ${JSON.stringify(process.cwd() + '/core')})
-import wiki_verify_worker as v
+sys.path.insert(0, ${JSON.stringify(process.cwd())})
+import memvane.wiki.compile.wiki_verify_worker as v
 real = v.wc.append_jsonl
 def boom(path, payload):
     if 'verify-skipped' in str(path):
@@ -486,9 +486,9 @@ test('cp.ledger가 None을 내도 verify 원장 경로는 None이 아니라 기�
       symlinkSync(join(dir, 'outside.jsonl'), join(dir, '.auto-context', 'compile', name));
     }
     const out = execFileSync('python3', ['-c', `import sys, pathlib, json
-sys.path.insert(0, ${JSON.stringify(process.cwd() + '/core')})
-import compile_paths as cp
-import wiki_verify_worker as v
+sys.path.insert(0, ${JSON.stringify(process.cwd())})
+import memvane.wiki.workspace.compile_paths as cp
+import memvane.wiki.compile.wiki_verify_worker as v
 root = pathlib.Path(${JSON.stringify(dir)}).resolve()
 print(json.dumps({
   'ledgerRefused': cp.ledger(root, cp.VERIFY_SKIPPED) is None and cp.ledger(root, cp.VERIFY_DELETED) is None,
@@ -526,8 +526,8 @@ test('load_sources는 MAX_SOURCES와 무관하게 authoritativeSources를 읽는
       ],
     };
     const out = execFileSync('python3', ['-c', `import sys, json, pathlib
-sys.path.insert(0, ${JSON.stringify(process.cwd() + '/core')})
-import wiki_verify_worker as v
+sys.path.insert(0, ${JSON.stringify(process.cwd())})
+import memvane.wiki.compile.wiki_verify_worker as v
 job = json.loads(sys.stdin.read())
 loaded = v.load_sources(pathlib.Path(${JSON.stringify(dir)}).resolve(), job, 12000)
 print(json.dumps([s['path'] for s in loaded]))
@@ -545,7 +545,7 @@ print(json.dumps([s['path'] for s in loaded]))
 });
 
 test('compiler and verifier sources contain no reviewed-state decision branches', () => {
-  for (const file of ['core/wiki_compile.py', 'core/wiki_verify_worker.py']) {
+  for (const file of ['memvane/wiki/compile/wiki_compile.py', 'memvane/wiki/compile/wiki_verify_worker.py']) {
     const text = readFileSync(file, 'utf8');
     assert.doesNotMatch(text, /meta\.get\(["']reviewed["']\)/, file);
   }

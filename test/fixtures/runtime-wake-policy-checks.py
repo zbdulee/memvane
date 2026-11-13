@@ -17,20 +17,20 @@ import time
 import unittest
 from unittest.mock import patch
 
-CORE = Path(__file__).resolve().parents[2] / 'core'
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
 
 from memvane.runtime import runtime_wake_policy as policy  # noqa: E402
-from memvane.runtime import runtime_work as runtime  # noqa: E402
+from memvane.runtime import runtime_work as runtime; import memvane.app.wiring as runtime_wiring  # noqa: E402
 from memvane.learning.context_learning.local_cycle import ResourceDeferred  # noqa: E402
-from memvane.learning.context_learning.resource_coordination import _lock  # noqa: E402
+from memvane.runtime.resource_coordination import _lock  # noqa: E402
 
 HEX = '0123456789abcdef' * 2
 
 
 class PolicyPurity(unittest.TestCase):
     def test_policy_module_imports_no_io_or_process_machinery(self):
-        tree = ast.parse((CORE / 'runtime_wake_policy.py').read_text())
+        tree = ast.parse((CORE / 'memvane/runtime/runtime_wake_policy.py').read_text())
         names = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -261,7 +261,7 @@ for _ in range(5):
 '''
         new_code = '''import sys
 sys.path.insert(0,sys.argv[1])
-import runtime_work as runtime
+import memvane.runtime.runtime_work as runtime; import memvane.app.wiring as runtime_wiring
 from pathlib import Path
 root=Path(sys.argv[2]); queue=runtime.WakeQueue(root)
 fd=runtime._lock(root/'runtime-worker-handoff.lock')
@@ -554,7 +554,7 @@ runtime._handoff_worker(queue,fd)
         with patch.object(laya_runtime_dispatch, 'run',
                           side_effect=lambda kind, target, **kw: ran.append(target)
                           or {'state': 'unchanged'}):
-            result = runtime.drain(self.queue, execute=runtime.dispatch, ready=lambda: True,
+            result = runtime.drain(self.queue, execute=runtime_wiring.dispatch, ready=lambda: True,
                                    clock=lambda: 0, wall=lambda: 100, sleep=lambda _: None,
                                    max_runs=3)
         self.assertEqual(result, {'status': 'drained', 'runs': 3})
@@ -572,7 +572,7 @@ runtime._handoff_worker(queue,fd)
         from memvane.app import runtime_dispatch as laya_runtime_dispatch
 
         def run(wall, **patches):
-            return runtime.drain(self.queue, execute=runtime.dispatch, ready=lambda: True,
+            return runtime.drain(self.queue, execute=runtime_wiring.dispatch, ready=lambda: True,
                                  clock=lambda: 0, wall=lambda: wall, sleep=lambda _: None,
                                  max_runs=1)
 

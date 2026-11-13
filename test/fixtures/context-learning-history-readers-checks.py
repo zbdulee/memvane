@@ -109,6 +109,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-readers-') as name:
                               (request_id,)).fetchone() == ('gold',)
 
     # No reader in these modules may open a learning ledger directly.
-    core = Path(__file__).resolve().parents[2] / 'core/context_learning'
+    core = Path(__file__).resolve().parents[2] / 'memvane/learning/context_learning'
     assert 'sqlite3.connect(' not in (core / 'runtime_authorization.py').read_text()
 print('ok')

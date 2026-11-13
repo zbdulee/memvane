@@ -22,8 +22,8 @@ for name in ('QMD_SANDBOX', 'GEMINI_SANDBOX', 'CLAUDE_SANDBOX', 'CODEX_SANDBOX',
 
 from memvane.learning.context_learning.history_activation import (
     HOST_FILES, _claude_load_roots, _discover_host_roots, _installed_hosts_compatible)
-import context_learning.history_activation as activation_module
-import context_learning.history_lifecycle as lifecycle_module
+import memvane.learning.context_learning.history_activation as activation_module
+import memvane.learning.context_learning.history_lifecycle as lifecycle_module
 from memvane.learning.context_learning.history_lifecycle import acknowledge_host, runtime_fingerprint
 from memvane.learning.context_learning.storage_layout import root as learning_root
 
@@ -168,9 +168,9 @@ try:
 
     def hook_ack(engine, root):
         # Exactly what hooks/run-hook does: the executing tree's own script.
-        result = real_run(['python3', str(root / 'core/context_learning_host_ack.py'), engine],
+        result = real_run(['python3', str(root / 'entry' / 'run.py'), 'host-ack', engine],
                           env={**os.environ, 'HOME': str(account),
-                               'PYTHONPATH': str(root / 'core'),
+                               'PYTHONPATH': str(root),
                                'PYTHONDONTWRITEBYTECODE': '1'},
                           capture_output=True, text=True, timeout=30, check=False)
         return result

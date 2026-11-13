@@ -44,14 +44,14 @@ from types import SimpleNamespace
 from unittest import mock
 import json,os,signal,sys
 root,payload=Path(sys.argv[1]),Path(sys.argv[2]);p=json.loads(payload.read_text())
-sys.path.insert(0,str(root/'core'));signal.alarm(35)
-import laya_product_sync_worker as worker,laya_vector_capacity as vectors
+sys.path.insert(0,str(root));signal.alarm(35)
+import laya_vector_capacity as vectors; import memvane.sync.product_sync_worker as worker; import memvane.journal.install_journal as worker_install_journal
 import laya_incremental_docs as incremental
 from laya_index_runtime import LayaIndexRuntime,capacity_store_paths
-from laya_index_host_route import wiki_index_roots
+from memvane.route.index_host_route import wiki_index_roots
 from laya_index_vector import qmd_markdown_title
 from laya_index_sync import _owner_lock
-from memvane.learning.context_learning.resource_coordination import Coordinator
+from memvane.runtime.resource_coordination import Coordinator
 decision,proof=p['decision'],p['proof'];profile=proof['vectorProfile']
 provider=SimpleNamespace(manifest={'recipeId':'qmd-regex-token-chunks-candidate-v1'},
     profile={'profile_id':profile['profileId'],'model_id':profile['modelId'],
@@ -80,7 +80,7 @@ def pause(runtime,provider,**kwargs):
 controller=Coordinator()
 with mock.patch.object(controller,'_admit',return_value={'ready':True}), \
      mock.patch.object(LayaIndexRuntime,'request_scan',return_value={'status':'queued'}), \
-     mock.patch.object(worker,'verify_selected_route',side_effect=selected), \
+     mock.patch.object(worker_install_journal,'verify_selected_route_for_write',side_effect=selected), \
      mock.patch.object(worker,'cas_mark_new_write',side_effect=mark), \
      mock.patch.object(incremental,'_verified',return_value=True), \
      mock.patch.object(worker,'_higher_priority_wake',return_value=False), \
@@ -1429,8 +1429,8 @@ class RecoveryChecks(unittest.TestCase):
             script = r'''
 import json, pathlib, sys
 sys.path.insert(0, sys.argv[1])
-import laya_install_journal as old
-import laya_local_embed_provider as provider
+import memvane.journal.install_journal as old
+import memvane.provider.adapters.local_embed_provider as provider
 assert pathlib.Path(old.__file__).resolve().parent == pathlib.Path(sys.argv[1]).resolve()
 actual_open = old._open
 traces, opens = [], []
@@ -1469,7 +1469,7 @@ result['provider_calls'] = calls['provider']
 result['observed_boundaries'] = ['ClaimQueue.open', 'ReviewedLocalQmdProvider']
 print(json.dumps(dict(event='result', **result)), flush=True)
 '''
-            process = subprocess.Popen([sys.executable, '-B', '-I', '-c', script, str(old / 'core'),
+            process = subprocess.Popen([sys.executable, '-B', '-I', '-c', script, str(old),
                                         str(case.journal), str(before['bundle']['epoch'])],
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        encoding='utf8', env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})

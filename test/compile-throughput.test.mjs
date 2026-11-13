@@ -90,7 +90,7 @@ function setupProject({ sources, cardsPerSource = 1, compile: compileOverrides =
 
 function runWorker(project, env = {}) {
   const dirtyQueue = env.QMD_DIRTY_QUEUE || join(project, '.auto-context', 'compile', 'dirty-queue');
-  const out = execFileSync('python3', ['core/wiki_compile_worker.py', '--cwd', project, '--json', '--flush-all'], {
+  const out = execFileSync('python3', ['entry/run.py', 'wiki-compile-worker', '--cwd', project, '--json', '--flush-all'], {
     cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, QMD_DIRTY_QUEUE: dirtyQueue, ...env },
   });
   return JSON.parse(out.trim());
@@ -299,7 +299,7 @@ test('budget.extractorPerRun is clamped, so a huge value cannot drive a huge run
     const out = runWorker(dir);
     assert.equal(out.processed, 4, 'a 4-item queue still drains fully');
     assert.equal(calls(logPath, 'extract').length, 4);
-    const py = `import json,sys; sys.path.insert(0,'core'); import config
+    const py = `import json,sys; sys.path.insert(0,'.'); import memvane.settings.config as config
 print(json.dumps(config.compile_config({'budget': {'extractorPerRun': 99999999}})['budget']['extractorPerRun']))`;
     const clamped = JSON.parse(execFileSync('python3', ['-c', py], {
       cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, QMD_DIRTY_QUEUE: join(dir, 'dirty-queue') },

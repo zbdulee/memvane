@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from memvane.runtime.runtime_admission import PreSendDeferred, provider_run
 from memvane.wiki.engines import qa_model_budget
 
@@ -29,8 +29,8 @@ print('host')
     assert qa_model_budget.status(ledger, 6) == 5
     worker = subprocess.run([sys.executable, '-c', '''
 import sys
-sys.path.insert(0, 'core')
-from runtime_admission import provider_run
+sys.path.insert(0, '.')
+from memvane.runtime.runtime_admission import provider_run
 result = provider_run([sys.executable, '-c', 'print("synthetic")'],
                       text=True, capture_output=True, timeout=5)
 assert result.returncode == 0 and result.stdout.strip() == 'synthetic'
@@ -53,8 +53,8 @@ assert result.returncode == 0 and result.stdout.strip() == 'synthetic'
     # A fresh worker cannot reset or increase the durable per-project ceiling.
     child = subprocess.run([sys.executable, '-c', '''
 import sys
-sys.path.insert(0, 'core')
-from runtime_admission import PreSendDeferred, provider_run
+sys.path.insert(0, '.')
+from memvane.runtime.runtime_admission import PreSendDeferred, provider_run
 try:
     provider_run([sys.executable, '-c', 'print("should not run")'], timeout=5)
 except PreSendDeferred as exc:
@@ -96,8 +96,8 @@ else:
     race_env = {**os.environ, 'QMD_QA_CALL_LEDGER': str(race), 'QMD_QA_CALL_LIMIT': '1'}
     reserve = '''
 import sys
-sys.path.insert(0, 'core')
-import qa_model_budget
+sys.path.insert(0, '.')
+import memvane.wiki.engines.qa_model_budget as qa_model_budget
 from memvane.kernel.resource_deferred import ResourceDeferred
 try:
     qa_model_budget.reserve_from_env()

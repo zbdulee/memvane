@@ -221,14 +221,14 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         self.cap(self.root, repository, worktree)
         payload = json.dumps([str(self.root), repository, worktree])
         program = """import json,sys; from unittest import mock
-sys.path.insert(0, sys.argv[1]); import laya_checkout_view as v
+sys.path.insert(0, sys.argv[1]); import memvane.store.checkout.checkout_view as v
 root,repo,worktree=json.loads(sys.argv[2])
 with mock.patch.object(v, '_git', wraps=v._git) as git:
     v.capture_view(root, repo, worktree)
     print(git.call_count)
 """
         child = subprocess.run([sys.executable, '-B', '-c', program,
-            str(HERE.parents[1] / 'core'), payload], text=True, capture_output=True, timeout=10)
+            str(HERE.parents[1]), payload], text=True, capture_output=True, timeout=10)
         self.assertEqual(child.returncode, 0, child.stderr)
         self.assertGreater(int(child.stdout.strip()), 0)
 

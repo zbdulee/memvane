@@ -194,8 +194,8 @@ test('selected dispatch execs service in hook PID and unlinks payload before tim
     mkdirSync(join(root, 'hooks'));
     mkdirSync(join(root, 'core'));
     copyFileSync(join(process.cwd(), 'hooks', 'run-hook'), join(root, 'hooks', 'run-hook'));
-    writeFileSync(join(root, 'core', 'laya_index_host_route.py'), "print('candidate')\n");
-    writeFileSync(join(root, 'core', 'laya_host_response.py'),
+    writeFileSync(join(root, 'memvane/route/index_host_route.py'), "print('candidate')\n");
+    writeFileSync(join(root, 'memvane/host/host_response.py'),
       'import os,time\nprint(os.getpid(),flush=True)\ntime.sleep(30)\n');
     const result = spawnSync('bash', [join(root, 'hooks', 'run-hook'), 'recall', 'claude'], {
       cwd: root, input: '{}', encoding: 'utf8', timeout: 900, killSignal: 'SIGTERM',

@@ -9,8 +9,8 @@ export function wikiTrustState(projectDir, cardRel) {
   return JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_card as R, wiki_compile as wc, wiki_freshness as WF, wiki_source_missing as wsm',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_card as R; import memvane.wiki.compile.wiki_compile as wc; import memvane.wiki.card.wiki_freshness as WF; import memvane.wiki.card.wiki_source_missing as wsm',
     'root = Path(sys.argv[1]).resolve()',
     'text = (root / sys.argv[2]).read_text(encoding="utf-8")',
     'block = wc.FRONTMATTER_RE.match(text).group(1)',
@@ -34,9 +34,9 @@ export function stampVerified(projectDir, cardRel, engine = 'codex', mode = 'cro
   const out = execFileSync('python3', ['-c', [
     'import sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_compile as wc',
-    'import yaml_scalars as ys',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.compile.wiki_compile as wc',
+    'import memvane.wiki.card.yaml_scalars as ys',
     'root = Path(sys.argv[1]).resolve()',
     'card = root / sys.argv[2]',
     // 실제 caller(`wiki_verify_worker`)와 같다: 검증기가 읽은 본문의 지문을 넘긴다.

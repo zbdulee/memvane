@@ -22,8 +22,8 @@ import { execFileSync } from 'node:child_process';
 function py(snippet, payload) {
   const out = execFileSync('python3', ['-c', [
     'import json, sys',
-    'sys.path.insert(0, "core")',
-    'import keywords',
+    'sys.path.insert(0, ".")',
+    'import memvane.recall.keywords as keywords',
     'payload = json.loads(sys.stdin.read())',
     snippet,
   ].join('\n')], { input: JSON.stringify(payload), encoding: 'utf8' });
@@ -216,8 +216,8 @@ test('EP 경로는 어느 선택 규칙의 대상도 아니다 (변형 emit·예
 test('EP 예산은 그대로 EP_SEARCH_BUDGET 로 유계다 (payload 상한 10 유지)', () => {
   const r = build('EP1 EP2 EP3 EP4 EP5 화 정리', ['ep']);
   const out = execFileSync('python3', ['-c', [
-    'import sys; sys.path.insert(0, "core")',
-    'import keywords; print(keywords.EP_SEARCH_BUDGET)',
+    'import sys; sys.path.insert(0, ".")',
+    'import memvane.recall.keywords as keywords; print(keywords.EP_SEARCH_BUDGET)',
   ].join('\n')], { encoding: 'utf8' }).trim();
   assert.equal(Number(out), 6, 'EP_SEARCH_BUDGET 상수 불변');
   assert.ok(r.lexQueries.length - 1 <= 6, 'EP 변형 엔트리 수는 예산 안');

@@ -4,8 +4,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 
 const code = [
   'import json, sys',
-  'sys.path.insert(0, "core")',
-  'import hook_budget',
+  'sys.path.insert(0, ".")',
+  'import memvane.kernel.hook_budget as hook_budget',
   'print(json.dumps({"seconds":hook_budget._seconds()}))',
 ].join('\n');
 
@@ -27,8 +27,8 @@ test('hook budget accepts 2-20 seconds and falls back to 18', () => {
 test('an exhausted hook deadline still exits zero without stderr', () => {
   const run = [
     'import sys',
-    'sys.path.insert(0, "core")',
-    'import hook_budget, hook_main',
+    'sys.path.insert(0, ".")',
+    'import hook_main; import memvane.kernel.hook_budget as hook_budget',
     'def expire(): raise hook_budget.HookDeadlineExceeded()',
     'print("exit", hook_main.run(expire))',
   ].join('\n');

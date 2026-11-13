@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-sys.path.insert(0,str(Path.cwd()/'core'))
+sys.path.insert(0,str(Path.cwd()))
 from memvane.learning.context_learning import adapter_binding as binding
 
 MARKET=binding.MARKETPLACE
@@ -27,7 +27,7 @@ class LocalBinding(unittest.TestCase):
         for host in ['claude','codex']:
             self.write(self.source/f'.{host}-plugin/plugin.json',{'name':'memvane','version':VERSION})
         self.write(self.source/'package.json',{'name':'memvane','version':VERSION})
-        for name,text in [('memvane/learning/context_learning/adapter.py','adapter = 1\n'),('memvane/learning/context_learning/other.py','identity = 1\n'),('core/update.sh','true\n'),('hooks/hooks.json','{}\n')]:
+        for name,text in [('memvane/learning/context_learning/adapter.py','adapter = 1\n'),('memvane/learning/context_learning/other.py','identity = 1\n'),('memvane/update.sh','true\n'),('hooks/hooks.json','{}\n')]:
             p=self.source/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
         self.write(self.market/'.claude-plugin/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':'./plugins/memvane','version':VERSION}]})
         self.write(self.market/'.agents/plugins/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':{'source':'local','path':'./plugins/memvane'},'version':VERSION}]})
@@ -108,11 +108,11 @@ class LocalBinding(unittest.TestCase):
             (root/'memvane/learning/context_learning/other.py').write_text('identity = 3\n')
         self.denied(self.cache['codex'],self.source)
     def test_extra_cache_executable_denied(self):
-        (self.cache['codex']/'core/unreviewed.py').write_text('extra = 1\n');self.denied()
+        (self.cache['codex']/'memvane/unreviewed.py').write_text('extra = 1\n');self.denied()
     def test_rogue_identical_source_denied(self):
         rogue=self.home/'rogue/plugins/memvane';rogue.parent.mkdir(parents=True);shutil.copytree(self.source,rogue);self.denied(rogue,self.cache['codex'])
     def many_files(self,count=150):
-        for n in range(count):(self.source/f'core/generated_{n}.py').write_text(f'value = {n}\n')
+        for n in range(count):(self.source/f'memvane/generated_{n}.py').write_text(f'value = {n}\n')
         return count+4
     def test_inventory_admission_checkpoints_are_batched(self):
         # Per-read checkpoints made a full inventory exceed the 1s foreground

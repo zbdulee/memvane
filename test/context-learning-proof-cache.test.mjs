@@ -4,7 +4,7 @@ import {execFileSync} from 'node:child_process';
 
 test('both host predictions reuse fresh proof or fall back without training', () => {
   const raw = execFileSync('python3', ['test/fixtures/context-learning-proof-cache-checks.py'], {
-    env: {...process.env, PYTHONPATH: 'core', PYTHONDONTWRITEBYTECODE: '1', QMD_RECALL_LOG: ''},
+    env: {...process.env, PYTHONPATH: '.', PYTHONDONTWRITEBYTECODE: '1', QMD_RECALL_LOG: ''},
     encoding: 'utf8', timeout: 30000,
   });
   const result = JSON.parse(raw);

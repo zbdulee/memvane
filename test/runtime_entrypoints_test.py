@@ -11,8 +11,8 @@ import time
 import unittest
 from unittest.mock import Mock,patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from memvane.learning.context_learning.resource_coordination import Coordinator
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from memvane.runtime.resource_coordination import Coordinator
 from memvane.learning.context_learning.local_cycle import ResourceDeferred
 
 
@@ -30,7 +30,7 @@ class EntryPoints(unittest.TestCase):
         self.c=Coordinator(self.root)
 
     def admission(self):
-        self.assertIsNotNone(importlib.util.find_spec('runtime_admission'),'remaining entry-point facade missing')
+        self.assertIsNotNone(importlib.util.find_spec('memvane.runtime.runtime_admission'),'remaining entry-point facade missing')
         from memvane.runtime import runtime_admission as a
         self.stack.enter_context(patch.object(a,'Coordinator',return_value=self.c))
         self.stack.enter_context(patch.object(a,'sample',return_value=self.report))

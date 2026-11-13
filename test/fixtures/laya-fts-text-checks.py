@@ -11,7 +11,7 @@ import sys
 import time
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.kernel import errors as a
 
 

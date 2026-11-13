@@ -19,12 +19,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.route import index_host_route as laya_index_host_route
-from memvane.install import initial_build as initial_build
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.route import index_host_route as laya_index_host_route; import memvane.journal.route_selection as laya_index_host_route_route_selection
+from memvane.journal import initial_build
 from memvane.journal import install_journal as laya_install_journal
 from laya_index_a import IndexContractError, LayaIndexA
-from memvane.install import product_install as product
+from memvane.app import setup_workflow as product
 from memvane.sync import product_sync_worker as worker
 from memvane.install import runtime_wake_cancel as wake_cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
@@ -103,7 +103,7 @@ class AbandonCase(unittest.TestCase):
         for patcher in (
                 mock.patch.object(laya_install_journal, 'inspect_journal',
                                   side_effect=lambda *_a: dict(self.journal)),
-                mock.patch.object(laya_index_host_route, 'select_route',
+                mock.patch.object(laya_index_host_route_route_selection, 'select_route',
                                   side_effect=lambda *_a, **_k: dict(self.route_view))):
             patcher.start()
             self.addCleanup(patcher.stop)

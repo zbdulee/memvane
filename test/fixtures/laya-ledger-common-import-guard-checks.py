@@ -18,7 +18,7 @@ import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-CORE = ROOT / 'core'
+CORE = ROOT
 QMD_MODULES = ('laya_qmd_cutover', 'laya_qmd_migration', 'laya_origin_detach')
 
 PRELUDE = f'''
@@ -70,9 +70,9 @@ class ImportGuard(unittest.TestCase):
 
     def test_hot_path_and_onboarding_modules_import_without_qmd_origin(self):
         out = run('''
-            import laya_index_host_route, laya_host_response
-            import laya_fresh_wiki_origin, laya_ledger_common
-            import laya_product_install, laya_product_sync_worker, setup_entry
+            import memvane.route.index_host_route as laya_index_host_route; import memvane.host.host_response as laya_host_response
+            import laya_fresh_wiki_origin; import memvane.install.ledger_common as laya_ledger_common
+            import memvane.app.setup_workflow as laya_product_install; import memvane.sync.product_sync_worker as laya_product_sync_worker; import memvane.app.setup_entry as setup_entry
             report(loaded=loaded())
         ''')
         self.assertEqual(out['loaded'], [])
@@ -83,14 +83,14 @@ class ImportGuard(unittest.TestCase):
         self.write_marker('laya-fresh-wiki-selection-marker-v1')
         out = run('''
             import laya_fresh_wiki_origin as fresh
-            import laya_index_host_route as route
+            import memvane.route.index_host_route as route; import memvane.journal.route_selection as route_route_selection
             calls = []
             real = fresh.classify_marker
             def counted(*args):
                 calls.append(args[1])
                 return real(*args)
             fresh.classify_marker = counted
-            decisions = [route.select_route(sys.argv[1], action=action)
+            decisions = [route_route_selection.select_route(sys.argv[1], action=action)
                          for action in ('recall', 'update', 'gate')]
             report(loaded=loaded(), calls=len(calls),
                    decisions=[[d['state'], d['reason']] for d in decisions])
@@ -103,8 +103,8 @@ class ImportGuard(unittest.TestCase):
     def test_qmd_marker_is_refused_as_detach_required(self):
         self.write_marker('laya-qmd-selection-marker-v1')
         out = run('''
-            import laya_index_host_route as route
-            decision = route.select_route(sys.argv[1], action='recall')
+            import memvane.route.index_host_route as route; import memvane.journal.route_selection as route_route_selection
+            decision = route_route_selection.select_route(sys.argv[1], action='recall')
             report(loaded=loaded(), decision=[decision['state'], decision['reason']])
         ''', str(self.project))
         self.assertEqual(out['decision'], ['blocked', 'qmd_origin_detach_required'])
@@ -112,7 +112,7 @@ class ImportGuard(unittest.TestCase):
 
     def test_shared_primitives_keep_lock_name_and_identity(self):
         out = run('''
-            import laya_ledger_common as common
+            import memvane.install.ledger_common as common
             import laya_fresh_wiki_origin as fresh
             marker = Path(sys.argv[1])
             with common._operation_lock(marker):
@@ -134,7 +134,7 @@ class ImportGuard(unittest.TestCase):
     def test_ledger_writer_bytes_are_canonical_and_private(self):
         out = run('''
             import stat
-            from laya_ledger_common import _read_json, _write
+            from memvane.install.ledger_common import _read_json, _write
             path = Path(sys.argv[1]) / 'record.json'
             _write(path, {'b': 'é', 'a': [1, 2]}, replace=False)
             report(raw=path.read_bytes().decode('utf-8'),

@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
 
-// SessionStart wiki 수명 주기(`core/wiki_lifecycle.py`). 조치(삭제·재생성 enqueue·가드·
+// SessionStart wiki 수명 주기(`memvane/wiki/lifecycle/wiki_lifecycle.py`). 조치(삭제·재생성 enqueue·가드·
 // 멱등성)는 python fixture가 selected route를 붙여 검증하고, 여기서는 그 결과와 update.sh
 // worker가 쓰는 ineligible 집계 계약을 본다. 모든 프로젝트는 임시 디렉터리다.
 
@@ -49,7 +49,7 @@ function writeCard(dir, rel, {
 }
 
 function runLifecycle(dir, env = {}) {
-  const out = execFileSync('python3', ['core/wiki_lifecycle.py', '--cwd', dir, '--json'], {
+  const out = execFileSync('python3', ['entry/run.py', 'wiki-lifecycle', '--cwd', dir, '--json'], {
     cwd: process.cwd(),
     encoding: 'utf8',
     env: {

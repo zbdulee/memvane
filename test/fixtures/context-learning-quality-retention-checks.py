@@ -6,7 +6,7 @@ import tempfile
 import time
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from memvane.learning.context_learning.contracts import digest, request
 from memvane.learning.context_learning.shared import _db, _selection_fence, train_due
@@ -87,11 +87,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-quality-retention-', dir='/tmp') as
                       str(root)], 'safetySeconds': 900, 'maxRssMib': 4096}
         add_cases(root, 0, project_split=scenario == 'project')
         FakeTrainer.calls = []
-        with patch('context_learning.shared.resource_report',
+        with patch('memvane.learning.context_learning.shared.resource_report',
                    return_value={'ready': True}), patch(
-                'context_learning.shared._reconcile_cases', return_value=0), patch(
-                'context_learning.shared._case_active', return_value=True), patch(
-                'context_learning.shared.trial_eligible', return_value=True):
+                'memvane.learning.context_learning.shared._reconcile_cases', return_value=0), patch(
+                'memvane.learning.context_learning.shared._case_active', return_value=True), patch(
+                'memvane.learning.context_learning.shared.trial_eligible', return_value=True):
             result = train_due(root, policy,
                 trainer_factory=lambda _: FakeTrainer(scenario))
             expected = 'complete' if scenario == 'improved' else 'retained'
@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-quality-retention-', dir='/tmp') as
                     if Path(path).name == 'experimental-checkpoint.json' and not crashed[0]:
                         crashed[0] = True
                         raise RuntimeError('fixture_post_pointer_crash')
-                with patch('context_learning.shared._atomic_json',
+                with patch('memvane.learning.context_learning.shared._atomic_json',
                            side_effect=interrupt_after_pointer):
                     interrupted = train_due(root, policy,
                         trainer_factory=lambda _: FakeTrainer('improved'))

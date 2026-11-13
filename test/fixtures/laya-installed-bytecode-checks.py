@@ -11,7 +11,7 @@ import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 from memvane.install import product_bundle as bundle
 
 
@@ -77,13 +77,13 @@ class InstalledBytecodeChecks(unittest.TestCase):
                        input=payload, env=env, cwd=project, check=True,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         # A refusal still imports the setup modules from the installed tree.
-        subprocess.run([str(python), str(installed / 'core/setup_entry.py'),
+        subprocess.run([str(python), str(installed / 'entry' / 'setup.py'),
                         'plan-fresh-wiki-origin', '--project', str(project)],
                        env=env, cwd=project, check=False, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, timeout=30)
         # Direct maintenance/status entrypoints also load installed modules.
         # They must not add bytecode to the sealed plugin cache.
-        status = subprocess.run([str(python), str(installed / 'core/runtime_work.py'),
+        status = subprocess.run([str(python), str(installed / 'entry' / 'run.py'), 'runtime-work',
                                  'build-wake-status', '--project', str(project)],
                                 env=env, cwd=project, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, timeout=30)

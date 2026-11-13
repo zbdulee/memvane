@@ -14,7 +14,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 
 def sha(value):
@@ -257,7 +257,7 @@ class SetChecks(unittest.TestCase):
         bodies = ['# \u0085Title\u0085\nbody', '# Title\u2028## Next\nbody',
                   '\u2028## Topic\nbody', '# Notes\r## Second\rbody', '# \u001cTitle\u001c\nbody',
                   '# \ufeffTitle\ufeff\nbody', '#   \nbody']
-        path = (Path(__file__).resolve().parents[2] / 'core/laya_qmd_chunking.mjs').as_uri()
+        path = (Path(__file__).resolve().parents[2] / 'memvane/provider/adapters/laya_qmd_chunking.mjs').as_uri()
         code = ('import {extractQmdMarkdownTitle as title} from ' + json.dumps(path) + ';'
                 'import {readFileSync} from "node:fs";'
                 'const rows=JSON.parse(readFileSync(0,"utf8"));'

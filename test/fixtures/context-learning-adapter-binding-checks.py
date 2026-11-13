@@ -17,7 +17,7 @@ OLD, NEW = '1.0.0', '1.0.1'
 DRIVER = '''import json,sys,time
 from pathlib import Path
 sys.dont_write_bytecode=True
-root=Path(sys.argv[1]);state=Path(sys.argv[2]);sys.path.insert(0,str(root/'core'))
+root=Path(sys.argv[1]);state=Path(sys.argv[2]);sys.path.insert(0,str(root))
 from memvane.learning.context_learning import live_select, inference_service
 from memvane.learning.context_learning.local_cycle import VerifiedLayaTrainer
 from memvane.learning.context_learning.contracts import digest
@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
         for version in (OLD, NEW):
             root = home / ('.'+host) / 'plugins/cache' / MARKET / 'memvane' / version
             root.mkdir(parents=True)
-            shutil.copytree(SOURCE/'core', root/'core',
+            shutil.copytree(SOURCE/'memvane', root/'memvane',
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             for directory in ('.claude-plugin', '.codex-plugin'):
                 private(root/directory/'plugin.json', {'name':'memvane','version':version})

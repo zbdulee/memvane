@@ -17,7 +17,7 @@ def event_state(stack):
     """A real 0700 state root that receives the recall's install events."""
     state = Path(stack.enter_context(tempfile.TemporaryDirectory())).resolve()
     os.chmod(state, 0o700)
-    stack.enter_context(patch('event_log.state_root_for_decision', return_value=state))
+    stack.enter_context(patch('memvane.diagnostics.event_log.state_root_for_decision', return_value=state))
     return state
 
 
@@ -26,7 +26,7 @@ def recall_reasons(state):
     rows = [row for row in event_log.read(state) if row['event'] == 'recall']
     return rows, [list(row.get('notes') or []) + [row['reason']] for row in rows]
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.settings import config
 from memvane.diagnostics import event_log
 from memvane.host import host_response as response
@@ -68,8 +68,8 @@ class Checks(unittest.TestCase):
         pool = [card(i) for i in range(15)]
         cfg = config.normalize_config({'contextLearning': {'liveSelection': False}})
         self.assertNotIn('liveSelection', cfg['contextLearning'])
-        with patch('context_learning.seam._private_state', return_value=Path('/synthetic/state')), \
-             patch('context_learning.live_select.choose', return_value=(
+        with patch('memvane.learning.context_learning.seam._private_state', return_value=Path('/synthetic/state')), \
+             patch('memvane.learning.context_learning.live_select.choose', return_value=(
                  [pool[14]['path'], pool[3]['path']], 'selected', {})) as choose:
             selected = selection_read.select_published(pool, prompt='find card',
                 config=cfg, project_root='/synthetic/project',
@@ -78,8 +78,8 @@ class Checks(unittest.TestCase):
         self.assertEqual([r['path'] for r in selected['final_results']],
                          [pool[14]['path'], pool[3]['path']])
         self.assertEqual(len(choose.call_args.args[2]), 15)
-        with patch('context_learning.seam._private_state', return_value=None), \
-             patch('context_learning.live_select.choose') as unavailable:
+        with patch('memvane.learning.context_learning.seam._private_state', return_value=None), \
+             patch('memvane.learning.context_learning.live_select.choose') as unavailable:
             empty = selection_read.select_published(pool, prompt='find card',
                 config=cfg, project_root='/synthetic/project',
                 wiki_names=('wiki',), scope_id=SCOPE)
@@ -94,7 +94,7 @@ class Checks(unittest.TestCase):
         from memvane.resident import embed_resident as laya_embed_resident
         import laya_incremental_docs_query
         decision = {'state': 'candidate', 'projectRoot': '/synthetic/project',
-                    'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
+                    'pluginRoot': str(Path(response.__file__).resolve().parents[2]),
                     'dbPath': '/synthetic/index.sqlite', 'queuePath': '/synthetic/queue',
                     'dbIncarnation': 'a' * 32, 'scopeId': SCOPE,
                     'vectorProfile': PROFILE,
@@ -128,14 +128,14 @@ class Checks(unittest.TestCase):
         """A real prepared local checkpoint pointer (the #60 predicate)."""
         temp = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix='laya-sel-')))
         (temp / 'active-checkpoint.json').write_text('{}')
-        stack.enter_context(patch('context_learning.seam._private_state', return_value=temp))
+        stack.enter_context(patch('memvane.learning.context_learning.seam._private_state', return_value=temp))
         return temp
 
     def test_prepared_selector_decides_bounded_pool(self):
         with ExitStack() as stack:
             decision, proof, rows, settings = self.host(stack)
             self.prepared(stack)
-            with patch('context_learning.live_select.choose', return_value=(
+            with patch('memvane.learning.context_learning.live_select.choose', return_value=(
                     [rows[14]['path'], rows[3]['path']], 'selected', {})) as choose:
                 result = response.serve_selected('recall', 'codex', decision,
                                                  {'prompt': 'find card'})
@@ -146,7 +146,7 @@ class Checks(unittest.TestCase):
             self.assertNotIn('wiki/card00.md', context)
             self.assertIn('local Laya model selected', context)
             decision['recallSettings']['topN'] = settings['topN'] = 1
-            with patch('context_learning.live_select.choose', return_value=(
+            with patch('memvane.learning.context_learning.live_select.choose', return_value=(
                     [rows[14]['path'], rows[3]['path']], 'selected', {})):
                 limited = response.serve_selected('recall', 'codex', decision,
                                                   {'prompt': 'find card'})
@@ -154,12 +154,12 @@ class Checks(unittest.TestCase):
             self.assertNotIn('wiki/card03.md', limited['hookSpecificOutput']['additionalContext'])
             decision['recallSettings']['topN'] = settings['topN'] = 3
             # A real zero-card choice by a prepared selector stays empty.
-            with patch('context_learning.live_select.choose',
+            with patch('memvane.learning.context_learning.live_select.choose',
                        return_value=([], 'selected', {})):
                 zero = response.serve_selected('recall', 'codex', decision,
                                                {'prompt': 'find card'})
             self.assertEqual(zero['hookSpecificOutput']['additionalContext'], '')
-            with patch('context_learning.live_select.choose', return_value=(
+            with patch('memvane.learning.context_learning.live_select.choose', return_value=(
                     [rows[14]['path']], 'selected', {})), \
                  patch.object(response, '_selection_view_unchanged', return_value=False):
                 with self.assertRaisesRegex(response.HostResponseError,
@@ -168,7 +168,7 @@ class Checks(unittest.TestCase):
                                             {'prompt': 'find card'})
             read_only = Mock(return_value=proof)
             from memvane.journal import install_journal as laya_install_journal
-            with patch('context_learning.live_select.choose', return_value=(
+            with patch('memvane.learning.context_learning.live_select.choose', return_value=(
                     [rows[14]['path']], 'selected', {})), \
                  patch.object(laya_install_journal, 'verify_selected_route',
                               side_effect=AssertionError('wrong recheck')):
@@ -182,9 +182,9 @@ class Checks(unittest.TestCase):
             with self.subTest(state=state), ExitStack() as stack:
                 decision, _proof, _rows, _settings = self.host(stack)
                 log = event_state(stack)
-                stack.enter_context(patch('context_learning.seam._private_state',
+                stack.enter_context(patch('memvane.learning.context_learning.seam._private_state',
                                           return_value=state))
-                choose = stack.enter_context(patch('context_learning.live_select.choose'))
+                choose = stack.enter_context(patch('memvane.learning.context_learning.live_select.choose'))
                 result = response.serve_selected('recall', 'codex', decision,
                                                  {'prompt': 'find card'})
                 choose.assert_not_called()
@@ -214,7 +214,7 @@ class Checks(unittest.TestCase):
             for reason in ('timeout', 'runtime_unavailable', 'no_active_checkpoint'):
                 with self.subTest(reason=reason):
                     (log / event_log.NAME).unlink(missing_ok=True)
-                    with patch('context_learning.live_select.choose',
+                    with patch('memvane.learning.context_learning.live_select.choose',
                                return_value=(None, reason, {})):
                         result = response.serve_selected('recall', 'codex', decision,
                                                          {'prompt': 'find card'})
@@ -223,13 +223,13 @@ class Checks(unittest.TestCase):
                     self.assertIn('hybrid rank score', context)
                     _lines, reasons = recall_reasons(log)
                     self.assertEqual(reasons, [['laya_selector_' + reason, 'selected']])
-            with patch('context_learning.live_select.choose',
+            with patch('memvane.learning.context_learning.live_select.choose',
                        side_effect=OSError('selector crashed')):
                 crashed = response.serve_selected('recall', 'codex', decision,
                                                   {'prompt': 'find card'})
             self.assertIn('wiki/card00.md', crashed['hookSpecificOutput']['additionalContext'])
             # The ranked rows keep the membership/view recheck.
-            with patch('context_learning.live_select.choose',
+            with patch('memvane.learning.context_learning.live_select.choose',
                        return_value=(None, 'timeout', {})), \
                  patch.object(response, '_selection_view_unchanged', return_value=False):
                 with self.assertRaisesRegex(response.HostResponseError,
@@ -245,9 +245,9 @@ class Checks(unittest.TestCase):
                 if prepared:
                     self.prepared(stack)
                 else:
-                    stack.enter_context(patch('context_learning.seam._private_state',
+                    stack.enter_context(patch('memvane.learning.context_learning.seam._private_state',
                                               return_value=None))
-                choose = stack.enter_context(patch('context_learning.live_select.choose'))
+                choose = stack.enter_context(patch('memvane.learning.context_learning.live_select.choose'))
                 result = response.serve_selected('recall', 'codex', decision,
                                                  {'prompt': 'find card'})
                 self.assertEqual(result['hookSpecificOutput']['additionalContext'], '')
@@ -256,7 +256,7 @@ class Checks(unittest.TestCase):
     def test_shared_trial_counts_as_prepared(self):
         self.assertTrue(selection_read.selector_prepared(
             {'sharedLearning': {'enabled': True, 'trialSelection': True}}, '/synthetic'))
-        with patch('context_learning.seam._private_state', return_value=None):
+        with patch('memvane.learning.context_learning.seam._private_state', return_value=None):
             self.assertFalse(selection_read.selector_prepared({}, '/synthetic'))
 
     def vector_host(self, stack, *, admit=None, provider=None, owner_state=None):
@@ -265,7 +265,7 @@ class Checks(unittest.TestCase):
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from memvane.runtime import runtime_work
         decision, proof, rows, _settings = self.host(stack)
-        stack.enter_context(patch('context_learning.seam._private_state', return_value=None))
+        stack.enter_context(patch('memvane.learning.context_learning.seam._private_state', return_value=None))
         if admit is not None:
             stack.enter_context(patch.object(laya_embed_resident, 'admit_query',
                                              side_effect=admit))
@@ -320,7 +320,7 @@ class Checks(unittest.TestCase):
                              'selected_provider_resource_deferred')
 
     def test_cold_provider_serves_lexical_and_wakes_owner(self):
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         for state, code in ((None, 'selected_provider_preparing'),
                             ({'terminal': False, 'reason': 'resource_deferred'},
                              'selected_provider_resource_deferred'),
@@ -351,7 +351,7 @@ class Checks(unittest.TestCase):
             wake.assert_not_called()
 
     def test_drifted_bundle_names_missing_vector_without_waking_owner(self):
-        from laya_index_a import IndexContractError
+        from memvane.kernel.errors import IndexContractError
         with ExitStack() as stack:
             decision, wake, calls, seen, log = self.vector_host(
                 stack, provider=IndexContractError('provider_identity_mismatch'))

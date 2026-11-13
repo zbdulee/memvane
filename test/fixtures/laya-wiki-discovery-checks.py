@@ -20,7 +20,7 @@ import unittest
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / 'core'))
+sys.path.insert(0, str(HERE.parents[1]))
 _BASE = runpy.run_path(str(HERE / 'laya-product-sync-worker-checks.py'),
                        run_name='laya_product_sync_worker_checks')
 V2 = _BASE['V2WorkerChecks']
@@ -29,8 +29,8 @@ PROFILE = _BASE['PROFILE']
 
 from memvane.host import host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
-from memvane.route import index_host_route as host_route
-from laya_index_vector import profile_identity
+from memvane.route import index_host_route as host_route; import memvane.journal.route_selection as host_route_route_selection
+from memvane.provider.domain.profile import profile_identity
 from memvane.sync import product_sync_worker as worker
 from memvane.wiki.intake import wiki_discovery as discovery
 from memvane.runtime import runtime_handlers
@@ -86,14 +86,14 @@ class DiscoveryChecks(unittest.TestCase):
                 {'name': 'beta', 'role': 'wiki', 'sourceRoot': str(self.beta)}]),
             'dbPath': str(self.index_path), 'queuePath': str(self.queue_path),
             'dbIncarnation': self.incarnation, 'scopeId': SCOPE,
-            'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
+            'pluginRoot': str(Path(response.__file__).resolve().parents[2]),
             'journalPath': str(self.home / 'install-journal.sqlite'), 'installId': '3' * 32,
             'generation': 'g-' + '4' * 32, 'bundleManifestSha256': '2' * 64,
             'ownershipManifestSha256': '5' * 64, 'vectorProfile': self.profile,
             'collections': [{'name': 'alpha', 'role': 'raw', 'sourceRoot': str(self.alpha)},
                             {'name': 'beta', 'role': 'wiki', 'sourceRoot': str(self.beta)}]}
         (auto / host_route.RECORD).write_text(json.dumps(record), encoding='utf-8')
-        decision = host_route.select_route(str(self.home), action='update')
+        decision = host_route_route_selection.select_route(str(self.home), action='update')
         if expect != 'candidate':
             self.assertNotEqual(decision['state'], 'candidate', decision)
             return

@@ -7,13 +7,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.diagnostics import diagnostic_trace as diag
 from memvane.diagnostics import event_log
-from memvane.route import index_host_route as routes
+from memvane.route import index_host_route as routes; import memvane.journal.route_selection as routes_route_selection
 from memvane.app import runtime_dispatch as dispatch
 from memvane.wiki.compile import wiki_compile_worker as compile_worker
-from memvane.wiki.verify import wiki_verify_worker
+from memvane.wiki.compile import wiki_verify_worker
 
 SENTINEL = 'synthetic-worker-exception-091'
 
@@ -59,7 +59,7 @@ class Worker(unittest.TestCase):
         for enabled in (False, True):
             with self.subTest(enabled=enabled):
                 self.enable(enabled)
-                with patch.object(routes, 'select_route', return_value=self.decision), \
+                with patch.object(routes_route_selection, 'select_route', return_value=self.decision), \
                      patch.object(wiki_verify_worker, 'run', side_effect=ValueError(SENTINEL)):
                     self.assertIsNone(compile_worker._run_verify_pass(self.project, {}, {}))
                 self.check_event('compile.verify_pass', enabled)
@@ -70,7 +70,7 @@ class Worker(unittest.TestCase):
                   'journalPath': self.decision['journalPath'],
                   'installId': self.decision['installId']}
         exc = ValueError(SENTINEL)
-        with patch.object(routes, 'select_route', return_value=self.decision), \
+        with patch.object(routes_route_selection, 'select_route', return_value=self.decision), \
              patch.object(dispatch, 'resolve', return_value=target), \
              patch.object(dispatch, '_run_target', side_effect=exc):
             with self.assertRaises(ValueError) as caught:
@@ -83,7 +83,7 @@ class Worker(unittest.TestCase):
                   'journalPath': self.decision['journalPath'],
                   'installId': self.decision['installId']}
         exc = dispatch.DispatchFailure('target_preparing')
-        with patch.object(routes, 'select_route', return_value=self.decision), \
+        with patch.object(routes_route_selection, 'select_route', return_value=self.decision), \
              patch.object(dispatch, 'resolve', return_value=target), \
              patch.object(dispatch, '_run_target', side_effect=exc):
             with self.assertRaises(dispatch.DispatchFailure):
@@ -101,7 +101,7 @@ class Worker(unittest.TestCase):
                   'installId': self.decision['installId']}
         exc = dispatch.DispatchFailure('target_child_failed', detail='exit 1\n' + SENTINEL)
         exc.child_stderr_available = True
-        with patch.object(routes, 'select_route', return_value=self.decision), \
+        with patch.object(routes_route_selection, 'select_route', return_value=self.decision), \
              patch.object(dispatch, 'resolve', return_value=target), \
              patch.object(dispatch, '_run_target', side_effect=exc):
             with self.assertRaises(dispatch.DispatchFailure):
@@ -135,7 +135,7 @@ class Worker(unittest.TestCase):
                   'journalPath': self.decision['journalPath'],
                   'installId': self.decision['installId']}
         exc = ValueError(SENTINEL)
-        with patch.object(routes, 'select_route', return_value=self.decision), \
+        with patch.object(routes_route_selection, 'select_route', return_value=self.decision), \
              patch.object(dispatch, 'resolve', return_value=target), \
              patch.object(dispatch, '_run_target', side_effect=exc), \
              patch.object(diag, 'capture', side_effect=RuntimeError('synthetic logger failure')):

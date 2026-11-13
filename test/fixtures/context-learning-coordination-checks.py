@@ -2,7 +2,7 @@
 from pathlib import Path
 from contextlib import contextmanager
 import json,os,subprocess,sys,tempfile,time,unittest
-from memvane.learning.context_learning.resource_coordination import Coordinator,decision
+from memvane.runtime.resource_coordination import Coordinator, decision
 from memvane.learning.context_learning.local_cycle import ResourceDeferred
 from memvane.learning.context_learning.training_cursor import UpdateCursor,record_completion,completion,run_updates
 
@@ -24,7 +24,7 @@ class Checks(unittest.TestCase):
   self.assertLessEqual(max(Counter(probes).values(),default=0),1)
  def test_last_slot_lease_is_observed_without_caching_absence(self):
   import fcntl
-  from memvane.learning.context_learning.resource_coordination import SLOTS
+  from memvane.runtime.resource_coordination import SLOTS
   self.assertFalse(self.c.demand())
   fd=os.open(self.root/f'inference-{SLOTS-1}.lock',os.O_CREAT|os.O_RDWR,0o600)
   try:
@@ -144,7 +144,7 @@ class Checks(unittest.TestCase):
   def sleep(dt):clock[0]+=dt
   def run():
    calls.append('local-only');q.complete(job['id']);return {'status':'staged'}
-  with patch('context_learning.learning_retry.LearningQueue',return_value=q):
+  with patch('memvane.learning.context_learning.learning_retry.LearningQueue',return_value=q):
    result=wait_pending(self.root,run,clock=lambda:clock[0],wall=lambda:clock[0],sleep=sleep)
    self.assertEqual(result['status'],'drained');self.assertEqual(calls,['local-only']);self.assertGreaterEqual(clock[0],130)
    wait_pending(self.root,lambda:self.fail('unchanged data retrained'),clock=lambda:clock[0],wall=lambda:clock[0],sleep=sleep)

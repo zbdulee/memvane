@@ -21,7 +21,7 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / 'core'))
+sys.path.insert(0, str(HERE.parents[1]))
 
 
 def load_fixture(name, filename):
@@ -507,7 +507,7 @@ class ContentFillChecks(helpers.BlobStoreCase):
             result = cached(key)
             clock[0] = 2.0
             return result
-        with mock.patch('laya_blob_fill.time.monotonic', side_effect=lambda: clock[0]), \
+        with mock.patch('memvane.store.blob.blob_fill.time.monotonic', side_effect=lambda: clock[0]), \
                 mock.patch.object(self.filler, '_cached', side_effect=expires):
             self.refused(self.fill, deadline_seconds=1)
         self.assertEqual(self.store._db.total_changes, before)

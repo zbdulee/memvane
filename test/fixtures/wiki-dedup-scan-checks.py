@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-CORE = Path(__file__).resolve().parents[2] / 'core'
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
 
 from laya_index_a import LayaIndexA, _digest as manifest_digest  # noqa: E402

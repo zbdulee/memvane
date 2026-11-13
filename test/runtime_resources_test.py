@@ -11,8 +11,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from memvane.learning.context_learning.resource_coordination import Coordinator,decision
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from memvane.runtime.resource_coordination import Coordinator, decision
 from memvane.learning.context_learning.local_cycle import ResourceDeferred
 
 
@@ -29,7 +29,7 @@ class RuntimeChecks(unittest.TestCase):
             'memory_pressure':{'system_free_percent':70,'level':'normal'},'swap_used_mib':0}
 
     def runtime(self):
-        self.assertIsNotNone(importlib.util.find_spec('runtime_work'),'runtime wake queue missing')
+        self.assertIsNotNone(importlib.util.find_spec('memvane.runtime.runtime_work'),'runtime wake queue missing')
         return importlib.import_module('memvane.runtime.runtime_work')
 
     def test_learning_wake_defers_during_install_transition(self):
@@ -38,9 +38,9 @@ class RuntimeChecks(unittest.TestCase):
         runtime=self.runtime()
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.root), \
-             patch('context_learning.learning.ready',return_value=False), \
+             patch('memvane.learning.context_learning.learning.ready',return_value=False), \
              patch.object(shared,'run_training_pending',return_value={'status':'staged'}) as train:
-            self.assertFalse(runtime.dispatch({'kind':'learning','target':str(self.root)}))
+            self.assertFalse(importlib.import_module('memvane.app.wiring').dispatch({'kind':'learning','target':str(self.root)}))
         train.assert_not_called()
 
 
@@ -112,10 +112,10 @@ class RuntimeChecks(unittest.TestCase):
 
     def test_small_other_process_cannot_duplicate_compute(self):
         c=Coordinator(self.root)
-        code="from pathlib import Path; from memvane.learning.context_learning.resource_coordination import Coordinator; from memvane.learning.context_learning.local_cycle import ResourceDeferred; import json,sys\ntry:\n with Coordinator(Path(sys.argv[1])).step(json.loads(sys.argv[2]),json.loads(sys.argv[3])):sys.exit(9)\nexcept ResourceDeferred:sys.exit(0)"
+        code="from pathlib import Path; from memvane.runtime.resource_coordination import Coordinator; from memvane.learning.context_learning.local_cycle import ResourceDeferred; import json,sys\ntry:\n with Coordinator(Path(sys.argv[1])).step(json.loads(sys.argv[2]),json.loads(sys.argv[3])):sys.exit(9)\nexcept ResourceDeferred:sys.exit(0)"
         with c.step(self.policy,self.report):
             p=subprocess.run([sys.executable,'-B','-c',code,str(self.root),json.dumps(self.policy),json.dumps(self.report)],
-                env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1]/'core')},timeout=5,check=False)
+                env={**os.environ,'PYTHONPATH':str(Path(__file__).resolve().parents[1])},timeout=5,check=False)
         self.assertEqual(p.returncode,0)
 
     def test_hook_completion_wakes_persistent_work_without_changing_exit(self):
@@ -140,7 +140,7 @@ class RuntimeChecks(unittest.TestCase):
             self.assertEqual(report['ready'],ready);self.assertEqual(report['memory_pressure']['level'],'warning')
 
     def test_legacy_adapter_cannot_bypass_active_foreground(self):
-        from memvane.learning.context_learning import local_cycle,shared,resource_coordination
+        from memvane.learning.context_learning import local_cycle, shared; from memvane.runtime import resource_coordination
         trainer=local_cycle.LocalTrainer([sys.executable],max_rss_mib=512)
         c=Coordinator(self.root)
         with patch.dict(os.environ,{},clear=True),patch.object(resource_coordination,'Coordinator',return_value=c), \
@@ -210,9 +210,9 @@ class RuntimeChecks(unittest.TestCase):
             self.assertEqual(inside,[True]);return {'status':'settled'}
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.root), \
-             patch('context_learning.learning.ready',return_value=True), \
+             patch('memvane.learning.context_learning.learning.ready',return_value=True), \
              patch.object(history_lifecycle,'worker_lease',lease), \
              patch.object(shared,'learning_worker_step',side_effect=step):
-            self.assertTrue(runtime.dispatch({'kind':'learning','target':str(self.root),'revision':1}))
+            self.assertTrue(importlib.import_module('memvane.app.wiring').dispatch({'kind':'learning','target':str(self.root),'revision':1}))
 
 if __name__=='__main__':unittest.main()

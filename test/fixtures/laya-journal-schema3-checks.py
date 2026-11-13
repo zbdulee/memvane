@@ -26,7 +26,7 @@ import uuid
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location('schema3_seed', HERE / 'laya-reader-move-seal-checks.py')
 seed_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seed_module)
@@ -574,7 +574,7 @@ import json,sys
 from pathlib import Path
 core,journal,project,plugin=sys.argv[1:5]
 sys.path.insert(0,core)
-import laya_journal_reader as R, laya_reader_lease as L, laya_writer_open_plan as W
+import laya_writer_open_plan as W; import memvane.journal.journal_reader as R; import memvane.journal.reader_lease as L
 assert R.__file__.startswith(core),R.__file__
 path=Path(journal);out={}
 def attempt(name,fn):

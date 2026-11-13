@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from memvane.learning.context_learning import shared
 from memvane.runtime.runtime_lease import atomic_json
 
@@ -95,7 +95,7 @@ class FullWorkerChecks(unittest.TestCase):
         from memvane.learning.context_learning import history_lifecycle
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
-             patch('context_learning.learning.ready',return_value=True), \
+             patch('memvane.learning.context_learning.learning.ready',return_value=True), \
              patch.object(history_lifecycle,'worker_lease',no_lease), \
              patch.object(shared,'run_training_pending',side_effect=train), \
              patch.object(shared.subprocess,'Popen',side_effect=self.spawn):
@@ -107,7 +107,7 @@ class FullWorkerChecks(unittest.TestCase):
              patch.object(shared,'_safe_root',return_value=self.shared), \
              patch.object(shared.job_telemetry,'emit'), \
              patch.object(shared.subprocess,'Popen',side_effect=AssertionError('direct worker spawn')), \
-             patch('runtime_work.request',return_value={'status':'queued'}) as wake:
+             patch('memvane.runtime.runtime_work.request',return_value={'status':'queued'}) as wake:
             self.assertEqual(shared.launch({},self.project),{'status':'queued'})
             first=json.loads((self.shared/shared.FULL_WORKER_REQUEST).read_text())
             self.assertEqual(shared.launch({},self.project,after_index=True),{'status':'queued'})
@@ -248,7 +248,7 @@ class FullWorkerChecks(unittest.TestCase):
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
              patch.object(shared,'run',side_effect=result) as worker, \
-             patch('runtime_work.request') as wake:
+             patch('memvane.runtime.runtime_work.request') as wake:
             answer=shared._run_owned_worker(str(self.project),str(fd))
         self.assertFalse(self.lease_busy())
         return answer,worker,wake
@@ -260,10 +260,10 @@ class FullWorkerChecks(unittest.TestCase):
         from memvane.settings import config
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
-             patch('context_learning.learning.ready',return_value=setup=='ready'), \
+             patch('memvane.learning.context_learning.learning.ready',return_value=setup=='ready'), \
              patch.object(shared,'run',side_effect=AssertionError('teacher path entered')), \
              patch.object(shared,'run_training_pending',side_effect=result) as train, \
-             patch('runtime_work.request',return_value={'status':'queued'}) as wake:
+             patch('memvane.runtime.runtime_work.request',return_value={'status':'queued'}) as wake:
             answer=shared._run_owned_training(str(self.project),str(fd))
         self.assertFalse(self.lease_busy())
         return answer,train,wake

@@ -23,7 +23,7 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location('schema3_endpoint_checks', HERE / 'laya-journal-schema3-checks.py')
 endpoint_checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(endpoint_checks)
@@ -80,7 +80,7 @@ class Schema3RecallChecks(unittest.TestCase):
         self.case = self.u10.case
         self.host = importlib.import_module('memvane.host.host_response')
         self.dispatch = importlib.import_module('memvane.recall.reader_dispatch')
-        self.event_log = importlib.import_module('event_log')
+        self.event_log = importlib.import_module('memvane.diagnostics.event_log')
         self.runtime = importlib.import_module('laya_index_runtime')
 
     @contextmanager
@@ -89,7 +89,7 @@ class Schema3RecallChecks(unittest.TestCase):
         with ExitStack() as stack:
             stack.enter_context(self.u10.seed.authority())
             stack.enter_context(mock.patch.object(
-                self.host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')))
+                self.host, '__file__', str(self.case.plugin / 'memvane/host/host_response.py')))
             yield
 
     def recall(self, host='claude', prompt='heron route northern marsh'):
@@ -241,8 +241,8 @@ class Schema3RecallChecks(unittest.TestCase):
     # ---- completion 4 -----------------------------------------------------
     def test_03_learning_selector_receives_schema3_rows(self):
         self.u10.switched()
-        selection = importlib.import_module('context_learning.selection_read')
-        port = importlib.import_module('context_learning.selection_port')
+        selection = importlib.import_module('memvane.learning.context_learning.selection_read')
+        port = importlib.import_module('memvane.learning.context_learning.selection_port')
         seen = []
 
         def select(pool, **kwargs):

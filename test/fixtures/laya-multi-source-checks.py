@@ -8,16 +8,13 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from laya_index_a import IndexContractError, LayaIndexA
 from memvane.host import host_response as laya_host_response
 from memvane.wiki.card import api as card_api
 from memvane.route.index_host_route import wiki_index_roots
 from memvane.wiki.card import yaml_scalars
-from laya_index_source_port import (publish_collections_from_source,
-                                    scan_collections,
-                                    search_collections_verified,
-                                    stage_collections_from_source)
+from memvane.wiki.intake.source_scan import publish_collections_from_source, scan_collections, search_collections_verified, stage_collections_from_source
 
 
 class MultiSourceTests(unittest.TestCase):

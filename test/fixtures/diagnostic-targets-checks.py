@@ -35,7 +35,7 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 
 SENTINEL = 'SYNTH-RAW-SENTINEL-do-not-store'
 REFUSALS = {'missing', 'not_onboarded', 'stale_route', 'limit_exceeded',
@@ -91,12 +91,12 @@ class Contract(Base):
         decision = {'state': 'candidate', 'projectRoot': str(root),
                     'installId': 'install-route',
                     'journalPath': str(root / '.memvane-state' / 'install-journal.sqlite')}
-        from memvane.route import index_host_route as laya_index_host_route
-        with patch.object(laya_index_host_route, 'select_route', return_value=decision):
+        from memvane.route import index_host_route as laya_index_host_route; import memvane.journal.route_selection as laya_index_host_route_route_selection
+        with patch.object(laya_index_host_route_route_selection, 'select_route', return_value=decision):
             self.assertEqual(self.real_route_for(root)['install_id'], 'install-route')
-        with patch.object(laya_index_host_route, 'select_route', return_value={**decision, 'projectRoot': str(self.work)}):
+        with patch.object(laya_index_host_route_route_selection, 'select_route', return_value={**decision, 'projectRoot': str(self.work)}):
             self.assertIsNone(self.real_route_for(root))
-        with patch.object(laya_index_host_route, 'select_route', return_value={'state': 'legacy'}):
+        with patch.object(laya_index_host_route_route_selection, 'select_route', return_value={'state': 'legacy'}):
             self.assertFalse(self.real_route_for(root)['onboarded'])
 
     def test_missing_registry_is_reported(self):

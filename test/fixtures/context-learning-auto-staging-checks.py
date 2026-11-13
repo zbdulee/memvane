@@ -12,9 +12,8 @@ import tempfile
 import time
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.learning.context_learning import (automatic_cohort, automatic_staging, shared,
-                              project_scope, resource_coordination)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.learning.context_learning import automatic_cohort, automatic_staging, shared, project_scope; from memvane.runtime import resource_coordination
 from memvane.learning.context_learning.store import canonical
 from memvane.learning.context_learning.contracts import digest
 
@@ -154,9 +153,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             side_effect=lambda *_args: runtime_state['source_active']), patch.object(
             shared, 'resource_report', side_effect=fresh_ready), patch.object(
             automatic_staging, 'require_operation', side_effect=operation), patch(
-            'context_learning.runtime_authorization.require_operation',
+            'memvane.learning.context_learning.runtime_authorization.require_operation',
             side_effect=operation), patch(
-            'context_learning.adapter.model_identity',
+            'memvane.learning.context_learning.adapter.model_identity',
             return_value='local-model-identity'):
         from memvane.learning.context_learning.local_cycle import ResourceDeferred
         from memvane.learning.context_learning import learning_profile

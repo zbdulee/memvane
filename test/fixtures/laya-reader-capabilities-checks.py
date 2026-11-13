@@ -79,14 +79,14 @@ class RealProviderChecks(provider_fixture.Base):
                     mock.patch.object(upgrade,'_provider_file_identity',return_value=[[str(new/'p.py'),1,2,3,4,5]]),
                     mock.patch.object(upgrade,'_wait_for_sockets'),
                     mock.patch.object(reader.journal,'_executing_from_candidate'),
-                    mock.patch.object(host,'__file__',str(new/'core/laya_host_response.py')),
+                    mock.patch.object(host,'__file__',str(new / 'memvane/host/host_response.py')),
                     mock.patch.object(dispatch,'query_endpoint',side_effect=observe),
-                    mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker'))):
+                    mock.patch('memvane.runtime.runtime_work.request',side_effect=AssertionError('reader woke worker'))):
                     stack.enter_context(patch)
                 intent=upgrade._prepare(case.project,case.state,case.journal,case.home,new,
                                         target['sourceCommit'],review['proposalSha256'],'/synthetic/model',4)
                 upgrade._fence(intent)
-                with mock.patch('laya_local_embed_service.start_owned_embed_service',
+                with mock.patch('memvane.provider.adapters.local_embed_service.start_owned_embed_service',
                                 side_effect=AssertionError('reader started provider')), \
                      mock.patch.object(dispatch,'_provider_vector',wraps=dispatch._provider_vector) as embed:
                     answer=host.serve_endpoint_recall('hermes',{'cwd':str(case.project),'prompt':'otter'},cwd=str(case.project))
@@ -330,7 +330,7 @@ class VectorCapabilityChecks(vector_fixture.VectorCase):
                             with self.assertRaisesRegex(ValueError,'reader_snapshot_deadline|reader_vector_caller_unproved'):
                                 dispatch.query_endpoint(endpoint,checkout=self.root,prompt='hello',query_vector=vector,
                                     deadline=real_clock()+30,authority=authority,snapshot=observed,decision=decision,provider=provider)
-                    from laya_index_a import IndexContractError
+                    from memvane.kernel.errors import IndexContractError
                     provider.failure=IndexContractError('provider_unavailable')
                     with dispatch.approved_query_vector(authority=authority,snapshot=observed,decision=decision,
                             provider=provider,prompt='hello',deadline=real_clock()+10) as vector:

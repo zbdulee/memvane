@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 FIXTURES = Path(__file__).resolve().parent
-sys.path.insert(0, str(FIXTURES.parents[1] / 'core'))
+sys.path.insert(0, str(FIXTURES.parents[1]))
 sys.path.insert(1, str(FIXTURES))
 from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402

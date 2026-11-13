@@ -7,7 +7,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0,'core')
+sys.path.insert(0,'.')
 fixture=runpy.run_path('test/fixtures/context-learning-dataset-checks.py')
 from memvane.learning.context_learning.contracts import CLASS_ORDER, digest, request
 from memvane.learning.context_learning.store import canonical, capture, database
@@ -152,7 +152,7 @@ class Checks(unittest.TestCase):
             neutral,_=dataset._payloads(manifest,checksum,rows)
             metadata,_,expected=_raw_payloads(neutral,rows)
         with self.assertRaises(ValueError):map_laya_predictions(good,None,expected)
-        with patch('context_learning.dataset.MAX_BYTES',100):
+        with patch('memvane.learning.context_learning.dataset.MAX_BYTES',100):
             with self.assertRaisesRegex(ValueError,'raw_export_budget_exceeded'):_raw_payloads(neutral,rows)
         for change in ({'format':'other'},{'schema_version':2},{'criteria_order':sorted(CLASS_ORDER)},
                 {'tokenization':dict(tokenization_status(),ready_tokenized_training_data=True)}):
@@ -206,7 +206,7 @@ class Checks(unittest.TestCase):
         decoded=[json.loads(json.loads(line)['state']) for line in (Path(raw['directory'])/'train.raw.jsonl').read_text().splitlines()]
         self.assertTrue(any(row['excerpt']==text for row in decoded))
         self.assertFalse(raw['tokenization']['truncation_validated'])
-        with patch('context_learning.dataset.MAX_BYTES',100):
+        with patch('memvane.learning.context_learning.dataset.MAX_BYTES',100):
             with self.assertRaises(ValueError):export_laya_raw(self.state,'unicode',revisions)
 
 if __name__=='__main__':unittest.main()

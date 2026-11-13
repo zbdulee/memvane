@@ -1,5 +1,5 @@
 """Diagnostic opt-in (Task 1): `diagnostics.enabled` normalization and the
-fail-closed consent check `diagnostic_trace.enabled(decision) -> bool`.
+fail-closed consent check `diagnostic_trace_diagnostic_consent.enabled(decision) -> bool`.
 
 Only synthetic constants are used. Every project and state directory is a
 fresh temporary directory under the temporary HOME provided by the Node
@@ -20,7 +20,7 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 from memvane.settings import config  # noqa: E402
 
 SYNTH_NAME = 'synthetic-diag-fixture'
@@ -50,7 +50,7 @@ def minimal_settings(**extra):
 
 def trace():
     """Lazily import the future module so config checks fail independently."""
-    from memvane.diagnostics import diagnostic_trace
+    from memvane.diagnostics import diagnostic_trace; import memvane.settings.diagnostic_consent as diagnostic_trace_diagnostic_consent
     return diagnostic_trace
 
 
@@ -107,7 +107,8 @@ class Base(unittest.TestCase):
             raise AssertionError('diagnostic consent must not spawn a child')
         with patch.object(subprocess, 'Popen', side_effect=no_child), \
                 patch.object(os, 'fork', side_effect=no_child, create=True):
-            result = module.enabled(decision)
+            from memvane.settings import diagnostic_consent
+            result = diagnostic_consent.enabled(decision)
         self.assertIsInstance(result, bool)
         return result
 
@@ -167,15 +168,15 @@ class ConfigNormalization(Base):
                                      {k: v for k, v in plain.items() if k != 'diagnostics'})
 
     def test_settings_identity_unchanged_by_diagnostics(self):
-        from memvane.route import index_host_route as route
+        from memvane.route import index_host_route as route; import memvane.journal.route_selection as route_route_selection
         for make in (full_settings, minimal_settings):
             with self.subTest(shape=make.__name__):
                 plain_project = self.project('identity-plain-' + make.__name__)
                 opted_project = self.project('identity-opted-' + make.__name__)
                 self.write_settings(plain_project, make())
                 self.write_settings(opted_project, make(diagnostics={'enabled': True}))
-                self.assertEqual(route._settings_identity(opted_project),
-                                 route._settings_identity(plain_project))
+                self.assertEqual(route_route_selection._settings_identity(opted_project),
+                                 route_route_selection._settings_identity(plain_project))
 
     def test_load_project_config_reads_opt_in_from_temp_project(self):
         project = self.project()

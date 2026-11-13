@@ -22,18 +22,18 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-CORE = Path(__file__).resolve().parents[2] / 'core'
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
 
 from memvane.settings import config
 from memvane.host import host_response as response
-from memvane.route import index_host_route as laya_index_host_route
+from memvane.route import index_host_route as laya_index_host_route; import memvane.journal.route_selection as laya_index_host_route_route_selection
 from memvane.journal import install_journal as laya_install_journal
 from laya_index_a import LayaIndexA, _digest as manifest_digest
 from laya_index_vector import LayaVectorIndex, profile_identity, qmd_markdown_title
 from memvane.learning.context_learning import corpus, shared
 try:  # Absent before this change; every check then fails on its own behavior.
-    from memvane.learning.context_learning import laya_learning
+    from memvane.learning.context_learning import learning as laya_learning
 except ImportError:
     laya_learning = None
 from memvane.learning.context_learning.contracts import digest
@@ -159,7 +159,7 @@ class LayaProject:
 
     def route(self, *, verified=True):
         stack = ExitStack()
-        stack.enter_context(patch.object(laya_index_host_route, 'select_route',
+        stack.enter_context(patch.object(laya_index_host_route_route_selection, 'select_route',
                                          return_value=dict(self.decision)))
         if verified:
             stack.enter_context(patch.object(laya_install_journal, 'verify_selected_route',
@@ -202,7 +202,7 @@ class Checks(unittest.TestCase):
                 return rows, frozenset()
             enter(patch.object(response, 'query_selected_v2', side_effect=query))
             enter(patch.object(config, 'load_project_config', return_value=self.laya.settings))
-            enter(patch('context_learning.live_select.choose',
+            enter(patch('memvane.learning.context_learning.live_select.choose',
                         return_value=(chosen, 'selected', {})))
             return response.serve_selected('recall', 'codex', self.laya.decision,
                                            {'prompt': 'Which card has the bridge fact?'})
@@ -320,7 +320,7 @@ class Checks(unittest.TestCase):
         with patch.object(response, 'select_hook_route', return_value=decision), \
              patch.object(response, 'select_route', return_value=decision), \
              patch.object(response, 'serve_selected', side_effect=serve), \
-             patch('context_learning.learning.capture_recall', side_effect=capture), \
+             patch('memvane.learning.context_learning.learning.capture_recall', side_effect=capture), \
              redirect_stdout(stdout):
             code = response.main(['serve-hook', 'recall', 'codex', str(payload),
                                   str(self.laya.project)])
@@ -334,7 +334,7 @@ class Checks(unittest.TestCase):
         with patch.object(response, 'select_hook_route', return_value=decision), \
              patch.object(response, 'select_route', return_value=decision), \
              patch.object(response, 'serve_selected', side_effect=serve), \
-             patch('context_learning.learning.capture_recall', side_effect=capture), \
+             patch('memvane.learning.context_learning.learning.capture_recall', side_effect=capture), \
              redirect_stdout(io.StringIO()):
             response.main(['serve-hook', 'posttool', 'codex', str(payload),
                            str(self.laya.project)])

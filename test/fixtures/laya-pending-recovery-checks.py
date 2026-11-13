@@ -20,9 +20,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.journal import install_journal as J  # noqa: E402
-from memvane.install.product_bundle import BundleEvidenceError  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.journal import install_journal as J; import memvane.route.index_host_route as J_index_host_route  # noqa: E402
+from memvane.provider.types import BundleEvidenceError  # noqa: E402
 
 
 def canon(value):
@@ -62,7 +62,7 @@ class PendingCase(unittest.TestCase):
         self.state = self.home / 'state'
         self.state.mkdir(mode=0o700)
         self.journal = self.state / 'install-journal.sqlite'
-        self.route_file = self.auto / J.ROUTE_FILE
+        self.route_file = self.auto / J_index_host_route.RECORD
         self.old_root, self.pending_root, self.next_root = (
             str(self.home / name) for name in ('old-cache', 'pending-cache', 'fresh-cache'))
         self.old_proof = self.proof(self.old_root, '1')
@@ -79,7 +79,7 @@ class PendingCase(unittest.TestCase):
             {'name': 'fixture', 'role': 'raw', 'sourceRoot': str(self.project)},
             {'name': 'fixture-wiki', 'role': 'wiki', 'sourceRoot': str(self.auto / 'wiki')}]
         self.old_route = {
-            'schema': J.ROUTE_SCHEMA_V2, 'status': 'active',
+            'schema': J_index_host_route.SCHEMA_V2, 'status': 'active',
             'projectRoot': str(self.project), 'settingsSha256': '7' * 64,
             'dbPath': str(self.state / 'index.sqlite'),
             'queuePath': str(self.state / 'claims.sqlite'),
@@ -295,7 +295,7 @@ class PendingRetargetTests(PendingCase):
 
     def test_forward_schema_and_fresh_full_bundle_proof_are_required(self):
         self.refuses_without_write(next_route_raw=canon({**self.next_route,
-                                                        'schema': J.ROUTE_SCHEMA_V2}))
+                                                        'schema': J_index_host_route.SCHEMA_V2}))
         self.refuses_without_write(next_bundle_proof={**self.next_proof,
                                                       'status': 'unverified'})
         self.live[self.next_root]['ownershipManifestSha256'] = 'f' * 64

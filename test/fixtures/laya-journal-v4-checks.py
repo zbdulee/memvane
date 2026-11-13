@@ -22,7 +22,7 @@ import unittest
 from unittest import mock
 
 FIXTURES = Path(__file__).resolve().parent
-CORE = FIXTURES.parents[1] / 'core'
+CORE = FIXTURES.parents[1]
 sys.path.insert(0, str(FIXTURES))
 sys.path.insert(0, str(CORE))
 from laya_selected_project import SelectedProject  # noqa: E402
@@ -158,7 +158,7 @@ class Conversion(V3Selected):
 
     def crash_at(self, step):
         script = ('import os, sys; sys.path.insert(0, sys.argv[1]); '
-                  'import laya_install_journal as J; '
+                  'import memvane.journal.install_journal as J; '
                   'J._conversion_step = lambda name: os._exit(9) if name == sys.argv[3] else None; '
                   'J.convert_to_v4(sys.argv[2]); os._exit(0)')
         done = subprocess.run([sys.executable, '-B', '-c', script, str(CORE),
@@ -238,7 +238,7 @@ class HostGate(V3Selected):
     @staticmethod
     def copy(root, version):
         (root / 'core').mkdir(parents=True)
-        (root / 'core' / 'laya_install_journal.py').write_text(
+        (root / 'memvane/journal/install_journal.py').write_text(
             f"SCHEMA = 'x'\nVERSION = {version}\n")
         return root
 
@@ -261,7 +261,7 @@ class HostGate(V3Selected):
 
     @staticmethod
     def copy_version(root, version):
-        (root / 'core' / 'laya_install_journal.py').write_text(f'VERSION = {version}\n')
+        (root / 'memvane/journal/install_journal.py').write_text(f'VERSION = {version}\n')
 
     def test_conversion_waits_for_the_hermes_copy(self):
         import laya_journal_v4
@@ -360,7 +360,7 @@ class HostGate(V3Selected):
 
     def test_busy_install_lock_defers_without_converting(self):
         import laya_journal_v4
-        from memvane.install.product_install import _install_lock
+        from memvane.app.setup_workflow import _install_lock
         self.copy_version(self.codex, 4)
         with _install_lock(self.state):
             with self.assertRaisesRegex(RuntimeError, 'journal_v4_install_busy'):
@@ -482,7 +482,7 @@ class ReproofBase(unittest.TestCase):
     """
 
     def setUp(self):
-        from laya_index_vector import profile_identity
+        from memvane.provider.domain.profile import profile_identity
         from memvane.provider.adapters.local_embed_provider import DEFAULT_EMBED_MODEL_URI, recipe_fingerprint
         # Short base: the provider socket path is limited to 100 bytes.
         tmp = tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp')
@@ -510,8 +510,8 @@ class ReproofBase(unittest.TestCase):
         native = self.native = self.old / relative
         closure = self.closure(native)
         closure_sha = hashlib.sha256(bundle._canonical(closure)).hexdigest()
-        provider_sha = sha_file(self.root / 'core' / 'laya_local_embed_provider.py')
-        worker_sha = sha_file(self.root / 'core' / 'laya_local_embed_worker.mjs')
+        provider_sha = sha_file(self.root / 'memvane/provider/adapters/local_embed_provider.py')
+        worker_sha = sha_file(self.root / 'memvane/provider/adapters/laya_local_embed_worker.mjs')
         self.content = dict(
             model_id=DEFAULT_EMBED_MODEL_URI,
             model_sha256=sha_file(self.old / self.files['model']),
@@ -546,12 +546,12 @@ class ReproofBase(unittest.TestCase):
                    'dimension': dimension, 'metric': 'cosine',
                    'approvedProviderId': approved,
                    'providerArtifactSha256': values['provider_sha256'],
-                   'providerRelativePath': 'core/laya_local_embed_provider.py'}
+                   'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py'}
         manifest = {'approvedProviderId': approved,
                     'providerArtifactSha256': values['provider_sha256'],
-                    'providerRelativePath': 'core/laya_local_embed_provider.py',
-                    'providerPath': str(self.root / 'core/laya_local_embed_provider.py'),
-                    'workerPath': str(self.root / 'core/laya_local_embed_worker.mjs'),
+                    'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py',
+                    'providerPath': str(self.root / 'memvane/provider/adapters/local_embed_provider.py'),
+                    'workerPath': str(self.root / 'memvane/provider/adapters/laya_local_embed_worker.mjs'),
                     'workerSha256': values['worker_sha256'],
                     'serviceSocketPath': str(socket),
                     'nodePath': str(base / self.files['node']),
@@ -703,7 +703,7 @@ class ProviderReproof(ReproofBase):
 class WorkerReproof(ReproofBase):
     def run_worker(self, review, attestation=None):
         import laya_active_upgrade
-        from memvane.install import product_install as product
+        from memvane.app import setup_workflow as product
         state = self.base / 'worker-state'
         state.mkdir(mode=0o700)
         project = self.base / 'project'
@@ -732,8 +732,8 @@ class WorkerReproof(ReproofBase):
                                side_effect=lambda **k: calls.append(k) or
                                {'status': 'active_upgrade_complete'}):
             review['reviewedProvider']['providerManifest'].update(
-                providerPath=str(host / 'core/laya_local_embed_provider.py'),
-                workerPath=str(host / 'core/laya_local_embed_worker.mjs'))
+                providerPath=str(host / 'memvane/provider/adapters/local_embed_provider.py'),
+                workerPath=str(host / 'memvane/provider/adapters/laya_local_embed_worker.mjs'))
             results = auto.run(project, root=host, home=self.base / 'home')
         return results, calls, state
 

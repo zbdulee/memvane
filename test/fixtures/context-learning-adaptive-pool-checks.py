@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path.cwd() / 'core'))
+sys.path.insert(0, str(Path.cwd()))
 from memvane.learning.context_learning.adaptive_pool import plan, actual_work
 from memvane.learning.context_learning.contracts import digest, request, validate_request
 from memvane.learning.context_learning.adapter import _pairs
@@ -62,7 +62,7 @@ validate_request(sample)
 assert len(sample['candidates']) == 20 and sample['schema_version'] == 3
 case = {'request_id': 'adaptive-20', 'prompt': 'Synthetic question',
         'candidates': [{'id': cid, 'input_text': 'Synthetic body'} for cid in ids]}
-with patch('context_learning.adapter._pair', return_value={'ids': [1]}):
+with patch('memvane.learning.context_learning.adapter._pair', return_value={'ids': [1]}):
     assert len(_pairs([case], None, {}, with_gold=False)) == 20
     try:
         _pairs([{**case, 'candidates': case['candidates'] * 2}], None, {},

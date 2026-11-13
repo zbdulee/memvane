@@ -4,7 +4,7 @@ import tempfile
 from contextlib import closing
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from laya_index_a import LayaIndexA
 from laya_index_claim_queue import ClaimQueue
 from laya_index_runtime import LayaIndexRuntime

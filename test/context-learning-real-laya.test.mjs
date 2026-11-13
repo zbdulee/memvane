@@ -6,7 +6,7 @@ test('opt-in existing Laya runtime: actual synthetic smoke and trainer protocol'
   {skip: process.env.QMD_LAYA_LIVE !== '1'}, () => {
     const raw = execFileSync('python3',
       ['test/fixtures/context-learning-real-laya-smoke.py'], {
-        env: {...process.env, PYTHONPATH: 'core'}, encoding: 'utf8', timeout: 180000,
+        env: {...process.env, PYTHONPATH: '.'}, encoding: 'utf8', timeout: 180000,
       });
     const report = JSON.parse(raw);
     assert.equal(report.external_calls, 0);

@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-CORE = HERE.parent.parent / 'core'
+CORE = HERE.parent.parent
 spec = importlib.util.spec_from_file_location('s_generation_fixture', HERE / 'laya-view-generations-checks.py')
 seed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seed)
@@ -20,7 +20,7 @@ CRASH_CHILD = r'''
 import json, os, sys
 args = json.loads(sys.argv[1])
 sys.path.insert(0, args['core'])
-import laya_view_store as views
+import memvane.store.view.view_store as views
 store = views.ViewStore.open(args['db'], repository=args['repository'], scope_id=args['scope'])
 handle = store.capture_view(args['worktree_id'])
 manifest = args['manifest']
@@ -32,7 +32,7 @@ def stop(*_):
 if point == 'before_commit':
     # The publication's guarded commit is the first commit on this connection
     # once the head CAS has run.
-    import laya_view_fts as fts
+    import memvane.store.view.view_fts as fts
     original = fts.ConnectionGuard.view_head
     from contextlib import contextmanager
     @contextmanager
@@ -52,7 +52,7 @@ GC_CHILD = r'''
 import json, os, sys
 args = json.loads(sys.argv[1])
 sys.path.insert(0, args['core'])
-import laya_view_store as views
+import memvane.store.view.view_store as views
 store = views.ViewStore.open(args['db'], repository=args['repository'], scope_id=args['scope'])
 handle = store.capture_view(args['worktree_id'])
 def stop(*_):

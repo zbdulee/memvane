@@ -29,12 +29,12 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-CORE = REPO / 'core'
+CORE = REPO
 sys.path.insert(0, str(CORE))
 from memvane.host import host_response as response  # noqa: E402
 from memvane.journal import install_journal as laya_install_journal  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
-from memvane.wiki.workspace import wiki_selected_laya  # noqa: E402
+from memvane.wiki.workspace import wiki_selected_laya; import memvane.wiki.compile.selected_execution as wiki_selected_laya_selected_execution  # noqa: E402
 from memvane.wiki.compile import wiki_compile_retrieval  # noqa: E402
 from memvane.wiki.card import yaml_scalars  # noqa: E402
 
@@ -180,7 +180,7 @@ class SelectedLifecycle(unittest.TestCase):
         if row['kind'] == 'laya-sync':
             return True
         if row['kind'] == 'laya-compile':
-            return wiki_selected_laya.run(Path(row['target']))['state'] == 'drained'
+            return wiki_selected_laya_selected_execution.run(Path(row['target']))['state'] == 'drained'
         raise AssertionError('unexpected wake ' + row['kind'])
 
     @contextlib.contextmanager

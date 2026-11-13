@@ -419,7 +419,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         result, _ingests, _calls = self.run_vector_pass()
         self.assertEqual(result['vector']['state'], 'published', result)
         scan = importlib.import_module('memvane.wiki.dedup.wiki_dedup_scan')
-        learning = importlib.import_module('context_learning.learning')
+        learning = importlib.import_module('memvane.learning.context_learning.learning')
         config = importlib.import_module('memvane.settings.config')
         queue = self.case.auto / 'compile' / 'dedup-needed.jsonl'
         with self.seed.authority(), \
@@ -505,7 +505,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.raw_file('scanned-once.md', 'A raw note the pass scans once.\n')
         grant = self.D.record_grant(self.decision, 'sync', engine='codex')
         self.assertTrue(self.D.activate_grant(self.decision, 'sync', grant))
-        port = importlib.import_module('memvane.sync.source_scan')
+        port = importlib.import_module('memvane.wiki.intake.source_scan')
         real, scans = port.scan_collections, []
 
         def counted(*args, **kwargs):
@@ -775,7 +775,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         result, _ingests, _calls = self.run_vector_pass()
         self.assertEqual(result.get('readerResettle'), 'resealed', result)
         host = importlib.import_module('memvane.host.host_response')
-        event_log = importlib.import_module('event_log')
+        event_log = importlib.import_module('memvane.diagnostics.event_log')
         asked, events = [], []
 
         drift = [True]
@@ -804,7 +804,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         resident = importlib.import_module('memvane.resident.embed_resident')
         def degraded_recall():
             with self.seed.authority(), \
-                    mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
+                    mock.patch.object(host, '__file__', str(self.case.plugin / 'memvane/host/host_response.py')), \
                     mock.patch.object(provider_module, 'ReviewedLocalQmdProvider', new=self.stub_provider()), \
                     mock.patch.object(resident, 'admit_query', return_value=None), \
                     mock.patch.object(self.dispatch, 'approved_query_vector', new=unproved), \
@@ -836,7 +836,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         # Lexical only (the provider lane refuses): recall notes a vector fallback.
         self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
         host = importlib.import_module('memvane.host.host_response')
-        event_log = importlib.import_module('event_log')
+        event_log = importlib.import_module('memvane.diagnostics.event_log')
         events = []
 
         def recorded(event, **fields):
@@ -846,7 +846,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         payload = {'cwd': str(self.case.project), 'prompt': 'zzqqxv nomatch', 'session_id': 'empty-probe',
                    'hook_event_name': 'UserPromptSubmit'}
         with self.seed.authority(), \
-                mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
+                mock.patch.object(host, '__file__', str(self.case.plugin / 'memvane/host/host_response.py')), \
                 mock.patch.object(event_log, 'emit', side_effect=recorded):
             host.serve_selected('recall', 'claude', decision, payload)
         recall = [e for e in events if e['event'] == 'recall']
@@ -1118,7 +1118,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         (``admit_query``) is not: it takes no provider lane."""
         import os
         import tempfile
-        rc = importlib.import_module('context_learning.resource_coordination')
+        rc = importlib.import_module('memvane.runtime.resource_coordination')
         resident = importlib.import_module('memvane.resident.embed_resident')
         from memvane.kernel.resource_deferred import ResourceDeferred
         root = Path(tempfile.mkdtemp(prefix='lanes-', dir=os.environ.get('HOME'))).resolve()
@@ -1143,7 +1143,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import os
         import tempfile
         work = importlib.import_module('memvane.runtime.runtime_work')
-        build = importlib.import_module('memvane.install.initial_build')
+        build = importlib.import_module('memvane.journal.initial_build')
         self.select_schema3()
         for name in ('delta', 'echo', 'foxtrot'):
             self.card(f'build/{name}.md', name + 'buildprobe')
@@ -1267,7 +1267,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         provider user is deferred."""
         import os
         import tempfile
-        rc = importlib.import_module('context_learning.resource_coordination')
+        rc = importlib.import_module('memvane.runtime.resource_coordination')
         resident = importlib.import_module('memvane.resident.embed_resident')
         from memvane.kernel.resource_deferred import ResourceDeferred
         self.select_schema3()
@@ -1307,7 +1307,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import os
         import tempfile
         work = importlib.import_module('memvane.runtime.runtime_work')
-        build = importlib.import_module('memvane.install.initial_build')
+        build = importlib.import_module('memvane.journal.initial_build')
         self.select_schema3()
         markers = self.cold_cards('yld', 10)
         self.run_vector_pass(Coordinator(refuse='cpu_pressure'))

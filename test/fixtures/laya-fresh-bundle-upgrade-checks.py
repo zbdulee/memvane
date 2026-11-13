@@ -21,22 +21,22 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / 'core'))
+sys.path.insert(0, str(HERE.parents[1]))
 BUILD = runpy.run_path(str(HERE / 'laya-initial-build-checks.py'))
 
 from memvane.settings import config  # noqa: E402
 import laya_active_upgrade as active  # noqa: E402
 import laya_bound_upgrade as bound_upgrade  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
-from memvane.install import initial_build as initial_build  # noqa: E402
-from memvane.install import product_install as product  # noqa: E402
+from memvane.journal import initial_build  # noqa: E402
+from memvane.app import setup_workflow as product  # noqa: E402
 from memvane.sync import product_sync_worker as worker  # noqa: E402
 from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from memvane.route.index_host_route import (SCHEMA_V2 as ROUTE_V2,  # noqa: E402
                                    settings_identity_digest)
 from memvane.journal.install_journal import PRODUCTION_ATTESTATION, _canon  # noqa: E402
-from memvane.install.product_bundle import BundleEvidenceError  # noqa: E402
+from memvane.provider.types import BundleEvidenceError  # noqa: E402
 
 PROFILE_ID = BUILD['PROFILE_ID']
 SCOPE = BUILD['SCOPE']
@@ -46,7 +46,7 @@ PROFILE = {'profileId': PROFILE_ID, 'modelId': BUILD['PROFILE']['model_id'],
            'dimension': BUILD['PROFILE']['dimension'], 'metric': 'cosine',
            'approvedProviderId': 'synthetic-provider',
            'providerArtifactSha256': 'b' * 64,
-           'providerRelativePath': 'core/laya_local_embed_provider.py'}
+           'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py'}
 
 
 class Kill(BaseException):
@@ -60,9 +60,9 @@ def _sha(raw):
 def manifest(root):
     return {'approvedProviderId': 'synthetic-provider',
             'providerArtifactSha256': 'b' * 64,
-            'providerRelativePath': 'core/laya_local_embed_provider.py',
-            'providerPath': root + '/core/laya_local_embed_provider.py',
-            'workerPath': root + '/core/laya_local_embed_worker.mjs',
+            'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py',
+            'providerPath': root + '/memvane/provider/adapters/local_embed_provider.py',
+            'workerPath': root + '/memvane/provider/adapters/laya_local_embed_worker.mjs',
             'workerSha256': 'c' * 64, 'modelPath': '/models/m.gguf',
             'modelSha256': 'd' * 64, 'dimension': PROFILE['dimension'],
             'serviceSocketPath': '/tmp/synthetic-install/runtime/laya-embed.sock'}
@@ -304,7 +304,7 @@ class UpgradeCase(FreshBoundCase):
         # Runtime file pinning has its own checks (laya-embed-runtime,
         # laya-journal-v4). These synthetic manifests name no Laya runtime
         # generation, so each reads as one pinned generation here.
-        pinned = mock.patch('laya_embed_runtime.sealed_files_sha256',
+        pinned = mock.patch('memvane.provider.embed_runtime.sealed_files_sha256',
                             new=lambda _path: 'f' * 64)
         pinned.start()
         self.addCleanup(pinned.stop)
@@ -343,7 +343,7 @@ class UpgradeCase(FreshBoundCase):
                                 side_effect=lambda **_kw: self.review))
         if module is active:
             # This fixture's journal CAS and on-disk file are synthetic v4.
-            enter(mock.patch('laya_install_journal.journal_version', return_value=4))
+            enter(mock.patch('memvane.journal.install_journal.journal_version', return_value=4))
             enter(mock.patch.object(active, '_prepare_v4_bridge'))
             enter(mock.patch.object(active, 'review_local_provider',
                                     side_effect=lambda **_kw: self.review))
@@ -352,7 +352,7 @@ class UpgradeCase(FreshBoundCase):
             enter(mock.patch.object(active, 'cas_activate', self.fj.activate))
             enter(mock.patch.object(active, '_verify_recovery_project', lambda *_a: None))
             enter(mock.patch.object(active, '_locked_provider', nullcontext))
-            enter(mock.patch('laya_embed_resident.wait_for_release', return_value=True))
+            enter(mock.patch('memvane.resident.embed_resident.wait_for_release', return_value=True))
         else:
             enter(mock.patch.object(module, 'cas_replace_inactive_candidate',
                                     self.fj.replace))
@@ -726,7 +726,7 @@ class ActiveUpgradeTests(UpgradeCase):
     def test_a_fenced_recall_asks_for_recovery_and_a_stalled_fence_stays_quiet(self):
         import laya_bundle_upgrade
         from memvane.host import host_response as response
-        from memvane.route import index_host_route as host
+        from memvane.route import index_host_route as host; import memvane.host.route_input as host_route_input; import memvane.journal.route_selection as host_route_selection
         self.fence()
         project = str(self.project)
         payload = self.state.parent / 'recall-payload.json'
@@ -757,7 +757,7 @@ class ActiveUpgradeTests(UpgradeCase):
                 decision = host.select_route_settled(project, action='recall')
                 self.assertEqual((decision['state'], decision['reason']),
                                  ('blocked', 'bundle_upgrade_stalled'))
-                self.assertEqual(self.run_main(host.main, 'classify-hook', 'recall',
+                self.assertEqual(self.run_main(host_route_input.main, 'classify-hook', 'recall',
                                                str(payload), project)[:2],
                                  (0, 'upgrading\n'))
                 code, out, err = self.run_main(response.main, 'serve-hook', 'recall',
@@ -842,7 +842,7 @@ class ActiveUpgradeTests(UpgradeCase):
         import subprocess
         import tempfile
         from memvane.host import host_response as response
-        from memvane.route import index_host_route as host
+        from memvane.route import index_host_route as host; import memvane.host.route_input as host_route_input; import memvane.journal.route_selection as host_route_selection
         self.bound()
         self.activate()
         real = active.inactive._atomic_expected
@@ -873,9 +873,9 @@ class ActiveUpgradeTests(UpgradeCase):
                              ('blocked', 'bundle_upgrade_in_progress'))
             self.assertEqual(host.select_route_settled(project, action='update')['state'],
                              'blocked')
-            self.assertEqual(run(host.main, 'classify-hook', 'recall', str(payload), project)[:2],
+            self.assertEqual(run(host_route_input.main, 'classify-hook', 'recall', str(payload), project)[:2],
                              (0, 'upgrading\n'))
-            self.assertEqual(run(host.main, 'classify-hook', 'gate', str(payload), project)[:2],
+            self.assertEqual(run(host_route_input.main, 'classify-hook', 'gate', str(payload), project)[:2],
                              (0, 'blocked\n'))
             code, out, err = run(response.main, 'serve-hook', 'recall', 'claude',
                                  str(payload), project)
@@ -892,7 +892,7 @@ class ActiveUpgradeTests(UpgradeCase):
                 hook = stub / 'hooks' / 'run-hook'
                 hook.write_bytes((HERE.parents[1] / 'hooks' / 'run-hook').read_bytes())
                 hook.chmod(0o700)
-                (stub / 'core' / 'laya_index_host_route.py').write_text(
+                (stub / 'memvane/route/index_host_route.py').write_text(
                     'print(%r)\n' % state)
                 env = {key: value for key, value in os.environ.items()
                        if key not in ('QMD_SANDBOX', 'CLAUDE_HEADLESS', 'CLAUDE_SANDBOX')}
@@ -903,18 +903,18 @@ class ActiveUpgradeTests(UpgradeCase):
         # An upgrade that finishes while the recall waits ends the wait at
         # once with the route as it now reads (this fixture's journal is
         # synthetic, so the host route itself stays unproven here).
-        blocked = host.select_route(project, action='recall')
+        blocked = host_route_selection.select_route(project, action='recall')
         finished = []
 
         def finish(_seconds):
             if not finished:
                 finished.append(self.run_upgrade(active)['status'])
-        settled = fresh.settle_decision(project, 'recall', blocked, host.select_route,
+        settled = fresh.settle_decision(project, 'recall', blocked, host_route_selection.select_route,
                                         sleep=finish)
         self.assertEqual(finished, ['active_upgrade_complete'])
         self.assertEqual(self.selection(), 'candidate')
         self.assertNotEqual(settled.get('reason'), fresh.UPGRADE_IN_PROGRESS)
-        self.assertEqual(settled, host.select_route(project, action='recall'))
+        self.assertEqual(settled, host_route_selection.select_route(project, action='recall'))
 
     def test_same_root_reextracted_in_place_readopts_and_proves_again(self):
         from memvane.journal import install_journal as install_journal

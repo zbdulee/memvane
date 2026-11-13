@@ -188,7 +188,7 @@ class StateMoveChecks(Lifecycle):
                     {'STATE_PARTS': ('.local', 'state', 'laya', '3' * 32)})
         with mock.patch.object(schema3.seed_module, 'MoveSealChecks', seed):
             super().setUp()
-        build = importlib.import_module('memvane.install.initial_build')
+        build = importlib.import_module('memvane.journal.initial_build')
         self.assertIn('/.local/state/laya/', str(self.case.state))
         self.assertTrue(Path(build.register_project(build.read(self.case.state)['identity'])).is_file())
         self.state_mover = importlib.import_module('laya_state_move')

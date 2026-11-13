@@ -23,7 +23,7 @@ from xml.etree import ElementTree
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT))
 
@@ -37,7 +37,7 @@ def load(name, filename):
 
 HERMES = load('hermes_fixture_for_review_regressions', 'hermes-route-recovery-checks.py')
 from memvane.host import onboarding_choice as choice
-from memvane.install import initial_build as build
+from memvane.journal import initial_build as build
 from memvane.journal import install_journal as journal
 from hermes_adapter import plugin
 
@@ -113,9 +113,9 @@ class ReviewRegressions(unittest.TestCase):
                 'CLAUDE_HEADLESS': '', 'QMD_SETUP_GUARD_FIXTURE': '1'}))
             stack.enter_context(mock.patch.object(journal, '_verified_executing_root',
                                                    return_value=str(case.plugin)))
-            stack.enter_context(mock.patch('laya_local_embed_provider.ReviewedLocalQmdProvider',
+            stack.enter_context(mock.patch('memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
                                            HERMES.E2E['QueryProvider']))
-            stack.enter_context(mock.patch('laya_embed_resident.admit_query', lambda **kw: None))
+            stack.enter_context(mock.patch('memvane.resident.embed_resident.admit_query', lambda **kw: None))
             for alias in ('working_directory', 'cwd'):
                 with self.subTest(hook='pre_llm_call', alias=alias):
                     error, answer = None, None
@@ -203,7 +203,7 @@ class ReviewRegressions(unittest.TestCase):
     def test_11_selected_registered_hook_contains_host_response_import_failure(self):
         helper, case = self.preview()
         real_import, real_run = builtins.__import__, HERMES.REAL_RUN
-        selector = ROOT / 'core' / 'laya_index_host_route.py'
+        selector = ROOT / 'entry/run.py'
         classifications, imports = [], []
         def observed_run(argv, *args, **kwargs):
             result = real_run(argv, *args, **kwargs)

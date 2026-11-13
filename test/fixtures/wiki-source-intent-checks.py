@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path.cwd() / 'core'))
+sys.path.insert(0, str(Path.cwd()))
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import config as qmd_config
 from memvane.wiki.intake import wiki_compile_enqueue as E
@@ -57,7 +57,7 @@ def legacy_enqueue(project_root, config, changed_files, *, session_start=False):
 
 class PurePlanning(unittest.TestCase):
     def test_module_imports_only_the_standard_library_nothing_at_all(self):
-        tree = ast.parse(Path('core/wiki_source_intent.py').read_text(encoding='utf-8'))
+        tree = ast.parse(Path('memvane/wiki/intake/wiki_source_intent.py').read_text(encoding='utf-8'))
         imports = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
         self.assertEqual(imports, [], 'the planning boundary must stay free of effects')
 

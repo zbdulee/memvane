@@ -18,7 +18,7 @@ def private(path, value):
 
 
 def host_checks(root, state):
-    sys.path.insert(0, str(root / 'core'))
+    sys.path.insert(0, str(root))
     from memvane.learning.context_learning import live_select, local_cycle, runtime_setup, adapter as laya_adapter, inference_service
     from memvane.learning.context_learning.contracts import digest
     adapter = root / 'memvane/learning/context_learning/adapter.py'
@@ -262,7 +262,7 @@ else:
         for host in ('claude', 'codex'):
             root = home / ('.'+host) / 'plugins/cache/memvane-marketplace/memvane/1.0.1'
             root.mkdir(parents=True)
-            shutil.copytree(Path.cwd()/'core', root/'core', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+            shutil.copytree(Path.cwd()/'memvane', root/'memvane', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
             private(root / ('.'+host+'-plugin/plugin.json'), {'name': 'memvane', 'version': '1.0.1'})
             private(root / 'package.json', {'name': 'memvane', 'version': '1.0.1'})
             roots[host] = root

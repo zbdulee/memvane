@@ -12,9 +12,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import laya_fresh_wiki_origin as fresh
-from memvane.install import product_install as product
+from memvane.app import setup_workflow as product
 from memvane.wiki.intake import wiki_discovery as discovery
 
 
@@ -149,7 +149,7 @@ class FreshWikiChecks(unittest.TestCase):
                 self.assertFalse(self.marker.exists())
 
     def test_retire_interrupted_empty_finalization_after_rescan(self):
-        from memvane.install import initial_build as builds
+        from memvane.journal import initial_build as builds
         self.sealed['vectorRows'] = 0
         self.bind()
         identity = {**self.identity, 'stateRoot': str(self.state)}
@@ -164,7 +164,7 @@ class FreshWikiChecks(unittest.TestCase):
         self.assertFalse(self.marker.exists())
 
     def test_retire_refuses_another_build_identity(self):
-        from memvane.install import initial_build as builds
+        from memvane.journal import initial_build as builds
         self.bind()
         identity = {**self.identity, 'stateRoot': str(self.state), 'scopeId': '9' * 32}
         record = {'phase': 'building', 'sealed': None, 'identity': identity}

@@ -15,15 +15,15 @@ import time
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.sync import product_sync_worker as worker
-from memvane.runtime import runtime_work
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.sync import product_sync_worker as worker; import memvane.journal.application.selected_proof as worker_selected_proof; import memvane.journal.install_journal as worker_install_journal
+from memvane.runtime import runtime_work; import memvane.app.wiring as runtime_work_wiring
 from memvane.runtime import runtime_wake_policy
 from memvane.learning.context_learning.local_cycle import ResourceDeferred
 from memvane.host import host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue
-from memvane.route import index_host_route as host_route
+from memvane.route import index_host_route as host_route; import memvane.journal.route_selection as host_route_route_selection
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import prepare_candidate_batch_off_hook
 from laya_index_vector import profile_identity, qmd_markdown_title
@@ -64,7 +64,7 @@ class WorkerChecks(unittest.TestCase):
         self.refreshed={**self.proof,'selectionEpoch':8}
 
     def test_repeatedly_failing_qmd_wake_does_not_starve_selected_sync(self):
-        from memvane.runtime import runtime_work
+        from memvane.runtime import runtime_work; import memvane.app.wiring as runtime_work_wiring
         controller=Coordinator();controller.root=self.project
         queue=runtime_work.WakeQueue(self.project)
         queue.put('index','',now=0)
@@ -125,10 +125,10 @@ class WorkerChecks(unittest.TestCase):
             patch.object(worker,'sync_owner',side_effect=lambda _queue,**_k:nullcontext(object())),
             patch.object(worker,'ReviewedLocalQmdProvider',return_value=provider),
             patch.object(worker,'resource_report',return_value={'ready':True}),
-            patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
-            patch('laya_install_journal.journal_version', return_value=4),
+            patch.object(worker_selected_proof,'owned_selected_proof',side_effect=lambda decision, owner: worker_install_journal.verify_selected_route_for_write(decision)),
+            patch('memvane.journal.install_journal.journal_version', return_value=4),
             patch.object(worker,'_owned_worker_attestation',return_value=self.proof['providerManifest']),
-            patch.object(worker,'verify_selected_route',side_effect=verify or
+            patch.object(worker_install_journal,'verify_selected_route_for_write',side_effect=verify or
                          [self.proof,self.proof,self.proof,self.refreshed,self.refreshed]),
             patch.object(worker,'LayaIndexRuntime',return_value=context),
             patch.object(worker,'prepare_candidate_batch_off_hook',return_value=batch),
@@ -207,10 +207,10 @@ class WorkerChecks(unittest.TestCase):
         service.stop.assert_called_once_with()
 
     def test_runtime_wake_retains_deferred_selected_sync(self):
-        with patch('laya_runtime_dispatch.run',return_value={'state':'deferred'}):
-            self.assertFalse(runtime_work.dispatch({'kind':'laya-sync','target':str(self.project)}))
-        with patch('laya_runtime_dispatch.run',return_value={'state':'unchanged'}):
-            self.assertTrue(runtime_work.dispatch({'kind':'laya-sync','target':str(self.project)}))
+        with patch('memvane.app.runtime_dispatch.run',return_value={'state':'deferred'}):
+            self.assertFalse(runtime_work_wiring.dispatch({'kind':'laya-sync','target':str(self.project)}))
+        with patch('memvane.app.runtime_dispatch.run',return_value={'state':'unchanged'}):
+            self.assertTrue(runtime_work_wiring.dispatch({'kind':'laya-sync','target':str(self.project)}))
 
     # RQA-RACE-01 Part B QA-only barrier. A synthetic fixture marker stands in
     # for test/fixtures/release-qa-fixture.py; no host or model is started.
@@ -435,10 +435,10 @@ class V2WorkerChecks(unittest.TestCase):
         patches=[patch.object(worker,'_selected',side_effect=lambda _p,**_k:(decision,self.proof())),
             patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
             patch.object(worker,'resource_report',return_value={'ready':True}),
-            patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
-            patch('laya_install_journal.journal_version', return_value=4),
+            patch.object(worker_selected_proof,'owned_selected_proof',side_effect=lambda decision, owner: worker_install_journal.verify_selected_route_for_write(decision)),
+            patch('memvane.journal.install_journal.journal_version', return_value=4),
             patch.object(worker,'_owned_worker_attestation',return_value={'synthetic':True}),
-            patch.object(worker,'verify_selected_route',side_effect=verify),
+            patch.object(worker_install_journal,'verify_selected_route_for_write',side_effect=verify),
             patch.object(worker,'cas_mark_new_write',side_effect=cas),
             patch.object(worker,'prepare_candidate_batch_off_hook',side_effect=batch)]
         with WorkerChecks._patches(patches):
@@ -568,14 +568,14 @@ class V2WorkerChecks(unittest.TestCase):
                 {'name':'beta','role':'wiki','sourceRoot':str(self.beta)}]),
             'dbPath':str(self.index_path),'queuePath':str(self.queue_path),
             'dbIncarnation':self.incarnation,'scopeId':SCOPE,
-            'pluginRoot':str(Path(response.__file__).resolve().parents[1]),
+            'pluginRoot':str(Path(response.__file__).resolve().parents[2]),
             'journalPath':str(self.home/'install-journal.sqlite'),'installId':'3'*32,
             'generation':'g-'+'4'*32,'bundleManifestSha256':'2'*64,
             'ownershipManifestSha256':'5'*64,'vectorProfile':self.profile,
             'collections':[{'name':'alpha','role':'raw','sourceRoot':str(self.alpha)},
                            {'name':'beta','role':'wiki','sourceRoot':str(self.beta)}]}
         (auto/host_route.RECORD).write_text(json.dumps(record),encoding='utf-8')
-        decision=host_route.select_route(str(self.home),action='update')
+        decision=host_route_route_selection.select_route(str(self.home),action='update')
         self.assertEqual(decision['state'],'candidate',decision)
         # The worker rereads this same route; its journal stays synthetic.
         self.decision=decision
@@ -624,7 +624,7 @@ class V2WorkerChecks(unittest.TestCase):
             return [row['id'] for row in rows[:3]],'selected',{}
         # CRUD uses an admitted synthetic provider independently of OS pressure.
         with patch.dict(os.environ,env,clear=True),\
-                patch('laya_embed_resident.admit_query',return_value=None),\
+                patch('memvane.resident.embed_resident.admit_query',return_value=None),\
                 patch.object(runtime_work,'WakeQueue',lambda root=None:real_queue(self.home)),\
                 patch.object(runtime_work,'wake',side_effect=AssertionError('hook spawned')),\
                 patch.object(laya_bundle_upgrade,'_spawn',
@@ -669,7 +669,7 @@ class V2WorkerChecks(unittest.TestCase):
         def no_wait(_seconds):
             raise AssertionError('drain retried the wake')
         try:
-            with patch('laya_runtime_dispatch.run',side_effect=handler):
+            with patch('memvane.app.runtime_dispatch.run',side_effect=handler):
                 status=runtime_work.drain(queue,ready=lambda:True,sleep=no_wait)
         finally:
             if errors:raise errors[0]
@@ -770,9 +770,9 @@ class V2WorkerChecks(unittest.TestCase):
             self.assertEqual(pending,[(key,str(self.home),3)])
             # Pinned classification: a copied route record names the original
             # projectRoot and blocks; without tracked .auto-context it is legacy.
-            self.assertEqual(host_route.select_route(str(copied)),
+            self.assertEqual(host_route_route_selection.select_route(str(copied)),
                              {'state':'blocked','reason':'route_project_mismatch'})
-            self.assertEqual(host_route.select_route(str(untracked))['state'],'legacy')
+            self.assertEqual(host_route_route_selection.select_route(str(untracked))['state'],'legacy')
             for cwd in (copied,untracked,copied/'alpha'):
                 self.assert_refused(cwd,'selected_route_unavailable')
             self.assertEqual([(row['id'],row['target'],row['revision'])
@@ -832,7 +832,7 @@ class CapacityWorkerChecks(unittest.TestCase):
             return context
         patches=[p for p in patches if getattr(p,'attribute',None) not in
                  ('verify_selected_route','cas_mark_new_write','LayaIndexRuntime')]
-        patches+=[patch.object(worker,'verify_selected_route',side_effect=verify),
+        patches+=[patch.object(worker_install_journal,'verify_selected_route_for_write',side_effect=verify),
                   patch.object(worker,'cas_mark_new_write',side_effect=cas),
                   patch.object(worker,'LayaIndexRuntime',side_effect=runtime),
                   patch.object(worker,'sync_step',side_effect=step),
@@ -868,8 +868,8 @@ class CapacityWorkerChecks(unittest.TestCase):
             result=worker.run(self.project,coordinator=controller,start_service=start)
         self.assertEqual(result,backlog)
         self.assertEqual(len(seen['steps']),worker.MAX_CAPACITY_ROUNDS)
-        with patch('laya_runtime_dispatch.run',return_value=backlog):
-            self.assertFalse(runtime_work.dispatch({'kind':'laya-sync','target':str(self.project)}))
+        with patch('memvane.app.runtime_dispatch.run',return_value=backlog):
+            self.assertFalse(runtime_work_wiring.dispatch({'kind':'laya-sync','target':str(self.project)}))
 
     def test_one_store_without_the_other_fails_before_model_start(self):
         self.stores(bindings=False)
@@ -947,10 +947,10 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         patches=[patch.object(worker,'_selected',side_effect=lambda _p,**_k:(decision,self.proof())),
             patch.object(worker,'ReviewedLocalQmdProvider',self.provider_class()),
             patch.object(worker,'resource_report',return_value={'ready':True}),
-            patch.object(worker,'_owned_selected_proof',side_effect=lambda decision, owner: worker.verify_selected_route(decision)),
-            patch('laya_install_journal.journal_version', return_value=4),
+            patch.object(worker_selected_proof,'owned_selected_proof',side_effect=lambda decision, owner: worker_install_journal.verify_selected_route_for_write(decision)),
+            patch('memvane.journal.install_journal.journal_version', return_value=4),
             patch.object(worker,'_owned_worker_attestation',return_value={'synthetic':True}),
-            patch.object(worker,'verify_selected_route',side_effect=lambda _d:self.proof()),
+            patch.object(worker_install_journal,'verify_selected_route_for_write',side_effect=lambda _d:self.proof()),
             patch.object(worker,'cas_mark_new_write',side_effect=cas),
             patch.object(worker,'prepare_candidate_batch_off_hook',
                          side_effect=lambda *_a:self.fail('capacity path built a full batch'))]

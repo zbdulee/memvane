@@ -9,7 +9,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 from memvane.wiki.workspace import compile_paths as cp
 
 
@@ -45,7 +45,7 @@ def exercise():
         try:
             assert ready.wait(5), 'card writer did not acquire lock'
             child = subprocess.Popen([
-                sys.executable, '-B', str(ROOT / 'core/wiki_dedup_resolve.py'),
+                sys.executable, '-B', str(ROOT / 'entry' / 'run.py'), 'wiki-dedup-resolve',
                 '--cwd', str(root), '--index', '0', '--action', 'merge',
                 '--delete', 'entities/b.md'],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

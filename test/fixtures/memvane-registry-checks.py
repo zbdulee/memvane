@@ -29,10 +29,10 @@ from unittest.mock import patch
 
 FIXTURES = Path(__file__).resolve().parent
 REPO = FIXTURES.parents[1]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 sys.path.insert(1, str(FIXTURES))
 from memvane.host import host_response as response  # noqa: E402
-from memvane.route import index_host_route as routes  # noqa: E402
+from memvane.route import index_host_route as routes; import memvane.journal.route_selection as routes_route_selection  # noqa: E402
 from memvane.journal import install_journal as journal  # noqa: E402
 from memvane.kernel import memvane_paths  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
@@ -44,13 +44,13 @@ try:
 except ImportError:
     memvane_registry = None
 
-LOADED_ROOT = str(Path(response.__file__).resolve().parents[1])
+LOADED_ROOT = str(Path(response.__file__).resolve().parents[2])
 DAY = 24 * 3600
 
 
 def registry():
     if memvane_registry is None:
-        raise AssertionError('core/memvane_registry.py is missing')
+        raise AssertionError('memvane/registry/memvane_registry.py is missing')
     return memvane_registry
 
 
@@ -320,9 +320,9 @@ class Store(Base):
         other = '/usr/bin/python3' if sys.version_info >= (3, 10) else shutil.which('python3.13')
         if not other or not Path(other).exists():
             self.skipTest('second python unavailable')
-        code = ('import sys,json; sys.path.insert(0, sys.argv[1]); import memvane_registry as r;'
+        code = ('import sys,json; sys.path.insert(0, sys.argv[1]); import memvane.registry.memvane_registry as r;'
                 'print(json.dumps(sorted(x["installId"] for x in r.routing_rows()["rows"])))')
-        out = subprocess.run([other, '-B', '-c', code, str(REPO / 'core')], text=True,
+        out = subprocess.run([other, '-B', '-c', code, str(REPO)], text=True,
                              capture_output=True, timeout=60,
                              env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -363,7 +363,7 @@ class Lifecycle(Base):
         self.assertEqual(self.row(self.a)['status'], 'active')
 
     def test_recovery_required_and_rejected_keep_the_row_active(self):
-        from memvane.install import product_install as product
+        from memvane.app import setup_workflow as product
         self.register(self.a)
         for status in ('recovery_required', 'blocked'):
             with self.subTest(status=status), patch.object(
@@ -378,7 +378,7 @@ class Lifecycle(Base):
         self.assertEqual(self.row(self.a)['status'], 'active')
 
     def test_a_success_status_without_a_released_selection_detaches_nothing(self):
-        from memvane.install import product_install as product
+        from memvane.app import setup_workflow as product
         self.register(self.a)
         with patch.object(product, 'restore_origin_selection',
                           return_value={'status': 'legacy_restored', 'changesApplied': 1}):
@@ -388,7 +388,7 @@ class Lifecycle(Base):
         self.assertEqual(self.row(self.a)['status'], 'active')
 
     def test_retire_and_abandon_success_detach_existing_rows_and_insert_none(self):
-        from memvane.install import product_install as product
+        from memvane.app import setup_workflow as product
         pending = installs.make_install(self.home, self.work / 'gamma', 'gamma',
                                         '8' * 32, '9' * 32, activate=False)
         self.bundles.add(pending)
@@ -421,7 +421,7 @@ class Lifecycle(Base):
                          ('detached', 'released'))
 
     def test_activation_success_registers_after_reproving_the_route(self):
-        from memvane.install import product_install as product
+        from memvane.app import setup_workflow as product
         with patch.object(product, 'activate_origin_selection',
                           return_value={'phase': 'active', 'syncWake': {'status': 'queued'}}):
             code, result = self.setup(*self.args('activate-index-origin', self.a,
@@ -437,7 +437,7 @@ class Lifecycle(Base):
         self.assertIsNone(self.row(pending))
 
     def test_registry_failure_never_changes_the_setup_result(self):
-        from memvane.install import product_install as product
+        from memvane.app import setup_workflow as product
         with patch.object(product, 'activate_origin_selection', return_value={'phase': 'active'}), \
                 patch.object(registry(), 'register', side_effect=RuntimeError('boom')):
             code, result = self.setup(*self.args('activate-index-origin', self.a,
@@ -632,7 +632,7 @@ class Reconcile(Base):
         self.register(self.a)
         with patch('laya_fresh_wiki_origin._proof'):
             installs.fresh.restore(self.a.project, self.a.journal)
-        self.assertEqual(routes.select_route(str(self.a.project), action='index')['state'], 'legacy')
+        self.assertEqual(routes_route_selection.select_route(str(self.a.project), action='index')['state'], 'legacy')
         registry().reconcile(now=2000.0, backfill_page=0)
         row = self.row(self.a)
         self.assertEqual((row['status'], row['reason']), ('detached', 'released'))
@@ -640,7 +640,7 @@ class Reconcile(Base):
     def test_unproved_route_marks_proof_but_never_detaches(self):
         self.register(self.a)
         installs.private_write(self.a.folder / routes.RECORD, b'{"schema":')
-        self.assertEqual(routes.select_route(str(self.a.project), action='index')['state'], 'blocked')
+        self.assertEqual(routes_route_selection.select_route(str(self.a.project), action='index')['state'], 'blocked')
         registry().reconcile(now=2000.0, backfill_page=0)
         row = self.row(self.a)
         self.assertEqual(row['status'], 'active')
@@ -677,8 +677,8 @@ class Reconcile(Base):
                 return real(cwd, action=action)
             return classify
         self.b.project.rename(self.b.project.with_name('beta-away'))
-        with patch.object(routes, 'select_route', flaky(routes.select_route)), \
-                patch.object(routes, '_select_route', flaky(routes._select_route)):
+        with patch.object(routes_route_selection, 'select_route', flaky(routes_route_selection.select_route)), \
+                patch.object(routes_route_selection, '_select_route', flaky(routes_route_selection._select_route)):
             result = registry().reconcile(now=2000.0, backfill_page=0)
         self.assertEqual(result['checked'], 2, result)
         self.assertEqual(self.row(self.b)['status'], 'missing_pending')
@@ -758,8 +758,8 @@ class Reconcile(Base):
             registry().reconcile(now=2000.0, backfill_page=0)
         self.assertEqual(self.row(self.b, worktree)['status'], 'active')
         calls = []
-        real = routes.select_route
-        with patch.object(routes, 'select_route',
+        real = routes_route_selection.select_route
+        with patch.object(routes_route_selection, 'select_route',
                           side_effect=lambda cwd, action='recall': calls.append(cwd) or
                           real(cwd, action=action)):
             deadline = __import__('time').monotonic() + 60
@@ -796,7 +796,7 @@ class SessionStart(Base):
     def session_start(self, install):
         event = {'cwd': str(install.project), 'hook_event_name': 'SessionStart',
                  'session_id': 'test-session', 'source': 'startup'}
-        decision = routes.select_route(str(install.project), action='update-queued')
+        decision = routes_route_selection.select_route(str(install.project), action='update-queued')
         return response.serve_selected('update-queued', 'claude', decision, event)
 
     def test_session_start_registers_the_selected_project_and_backfills(self):
@@ -887,7 +887,7 @@ class SessionStart(Base):
         run('commit', '-qm', 'init')
         worktree = self.work / 'beta-wt'
         run('worktree', 'add', '-q', str(worktree))
-        self.assertEqual(routes.select_route(str(worktree), action='index')['state'], 'worktree')
+        self.assertEqual(routes_route_selection.select_route(str(worktree), action='index')['state'], 'worktree')
         calls, results = [], []
         real_run = subprocess.run
         real_reconcile = registry().reconcile

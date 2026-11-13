@@ -14,8 +14,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-assert importlib.util.find_spec('context_learning.inference_service'), 'shared_inference_service_missing'
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+assert importlib.util.find_spec('memvane.learning.context_learning.inference_service'), 'shared_inference_service_missing'
 from memvane.learning.context_learning import inference_service as service
 
 
@@ -251,32 +251,32 @@ class BundleSignatureTests(unittest.TestCase):
 
     def test_host_code_change_outside_the_package_changes_the_signature(self):
         import shutil
-        source = Path(service.__file__).resolve().parents[1]
+        source = Path(service.__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory(prefix='qmd-sig-') as temp:
             copies = []
             for name in ('claude', 'codex', 'next'):
-                core = Path(temp) / name / 'core'
+                core = Path(temp) / name / 'memvane'
                 shutil.copytree(source, core, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
                 copies.append(core)
             host = sorted(p.name for p in copies[2].glob('*.py'))[0]
             (copies[2] / host).write_text((copies[2] / host).read_text() + '\n# next release\n')
-            claude, codex, nxt = (self.signature(core) for core in copies)
+            claude, codex, nxt = (self.signature(core.parent) for core in copies)
         self.assertEqual(claude, codex, 'two host caches of one release must agree')
         self.assertNotEqual(claude, nxt, 'a host-code-only release kept the old service signature')
 
     def test_version_only_release_requests_hosted_service_adoption(self):
         import shutil
         from memvane.resident import resident_service as host
-        source = Path(service.__file__).resolve().parents[1]
+        source = Path(service.__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory(prefix='qmd-version-sig-') as temp:
             roots = []
             for name, version in (('old', '1.0.0'), ('new', '1.0.1'), ('companion', '1.0.1')):
                 root = Path(temp).resolve() / name
-                shutil.copytree(source, root / 'core',
+                shutil.copytree(source, root / 'memvane',
                                 ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
                 (root / 'plugin.json').write_text(json.dumps({'version': version}))
                 roots.append(root)
-            old, new, companion = [self.signature(root / 'core') for root in roots]
+            old, new, companion = [self.signature(root) for root in roots]
             self.assertEqual(new, companion, 'same-release hosts must share a service')
             answer = {'protocol': service.PROTOCOL, 'signature': old,
                       'status': 'ready', 'python': sys.executable}
@@ -378,7 +378,7 @@ def fake_validate(env):
 
 class ServerTests(unittest.TestCase):
     def test_apply_commands_prepare_activate_recover_and_yield_to_inference(self):
-        from memvane.learning.context_learning.resource_coordination import Coordinator
+        from memvane.runtime.resource_coordination import Coordinator
         with tempfile.TemporaryDirectory(prefix='qmd-a-',dir='/tmp') as temp:
             root=Path(temp).resolve();root.chmod(0o700)
             tokens=[]
@@ -461,7 +461,7 @@ class ServerTests(unittest.TestCase):
         # A wiki card longer than the selector's token budget is refused by
         # the adapter. The hosted worker and the client keep that fixed code.
         from contextlib import nullcontext
-        from memvane.learning.context_learning import resource_coordination
+        from memvane.runtime import resource_coordination
         class NoCoordinator:
             def __init__(self,_root):pass
             def inference(self,*_args):return nullcontext()

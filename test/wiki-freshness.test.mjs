@@ -21,8 +21,8 @@ function revision(project, relativePath = 'docs/source.md') {
   return JSON.parse(python([
     'import json, sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_freshness as F',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_freshness as F',
     'print(json.dumps(F.snapshot_file(Path(sys.argv[1]) / sys.argv[2])))',
   ].join('\n'), project, relativePath));
 }
@@ -31,8 +31,8 @@ function check(project, card) {
   return JSON.parse(python([
     'import json, sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_freshness as F',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_freshness as F',
     'root = Path(sys.argv[1])',
     'card = json.loads(sys.argv[2])',
     'print(json.dumps(F.check_card(card, root, [(root / "docs").resolve()])))',
@@ -47,8 +47,8 @@ function strictPending(project) {
   return JSON.parse(python([
     'import json, sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_freshness as F',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_freshness as F',
     'reader = getattr(F, "unresolved_pending_refreshes_strict", None)',
     'print(json.dumps({"api": "missing"} if reader is None else reader(Path(sys.argv[1]))))',
   ].join('\n'), project));
@@ -58,8 +58,8 @@ function strictPendingFault(project, fault) {
   return JSON.parse(python([
     'import json, sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_freshness as F',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_freshness as F',
     'fault = sys.argv[2]',
     'real_exists = F.Path.exists',
     'real_read_text = F.Path.read_text',
@@ -147,8 +147,8 @@ test('snapshot_file refuses a file whose fstat changed during its single read', 
     const out = python([
       'import json, os, sys',
       'from pathlib import Path',
-      'sys.path.insert(0, "core")',
-      'import wiki_freshness as F',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.wiki_freshness as F',
       'path = Path(sys.argv[1]) / "docs/source.md"',
       'real_fstat = F.os.fstat',
       'calls = 0',
@@ -172,8 +172,8 @@ test('sourceRevisions uses a closed typed YAML flow-mapping schema', () => {
   };
   const out = JSON.parse(python([
     'import json, sys',
-    'sys.path.insert(0, "core")',
-    'import yaml_scalars as Y',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.yaml_scalars as Y',
     'record = json.loads(sys.argv[1])',
     'emitted = Y.dump_source_revisions([record])',
     'print(json.dumps({"emitted": emitted, "parsed": Y.load_source_revisions(emitted),',
@@ -190,8 +190,8 @@ test('quoted numeric fields and empty mapping entries fail closed before card fr
     const record = sourceRevision(project);
     const emitted = JSON.parse(python([
       'import json, sys',
-      'sys.path.insert(0, "core")',
-      'import yaml_scalars as Y',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.yaml_scalars as Y',
       'record = json.loads(sys.argv[1])',
       'flow = Y.dump_source_revisions([record])[0]',
       'quoted = flow.replace("size: " + str(record["size"]), "size: \\\"" + str(record["size"]) + "\\\"")',
@@ -214,8 +214,8 @@ test('sourceRevisions emission rejects an entire list when any sibling is invali
   };
   const out = JSON.parse(python([
     'import json, sys',
-    'sys.path.insert(0, "core")',
-    'import yaml_scalars as Y',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.yaml_scalars as Y',
     'record = json.loads(sys.argv[1])',
     'invalid = dict(record)',
     'invalid["size"] = "11"',
@@ -281,8 +281,8 @@ test('pending refresh resolves only with the successful compile revision still o
     const out = JSON.parse(python([
       'import json, sys',
       'from pathlib import Path',
-      'sys.path.insert(0, "core")',
-      'import wiki_freshness as F',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.wiki_freshness as F',
       'root = Path(sys.argv[1])',
       'old = json.loads(sys.argv[2])',
       'pending = F.record_pending_refresh(root, "docs/source.md", "codex")',
@@ -306,8 +306,8 @@ test('ordered history and unique event ids reject prior resolution and token rep
     const out = JSON.parse(python([
       'import json, sys',
       'from pathlib import Path',
-      'sys.path.insert(0, "core")',
-      'import wiki_freshness as F',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.wiki_freshness as F',
       'root = Path(sys.argv[1])',
       'old = F.record_pending_refresh(root, "docs/source.md", "codex")',
       'revision = {"kind": "file", "path": "docs/source.md", "collection": "proj-docs", **F.snapshot_file(root / "docs/source.md")}',
@@ -335,8 +335,8 @@ test('pending refresh compaction atomically retains only each source latest unre
     const rows = JSON.parse(python([
       'import json, sys',
       'from pathlib import Path',
-      'sys.path.insert(0, "core")',
-      'import wiki_freshness as F',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.wiki_freshness as F',
       'root = Path(sys.argv[1])',
       'first = F.record_pending_refresh(root, "docs/source.md", "claude")',
       'rev = {"kind": "file", "path": "docs/source.md", "collection": "proj-docs", **F.snapshot_file(root / "docs/source.md")}',
@@ -373,8 +373,8 @@ function quarantine(project) {
   return JSON.parse(python([
     'import json, sys',
     'from pathlib import Path',
-    'sys.path.insert(0, "core")',
-    'import wiki_freshness as F',
+    'sys.path.insert(0, ".")',
+    'import memvane.wiki.card.wiki_freshness as F',
     'print(json.dumps(F.quarantine_corrupt_pending(Path(sys.argv[1]))))',
   ].join('\n'), project));
 }
@@ -459,8 +459,8 @@ test('읽을 수 없는 원장은 격리하지 않는다(권한 문제로 정상
     const out = python([
       'import json, sys',
       'from pathlib import Path',
-      'sys.path.insert(0, "core")',
-      'import wiki_freshness as F',
+      'sys.path.insert(0, ".")',
+      'import memvane.wiki.card.wiki_freshness as F',
       'real_read_text = F.Path.read_text',
       'def denied(path, *a, **k):',
       '    if path.name == "source-refresh-pending.jsonl":',

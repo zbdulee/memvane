@@ -26,14 +26,14 @@ import unittest
 from unittest.mock import patch
 
 FIXTURES = Path(__file__).resolve().parent
-sys.path.insert(0, str(FIXTURES.parents[1] / 'core'))
+sys.path.insert(0, str(FIXTURES.parents[1]))
 sys.path.insert(1, str(FIXTURES))
 from memvane.wiki.workspace import compile_paths  # noqa: E402
 from memvane.resident import embed_resident as laya_embed_resident  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
-from memvane.route import index_host_route as routes  # noqa: E402
+from memvane.route import index_host_route as routes; import memvane.journal.route_selection as routes_route_selection  # noqa: E402
 from memvane.journal import install_journal as journal  # noqa: E402
-from memvane.sync import product_sync_worker as sync  # noqa: E402
+from memvane.sync import product_sync_worker as sync; import memvane.journal.install_journal as sync_install_journal  # noqa: E402
 from memvane.host import onboarding_choice  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
 import out_of_project_installs as installs  # noqa: E402
@@ -46,7 +46,7 @@ try:
 except ImportError:
     laya_external_edits = None
 
-LOADED_ROOT = str(Path(response.__file__).resolve().parents[1])
+LOADED_ROOT = str(Path(response.__file__).resolve().parents[2])
 WAKE_KINDS = {'laya-sync', 'laya-compile'}
 
 
@@ -56,7 +56,7 @@ def blob(data):
 
 def external():
     if laya_external_edits is None:
-        raise AssertionError('core/laya_external_edits.py is missing')
+        raise AssertionError('memvane/wiki/intake/external_edits.py is missing')
     return laya_external_edits
 
 
@@ -163,7 +163,7 @@ class Routing(unittest.TestCase):
                              'the hook ran a full proof of another project')
 
     def decision(self, install, action='update'):
-        return routes.select_route(str(install.project), action=action)
+        return routes_route_selection.select_route(str(install.project), action=action)
 
     def event(self, path=None, **extra):
         return {'cwd': str(self.a.project), 'hook_event_name': 'PostToolUse',
@@ -481,7 +481,7 @@ class HookRouting(Routing):
                          self.b.project / 'worktrees' / 'nested-wt'):
             with self.subTest(worktree=str(worktree)):
                 run('worktree', 'add', '-q', str(worktree))
-                self.assertEqual(routes.select_route(str(worktree), action='index')['state'], 'worktree')
+                self.assertEqual(routes_route_selection.select_route(str(worktree), action='index')['state'], 'worktree')
                 (worktree / 'note.md').write_text('worktree edit\n')
                 self.assertEqual(self.index(self.event(worktree / 'note.md')), {})
                 self.assert_not_routed()
@@ -807,9 +807,9 @@ class SyncOwner(Routing):
         drain.assert_called_once()
         self.assertEqual(drain.call_args.args[0], decision)
         recheck = drain.call_args.kwargs['recheck']
-        with patch.object(sync, 'verify_selected_route', return_value=proof):
+        with patch.object(sync_install_journal, 'verify_selected_route_for_write', return_value=proof):
             recheck()
-        with patch.object(sync, 'verify_selected_route',
+        with patch.object(sync_install_journal, 'verify_selected_route_for_write',
                           return_value={**proof, 'selectionEpoch': 9}), \
                 self.assertRaises(Exception):
             recheck()

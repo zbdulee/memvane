@@ -81,7 +81,7 @@ test('hooks and skills no longer reach a QMD runtime, daemon or legacy recall', 
     /index_enqueue/, /preflight_gate/, /\.cache\/qmd/]) {
     assert.doesNotMatch(runHook, pattern);
   }
-  for (const name of readdirSync('core')) {
+  for (const name of readdirSync('memvane')) {
     assert.doesNotMatch(name, /^qmd_|^shared_(install|qmd_setup)|^install_|^setup_guard|^recall\.py$|^backend_manager/, name);
   }
   assert.equal(existsSync('backend'), false);
@@ -98,7 +98,7 @@ test('hooks and skills no longer reach a QMD runtime, daemon or legacy recall', 
 test('wakes of retired QMD kinds are acknowledged instead of retried forever', () => {
   const result = spawnSync('python3', ['-B', '-c', `
 import json, sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 import runtime_handlers
 print(json.dumps([runtime_handlers.dispatch({'kind': kind, 'target': '/nonexistent'})
                   for kind in ('index', 'update', 'cleanup')]))

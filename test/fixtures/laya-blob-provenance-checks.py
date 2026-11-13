@@ -73,8 +73,8 @@ class ProvenanceChecks(unittest.TestCase):
         """Raw roots may sit in dot directories (``.nova/06_Sessions``): the
         fingerprint and manifest source path rule refuses only empty, ``.``
         and ``..`` segments. Wiki card paths keep refusing dot segments."""
-        values = sys.modules['laya_blob_values']
-        view_values = __import__('memvane.store.view.view_values')
+        values = sys.modules['memvane.store.blob.blob_values']
+        view_values = __import__('memvane.store.view.view_values', fromlist=['_'])
         for path in ('.nova/06_Sessions/ep01.md', '.hidden/x.md', '.nova/x/.drafts/a.md', '..a/b.md'):
             with self.subTest(path=path):
                 key = self.store.put_fingerprint(self.fp(path=path))
@@ -157,7 +157,7 @@ class ProvenanceChecks(unittest.TestCase):
         with self.assertRaises(self.Error): self.store.put_attestation(self.evidence(fp))
 
     def test_legacy_line_spans_keep_their_original_evidence_level(self):
-        values = sys.modules['laya_blob_values']
+        values = sys.modules['memvane.store.blob.blob_values']
         detached = self.fp(branch_key='detached:' + '1' * 40,
                            binding_state='legacy_unbound', tracked_state='unknown')
         self.assertEqual(values.fingerprint(detached, 'sha1'), detached)
@@ -198,7 +198,7 @@ class ProvenanceChecks(unittest.TestCase):
         raw = b'SOURCE_CANARY_NEVER_STORED_3736c9b1'
         source = self.project / 'notes/source.md'; source.parent.mkdir()
         source.write_bytes(raw)
-        module = sys.modules['laya_blob_store']; regular = module._regular
+        module = sys.modules['memvane.store.blob.blob_store']; regular = module._regular
         def no_source(root, path, limit):
             self.assertNotIn('source.md', str(root) + path)
             return regular(root, path, limit)
@@ -579,7 +579,7 @@ class ProvenanceChecks(unittest.TestCase):
         self.assertFalse(Path(str(path) + '-wal').exists())
 
     def test_29_existing_kind_trust_digests_are_unchanged(self):
-        values = sys.modules['laya_blob_values']
+        values = sys.modules['memvane.store.blob.blob_values']
         expected = {
             'compiled': ('ed0147ec42b3bd9f48837b59a62c000bdb50f075f26d50279fa59047bd80cc95',
                          '8f4cbb2e5ff758af53181379e3833e9699acee2f3057b5f939fcba08e48fdacf'),
@@ -599,7 +599,7 @@ class ProvenanceChecks(unittest.TestCase):
                                  expected[name])
 
     def test_30_compiled_line_span_kind_is_reserved_for_compiled_chain(self):
-        values = sys.modules['laya_blob_values']
+        values = sys.modules['memvane.store.blob.blob_values']
         specs = self.fixed_specs()
         accepted = []
         for kind, receipt_prior in (('compiled', None), ('rebound', '3' * 64)):
@@ -633,7 +633,7 @@ class ProvenanceChecks(unittest.TestCase):
                 values.attestation(spec)
 
     def test_31_compile_receipt_fields_are_versioned_and_closed(self):
-        values = sys.modules['laya_blob_values']
+        values = sys.modules['memvane.store.blob.blob_values']
         specs = self.fixed_specs()
         for name in ('compiled', 'rebound'):
             spec = copy.deepcopy(specs[name])

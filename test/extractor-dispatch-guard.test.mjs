@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { removeTemp } from './helpers/temp.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
-const CORE = join(REPO_ROOT, 'core');
+const CORE = REPO_ROOT;
 
 process.env.QMD_SKIP_BACKGROUND_EMBED = '1';
 
@@ -35,7 +35,7 @@ process.env.QMD_SKIP_BACKGROUND_EMBED = '1';
 function resolveArgv(extractor, engine) {
   const py = `import json, sys
 sys.path.insert(0, sys.argv[1])
-import wiki_compile_worker as wcw
+import memvane.wiki.compile.wiki_compile_worker as wcw
 print(json.dumps(wcw.resolve_extractor_argv({"extractor": json.loads(sys.argv[2])}, sys.argv[3])))`;
   return JSON.parse(execFileSync('python3', ['-c', py, CORE, JSON.stringify(extractor), engine], {
     cwd: REPO_ROOT, encoding: 'utf8',
@@ -112,7 +112,7 @@ function setupProject(extractor) {
 }
 
 function runWorker(project, env = {}) {
-  return execFileSync('python3', [join(CORE, 'wiki_compile_worker.py'), '--cwd', project], {
+  return execFileSync('python3', [join(CORE, 'entry/run.py'), 'wiki-compile-worker', '--cwd', project], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     env: {

@@ -4,11 +4,11 @@ import assert from 'node:assert/strict';
 test('offline teacher contract rejects unsafe transport and malformed evidence',()=>{
 const out=execFileSync('python3',['-c',`
 import sys,json
-sys.path.insert(0,'core')
-from context_learning.contracts import request,digest
-from context_learning.teacher import prompt,validate_response,require_tool_free_transport
-from context_learning.capabilities import preflight,CHECKS
-from context_learning.claude_adapter import argv,inspect_event,startup_metadata,StartupRejected
+sys.path.insert(0,'.')
+from memvane.learning.context_learning.contracts import request, digest
+from memvane.learning.context_learning.teacher import prompt, validate_response, require_tool_free_transport
+from memvane.learning.context_learning.capabilities import preflight, CHECKS
+from memvane.learning.context_learning.claude_adapter import argv, inspect_event, startup_metadata, StartupRejected
 configured=argv(disabled_plugin_ids=['synthetic@builtin']);settings=json.loads(configured[configured.index('--settings')+1]);assert settings=={'disableAllHooks':True,'enabledPlugins':{'synthetic@builtin':False}}
 for value in ['*',['*'],['synthetic'],['synthetic@builtin;echo'],[None]]:
  try:argv(disabled_plugin_ids=value)

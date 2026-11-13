@@ -5,7 +5,7 @@ import {execFileSync} from 'node:child_process';
 test('normal scheduler stages fresh cohort training without publishing a pointer', () => {
   const raw = execFileSync('python3',
     ['test/fixtures/context-learning-auto-staging-checks.py'], {
-      env: {...process.env, PYTHONPATH: 'core', QMD_RECALL_LOG: '',
+      env: {...process.env, PYTHONPATH: '.', QMD_RECALL_LOG: '',
         QMD_SKIP_BACKGROUND_WORKER: '1', PYTHONDONTWRITEBYTECODE: '1'},
       encoding: 'utf8', timeout: 10000,
     });

@@ -17,12 +17,12 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / 'core'))
+sys.path.insert(0, str(HERE.parents[1]))
 from memvane.learning.context_learning import inference_service as learning
-from memvane.learning.context_learning import resource_coordination as resources
+from memvane.runtime import resource_coordination as resources
 from memvane.resident import embed_resident as owner
 from memvane.resident import resident_service as host
-from laya_index_a import IndexContractError
+from memvane.kernel.errors import IndexContractError
 
 spec = importlib.util.spec_from_file_location('resident_fixture_for_retry_gates',
                                              HERE / 'laya-resident-service-checks.py')

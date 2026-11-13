@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from memvane.store.blob import blob_values as v
 from memvane.store.view import view_values as values
 from memvane.store.view import view_store as view_store

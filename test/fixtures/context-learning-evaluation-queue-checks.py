@@ -75,7 +75,7 @@ class Checks(unittest.TestCase):
   from memvane.learning.context_learning.learning_retry import wait_pending
   q=self.queue();job=q.ensure('cycle','stage','validation');calls=[]
   def evaluate():calls.append('quality-only');q.finish(job['id'],'completed');return {'status':'staged_evaluated'}
-  with patch('context_learning.learning_retry.LearningQueue',return_value=LearningQueue(self.root,connect=self.connect)):
+  with patch('memvane.learning.context_learning.learning_retry.LearningQueue',return_value=LearningQueue(self.root,connect=self.connect)):
    result=wait_pending(self.root,evaluate)
   self.assertEqual(calls,['quality-only']);self.assertEqual(result['status'],'drained')
  def test_terminal_quality_job_ignores_stale_defer_and_finish(self):

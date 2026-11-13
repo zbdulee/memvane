@@ -65,7 +65,7 @@ class IdentityChecks(unittest.TestCase):
         fake=types.ModuleType('torch.ops');fake.__file__='_ops.py'
         with patch.dict(os.sys.modules,{'torch.ops':fake}):
             with self.assertRaisesRegex(ValueError,'inference_external_library_scope'):
-                self.original_scope([Path(os.sys.base_prefix),Path(identity.__file__).resolve().parent.parent])
+                self.original_scope([Path(os.sys.base_prefix),Path(identity.__file__).resolve().parents[2]])
     def test_device_generation_code_and_scope(self):
         self.validate()
         with patch.object(identity,'device_identity',return_value={'backend':'mps','os':'fixture'}):
@@ -97,7 +97,7 @@ class IdentityChecks(unittest.TestCase):
         fake=types.ModuleType('qmd_external_fixture');fake.__file__=str(self.root/'external.py')
         with patch.dict(os.sys.modules, {'qmd_external_fixture':fake}):
             with self.assertRaisesRegex(ValueError,'inference_external_library_scope'):
-                original([Path(os.sys.base_prefix),Path(identity.__file__).resolve().parent.parent])
+                original([Path(os.sys.base_prefix),Path(identity.__file__).resolve().parents[2]])
     def test_anchor_revocation_and_unsafe_receipt(self):
         self.validate();(self.state/'laya-synthetic-attestation.json').unlink()
         with self.assertRaises(ValueError):self.validate()

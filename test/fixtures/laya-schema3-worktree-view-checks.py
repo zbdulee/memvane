@@ -41,7 +41,7 @@ class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
         super().setUp()
         self.host = importlib.import_module('memvane.host.host_response')
         self.route = importlib.import_module('memvane.route.index_host_route')
-        self.event_log = importlib.import_module('event_log')
+        self.event_log = importlib.import_module('memvane.diagnostics.event_log')
         self.project_dir = importlib.import_module('memvane.settings.project_dir')
         project = self.case.project
         base = Path(tempfile.mkdtemp(prefix='linked-', dir=str(project.parent))).resolve()
@@ -97,7 +97,7 @@ class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
         with ExitStack() as stack:
             stack.enter_context(self.seed.authority())
             stack.enter_context(mock.patch.object(
-                self.host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')))
+                self.host, '__file__', str(self.case.plugin / 'memvane/host/host_response.py')))
             yield
 
     def hook(self, action, cwd, payload, host='claude', *, wakes=None):

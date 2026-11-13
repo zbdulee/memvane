@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from memvane.learning.context_learning import general_teacher as teacher
 from memvane.learning.context_learning import general_gold_ledger as ledger
 from memvane.learning.context_learning.egress_guard import inspect_payload

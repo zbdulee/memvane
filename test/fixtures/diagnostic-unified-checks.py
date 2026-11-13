@@ -30,7 +30,7 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 from memvane.diagnostics import event_log  # noqa: E402
 from memvane.registry import log_targets  # noqa: E402
 

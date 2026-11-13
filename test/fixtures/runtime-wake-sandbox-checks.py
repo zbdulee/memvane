@@ -19,7 +19,7 @@ import unittest
 from unittest import mock
 
 FIXTURES = Path(__file__).resolve().parent
-CORE = FIXTURES.parents[1] / 'core'
+CORE = FIXTURES.parents[1]
 sys.path.insert(0, str(CORE))
 sys.path.insert(0, str(FIXTURES))
 
@@ -72,7 +72,7 @@ class TestRuntimeRootGuard(Decoy):
             root = override / 'laya-inference'
             # Every participant resolves the same root: queue, coordinator
             # (worker lease, monitor) and the service root itself.
-            from memvane.learning.context_learning import inference_service, resource_coordination
+            from memvane.learning.context_learning import inference_service; from memvane.runtime import resource_coordination
             self.assertEqual(runtime_work.WakeQueue().root, root)
             self.assertEqual(resource_coordination.Coordinator().root, root)
             self.assertEqual(inference_service.service_root(), root)

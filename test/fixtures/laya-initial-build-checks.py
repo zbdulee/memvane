@@ -20,12 +20,12 @@ import time
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.install import initial_build as initial_build
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from memvane.journal import initial_build
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_capacity import generation_digest
-from laya_index_vector import profile_identity
-from memvane.install import product_install as product
+from memvane.provider.domain.profile import profile_identity
+from memvane.app import setup_workflow as product
 from memvane.sync import product_sync_worker as worker
 import laya_source_catalog
 from laya_source_catalog import LayaSourceCatalog
@@ -206,14 +206,14 @@ class BuildProgressTests(BuildCase):
         from memvane.resident.embed_resident import AttachedService
         self.corpus(1)
         self.register()
-        with mock.patch('laya_embed_resident.ensure_running',
+        with mock.patch('memvane.resident.embed_resident.ensure_running',
                         side_effect=ResourceDeferred('laya_service_preparing')) as owner:
             first = worker.run_initial_build(
                 self.project, self.record(), coordinator=self.coordinator, report={},
                 start_service=worker.start_owned_embed_service)
         self.assertEqual(first['reason'], 'laya_service_preparing')
         owner.assert_called_once()
-        with mock.patch('laya_embed_resident.ensure_running',
+        with mock.patch('memvane.resident.embed_resident.ensure_running',
                         return_value=AttachedService()) as owner, \
              mock.patch.object(worker, 'start_owned_embed_service',
                                side_effect=AssertionError('transient model started')):
@@ -229,7 +229,7 @@ class BuildProgressTests(BuildCase):
         from memvane.resident.embed_resident import AttachedService
         self.corpus(1)
         self.register()
-        with mock.patch('laya_embed_resident.ensure_running',
+        with mock.patch('memvane.resident.embed_resident.ensure_running',
                         return_value=AttachedService()) as owner, \
              mock.patch.object(worker, 'start_owned_embed_service',
                                side_effect=AssertionError('transient model started')):
@@ -625,11 +625,11 @@ class RecordAndInstallerTests(BuildCase):
         patches = [
             mock.patch.object(product, 'plan_fresh_wiki_origin',
                               return_value={'proposalSha256': identity['proposalSha256']}),
-            mock.patch('laya_install_journal.inspect_journal',
+            mock.patch('memvane.journal.install_journal.inspect_journal',
                        side_effect=lambda _p: dict(self.journal)),
             mock.patch.object(product, 'preflight_product_candidate',
                               return_value={'attestationSha256': self.attestation}),
-            mock.patch('laya_fresh_wiki_origin.bind',
+            mock.patch('memvane.diagnostics.event_log.bind',
                        side_effect=AssertionError('bind reached')),
         ]
         for patcher in patches:
@@ -669,7 +669,7 @@ class RecordAndInstallerTests(BuildCase):
             initial_build.advance(record, sealed=forged)
         with mock.patch.object(product, 'plan_fresh_wiki_origin',
                                return_value={'proposalSha256': identity['proposalSha256']}), \
-                mock.patch('laya_install_journal.inspect_journal',
+                mock.patch('memvane.journal.install_journal.inspect_journal',
                            side_effect=lambda _p: dict(self.journal)), \
                 mock.patch.object(product, 'preflight_product_candidate',
                                   return_value={'attestationSha256': self.attestation}):

@@ -12,9 +12,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.wiki.compile import wiki_compile_retrieval as retrieval
-from memvane.wiki.workspace import wiki_selected_laya as selected
+from memvane.wiki.workspace import wiki_selected_laya as selected; import memvane.wiki.compile.selected_execution as selected_selected_execution
 
 
 class OverlayChecks(unittest.TestCase):
@@ -41,7 +41,7 @@ class OverlayChecks(unittest.TestCase):
             self.addCleanup(mocked.stop)
 
     def query(self, text='starship archive', top_k=3, cap_chars=100):
-        return selected.wiki_matches(self.root, self.wiki, text, top_k, cap_chars,
+        return selected_selected_execution.wiki_matches(self.root, self.wiki, text, top_k, cap_chars,
                                      bound=self.bound)
 
     def card(self, name, body):
@@ -367,8 +367,8 @@ class OverlayChecks(unittest.TestCase):
         profile = {'profileId': 'synthetic-profile'}
         manifest = {'synthetic': True}
         long_query = '한글 공포 기록🙂👻 ' * 2000
-        with patch('laya_local_embed_provider.ReviewedLocalQmdProvider') as constructor, \
-             patch('laya_embed_resident.admit_query') as admit:
+        with patch('memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider') as constructor, \
+             patch('memvane.resident.embed_resident.admit_query') as admit:
             query = retrieval.query_provider(({}, {'providerManifest': manifest}))
             query(long_query, profile)
             received, received_profile = constructor.return_value.call_args.args
@@ -420,7 +420,7 @@ class PinnedChecks(capacity.HostCapacityCase):
     def query(self, text='alpha otter', top_k=3):
         with patch.object(retrieval, 'query_provider', return_value=self.provider), \
              patch.object(selected, 'recheck'):
-            return selected.wiki_matches(self.raw.parent, self.raw, text, top_k, 100,
+            return selected_selected_execution.wiki_matches(self.raw.parent, self.raw, text, top_k, 100,
                                          bound=self.bound)
 
     def test_real_pinned_lexical_vector_search_and_unpublished_overlay(self):
@@ -477,8 +477,8 @@ class PinnedChecks(capacity.HostCapacityCase):
     def test_compile_index_query_never_calls_learning_selector_or_capture(self):
         with patch.object(capacity.response, '_select_verified_cards', side_effect=AssertionError('learner selection')), \
              patch.object(capacity.response, '_capture_learning', side_effect=AssertionError('learner capture')), \
-             patch('context_learning.selection_read.select_published', side_effect=AssertionError('learner entry')), \
-             patch('context_learning.live_select.choose', side_effect=AssertionError('learner inference')), \
+             patch('memvane.learning.context_learning.selection_read.select_published', side_effect=AssertionError('learner entry')), \
+             patch('memvane.learning.context_learning.live_select.choose', side_effect=AssertionError('learner inference')), \
              patch.object(retrieval, 'overlay_paths', return_value=[]):
             self.assertEqual(self.query()[0][0], self.raw / 'a.md')
 

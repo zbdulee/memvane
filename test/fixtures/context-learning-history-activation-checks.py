@@ -18,7 +18,7 @@ from memvane.learning.context_learning.history_activation import (
     HOST_FILES, activate, recover, rollback, selected_database, writer_access,
     read_database, record_case_mapping, _write_state, schema_digest)
 from memvane.learning.context_learning import history_fence
-import context_learning.history_activation as activation_module
+import memvane.learning.context_learning.history_activation as activation_module
 from memvane.learning.context_learning.history_migration import prepare
 from memvane.learning.context_learning.history_lifecycle import request as lifecycle_request
 from memvane.learning.context_learning.shared import _db
@@ -148,7 +148,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
             assert len(commands) == 1
             environment = {**os.environ, 'HOME': str(home),
                            'CLAUDE_PLUGIN_ROOT': str(plugin_root),
-                           'PYTHONPATH': str(plugin_root / 'core'),
+                           'PYTHONPATH': str(plugin_root),
                            'PYTHONDONTWRITEBYTECODE': '1',
                            'QMD_RECALL_LOG': '', 'QMD_SUPPRESS_NOTICE': '1',
                            'QMD_AUTO_COMPILE_DISABLED': '1',
@@ -216,7 +216,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
                     'with_writer=writer_access(sys.argv[1],home=sys.argv[2]); '
                     'with_writer.__enter__(); print("held",flush=True); '
                     'sys.stdin.readline(); with_writer.__exit__(None,None,None)')
-    child_env = {**os.environ, 'PYTHONPATH': str(source / 'core'),
+    child_env = {**os.environ, 'PYTHONPATH': str(source),
                  'PYTHONDONTWRITEBYTECODE': '1'}
     child = subprocess.Popen([sys.executable, '-c', child_script,
                               str(shared_db), str(home)], stdin=subprocess.PIPE,
@@ -271,7 +271,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     with closing_ro(shared_db) as db:
         assert not history_fence._actual(db)
 
-    with patch('context_learning.history_activation.os.replace',
+    with patch('memvane.learning.context_learning.history_activation.os.replace',
                side_effect=OSError('simulated-crash-before-replace')):
         rejects(lambda: activate(generation, host_roots=hosts, home=home),
                 'simulated-crash-before-replace')
@@ -282,7 +282,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
         'import os,sys; from unittest.mock import patch; '
         'from memvane.learning.context_learning.history_activation import activate; '
         'stop=lambda *args,**kwargs: os._exit(94); '
-        'guard=patch("context_learning.history_activation._atomic_pointer", '
+        'guard=patch("memvane.learning.context_learning.history_activation._atomic_pointer", '
         'side_effect=stop); guard.start(); '
         'activate(sys.argv[1],home=sys.argv[2],host_roots={'
         '"claude":sys.argv[3],"codex":sys.argv[4]})')
@@ -397,7 +397,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
         'import os,sys; from unittest.mock import patch; '
         'from memvane.learning.context_learning.history_activation import activate; '
         'stop=lambda *args,**kwargs: os._exit(96); '
-        'guard=patch("context_learning.history_activation._legacy_writer_pids", '
+        'guard=patch("memvane.learning.context_learning.history_activation._legacy_writer_pids", '
         'side_effect=stop); guard.start(); '
         'activate(sys.argv[1],home=sys.argv[2],host_roots={'
         '"claude":sys.argv[3],"codex":sys.argv[4]})')
@@ -490,7 +490,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
         'import os,sys; from unittest.mock import patch; '
         'from memvane.learning.context_learning.history_activation import rollback; '
         'stop=lambda *args,**kwargs: os._exit(95); '
-        'guard=patch("context_learning.history_activation._remove_partial_fences", '
+        'guard=patch("memvane.learning.context_learning.history_activation._remove_partial_fences", '
         'side_effect=stop); guard.start(); '
         'rollback(home=sys.argv[1],host_roots={'
         '"claude":sys.argv[2],"codex":sys.argv[3]})')

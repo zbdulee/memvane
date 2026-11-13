@@ -32,7 +32,7 @@ function writeSettings(work, compile = {}) {
 
 function runCompile(work, payload, env = {}) {
   // QMD_DIRTY_QUEUE를 임시 경로로 격리하지 않으면 dirty queue 유출 시 사용자 실제 qmd 인덱스에 고아 컬렉션이 등록되며(복구 불가 고아 등록), 자동으로 정리할 수 있는 경로가 없다.
-  return execFileSync('python3', ['core/wiki_compile.py', '--cwd', work], {
+  return execFileSync('python3', ['entry/run.py', 'wiki-compile', '--cwd', work], {
     encoding: 'utf8',
     input: JSON.stringify(payload),
     env: { QMD_DIRTY_QUEUE: join(work, 'dirty-queue'), ...process.env, ...env },
@@ -44,7 +44,7 @@ function runCompileAsync(work, payload, env = {}) {
   // mock HTTP server used by tests that need to observe the outgoing /query
   // payload -- use async spawn instead so the server can actually respond.
   return new Promise((resolve, reject) => {
-    const child = spawn('python3', ['core/wiki_compile.py', '--cwd', work], {
+    const child = spawn('python3', ['entry/run.py', 'wiki-compile', '--cwd', work], {
       env: { QMD_DIRTY_QUEUE: join(work, 'dirty-queue'), ...process.env, ...env },
     });
     let stdout = '';
@@ -147,8 +147,8 @@ test('selected replacement stages a hidden candidate without overwriting the pub
       'import json,sys',
       'from pathlib import Path',
       'from unittest.mock import patch',
-      'sys.path.insert(0,"core")',
-      'import wiki_compile as wc, wiki_selected_laya, config',
+      'sys.path.insert(0,".")',
+      'import memvane.wiki.compile.wiki_compile as wc; import memvane.wiki.workspace.wiki_selected_laya as wiki_selected_laya; import memvane.settings.config as config',
       'from memvane.wiki.card import api as card_api',
       'root=Path(sys.argv[1]); candidate=json.loads(sys.argv[2])',
       'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
@@ -186,8 +186,8 @@ test('selected replacement fails closed when its wiki collection root cannot be 
     const original = readFileSync(card, 'utf8');
     const script = [
       'import json,sys', 'from pathlib import Path', 'from unittest.mock import patch',
-      'sys.path.insert(0,"core")',
-      'import wiki_compile as wc, wiki_selected_laya, config',
+      'sys.path.insert(0,".")',
+      'import memvane.wiki.compile.wiki_compile as wc; import memvane.wiki.workspace.wiki_selected_laya as wiki_selected_laya; import memvane.settings.config as config',
       'from memvane.wiki.card import api as card_api',
       'root=Path(sys.argv[1]); candidate=json.loads(sys.argv[2])',
       'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
@@ -751,7 +751,7 @@ test('wiki_compile: compile audit paths are confined to project .auto-context/co
     writeSettings(work);
     mkdirSync(join(work, '.auto-context', 'compile'), { recursive: true });
     symlinkSync(outside, join(work, '.auto-context', 'compile', 'candidates.jsonl'));
-    const result = spawnSync('python3', ['core/wiki_compile.py', '--cwd', work], {
+    const result = spawnSync('python3', ['entry/run.py', 'wiki-compile', '--cwd', work], {
       encoding: 'utf8',
       input: JSON.stringify({
       trigger: 'manual',
@@ -796,9 +796,9 @@ test('patch_frontmatter_fields: rewrites only named scalar keys, leaves body and
 
     const script = `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as w
+import memvane.wiki.compile.wiki_compile as w
 ok = w.patch_frontmatter_fields(Path(${JSON.stringify(page)}), {"status": "superseded", "supersededBy": ".auto-context/wiki/decisions/new.md"})
 print(ok)
 `;
@@ -846,9 +846,9 @@ test('patch_frontmatter_fields: quotes unknown status values', () => {
     ].join('\n'));
     const script = `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as w
+import memvane.wiki.compile.wiki_compile as w
 print(w.patch_frontmatter_fields(Path(${JSON.stringify(page)}), {"status": "needs review"}))
 `;
     const result = execFileSync('python3', ['-c', script], { encoding: 'utf8' }).trim();
@@ -866,9 +866,9 @@ test('patch_frontmatter_fields: returns False for a page with no parseable front
     writeFileSync(page, 'no frontmatter here\n');
     const script = `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as w
+import memvane.wiki.compile.wiki_compile as w
 print(w.patch_frontmatter_fields(Path(${JSON.stringify(page)}), {"status": "superseded"}))
 `;
     const result = execFileSync('python3', ['-c', script], { encoding: 'utf8' }).trim();
@@ -1129,9 +1129,9 @@ test('wiki_compile: verified 카드가 auto-update되면 status가 generated로 
     const page = join(work, '.auto-context', 'wiki', 'decisions', 'reset-decision.md');
     // verify 승격 시뮬레이션
     execFileSync('python3', ['-c', `
-import sys; sys.path.insert(0, 'core')
+import sys; sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as wc
+import memvane.wiki.compile.wiki_compile as wc
 wc.patch_frontmatter_fields(Path(${JSON.stringify(page)}), {"status": "verified", "verifiedBy": "claude", "verifiedAt": "2026-07-04T00:00:00Z"})
 `], { encoding: 'utf8' });
     assert.match(readFileSync(page, 'utf8'), /^status: verified$/m);
@@ -1146,8 +1146,8 @@ wc.patch_frontmatter_fields(Path(${JSON.stringify(page)}), {"status": "verified"
     const counted = execFileSync('python3', ['-c', `
 import json, sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-import wiki_compile as wc
+sys.path.insert(0, '.')
+import memvane.wiki.compile.wiki_compile as wc
 target = Path(${JSON.stringify(page)})
 real_write = wc.write_text_atomic
 writes = []
@@ -1301,9 +1301,9 @@ test('compact_manifest: same-identity 중복은 접되 최신 엔트리를 보�
   writeFileSync(manifest, rows);
   const script = `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as w
+import memvane.wiki.compile.wiki_compile as w
 p = Path(${JSON.stringify(manifest)})
 w.compact_manifest(p, max_bytes=1)  # 임계 강제 트리거
 out = w.read_jsonl(p)
@@ -1326,9 +1326,9 @@ test('compact_manifest: O(n) 역방향 스캔이 pairwise oracle과 동일한 �
   const manifest = join(work, 'manifest.jsonl');
   const script = `
 import sys, json, random
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as w
+import memvane.wiki.compile.wiki_compile as w
 
 random.seed(20260714)
 
@@ -1394,9 +1394,9 @@ test('compact_manifest: 압축해도 줄지 않으면 stamp 사이드카가 다�
   writeFileSync(manifest, rows);
   const script = `
 import sys
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from pathlib import Path
-import wiki_compile as w
+import memvane.wiki.compile.wiki_compile as w
 
 calls = {"n": 0}
 orig_read_jsonl = w.read_jsonl
@@ -1440,8 +1440,8 @@ test('rewrite_generated_card drops verifier-cited sourceSpans with the other pro
   const script = `
 import hashlib, json, sys
 from pathlib import Path
-sys.path.insert(0, 'core')
-import source_spans, wiki_compile as wc, yaml_scalars as ys
+sys.path.insert(0, '.')
+import memvane.wiki.card.source_spans as source_spans; import memvane.wiki.compile.wiki_compile as wc; import memvane.wiki.card.yaml_scalars as ys
 root = Path(${JSON.stringify(work)})
 (root / 'docs').mkdir()
 src = root / 'docs' / 'a.md'

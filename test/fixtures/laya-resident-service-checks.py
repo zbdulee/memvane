@@ -19,7 +19,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-CORE = Path(__file__).resolve().parents[2] / 'core'
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
 
 from memvane.kernel.errors import IndexContractError
@@ -44,9 +44,9 @@ def manifest_for(socket_path, *, model='1', dimension=DIM):
         node_sha256=digests['node'], module_entry_sha256=digests['entry'],
         closure_sha256=digests['closure'])
     return {'approvedProviderId': 'local-qmd-synthetic', 'providerArtifactSha256': digests['provider'],
-            'providerRelativePath': 'core/laya_local_embed_provider.py',
-            'providerPath': '/synthetic/core/laya_local_embed_provider.py',
-            'workerPath': '/synthetic/core/laya_local_embed_worker.mjs', 'workerSha256': digests['worker'],
+            'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py',
+            'providerPath': '/synthetic/memvane/provider/adapters/local_embed_provider.py',
+            'workerPath': '/synthetic/memvane/provider/adapters/laya_local_embed_worker.mjs', 'workerSha256': digests['worker'],
             'serviceSocketPath': str(socket_path), 'nodePath': '/synthetic/node',
             'nodeSha256': digests['node'], 'moduleEntryPath': '/synthetic/entry.mjs',
             'moduleEntrySha256': digests['entry'], 'modelPath': '/synthetic/model.gguf',
@@ -294,14 +294,14 @@ class ServiceChecks(Fixture):
         self.assertEqual(len(self.loads), 1)
 
     def test_default_admission_uses_memory_gate_without_provider_lane(self):
-        import context_learning.resource_coordination as coordination
-        import context_learning.shared as shared
+        import memvane.runtime.resource_coordination as coordination
+        import memvane.learning.context_learning.shared as shared
         calls = []
 
         class Controller:
             def check(self, policy, report):
                 calls.append(policy)
-                from memvane.learning.context_learning.resource_coordination import decision
+                from memvane.runtime.resource_coordination import decision
                 return decision(policy, report)
 
             def activity(self, *_args):

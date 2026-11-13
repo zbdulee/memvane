@@ -19,11 +19,11 @@ import tempfile
 import unittest
 from unittest import mock
 
-CORE = Path(__file__).resolve().parents[2] / 'core'
+CORE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(CORE))
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
-from memvane.route import index_host_route as host_route  # noqa: E402
+from memvane.route import index_host_route as host_route; import memvane.journal.route_selection as host_route_route_selection  # noqa: E402
 from memvane.journal import install_journal as journal_mod  # noqa: E402
 from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
@@ -76,7 +76,7 @@ class SelectedProject(unittest.TestCase):
             'MEMVANE_TEST_RUNTIME_ROOT': str(self.home / 'runtime-root')})
         patcher.start()
         self.addCleanup(patcher.stop)
-        budget = mock.patch('hook_budget._deadline', None)
+        budget = mock.patch('memvane.kernel.hook_budget._deadline', None)
         budget.start()
         self.addCleanup(budget.stop)
         self.project = self.home / 'project'
@@ -177,7 +177,7 @@ class SelectedProject(unittest.TestCase):
         path.chmod(0o600)
 
     def decision(self):
-        return host_route.select_route(str(self.project), action='recall')
+        return host_route_route_selection.select_route(str(self.project), action='recall')
 
     def assert_selected_and_readable(self):
         decision = self.decision()

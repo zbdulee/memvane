@@ -34,7 +34,7 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path.insert(0, str(ROOT / 'core'))
+sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location('pr67_rollback_checks', HERE / 'laya-shadow-rollback-checks.py')
 rollback_checks = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rollback_checks)
@@ -50,13 +50,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 root, payload = Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text(encoding='utf8'))
-sys.path.insert(0, str(root / 'core'))
+sys.path.insert(0, str(root))
 signal.alarm(150)
 spec = importlib.util.spec_from_file_location('pr67_crash_authority', root / 'test/fixtures/laya-journal-reader-checks.py')
 fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
-import laya_bridge_readiness as bridge, laya_install_journal as J, laya_journal_reader as reader
-import laya_ledger_common as ledger, laya_project_dir_move as mover, laya_reader_lease as lease
-import laya_product_sync_worker as worker, laya_view_store as views, project_dir
+import laya_bridge_readiness as bridge; import memvane.journal.install_journal as J; import memvane.journal.journal_reader as reader
+import laya_project_dir_move as mover; import memvane.install.ledger_common as ledger; import memvane.journal.reader_lease as lease
+import memvane.sync.product_sync_worker as worker; import memvane.store.view.view_store as views; import memvane.settings.project_dir as project_dir
 helper = fixture.JournalReaderChecks('runTest')
 case = SimpleNamespace(plugin=Path(payload['plugin']), proof=payload['proof'])
 project, kill = Path(payload['project']), payload['kill']
@@ -114,19 +114,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 root, payload = Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text(encoding='utf8'))
-sys.path.insert(0, str(root / 'core'))
+sys.path.insert(0, str(root))
 spec = importlib.util.spec_from_file_location('pr67_recall_authority', root / 'test/fixtures/laya-journal-reader-checks.py')
 fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
-import laya_bridge_readiness as bridge, laya_index_host_route as route, laya_journal_reader as reader
-import laya_project_dir_move as mover, laya_reader_lease as lease, laya_host_response as host
+import laya_bridge_readiness as bridge; import memvane.route.index_host_route as route; import memvane.journal.route_selection as route_route_selection; import memvane.journal.journal_reader as reader
+import laya_project_dir_move as mover; import memvane.journal.reader_lease as lease; import memvane.host.host_response as host
 helper = fixture.JournalReaderChecks('runTest')
 case = SimpleNamespace(plugin=Path(payload['plugin']), proof=payload['proof'])
 project, gens, served = payload['project'], payload['gens'], []
 for _ in range(payload['limit']):
     err = io.StringIO()
     with helper.full_authority(case, reader, bridge, lease, mover), redirect_stderr(err), \
-            mock.patch.object(host, '__file__', str(case.plugin / 'core' / 'laya_host_response.py')):
-        decision = route.select_route(project, action='recall')
+            mock.patch.object(host, '__file__', str(case.plugin / 'memvane/host/host_response.py')):
+        decision = route_route_selection.select_route(project, action='recall')
         answer = host.serve_selected('recall', payload['host'], decision,
                                      {'cwd': project, 'prompt': 'heron route northern marsh',
                                       'session_id': 'pr67-parallel', 'hook_event_name': 'UserPromptSubmit'})
@@ -143,8 +143,8 @@ CROSS = r'''
 import json, sys, time
 from pathlib import Path
 root, payload = Path(sys.argv[1]), json.loads(Path(sys.argv[2]).read_text(encoding='utf8'))
-sys.path.insert(0, str(root / 'core'))
-import laya_view_store as views
+sys.path.insert(0, str(root))
+import memvane.store.view.view_store as views
 store = views.ViewStore.open_reader(Path(payload['store']), repository=payload['repository'],
                                    scope_id=payload['scope'], deadline=time.monotonic() + 20)
 try:
@@ -363,11 +363,11 @@ class Pr67IntegrationChecks(unittest.TestCase):
         import io
         from contextlib import redirect_stderr
         route = importlib.import_module('memvane.route.index_host_route')
-        event_log = importlib.import_module('event_log')
+        event_log = importlib.import_module('memvane.diagnostics.event_log')
         events, err = [], io.StringIO()
         with self.u11.loaded(), redirect_stderr(err), \
                 mock.patch.object(event_log, 'emit', side_effect=lambda event, **f: events.append(dict(f, event=event))):
-            decision = route.select_route(str(cwd), action='recall')
+            decision = route_route_selection.select_route(str(cwd), action='recall')
             answer = self.u11.host.serve_selected('recall', host, decision,
                                                   {'cwd': str(cwd), 'prompt': prompt, 'session_id': 'pr67-' + host,
                                                    'hook_event_name': 'UserPromptSubmit'})

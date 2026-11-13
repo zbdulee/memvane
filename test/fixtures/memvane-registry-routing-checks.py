@@ -27,10 +27,10 @@ from unittest.mock import patch
 
 FIXTURES = Path(__file__).resolve().parent
 REPO = FIXTURES.parents[1]
-sys.path.insert(0, str(REPO / 'core'))
+sys.path.insert(0, str(REPO))
 sys.path.insert(1, str(FIXTURES))
 from memvane.wiki.intake import external_edits as external  # noqa: E402
-from memvane.route import index_host_route as routes  # noqa: E402
+from memvane.route import index_host_route as routes; import memvane.journal.route_selection as routes_route_selection  # noqa: E402
 from memvane.journal import install_journal as journal  # noqa: E402
 from memvane.kernel import memvane_paths  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
@@ -46,7 +46,7 @@ BASE_COMMIT = os.environ.get('MEMVANE_REGISTRY_BASE_COMMIT', '4510105e')
 
 def registry():
     if memvane_registry is None:
-        raise AssertionError('core/memvane_registry.py is missing')
+        raise AssertionError('memvane/registry/memvane_registry.py is missing')
     return memvane_registry
 
 
@@ -211,7 +211,7 @@ class RegistryTargets(Routing):
         return counted
 
     def test_nested_check_is_bounded_by_depth_and_holds_deeper_edits(self):
-        from memvane.sync.source_scan import MAX_DEPTH
+        from memvane.wiki.intake.source_scan import MAX_DEPTH
         self.backfill()
         shallow = self.b.project / 'a' / 'b' / 'note.md'
         shallow.parent.mkdir(parents=True)
@@ -259,7 +259,7 @@ class RegistryTargets(Routing):
         self.assertEqual(now[0], 1000.0, 'the last nested stat did not run')
         self.assertEqual(result['owners'], 0, result)
         self.assertFalse(self.routed())
-        inbox = external._inbox_path(routes.select_route(str(self.b.project), action='index'))
+        inbox = external._inbox_path(routes_route_selection.select_route(str(self.b.project), action='index'))
         self.assertFalse(inbox.exists())
 
     def test_nested_project_folders_hold_out_a_registered_owner_only(self):
@@ -295,7 +295,7 @@ class RegistryTargets(Routing):
         foreign = installs.make_install(elsewhere, self.work / 'delta', 'delta',
                                         '8' * 32, '9' * 32)
         self.bundles.add(foreign)
-        self.assertEqual(routes.select_route(str(foreign.project), action='index')['state'],
+        self.assertEqual(routes_route_selection.select_route(str(foreign.project), action='index')['state'],
                          'candidate')
         with contextlib.closing(sqlite3.connect(str(self.db))) as db:
             db.execute("INSERT INTO entries(install_id,state_root,project_root,target_root,"

@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path.cwd() / 'core'))
+sys.path.insert(0, str(Path.cwd()))
 from memvane.learning import project_learning_setup as setup
 
 assert setup.SYNTHETIC_MAX_RSS_MIB == 3584
@@ -46,7 +46,7 @@ with patch.object(setup, '_guard_calibration', return_value={'peakRssKib': 2033 
     except ValueError as exc:
         assert str(exc) == 'setup_synthetic_measured_profile_required'
 # Other synthetic bounds are unchanged in source.
-source = (Path.cwd() / 'core/project_learning_setup.py').read_text()
+source = (Path.cwd() / 'memvane/learning/project_learning_setup.py').read_text()
 for fragment in ("'minAvailableMib':768,'maxLoadPerCpu':.75}",
                  "minAvailableMib=768,maxLoadPerCpu=.75,maxGoldCalls=0,",
                  "batchMax=100,adaptiveMemory=profile,targetHeadroomFraction=.35",

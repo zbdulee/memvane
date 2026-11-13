@@ -21,7 +21,7 @@ class GateResponseChecks(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = str(Path(self.temp.name).resolve())
         self.decision = {'state': 'candidate', 'projectRoot': self.root,
-                         'pluginRoot': str(Path(response.__file__).resolve().parents[1])}
+                         'pluginRoot': str(Path(response.__file__).resolve().parents[2])}
         self.proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
         self.event = {'cwd': self.root, 'hook_event_name': 'PreToolUse',
                       'tool_name': 'Edit', 'tool_input': {'file_path': 'note.md'}}

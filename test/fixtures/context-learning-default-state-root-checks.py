@@ -7,7 +7,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-sys.path.insert(0, 'core')
+sys.path.insert(0, '.')
 from memvane.settings import config
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.seam import _private_state
