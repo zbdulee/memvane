@@ -1887,25 +1887,14 @@ def _request_worktree_sync(main: dict, proof: dict, recheck) -> None:
 
 
 def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> dict:
-    """Linked git worktree: serve the main checkout's published generation only.
-
-    The selector proved the worktree shares the main checkout's git common dir
-    and derived settings identity. No sync, compile or index wake, wiki grant,
-    provider start or learning capture is recorded, and edit events are not
-    validated against the main project's paths.
-
-    When the main checkout's journal selects a schema3 endpoint, recall reads
-    this worktree's own view instead (``view_preparing`` until its first
-    publish), and SessionStart, ``index`` and a successful Bash record the
-    main checkout's ``laya-sync`` wake, whose owner fills that view.
-    """
-    from laya_install_journal import verify_selected_route_read_only as recheck
+    """Serve the linked worktree's own view and offer main-owner sync wakes."""
+    from laya_install_journal import verify_selected_route as recheck
     main = decision.get('mainRoute')
     if not isinstance(main, dict) or main.get('state') != 'candidate':
         _fail('worktree_route_invalid')
     proof = recheck(main)
-    if proof.get('readOnlyAllowed') is not True:
-        _fail('worktree_read_only_unapproved')
+    if proof.get('productRouteAllowed') is not True:
+        _fail('worktree_selection_unapproved')
     _trace_fields(degraded='worktree')
     if action == 'recall':
         try:
