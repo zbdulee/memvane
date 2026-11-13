@@ -1,17 +1,4 @@
-"""Selection-ledger primitives shared by the Laya selection and its upgrades.
-
-The fresh-wiki ledger, the selected-route classifier and the
-active/bound/inactive bundle upgrades all read, write and lock their records
-through these functions. This module imports only the standard library at
-module level.
-
-A QMD-origin selection (``qmd-cutover.json`` and its marker schema) is no
-longer served or upgraded. Every writer refuses a state root that still
-holds that ledger as ``qmd_origin_detach_required``, and the route selector
-classifies its marker ``blocked`` with the same reason.
-
-``CutoverBlocked`` keeps its name: callers match it by class name.
-"""
+"""Selection ledger reads, writes and locking primitives."""
 from __future__ import annotations
 
 from contextlib import contextmanager

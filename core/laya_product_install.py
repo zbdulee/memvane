@@ -10,9 +10,7 @@ the runtime ``laya-sync`` wake advances in bounded steps, bound by an explicit
 activated by a separate ``activate``, which then queues one selected
 ``laya-sync`` wake. An explicit ``retire-origin`` withdraws a bound build that
 was never selected (deleting nothing) so a fresh install with its own state
-root can be prepared. An explicit ``restore`` withdraws the route before its
-first selected write. A project still bound to a QMD-origin ledger
-(``qmd-cutover.json``) is refused as ``qmd_origin_detach_required``.
+root can be prepared.
 """
 from __future__ import annotations
 
