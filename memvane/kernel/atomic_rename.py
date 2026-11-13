@@ -78,3 +78,11 @@ def write_text_atomic(path: Path, text: str) -> bool:
         except OSError:
             pass
         return False
+
+
+def fsync_dir(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)

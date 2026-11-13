@@ -8,6 +8,7 @@ import stat
 import tempfile
 
 from memvane.journal.types import CutoverBlocked
+from memvane.kernel.atomic_rename import fsync_dir as _fsync_dir
 
 
 def _fail(reason):
@@ -60,12 +61,6 @@ def _read_json(path):
     except (UnicodeError, ValueError, TypeError) as exc:
         raise CutoverBlocked('cutover_record_invalid') from exc
 
-def _fsync_dir(path):
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 def _write(path, value, *, replace):
     path = Path(path)

@@ -53,6 +53,7 @@ import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.kernel.atomic_rename import fsync_dir
 from memvane.wiki.verify.intent_ack import _supersede_compile_intent
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.card import wiki_markers
@@ -69,7 +70,6 @@ from memvane.wiki.card import source_spans
 from memvane.wiki.card.api import card_sources_allowed
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
-
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
 # `skippedPath`/`deletedPath` 오타가 유료 과금 루프의 입구였던 실패 클래스가 함께 사라진다).
 VERIFY_QUEUE_DEFAULT = cp.rel(ct.VERIFY_QUEUE)
@@ -786,7 +786,7 @@ def _write_compile_intent(checkout, result, verdict_digest, result_digest):
     directory = state / 'provenance-intents'
     try:
         directory.mkdir(mode=0o700)
-        ledger.ledger_fsync_dir(state)
+        fsync_dir(state)
     except FileExistsError:
         pass
     info = directory.lstat()

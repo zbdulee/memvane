@@ -128,9 +128,6 @@ def ledger_read_json(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def ledger_fsync_dir(*args, **kwargs):
-    from memvane.journal.ledger_io import _fsync_dir as implementation
-    return implementation(*args, **kwargs)
 
 
 def ledger_write(*args, **kwargs):
