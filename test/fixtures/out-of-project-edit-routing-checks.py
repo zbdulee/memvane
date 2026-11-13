@@ -98,7 +98,7 @@ class Routing(unittest.TestCase):
         self.backfill_registry()
 
     def backfill_registry(self):
-        import memvane_registry
+        from memvane.registry import memvane_registry
         for _ in range(8):
             if memvane_registry.reconcile(max_rows=64, seconds=60.0,
                                           backfill_page=64)['complete']:
@@ -459,7 +459,7 @@ class HookRouting(Routing):
         path.write_text('nested owner\n')
         # The owner cap applies to the bounded scan, which runs while the
         # registry backfill is incomplete.
-        import memvane_registry
+        from memvane.registry import memvane_registry
         with contextlib.closing(sqlite3.connect(str(memvane_registry.registry_path()))) as db:
             db.execute('UPDATE scans SET complete_at=NULL')
             db.commit()

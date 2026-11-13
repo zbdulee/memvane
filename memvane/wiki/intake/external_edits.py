@@ -202,7 +202,7 @@ def _targets(origin, deadline):
     """
     import laya_index_host_route as routes
     import laya_install_journal as journal
-    import memvane_registry
+    from memvane.registry import memvane_registry
     view = memvane_registry.routing_rows()
     if view['complete']:
         candidates = [(Path(row['stateRoot']), row) for row in view['rows']]

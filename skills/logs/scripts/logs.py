@@ -36,6 +36,7 @@ import unicodedata
 sys.dont_write_bytecode = True
 CORE = Path(__file__).resolve().parents[3] / 'core'
 sys.path.insert(0, str(CORE))
+sys.path.insert(0, str(CORE.parent))
 
 from memvane.diagnostics import event_log  # noqa: E402
 from memvane.registry import log_targets  # noqa: E402

@@ -40,7 +40,7 @@ import setup_entry  # noqa: E402
 import out_of_project_installs as installs  # noqa: E402
 
 try:
-    import memvane_registry
+    from memvane.registry import memvane_registry
 except ImportError:
     memvane_registry = None
 
