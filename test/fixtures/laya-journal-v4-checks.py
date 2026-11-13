@@ -379,17 +379,6 @@ class HostGate(V3Selected):
         self.assertIn(('journal.v4', 'journal_v4_converted'),
                       [(row['event'], row['outcome']) for row in event_log.read(self.state)])
 
-    def test_selected_session_start_requests_conversion_only_for_v3(self):
-        requested = []
-        decision = self.decision()
-        with mock.patch.object(auto, 'request',
-                               side_effect=lambda *a, **k: requested.append(a)):
-            import laya_host_response as response
-            response._request_journal_v4(decision)
-            J.convert_to_v4(self.journal)
-            response._request_journal_v4(decision)
-        self.assertEqual(requested, [(decision['projectRoot'], decision['journalPath'],
-                                      'journal_v4_conversion')])
 
 
 class SchemaSnapshot(V3Selected):

@@ -153,7 +153,6 @@ class ResponseChecks(unittest.TestCase):
             proof = {'productRouteAllowed': True, 'selectionEpoch': 1}
             payload = {'hook_event_name': 'SessionStart'}
             with patch.object(laya_install_journal, 'verify_selected_route', return_value=proof), \
-                 patch.object(response, '_request_journal_v4'), \
                  patch.object(response, '_move_notices', return_value=None), \
                  patch.object(response, '_request_selected_sync'), \
                  patch.object(response, '_vector_block_notice', return_value=None):

@@ -2427,7 +2427,6 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         from laya_host_rules import is_session, discovery_grant_kind, codex_seal_notice
         move_notice = None
         if is_session(action):
-            _request_journal_v4(decision)
             move_notice = _move_notices(decision)
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
@@ -2598,23 +2597,6 @@ def _move_notices(decision: dict, *, request_move: bool = True):
     folder = _project_dir_move_notice(decision,
                                       request_move=request_move and state is None)
     return '\n'.join(line for line in (state, folder) if line) or None
-
-
-def _request_journal_v4(decision: dict) -> None:
-    """A v3 journal asks the detached upgrade worker to convert it.
-
-    The worker converts only when every host copy reads v4; this hook only
-    reads the journal format and never waits.
-    """
-    try:
-        from laya_install_journal import journal_version
-        if journal_version(decision['journalPath']) >= 4:
-            return
-        import laya_bundle_upgrade
-        laya_bundle_upgrade.request(decision['projectRoot'], decision['journalPath'],
-                                    'journal_v4_conversion')
-    except Exception:
-        pass
 
 
 def _trace_fields(**fields) -> None:
