@@ -355,6 +355,7 @@ def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
     import memvane_paths
     import sqlite3
     from contextlib import closing
+    from memvane_version import same_major
 
     if (set(record) != FIELDS_V4 or record['status'] != 'active'
             or type(record['installId']) is not str
@@ -389,17 +390,20 @@ def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
         if path.resolve(strict=True) != path:
             raise ValueError('unsafe_route_store')
         observed[field] = (info.st_dev, info.st_ino)
-    try:
-        with closing(sqlite3.connect(store.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
-            db.execute('PRAGMA query_only=ON')
-            identity = db.execute('SELECT incarnation,scope_id FROM store_meta WHERE singleton=1').fetchone()
-    except sqlite3.Error as exc:
-        raise ValueError('route_store_unavailable') from exc
+    identity = None
+    matching_major = same_major(record['stateFormat'])
+    if matching_major:
+        try:
+            with closing(sqlite3.connect(store.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
+                db.execute('PRAGMA query_only=ON')
+                identity = db.execute('SELECT incarnation,scope_id FROM store_meta WHERE singleton=1').fetchone()
+        except sqlite3.Error as exc:
+            raise ValueError('route_store_unavailable') from exc
     for path, field in ((state, 'stateNode'), (store, 'storeNode')):
         info = path.lstat()
         if (info.st_dev, info.st_ino) != observed[field]:
             raise ValueError('route_store_changed')
-    if identity != (record['storeIncarnation'], record['scopeId']):
+    if matching_major and identity != (record['storeIncarnation'], record['scopeId']):
         return _decision('legacy', 'foreign_install')
     if record['projectRoot'] != str(root):
         raise ValueError('route_project_mismatch')

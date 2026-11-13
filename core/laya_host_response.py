@@ -1493,6 +1493,10 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
         _fail("unsupported_host")
     if not isinstance(payload, dict):
         _fail("invalid_hook_payload")
+    version_route = decision.get('mainRoute') if decision.get('state') == 'worktree' else decision
+    if (isinstance(version_route, dict) and version_route.get('routeSchema') == 'memvane-route-v4'
+            and not _major_allowed(version_route)):
+        return _major_mismatch_response(action, host)
     with _event_scope(action, host, decision, payload):
         if action != 'recall':
             return _serve_selected_once(action, host, decision, payload)
@@ -1665,6 +1669,8 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
+    if decision.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(decision):
+        return _major_mismatch_response(action, host)
     from laya_install_journal import verify_selected_route
     proof = verify_selected_route(decision)
     # Failure must not reach QMD.
@@ -1946,6 +1952,8 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     main = decision.get('mainRoute')
     if not isinstance(main, dict) or main.get('state') != 'candidate':
         _fail('worktree_route_invalid')
+    if main.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(main):
+        return _major_mismatch_response(action, host)
     proof = recheck(main)
     if proof.get('productRouteAllowed') is not True:
         _fail('worktree_selection_unapproved')
