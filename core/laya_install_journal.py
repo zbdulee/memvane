@@ -1935,7 +1935,16 @@ def verify_preview_worker_attestation(journal_path, provider_manifest):
     The preview proof already validated the record against the journal's
     reviewed digest; this re-hashes every runtime file it executes.
     """
-    record, _digest = _attestation(_private_parent(journal_path))
+    path = _private_parent(journal_path)
+    record, digest = _attestation(path)
+    if isinstance(record, dict) and record.get('schema') == 'memvane-provider-attestation-v1':
+        row = inspect_journal(path)
+        if row['state'] != 'prepared' or row['attestationSha256'] != digest:
+            _fail('worker_attestation_changed')
+        manifest = _v1_provider_manifest(record, row['vectorProfile'])
+        if manifest != provider_manifest or inspect_journal(path) != row:
+            _fail('worker_attestation_changed')
+        return manifest
     if (not isinstance(record, dict) or not isinstance(provider_manifest, dict) or
             record.get('providerManifest') != provider_manifest):
         _fail('worker_attestation_changed')
