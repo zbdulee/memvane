@@ -1268,7 +1268,7 @@ def _settings_resettle_pending(decision, project, root) -> bool:
         return False
 
 
-def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None,
+def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=None,
                           main_proof=None, linked=None) -> dict:
     """Serve the journal-preferred reader endpoint (``_serve_endpoint_recall``).
 
@@ -1277,25 +1277,25 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=
     checkout's recall then offers its sync wake, whose owner pass recovers it.
     """
     try:
-        return _serve_endpoint_recall(host, payload, cwd=cwd, drift_decision=drift_decision,
+        return _serve_endpoint_recall(host, payload, cwd=cwd, route_decision=route_decision,
                                       main_proof=main_proof, linked=linked)
     except Exception as exc:
         if str(exc) == 'reader_store_recovery_pending' and main_proof is not None:
             try:
-                _recall_sync_wake(drift_decision['projectRoot'])
+                _recall_sync_wake(route_decision['projectRoot'])
             except Exception:
                 pass  # The refusal stands; a later wake still recovers it.
         raise
 
 
-def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision=None,
+def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=None,
                            main_proof=None, linked=None) -> dict:
     """Serve the journal-preferred reader endpoint.
 
     ``main_proof`` is the selected route proof. ``linked`` reads only the
     linked worktree view.
     """
-    if main_proof is not None and drift_decision is None:
+    if main_proof is not None and route_decision is None:
         _fail('reader_selection_unproved')
     if host not in ('claude','codex','hermes') or not isinstance(payload,dict):
         _fail('invalid_hook_payload')
@@ -1305,9 +1305,9 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
             not isinstance(prompt,str) or not prompt.strip()):
         _fail('invalid_query_prompt')
     requested = Path(requested).resolve(strict=True)
-    if not isinstance(drift_decision, dict) or drift_decision.get('state') != 'candidate':
+    if not isinstance(route_decision, dict) or route_decision.get('state') != 'candidate':
         _fail('reader_selection_unproved')
-    project = Path(drift_decision['projectRoot'])
+    project = Path(route_decision['projectRoot'])
     if (project.resolve(strict=True) != project or
             (requested != project and project not in requested.parents)):
         _fail('reader_selection_unproved')
@@ -1323,18 +1323,18 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
                 break
             except ValueError as exc:
                 from laya_host_rules import reader_reseal_candidate
-                if (reader_reseal_candidate(str(exc), drift_decision is not None) and
-                        _settings_resettle_pending(drift_decision, project, root)):
+                if (reader_reseal_candidate(str(exc), route_decision is not None) and
+                        _settings_resettle_pending(route_decision, project, root)):
                     # Only the project's recall settings moved (skipPaths and
                     # the like): the sync owner re-seals the schema3 reader.
                     # Until then this recall answers without context, never
                     # from the stale record and never as an error.
                     if main_proof is not None:
                         try:
-                            _recall_sync_wake(drift_decision['projectRoot'])
+                            _recall_sync_wake(route_decision['projectRoot'])
                         except Exception:
                             pass
-                    _write_selection_log(drift_decision['projectRoot'], 'laya_' + _RESETTLE_PENDING, [])
+                    _write_selection_log(route_decision['projectRoot'], 'laya_' + _RESETTLE_PENDING, [])
                     _trace_final(_RESETTLE_PENDING)
                     print(f'[memvane] {_RESETTLE_PENDING}; no context until the index applies '
                           'the new recall settings', file=sys.stderr)
@@ -1344,7 +1344,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
                     raise
         _record,_att,proof = reader._recheck(endpoint)
         decision = proof.get('readerDecision')
-        if not isinstance(decision, dict) or decision != drift_decision:
+        if not isinstance(decision, dict) or decision != route_decision:
             _fail('reader_selection_unproved')
         return _serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
                                      decision=decision, project=project, prompt=prompt,
@@ -1406,14 +1406,6 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     # A view sealed without vectors (a lexical-first publish whose fill is
     # still deferred) serves its lexical lists; the provider is not asked.
     unsealed = endpoint.record.get('vector_profile') is None
-    # A bundle-drift read carries the read-only proof of
-    # ``verify_selected_route_read_only`` (no full proof for the executing
-    # bundle): it cannot prove a query vector, so the provider is not asked and
-    # the lexical lists answer, as the v6 read does. A linked worktree read
-    # whose bundle proof holds keeps vectors.
-    if (not vector_off and proof.get('readOnlyAllowed') is True
-            and proof.get('productRouteAllowed') is not True):
-        vector_off.append('degraded_read')
     with ExitStack() as stack:
         vector = None
         if provider is not None and not vector_off and not unsealed:
@@ -1633,7 +1625,7 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     the hook budget left, before and after re-selection, exceeds the first
     attempt's duration plus a margin. A journal epoch rollback never
     qualifies (``selected_proof_rolled_back``). The second attempt proves the
-    route from the top (full proof, or the read-only drift path), so its
+    route from the top, so its
     rows never come from the first attempt's proof or pin. A changed
     install, project, scope, journal or store identity keeps the refusal.
     """
@@ -1669,19 +1661,8 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
-    # The journal binds one owner cache; another host may execute only an
-    # independently sealed copy with the same exact bundle identity.
     from laya_install_journal import verify_selected_route
-    try:
-        proof = verify_selected_route(decision)
-    except Exception as exc:
-        drifted = _bundle_drift_proof(decision, exc)
-        _trace_fields(drift=_drift_code(exc))
-        return _serve_bundle_drift(action, host, decision, payload, drifted,
-                                   _drift_code(exc))
-    loaded_root = str(Path(__file__).resolve().parent.parent)
-    if proof.get('executingPluginRoot', decision.get('pluginRoot')) != loaded_root:
-        _fail("selected_plugin_root_mismatch")
+    proof = verify_selected_route(decision)
     # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
@@ -1819,11 +1800,11 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
     try:
         return serve_endpoint_recall(host, payload,
                                      cwd=payload.get('cwd', decision['projectRoot']),
-                                     drift_decision=decision, main_proof=proof)
+                                     route_decision=decision, main_proof=proof)
     except Exception as exc:
         # A reader CAS or a store replacement under this recall may be
         # retried once from a fresh route; any other reader refusal must
-        # not be retried again through the fence-hint reader.
+        # not be retried after an endpoint refusal.
         if _retry_code(exc) not in _RETRYABLE_READER_CODES:
             exc._memvane_reader_attempted = True
         raise
@@ -1869,73 +1850,6 @@ def _trace_final(reason: str) -> None:
     trace = _TRACE.get()
     if trace is not None:
         trace['final'] = reason
-
-
-def _drift_code(exc: BaseException) -> str:
-    code = str(exc)
-    return code if re.fullmatch(r'[a-z0-9_]{1,80}', code) else 'bundle_identity_changed'
-
-
-def _bundle_drift_proof(decision: dict, exc: BaseException) -> dict:
-    """Read-only proof after a full proof failed only on bundle identity.
-
-    Any other failure, or a read-only proof failure, keeps the original error.
-    """
-    from laya_install_journal import is_bundle_drift, verify_selected_route_read_only
-    if not is_bundle_drift(exc):
-        raise exc
-    try:
-        proof = verify_selected_route_read_only(decision)
-    except Exception:
-        raise exc
-    if proof.get('readOnlyAllowed') is not True:
-        raise exc
-    return proof
-
-
-def _bundle_upgrade_notice(decision: dict, code: str) -> str:
-    return ('[memvane] plugin bundle changed (' + code + '); search serves '
-            'the last published index read-only; sync waits for the upgrade.')
-
-
-def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
-                        proof: dict, code: str) -> dict:
-    """Host plugin update: read the published generation, fence every write.
-
-    Sync, compile and index wakes are not recorded; the finished upgrade
-    wakes one full-scan sync that catches up every source change.
-    """
-    from laya_install_journal import verify_selected_route_read_only
-    from laya_host_rules import drift_action, gate_response
-    policy = drift_action(action)
-    if policy == 'recall':
-        try:
-            return serve_endpoint_recall(host, payload, cwd=payload.get('cwd', decision['projectRoot']),
-                                         drift_decision=decision)
-        except Exception as exc:
-            exc._memvane_reader_attempted = True
-            raise
-    if policy == 'session':
-        if payload.get('hook_event_name') != 'SessionStart':
-            _fail('invalid_session_event')
-        notice = _bundle_upgrade_notice(decision, code)
-        _trace_final('bundle_upgrade_pending')
-        if verify_selected_route_read_only(decision) != proof:
-            _fail('selected_proof_changed')
-        if host == 'hermes':
-            return {'status': 'bundle_upgrade_pending', 'notice': notice}
-        return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
-                                       'additionalContext': notice}}
-    if policy == 'gate':
-        _verified_edit(decision, payload, action)
-        if verify_selected_route_read_only(decision) != proof:
-            _fail('selected_proof_changed')
-        return gate_response(host)
-    # posttool/compile/index/file-change-event: nothing is
-    # queued while the bundle is pending. The post-upgrade full scan covers it.
-    if verify_selected_route_read_only(decision) != proof:
-        _fail('selected_proof_changed')
-    return {}
 
 
 WORKTREE_VIEW_NOTICE = ('[memvane] linked git worktree: search serves this worktree\'s own '
@@ -2000,7 +1914,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
             if state is not None:
                 state.pop('ownView', None)
             response = serve_endpoint_recall(host,main_payload,cwd=main['projectRoot'],
-                drift_decision=main,
+                route_decision=main,
                 linked=decision)
             cwd = payload.get('cwd', decision.get('worktreeProjectRoot'))
             current = select_route(cwd, action='recall') if isinstance(cwd,str) else {}

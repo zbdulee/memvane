@@ -47,13 +47,6 @@ class RecallRulesChecks(unittest.TestCase):
             self.assertEqual(rules.reader_reseal_candidate(code, present), expected)
 
 class ActionRulesChecks(unittest.TestCase):
-    def test_bundle_drift_actions(self):
-        for action, expected in [('recall', 'recall'), ('update', 'session'),
-                ('update-queued', 'session'), ('gate', 'gate'), ('index', 'defer'),
-                ('posttool', 'defer'), ('compile', 'defer'), ('file-change-event', 'defer')]:
-            with self.subTest(action=action):
-                self.assertEqual(rules.drift_action(action), expected)
-
     def test_session_and_queued_notice(self):
         for action in ('update', 'update-queued', 'index', 'file-change-event'):
             with self.subTest(action=action):

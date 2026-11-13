@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synthetic route proofs exercise the real selected and drift gate responses."""
+"""Synthetic route proofs exercise selected gate responses."""
 import json
 import io
 from contextlib import redirect_stdout, redirect_stderr
@@ -26,12 +26,8 @@ class GateResponseChecks(unittest.TestCase):
         self.event = {'cwd': self.root, 'hook_event_name': 'PreToolUse',
                       'tool_name': 'Edit', 'tool_input': {'file_path': 'note.md'}}
 
-    def call_gate(self, host, drift=False, event=None):
-        with patch.object(journal, 'verify_selected_route',
-                          side_effect=ValueError('synthetic drift') if drift else None,
-                          return_value=self.proof), \
-             patch.object(response, '_bundle_drift_proof', return_value=self.proof), \
-             patch.object(journal, 'verify_selected_route_read_only', return_value=self.proof):
+    def call_gate(self, host, event=None):
+        with patch.object(journal, 'verify_selected_route', return_value=self.proof):
             result = response.serve_selected('gate', host, self.decision,
                                              self.event if event is None else event)
         return json.loads(json.dumps(result))
@@ -39,26 +35,14 @@ class GateResponseChecks(unittest.TestCase):
     def test_selected_codex_allow_is_empty(self):
         self.assertEqual(self.call_gate('codex'), {})
 
-    def test_bundle_drift_codex_allow_is_empty(self):
-        self.assertEqual(self.call_gate('codex', drift=True), {})
-
     def test_selected_claude_allow_is_empty(self):
         self.assertEqual(self.call_gate('claude'), {})
 
-    def test_bundle_drift_claude_allow_is_empty(self):
-        self.assertEqual(self.call_gate('claude', drift=True), {})
-
-    def test_selected_and_drift_proof_change_rejected(self):
+    def test_selected_proof_change_rejected(self):
         for host in ('codex', 'claude', 'hermes'):
-            with self.subTest(host=host, drift=False):
+            with self.subTest(host=host):
                 with patch.object(journal, 'verify_selected_route',
                                   side_effect=[self.proof, {'productRouteAllowed': True, 'changed': True}]):
-                    with self.assertRaisesRegex(response.HostResponseError, 'selected_proof_changed'):
-                        response.serve_selected('gate', host, self.decision, self.event)
-            with self.subTest(host=host, drift=True):
-                with patch.object(journal, 'verify_selected_route', side_effect=ValueError('drift')), \
-                     patch.object(response, '_bundle_drift_proof', return_value=self.proof), \
-                     patch.object(journal, 'verify_selected_route_read_only', return_value={'changed': True}):
                     with self.assertRaisesRegex(response.HostResponseError, 'selected_proof_changed'):
                         response.serve_selected('gate', host, self.decision, self.event)
 
@@ -105,12 +89,10 @@ class GateResponseChecks(unittest.TestCase):
                 self.assertIn('invalid_edit_event', err.getvalue())
 
     def test_other_hosts_and_invalid_events_keep_their_behavior(self):
-        for drift in (False, True):
-            with self.subTest(drift=drift):
-                self.assertEqual(self.call_gate('hermes', drift), {'action': 'continue'})
-                for host in ('codex', 'claude', 'hermes'):
-                    with self.assertRaisesRegex(response.HostResponseError, 'invalid_edit_event'):
-                        self.call_gate(host, drift, {**self.event, 'hook_event_name': 'PostToolUse'})
+        self.assertEqual(self.call_gate('hermes'), {'action': 'continue'})
+        for host in ('codex', 'claude', 'hermes'):
+            with self.assertRaisesRegex(response.HostResponseError, 'invalid_edit_event'):
+                self.call_gate(host, {**self.event, 'hook_event_name': 'PostToolUse'})
 
 
 if __name__ == '__main__':

@@ -63,13 +63,3 @@ def check_compile_queue(has_collections, action):
 
 def gate_response(host):
     return {'action': 'continue'} if host == 'hermes' else {}
-
-
-def drift_action(action):
-    if action == 'recall':
-        return 'recall'
-    if is_session(action):
-        return 'session'
-    if action == 'gate':
-        return 'gate'
-    return 'defer'
