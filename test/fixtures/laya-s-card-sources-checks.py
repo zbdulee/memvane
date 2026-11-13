@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Row-format (4) card source rows: a trusted card's source spans as view intervals.
 
-The generation format (3) keeps them as per-generation ``card_sources`` rows;
-``card_locations`` answers from them. The row format keeps them in
-``s_card_sources`` with stage changes, rollback deltas, the member
-accumulator, conversion and GC. Synthetic stores only.
+Card source rows use ``s_card_sources`` with stage changes, rollback deltas,
+the member accumulator and GC. Synthetic stores only.
 """
 import hashlib
 import importlib.util
@@ -64,7 +62,7 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         # The first generation records no rollback delta (no prior).
         self.assertEqual(store._db.execute("SELECT COUNT(*) FROM s_deltas WHERE rel='card_source'").fetchone()[0], 0)
 
-    def test_02_byte_spans_still_refuse_like_the_generation_format(self):
+    def test_02_byte_spans_refuse(self):
         store, _, handle = self.rows_store()
         self.publish(store, handle, b'# Alpha\nhello byte spans\n')
         pin = store.pin_view(handle)

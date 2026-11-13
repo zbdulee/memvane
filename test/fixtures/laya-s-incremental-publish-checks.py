@@ -687,12 +687,12 @@ class IncrementalPublicationChecks(seed.GenerationCase):
                      vector_spec=spec)
         self.assertEqual(store._db.execute('SELECT COUNT(*) FROM s_stage_jobs').fetchone()[0], 0)
 
-    def test_default_create_keeps_the_existing_format(self):
+    def test_default_create_uses_row_format(self):
         store, _, handle = self.seeded()
         tables = {row[0] for row in store._db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        self.assertIn('generation_slots', tables)
-        self.assertNotIn('s_generations', tables)
+        self.assertNotIn('generation_slots', tables)
+        self.assertIn('s_generations', tables)
 
     def crash(self, point):
         store, repository, handle = self.rows_store()

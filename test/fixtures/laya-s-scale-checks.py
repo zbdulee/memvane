@@ -2,8 +2,8 @@
 """Synthetic row-format scale observation: growth, rollback, collection and recall.
 
 S_SCALE_CARDS (default 50) cards are published into one view; the fixture then
-changes one card and measures, on the row format and the generation format,
-the store growth of that publication, rollback and collection time, and a
+changes one card and measures the store growth of that publication,
+rollback and collection time, and a
 fresh pin + search. It prints one JSON line and asserts only results, never
 elapsed time.
 """
