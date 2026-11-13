@@ -1,7 +1,6 @@
 """UID-wide reader lifetime leases and steady, fully proved v5 endpoints.
 
-Readers never create coordination files. Store movement and retained tuples
-require their separate writer integration; this module grants no writer role.
+Readers never create coordination files. This module grants no writer role.
 """
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
@@ -15,8 +14,6 @@ import time
 import weakref
 
 import laya_journal_reader as reader
-from laya_move_read_seal import MoveReadSeal, stage_move_reader
-from laya_move_reader_journal import publish_move_reader
 
 _shared_stack = ContextVar('reader_shared_lifetimes', default=())
 _shared_scopes = weakref.WeakSet()
@@ -160,72 +157,6 @@ def reader_lifetime(install_id, *, exclusive):
             os.close(parent_fd)
 
 
-def _move_identity(state, project, intent):
-    """Bind lifetime admission to the real selected journal, including resume.
-
-    Move metadata is already validated by the owning mover. It supplies only
-    its exact old/new state aliases, never a search path or a reader capability.
-    The mover retains all of its own route/approval/provider validations.
-    """
-    journal = reader.journal
-    state, project = Path(state), Path(project)
-    path = state / 'install-journal.sqlite'
-    version = journal.journal_version(path)
-    _need(version in (3, 4, 5), 'reader_schema_unknown')
-    if version != 5:
-        return None
-    state = reader._state(state)
-    path = reader._journal(path)
-    _need(project.is_absolute() and project.resolve(strict=True) == project,
-          'reader_move_project_invalid')
-    with reader._readonly(path, state) as db:
-        row = journal._row(db)
-        selection, record = reader._selection(db)
-        selected = row['selected']
-        _need(row['state'] in ('active', 'restored_old') and row['pending'] is None
-              and isinstance(selected, dict) and row['project_root'] == str(project)
-              and reader.persistent_node_equal([row['project_dev'], row['project_ino']], reader._node(project))
-              and isinstance(selected.get('vectorProfile'), dict),
-              'reader_move_selection_unproved')
-        install_id = selected['installId']
-        states = {str(state)}
-        if intent is not None:
-            _need(intent.get('projectRoot') == str(project)
-                  and intent.get('installId') == install_id, 'reader_install_changed')
-            if 'fromRoot' in intent or 'toRoot' in intent:
-                old, new = intent.get('fromRoot'), intent.get('toRoot')
-                _need(type(old) is str and type(new) is str and str(state) in (old, new)
-                      and Path(old).is_absolute() and Path(new).is_absolute()
-                      and Path(old).name == install_id and Path(new).name == install_id,
-                      'reader_move_state_invalid')
-                states.update((old, new))
-            else:
-                _need(intent.get('stateRoot') == str(state), 'reader_move_state_invalid')
-        _need(record['install_id'] == install_id and record['scope'] == row['scope_id']
-              and record['project'] == str(project) and record['state'] in states
-              and reader.persistent_node_equal(record['state_node'], reader._node(state))
-              and reader.persistent_node_equal(record['project_node'], reader._node(project))
-              and record['profile'] == selected['vectorProfile']['profileId'],
-              'reader_install_changed')
-        return install_id, row, selection, record
-
-
-@contextmanager
-def move_lifetime(state, project, *, intent=None):
-    """Exclude v5 readers during an existing mover's physical switch/settle.
-
-    Legacy journal formats retain their existing mover behavior. This is
-    admission only: it does not seal retained tuples or legal crash prefixes.
-    """
-    before = _move_identity(state, project, intent)
-    if before is None:
-        yield None
-        return
-    with reader_lifetime(before[0], exclusive=True) as fd:
-        _need(_move_identity(state, project, intent) == before, 'reader_selection_changed')
-        yield fd
-
-
 def _image(db):
     """Capture one complete immutable journal image, including its CAS prefix."""
     bundle = reader.journal._row(db)
@@ -247,19 +178,17 @@ def _image(db):
           and transitions[-1] == (selected.epoch, selected.preferred_endpoint,
                                   selected.previous_endpoint, selected.transition_id)
           and referenced == set(endpoints), 'reader_selection_invalid')
-    from laya_move_reader_journal import seal_prefix
-    return bundle, selected, stored, transitions, endpoints, records, seal_prefix(db)
+    return bundle, selected, stored, transitions, endpoints, records
 
 
 def _forward_image(before, after):
     """Admit only an exact immutable prefix followed by reader-only CAS steps."""
-    old_bundle, old, old_stored, prefix, endpoints, _, old_seals = before
-    bundle, selected, _stored, transitions, current, records, new_seals = after
+    old_bundle, old, old_stored, prefix, endpoints, _ = before
+    bundle, selected, _stored, transitions, current, records = after
     _need(bundle == old_bundle and selected.epoch > old.epoch
           and transitions[:len(prefix)] == prefix
           and all(current.get(key) == value for key, value in endpoints.items()),
           'reader_store_changed')
-    _need(all(new_seals.get(key) == value for key,value in old_seals.items()), 'reader_store_changed')
     for key, record in records.items():
         fields = reader.stable_fields(record, old_stored)
         _need(reader.records_agree({name: record.get(name) for name in fields}, old_stored, fields)
@@ -292,40 +221,28 @@ def _resolve_endpoint(project, *, action, host_root):
           and host_root.is_absolute() and host_root.resolve(strict=True) == host_root,
           'reader_resolution_invalid')
     first = journal.select_route(str(project), action=action)
-    pointer = None
     fenced = False
     if first.get('state') == 'candidate':
         _need(first.get('projectRoot') == str(project), 'reader_selection_unproved')
         path = reader._journal(first['journalPath'])
     else:
-        # Both a project move and a bundle upgrade can expose an upgrading
-        # ledger. A present move pointer chooses the retained-move proof;
-        # malformed or unsupported pointers must not fall through to upgrade.
-        import laya_project_dir_move as mover
-        pointer = mover.read_pointer(project)
-        if pointer is not None:
-            _need(pointer['mode'] == 'rename', 'reader_selection_unproved')
-            path = reader._journal(Path(pointer['stateRoot']) / reader._JOURNAL)
-        else:
-            import laya_fresh_wiki_origin as fresh
-            hint = fresh._fence_record(project)
-            _need(first.get('state') == 'blocked' and hint is not None and
-                  hint['projectRoot'] == str(project) and hint['phase'] == 'upgrading',
-                  'reader_selection_unproved')
-            path = reader._journal(Path(hint['journalPath']))
-            fenced = True
+        import laya_fresh_wiki_origin as fresh
+        hint = fresh._fence_record(project)
+        _need(first.get('state') == 'blocked' and hint is not None and
+              hint['projectRoot'] == str(project) and hint['phase'] == 'upgrading',
+              'reader_selection_unproved')
+        path = reader._journal(Path(hint['journalPath']))
+        fenced = True
     initial = _read_v5_bundle(path)
     _need(((initial['state'] in ('active', 'restored_old') and initial['pending'] is None) or
            (fenced and initial['state'] == 'pending' and initial['pending'] is not None))
           and isinstance(initial['selected'], dict), 'reader_selection_unproved')
     install_id = initial['selected']['installId']
-    _need(pointer is not None or fenced or first.get('installId') == install_id, 'reader_install_changed')
+    _need(fenced or first.get('installId') == install_id, 'reader_install_changed')
     with reader_lifetime(install_id, exclusive=False):
         decision = journal.select_route(str(project), action=action)
         _need(decision == first and _read_v5_bundle(path) == initial,
               'reader_selection_changed')
-        if pointer is not None:
-            _need(mover.read_pointer(project) == pointer, 'reader_selection_changed')
         token = None
         try:
             prior = None
@@ -335,7 +252,7 @@ def _resolve_endpoint(project, *, action, host_root):
                 try:
                     with reader._readonly(path, path.parent) as db:
                         image = _image(db)
-                        bundle_row, selected, stored, _transitions, endpoints, _records, _seals = image
+                        bundle_row, selected, stored, _transitions, endpoints, _records = image
                         _need(((bundle_row['state'] in ('active', 'restored_old')
                                 and bundle_row['pending'] is None) or
                                (fenced and bundle_row['state'] == 'pending'
@@ -344,8 +261,6 @@ def _resolve_endpoint(project, *, action, host_root):
                               'reader_install_changed')
                         _need(stored['install_id'] == install_id and stored['project'] == str(project)
                               and stored['state'] == str(path.parent), 'reader_install_changed')
-                        _need(pointer is None or stored.get('capability') == 'v6-retained-ro-v1',
-                              'reader_selection_unproved')
                         if prior is not None:
                             _forward_image(prior, image)
                         from laya_reader_windows import reader_proof_windows
