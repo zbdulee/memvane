@@ -54,6 +54,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
+from memvane.kernel.paths import now_iso
 from memvane.wiki.verify.api import _supersede_compile_intent, compile_intent_id as _compile_intent_id
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.card import types as wiki_markers
@@ -329,7 +330,7 @@ def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: 
     # targetPath만 담아 same_generated_identity가 이 카드에만 매칭되게 한다
     # (sourceHash/canonicalKey를 넣으면 다른 카드까지 잘못 매칭될 수 있음).
     wc.append_jsonl(path, {
-        "ts": wcw.now_iso(),
+        "ts": now_iso(),
         "action": wc.MACHINE_DELETE_ACTION,
         "status": "deleted",
         "targetPath": record.get("targetPath", ""),
@@ -378,7 +379,7 @@ def record_verify_deletion(
                 src.get("path") for src in sources
                 if isinstance(src, dict) and isinstance(src.get("path"), str) and src.get("path")
             ],
-            "deletedAt": wcw.now_iso(),
+            "deletedAt": now_iso(),
         })
     except OSError:
         return False
@@ -423,7 +424,7 @@ def record_verify_suppression(
                 "verdict": verdict,
                 "reasons": record.get("reasons", []),
                 "engine": record.get("engine", ""),
-                "deletedAt": wcw.now_iso(),
+                "deletedAt": now_iso(),
             })
         except OSError:
             return written, False
@@ -685,7 +686,7 @@ def base_record(job: dict) -> dict:
     `producedBy`, 실제로 판정을 낸 엔진은 항상 `engine`이다.
     """
     return {
-        "ts": wcw.now_iso(),
+        "ts": now_iso(),
         "targetPath": job.get("targetPath", ""),
         "producedBy": job.get("engine", ""),
     }

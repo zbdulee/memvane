@@ -40,12 +40,14 @@ def append(root, action: str, rel: str, title: str, bound=_UNRESOLVED, *,
            reason: str | None = None) -> bool:
     """Record one card write/delete. Returns whether the line was written."""
     try:
+        supplied = bound is not _UNRESOLVED
         bound = _binding(root, bound)
         if bound is None:
             return False
         state_root = event_log.state_root_of(bound[0].get('journalPath'))
+        # Only a caller-supplied binding names the install on the event line.
         return event_log.wiki(state_root, action, rel, title, reason=reason,
-                              install=event_log.install_of(bound[0]))
+                              install=event_log.install_of(bound[0]) if supplied else None)
     except Exception:  # noqa: BLE001
         return False
 
