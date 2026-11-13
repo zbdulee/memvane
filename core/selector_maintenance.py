@@ -3,30 +3,76 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import time
 
 
-def request(decision, *, force=False):
-    """Start off-hook work after activation or for a newer SessionStart."""
+REQUEST_SECONDS = 600
+REQUEST_FILE = 'selector-heal-request.json'
+
+
+def _missing_warm_receipt(project):
+    """Only a prepared selector needs a same-version warm retry."""
+    from context_learning import selector_heal
+    from context_learning.dataset import read_private_json
+    state = selector_heal.namespace(project)
+    if not (state / selector_heal.POLICY).is_file() or not (state / 'active-checkpoint.json').is_file():
+        return False
+    try:
+        receipt = read_private_json(state / selector_heal.WARM_MARKER)
+    except (OSError, ValueError, TypeError):
+        return True
+    return (not isinstance(receipt, dict) or receipt.get('schema') != 'memvane-selector-warm-v1'
+            or not isinstance(receipt.get('key'), str))
+
+
+def _request_owned(decision, owner, *, force):
+    """Apply the existing ten-minute per-install request floor under sync owner."""
     from laya_install_journal import inspect_journal
+    from laya_ledger_common import _read_json, _write
     from memvane_version import plugin_version, version_key
+    from sync_owner_lock import validate_sync_owner
+    validate_sync_owner(owner, Path(decision['storePath']))
     row = inspect_journal(decision['journalPath'])
     running, highest = version_key(plugin_version()), version_key(row['maxPluginVersion'])
     if (row['state'] != 'selected' or row['installId'] != decision['installId']
-            or running is None or highest is None or running < highest
-            or (not force and running == highest)):
+            or running is None or highest is None or running < highest):
         return
-    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
+    retry = running == highest and _missing_warm_receipt(decision['projectRoot'])
+    if not force and running == highest and not retry:
         return
+    state = Path(decision['journalPath']).parent
+    path = state / REQUEST_FILE
+    now = time.time_ns()
+    try:
+        previous = _read_json(path)
+        last = previous.get('requestedNs') if isinstance(previous, dict) else None
+    except (OSError, ValueError, RuntimeError):
+        last = None
+    if type(last) is int and 0 <= now - last < REQUEST_SECONDS * 10**9:
+        return
+    _write(path, {'requestedNs': now}, replace=path.exists())
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
                                             'MEMVANE_TEST_RUNTIME_ROOT',
                                             'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
            if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()),
-                      decision['projectRoot'], 'force' if force else 'newer'],
+                      decision['projectRoot'], 'force' if force or retry else 'newer'],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, close_fds=True,
                      start_new_session=True, env=env, cwd='/')
+
+
+def request(decision, *, force=False, owner=None):
+    """Request detached work after activation or a SessionStart, never write journal."""
+    if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
+        return
+    if owner is not None:
+        return _request_owned(decision, owner, force=force)
+    from sync_owner_lock import sync_owner
+    with sync_owner(Path(decision['storePath']), wait=False) as held:
+        if held is not None:
+            return _request_owned(decision, held, force=force)
 
 
 def run(project, *, force=False):

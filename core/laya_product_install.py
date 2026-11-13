@@ -810,7 +810,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                 proof = journal_module.verify_selected_route(decision)
                 try:
                     from selector_maintenance import request as request_selector_maintenance
-                    request_selector_maintenance(decision, force=True)
+                    request_selector_maintenance(decision, force=True, owner=owner)
                 except (OSError, ValueError, RuntimeError):
                     pass  # Selection is complete; a later SessionStart can retry.
                 return {'status': 'selected', 'phase': 'selected', 'journalPath': str(path),
