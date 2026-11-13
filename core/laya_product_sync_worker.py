@@ -589,6 +589,20 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     import laya_writer_scope as normal
     from laya_reader_windows import ReaderWindowBusy
     project = Path(decision['projectRoot'])
+    if decision.get('routeSchema') == 'memvane-route-v4':
+        try:
+            with sync_owner(Path(decision['storePath']), wait=True) as owner:
+                if owner is None:
+                    return {'state': 'deferred', 'reason': 'owner_busy'}, proof
+                with ExitStack() as lane, normal.selected_v1_writer_scope(decision, queue_owner=owner) as writer:
+                    if normal.admission_proof(writer) != proof:
+                        raise IndexContractError('selected_proof_changed')
+                    vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
+                                                       report=report, start_service=start_service)
+                    vectors['rawScan'] = raw_scan
+                    return _publish_schema3(decision, proof, writer, vectors)
+        except ResourceDeferred as exc:
+            return _deferred(exc), proof
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:

@@ -28,6 +28,7 @@ from sync_owner_lock import validate_sync_owner
 # release their lifetime and queue pin; no generator/finalizer does cleanup.
 _issued = {}
 _build_issued = {}
+_selected_issued = {}
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -53,6 +54,93 @@ class BuildWriter:
 
     def __reduce__(self):
         raise TypeError('normal_writer_not_serializable')
+
+
+class SelectedWriter:
+    __slots__ = ()
+
+    def __new__(cls):
+        raise ValueError('normal_writer_not_issued')
+
+    def __reduce__(self):
+        raise TypeError('normal_writer_not_serializable')
+
+
+def _selected_record(writer):
+    R._need(type(writer) is SelectedWriter and writer in _selected_issued,
+            'normal_writer_not_issued')
+    context = _selected_issued[writer]
+    R._need(context.pid == os.getpid() and context.thread is threading.current_thread()
+            and context.entered and not context.finished, 'normal_writer_expired')
+    return context
+
+
+class _SelectedWriterContext:
+    def __init__(self, decision, queue_owner):
+        self.decision, self.queue_owner = decision, queue_owner
+        self.pid, self.thread = os.getpid(), threading.current_thread()
+        self.entered = self.finished = False
+        self.stack = ExitStack()
+        self.marked = False
+
+    def __enter__(self):
+        from laya_view_store import ViewStore
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread()
+                and not self.entered and not self.finished, 'normal_writer_reentered')
+        try:
+            validate_sync_owner(self.queue_owner, Path(self.decision['storePath']))
+            self.stack.callback(self.queue_owner.pin().close)
+            self.lifetime = W._Lifetime(self.decision['installId'])
+            self.stack.callback(self.lifetime.close)
+            self.proof = J.verify_selected_route_for_write(self.decision)
+            row = J.inspect_journal(self.decision['journalPath'])
+            record = row['reader']
+            R._need(row['state'] == 'selected' and isinstance(record, dict),
+                    'writer_selection_unavailable')
+            state, project = Path(self.decision['stateRoot']), Path(self.decision['projectRoot'])
+            evidence = R._schema3_store(state, project, self.proof, self.decision,
+                                        record['db_path'], record['worktree_id'])
+            R._need(R.records_agree(record, evidence, tuple(evidence)), 'writer_plan_store_changed')
+            with R._readonly(Path(record['db_path']), state, recover=True) as db:
+                meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+            R._need(meta is not None, 'writer_plan_store_changed')
+            repository = json.loads(meta[0])
+            store = ViewStore.open(record['db_path'], repository=repository, scope_id=record['scope'])
+            try:
+                saved, _capture = store._observe_worktree(record['worktree_id'])
+                R._need(store._incarnation == record['incarnation']
+                        and store._policy == record['settings_policy_digest']
+                        and saved['binding_digest'] == record['worktree_binding'],
+                        'writer_plan_store_changed')
+                self.store = {'path': record['db_path'], 'incarnation': store._incarnation,
+                              'worktree_id': record['worktree_id'], 'repository': repository,
+                              'worktree_binding': record['worktree_binding'], 'policy_digest': store._policy}
+            finally:
+                store.close()
+            self.entered = True
+            token = object.__new__(SelectedWriter)
+            self.writer = token
+            _selected_issued[token] = self
+            validate_normal_writer(token)
+            return token
+        except BaseException:
+            self.finished = True
+            if hasattr(self, 'writer'):
+                _selected_issued.pop(self.writer, None)
+            self.stack.close()
+            raise
+
+    def __exit__(self, exc_type, exc, traceback):
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
+                'normal_writer_owner_changed')
+        self.finished = True
+        _selected_issued.pop(self.writer, None)
+        self.stack.close()
+        return False
+
+
+def selected_v1_writer_scope(decision, *, queue_owner):
+    return _SelectedWriterContext(decision, queue_owner)
 
 
 def _build_record(writer):
@@ -161,6 +249,17 @@ def _record(writer):
 
 def validate_normal_writer(writer, *, deadline=None):
     """Validate current admission metadata, not a continuing content snapshot."""
+    if type(writer) is SelectedWriter:
+        context = _selected_record(writer)
+        if deadline is not None:
+            W._deadline(deadline)
+            R._need(time.monotonic() < deadline, 'normal_writer_deadline')
+        validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
+        context.lifetime.check()
+        R._need(J.verify_selected_route_for_write(context.decision) == context.proof,
+                'normal_writer_changed')
+        validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
+        return
     if type(writer) is BuildWriter:
         import laya_initial_build as build
         import laya_runtime_dispatch as dispatch
@@ -224,6 +323,8 @@ def writer_store(writer):
     Same keys as ``laya_writer_open_plan.plan_store``.
     """
     validate_normal_writer(writer)
+    if type(writer) is SelectedWriter:
+        return json.loads(R._raw(_selected_record(writer).store))
     if type(writer) is BuildWriter:
         return json.loads(R._raw(_build_record(writer).store))
     store = _record(writer)['snapshot'].get('store')
@@ -412,6 +513,8 @@ def worker_writer_scope(plan, *, queue_owner, operation_timeout):
 def admission_proof(writer):
     """Return the owned admission proof after validating the live writer."""
     validate_normal_writer(writer)
+    if type(writer) is SelectedWriter:
+        return json.loads(R._raw(_selected_record(writer).proof))
     if type(writer) is BuildWriter:
         return json.loads(R._raw(_build_record(writer).proof))
     return json.loads(R._raw(_record(writer)['proof']))
@@ -473,6 +576,38 @@ def mark_new_write(writer):
     """
     if type(writer) is BuildWriter:
         return admission_proof(writer)
+    if type(writer) is SelectedWriter:
+        from contextlib import closing
+        context = _selected_record(writer)
+        validate_normal_writer(writer)
+        if context.marked:
+            return json.loads(R._raw(context.proof))
+        path, db = J._open(context.decision['journalPath'], write=True)
+        with closing(db):
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                row = J._inspect_v1_row(db)
+                R._need(row['state'] == 'selected' and row['epoch'] == context.proof['selectionEpoch'],
+                        'normal_writer_intent_premise_changed')
+                validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
+                context.lifetime.check()
+                R._need(db.execute("UPDATE selection SET new_write_seen=1,epoch=epoch+1 "
+                                   "WHERE id=1 AND state='selected' AND epoch=?", (row['epoch'],)).rowcount == 1,
+                        'normal_writer_intent_premise_changed')
+                J._inspect_v1_row(db)
+                db.commit()
+            except BaseException:
+                db.rollback()
+                raise
+        fresh = J.verify_selected_route_for_write(context.decision)
+        stable = lambda value: {key: item for key, item in value.items() if key != 'selectionEpoch'}
+        R._need(fresh['selectionEpoch'] == context.proof['selectionEpoch'] + 1
+                and stable(fresh) == stable(context.proof),
+                'normal_writer_intent_premise_changed')
+        context.proof = fresh
+        context.marked = True
+        validate_normal_writer(writer)
+        return json.loads(R._raw(fresh))
     record = _record(writer)
     context = record['context']
     timings, image_started = {}, None
