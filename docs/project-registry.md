@@ -28,15 +28,14 @@ intent를 쓰지 않고, SQLite 자체 파일 잠금 외의 lock, wake kind, hoo
 `missing`·`root_moved` 행은 tombstone이다. SessionStart seed와 backfill 같은
 암묵 등록은 tombstone을 바꾸지 않고, 같은 경로의 다른 install도 새로 넣지
 않는다. 새 route 증명을 가진 명시적 활성화(`activate-index-origin`,
-`active`로 끝난 `recover-index-origin`)만 tombstone을 교체한다.
+`selected`로 끝난 `recover-index-origin`)만 tombstone을 교체한다.
 
 ## 쓰기 지점
 
 - 활성화 성공 뒤 `setup_entry`가 `after_setup`으로 route를 다시 증명해 main 행을
   idempotent upsert하고 유계 reconcile을 한 번 돈다.
-- `restore-index-origin`·`retire-index-origin`·`abandon-index-build`·
-  `abandon-inactive-index-build`가 성공하면 명령 뒤 재관측(route가 그 install을
-  가리키지 않고 journal이 `active`·`restored_old`가 아님)이 성립할 때만 그
+- `restore-index-origin`이 성공하면 명령 뒤 재관측(route가 그 install을
+  가리키지 않고 journal이 `selected`가 아님)이 성립할 때만 그
   install의 행을 `detached`(`released`)로 바꾼다. `blocked`·`recovery_required`·
   `rejected`나 재관측 실패는 행을 바꾸지 않는다. 해제 명령은 행을 새로 넣지 않는다.
 - 선택된 main checkout의 SessionStart hook이 자기 행을 seed하고 유계 reconcile을

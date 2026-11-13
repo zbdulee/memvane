@@ -67,8 +67,7 @@ def main(argv=None):
                                           'index-build-status','index-build-rescan',
                                           'finalize-index-origin',
                                           'activate-index-origin','recover-index-origin',
-                                          'restore-index-origin','retire-index-origin',
-                                          'abandon-index-build','abandon-inactive-index-build',
+                                          'restore-index-origin',
                                           'onboarding-skip', 'onboarding-never',
                                           'onboarding-resume', 'onboarding-status'))
     parser.add_argument('--project')
@@ -77,8 +76,6 @@ def main(argv=None):
     parser.add_argument('--learning-migration',choices=('new','preserve'),default='preserve')
     parser.add_argument('--learning-expires-at-unix-ms',type=int)
     parser.add_argument('--accepted-learning-profile')
-    parser.add_argument('--source-root')
-    parser.add_argument('--commit')
     parser.add_argument('--state-root')
     parser.add_argument('--install-id')
     parser.add_argument('--accepted-origin-sha256')
@@ -87,12 +84,8 @@ def main(argv=None):
     parser.add_argument('--provider-dimension', type=int)
     parser.add_argument('--approve-index-origin-activation', action='store_true')
     parser.add_argument('--approve-index-origin-restore', action='store_true')
-    parser.add_argument('--approve-index-origin-retire', action='store_true')
-    parser.add_argument('--approve-index-build-abandon', action='store_true')
-    parser.add_argument('--approve-inactive-index-build-abandon', action='store_true')
     parser.add_argument('--approve-index-runtime-download', action='store_true')
     parser.add_argument('--approve-index-runtime-gc', action='store_true')
-    parser.add_argument('--wake-revision', type=int)
     parser.add_argument('--session')
     args = parser.parse_args(argv)
     if args.project is None and args.action not in (
@@ -140,18 +133,13 @@ def main(argv=None):
                            'index-build-status','index-build-rescan',
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
-                           'restore-index-origin','retire-index-origin',
-                           'abandon-index-build','abandon-inactive-index-build'):
+                           'restore-index-origin'):
             import laya_product_install as product
             installed = Path(__file__).resolve(strict=True).parent.parent
             if args.action != 'plan-fresh-wiki-origin' and not args.state_root:
                 raise ValueError('state_root_required')
             if args.action == 'plan-fresh-wiki-origin':
                 result = product.plan_fresh_wiki_origin(args.project)
-                pending = product.retired_build_pointer(Path(args.project).resolve())
-                if pending is not None:
-                    # Finish the interrupted retirement before preparing.
-                    result['pendingRetirement'] = pending
             elif args.action == 'review-index-provider':
                 result = product.review_local_provider(
                     plugin_root=installed, state_root=args.state_root,
@@ -159,9 +147,7 @@ def main(argv=None):
                     dimension=args.provider_dimension)
             elif args.action == 'prepare-fresh-wiki-origin':
                 result = product.prepare_fresh_wiki_origin(
-                    project_root=args.project, source_root=args.source_root,
-                    plugin_root=installed, state_root=args.state_root,
-                    commit_id=args.commit,
+                    project_root=args.project, plugin_root=installed, state_root=args.state_root,
                     expected_proposal_sha256=args.accepted_origin_sha256,
                     accepted_provider_sha256=args.accepted_provider_sha256,
                     install_id=args.install_id,
@@ -194,30 +180,6 @@ def main(argv=None):
                         raise ValueError('index_origin_restore_approval_required')
                     result = product.restore_origin_selection(
                         project_root=args.project, state_root=state)
-                elif args.action == 'retire-index-origin':
-                    # A bound, never selected build; deletes no DB or store.
-                    if not args.approve_index_origin_retire:
-                        raise ValueError('index_origin_retire_approval_required')
-                    result = product.retire_drifted_origin(
-                        project_root=args.project, state_root=state)
-                elif args.action == 'abandon-index-build':
-                    # An unused registered build (no source read, nothing written);
-                    # the pending laya-sync wake is cancelled by revision. Deletes nothing.
-                    if not args.approve_index_build_abandon:
-                        raise ValueError('index_build_abandon_approval_required')
-                    result = product.abandon_unused_initial_build(
-                        project_root=args.project, state_root=state,
-                        install_id=args.install_id, commit_id=args.commit,
-                        wake_revision=args.wake_revision)
-                elif args.action == 'abandon-inactive-index-build':
-                    # QA-only recovery of a partly built, still unselected
-                    # candidate. All private stores are backed up and kept.
-                    if not args.approve_inactive_index_build_abandon:
-                        raise ValueError('inactive_index_build_abandon_approval_required')
-                    result = product.abandon_inactive_initial_build(
-                        project_root=args.project, state_root=state,
-                        install_id=args.install_id, commit_id=args.commit,
-                        wake_revision=args.wake_revision)
                 else:
                     route = product._read_private(state / 'reviewed-route.json', 8192)
                     with product._install_lock(state):
@@ -241,14 +203,6 @@ def main(argv=None):
             detail = _exception_detail(exc)
             if detail is not None:
                 result['detail'] = detail
-            if (str(exc) == 'initial_build_already_registered' and
-                    args.action == 'prepare-fresh-wiki-origin'):
-                import laya_product_install as product
-                pending = product.retired_build_pointer(Path(args.project).resolve())
-                if pending is not None:
-                    # Only the exact retired build's own pointer is named.
-                    result['nextAction'] = pending['nextAction']
-                    result['retireStateRoot'] = pending['stateRoot']
     try:
         # The selected project registry is a lookup index: it reflects a
         # finished activation or release and never changes this result.

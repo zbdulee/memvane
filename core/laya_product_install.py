@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
-"""Installer-only Laya onboarding: plan, provider review, build, bind, activate.
-
-The host must install and load the exact Git candidate first. Staging seals
-that *installed* root; it never installs a plugin or changes a project route.
-A new project is planned from its minimal settings (``plan-fresh-wiki``),
-registered as a durable inactive initial build (``laya_initial_build``) that
-the runtime ``laya-sync`` wake advances in bounded steps, bound by an explicit
-``finalize-build`` (``laya_fresh_wiki_origin`` ledger and project marker) and
-activated by a separate ``activate``, which then queues one selected
-``laya-sync`` wake. An explicit ``retire-origin`` withdraws a bound build that
-was never selected (deleting nothing) so a fresh install with its own state
-root can be prepared.
-"""
+"""Plan, prepare, finalize and activate one private MemVane store."""
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -25,18 +13,11 @@ import re
 import sqlite3
 import stat
 import sys
-import tempfile
 import time
 
 import project_dir
 
-from laya_install_journal import (create_journal, inspect_journal,
-                                  preflight_product_candidate,
-                                  stage_production_attestation)
-from laya_product_bundle import (adopt_host_loaded_plugin, BundleEvidenceError,
-                                 inspect_full_plugin_candidate,
-                                 PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
-                                 validate_production_provider_attestation)
+from laya_install_journal import inspect_journal
 
 
 class InstallBlocked(RuntimeError):
@@ -61,12 +42,6 @@ def _private_parent(path):
     if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
         _fail('unsafe_install_parent')
     return parent.resolve(strict=True)
-
-
-def _state_bases():
-    """State base an existing install may live under."""
-    import memvane_paths
-    return (memvane_paths.installs_base(),)
 
 
 def _prepare_state_root(path, install_id):
@@ -139,21 +114,6 @@ def _read_private(path, limit):
         os.close(fd)
 
 
-def _json_input(path):
-    raw = _read_private(path, 1024 * 1024)
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                _fail('duplicate_install_input_key')
-            result[key] = value
-        return result
-    def nonfinite(_value):
-        _fail('nonfinite_install_input')
-    return json.loads(raw.decode('utf-8'), object_pairs_hook=unique,
-                      parse_constant=nonfinite)
-
-
 def _write_or_verify_private(path, raw):
     target = Path(path)
     if target.exists() or target.is_symlink():
@@ -177,9 +137,7 @@ def _write_or_verify_private(path, raw):
         os.close(directory)
 
 
-# Origin planning reads settings only. The source inventory is the durable wiki
-# catalog scan of the registered inactive initial build (_register_initial_build);
-# no source scan runs in this process.
+# Origin planning reads settings only; the initial build scans the wiki.
 def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     """Review a new wiki-only Laya generation from minimal project settings.
 
@@ -391,8 +349,8 @@ def _read_private_or_package(path):
     return path.read_bytes()
 
 
-def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_root,
-                              commit_id, expected_proposal_sha256, install_id,
+def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
+                              expected_proposal_sha256, install_id,
                               accepted_provider_sha256,
                               model_path=None, dimension=None):
     """Register an inactive wiki-only build; do not touch QMD or activate.
@@ -429,9 +387,7 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             _fail('reviewed_provider_proposal_changed')
         result = _register_initial_build(
             plan=plan, reviewed_provider=review['reviewedProvider'],
-            provider_proposal_sha256=accepted_provider_sha256,
-            source_root=source_root, plugin_root=plugin_root, state=state,
-            journal=journal, socket=socket, commit_id=commit_id,
+            state=state, journal=journal,
             install_id=install_id)
         return result
 
@@ -523,9 +479,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     return raw
 
 
-def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256,
-                            source_root, plugin_root, state, journal, socket,
-                            commit_id, install_id):
+def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id):
     """Register the reviewed single-store build under the existing install lock."""
     import laya_initial_build as initial_build
     from laya_install_journal import stage_v1_attestation, create_v1_journal
@@ -744,533 +698,12 @@ def finalize_initial_build(*, project_root, state_root):
                         'generation': head['gen_id']}
 
 
-def retire_drifted_origin(*, project_root, state_root):
-    """Retire a bound, never selected initial build; select nothing.
-
-    This explicit step makes room for a fresh install when a bound build
-    can no longer be activated. Under the install lock and the build owner
-    the selection ledger moves ``prepared`` -> ``retired`` and its own project
-    marker is withdrawn (``laya_fresh_wiki_origin.retire``); the project's
-    wake pointer of this build is then archived and released
-    (``retire_project_pointer``). The old state root keeps the candidate,
-    queue, catalog, binding store, journal, ledger, route and build record.
-    The next install is a new ``review-provider`` and ``prepare-origin`` with
-    a new install id and state root.
-    """
-    import laya_initial_build as initial_build
-    import laya_fresh_wiki_origin as fresh
-    project = _checked_project(project_root)
-    state = _private_parent(state_root)
-    with _install_lock(state), initial_build.owner(state) as owned:
-        if not owned:
-            _fail('initial_build_busy')
-        record = initial_build.read(state)
-        if record is None:
-            _fail('initial_build_missing')
-        identity = record['identity']
-        journal = state / 'journal.sqlite'
-        if (identity['projectRoot'] != str(project) or
-                identity['stateRoot'] != str(state) or
-                identity['journalPath'] != str(journal)):
-            _fail('initial_build_project_mismatch')
-        if record['phase'] not in ('building', 'sealed', 'bound', 'retired'):
-            _fail('fresh_wiki_build_not_bound')
-        # Finalization can persist the ledger/marker before recording `bound`.
-        # A rescan can subsequently clear `sealed`. Retire that interrupted
-        # binding only when all its durable ownership fields still agree.
-        ledger = fresh._load(state / fresh.LEDGER)
-        pairs = {'projectRoot': 'projectRoot', 'journalPath': 'journalPath',
-                 'candidateDb': 'candidateDb', 'queueDb': 'queueDb',
-                 'catalogDb': 'catalogDb', 'bindingStore': 'bindingStore',
-                 'routeSha256': 'routeSha256', 'attestationSha256': 'attestationSha256',
-                 'vectorProfileId': 'vectorProfileId', 'candidateIncarnation': 'dbIncarnation',
-                 'scope': 'scopeId', 'collections': 'collections'}
-        if any(ledger[key] != identity[value] for key, value in pairs.items()):
-            _fail('fresh_wiki_retirement_identity_mismatch')
-        row = fresh.retire(project, journal)
-        if record['phase'] not in ('bound', 'retired'):
-            record = initial_build.advance(record, phase='retired', sealed=None)
-        pointer = initial_build.retire_project_pointer(identity)
-        return {'status': 'fresh_wiki_binding_retired', 'changesApplied': 1,
-                'stateRoot': str(state), 'buildPointer': pointer,
-                'cutoverPhase': row['phase'],
-                'nextRequires': 'new_install_id_and_state_root'}
-
-
-UNUSED_RETIREMENT = 'unused-build-retirement'
-UNUSED_RECEIPT_SCHEMA = 'laya-unused-build-retirement-v1'
-INACTIVE_RETIREMENT = 'inactive-build-retirement'
-INACTIVE_RECEIPT_SCHEMA = 'laya-inactive-build-retirement-v1'
-# Tables whose rows would mean the build already read source or wrote vectors.
-# A missing table counts as empty; a store that cannot be read refuses.
-_UNUSED_ZERO_TABLES = (
-    ('candidateDb', ('generations', 'content', 'membership', 'head', 'candidate_seals',
-                     'receipts', 'pins', 'gen_index', 'vector_profiles', 'vector_chunks',
-                     'vector_chunk_sets', 'gen_vector_rows', 'gen_vector_seals',
-                     'exclusions', 'content_fts', 'content_fts_idx',
-                     'content_fts_content', 'content_fts_docsize')),
-    ('queueDb', ('jobs',)),
-    ('catalogDb', ('scans', 'active', 'current', 'scan_dirs', 'scan_files',
-                   'hash_ready', 'pending_fill', 'vector_fill')),
-    ('bindingStore', ('bindings',)),
-)
-_UNUSED_METADATA_TABLES = {
-    'candidateDb': {'schema_meta', 'content_fts_data', 'content_fts_config'},
-    'queueDb': {'queue_meta'},
-    'catalogDb': {'meta'},
-    'bindingStore': {'meta'},
-}
-
-
-def _ro_sqlite(path):
-    import sqlite3
-    source = Path(path)
-    if not source.is_absolute() or source.is_symlink() or not source.is_file():
-        _fail('unused_build_store_unavailable')
-    # A WAL-mode database with no sidecars cannot always be opened mode=ro by
-    # the system SQLite. With no WAL present, immutable reads the complete
-    # single-file snapshot without creating sidecars; a present WAL must be
-    # read through SQLite's normal read-only WAL path or fail closed.
-    wal = Path(str(source) + '-wal')
-    shm = Path(str(source) + '-shm')
-    mode = '?mode=ro' if wal.exists() or shm.exists() else '?immutable=1'
-    return sqlite3.connect(source.as_uri() + mode, uri=True, timeout=.5)
-
-
-def _unused_store_proof(identity, *, allow_work=False):
-    """Read-only, WAL-aware proof of store rows and active claims.
-
-    A present WAL is read through SQLite's normal read-only path; a store
-    without sidecars is read as an immutable single-file snapshot. Any SQLite
-    error or integrity failure refuses: unreadable is never read as empty.
-    """
-    import sqlite3
-    from contextlib import closing
-    proof = {}
-    for key, tables in _UNUSED_ZERO_TABLES:
-        try:
-            with closing(_ro_sqlite(identity[key])) as db:
-                db.execute('BEGIN')
-                if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
-                    _fail('unused_build_store_check_failed')
-                present = {row[0] for row in db.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name NOT LIKE 'sqlite_%'")}
-                dynamic = set()
-                if allow_work and key == 'candidateDb':
-                    from laya_index_a import _gen_fts_ddl
-                    # A partly built generation owns an FTS5 table and its
-                    # shadow tables. Verify the exact allocated set and DDL;
-                    # unrelated schema drift still refuses. Do not require a
-                    # fixed user_version here: the snapshot/replay check below
-                    # must also catch a changed SQLite header.
-                    ordinals = [row[0] for row in db.execute('SELECT ord FROM gen_index')]
-                    if any(type(n) is not int or n <= 0 for n in ordinals):
-                        _fail('unused_build_store_schema_unrecognized')
-                    dynamic = {name for name in present if re.fullmatch(
-                        r'gen_fts_[1-9][0-9]*(?:_(?:data|idx|content|docsize|config))?',
-                        name)}
-                    expected = {f'gen_fts_{n}{suffix}' for n in ordinals for suffix in
-                                ('', '_data', '_idx', '_content', '_docsize', '_config')}
-                    if dynamic != expected or any(db.execute(
-                            'SELECT sql FROM sqlite_master WHERE type=? AND name=?',
-                            ('table', f'gen_fts_{n}')).fetchone() != (_gen_fts_ddl(f'gen_fts_{n}'),)
-                            for n in ordinals):
-                        _fail('unused_build_store_schema_unrecognized')
-                if present - set(tables) - _UNUSED_METADATA_TABLES[key] - dynamic:
-                    _fail('unused_build_store_schema_unrecognized')
-                counts = {name: db.execute('SELECT COUNT(*) FROM "%s"' % name).fetchone()[0]
-                          for name in tables if name in present}
-                if allow_work and key == 'queueDb' and 'jobs' in present:
-                    active = db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('pending','leased')").fetchone()[0]
-                    if active:
-                        _fail('inactive_build_claim_active')
-                db.execute('COMMIT')
-        except sqlite3.Error:
-            _fail('unused_build_store_unreadable')
-        if not allow_work and any(counts.values()):
-            _fail('unused_build_has_work')
-        wal = Path(identity[key] + '-wal')
-        if allow_work:
-            try:
-                source_info = Path(identity[key]).stat()
-                wal_info = wal.stat() if wal.exists() else None
-            except OSError:
-                _fail('unused_build_store_unavailable')
-            proof[key] = {'counts': counts,
-                          'walBytes': wal_info.st_size if wal_info else 0,
-                          'sourceIdentity': [source_info.st_dev, source_info.st_ino,
-                                             source_info.st_size, source_info.st_mtime_ns,
-                                             source_info.st_ctime_ns],
-                          'walIdentity': ([wal_info.st_dev, wal_info.st_ino,
-                                           wal_info.st_size, wal_info.st_mtime_ns,
-                                           wal_info.st_ctime_ns] if wal_info else None)}
-        else:
-            proof[key] = {'counts': counts,
-                          'walBytes': wal.stat().st_size if wal.exists() else 0}
-    return proof
-
-
-def _sha256_file(path):
-    """Streaming digest of one owned, private, single-link regular file."""
-    source = Path(path)
-    if source.is_symlink():
-        _fail('unsafe_install_input')
-    fd = os.open(source, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-    try:
-        info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
-                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
-            _fail('unsafe_install_input')
-        digest = hashlib.sha256()
-        while True:
-            block = os.read(fd, 1 << 20)
-            if not block:
-                return digest.hexdigest()
-            digest.update(block)
-    finally:
-        os.close(fd)
-
-
-def _snapshot_sqlite(source, target):
-    """Create one self-contained SQLite snapshot, verified by quick_check."""
-    import sqlite3
-    from contextlib import closing
-    try:
-        with closing(_ro_sqlite(source)) as src:
-            # VACUUM INTO reads a consistent SQLite snapshot and produces a
-            # standalone file. backup() of WAL-mode stores leaves a -shm
-            # sidecar on this host, which cannot be sealed as one file.
-            src.execute('VACUUM main INTO ?', (str(target),))
-        if Path(str(target) + '-wal').exists() or Path(str(target) + '-shm').exists():
-            _fail('unused_build_backup_failed')
-        with closing(sqlite3.connect(Path(target).as_uri() + '?immutable=1', uri=True)) as check:
-            ok = check.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
-    except sqlite3.Error:
-        _fail('unused_build_backup_failed')
-    if not ok:
-        _fail('unused_build_backup_failed')
-    os.chmod(target, 0o600)
-    return _sha256_file(target)
-
-
-def _receipt_matches(final, identity, install_id, commit_id, *, current_bytes,
-                     schema=UNUSED_RECEIPT_SCHEMA):
-    """True only for a complete receipt of exactly this build; else refuse.
-
-    ``current_bytes`` are the live record/pointer bytes to compare with the
-    receipt (None to skip: after retirement the record has legitimately moved).
-    """
-    try:
-        receipt = json.loads(_read_private(final / 'receipt.json', 65536))
-    except (OSError, ValueError, InstallBlocked):
-        _fail('unused_build_receipt_invalid')
-    files = receipt.get('files') if isinstance(receipt, dict) else None
-    if (not isinstance(files, dict) or receipt.get('schema') != schema or
-            receipt.get('installId') != install_id or receipt.get('commitId') != commit_id or
-            receipt.get('projectRoot') != identity['projectRoot'] or
-            receipt.get('stateRoot') != identity['stateRoot'] or
-            set(files) != {'journal.sqlite', 'candidate.sqlite', 'queue.sqlite',
-                           'catalog.sqlite', 'binding.sqlite', 'initial-build.json',
-                           'build-pointer.json', 'reviewed-route.json'}):
-        _fail('unused_build_receipt_mismatch')
-    for name, digest in files.items():
-        if _sha256_file(final / name) != digest:
-            _fail('unused_build_receipt_mismatch')
-    if current_bytes is not None and any(
-            hashlib.sha256(current_bytes[name]).hexdigest() != files[name]
-            for name in current_bytes):
-        _fail('unused_build_receipt_mismatch')
-    return receipt
-
-
-def abandon_unused_initial_build(*, project_root, state_root, install_id, commit_id,
-                                 wake_revision=None, queue=None):
-    """Retire a registered initial build that never started; deletes nothing.
-
-    For an owned synthetic-QA install whose build is still ``registered``
-    (unsealed, no progress/freshness/block), journal ``candidate_ready`` with
-    no selected route or first write, and whose stores hold no source or
-    vector row, this ends the build so a fresh install can register. Under
-    the install lock and then the build owner (the order finalize/rescan and
-    the wake cancel use), each step verified-or-resumed by a repeat:
-
-    1. Prove identity and emptiness (``runtime_wake_cancel.ownership_proof``:
-       fixture markers, canonical pointer, journal, project still plain QMD;
-       the caller's install id and commit; the reviewed route bytes; a
-       read-only WAL-aware zero-row proof of every store).
-    2. Write a verified private receipt directory in the state root first:
-       online SQLite backups of the journal and the four stores plus the
-       exact record, pointer and route bytes (no-clobber, atomic rename).
-    3. A pending ``laya-sync`` wake is cancelled by the official CAS
-       (``runtime_wake_cancel.cancel_locked``) under these same locks. A wake
-       row needs its ``wake_revision``; a running or newer one refuses before
-       any record/pointer change. Nothing but the project's own selected
-       route or an install step enqueues this kind, and both are excluded
-       (QMD selected; install lock held), so none can reappear.
-    4. CAS the record to terminal ``retired`` (a worker that knows it ACKs,
-       an older one fails closed on the unknown phase), then release the
-       project pointer (``retire_project_pointer``, archived first).
-
-    Old state files, QMD, sources and backups all remain. Sealed, bound,
-    building, blocked, selected or first-write builds are never touched.
-    """
-    return _abandon_initial_build(project_root=project_root, state_root=state_root,
-                                  install_id=install_id, commit_id=commit_id,
-                                  wake_revision=wake_revision, queue=queue,
-                                  allow_started=False)
-
-
-def abandon_inactive_initial_build(*, project_root, state_root, install_id, commit_id,
-                                   wake_revision=None, queue=None):
-    """Archive an unselected QA candidate, including a partially built one.
-
-    All private stores are backed up and retained. A selected route, first
-    write, bound cutover, active claim, running wake, or changed owner refuses.
-    This is separate from the registered-only unused-build contract.
-    """
-    return _abandon_initial_build(project_root=project_root, state_root=state_root,
-                                  install_id=install_id, commit_id=commit_id,
-                                  wake_revision=wake_revision, queue=queue,
-                                  allow_started=True)
-
-
-def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
-                           wake_revision, queue, allow_started):
-    import laya_initial_build as initial_build
-    import runtime_wake_cancel as wake_cancel
-    from laya_install_journal import inspect_journal
-    project = _checked_project(project_root)
-    state = _private_parent(state_root)
-    if (state != Path(state_root) or type(install_id) is not str or
-            not re.fullmatch(r'[0-9a-f]{32}', install_id) or state.name != install_id or
-            state.parent not in _state_bases()):
-        _fail('unused_build_state_not_canonical')
-    if type(commit_id) is not str or not re.fullmatch(r'[0-9a-f]{40}', commit_id):
-        _fail('unused_build_commit_invalid')
-    if wake_revision is not None and (type(wake_revision) is not int or wake_revision <= 0):
-        _fail('unused_build_wake_revision_invalid')
-    import time
-    final = state / (INACTIVE_RETIREMENT if allow_started else UNUSED_RETIREMENT)
-    other = state / (UNUSED_RETIREMENT if allow_started else INACTIVE_RETIREMENT)
-    if other.exists() or other.is_symlink():
-        _fail('unused_build_conflicting_receipt')
-    receipt_schema = INACTIVE_RECEIPT_SCHEMA if allow_started else UNUSED_RECEIPT_SCHEMA
-    if final.is_symlink():
-        _fail('unused_build_receipt_invalid')
-    with _install_lock(state), initial_build.owner(state) as owned:
-        if not owned:
-            _fail('initial_build_busy')
-        record = initial_build.read(state)
-        if record is None:
-            _fail('initial_build_missing')
-        identity = record['identity']
-        journal = state / 'journal.sqlite'
-        if (identity['projectRoot'] != str(project) or identity['stateRoot'] != str(state) or
-                identity['journalPath'] != str(journal) or identity['installId'] != install_id):
-            _fail('unused_build_identity_mismatch')
-        if record['phase'] == 'retired':
-            # Replay after the record moved: finish the pointer, nothing else.
-            receipt = _receipt_matches(final, identity, install_id, commit_id,
-                                       current_bytes=None, schema=receipt_schema)
-            return {'status': 'inactive_build_retired' if allow_started else 'unused_build_retired',
-                    'replayed': True,
-                    'receipt': str(final / 'receipt.json'),
-                    'buildPointer': initial_build.retire_project_pointer(identity),
-                    'buildPhase': 'retired', 'recordEpoch': record['epoch'],
-                    'receiptRecordEpoch': receipt.get('recordEpoch'),
-                    'changesApplied': 0, 'nextRequires': 'new_install_id_and_state_root'}
-        if record['phase'] != 'registered' and (not allow_started or record['phase'] not in
-                                                ('building', 'blocked')):
-            _fail('unused_build_not_registered')
-        if not allow_started and any(record[key] is not None for key in
-                                     ('progress', 'sealed', 'freshness', 'blocked')):
-            _fail('unused_build_has_progress')
-        try:
-            ownership = wake_cancel.ownership_proof(str(project))
-        except wake_cancel.CancelRefused as exc:
-            _fail('unused_build_' + str(exc))
-        if (ownership['installId'] != install_id or ownership['stateRoot'] != str(state) or
-                initial_build.read(state) != record):
-            _fail('unused_build_identity_mismatch')
-        pointer_path = initial_build.registered_pointer_path(str(project))
-        if pointer_path is None:
-            _fail('unused_build_pointer_mismatch')
-        pointer_bytes = _read_private(pointer_path, 65536)
-        expected_pointer = {'schema': initial_build.POINTER_SCHEMA,
-                            'projectRoot': identity['projectRoot'],
-                            'stateRoot': identity['stateRoot'],
-                            'installId': identity['installId']}
-        if json.loads(pointer_bytes) != expected_pointer:
-            _fail('unused_build_pointer_mismatch')
-        pending = inspect_journal(journal)
-        entry = pending['pending'] if isinstance(pending['pending'], dict) else {}
-        if (pending['state'] != 'candidate_ready' or pending['selected'] is not None or
-                pending['newWriteSeen'] or pending['projectRoot'] != str(project) or
-                pending['scopeId'] != identity['scopeId'] or
-                pending['pendingRouteSha256'] != identity['routeSha256'] or
-                (not allow_started and pending['providerAttestationSha256'] is not None) or
-                (not allow_started and pending['providerFileIdentitySha256'] is not None) or
-                entry.get('installId') != install_id or entry.get('sourceCommit') != commit_id):
-            _fail('unused_build_journal_changed')
-        if allow_started:
-            from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-            if (state / FRESH_LEDGER).exists():
-                _fail('inactive_build_cutover_started')
-        route_bytes = _read_private(identity['routeFile'], 8192)
-        if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
-            _fail('initial_build_route_changed')
-        stores = _unused_store_proof(identity, allow_work=True) if allow_started else _unused_store_proof(identity)
-        record_bytes = _read_private(initial_build.record_path(state),
-                                     initial_build.MAX_RECORD_BYTES)
-        live = {'initial-build.json': record_bytes, 'build-pointer.json': pointer_bytes,
-                'reviewed-route.json': route_bytes}
-        wake_status = wake_cancel.status(str(project), queue=queue)
-        wake = wake_status['wake']
-        if wake is None and wake_status.get('overflow'):
-            _fail('unused_build_wake_overflow_present')
-        if wake is not None and wake_revision is None:
-            _fail('unused_build_wake_revision_required')
-        if not final.exists():
-            temp = Path(tempfile.mkdtemp(prefix='.unused-retire-', dir=state))
-            try:
-                files = {'initial-build.json': record_bytes, 'build-pointer.json': pointer_bytes,
-                         'reviewed-route.json': route_bytes}
-                for name, raw in files.items():
-                    fd = os.open(temp / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    with os.fdopen(fd, 'wb') as out:
-                        out.write(raw)
-                        out.flush()
-                        os.fsync(out.fileno())
-                digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in files.items()}
-                for name, source in (('journal.sqlite', journal),
-                                     ('candidate.sqlite', identity['candidateDb']),
-                                     ('queue.sqlite', identity['queueDb']),
-                                     ('catalog.sqlite', identity['catalogDb']),
-                                     ('binding.sqlite', identity['bindingStore'])):
-                    digests[name] = _snapshot_sqlite(source, temp / name)
-                receipt = {'schema': receipt_schema, 'installId': install_id,
-                           'commitId': commit_id, 'projectRoot': identity['projectRoot'],
-                           'stateRoot': identity['stateRoot'], 'recordEpoch': record['epoch'],
-                           'journalEpoch': pending['epoch'], 'stores': stores,
-                           'wakeRevision': wake_revision, 'files': digests,
-                           'createdNs': time.time_ns()}
-                fd = os.open(temp / 'receipt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, 'wb') as out:
-                    out.write(json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode())
-                    out.flush()
-                    os.fsync(out.fileno())
-                os.rename(temp, final)
-                fd = os.open(state, os.O_RDONLY)
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-            except BaseException:
-                import shutil
-                shutil.rmtree(temp, ignore_errors=True)
-                raise
-        # A pre-existing receipt (interrupted run) must be this exact build's.
-        receipt = _receipt_matches(final, identity, install_id, commit_id,
-                                   current_bytes=live, schema=receipt_schema)
-        if allow_started and receipt.get('stores') != stores:
-            _fail('unused_build_store_changed')
-        cancelled = None
-        if wake is not None:
-            import sqlite3
-            try:
-                cancelled = wake_cancel.cancel_locked(str(project), wake_revision, str(final),
-                                                      ownership, queue=queue)
-            except wake_cancel.CancelRefused as exc:
-                _fail('unused_build_wake_' + str(exc))
-            except sqlite3.OperationalError:
-                _fail('unused_build_wake_queue_busy')
-        # Last look before the first mutation of the record: nothing moved.
-        current_stores = (_unused_store_proof(identity, allow_work=True) if allow_started
-                          else _unused_store_proof(identity))
-        try:
-            current_ownership = wake_cancel.ownership_proof(str(project))
-        except wake_cancel.CancelRefused:
-            _fail('unused_build_changed')
-        if (initial_build.read(state) != record or current_stores != stores or
-                inspect_journal(journal) != pending or
-                current_ownership['sha256'] != ownership['sha256']):
-            _fail('unused_build_changed')
-        if allow_started:
-            if (state / FRESH_LEDGER).exists():
-                _fail('inactive_build_cutover_started')
-        clear = {'sealed': None, 'progress': None, 'freshness': None, 'blocked': None}
-        record = initial_build.advance(record, phase='retired', **clear) if allow_started else initial_build.advance(record, phase='retired')
-        pointer = initial_build.retire_project_pointer(identity)
-    return {'status': 'inactive_build_retired' if allow_started else 'unused_build_retired',
-            'replayed': False,
-            'receipt': str(final / 'receipt.json'), 'stateRoot': str(state),
-            'wake': None if cancelled is None else
-            {key: cancelled[key] for key in ('status', 'revision') if key in cancelled},
-            'buildPointer': pointer, 'buildPhase': record['phase'],
-            'changesApplied': 1, 'nextRequires': 'new_install_id_and_state_root',
-            'next': ['plan-fresh-wiki-origin', 'review-index-provider',
-                     'prepare-fresh-wiki-origin']}
-
-
-def retired_build_pointer(project_root):
-    """Read-only: the retired build still holding this project's wake pointer.
-
-    An interrupted abandon can retire the build record yet leave the
-    pointer, which then refuses a fresh install as
-    ``initial_build_already_registered``. Only a pointer naming a ``retired``
-    build qualifies; an active or prepared install is never named. Returns
-    the next action, or None.
-    """
-    import laya_initial_build as initial_build
-    try:
-        record = initial_build.lookup(str(_checked_project(project_root)))
-        if record is None or record['phase'] != 'retired':
-            return None
-        identity = record['identity']
-        state = Path(identity['stateRoot'])
-        if identity['journalPath'] != str(state / 'journal.sqlite'):
-            return None
-    except Exception:  # a hint only; the real refusal stays the caller's
-        return None
-    # An interrupted abandon may have archived a partial candidate.
-    action = ('abandon-inactive-index-build' if
-              (state / INACTIVE_RETIREMENT / 'receipt.json').is_file() else
-              'abandon-index-build')
-    return {'nextAction': action, 'stateRoot': str(state),
-            'reason': 'retired_build_pointer_registered'}
-
-
 def _checked_project(project_root):
     project = Path(project_root)
     if (not project.is_absolute() or project.is_symlink() or
             project.resolve(strict=True) != project):
         _fail('invalid_project_root')
     return project
-
-
-def _require_fresh_bound_generation(row, state):
-    """A selection activates only the generation sealed after a freshness request.
-
-    The build record must be ``bound`` to exactly the ledger's generation and
-    sealed evidence, from a scan started at or after the recorded request.
-    """
-    import laya_initial_build as initial_build
-    from laya_ledger_common import BOUND_EVIDENCE
-    record = initial_build.read(state)
-    if record is None:
-        _fail('initial_build_missing')
-    identity, sealed, freshness = record['identity'], record['sealed'], record['freshness']
-    if (identity['journalPath'] != row['journalPath'] or
-            identity['projectRoot'] != row['projectRoot'] or
-            identity['candidateDb'] != row['candidateDb']):
-        _fail('initial_build_project_mismatch')
-    if record['phase'] != 'bound':
-        _fail('initial_build_bind_unsettled')
-    if (sealed is None or freshness is None or
-            sealed['scanStartedNs'] < freshness['requestedNs'] or
-            any(sealed[theirs] != row[ours] for ours, theirs in BOUND_EVIDENCE)):
-        _fail('activation_requires_fresh_generation')
 
 
 def activate_origin_selection(project_root, journal_path, route_bytes):
@@ -1375,7 +808,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                     ledger = {**ledger, 'phase': 'selected', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)
                 proof = journal_module.verify_selected_route(decision)
-                return {'status': 'selected', 'journalPath': str(path),
+                return {'status': 'selected', 'phase': 'selected', 'journalPath': str(path),
                         'selectionEpoch': proof['selectionEpoch'],
                         'syncWake': _request_build_wake(str(project)),
                         'gitignoreEntries': ['.memvane/route.json', '.memvane/selection.json']}
@@ -1487,76 +920,6 @@ def _restore_v1_locked(project, state):
     return {'status': 'restored', 'changesApplied': 1}
 
 
-def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_id,
-                                route_bytes, reviewed_provider,
-                                _already_locked=False):
-    """Seal an installed commit and stage its attested, inactive journal.
-
-    The final route is constructed by the onboarding owner. The caller
-    must not call this with the source checkout as ``plugin_root``. No QMD
-    file, model or project route is written by staging.
-    """
-    root = Path(plugin_root)
-    if not isinstance(route_bytes, bytes):
-        _fail('invalid_route_bytes')
-    try:
-        route_hint = json.loads(route_bytes.decode('utf-8'))
-    except (UnicodeError, ValueError) as exc:
-        raise InstallBlocked('invalid_route_bytes') from exc
-    if not isinstance(route_hint, dict):
-        _fail('invalid_route_bytes')
-    parent = _prepare_state_root(state_root, route_hint.get('installId'))
-    if len(str(parent / 'runtime' / 'laya-embed.sock').encode('utf-8')) > 100:
-        _fail('install_socket_path_too_long')
-    if (not root.is_absolute() or root.is_symlink() or
-            Path(source_root).resolve(strict=True) == root.resolve(strict=True) or
-            route_hint.get('journalPath') != str(parent / 'journal.sqlite') or
-            route_hint.get('pluginRoot') != str(root) or
-            not isinstance(reviewed_provider, dict) or
-            set(reviewed_provider) - {PROFILE_CLOSURE_FIELD} !=
-            {'vectorProfile', 'providerManifest', 'dependencyClosure'}):
-        _fail('invalid_install_request')
-    journal = parent / 'journal.sqlite'
-    with (nullcontext() if _already_locked else _install_lock(parent)):
-        proof = adopt_host_loaded_plugin(source_root, root, commit_id=commit_id,
-                                          vector_profile=reviewed_provider['vectorProfile'])
-        runtime = parent / 'runtime'
-        if not runtime.exists() and not runtime.is_symlink():
-            os.mkdir(runtime, 0o700)
-        runtime_info = runtime.lstat()
-        if (not stat.S_ISDIR(runtime_info.st_mode) or
-                runtime_info.st_uid != os.getuid() or
-                stat.S_IMODE(runtime_info.st_mode) & 0o077):
-            _fail('unsafe_runtime_directory')
-        receipt = stage_production_attestation(
-            journal, proof, reviewed_provider['providerManifest'],
-            reviewed_provider['dependencyClosure'],
-            reviewed_provider.get(PROFILE_CLOSURE_FIELD))
-        if journal.exists() or journal.is_symlink():
-            observed = inspect_journal(journal)
-            if (observed['state'] != 'candidate_ready' or
-                    observed['pending'] is None or
-                    observed['pending']['pluginRoot'] != str(root) or
-                    observed['pending']['sourceCommit'] != commit_id or
-                    observed['pending']['bundleManifestSha256'] !=
-                    proof['bundleManifestSha256'] or
-                    observed['pendingRouteSha256'] !=
-                    hashlib.sha256(route_bytes).hexdigest() or
-                    observed['providerAttestationSha256'] is not None):
-                _fail('existing_install_journal_requires_review')
-        else:
-            observed = create_journal(journal, proof, route_bytes)
-        preflight = preflight_product_candidate(journal)
-        if preflight['attestationSha256'] != receipt['attestationSha256']:
-            _fail('staged_attestation_changed')
-        return {'status': 'candidate_ready', 'pluginRoot': str(root),
-                'sourceCommit': commit_id, 'journalPath': str(journal),
-                'bundleManifestSha256': proof['bundleManifestSha256'],
-                'ownershipManifestSha256': proof['ownershipManifestSha256'],
-                'attestationSha256': receipt['attestationSha256'],
-                'pendingRouteSha256': preflight['pendingRouteSha256']}
-
-
 def _installed_root():
     return Path(__file__).resolve(strict=True).parent.parent
 
@@ -1564,26 +927,18 @@ def _installed_root():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    stage = sub.add_parser('stage', help='seal an already host-installed candidate')
-    stage.add_argument('--source-root', required=True)
-    stage.add_argument('--commit', required=True)
-    stage.add_argument('--state-root', required=True)
-    stage.add_argument('--route-file', required=True)
-    stage.add_argument('--provider-review-file', required=True)
     fresh_plan = sub.add_parser('plan-fresh-wiki',
                                 help='review a new wiki-only generation')
     fresh_plan.add_argument('--project-root', required=True)
     review = sub.add_parser('review-provider',
                             help='inventory exact local Node/model/native artifacts')
-    review.add_argument('--source-root', required=True)
     review.add_argument('--state-root', required=True)
-    review.add_argument('--commit', required=True)
     review.add_argument('--model-file')
     review.add_argument('--dimension', type=int)
     fresh_prepare = sub.add_parser('prepare-fresh-wiki',
                                    help='register an inactive new wiki-only build')
-    for key in ('project-root', 'source-root', 'state-root', 'commit',
-                'proposal-sha256', 'install-id', 'accepted-provider-sha256'):
+    for key in ('project-root', 'state-root', 'proposal-sha256', 'install-id',
+                'accepted-provider-sha256'):
         fresh_prepare.add_argument('--' + key, required=True)
     fresh_prepare.add_argument('--model-file')
     fresh_prepare.add_argument('--dimension', type=int)
@@ -1610,11 +965,6 @@ def main(argv=None):
     restore.add_argument('--project-root', required=True)
     restore.add_argument('--state-root', required=True)
     restore.add_argument('--approve-restore', action='store_true')
-    retire = sub.add_parser('retire-origin',
-                            help='retire a bound, never selected build')
-    retire.add_argument('--project-root', required=True)
-    retire.add_argument('--state-root', required=True)
-    retire.add_argument('--approve-retire', action='store_true')
     args = parser.parse_args(argv)
     if args.action not in ('plan-fresh-wiki', 'review-provider', 'status', 'build-status'):
         from memvane_execution_guard import require_cached_plugin_for_live_write
@@ -1638,31 +988,18 @@ def main(argv=None):
             model_path=args.model_file, dimension=args.dimension)
     elif args.action == 'prepare-fresh-wiki':
         result = prepare_fresh_wiki_origin(
-            project_root=args.project_root, source_root=args.source_root,
-            plugin_root=root, state_root=args.state_root, commit_id=args.commit,
+            project_root=args.project_root, plugin_root=root, state_root=args.state_root,
             expected_proposal_sha256=args.proposal_sha256,
             install_id=args.install_id,
             accepted_provider_sha256=args.accepted_provider_sha256,
             model_path=args.model_file, dimension=args.dimension)
-    elif args.action == 'stage':
-        result = stage_host_loaded_candidate(
-            source_root=args.source_root, plugin_root=root,
-            state_root=args.state_root, commit_id=args.commit,
-            route_bytes=_read_private(args.route_file, 8192),
-            reviewed_provider=_json_input(args.provider_review_file))
     elif args.action == 'status':
-        proof = inspect_full_plugin_candidate(root)
-        result = {'bundle': proof, 'journal': inspect_journal(journal)}
+        result = {'journal': inspect_journal(journal)}
     elif args.action == 'restore':
         if not args.approve_restore:
             _fail('restore_approval_required')
         result = restore_origin_selection(project_root=args.project_root,
                                           state_root=args.state_root)
-    elif args.action == 'retire-origin':
-        if not args.approve_retire:
-            _fail('retire_approval_required')
-        result = retire_drifted_origin(project_root=args.project_root,
-                                       state_root=args.state_root)
     else:
         project = _checked_project(args.project_root)
         route = _read_private(args.route_file, 8192)

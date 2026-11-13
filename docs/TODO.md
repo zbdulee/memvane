@@ -83,7 +83,7 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
   - 외장·네트워크 볼륨처럼 잠시 사라지는 경로는 즉시 해제하지 않는다. 유예 기간(또는 연속 관측 횟수)을 둔다.
 - **먼저 정할 계약.**
   - 권한: 레지스트리는 조회 색인일 뿐 권한을 주지 않는다. 조회한 뒤 기존 selected route 증명(journal·route·attestation)을 그대로 통과해야 한다. 항목과 증명이 어긋나면 그 항목을 건너뛰고 백그라운드 reconcile이 고친다.
-  - uninstall의 정의와 단일 진입점: 지금은 `restore-index-origin`, `retire-index-origin`, `abandon-*`로 흩어져 있다. 진입점을 하나로 모을지, uninstall이 지우는 범위(route 파일, state 디렉터리, wiki 카드, 학습 상태)와 owner 승인 단계도 정한다.
+  - uninstall의 정의: 선택 해제와 별도로 state 디렉터리·wiki 카드·학습 상태의 정리 범위와 owner 승인 단계를 정한다.
   - 기존 설치 이전: 첫 실행 때 state base를 한 번 훑어 레지스트리를 채운다(backfill).
   - 오래된 항목: 경로 소실, inode 변경, journal 미선택을 판정하는 규칙, 일시적 소실의 유예 기간, 서비스 시작·주기 reconcile의 예산을 정한다.
   - 연결 worktree: 등록 단위와 main 항목과의 관계를 정한다. 「연결 git worktree의 카드 수명 주기」의 계약과 맞춘다.

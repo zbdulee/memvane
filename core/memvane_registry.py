@@ -49,13 +49,12 @@ DIRECTORY = 'registry'
 FILENAME = 'projects.sqlite'
 STATUSES = ('active', 'missing_pending', 'detached', 'conflict')
 TOMBSTONE_REASONS = ('missing', 'root_moved')
-SELECTED_JOURNAL_STATES = ('active', 'restored_old')
+SELECTED_JOURNAL_STATES = ('selected',)
 FAILED_SETUP_STATUSES = ('rejected', 'blocked', 'failed_preparing', 'partial',
                          'recovery_required', 'rolled_back_after_activation_failure',
                          'deferred')
 REGISTER_ACTIONS = ('activate-index-origin', 'recover-index-origin')
-RELEASE_ACTIONS = ('restore-index-origin', 'retire-index-origin', 'abandon-index-build',
-                   'abandon-inactive-index-build')
+RELEASE_ACTIONS = ('restore-index-origin',)
 MISSING_GRACE_SECONDS = 24 * 3600
 MISSING_OBSERVATIONS = 2
 OBSERVATION_GAP_SECONDS = 60
@@ -706,7 +705,7 @@ def after_setup(action, project_root, state_root, result):
                 or not project_root or not state_root):
             return None
         if action in REGISTER_ACTIONS:
-            if result.get('phase') != 'active':
+            if result.get('phase') != 'selected':
                 return None
             outcome = register(project_root, state_root, explicit=True)
             if outcome.get('status') != 'skipped':
