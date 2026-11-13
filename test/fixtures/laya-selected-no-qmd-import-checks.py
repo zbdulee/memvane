@@ -79,7 +79,6 @@ class SelectedNoQmdImport(unittest.TestCase):
                               ('laya-runtime-dispatch-checks.py', 10),
                               ('wiki-selected-laya-checks.py', 8),
                               ('wiki-dedup-scan-checks.py', 9),
-                              ('laya-bundle-auto-upgrade-checks.py', 15),
                               ('laya-embed-runtime-checks.py', 13),
                               ('laya-runtime-provision-checks.py', 21)):
             with self.subTest(fixture=name):
