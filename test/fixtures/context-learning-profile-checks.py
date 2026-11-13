@@ -2,7 +2,7 @@
 from pathlib import Path
 import json,tempfile,unittest,time
 from unittest.mock import patch
-from memvane.learning.context_learning import runtime_authorization,laya_adapter
+from memvane.learning.context_learning import runtime_authorization,adapter as laya_adapter
 try:from memvane.learning.context_learning import learning_profile as P
 except ImportError:P=None
 

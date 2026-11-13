@@ -195,7 +195,7 @@ class Checks(unittest.TestCase):
  def test_adapter_reloads_committed_head_rng_and_only_remaining_optimizer_groups(self):
   import importlib.util,math,types
   from unittest.mock import patch
-  from memvane.learning.context_learning import laya_adapter as adapter
+  from memvane.learning.context_learning import adapter
   spec=importlib.util.spec_from_file_location('analytical_memory',Path(__file__).with_name('context-learning-adaptive-memory-checks.py'))
   helpers=importlib.util.module_from_spec(spec);spec.loader.exec_module(helpers)
   Scalar=helpers.Scalar;Scalar.clone=lambda inner:Scalar(inner.value)

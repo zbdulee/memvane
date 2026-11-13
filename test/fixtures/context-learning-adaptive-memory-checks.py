@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.learning.context_learning import shared, local_cycle, laya_adapter
+from memvane.learning.context_learning import shared, local_cycle, adapter as laya_adapter
 
 class Scalar:
     def __init__(self, value, backward=None): self.value=value; self.action=backward

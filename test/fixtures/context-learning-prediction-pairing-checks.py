@@ -93,7 +93,7 @@ def _stub_laya():
 
 
 with patch.dict(sys.modules, _stub_laya()):
-    from memvane.learning.context_learning import laya_adapter as adapter
+    from memvane.learning.context_learning import adapter
     from memvane.learning.context_learning import compact_input
 
 TOK = CodepointTokenizer()

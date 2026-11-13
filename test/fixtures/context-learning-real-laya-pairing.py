@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.learning.context_learning import laya_adapter as adapter
+from memvane.learning.context_learning import adapter
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.store import canonical
 

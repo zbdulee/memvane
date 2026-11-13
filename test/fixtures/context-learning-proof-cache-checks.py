@@ -19,7 +19,7 @@ def private(path, value):
 
 def host_checks(root, state):
     sys.path.insert(0, str(root / 'core'))
-    from memvane.learning.context_learning import live_select, local_cycle, runtime_setup, laya_adapter, inference_service
+    from memvane.learning.context_learning import live_select, local_cycle, runtime_setup, adapter as laya_adapter, inference_service
     from memvane.learning.context_learning.contracts import digest
     adapter = root / 'memvane/learning/context_learning/adapter.py'
     model = state / 'model'; model.mkdir()

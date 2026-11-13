@@ -112,7 +112,7 @@ class IdentityChecks(unittest.TestCase):
         with patch.object(identity,'code_identity',return_value='c'*64):self.validate()
         with self.assertRaises(ValueError):self.cache.verify(self.state,self.argv,'other-view')
     def probe(self):
-        from memvane.learning.context_learning import laya_adapter
+        from memvane.learning.context_learning import adapter as laya_adapter
         case={'request_id':'probe','prompt':'synthetic request','input_sha256':'0'*64,
               'candidates':[{'id':'synthetic/overflow','revision_sha256':'1'*64,
                              'input_text':'# Synthetic overflow\nbody','input_kind':'full_compact_wiki_body'}]}

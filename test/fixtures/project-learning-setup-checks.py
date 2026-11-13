@@ -169,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
        'root':str(fixture),'fixtureId':'synthetic-qa','paths':{'project':str(qa_project)}})
   save(fixture/'.qa-fixture-owner',{'fixtureId':'synthetic-qa','uid':os.getuid()})
   save(qa_project/'.auto-context/settings.json',settings)
-  from memvane.learning.context_learning import local_cycle,runtime_setup,laya_adapter
+  from memvane.learning.context_learning import local_cycle,runtime_setup,adapter as laya_adapter
   identity=setup.model_identity(model)
   # Runtime probes stay metadata-only stubs; the binding checks themselves are real.
   compatible={'status':'metadata_compatible','runtime_identity_sha256':'c'*64,'mps_available':True}
@@ -338,7 +338,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   guard_patch.stop();probe_patch.stop()
   # A fresh synthetic root gets its runtime/model/base bindings only from the
   # reviewed initializer: exact fixture, installed adapter, prepared base.
-  from memvane.learning.context_learning import laya_adapter
+  from memvane.learning.context_learning import adapter as laya_adapter
   init=base/'qa-init';init.mkdir(mode=0o700)
   init_project=init/'project';init_project.mkdir(mode=0o700)
   init_root=init/'learning-private';init_root.mkdir(mode=0o700)

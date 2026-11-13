@@ -67,7 +67,7 @@ def _hook_closures(snapshot, trees):
 
 def _patch_checks(trees):
     names = {_module_name(path): path for path in trees}
-    symbols = {path: _symbol_table(tree) for path, tree in trees.items()}
+    symbols = {path: _symbol_table(tree) | {'__file__', '__name__', '__package__'} for path, tree in trees.items()}
     bad, unknown = [], []
     for path in ROOT.joinpath('test').rglob('*.py'):
         try:
@@ -96,15 +96,32 @@ def _patch_checks(trees):
                     target = module + '.' + str(node.args[1].value)
             if not isinstance(target, str) or '.' not in target:
                 continue
-            module, attr = target.rsplit('.', 1)
+            parts = target.split('.')
             location = str(path.relative_to(ROOT)) + ':' + str(node.lineno)
-            module_path = names.get(module)
+            module_path, remaining = None, []
+            for index in range(len(parts) - 1, 0, -1):
+                candidate = '.'.join(parts[:index])
+                if candidate in names:
+                    module_path, remaining = names[candidate], parts[index:]
+                    break
             if module_path is None:
-                if module.startswith('memvane.'):
+                if target.startswith('memvane.'):
                     bad.append(location + ':' + target + ':missing_module')
                 else:
                     unknown.append(location + ':' + target)
-            elif attr not in symbols[module_path]:
+                continue
+            if remaining[0] not in symbols[module_path]:
+                bad.append(location + ':' + target + ':missing_attribute')
+                continue
+            current = trees[module_path]
+            for attr in remaining:
+                definition = next((n for n in current.body if isinstance(n, ast.ClassDef) and n.name == attr), None)
+                if definition is None:
+                    break  # Imported objects and instances cannot be resolved statically here.
+                current = definition
+            else:
+                continue
+            if isinstance(current, ast.ClassDef) and attr not in _symbol_table(current):
                 bad.append(location + ':' + target + ':missing_attribute')
     return sorted(set(bad)), sorted(set(unknown))
 

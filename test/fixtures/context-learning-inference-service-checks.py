@@ -293,7 +293,7 @@ class BundleSignatureTests(unittest.TestCase):
 
 class ResponseTests(unittest.TestCase):
     def test_invalid_candidate_response_is_not_a_publishable_generation(self):
-        from memvane.learning.context_learning import laya_adapter
+        from memvane.learning.context_learning import adapter as laya_adapter
         request={'request':{'cases':[{'request_id':'r','input_sha256':'a',
                                     'candidates':[{'id':'wiki'}]}]}}
         with patch.object(laya_adapter,'predict_loaded',return_value={
