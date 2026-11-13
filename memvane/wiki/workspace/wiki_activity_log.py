@@ -16,13 +16,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from memvane.diagnostics import api as event_log
-from memvane.wiki.compile import wiki_card_budget
+from memvane.diagnostics.types import MEASURE_REASONS
 
 TAIL_CHARS = event_log.WIKI_TAIL_CHARS
 _UNRESOLVED = object()
 
 REASON_CODES = {
-    'card_measure': wiki_card_budget.MEASURE_REASONS,
+    'card_measure': MEASURE_REASONS,
 }
 
 

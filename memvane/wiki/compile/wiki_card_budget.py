@@ -75,19 +75,10 @@ MAX_SELECTOR_STATES = 64
 EXACT_TIMEOUT_SECONDS = 20
 MAX_ATTEMPTS_LOGGED = 8
 
-# Why one selector runtime could not count (one code per failed attempt).
-REASON_SPAWN_FAILED = 'runtime_spawn_failed'      # the interpreter did not start
-REASON_TIMEOUT = 'runtime_timeout'                # no answer within EXACT_TIMEOUT_SECONDS
-REASON_RUNTIME_ERROR = 'runtime_error'            # any other subprocess failure
-REASON_EXIT = 'runtime_exit'                      # non-zero exit (negative: signal)
-REASON_INPUT_UNENCODABLE = 'input_unencodable'    # the body could not be sent
-REASON_OUTPUT_UNDECODABLE = 'output_undecodable'  # stdout was not text
-REASON_OUTPUT_NOT_JSON = 'output_not_json'
-REASON_OUTPUT_SHAPE = 'output_shape_invalid'      # not a list of non-negative integers
-REASON_COUNT_MISMATCH = 'count_mismatch'          # one count per text expected
-MEASURE_REASONS = (REASON_SPAWN_FAILED, REASON_TIMEOUT, REASON_RUNTIME_ERROR, REASON_EXIT,
-                   REASON_INPUT_UNENCODABLE, REASON_OUTPUT_UNDECODABLE,
-                   REASON_OUTPUT_NOT_JSON, REASON_OUTPUT_SHAPE, REASON_COUNT_MISMATCH)
+from memvane.diagnostics.types import (REASON_SPAWN_FAILED, REASON_TIMEOUT,
+    REASON_RUNTIME_ERROR, REASON_EXIT, REASON_INPUT_UNENCODABLE,
+    REASON_OUTPUT_UNDECODABLE, REASON_OUTPUT_NOT_JSON, REASON_OUTPUT_SHAPE,
+    REASON_COUNT_MISMATCH, MEASURE_REASONS)
 
 _CLASS_RE = re.compile(
     r'[0-9]|[A-Za-z]+|\n|[ \t]+|[\x00-\x7f]|[가-힣]|[\u0080-￿]|[\U00010000-\U0010ffff]')
