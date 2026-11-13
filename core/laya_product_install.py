@@ -71,6 +71,8 @@ def _state_bases():
 def _prepare_state_root(path, install_id):
     """Create only a fresh per-install directory under the local state base."""
     root = Path(path)
+    from memvane_execution_guard import require_cached_plugin_for_live_write
+    require_cached_plugin_for_live_write(root)
     import memvane_paths
     if root.exists() or root.is_symlink():
         result = _private_parent(root)

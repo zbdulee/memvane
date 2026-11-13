@@ -438,6 +438,8 @@ def lookup(project_root):
 @contextmanager
 def owner(state_root):
     """One build owner at a time; yields False (never waits) when held."""
+    from memvane_execution_guard import require_cached_plugin_for_live_write
+    require_cached_plugin_for_live_write(state_root)
     state = _private_dir(state_root)
     fd = os.open(state / LOCK, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
                  | getattr(os, 'O_CLOEXEC', 0), 0o600)
