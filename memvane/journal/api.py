@@ -140,3 +140,8 @@ def reader_state(*args, **kwargs):
 def select_notification_route(*args, **kwargs):
     from memvane.journal.notification_route import select_notification_route as implementation
     return implementation(*args, **kwargs)
+
+
+def verify_preview_route(*args, **kwargs):
+    from memvane.journal.preview_proof import verify_preview_route as implementation
+    return implementation(*args, **kwargs)

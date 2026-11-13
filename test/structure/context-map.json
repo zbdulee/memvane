@@ -259,6 +259,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/journal/preview_proof.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/journal/reader_lease.py": {
       "context": "journal",
       "layer": "adapter",

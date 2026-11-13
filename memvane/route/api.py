@@ -43,9 +43,6 @@ def source_for_collection(*args, **kwargs):
 
 
 
-def verify_preview_route(*args, **kwargs):
-    from memvane.route.index_host_route import verify_preview_route as implementation
-    return implementation(*args, **kwargs)
 
 
 def written_schema(*args, **kwargs):
