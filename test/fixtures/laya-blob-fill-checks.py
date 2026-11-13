@@ -47,8 +47,8 @@ def wait_file(path, seconds=10):
 def worker(config_path, mode):
     """Finite synthetic subprocess; inherited claim descriptors are disabled."""
     config = json.loads(Path(config_path).read_text(encoding='utf8'))
-    from memvane.store.blob_store import BlobStore, BlobStoreError
-    from memvane.store.blob_fill import ContentFiller
+    from memvane.store.blob.blob_store import BlobStore, BlobStoreError
+    from memvane.store.blob.blob_fill import ContentFiller
     store = BlobStore.open(config['db'], repository=config['repository'], scope_id=config['scope'])
     filler = ContentFiller(store)
     key = (config['blob'], config['recipe'], config['profile'])
@@ -92,7 +92,7 @@ class ContentFillChecks(helpers.BlobStoreCase):
     def setUp(self):
         super().setUp()
         try:
-            module = importlib.import_module('memvane.store.blob_fill')
+            module = importlib.import_module('memvane.store.blob.blob_fill')
         except ModuleNotFoundError as exc:
             if exc.name != 'laya_blob_fill':
                 raise

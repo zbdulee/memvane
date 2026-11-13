@@ -44,7 +44,7 @@ def chunk(text, seq=0, position=0):
 
 class SetChecks(unittest.TestCase):
     def setUp(self):
-        module = importlib.import_module('memvane.store.blob_store')
+        module = importlib.import_module('memvane.store.blob.blob_store')
         self.Store, self.Error = module.BlobStore, module.BlobStoreError
         self.temp = tempfile.TemporaryDirectory(dir=os.environ['HOME'])
         self.addCleanup(self.temp.cleanup)
@@ -59,7 +59,7 @@ class SetChecks(unittest.TestCase):
         self.state = self.root / 'state'
         self.state.mkdir(mode=0o700)
         self.path = self.state / 'candidate.sqlite'
-        checkout = importlib.import_module('memvane.store.checkout_view')
+        checkout = importlib.import_module('memvane.store.checkout.checkout_view')
         self.repository = checkout.register_repository(str(self.project))
         self.worktree = checkout.register_worktree(str(self.project), self.repository)
         self.scope = 'f' * 32

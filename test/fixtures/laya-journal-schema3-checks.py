@@ -61,9 +61,9 @@ class Schema3EndpointChecks(unittest.TestCase):
         self.bridge = self.seed.bridge
         self.dispatch = importlib.import_module('memvane.recall.reader_dispatch')
         self.migration = importlib.import_module('laya_shadow_migration')
-        self.views = importlib.import_module('memvane.store.view_store')
+        self.views = importlib.import_module('memvane.store.view.view_store')
         self.opens = importlib.import_module('laya_reader_open')
-        checkout = importlib.import_module('memvane.store.checkout_view')
+        checkout = importlib.import_module('memvane.store.checkout.checkout_view')
         case = self.case
         git = ['git', '-C', str(case.project), '-c', 'commit.gpgsign=false', '-c',
                'core.hooksPath=' + os.devnull, '-c', 'user.name=Fixture', '-c',

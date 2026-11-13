@@ -84,7 +84,7 @@ class IntentAckChecks(unittest.TestCase):
 class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
     def test_reader_selection_change_during_issuance_is_rejected(self):
         selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
-        views = importlib.import_module('memvane.store.view_store')
+        views = importlib.import_module('memvane.store.view.view_store')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
@@ -101,7 +101,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
 
     def test_reader_selection_change_during_capture_is_rejected(self):
         selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
-        checkout_module = importlib.import_module('memvane.store.checkout_view')
+        checkout_module = importlib.import_module('memvane.store.checkout.checkout_view')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
@@ -171,7 +171,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
     def run_verify_case(self, *, malformed=False, branch=False, advance=False, fail_stamp=False,
                         crash=False, through_process=False, unavailable=False, sqlite_failure=False,
                         initial_sqlite=False):
-        checkout = importlib.import_module('memvane.store.checkout_view')
+        checkout = importlib.import_module('memvane.store.checkout.checkout_view')
         compiler = importlib.import_module('memvane.wiki.compile.wiki_compile_worker')
         verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
@@ -321,7 +321,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         self.run_verify_case(crash=True)
 
     def run_pending_replay(self, mode):
-        checkout_module = importlib.import_module('memvane.store.checkout_view')
+        checkout_module = importlib.import_module('memvane.store.checkout.checkout_view')
         compiler = importlib.import_module('memvane.wiki.compile.wiki_compile_worker')
         verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')

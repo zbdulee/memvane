@@ -10,11 +10,11 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / 'core'))
-from memvane.store import blob_values as v
-from memvane.store import view_values as values
-from memvane.store import view_store as view_store
-from memvane.store import view_schema as view_schema
-from memvane.store import view_fts as view_fts
+from memvane.store.blob import blob_values as v
+from memvane.store.view import view_values as values
+from memvane.store.view import view_store as view_store
+from memvane.store.view import view_schema as view_schema
+from memvane.store.view import view_fts as view_fts
 
 
 class ContentIdentityTests(unittest.TestCase):

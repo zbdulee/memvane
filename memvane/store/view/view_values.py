@@ -11,7 +11,7 @@ import json
 import re
 import time
 
-from memvane.store import blob_values as v
+from memvane.store.blob import blob_values as v
 from memvane.kernel import errors as primitives
 
 MAX_MEMBERS = 20000

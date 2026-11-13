@@ -422,7 +422,7 @@ class CapabilityChecks(fixture.ReaderChecks):
             dispatch._issue_candidate(store._path,repository=repository,scope_id='f'*32,
                 worktree_id=handle.worktree_id,checkout=self.root,deadline=time.monotonic()+10)
         foreign_root=self.project('foreign')
-        foreign_repository=importlib.import_module('memvane.store.checkout_view').register_repository(str(foreign_root))
+        foreign_repository=importlib.import_module('memvane.store.checkout.checkout_view').register_repository(str(foreign_root))
         with self.assertRaises(ValueError):
             dispatch._issue_candidate(store._path,repository=foreign_repository,scope_id=store._scope,
                 worktree_id=handle.worktree_id,checkout=self.root,deadline=time.monotonic()+10)

@@ -166,7 +166,7 @@ class RetireAndReceiptShape(Repo):
         self.assertEqual(again['receipt_id'], spec['receipt_id'])
 
     def test_checkout_view_registration_is_accepted_as_is(self):
-        from memvane.store import checkout_view as checkout_view
+        from memvane.store.checkout import checkout_view as checkout_view
         repository = checkout_view.register_repository(self.root)
         worktree = checkout_view.register_worktree(self.root, repository)
         fp = self.fingerprint(worktree=worktree)

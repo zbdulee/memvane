@@ -151,7 +151,7 @@ def source_path(value):
 
 
 def repository(value):
-    from memvane.store.checkout_view import REPOSITORY_FIELDS, REPOSITORY_SCHEMA, _identity
+    from memvane.store.checkout.checkout_view import REPOSITORY_FIELDS, REPOSITORY_SCHEMA, _identity
     if (not isinstance(value, dict) or set(value) != REPOSITORY_FIELDS
             or value.get('schema') != REPOSITORY_SCHEMA):
         fail('invalid_repository_binding')

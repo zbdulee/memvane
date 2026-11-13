@@ -7,12 +7,12 @@ import sqlite3
 import time
 import uuid
 
-from memvane.store import blob_values as v
-from memvane.store.blob_values import BlobStoreError
-from memvane.store.blob_store import _worktree_record
-from memvane.store import checkout_view as checkout
-from memvane.store import view_fts as fts
-from memvane.store import view_values as vals
+from memvane.store.blob import blob_values as v
+from memvane.store.blob.blob_values import BlobStoreError
+from memvane.store.blob.blob_store import _worktree_record
+from memvane.store.checkout import checkout_view as checkout
+from memvane.store.view import view_fts as fts
+from memvane.store.view import view_values as vals
 
 MAX_PINS = 128
 

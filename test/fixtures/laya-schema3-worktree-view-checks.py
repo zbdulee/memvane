@@ -131,7 +131,7 @@ class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
         return dict(decision=decision, context=context, event=recall[0], stderr=stderr)
 
     def view_id(self, worktree_id, branch):
-        checkout = importlib.import_module('memvane.store.checkout_view')
+        checkout = importlib.import_module('memvane.store.checkout.checkout_view')
         return checkout._digest([self.repository['repoId'], worktree_id, 'refs/heads/' + branch])
 
     def view_head(self, view_id):
@@ -273,7 +273,7 @@ class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
 
     def test_04_checkout_moving_under_the_read_answers_no_other_view(self):
         main_gen, linked_gen = self.built()
-        BlobStoreError = importlib.import_module('memvane.store.blob_values').BlobStoreError
+        BlobStoreError = importlib.import_module('memvane.store.blob.blob_values').BlobStoreError
         calls = []
 
         def moving(store, handle, **kwargs):

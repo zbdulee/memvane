@@ -16,7 +16,7 @@ spec.loader.exec_module(rows)
 
 class Contract:
     def prepare_intent(self):
-        from memvane.store import blob_values as values
+        from memvane.store.blob import blob_values as values
         from memvane.install import ledger_common as ledger
         from memvane.wiki.verify import wiki_verify_worker
         self.select_schema3()
@@ -107,7 +107,7 @@ class Contract:
 
     def test_newer_consumed_supersedes_older_waiting(self):
         from memvane.install import ledger_common as ledger
-        from memvane.store import blob_values as values
+        from memvane.store.blob import blob_values as values
         from memvane.wiki.verify import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
         old = copy.deepcopy(current)
@@ -161,7 +161,7 @@ class Contract:
 
     def test_forged_consumed_marker_cannot_supersede_waiting(self):
         from memvane.install import ledger_common as ledger
-        from memvane.store import blob_values as values
+        from memvane.store.blob import blob_values as values
         from memvane.wiki.verify import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
         path.rename(path.with_suffix('.consumed.json'))

@@ -16,7 +16,7 @@ helpers=importlib.util.module_from_spec(spec);spec.loader.exec_module(helpers)
 
 class ViewSchemaChecks(helpers.BlobStoreCase):
     def test_shared_body_fts_normalization_is_reused(self):
-        values=importlib.import_module('memvane.store.view_values')
+        values=importlib.import_module('memvane.store.view.view_values')
         body='합성 카드 본문'
         with mock.patch.object(values.primitives, '_qmd_fts_text', wraps=values.primitives._qmd_fts_text) as normalized:
             rows=values.fts_rows({'one.md':body, 'two.md':body}, titles={'one.md':'one', 'two.md':'two'})

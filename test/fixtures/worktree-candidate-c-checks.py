@@ -7,8 +7,8 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from memvane.store import worktree_wiki_membership as membership
-from memvane.store import worktree_query_slice as query
+from memvane.store.checkout import worktree_wiki_membership as membership
+from memvane.store.checkout import worktree_query_slice as query
 
 
 def h(body):

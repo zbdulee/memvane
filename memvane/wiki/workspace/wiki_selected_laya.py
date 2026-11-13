@@ -124,12 +124,12 @@ def schema3_checkout(bound):
             row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
         reader._need(row is not None and reader._repository_digest(row[0]) == record['repository_digest'],
                      'reader_store_changed')
-        from memvane.store.view_store import ViewStore
+        from memvane.store.view.view_store import ViewStore
         store = ViewStore.open_reader(record['db_path'], repository=json.loads(row[0]), scope_id=record['scope'])
         try:
             saved, _capture = store._observe_worktree(record['worktree_id'])
             reader._need(saved['binding_digest'] == record['worktree_binding'], 'reader_store_changed')
-            from memvane.store.blob_store import _worktree_record
+            from memvane.store.blob.blob_store import _worktree_record
             repository = store._repository
             worktree = _worktree_record(saved, repository, store._policy)
         finally:
@@ -171,7 +171,7 @@ class _Schema3Checkout:
                     and reader.persistent_node_equal(current['db_node'], record['db_node']))
 
     def capture(self):
-        from memvane.store import checkout_view as checkout
+        from memvane.store.checkout import checkout_view as checkout
         if not self._selection_current():
             raise ValueError('reader_selection_changed')
         capture = checkout.capture_view(self.decision['projectRoot'], self.repository,
@@ -181,7 +181,7 @@ class _Schema3Checkout:
         return capture
 
     def matches(self, capture):
-        from memvane.store import checkout_view as checkout
+        from memvane.store.checkout import checkout_view as checkout
         return (self._selection_current()
                 and checkout.capture_matches(capture, self.repository, self.worktree, fresh=True)
                 and self._selection_current())

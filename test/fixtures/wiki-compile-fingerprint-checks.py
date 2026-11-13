@@ -36,8 +36,8 @@ for _key in [key for key in os.environ if key.startswith('GIT_')]:
 os.environ.update(GIT_ENV)
 
 from memvane.wiki.lifecycle import git_branch_safety  # noqa: E402
-from memvane.store import blob_values as laya_blob_values  # noqa: E402
-from memvane.store import checkout_view as view  # noqa: E402
+from memvane.store.blob import blob_values as laya_blob_values  # noqa: E402
+from memvane.store.checkout import checkout_view as view  # noqa: E402
 from memvane.wiki.compile import wiki_compile_worker as worker  # noqa: E402
 from memvane.wiki.card import wiki_freshness  # noqa: E402
 from memvane.wiki.workspace import wiki_selected_laya  # noqa: E402

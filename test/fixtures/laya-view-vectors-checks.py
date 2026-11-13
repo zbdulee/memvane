@@ -83,8 +83,8 @@ class VectorChecks(VectorCase):
         self.assertEqual(reader.search_hybrid(read_pin,'hello',[1.0,0.0],10,profile_id=profile),expected_hybrid)
         self.assertEqual(reader._db.execute('PRAGMA query_only').fetchone()[0],1)
         reader.release(read_pin)
-        filler=importlib.import_module('memvane.store.blob_fill').ContentFiller(reader)
-        leases=importlib.import_module('memvane.store.blob_lease')
+        filler=importlib.import_module('memvane.store.blob.blob_fill').ContentFiller(reader)
+        leases=importlib.import_module('memvane.store.blob.blob_lease')
         blob=manifest['members'][0]['blob_sha']
         calls=[]
         with mock.patch.object(leases,'acquire',side_effect=AssertionError('unexpected lock')):

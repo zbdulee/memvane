@@ -11,7 +11,7 @@ spec.loader.exec_module(fixture)
 
 class CompiledAttestationChecks(fixture.CardSourceChecks):
     def check_compiled(self, store, handle):
-        from memvane.store import blob_values as values
+        from memvane.store.blob import blob_values as values
         manifest = self.snapshot(store, handle, trust=False)
         fp = store.fingerprint(manifest['sources'][0]['fingerprint_id'])
         fp['path'] = '.nova/notes.md'

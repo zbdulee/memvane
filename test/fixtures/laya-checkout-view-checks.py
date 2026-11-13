@@ -33,7 +33,7 @@ from memvane.host import onboarding_choice  # noqa: E402
 
 MODULES_BEFORE = set(sys.modules)
 try:
-    from memvane.store import checkout_view as view  # noqa: E402
+    from memvane.store.checkout import checkout_view as view  # noqa: E402
 except ModuleNotFoundError as exc:
     if exc.name != 'laya_checkout_view':
         raise

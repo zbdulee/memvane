@@ -2,10 +2,10 @@
 from functools import lru_cache
 import sqlite3
 
-from memvane.store.blob_values import canonical, hash_bytes
-from memvane.store import fill_schema as laya_fill_schema
-from memvane.store import view_schema as laya_view_schema
-from memvane.store import view_fts as laya_view_fts
+from memvane.store.blob.blob_values import canonical, hash_bytes
+from memvane.store.view import fill_schema as laya_fill_schema
+from memvane.store.view import view_schema as laya_view_schema
+from memvane.store.view import view_fts as laya_view_fts
 
 APP_ID = 0x4D564231
 SCHEMA_VERSION = 4

@@ -15,18 +15,18 @@ from pathlib import Path
 import time
 import uuid
 
-from memvane.store import blob_values as v
-from memvane.store import checkout_view as checkout
-from memvane.store.blob_values import BlobStoreError
-from memvane.store.blob_store import (BlobStore, _bound_settings, _current_file_node, _insert, _regular,
+from memvane.store.blob import blob_values as v
+from memvane.store.checkout import checkout_view as checkout
+from memvane.store.blob.blob_values import BlobStoreError
+from memvane.store.blob.blob_store import (BlobStore, _bound_settings, _current_file_node, _insert, _regular,
                              _worktree_record, _worktree_row)
-from memvane.store import view_fts as view_fts
-from memvane.store import view_values as vals
-from memvane.store import view_vectors as vectors
-from memvane.store.view_fill import FillMixin
-from memvane.store.view_reader import ReaderMixin
-from memvane.store.view_rows import RowsMixin
-from memvane.store.view_vectors import VectorMixin
+from memvane.store.view import view_fts as view_fts
+from memvane.store.view import view_values as vals
+from memvane.store.view import view_vectors as vectors
+from memvane.store.view.view_fill import FillMixin
+from memvane.store.view.view_reader import ReaderMixin
+from memvane.store.view.view_rows import RowsMixin
+from memvane.store.view.view_vectors import VectorMixin
 
 # Publication cut budget; only an O(1) source identity and the commit run under it.
 _CUT_SECONDS = 1.0

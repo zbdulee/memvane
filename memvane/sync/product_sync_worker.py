@@ -336,7 +336,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
     from contextlib import ExitStack
     from memvane.install import initial_build as build
     from memvane.journal import writer_scope as normal
-    from memvane.store.view_store import ViewStore
+    from memvane.store.view.view_store import ViewStore
     state = Path(decision['stateRoot'])
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
@@ -502,8 +502,8 @@ def _schema3_wiki_cards(root):
     Dot segments, root meta pages and links are not cards; a file the store
     would refuse to admit (not owned, linked, too large) is counted, not read.
     """
-    from memvane.store import blob_values as v
-    from memvane.store import view_values as view_values
+    from memvane.store.blob import blob_values as v
+    from memvane.store.view import view_values as view_values
     cards, skipped = [], 0
     for base, dirs, files in os.walk(root, followlinks=False):
         dirs[:] = sorted(name for name in dirs if not name.startswith('.'))
@@ -555,10 +555,10 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     """
     if vectors is None:
         vectors = {'spec': None}
-    from memvane.store import blob_values as v
-    from memvane.store import checkout_view as checkout
+    from memvane.store.blob import blob_values as v
+    from memvane.store.checkout import checkout_view as checkout
     from memvane.journal import writer_scope as normal
-    from memvane.store.view_store import ViewStore
+    from memvane.store.view.view_store import ViewStore
     info = normal.writer_store(writer)
     deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
     store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
@@ -674,7 +674,7 @@ def _schema3_linked_worktree(store, writer, proof, info, project, deadline, mark
     The record is built by ``laya_checkout_view.register_worktree`` and bound
     by ``ViewStore.register_worktree`` (no rebinding of an existing row).
     """
-    from memvane.store import checkout_view as checkout
+    from memvane.store.checkout import checkout_view as checkout
     with store._session() as db:
         rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
                           (str(project),)).fetchall()
@@ -769,7 +769,7 @@ def _ack_compile_intent(path, fd, initial, outcome):
 
 def _compiled_intent_is_stored(store, handle, intent):
     """A consumed filename is a witness only if its exact evidence is stored."""
-    from memvane.store import blob_values as values
+    from memvane.store.blob import blob_values as values
     result = {key: value for key, value in intent.items()
               if key not in ('kind', 'verdict_digest', 'result_digest')}
     if (intent.get('kind') != 'compile' or intent['viewId'] != handle.view_id
@@ -798,7 +798,7 @@ def _compiled_intent_is_stored(store, handle, intent):
 
 def _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current):
     """Consume bounded compile intents without changing the view's member trust."""
-    from memvane.store import blob_values as values
+    from memvane.store.blob import blob_values as values
     from memvane.install import ledger_common as ledger
     from memvane.journal import journal_reader as reader
     from memvane.journal import writer_scope as normal
@@ -964,12 +964,12 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     result's ``vector`` names why the vectors wait. An unchanged lexical head
     gets its vector generation from the same manifest.
     """
-    from memvane.store import blob_values as v
+    from memvane.store.blob import blob_values as v
     from memvane.journal import writer_scope as normal
     from memvane.wiki.lifecycle import wiki_lifecycle
-    from memvane.store.blob_store import _regular
-    from memvane.store import view_values as view_values
-    from memvane.store.view_store import _skip_patterns
+    from memvane.store.blob.blob_store import _regular
+    from memvane.store.view import view_values as view_values
+    from memvane.store.view.view_store import _skip_patterns
     import uuid
     if vectors is None:
         vectors = {'spec': None}
@@ -1146,8 +1146,8 @@ def _schema3_rows_baseline(store, db, handle, head):
     this pass's observation without reading a stored manifest.
     """
     import json
-    from memvane.store import view_rows as view_rows
-    from memvane.store import view_values as view_values
+    from memvane.store.view import view_rows as view_rows
+    from memvane.store.view import view_values as view_values
     cold = head['gen_id'] is None
 
     def member(row):
@@ -1183,7 +1183,7 @@ def _schema3_rows_baseline(store, db, handle, head):
 
 def _schema3_head_same(store, head, baseline, observed, handle):
     """The head was published from exactly this observation at the same HEAD."""
-    from memvane.store import view_values as view_values
+    from memvane.store.view import view_values as view_values
     if baseline['head_oid'] != handle.head_oid:
         return False
     wanted = []
@@ -1205,7 +1205,7 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
     the lexical generation is published first and the head's own fill follows
     (design: a row head fills its eligible cards).
     """
-    from memvane.store import blob_values as v
+    from memvane.store.blob import blob_values as v
     spec = vectors.get('spec')
     if spec is None:
         return {'state': 'off'}
@@ -1330,7 +1330,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
     ends; a refusal is remembered for the rest of the pass. The spec is None
     when the provider recipe has no view recipe (the view stays lexical).
     """
-    from memvane.store.view_vectors import provider_spec
+    from memvane.store.view.view_vectors import provider_spec
     spec = _schema3_vector_spec(proof)
     context = {'spec': spec, 'provider': None, 'refused': None, 'calls': 0, 'stash': {}}
     if spec is None:
@@ -1418,7 +1418,7 @@ def _code(exc):
 
 
 def _schema3_vector_spec(proof):
-    from memvane.store.view_vectors import provider_spec
+    from memvane.store.view.view_vectors import provider_spec
     return provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
 
 
@@ -1449,8 +1449,8 @@ def _schema3_chunker(context, current):
     recipe's fallback windows (``FALLBACK_CHARS``) and keeps no vector, so the
     embedder embeds each window alone.
     """
-    from memvane.store import blob_values as v
-    from memvane.store.view_vectors import FALLBACK_CHARS, qmd_first_pass
+    from memvane.store.blob import blob_values as v
+    from memvane.store.view.view_vectors import FALLBACK_CHARS, qmd_first_pass
 
     stats = context.setdefault('stats', {'providerMs': 0})
 
@@ -1595,8 +1595,8 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     ``provider_blocked``: the install's provider cannot be proved
     (``SCHEMA3_PROVIDER_DEFECTS``); the wake ends ``blocked``.
     """
-    from memvane.store import blob_values as v
-    from memvane.store.view_fill import MAX_FILES
+    from memvane.store.blob import blob_values as v
+    from memvane.store.view.view_fill import MAX_FILES
     spec = vectors.get('spec')
     if spec is None:
         return {'state': 'off'}
@@ -1617,7 +1617,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         if not registered:
             vectors['acquire'](current())
             _mark_schema3_write(writer, proof, marks)
-            from memvane.store.view_vectors import register_provider_spec
+            from memvane.store.view.view_vectors import register_provider_spec
             if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
                 v.fail('vector_spec_mismatch')
         _entry, _saved, _job, targets, stored = store._rows_fill_plan(handle, recipe_id, profile_id)

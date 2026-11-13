@@ -410,8 +410,8 @@ def _request_build_wake(project_root):
 def _create_v1_store(project_root, state_root, scope_id):
     """Create one new format-4 store under the installer's lock."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
-    from memvane.store import checkout_view as checkout
-    from memvane.store.view_store import ViewStore
+    from memvane.store.checkout import checkout_view as checkout
+    from memvane.store.view.view_store import ViewStore
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
     project = _checked_project(project_root)
@@ -563,14 +563,14 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.journal import journal_reader as reader
     from memvane.app import runtime_dispatch as dispatch
     from memvane.sync import product_sync_worker as sync
-    from memvane.store import blob_values as values
-    from memvane.store import view_values as view_values
+    from memvane.store.blob import blob_values as values
+    from memvane.store.view import view_values as view_values
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
-    from memvane.store.blob_store import _regular
+    from memvane.store.blob.blob_store import _regular
     from memvane.install.ledger_common import _read_json, _write
-    from memvane.store.view_store import ViewStore, _skip_patterns
-    from memvane.store.view_vectors import provider_spec
+    from memvane.store.view.view_store import ViewStore, _skip_patterns
+    from memvane.store.view.view_vectors import provider_spec
     from memvane.sync.sync_owner_lock import sync_owner
     state = _private_parent(state_root)
     project = _checked_project(project_root)

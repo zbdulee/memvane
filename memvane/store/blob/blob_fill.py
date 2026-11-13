@@ -17,10 +17,10 @@ import struct
 import threading
 import time
 
-from memvane.store import blob_lease as lease
-from memvane.store import blob_values as v
-from memvane.store.blob_store import BlobStore
-from memvane.store.blob_values import BlobStoreError
+from memvane.store.blob import blob_lease as lease
+from memvane.store.blob import blob_values as v
+from memvane.store.blob.blob_store import BlobStore
+from memvane.store.blob.blob_values import BlobStoreError
 
 MAX_DEADLINE = 300
 

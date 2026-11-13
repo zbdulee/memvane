@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import time
 
-from memvane.store import blob_values as v
+from memvane.store.blob import blob_values as v
 
 PREFIX='wiki_fts_'
 _FIELDS=('filepath','title','body','path_key')

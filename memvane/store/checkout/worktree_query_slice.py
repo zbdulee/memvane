@@ -12,7 +12,7 @@ import math
 import sqlite3
 import uuid
 
-from memvane.store import worktree_wiki_membership
+from memvane.store.checkout import worktree_wiki_membership
 
 
 def create_schema(db: sqlite3.Connection):

@@ -21,7 +21,7 @@ SCAN='1'*32
 class GenerationCase(helpers.BlobStoreCase):
     def setUp(self):
         super().setUp()
-        try:self.views=importlib.import_module('memvane.store.view_store')
+        try:self.views=importlib.import_module('memvane.store.view.view_store')
         except ModuleNotFoundError as exc:
             if exc.name!='laya_view_store':raise
             self.fail('PR3 capture-bound generation store is absent')

@@ -814,87 +814,102 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/blob_fill.py": {
+    "memvane/store/blob/__init__.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/blob_lease.py": {
+    "memvane/store/blob/blob_fill.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/blob_schema.py": {
+    "memvane/store/blob/blob_lease.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/blob_store.py": {
+    "memvane/store/blob/blob_schema.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/blob_values.py": {
+    "memvane/store/blob/blob_store.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/checkout_view.py": {
+    "memvane/store/blob/blob_values.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/fill_schema.py": {
+    "memvane/store/checkout/__init__.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_fill.py": {
+    "memvane/store/checkout/checkout_view.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_fts.py": {
+    "memvane/store/checkout/worktree_query_slice.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_reader.py": {
+    "memvane/store/checkout/worktree_wiki_membership.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_rows.py": {
+    "memvane/store/view/__init__.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_schema.py": {
+    "memvane/store/view/fill_schema.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_store.py": {
+    "memvane/store/view/view_fill.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_values.py": {
+    "memvane/store/view/view_fts.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/view_vectors.py": {
+    "memvane/store/view/view_reader.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/worktree_query_slice.py": {
+    "memvane/store/view/view_rows.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/store/worktree_wiki_membership.py": {
+    "memvane/store/view/view_schema.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_store.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_values.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_vectors.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false

@@ -71,7 +71,7 @@ class Coordinator:
 class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
     def setUp(self):
         super().setUp()
-        self.VV = importlib.import_module('memvane.store.view_vectors')
+        self.VV = importlib.import_module('memvane.store.view.view_vectors')
         self.provider_calls = []
         self.split = set()  # card bodies (by marker) the stub provider re-splits
         real = self.VV.provider_specs
@@ -101,7 +101,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
             def embed_document_chunks(self, body, path, timeout=None):
                 checks.provider_calls.append(('chunks', path))
                 parts = checks.VV.qmd_first_pass(body)
-                title = importlib.import_module('memvane.store.blob_values').markdown_title(body, path[6:-3])
+                title = importlib.import_module('memvane.store.blob.blob_values').markdown_title(body, path[6:-3])
                 if any(marker in body for marker in checks.split):
                     # A token re-split: one more chunk position than the first pass.
                     parts = parts + [(len(body.encode('utf-16-le')) // 2 - 1, body[-1:])]
@@ -301,7 +301,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
                 members = store._stored(db, side['generation'])[0]
             borrowed = [dict({k: m[k] for k in ('path', 'blob_sha', 'display_title', 'trust_digest')},
                              trust_digest=trust[main['generation']][m['path']]) for m in members]
-            with self.assertRaises(importlib.import_module('memvane.store.blob_values').BlobStoreError) as caught:
+            with self.assertRaises(importlib.import_module('memvane.store.blob.blob_values').BlobStoreError) as caught:
                 store.prepare_generation(handle, dict(scan_id='9' * 32, policy_digest=handle.policy_digest,
                                                       revocation_epoch=0, complete=True, sources=[],
                                                       members=borrowed), expected_head=head)
@@ -550,8 +550,8 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         ``laya_blob_fill``'s deadline reads a virtual clock that only the stub's
         single-embedding calls advance (4 virtual seconds each).
         """
-        fill = importlib.import_module('memvane.store.blob_fill')
-        values = importlib.import_module('memvane.store.blob_values')
+        fill = importlib.import_module('memvane.store.blob.blob_fill')
+        values = importlib.import_module('memvane.store.blob.blob_values')
         clock, budgets = [0.0], []
         real_deadline = fill._deadline
 
@@ -613,8 +613,8 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         """``laya_blob_fill`` deadlines on a virtual clock; ``slow[marker]`` virtual
         seconds pass inside the provider's chunked call for a body holding marker.
         Yields the list of content-fill budgets."""
-        fill = importlib.import_module('memvane.store.blob_fill')
-        values = importlib.import_module('memvane.store.blob_values')
+        fill = importlib.import_module('memvane.store.blob.blob_fill')
+        values = importlib.import_module('memvane.store.blob.blob_values')
         clock, budgets = [0.0], []
         real_deadline = fill._deadline
 
@@ -1193,8 +1193,8 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         """One virtual monotonic clock for the sync worker and both fill layers;
         ``cost[marker]`` seconds pass inside the provider's chunked call for a
         body holding marker. Yields the list of chunked-call markers seen."""
-        modules = [self.worker, importlib.import_module('memvane.store.view_fill'),
-                   importlib.import_module('memvane.store.blob_fill')]
+        modules = [self.worker, importlib.import_module('memvane.store.view.view_fill'),
+                   importlib.import_module('memvane.store.blob.blob_fill')]
         offset = [0.0]
         fake = mock.Mock(wraps=time)
         fake.monotonic = lambda: time.monotonic() + offset[0]

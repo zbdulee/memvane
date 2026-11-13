@@ -27,7 +27,7 @@ import uuid
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO / 'core'))
-from memvane.store import checkout_view as view  # noqa: E402  (PR 1, present at base)
+from memvane.store.checkout import checkout_view as view  # noqa: E402  (PR 1, present at base)
 
 APP_ID, FORMAT = 0x4D564231, b'memvane-git-blob-candidate-v3'
 SETTINGS = {'name': 'blobfixture'}
@@ -81,7 +81,7 @@ def sha256(raw):
 class BlobStoreCase(unittest.TestCase):
     def setUp(self):
         try:
-            self.mod = importlib.import_module('memvane.store.blob_store')
+            self.mod = importlib.import_module('memvane.store.blob.blob_store')
         except ModuleNotFoundError as exc:
             if exc.name != 'laya_blob_store':
                 raise
@@ -380,7 +380,7 @@ class BlobStoreChecks(BlobStoreCase):
         store, _, wid = self.create()
         old = store.ingest_card(wid, 'cards/a.md')
         (self.wiki() / 'cards/b.md').write_bytes(BEE)
-        values = importlib.import_module('memvane.store.blob_values')
+        values = importlib.import_module('memvane.store.blob.blob_values')
         real_hash = values.hash_bytes
         with mock.patch.object(values, 'hash_bytes', side_effect=lambda b: old if b == BEE else real_hash(b)):
             error = self.refused(store.ingest_card, wid, 'cards/b.md')

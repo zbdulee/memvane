@@ -769,7 +769,7 @@ def _provenance_gate(job, checkout):
 
 
 def _compile_intent_id(result):
-    from memvane.store import blob_values as values
+    from memvane.store.blob import blob_values as values
     return values.digest('memvane-compile-intent-id-v1', [
         'compile', result['viewId'], result['targetPath'], result['cardSha'],
         result['sourceFingerprints']['scanId']])
@@ -810,8 +810,8 @@ def _supersede_job_intent(root, config, job, target, decision):
     from memvane.install import ledger_common as ledger
     try:
         wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
-        from memvane.store.blob_store import _regular
-        from memvane.store.blob_values import MAX_BODY
+        from memvane.store.blob.blob_store import _regular
+        from memvane.store.blob.blob_values import MAX_BODY
         card, _, _ = _regular(wiki_root, target.relative_to(wiki_root).as_posix(), MAX_BODY)
         card_sha = hashlib.sha256(card).hexdigest()
         path = (root / job['targetPath']).resolve().relative_to(wiki_root).as_posix()
@@ -911,7 +911,7 @@ def apply_verify_verdict_locked(
             if rendered is not None:
                 capture, gate_reason = _provenance_gate(job, checkout)
                 if capture is not None:
-                    from memvane.store import blob_values as values
+                    from memvane.store.blob import blob_values as values
                     wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
                     live_target = (root / job['targetPath']).resolve()
                     result = dict(cardSha=hashlib.sha256(rendered.encode('utf8')).hexdigest(),
