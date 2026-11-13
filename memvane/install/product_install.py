@@ -244,7 +244,9 @@ def review_local_provider(*, plugin_root, state_root,
     from memvane.provider.api import profile_identity
     from memvane.provider.api import default_embed_model_uri, hash_file as _hash_file, recipe_fingerprint
     DEFAULT_EMBED_MODEL_URI = default_embed_model_uri()
-    from memvane.install.product_bundle import _read, MAX_FILE, _canonical
+    from memvane.provider.api import _bundle as product_bundle
+    _read, MAX_FILE, _canonical = (product_bundle._read, product_bundle.MAX_FILE,
+                                   product_bundle._canonical)
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         _fail('reviewed_native_platform_unsupported')
     root, state = map(Path, (plugin_root, state_root))
@@ -561,7 +563,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.install import initial_build as build
     from memvane.journal.api import _install_journal as journal
     from memvane.journal.api import _reader as reader
-    from memvane.app import runtime_dispatch as dispatch
+    from memvane.app.api import _runtime_dispatch as dispatch
     from memvane.sync import api as sync
     from memvane.store import api as values
     from memvane.store import api as view_values, types as store_types

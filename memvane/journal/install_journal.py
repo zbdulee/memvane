@@ -28,11 +28,13 @@ from memvane.route.types import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIEL
                                    SCHEMA_V3 as ROUTE_SCHEMA_V3)
 from memvane.journal.api import select_route
 from memvane.route.api import written_schema
-from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
-                                 inspect_full_plugin_candidate,
-                                 RUNTIME_FILES_FIELD,
-                                 validate_production_provider_attestation,
-                                 validate_vector_profile)
+from memvane.provider.types import BundleEvidenceError
+from memvane.provider.api import _bundle as product_bundle
+COMMIT = product_bundle.COMMIT
+inspect_full_plugin_candidate = product_bundle.inspect_full_plugin_candidate
+RUNTIME_FILES_FIELD = product_bundle.RUNTIME_FILES_FIELD
+validate_production_provider_attestation = product_bundle.validate_production_provider_attestation
+validate_vector_profile = product_bundle.validate_vector_profile
 
 
 SCHEMA_V3 = 'laya-installer-journal-v3'

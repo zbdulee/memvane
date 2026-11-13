@@ -1312,7 +1312,7 @@ def _schema3_worker_manifest(decision, proof):
     from memvane.journal.api import _install_journal as journal
     with journal.read_only_journals():
         if proof.get('buildPending'):
-            from memvane.app import runtime_dispatch as dispatch
+            from memvane.app.api import _runtime_dispatch as dispatch
             dispatch.resolve('laya-sync', decision['projectRoot'])
             row = journal.inspect_journal(decision['journalPath'])
             attestation, digest = journal._attestation(Path(decision['journalPath']))

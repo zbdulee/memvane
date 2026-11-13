@@ -14,7 +14,7 @@ def verify_preview_route(decision: dict) -> dict:
     if live != decision:
         raise ValueError('initial_preview_changed')
     if decision.get('routeSchema') == SCHEMA_V4:
-        from memvane.app import runtime_dispatch as dispatch
+        from memvane.app.api import _runtime_dispatch as dispatch
         from memvane.journal.install_journal import inspect_journal, _attestation, _v1_provider_manifest
         dispatch.resolve('laya-sync', decision['projectRoot'])
         journal = inspect_journal(decision['journalPath'])

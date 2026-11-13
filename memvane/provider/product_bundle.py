@@ -468,7 +468,7 @@ def _plugin_paths(source, commit_id, *, required_paths=None):
                  'memvane/runtime/sync_owner_lock.py', 'memvane/kernel/errors.py',
                  'memvane/provider/domain/profile.py',
                  'memvane/install/product_install.py',
-                 'memvane/install/product_bundle.py', 'memvane/journal/install_journal.py',
+                 'memvane/provider/product_bundle.py', 'memvane/journal/install_journal.py',
                  'hermes_adapter/core_bridge.py', 'plugin.yaml',
                  'LICENSE', 'README.md',
                  '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}
@@ -858,7 +858,7 @@ def inspect_full_plugin_candidate(plugin_root):
              'memvane/runtime/sync_owner_lock.py', 'memvane/kernel/errors.py',
              'memvane/provider/domain/profile.py',
              'memvane/install/product_install.py',
-             'memvane/install/product_bundle.py', 'memvane/journal/install_journal.py',
+             'memvane/provider/product_bundle.py', 'memvane/journal/install_journal.py',
              'hermes_adapter/core_bridge.py', 'plugin.yaml',
              'LICENSE', 'README.md',
              '.claude-plugin/plugin.json', '.codex-plugin/plugin.json'}.issubset(expected_files) or

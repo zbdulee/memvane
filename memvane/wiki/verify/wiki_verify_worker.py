@@ -60,8 +60,8 @@ from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings.api import _config as qmd_config
-from memvane.wiki.compile import wiki_compile as wc
-from memvane.wiki.compile import wiki_compile_worker as wcw
+from memvane.wiki.compile.api import _operations as wc
+from memvane.wiki.compile.api import _operations as wcw
 from memvane.wiki.engines import api as engines
 from memvane.wiki.card.api import card_support
 wiki_freshness = card_support.freshness

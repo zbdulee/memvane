@@ -9,7 +9,7 @@ from memvane.wiki.card.api import archive_card
 from memvane.wiki.workspace import api as cp
 from memvane.settings import api as project_dir
 from memvane.wiki.card import api as wiki_card
-from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.compile.api import _operations as wc
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.workspace import api as wiki_selected_laya
 from memvane.wiki.card import api as yaml_scalars

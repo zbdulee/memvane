@@ -10,6 +10,12 @@ class _ProfileOperations:
 
 _profile = _ProfileOperations()
 
+class _InferenceServiceOperations:
+    def __getattr__(self, name):
+        return getattr(_import_module('memvane.learning.context_learning.inference_service'), name)
+
+_inference_service = _InferenceServiceOperations()
+
 
 def resource_report(*args, **kwargs):
     from memvane.runtime.api import resource

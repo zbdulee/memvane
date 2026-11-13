@@ -184,11 +184,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/install/product_bundle.py": {
-      "context": "install",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/install/product_install.py": {
       "context": "install",
       "layer": "adapter",
@@ -1551,6 +1546,16 @@
     },
     "memvane/wiki/workspace/wiki_selected_laya.py": {
       "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/product_bundle.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/api.py": {
+      "context": "app",
       "layer": "adapter",
       "pinned": false
     }

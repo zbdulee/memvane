@@ -346,7 +346,8 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
 
 def _learning_root():
     try:
-        from memvane.learning.context_learning.inference_service import service_root
+        from memvane.learning.api import _inference_service as inference_service
+        service_root = inference_service.service_root
         return service_root(create=True)
     except Exception:
         return None
@@ -993,7 +994,7 @@ class Service:
 
     def _learning_busy(self):
         try:
-            from memvane.learning.context_learning import inference_service as learning
+            from memvane.learning.api import _inference_service as learning
             answer = learning._version(Path(self.learning_root), time.monotonic() + .5)
         except Exception:
             return False
@@ -1577,7 +1578,7 @@ class Service:
 def _learning_host(learning_root):
     """Host the learning inference service in this process until stopped."""
     def host(stopped):
-        from memvane.learning.context_learning import inference_service as learning
+        from memvane.learning.api import _inference_service as learning
         root = Path(learning_root)
         from memvane.runtime.api import lease
         while not stopped.is_set():
