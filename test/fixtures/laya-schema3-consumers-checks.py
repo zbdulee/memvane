@@ -32,7 +32,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         self.D = importlib.import_module('memvane.wiki.intake.wiki_discovery')
         self.X = importlib.import_module('memvane.wiki.intake.external_edits')
         self.wakes = []
-        work = importlib.import_module('runtime_work')
+        work = importlib.import_module('memvane.runtime.runtime_work')
 
         def request(kind, target='', **_kwargs):
             self.wakes.append((kind, target))

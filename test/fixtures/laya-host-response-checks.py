@@ -99,7 +99,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
     import laya_index_runtime
     from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
     import laya_index_source_port as source_port
-    import runtime_work
+    from memvane.runtime import runtime_work
     calls = [] if provider_calls is None else provider_calls
 
     def provider(*args):
@@ -254,7 +254,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_selected_update_only_enqueues_and_accepts_worker_epoch_advance(self):
         import laya_install_journal
-        import runtime_work
+        from memvane.runtime import runtime_work
         decision = {**DECISION,
                     "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
                     "projectRoot": "/synthetic/project"}
@@ -271,7 +271,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_selected_successful_bash_wakes_full_scan_owner_only(self):
         import laya_install_journal
-        import runtime_work
+        from memvane.runtime import runtime_work
         decision = {**DECISION,
                     "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
                     "projectRoot": "/synthetic/project", "collections": []}
@@ -316,7 +316,7 @@ class ResponseChecks(unittest.TestCase):
     def test_selected_session_start_wakes_pending_compile_queue(self):
         from memvane.wiki.workspace import compile_paths
         import laya_install_journal
-        import runtime_work
+        from memvane.runtime import runtime_work
         from memvane.wiki.card import wiki_freshness
         with tempfile.TemporaryDirectory(prefix='laya-host-wake-') as temp:
             root = Path(temp).resolve()
@@ -1446,7 +1446,7 @@ class ResponseChecks(unittest.TestCase):
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from memvane.settings import config
-        import runtime_work
+        from memvane.runtime import runtime_work
         from contextlib import nullcontext
         try:
             raise IndexContractError('index_stale') from response._SealedManifestMismatch('x')
@@ -1471,7 +1471,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_repeated_stale_recall_coalesces_in_existing_wake_queue(self):
         import os
-        import runtime_work
+        from memvane.runtime import runtime_work
         decision = v2_decision()
         real_queue = runtime_work.WakeQueue
         with tempfile.TemporaryDirectory(prefix='laya-stale-wake-') as temp:
@@ -1499,7 +1499,7 @@ class ResponseChecks(unittest.TestCase):
     def test_cold_provider_wakes_owner_without_qmd_fallback(self):
         import laya_install_journal
         import laya_embed_resident
-        import runtime_work
+        from memvane.runtime import runtime_work
         decision = v2_decision()
         with patch.object(laya_install_journal, 'verify_selected_route',
                           return_value=V2_PROOF), \
@@ -1513,7 +1513,7 @@ class ResponseChecks(unittest.TestCase):
     def test_provider_failure_and_identity_transition_have_distinct_codes(self):
         import laya_install_journal
         import laya_embed_resident
-        import runtime_work
+        from memvane.runtime import runtime_work
         decision = v2_decision()
         state = {'terminal': True, 'reason': 'attestation_invalid'}
         with patch.object(laya_install_journal, 'verify_selected_route',
@@ -1541,7 +1541,7 @@ class ResponseChecks(unittest.TestCase):
         import time as clock
         import laya_install_journal
         import laya_embed_resident
-        import runtime_work
+        from memvane.runtime import runtime_work
         from laya_index_a import IndexContractError
         from memvane.kernel.resource_deferred import ResourceDeferred
         decision = v2_decision()
@@ -1674,7 +1674,7 @@ class BundleDriftChecks(unittest.TestCase):
     def drifted(self, stack, code='executing_code_outside_bundle'):
         import laya_install_journal
         from memvane.journal import journal_reader as laya_journal_reader
-        import runtime_work
+        from memvane.runtime import runtime_work
         from contextlib import nullcontext
         stack.enter_context(patch.object(laya_journal_reader, '_journal', side_effect=lambda path:path))
         stack.enter_context(patch.object(laya_journal_reader, '_readonly', return_value=nullcontext(object())))
@@ -1986,7 +1986,7 @@ class ProofRetryChecks(unittest.TestCase):
         import laya_install_journal
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-        import runtime_work
+        from memvane.runtime import runtime_work
         calls = {'query': []}
         digest = hashlib.sha256(self.BODY.encode('utf-8')).hexdigest()
 
@@ -2301,7 +2301,7 @@ class ProofRetryChecks(unittest.TestCase):
         # Hermes serves recalls in-process: a concurrent or nested recall
         # must neither reset another one's epoch floor nor share its wakes.
         import threading
-        import runtime_work
+        from memvane.runtime import runtime_work
         a_ready, b_done = threading.Event(), threading.Event()
         outcome = {}
 

@@ -19,6 +19,8 @@ TARGETS = {
     'hook-serve': ('core/laya_host_response.py', 'serve-stdin'),
     'host-ack': ('core/context_learning_host_ack.py', None),
     'setup': ('core/setup_entry.py', None),
+    'runtime-work': ('memvane/runtime/runtime_work.py', None),
+    'runtime-monitor': ('memvane/runtime/runtime_monitor.py', None),
     'wiki-extract': ('core/wiki_extract.py', None),
     'wiki-dedup-resolve': ('memvane/wiki/dedup/wiki_dedup_resolve.py', None),
 }

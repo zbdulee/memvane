@@ -193,7 +193,7 @@ class EntryPoints(unittest.TestCase):
 
     def test_recall_can_prepare_with_its_owned_demand_before_compute(self):
         a=self.admission()
-        import runtime_work
+        from memvane.runtime import runtime_work
         with runtime_work.foreground('recall',coordinator=self.c):
             with a.preparation():
                 a.preparation_checkpoint()

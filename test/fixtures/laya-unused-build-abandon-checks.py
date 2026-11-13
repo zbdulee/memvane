@@ -28,7 +28,7 @@ import laya_product_install as product
 import laya_product_sync_worker as worker
 from memvane.runtime import runtime_wake_cancel as wake_cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
-import runtime_work
+from memvane.runtime import runtime_work
 
 SCOPE = 'c' * 32
 INSTALL = '4' * 32

@@ -35,7 +35,7 @@ class ImportBoundary(unittest.TestCase):
 
 class Aliases(unittest.TestCase):
     def test_learning_modules_re_export_the_same_objects(self):
-        import runtime_work
+        from memvane.runtime import runtime_work
         from context_learning import local_cycle,resident,resource_coordination
         self.assertIs(resident._private_state,lease.private_state)
         self.assertIs(resident._private_lock,lease.private_lock)
@@ -46,7 +46,7 @@ class Aliases(unittest.TestCase):
         self.assertIs(runtime_work._atomic_json,lease.atomic_json)
 
     def test_runtime_work_shims_reach_the_real_coordinator_and_root_on_call(self):
-        import runtime_work
+        from memvane.runtime import runtime_work
         from context_learning import resource_coordination
         with tempfile.TemporaryDirectory() as raw:
             root=Path(os.path.realpath(raw));os.chmod(root,0o700)

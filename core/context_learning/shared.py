@@ -1801,7 +1801,7 @@ def launch(config, project, *, parent_id=None, episode=None,
     # competing detached trainer directly from the hook. General project and
     # legacy source workers still need their capture/teacher phase below.
     if selected_profile and not general_project:
-        import runtime_work
+        from memvane.runtime import runtime_work
         receipt=runtime_work.request('learning',str(Path(project).resolve()))
         return receipt or {'status':'deferred_resource'}
     # General project and legacy source workers also run the capture/teacher
@@ -1825,7 +1825,7 @@ def launch(config, project, *, parent_id=None, episode=None,
                 "QMD_JOB_EPISODE": str(episode) if episode is not None else "",
                 "QMD_JOB_QUEUED_AT": str(queued_at),
                 "QMD_JOB_MODEL_VERSION": str(version)}})
-    import runtime_work
+    from memvane.runtime import runtime_work
     receipt = runtime_work.request('learning', str(Path(project).resolve()))
     return receipt or {'status': 'deferred_resource'}
 
@@ -2071,7 +2071,7 @@ def _settle_owned(root, name, state, result, project, *, handoff=False):
                                    "acked": False})
     if not retry:
         return result
-    import runtime_work
+    from memvane.runtime import runtime_work
     receipt = runtime_work.request('learning', str(project))
     lost = isinstance(receipt, dict) and receipt.get("status") == "deferred_queue_capacity"
     return {**result, "learning_retry": {"status": "wake_dropped_until_next_hook" if lost else
@@ -2276,7 +2276,7 @@ def main(argv):
         if argv[0] == "start-synthetic-training":
             from memvane.settings import config
             import project_learning_setup
-            import runtime_work
+            from memvane.runtime import runtime_work
             project=Path(argv[1]).resolve(strict=True)
             cfg=config.find_project_config(str(project))['config']
             root=_safe_root(cfg,project)
@@ -2303,7 +2303,7 @@ def main(argv):
                              wait_for_lock=argv[0] == "run-project-after-index")
                 if (result['status'] in ('deferred_resource','staged_evaluation_deferred','apply_deferred')
                         and _policy(root).get('_runtime_authorization_v2') is True):
-                    import runtime_work
+                    from memvane.runtime import runtime_work
                     runtime_work.request('learning',str(project))
                     result={**result,'learning_retry':{'status':'durable_wake_pending'}}
         else:

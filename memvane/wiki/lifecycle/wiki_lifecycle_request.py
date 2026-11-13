@@ -127,6 +127,6 @@ def request(decision: dict, trigger: str) -> str | None:
     root = decision["projectRoot"]
     outcome = record(root, trigger)
     if outcome != "coalesced":
-        import runtime_work
+        from memvane.runtime import runtime_work
         runtime_work.request("laya-compile", root, start=False)
     return outcome

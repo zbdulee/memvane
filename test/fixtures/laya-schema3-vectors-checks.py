@@ -34,7 +34,7 @@ seed_module = importlib.util.module_from_spec(spec); spec.loader.exec_module(see
 
 # The seed setUp replaces ``runtime_work.request``; the wake-queue checks keep
 # the real one, captured here before any setUp runs.
-REAL_WAKE_REQUEST = importlib.import_module('runtime_work').request
+REAL_WAKE_REQUEST = importlib.import_module('memvane.runtime.runtime_work').request
 
 MODEL_SHA = '3' * 64
 RECIPE = 'qmd-regex-token-chunks-candidate-v1'
@@ -638,7 +638,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
     @contextmanager
     def offers(self):
         """``runtime_work.request`` calls as (kind, target, delay)."""
-        work = importlib.import_module('runtime_work')
+        work = importlib.import_module('memvane.runtime.runtime_work')
         seen = []
 
         def request(kind, target='', **kwargs):
@@ -981,7 +981,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import os
         import tempfile
         from types import SimpleNamespace
-        work = importlib.import_module('runtime_work')
+        work = importlib.import_module('memvane.runtime.runtime_work')
         root = Path(tempfile.mkdtemp(prefix='wakes-', dir=os.environ.get('HOME'))).resolve()
         clock = {'now': time.time()}
         fake = SimpleNamespace(time=lambda: clock['now'], monotonic=time.monotonic, sleep=lambda _s: None)
@@ -1016,7 +1016,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         and leaves one delayed re-offer 30 s out; a following pass with vectors
         left and no store progress is not ACKed (the same row and revision stay,
         with a counted target_deferred attempt) and leaves no delayed row."""
-        work = importlib.import_module('runtime_work')
+        work = importlib.import_module('memvane.runtime.runtime_work')
         self.select_schema3()
         self.card('concepts/slow-card.md', 'slowprobe')
         project = str(self.case.project)
@@ -1052,7 +1052,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         provider call) after it added embedding sets is a progressing pass: the
         wake is ACKed with one delayed re-offer, no provider call follows the
         yield, and the next pass asks the provider only for cards not done."""
-        work = importlib.import_module('runtime_work')
+        work = importlib.import_module('memvane.runtime.runtime_work')
         self.select_schema3()
         for name in ('alpha', 'bravo', 'charlie'):
             self.card(f'yield/{name}.md', name + 'yieldprobe')
@@ -1142,7 +1142,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         sets stay, and the vector wake resumes on its delayed re-offer."""
         import os
         import tempfile
-        work = importlib.import_module('runtime_work')
+        work = importlib.import_module('memvane.runtime.runtime_work')
         build = importlib.import_module('laya_initial_build')
         self.select_schema3()
         for name in ('delta', 'echo', 'foxtrot'):
@@ -1306,7 +1306,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         its backed-off wake runs next and the filled sets stay."""
         import os
         import tempfile
-        work = importlib.import_module('runtime_work')
+        work = importlib.import_module('memvane.runtime.runtime_work')
         build = importlib.import_module('laya_initial_build')
         self.select_schema3()
         markers = self.cold_cards('yld', 10)

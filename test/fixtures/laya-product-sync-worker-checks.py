@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_product_sync_worker as worker
-import runtime_work
+from memvane.runtime import runtime_work
 from memvane.runtime import runtime_wake_policy
 from context_learning.local_cycle import ResourceDeferred
 import laya_host_response as response
@@ -64,7 +64,7 @@ class WorkerChecks(unittest.TestCase):
         self.refreshed={**self.proof,'selectionEpoch':8}
 
     def test_repeatedly_failing_qmd_wake_does_not_starve_selected_sync(self):
-        import runtime_work
+        from memvane.runtime import runtime_work
         controller=Coordinator();controller.root=self.project
         queue=runtime_work.WakeQueue(self.project)
         queue.put('index','',now=0)

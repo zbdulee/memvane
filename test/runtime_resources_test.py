@@ -30,7 +30,7 @@ class RuntimeChecks(unittest.TestCase):
 
     def runtime(self):
         self.assertIsNotNone(importlib.util.find_spec('runtime_work'),'runtime wake queue missing')
-        return importlib.import_module('runtime_work')
+        return importlib.import_module('memvane.runtime.runtime_work')
 
     def test_learning_wake_defers_during_install_transition(self):
         from memvane.settings import config

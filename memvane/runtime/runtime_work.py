@@ -49,7 +49,7 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.runtime.runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 from memvane.runtime import runtime_wake_policy as wake_policy
 # Re-exported: drain's default executor and external callers keep this object.
-from runtime_handlers import dispatch
+from memvane.runtime.runtime_handlers import dispatch
 
 POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,
         'targetHeadroomFraction':.35}
@@ -428,7 +428,7 @@ def _wake(queue=None):
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return 'busy'
-        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),'worker',str(fd)],
+        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-work','worker',str(fd)],
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return 'spawned'
@@ -449,7 +449,7 @@ def _arm_timer(queue):
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return False
-        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),'timer',str(fd)],
+        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-work','timer',str(fd)],
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return True
@@ -512,7 +512,7 @@ def _handoff():
     try:
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return False
-        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve()),'handoff',str(fd)],
+        subprocess.Popen([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-work','handoff',str(fd)],
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,),start_new_session=True)
         return True

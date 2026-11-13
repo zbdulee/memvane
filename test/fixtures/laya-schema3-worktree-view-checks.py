@@ -108,7 +108,7 @@ class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
             events.append(dict(fields, event=event))
             return True
         seen = [] if wakes is None else wakes
-        import runtime_work
+        from memvane.runtime import runtime_work
 
         def request(kind, target, **kwargs):
             seen.append((kind, str(target)))

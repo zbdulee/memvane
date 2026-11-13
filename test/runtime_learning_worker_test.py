@@ -84,7 +84,7 @@ class FullWorkerChecks(unittest.TestCase):
         return {'kind':'learning','target':str(self.project),'revision':revision}
 
     def drain(self,queue,execute,wall,max_runs=2):
-        runtime=importlib.import_module('runtime_work')
+        runtime=importlib.import_module('memvane.runtime.runtime_work')
         clock=[0.]
         return runtime.drain(queue,execute=execute,ready=lambda:True,clock=lambda:clock[0],
             wall=lambda:wall[0],sleep=lambda dt:clock.__setitem__(0,clock[0]+dt),max_runs=max_runs)
@@ -117,7 +117,7 @@ class FullWorkerChecks(unittest.TestCase):
         wake.assert_called_with('learning',str(self.project.resolve()))
 
     def test_restart_reruns_full_worker_once_while_index_keeps_priority(self):
-        runtime=importlib.import_module('runtime_work')
+        runtime=importlib.import_module('memvane.runtime.runtime_work')
         # After a reboot: one counted start that never recorded an outcome.
         self.request();atomic_json(self.shared/shared.FULL_WORKER_STATE,
             {'nonce':NONCE,'starts':1,'outcome':None,'acked':False})
@@ -147,7 +147,7 @@ class FullWorkerChecks(unittest.TestCase):
         self.assertTrue(self.state()['acked'])
 
     def test_training_retry_runs_in_owned_child_while_index_dispatches(self):
-        runtime=importlib.import_module('runtime_work')
+        runtime=importlib.import_module('memvane.runtime.runtime_work')
         q=runtime.WakeQueue(self.wakes);q.put('learning',str(self.project),now=0)
         calls=[];wall=[1.]
         def execute(row):
@@ -177,14 +177,14 @@ class FullWorkerChecks(unittest.TestCase):
     def test_full_settled_request_falls_back_to_owned_training_child(self):
         self.request();atomic_json(self.shared/shared.FULL_WORKER_STATE,
             {'nonce':NONCE,'starts':1,'outcome':'drained','acked':True})
-        import runtime_handlers
+        from memvane.runtime import runtime_handlers
         with self.handler_env():
             self.assertFalse(runtime_handlers.dispatch(self.row(3)))
         self.assertEqual(len(self.spawned),1)
         self.assertEqual(self.spawned[0][0][3],'run-owned-training')
 
     def test_training_child_crash_restarts_are_bounded(self):
-        import runtime_handlers
+        from memvane.runtime import runtime_handlers
         with self.handler_env():
             for starts in range(1,shared.MAX_FULL_WORKER_STARTS+1):
                 self.assertFalse(runtime_handlers.dispatch(self.row(4)))
@@ -195,9 +195,9 @@ class FullWorkerChecks(unittest.TestCase):
         self.assertEqual(self.training_state()['outcome'],'abandoned_after_restarts')
 
     def test_wake_after_settled_training_coalesces_into_one_new_run(self):
-        runtime=importlib.import_module('runtime_work')
+        runtime=importlib.import_module('memvane.runtime.runtime_work')
         q=runtime.WakeQueue(self.wakes);q.put('learning',str(self.project),now=0)
-        import runtime_handlers
+        from memvane.runtime import runtime_handlers
         with self.handler_env():
             first=q.pending()[0]
             self.assertFalse(runtime_handlers.dispatch(first))
@@ -214,7 +214,7 @@ class FullWorkerChecks(unittest.TestCase):
         self.assertEqual(len(self.spawned),2)
 
     def test_malformed_records_are_quarantined_and_acked_without_spawn(self):
-        import runtime_handlers
+        from memvane.runtime import runtime_handlers
         with self.handler_env():
             atomic_json(self.shared/shared.FULL_WORKER_REQUEST,{'schema':'wrong'})
             self.assertTrue(runtime_handlers.dispatch(self.row(1)))
@@ -236,7 +236,7 @@ class FullWorkerChecks(unittest.TestCase):
         self.request();atomic_json(self.shared/shared.FULL_WORKER_STATE,
             {'nonce':NONCE,'starts':shared.MAX_FULL_WORKER_STARTS,'outcome':None,'acked':False})
         with self.handler_env():
-            import runtime_handlers
+            from memvane.runtime import runtime_handlers
             self.assertTrue(runtime_handlers.dispatch(self.row(1)))
         self.assertEqual(self.spawned,[]);self.assertEqual(self.state()['outcome'],'abandoned_after_restarts')
 
@@ -290,7 +290,7 @@ class FullWorkerChecks(unittest.TestCase):
         self.assertEqual(answer['learning_retry'],{'status':'training_only_handoff'})
         wake.assert_called_once_with('learning',str(self.project.resolve()))
         self.assertEqual(self.state()['outcome'],shared.TRAINING_HANDOFF)
-        import runtime_handlers
+        from memvane.runtime import runtime_handlers
         with self.handler_env():
             self.assertFalse(runtime_handlers.dispatch(self.row(5)))
         self.assertEqual([argv[3] for argv,_ in self.spawned],['run-owned-training'])
@@ -342,7 +342,7 @@ class WakeQueueChecks(unittest.TestCase):
     def setUp(self):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         root=Path(temp.name).resolve()/'wakes';root.mkdir(mode=0o700)
-        self.runtime=importlib.import_module('runtime_work')
+        self.runtime=importlib.import_module('memvane.runtime.runtime_work')
         self.queue=self.runtime.WakeQueue(root)
 
     def test_revisions_stay_unique_after_ack_and_recreate(self):

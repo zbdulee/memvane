@@ -395,7 +395,7 @@ class Checks(unittest.TestCase):
             self.assertFalse(laya_learning.ready(self.laya.project))
 
     def test_laya_publish_wakes_learning_without_changing_sync_result(self):
-        import runtime_handlers
+        from memvane.runtime import runtime_handlers
         import laya_runtime_dispatch
         woken = []
         row = {'target': str(self.laya.project), 'leaseFd': None}

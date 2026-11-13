@@ -21,7 +21,7 @@ CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
 
 from memvane.runtime import runtime_wake_policy as policy  # noqa: E402
-import runtime_work as runtime  # noqa: E402
+from memvane.runtime import runtime_work as runtime  # noqa: E402
 from context_learning.local_cycle import ResourceDeferred  # noqa: E402
 from context_learning.resource_coordination import _lock  # noqa: E402
 

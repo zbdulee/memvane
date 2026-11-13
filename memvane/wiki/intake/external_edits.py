@@ -294,7 +294,7 @@ def _nested_project(path, project, deadline):
 def notify(paths, *, cwd, host, origin):
     """Offer inert revision hints and normal sync wakes, never owner store work."""
     import laya_install_journal as journal
-    import runtime_work
+    from memvane.runtime import runtime_work
     from memvane.wiki.intake.wiki_discovery import _locked, _write
     deadline = time.monotonic() + HOOK_SECONDS
     try:

@@ -81,7 +81,7 @@ def _embed_with_budget(provider, body, path):
 
 def _higher_priority_wake(controller):
     """Yield for due QMD work; preserve an unavailable probe as a distinct deferral."""
-    from runtime_work import WakeQueue
+    from memvane.runtime.runtime_work import WakeQueue
     try:
         rows = WakeQueue(controller.root).pending()
         return any(row['kind'] in ('index', 'update') and row['due'] <= time.time()
@@ -122,7 +122,7 @@ def _initial_build_waiting(controller, project):
     builds never yield to each other.
     """
     import laya_initial_build as initial_build
-    from runtime_work import WakeQueue
+    from memvane.runtime.runtime_work import WakeQueue
     try:
         queue = WakeQueue(controller.root)
         rows = queue.pending()
@@ -414,7 +414,7 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
         # warm worker instead of waiting for the next edit. An offer
         # failure leaves the next natural wake to go on.
         try:
-            import runtime_work
+            from memvane.runtime import runtime_work
             runtime_work.request('laya-sync', str(project), delay=SCHEMA3_VECTOR_REOFFER_SECONDS)
             result = {**result, 'vectorReoffer': True}
         except Exception:

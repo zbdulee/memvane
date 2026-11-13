@@ -10,7 +10,7 @@ from unittest.mock import Mock,patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
 from context_learning.resource_coordination import Coordinator,decision
 from context_learning.local_cycle import ResourceDeferred
-import runtime_work as runtime
+from memvane.runtime import runtime_work as runtime
 
 
 class Hardening(unittest.TestCase):

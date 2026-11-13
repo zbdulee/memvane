@@ -263,7 +263,7 @@ class Checks(unittest.TestCase):
         """Selected route whose query vector is missing; records the provider calls."""
         import laya_embed_resident
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-        import runtime_work
+        from memvane.runtime import runtime_work
         decision, proof, rows, _settings = self.host(stack)
         stack.enter_context(patch('context_learning.seam._private_state', return_value=None))
         if admit is not None:

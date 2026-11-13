@@ -35,7 +35,7 @@ import laya_index_host_route as routes  # noqa: E402
 import laya_install_journal as journal  # noqa: E402
 import laya_product_sync_worker as sync  # noqa: E402
 from memvane.host import onboarding_choice  # noqa: E402
-import runtime_work  # noqa: E402
+from memvane.runtime import runtime_work  # noqa: E402
 import out_of_project_installs as installs  # noqa: E402
 
 # Imported before any patch. The full proofs are patched on

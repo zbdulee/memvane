@@ -57,7 +57,7 @@ def run(main) -> int:
     finally:
         if not os.environ.get('QMD_SANDBOX') and '--sandbox' not in sys.argv:
             try:
-                from runtime_work import hook_wake
+                from memvane.runtime.runtime_work import hook_wake
                 hook_wake()
             except Exception:
                 pass  # Wake failure must not break host hooks or drop the queue.

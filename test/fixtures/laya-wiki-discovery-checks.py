@@ -33,8 +33,8 @@ import laya_index_host_route as host_route
 from laya_index_vector import profile_identity
 import laya_product_sync_worker as worker
 from memvane.wiki.intake import wiki_discovery as discovery
-import runtime_handlers
-import runtime_work
+from memvane.runtime import runtime_handlers
+from memvane.runtime import runtime_work
 from memvane.wiki.intake import wiki_compile_enqueue
 from memvane.wiki.card import wiki_freshness
 

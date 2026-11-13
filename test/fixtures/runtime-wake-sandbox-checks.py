@@ -23,7 +23,7 @@ CORE = FIXTURES.parents[1] / 'core'
 sys.path.insert(0, str(CORE))
 sys.path.insert(0, str(FIXTURES))
 
-import runtime_work  # noqa: E402
+from memvane.runtime import runtime_work  # noqa: E402
 
 QUEUE = 'runtime-wakes.sqlite3'
 REAL_POPEN = subprocess.Popen
@@ -107,7 +107,7 @@ class TestRuntimeRootGuard(Decoy):
         with mock.patch.object(tempfile, 'tempdir', '/usr'), \
                 mock.patch.dict(os.environ, {'TMPDIR': '/usr'}):
             self.assertFalse(runtime_lease.in_platform_temp('/usr/share/memvane-project'))
-            import runtime_handlers
+            from memvane.runtime import runtime_handlers
             from memvane.runtime import runtime_wake_policy
             with self.assertRaises(runtime_wake_policy.TargetMissing):
                 runtime_handlers.laya_sync({'kind': 'laya-sync',

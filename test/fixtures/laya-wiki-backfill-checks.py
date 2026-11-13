@@ -18,7 +18,7 @@ from memvane.wiki.intake import wiki_discovery as discovery
 from memvane.wiki.intake import wiki_compile_enqueue as enqueue
 import wiki_compile_worker as worker
 import wiki_selected_laya as selected
-import runtime_work
+from memvane.runtime import runtime_work
 
 
 class BackfillChecks(unittest.TestCase):

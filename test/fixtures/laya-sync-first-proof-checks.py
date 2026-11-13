@@ -643,7 +643,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         from memvane.wiki.intake import wiki_discovery as discovery
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.workspace import compile_paths as cp
-        import runtime_work
+        from memvane.runtime import runtime_work
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected()
             state,_grants,_lock=discovery._paths(decision)
@@ -673,7 +673,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.intake import wiki_compile_enqueue as enqueue
         from memvane.wiki.workspace import compile_paths as cp
-        import runtime_work
+        from memvane.runtime import runtime_work
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected()
             state,_grants,_lock=discovery._paths(decision)
@@ -709,7 +709,7 @@ class SyncFirstProofChecks(unittest.TestCase):
     def test_legacy_v4_compile_edit_with_owned_enqueue_wakes(self):
         import laya_host_response as response
         from memvane.wiki.workspace import compile_paths as cp
-        import runtime_work
+        from memvane.runtime import runtime_work
         with self._compile_warm(),self.seed.authority():
             self.publish_v4()
             decision,_proof=self.selected()
@@ -827,7 +827,7 @@ class SyncFirstProofChecks(unittest.TestCase):
     def test_discovery_real_enqueue_reuses_owned_compile_proof(self):
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.intake import wiki_discovery as discovery
-        import runtime_work
+        from memvane.runtime import runtime_work
         from memvane.wiki.workspace import compile_paths as cp
         with self.fixture.F.warm(),self.seed.authority():
             decision,proof=self.selected()
@@ -893,7 +893,7 @@ class SyncFirstProofChecks(unittest.TestCase):
     def test_discovery_external_inbox_full_proofs_use_owned_readers(self):
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
-        import runtime_work
+        from memvane.runtime import runtime_work
         import wiki_selected_laya
         with self.fixture.F.warm(), self.seed.authority():
             decision, proof = self.selected()
@@ -919,7 +919,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         from memvane.wiki.intake import external_edits as external
         from memvane.wiki.intake import wiki_discovery as discovery
         from memvane.wiki.workspace import compile_paths as cp
-        import runtime_work
+        from memvane.runtime import runtime_work
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected()
             source=self.case.project/'external-owned-edit.md'

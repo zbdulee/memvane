@@ -33,7 +33,7 @@ CORE = REPO / 'core'
 sys.path.insert(0, str(CORE))
 import laya_host_response as response  # noqa: E402
 import laya_install_journal  # noqa: E402
-import runtime_work  # noqa: E402
+from memvane.runtime import runtime_work  # noqa: E402
 import wiki_selected_laya  # noqa: E402
 from memvane.wiki.compile import wiki_compile_retrieval  # noqa: E402
 from memvane.wiki.card import yaml_scalars  # noqa: E402

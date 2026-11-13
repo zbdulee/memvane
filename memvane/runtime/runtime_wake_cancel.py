@@ -175,7 +175,7 @@ def _backup(queue, backup_dir, key, expected):
 
 def status(project_raw, *, queue=None):
     """Read-only: the current wake row for this project and its cancel audit."""
-    from runtime_work import WakeQueue
+    from memvane.runtime.runtime_work import WakeQueue
     queue = queue or WakeQueue()
     key = wake_policy.wake_key(KIND, str(project_raw))
     if not queue.path.exists():
@@ -246,7 +246,7 @@ def cancel_locked(project_raw, revision, backup_dir, proof, *, queue=None, clock
     them. It raises ``CancelRefused``/``sqlite3.OperationalError`` instead of
     answering, so a composing operation stops before its own first write.
     """
-    from runtime_work import WakeQueue
+    from memvane.runtime.runtime_work import WakeQueue
     queue = queue or WakeQueue()
     key = wake_policy.wake_key(KIND, proof['project'])
     with queue.connect() as db:

@@ -400,7 +400,7 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
 def _request_build_wake(project_root):
     """Queue the selected-project wake kind; the worker finds the build."""
     try:
-        import runtime_work
+        from memvane.runtime import runtime_work
         queued = runtime_work.request('laya-sync', str(project_root))
     except (OSError, ValueError) as exc:
         return {'status': 'wake_unavailable', 'reason': type(exc).__name__}

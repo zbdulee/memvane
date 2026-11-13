@@ -169,7 +169,7 @@ else:
     resource_observer=resource_platform.adapter_for(sys.platform)
     from context_learning import general_teacher, shared, project_scope
     from context_learning.resource_coordination import Coordinator
-    from runtime_work import WakeQueue
+    from memvane.runtime.runtime_work import WakeQueue
     assert Coordinator().root.is_relative_to(home)
     assert WakeQueue().root.is_relative_to(home)
     scheduler_lock=open(Coordinator().root/'runtime-worker.lock','a')
@@ -459,7 +459,7 @@ assert not attempts,attempts
     worker_receipts=[row for row in receipts if row['argv0'].endswith('context_learning_shared.py')]
     assert worker_receipts==[],worker_receipts
     for lock in locks: lock.close()
-    from runtime_work import drain
+    from memvane.runtime.runtime_work import drain
     # The dispatcher starts one owned worker per pending request and keeps its
     # wake until that worker settles; teacher work was already committed above.
     # A child may finish while a different, detached dispatcher owns the UID

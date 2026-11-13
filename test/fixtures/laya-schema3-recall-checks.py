@@ -348,7 +348,7 @@ class Schema3RecallChecks(unittest.TestCase):
     # ---- hot rollback journal ----------------------------------------------
     def test_07_hot_journal_refuses_recall_with_recovery_reason_and_offers_sync(self):
         from memvane.kernel.errors import _query_only_uri
-        import runtime_work
+        from memvane.runtime import runtime_work
         case = self.case
         self.u10.switched()
         store = self.u10.store_path

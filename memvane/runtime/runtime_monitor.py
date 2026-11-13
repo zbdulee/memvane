@@ -10,7 +10,7 @@ import time
 
 from context_learning.resource_coordination import Coordinator,_lock
 from memvane.kernel.resource_deferred import ResourceDeferred
-import runtime_work
+from memvane.runtime import runtime_work
 
 INTERVAL=5.
 LAYA_KINDS=('laya-sync','laya-compile')
@@ -87,7 +87,7 @@ def start(root,*,spawn=None):
         try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return None
         read,write=os.pipe()
-        process=spawn([sys.executable,'-B',str(Path(__file__).resolve()),str(root),str(fd),str(read)],
+        process=spawn([sys.executable,'-B',str(Path(__file__).resolve().parents[2] / 'entry/run.py'),'runtime-monitor',str(root),str(fd),str(read)],
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
             close_fds=True,pass_fds=(fd,read),start_new_session=True)
         result=Handle(process,write);write=None;return result

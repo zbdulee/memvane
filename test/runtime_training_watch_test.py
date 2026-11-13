@@ -80,7 +80,7 @@ class RunningTraining(unittest.TestCase):
                                    priority_work=True)['action'],'terminate')
 
     def test_due_index_wake_is_visible_without_mutating_the_queue(self):
-        import runtime_work
+        from memvane.runtime import runtime_work
         queue=runtime_work.WakeQueue(self.root)
         controller=Coordinator(self.root)
         self.assertFalse(controller.priority_work())
@@ -234,7 +234,7 @@ class RunningTraining(unittest.TestCase):
         finally:os.close(read);os.close(write)
 
     def test_training_guard_yields_before_next_group_for_due_update(self):
-        import runtime_work
+        from memvane.runtime import runtime_work
         from context_learning import resource_coordination as coordination
         controller=Coordinator(self.root)
         with controller._gate('trainer.lock') as fd,patch.object(coordination,'default_root',return_value=self.root),patch.dict(os.environ,{'QMD_TRAINER_COORD_FD':str(fd),'QMD_TRAINER_STOP_FD':''}):
@@ -301,11 +301,11 @@ class DaemonMonitor(unittest.TestCase):
     setUp=RunningTraining.setUp
     def monitor(self):
         self.assertIsNotNone(importlib.util.find_spec('runtime_monitor'),'daemon monitor missing')
-        import runtime_monitor
+        from memvane.runtime import runtime_monitor
         return runtime_monitor
 
     def test_live_daemon_recovers_queue_after_waiter_budget_without_new_hook(self):
-        module=self.monitor();import runtime_work
+        module=self.monitor();from memvane.runtime import runtime_work
         q=runtime_work.WakeQueue(self.root);q.put('index','',now=0)
         c=Coordinator(self.root,clock=lambda:self.clock[0],wall=lambda:100+self.clock[0])
         reports=iter([False,True,True]);alive=iter([True,True,True,False]);wakes=[]
@@ -316,7 +316,7 @@ class DaemonMonitor(unittest.TestCase):
         self.assertEqual(len(q.pending()),1)
 
     def test_due_laya_wake_is_woken_without_learning_admission(self):
-        module=self.monitor();import runtime_work
+        module=self.monitor();from memvane.runtime import runtime_work
         q=runtime_work.WakeQueue(self.root);q.put('laya-sync','/synthetic/a',now=0)
         q.put('learning','/synthetic/b',now=0)
         c=Coordinator(self.root,clock=lambda:self.clock[0],wall=lambda:100+self.clock[0])
@@ -368,7 +368,7 @@ class DaemonMonitor(unittest.TestCase):
         supervisor.close();handle.close.assert_called()
 
     def test_empty_queue_monitor_does_no_resource_probe_or_worker_spawn(self):
-        module=self.monitor();import runtime_work
+        module=self.monitor();from memvane.runtime import runtime_work
         q=runtime_work.WakeQueue(self.root);alive=iter([True,False]);waits=[]
         result=module.run(q,probe=lambda:self.fail('idle probe'),wake=lambda:self.fail('idle worker'),alive=lambda:next(alive),wait=waits.append)
         self.assertEqual(result['samples'],0);self.assertEqual(waits,[30.])

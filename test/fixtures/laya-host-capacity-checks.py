@@ -323,7 +323,7 @@ class ServeRuntimeTests(unittest.TestCase):
         import laya_index_runtime
         import laya_install_journal
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-        import runtime_work
+        from memvane.runtime import runtime_work
         with tempfile.TemporaryDirectory(prefix='laya-host-refusal-') as raw:
             project = Path(raw).resolve()
             settings = {'topN': 3, 'lexicalPatterns': []}
