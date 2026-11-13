@@ -774,6 +774,16 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/runtime/api.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/qa_model_budget.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/runtime/resource_controls.py": {
       "context": "runtime",
       "layer": "adapter",
@@ -817,6 +827,11 @@
     "memvane/runtime/runtime_work.py": {
       "context": "runtime",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/types.py": {
+      "context": "runtime",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/settings/__init__.py": {
