@@ -95,10 +95,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import config as qmd_config
+from memvane.settings import config as qmd_config
 from memvane.kernel import memvane_paths
 import scan_state
-import source_text
+from memvane.settings import source_text
 import wiki_compile as wc
 import wiki_source_missing as wsm
 import wiki_source_retire
@@ -578,7 +578,7 @@ def run(cwd: str) -> dict:
     allow_roots = wsm.allow_roots_of(config)
     known = known_collections(config)
     rels = [page.relative_to(wiki_root).as_posix() for page in pages]
-    import source_label
+    from memvane.settings import source_label
     label = source_label.resolver(root, config)
     infos = {rel: inspect_card(wiki_root / rel, root, allow_roots, known, label)
              for rel in rels}
@@ -773,7 +773,7 @@ def dry_run(cwd: str) -> dict:
         report["skip"] = f"bytes_over_MAX_TOTAL_BYTES_{MAX_TOTAL_BYTES}"
     allow_roots = wsm.allow_roots_of(config)
     known = known_collections(config)
-    import source_label
+    from memvane.settings import source_label
     label = source_label.resolver(root, config)
     infos = {page: inspect_card(page, root, allow_roots, known, label) for page in pages}
     facts, git_hold = git_facts(root)

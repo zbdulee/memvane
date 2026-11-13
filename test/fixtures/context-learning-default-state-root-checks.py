@@ -8,7 +8,7 @@ import tempfile
 from unittest.mock import patch
 
 sys.path.insert(0, 'core')
-import config
+from memvane.settings import config
 from context_learning.contracts import digest
 from context_learning.seam import _private_state
 

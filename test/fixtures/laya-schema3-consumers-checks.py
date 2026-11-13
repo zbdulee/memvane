@@ -129,7 +129,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         self.run_pass()
         scan = importlib.import_module('wiki_dedup_scan')
         learning = importlib.import_module('context_learning.laya_learning')
-        config = importlib.import_module('config')
+        config = importlib.import_module('memvane.settings.config')
         with self.seed.authority(), \
                 mock.patch.object(config, 'compile_active', return_value=True), \
                 mock.patch.object(learning, '_open', side_effect=AssertionError('v6 database read')):
@@ -174,7 +174,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
 
     def test_06_learning_corpus_reads_the_view_head_members(self):
         learning = importlib.import_module('context_learning.laya_learning')
-        config = importlib.import_module('config')
+        config = importlib.import_module('memvane.settings.config')
         self.card('concepts/plover-perch.md', 'ploverprobe')
         self.select_schema3()
         first, _calls = self.run_pass()

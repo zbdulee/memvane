@@ -18,7 +18,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 E2E = runpy.run_path(str(HERE / 'laya-fresh-onboarding-e2e-checks.py'))
 
-import config  # noqa: E402
+from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 import laya_host_response as response  # noqa: E402
 import laya_index_host_route as host_route  # noqa: E402

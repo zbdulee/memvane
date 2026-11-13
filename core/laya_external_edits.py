@@ -115,8 +115,8 @@ def _safe_path(path, cwd):
 
 
 def _eligible(path, decision):
-    from laya_source_exclusion import excluded_source
-    from source_text import DENIED_SOURCE_SEGMENTS, is_source_text
+    from memvane.settings.source_exclusion import excluded_source
+    from memvane.settings.source_text import DENIED_SOURCE_SEGMENTS, is_source_text
     try:
         rel = path.relative_to(decision['projectRoot'])
     except ValueError:
@@ -267,7 +267,7 @@ def _nested_project(path, project, deadline):
     edit back (True), never routes it unchecked, including a deadline that
     passes during the last stat.
     """
-    import project_dir
+    from memvane.settings import project_dir
     from source_scan import MAX_DEPTH
     try:
         between = len(path.relative_to(project).parts) - 1
@@ -366,7 +366,7 @@ def notify(paths, *, cwd, host, origin):
 
 def drain(decision, *, recheck, owner=None):
     """Full-proof owner consumes current hints using existing compile policy."""
-    import config
+    from memvane.settings import config
     import laya_index_host_route as routes
     import laya_install_journal as journal
     import wiki_compile_enqueue as enqueue

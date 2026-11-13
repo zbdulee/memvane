@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
-import config  # noqa: E402
+from memvane.settings import config  # noqa: E402
 
 SYNTH_NAME = 'synthetic-diag-fixture'
 SYNTH_INSTALL = 'install-synthetic-1'

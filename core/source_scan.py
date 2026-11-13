@@ -12,7 +12,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, NoReturn
 
 from laya_store_primitives import IndexContractError, _digest
-from source_text import (DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS,
+from memvane.settings.source_text import (DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS,
                          WIKI_TEXT_EXTENSIONS, is_source_text,
                          is_wiki_meta_page)
 

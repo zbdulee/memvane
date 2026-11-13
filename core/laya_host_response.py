@@ -751,7 +751,7 @@ def _verified_wiki_locations(row: dict, decision: dict,
     import source_spans
     import wiki_freshness
     import yaml_scalars
-    from laya_source_exclusion import excluded_source
+    from memvane.settings.source_exclusion import excluded_source
     body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
     if not body.startswith('---\n'):
         return _rejected(reasons, 'frontmatter_missing')
@@ -1269,7 +1269,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     read answers with no context and ``checkout_changed``. Neither falls
     back to another view.
     """
-    import config
+    from memvane.settings import config
     import laya_journal_reader as reader
     import laya_reader_dispatch as dispatch
     from laya_store_primitives import IndexContractError

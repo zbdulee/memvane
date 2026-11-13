@@ -39,7 +39,7 @@ sys.dont_write_bytecode = True
 
 import time
 
-import config
+from memvane.settings import config
 from memvane.kernel import memvane_paths
 
 SCHEMA = 'memvane-onboarding-choice-v1'

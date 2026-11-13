@@ -549,7 +549,7 @@ class WorkerChecks(unittest.TestCase):
         cfg = json.loads(settings.read_text())
         cfg['compile']['mode'] = 'guarded'
         settings.write_text(json.dumps(cfg))
-        import config
+        from memvane.settings import config
         import wiki_compile_worker as w
         self.w = w
         self.config = config.find_project_config(str(self.p.root))['config']
@@ -700,7 +700,7 @@ class WorkerChecks(unittest.TestCase):
         cfg = json.loads(settings.read_text())
         cfg['compile']['budget'] = {'cardsPerSource': 4}
         settings.write_text(json.dumps(cfg))
-        import config
+        from memvane.settings import config
         self.config = config.find_project_config(str(self.p.root))['config']
         first = [candidate(title='Small One'), candidate(title='Small Two'),
                  candidate(title='Budget Whole', summary=LONG_SUMMARY)]
@@ -714,7 +714,7 @@ class WorkerChecks(unittest.TestCase):
         cfg = json.loads(settings.read_text())
         cfg['compile']['budget'] = {'cardsPerSource': 3}
         settings.write_text(json.dumps(cfg))
-        import config
+        from memvane.settings import config
         self.config = config.find_project_config(str(self.p.root))['config']
         first = [candidate(title='Small One'), candidate(title='Small Two'),
                  candidate(title='Budget Whole', summary=LONG_SUMMARY)]

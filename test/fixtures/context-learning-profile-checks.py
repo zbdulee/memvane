@@ -69,7 +69,9 @@ class Checks(unittest.TestCase):
   self.assertTrue(P.require(self.root,self.policy,'apply')['autoApply'])
  def test_setup_entry_explicit_plan_activate_and_normalized_marker(self):
   self.assertIsNotNone(P,'learning profile missing')
-  import setup_entry,config,io
+  import setup_entry
+  from memvane.settings import config
+  import io
   from contextlib import redirect_stdout
   args=['--project',str(self.project),'--learning-namespace',str(self.root),'--learning-choice','local-auto-apply','--learning-migration','new','--learning-expires-at-unix-ms',str(self.expiry)]
   out=io.StringIO()
@@ -102,7 +104,8 @@ class Checks(unittest.TestCase):
   self.assertTrue(P.present(self.root))
  def test_selected_profile_uses_only_local_worker_and_disables_legacy_autocycle(self):
   self.assertIsNotNone(P,'learning profile missing')
-  import config,context_learning_auto as auto
+  from memvane.settings import config
+  import context_learning_auto as auto
   from context_learning import shared
   plan=self.plan();P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='new',expires_at_unix_ms=self.expiry)
   cfg=config.normalize_config(json.loads(self.settings.read_text()))
@@ -115,7 +118,7 @@ class Checks(unittest.TestCase):
    answer=shared.run(self.root,project=self.project,sync_config=cfg)
    self.assertEqual(answer['status'],'waiting_fresh_batch');train.assert_called_once()
  def test_training_disabled_profile_can_resume_existing_quality_only_job(self):
-  import config
+  from memvane.settings import config
   from context_learning import shared,automatic_staging
   from context_learning.evaluation_queue import EvaluationQueue
   self.write(self.settings,{**self.raw,'contextLearning':{'autoCycle':False}})
@@ -126,7 +129,7 @@ class Checks(unittest.TestCase):
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(EvaluationQueue,'pending',return_value=[{'cycle_id':'existing'}]),patch.object(automatic_staging,'evaluate_pending',return_value={'status':'staged_evaluated'}) as evaluate,patch.object(shared,'train_due',side_effect=AssertionError('training forbidden')):
    self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'staged_evaluated');evaluate.assert_called_once()
  def test_incomplete_apply_resumes_before_new_training_or_evaluation(self):
-  import config
+  from memvane.settings import config
   from context_learning import shared,candidate_apply
   plan=self.plan();P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='new',expires_at_unix_ms=self.expiry)
   cfg=config.normalize_config(json.loads(self.settings.read_text()))

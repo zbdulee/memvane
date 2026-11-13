@@ -228,9 +228,9 @@ def _settings_identity(root):
     outside that identity (``skipPaths`` and other options) are not bound;
     readers take ``skipPaths`` from ``config`` here at each use.
     """
-    import config
+    from memvane.settings import config
     import laya_index_host_route as routes
-    import project_dir
+    from memvane.settings import project_dir
     from pathlib import PurePosixPath
     settings = project_dir.settings_path(root)
     if settings is None:

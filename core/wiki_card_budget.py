@@ -409,7 +409,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     tokenizer = None
     try:
-        import config as qmd_config
+        from memvane.settings import config as qmd_config
         found = qmd_config.find_project_config(args.cwd)
         tokenizer = selector_tokenizers(found['config'], Path(found['projectRoot']))
     except Exception:  # noqa: BLE001

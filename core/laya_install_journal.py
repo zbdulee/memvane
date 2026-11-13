@@ -558,7 +558,7 @@ def _project(route):
 
 
 def _observed_route(row, supplied_raw):
-    import project_dir
+    from memvane.settings import project_dir
     route_path = project_dir.runtime_file(row['project_root'], ROUTE_FILE)
     try:
         if route_path.is_symlink() or not route_path.is_file():
@@ -899,7 +899,7 @@ def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_r
 
 def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
     """Create an inactive journal under the installer's lock after review approval."""
-    import project_dir
+    from memvane.settings import project_dir
     from memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane_version import plugin_version, same_major
     from laya_index_host_route import _classify_v4
@@ -1412,7 +1412,7 @@ def _executing_root():
 
 def _verify_v1_selected(decision):
     """Reprove the selected v1 journal, route, ledger and provider."""
-    import project_dir
+    from memvane.settings import project_dir
     from laya_initial_build import read_v1
     from laya_ledger_common import _private_file, _read_json
     from memvane_version import same_major
@@ -1503,7 +1503,7 @@ def verify_dispatch_target(decision):
 
 def verify_notification_target(decision):
     """Prove an external-edit hint using only local metadata and the journal."""
-    import project_dir
+    from memvane.settings import project_dir
     from laya_index_host_route import select_notification_route
     from laya_initial_build import read_v1
     from laya_ledger_common import _private_file, _read_json

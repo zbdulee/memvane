@@ -378,7 +378,7 @@ class Pr67IntegrationChecks(unittest.TestCase):
 
     def test_07_linked_worktree_reads_its_own_view_and_a_branch_switch_is_cold(self):
         case, u15 = self.case, self.u15
-        project_dir = importlib.import_module('project_dir')
+        project_dir = importlib.import_module('memvane.settings.project_dir')
         self.u16.switched()
         main_gen = u15.schema3_generation()
         base = Path(tempfile.mkdtemp(prefix='linked-', dir=str(case.project.parent))).resolve()

@@ -19,8 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import config as qmd_config
-from collection_match import select_collections
+from memvane.settings import config as qmd_config
+from memvane.settings.collection_match import select_collections
 
 
 def resolver(root, config):

@@ -21,8 +21,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import compile_paths as cp
-import project_dir
-import config as qmd_config
+from memvane.settings import project_dir
+from memvane.settings import config as qmd_config
 import wiki_activity_log
 import wiki_mutation_lock
 import wiki_compile as wc

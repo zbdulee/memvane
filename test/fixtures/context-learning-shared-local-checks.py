@@ -18,7 +18,7 @@ from context_learning.safe_source import snapshot_beneath
 from context_learning.offline import delete_case, save_label, review_digest
 from context_learning.selection_gold import save_selection
 from context_learning.laya_adapter import EXPERIMENT_INPUT_VIEW
-from config import normalize_config
+from memvane.settings.config import normalize_config
 
 
 TRAINER_CALLS = []

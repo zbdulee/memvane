@@ -93,7 +93,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
                     provider_calls=None):
     """Run selected v2 recall with fake journal/runtime/source; return the failure."""
     from contextlib import ExitStack, nullcontext
-    import config
+    from memvane.settings import config
     import keywords
     import laya_install_journal
     import laya_index_runtime
@@ -217,7 +217,7 @@ class ResponseChecks(unittest.TestCase):
         import laya_index_runtime
         import laya_local_embed_provider
         import laya_embed_resident
-        import config
+        from memvane.settings import config
         from memvane.kernel.resource_deferred import ResourceDeferred
         decision = {**DECISION,
                     "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
@@ -809,7 +809,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_excludes_source_directories_without_matching_wiki_names(self):
         import yaml_scalars
-        from laya_source_exclusion import excluded_source
+        from memvane.settings.source_exclusion import excluded_source
         self.assertTrue(excluded_source('docs/build/a.md', ['build']))
         self.assertTrue(excluded_source('docs/team-workspace/a.md', ['-workspace']))
         self.assertFalse(excluded_source('docs/build-notes.md', ['build']))
@@ -1445,7 +1445,7 @@ class ResponseChecks(unittest.TestCase):
         import laya_install_journal
         import laya_index_runtime
         import laya_local_embed_provider
-        import config
+        from memvane.settings import config
         import runtime_work
         from contextlib import nullcontext
         try:
@@ -1690,7 +1690,7 @@ class BundleDriftChecks(unittest.TestCase):
 
     def test_bundle_mismatch_legacy_route_never_bypasses_required_selection(self):
         from contextlib import ExitStack, nullcontext
-        import config
+        from memvane.settings import config
         import laya_index_runtime
         import laya_local_embed_provider
         from laya_index_a import IndexContractError
@@ -1980,7 +1980,7 @@ class ProofRetryChecks(unittest.TestCase):
         ``self.publish()`` there lands between the pin and the final check.
         """
         from contextlib import ExitStack, nullcontext
-        import config
+        from memvane.settings import config
         import laya_embed_resident
         import laya_incremental_docs_query
         import laya_install_journal

@@ -62,7 +62,7 @@ def laya_compile(row):
 
 
 def learning(row):
-    import config
+    from memvane.settings import config
     from context_learning import shared
     from context_learning.laya_learning import ready
     project=Path(row['target'])

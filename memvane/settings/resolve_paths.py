@@ -9,7 +9,7 @@ import fnmatch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import config as qmd_config
+from memvane.settings import config as qmd_config
 
 
 def is_risky_path(path_str):

@@ -14,7 +14,7 @@ def setup_ready(root):
 
 def run(root, project, config=None):
     from . import shared
-    import config as qmd_config
+    from memvane.settings import config as qmd_config
     root,project=Path(root),Path(project).resolve(strict=True)
     config=config if config is not None else qmd_config.find_project_config(str(project))['config']
     flags=config.get('contextLearning',{})

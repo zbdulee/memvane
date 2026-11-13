@@ -549,7 +549,7 @@ def _changed_files(pending, roots, snapshot):
 
 def _project_config(decision):
     """Current settings, accepted only while they still name the bound route."""
-    import config as qmd_config
+    from memvane.settings import config as qmd_config
     cfg = qmd_config.load_project_config(decision['projectRoot'])
     roles = qmd_config.role_map(cfg)
     if (cfg.get('indexing') is not True

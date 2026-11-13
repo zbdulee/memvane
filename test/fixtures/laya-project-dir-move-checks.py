@@ -25,7 +25,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from laya_selected_project import SelectedProject, vector_profile  # noqa: E402
 
-import config  # noqa: E402
+from memvane.settings import config  # noqa: E402
 import laya_bundle_upgrade as upgrade  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 import laya_host_response as response  # noqa: E402
@@ -36,7 +36,7 @@ import laya_project_dir_move as dir_move  # noqa: E402
 import laya_state_move  # noqa: E402
 import laya_vector_capacity as vc  # noqa: E402
 import laya_wiki_discovery as discovery  # noqa: E402
-import project_dir  # noqa: E402
+from memvane.settings import project_dir  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from laya_index_capacity import (GenerationBindingStore, binding_digest,  # noqa: E402
                                  open_pinned_candidate_query)

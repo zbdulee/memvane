@@ -5,7 +5,7 @@ import math
 import sys
 from pathlib import Path
 
-import project_dir
+from memvane.settings import project_dir
 
 
 # The project folder is `.memvane/` (project_dir).

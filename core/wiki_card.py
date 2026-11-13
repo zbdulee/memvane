@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 
-import resolve_paths as qmd_resolve_paths
+from memvane.settings import resolve_paths as qmd_resolve_paths
 import wiki_freshness
 import wiki_markers
 import yaml_scalars

@@ -10,11 +10,11 @@
 from __future__ import annotations
 import sys
 from pathlib import Path
-import project_dir
+from memvane.settings import project_dir
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import wiki_card
-import resolve_paths as qmd_resolve_paths
+from memvane.settings import resolve_paths as qmd_resolve_paths
 import wiki_compile as wc
 import yaml_scalars
 

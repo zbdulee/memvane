@@ -90,7 +90,7 @@ def resolve(kind, value):
             from laya_install_journal import _attestation, _route, _v1_provider_manifest
             from laya_index_host_route import _classify_v4, _read_regular, MAX_RECORD_BYTES
             import hashlib
-            import project_dir
+            from memvane.settings import project_dir
             try:
                 state = Path(identity['stateRoot'])
                 raw = _read_regular(state / 'route.json', MAX_RECORD_BYTES)

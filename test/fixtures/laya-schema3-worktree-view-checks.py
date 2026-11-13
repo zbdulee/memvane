@@ -42,7 +42,7 @@ class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
         self.host = importlib.import_module('laya_host_response')
         self.route = importlib.import_module('laya_index_host_route')
         self.event_log = importlib.import_module('event_log')
-        self.project_dir = importlib.import_module('project_dir')
+        self.project_dir = importlib.import_module('memvane.settings.project_dir')
         project = self.case.project
         base = Path(tempfile.mkdtemp(prefix='linked-', dir=str(project.parent))).resolve()
         self.addCleanup(shutil.rmtree, base, True)

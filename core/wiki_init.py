@@ -15,8 +15,8 @@ from pathlib import Path
 import sys
 import tempfile
 
-import config as qmd_config
-import project_dir
+from memvane.settings import config as qmd_config
+from memvane.settings import project_dir
 import wiki_mutation_lock
 
 

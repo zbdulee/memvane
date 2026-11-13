@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import config as qmd_config
+from memvane.settings import config as qmd_config
 
 ENGINES = ("claude", "codex", "hermes")
 

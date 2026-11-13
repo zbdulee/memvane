@@ -27,8 +27,8 @@ import stat
 import sys
 import unicodedata
 
-import config
-import project_dir
+from memvane.settings import config
+from memvane.settings import project_dir
 
 SCHEMA = "laya-index-route-v1"
 SCHEMA_V2 = "laya-index-route-v2"

@@ -42,7 +42,7 @@ TRIGGERS = frozenset(("session_start", "source_edit"))
 
 
 def _paths(root) -> tuple[Path, Path]:
-    import config
+    from memvane.settings import config
     found = config.find_project_config(str(root))
     project = str(Path(found["projectRoot"]).resolve())
     key = scan_state.project_key(project, found.get("configPath"))

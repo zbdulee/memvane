@@ -20,7 +20,7 @@ def digest(value):return _digest(canonical(value))
 def present(root):return any((Path(root)/name).exists() or (Path(root)/name).is_symlink() for name in (NAME,INSTALL))
 
 def _settings(project):
-    import project_dir
+    from memvane.settings import project_dir
     path=project_dir.settings_path(project) or project_dir.folder(project)/project_dir.SETTINGS
     if any(p.is_symlink() for p in (path,*path.parents)):raise ValueError('profile_settings_unsafe')
     info=path.stat()
@@ -89,9 +89,9 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
         preferences.setdefault('sharedLearning',{})['enabled']=True
     cfg,train,apply=_preferences(preferences,root,choice)
     from .shared import _policy,_safe_root
-    import config
+    from memvane.settings import config
     # A namespace cannot be a source collection or another project's store.
-    import project_dir
+    from memvane.settings import project_dir
     if cfg['sharedLearning']['enabled'] and _safe_root(config.normalize_config(cfg,project_dir.active_name(project)),project)!=root:
         raise ValueError('profile_namespace_invalid')
     policy=_policy(root)
@@ -160,7 +160,7 @@ def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,
              enable_learning=False,staged_no_selection=False,fault=lambda _:None):
     root=resident._private_state(Path(root));project=Path(project).resolve(strict=True)
     # This same project settings lock is used by setup/install writers.
-    import settings_lock
+    from memvane.settings import settings_lock
     with settings_lock.locked(project):
         fd=_lock(root/'learning-profile.lock')
         try:
@@ -184,7 +184,7 @@ def activate(project,root,*,accepted_sha256,choice,mode,expires_at_unix_ms,
             if digest(current) not in (row['sourceSettingsSha256'],digest(row['settings'])):raise ValueError('profile_settings_cas_conflict')
             record={'acceptedSha256':accepted_sha256,'proposal':row,'phase':'intent'}
             _atomic_json(path,record);_sync(root);fault('intent')
-            import project_dir
+            from memvane.settings import project_dir
             folder=project_dir.folder(project)
             _atomic_json(folder/project_dir.SETTINGS,row['settings']);_sync(folder)
             record['phase']='settings_written';_atomic_json(path,record);_sync(root);fault('settings_written')

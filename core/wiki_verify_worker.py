@@ -59,8 +59,8 @@ import wiki_activity_log
 import wiki_markers
 import wiki_mutation_lock
 import compile_paths as cp
-import project_dir
-import config as qmd_config
+from memvane.settings import project_dir
+from memvane.settings import config as qmd_config
 import wiki_compile as wc
 import wiki_compile_worker as wcw
 import wiki_freshness
@@ -1081,7 +1081,7 @@ def process_verify_job(
         # Old verify jobs may outlive a newly selected source-folder policy.
         # Do not send an excluded raw source or a mixed-source card to a host
         # model; keep its generated file recoverable and unverified.
-        from laya_source_exclusion import card_sources_allowed, excluded_source
+        from memvane.settings.source_exclusion import card_sources_allowed, excluded_source
         skips = selected_route[0]['recallSettings']['skipPaths']
         if skips:
             job_revisions = job.get('sourceRevisions')

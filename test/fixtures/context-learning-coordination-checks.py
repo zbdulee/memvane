@@ -158,7 +158,7 @@ class Checks(unittest.TestCase):
   self.assertEqual(answer['status'],'trained');self.assertTrue(resources['recovered_completion'])
  def test_retry_glue_revalidates_scope_and_calls_only_local_train(self):
   from unittest.mock import patch
-  import config
+  from memvane.settings import config
   from context_learning import shared,runtime_authorization
   cfg={'sharedLearning':{'enabled':True,'root':str(self.root)}}
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(shared,'_policy',return_value={'_runtime_authorization_v2':True}),patch.object(runtime_authorization,'require_operation',return_value={}) as grant,patch.object(shared,'train_due',return_value={'status':'staged'}) as train,patch.object(shared,'_run_impl',side_effect=AssertionError('teacher worker must not run')):

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import resolve_paths as qmd_resolve_paths
+from memvane.settings import resolve_paths as qmd_resolve_paths
 
 
 def _resolve_rel(cwd_path, rel):

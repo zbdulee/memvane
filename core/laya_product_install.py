@@ -15,7 +15,7 @@ import stat
 import sys
 import time
 
-import project_dir
+from memvane.settings import project_dir
 
 from laya_install_journal import inspect_journal
 
@@ -147,7 +147,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     installer builds a separate private generation from the canonical wiki
     root. No QMD database is read, copied, or selected.
     """
-    import config
+    from memvane.settings import config
     from laya_index_host_route import (_multi_settings_supported,
                                        _multi_compile_supported,
                                        selected_collection_roots,
@@ -718,7 +718,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     import laya_journal_reader as reader
     import laya_product_sync_worker as sync
     import laya_wiki_discovery as discovery
-    import project_dir
+    from memvane.settings import project_dir
     import wiki_mutation_lock
     from contextlib import closing
     from laya_index_host_route import _classify_v4, SELECTION_SCHEMA_V1

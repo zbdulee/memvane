@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import wiki_mutation_lock
 import wiki_activity_log
 import compile_paths as cp
-import project_dir
-import config as qmd_config
-import source_text
+from memvane.settings import project_dir
+from memvane.settings import config as qmd_config
+from memvane.settings import source_text
 import wiki_dedup_judge
 import wiki_markers
 import yaml_scalars
@@ -1565,7 +1565,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
-        from laya_source_exclusion import excluded_source
+        from memvane.settings.source_exclusion import excluded_source
         skips = selected[0]['recallSettings']['skipPaths']
         sources = candidate.get('sources')
         source_paths = []
@@ -1582,7 +1582,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     identity_index = build_identity_index(wiki_root)
     target, target_reason, target_matches = resolve_target(root, wiki_root, candidate, suggested_type, identity_index)
     if selected is not None and target is not None and target.exists():
-        from laya_source_exclusion import card_sources_allowed
+        from memvane.settings.source_exclusion import card_sources_allowed
         try:
             allowed_target = card_sources_allowed(
                 target.read_text(encoding='utf-8'), selected[0]['recallSettings']['skipPaths'])

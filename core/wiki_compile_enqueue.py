@@ -17,13 +17,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import compile_paths as cp
-import project_dir
-import config as qmd_config
+from memvane.settings import project_dir
+from memvane.settings import config as qmd_config
 import posttool
 import wiki_freshness
 import wiki_source_intent as intent
-from collection_match import select_collections
-import source_text
+from memvane.settings.collection_match import select_collections
+from memvane.settings import source_text
 
 
 DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE
@@ -393,7 +393,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
     selected_route = wiki_selected_laya.selected(Path(project_root))
     skip_paths = qmd_config.generation_skip_paths(config, selected_route)
     if skip_paths is not None:
-        from laya_source_exclusion import excluded_source
+        from memvane.settings.source_exclusion import excluded_source
         if excluded_source(rel_path, skip_paths):
             return None
     record = {

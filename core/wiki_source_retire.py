@@ -9,14 +9,14 @@ import tempfile
 from pathlib import Path
 
 import compile_paths as cp
-import project_dir
+from memvane.settings import project_dir
 import wiki_card
 import wiki_compile as wc
 import wiki_mutation_lock
 import wiki_activity_log
 import wiki_selected_laya
 import yaml_scalars
-from source_text import is_wiki_meta_page
+from memvane.settings.source_text import is_wiki_meta_page
 
 MAX_CARDS = 2_048
 MAX_CARD_BYTES = 5_000_000
@@ -138,7 +138,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
     wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return {'state': 'blocked', 'survivors': []}
-    import source_label
+    from memvane.settings import source_label
     label = source_label.resolver(root, config)
 
     def key(item):

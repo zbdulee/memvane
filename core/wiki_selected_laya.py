@@ -28,7 +28,7 @@ def _owner_scope(bound, owner):
 
 
 def _compile_proof(decision, *, owner=None):
-    import project_dir
+    from memvane.settings import project_dir
     from laya_install_journal import verify_selected_route_for_write
     active=_compile_owner.get()
     if owner is None and active is not None and active[0][0]==decision:
@@ -367,7 +367,7 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
     # A selected policy may exclude a source after its old refresh event was
     # recorded. Keep the ledger for reversible re-enrollment, but do not hold
     # the selected compile wake open for a source the worker must not compile.
-    from laya_source_exclusion import excluded_source
+    from memvane.settings.source_exclusion import excluded_source
     active_unresolved = [item for item in unresolved if not excluded_source(
         item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
     if active_unresolved:

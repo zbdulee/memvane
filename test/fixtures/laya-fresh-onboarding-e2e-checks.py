@@ -30,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / 'core'))
 BUILD = runpy.run_path(str(HERE / 'laya-initial-build-checks.py'))
 
-import config  # noqa: E402
+from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 import laya_host_response as response  # noqa: E402
 import laya_index_host_route as host_route  # noqa: E402

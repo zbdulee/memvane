@@ -420,7 +420,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertEqual(result['vector']['state'], 'published', result)
         scan = importlib.import_module('wiki_dedup_scan')
         learning = importlib.import_module('context_learning.laya_learning')
-        config = importlib.import_module('config')
+        config = importlib.import_module('memvane.settings.config')
         queue = self.case.auto / 'compile' / 'dedup-needed.jsonl'
         with self.seed.authority(), \
                 mock.patch.object(config, 'compile_active', return_value=True), \
@@ -473,7 +473,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         linked = base / 'linked'
         subprocess.run(['git', '-C', str(project), '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add',
                         '-q', '-b', 'side', str(linked)], check=True, capture_output=True, timeout=20)
-        settings = importlib.import_module('project_dir').settings_path(project)
+        settings = importlib.import_module('memvane.settings.project_dir').settings_path(project)
         relative = settings.relative_to(project)
         (linked / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(settings, linked / relative)
@@ -740,7 +740,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         linked = base / 'linked'
         subprocess.run(['git', '-C', str(project), '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add',
                         '-q', '-b', 'side', str(linked)], check=True, capture_output=True, timeout=20)
-        settings = importlib.import_module('project_dir').settings_path(project)
+        settings = importlib.import_module('memvane.settings.project_dir').settings_path(project)
         relative = settings.relative_to(project)
         (linked / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(settings, linked / relative)
@@ -947,7 +947,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         linked = base / 'linked'
         subprocess.run(['git', '-C', str(project), '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add',
                         '-q', '-b', 'side', str(linked)], check=True, capture_output=True, timeout=20)
-        settings = importlib.import_module('project_dir').settings_path(project)
+        settings = importlib.import_module('memvane.settings.project_dir').settings_path(project)
         relative = settings.relative_to(project)
         (linked / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(settings, linked / relative)
@@ -1234,7 +1234,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         linked = base / 'linked'
         subprocess.run(['git', '-C', str(project), '-c', 'core.hooksPath=' + os.devnull, 'worktree', 'add',
                         '-q', '-b', 'side', str(linked)], check=True, capture_output=True, timeout=20)
-        settings = importlib.import_module('project_dir').settings_path(project)
+        settings = importlib.import_module('memvane.settings.project_dir').settings_path(project)
         relative = settings.relative_to(project)
         (linked / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(settings, linked / relative)
@@ -1397,7 +1397,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         """A linked worktree whose branch keeps the other project folder name
         (``.memvane`` vs ``.auto-context``) than the main checkout."""
         import os
-        project_dir = importlib.import_module('project_dir')
+        project_dir = importlib.import_module('memvane.settings.project_dir')
         linked = self.linked_worktree()
         main_name = project_dir.settings_path(self.case.project).parent.name
         other = [name for name in project_dir.NAMES if name != main_name][0]

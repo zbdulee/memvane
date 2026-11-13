@@ -302,7 +302,7 @@ def _current_config(root, project):
     if not _consent(root, project):
         return None
     try:
-        import config as qmd_config
+        from memvane.settings import config as qmd_config
         found = qmd_config.find_project_config(str(project))
         cfg = found["config"]
         shared = cfg.get("sharedLearning", {})
@@ -2042,7 +2042,7 @@ def learning_worker_step(root, project, revision, *, spawn=None):
 
 
 def _owned_root(project):
-    import config
+    from memvane.settings import config
     project = Path(project).resolve(strict=True)
     cfg = config.find_project_config(str(project))["config"]
     return project, cfg, _safe_root(cfg, project)
@@ -2148,7 +2148,7 @@ def wake_after_index(project):
     The detached worker waits on the shared OS lock, so an earlier hook
     worker cannot consume the wake before the index catches up.
     """
-    import config
+    from memvane.settings import config
     requested = Path(project)
     if not requested.is_absolute() or requested.is_symlink():
         return {"status": "ignored"}
@@ -2167,7 +2167,7 @@ def wake_after_index(project):
 
 def run_training_pending(root,project):
     """Retry local training only, never teacher/observation or enrollment."""
-    import config
+    from memvane.settings import config
     from .runtime_authorization import require_operation
     from .resource_coordination import _lock
     root,project=Path(root),Path(project)
@@ -2274,7 +2274,9 @@ def main(argv):
         return 2
     try:
         if argv[0] == "start-synthetic-training":
-            import config,project_learning_setup,runtime_work
+            from memvane.settings import config
+            import project_learning_setup
+            import runtime_work
             project=Path(argv[1]).resolve(strict=True)
             cfg=config.find_project_config(str(project))['config']
             root=_safe_root(cfg,project)
@@ -2285,12 +2287,12 @@ def main(argv):
         elif argv[0] == "wake-after-index":
             result = wake_after_index(argv[1])
         elif argv[0] == "launch-project":
-            import config
+            from memvane.settings import config
             project = Path(argv[1]).resolve(strict=True)
             cfg = config.find_project_config(str(project))["config"]
             result = launch(cfg, project)
         elif argv[0] in ("run-project", "run-project-after-index"):
-            import config
+            from memvane.settings import config
             project = Path(argv[1]).resolve(strict=True)
             cfg = config.find_project_config(str(project))["config"]
             root = _safe_root(cfg, project)

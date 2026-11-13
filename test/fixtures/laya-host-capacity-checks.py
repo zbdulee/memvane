@@ -289,7 +289,7 @@ class ServeRuntimeTests(unittest.TestCase):
             context = mock.MagicMock()
             context.__enter__.return_value = context
             return context
-        import config
+        from memvane.settings import config
         import laya_index_runtime
         import laya_install_journal
         import laya_local_embed_provider
@@ -319,7 +319,7 @@ class ServeRuntimeTests(unittest.TestCase):
         self.assertNotIn('catalog_path', opened)
 
     def test_returned_mismatch_wakes_sync_but_read_budget_reports_unavailable(self):
-        import config
+        from memvane.settings import config
         import laya_index_runtime
         import laya_install_journal
         import laya_local_embed_provider

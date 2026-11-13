@@ -33,7 +33,7 @@ class RuntimeChecks(unittest.TestCase):
         return importlib.import_module('runtime_work')
 
     def test_learning_wake_defers_during_install_transition(self):
-        import config
+        from memvane.settings import config
         from context_learning import shared
         runtime=self.runtime()
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
@@ -198,7 +198,7 @@ class RuntimeChecks(unittest.TestCase):
         with c.step(self.policy,self.report):pass
 
     def test_learning_dispatch_keeps_existing_history_worker_fence(self):
-        import config
+        from memvane.settings import config
         from context_learning import shared,history_lifecycle
         runtime=self.runtime();inside=[]
         @contextmanager

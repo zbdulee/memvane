@@ -18,7 +18,7 @@ LOCK_NAME = '.install-update.lock'
 
 
 def _private_auto(root, *, create=False):
-    import project_dir
+    from memvane.settings import project_dir
     path = project_dir.folder(root)
     if create and not path.exists():
         path.mkdir(mode=0o700)
@@ -33,7 +33,7 @@ def _private_auto(root, *, create=False):
 @contextmanager
 def locked(root, *, folder=None):
     """Hold the exclusive settings writer lock of one project."""
-    import project_dir
+    from memvane.settings import project_dir
     root = Path(root).resolve(strict=True)
     auto = _private_auto(root, create=True) if folder is None else Path(folder)
     if auto not in tuple(root / name for name in project_dir.NAMES):

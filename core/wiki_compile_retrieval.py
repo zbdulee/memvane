@@ -22,9 +22,9 @@ import sys
 import time
 
 import compile_paths as cp
-import source_text
+from memvane.settings import source_text
 import wiki_card
-from laya_source_exclusion import card_sources_allowed
+from memvane.settings.source_exclusion import card_sources_allowed
 
 REFRESH_FILES = 512
 REFRESH_BYTES = 8 * 1024 * 1024
@@ -431,7 +431,7 @@ def _schema3_search(bound, text):
     import laya_journal_reader as reader
     import laya_reader_dispatch as dispatch
     import laya_reader_lease as lease
-    import project_dir
+    from memvane.settings import project_dir
     from laya_index_host_route import wiki_index_roots
     from sync_owner_lock import sync_owner
     from laya_product_sync_worker import _owned_selected_proof, _writer_executing_root

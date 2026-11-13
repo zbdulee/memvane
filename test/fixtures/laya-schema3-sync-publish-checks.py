@@ -350,7 +350,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
 
     def test_02_settings_bytes_and_skip_paths_edits_publish_and_recall_reads(self):
         self.select_schema3()
-        settings = importlib.import_module('project_dir').settings_path(self.case.project)
+        settings = importlib.import_module('memvane.settings.project_dir').settings_path(self.case.project)
         original = settings.read_bytes()
         start = self.head()
         self.card('concepts/heron-watch.md', 'heronwatchprobe')
@@ -419,7 +419,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
 
     def test_09_recall_settings_edit_answers_empty_until_the_owner_reseals(self):
         self.select_schema3()
-        settings = importlib.import_module('project_dir').settings_path(self.case.project)
+        settings = importlib.import_module('memvane.settings.project_dir').settings_path(self.case.project)
         original = settings.read_bytes()
         self.card('concepts/heron-watch.md', 'heronwatchprobe')
         first, _calls = self.run_pass()
@@ -469,7 +469,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
 
     def test_07_identity_edit_v6_also_refuses_stays_fixed_reason(self):
         self.select_schema3()
-        settings = importlib.import_module('project_dir').settings_path(self.case.project)
+        settings = importlib.import_module('memvane.settings.project_dir').settings_path(self.case.project)
         original = settings.read_bytes()
         start = self.head()
         epoch = self.J.inspect_journal(self.case.journal)['epoch']

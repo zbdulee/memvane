@@ -33,9 +33,9 @@ from pathlib import Path
 import re
 import traceback
 
-import config
+from memvane.settings import config
 from memvane.diagnostics import event_log
-import project_dir
+from memvane.settings import project_dir
 
 __all__ = ["enabled", "capture", "reassemble"]
 

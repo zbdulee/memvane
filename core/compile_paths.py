@@ -28,7 +28,7 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 
-import project_dir
+from memvane.settings import project_dir
 
 # 프로젝트 활성 폴더(`project_dir.active_name`) 아래 `compile/`. 상수는 새 프로젝트
 # 기준값이고, 프로젝트가 있으면 `compile_rel(root)`가 활성 폴더를 따른다

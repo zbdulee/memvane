@@ -62,7 +62,7 @@ def compile_result_digest(result, verdict_digest):
         identifier(result['cardSha']); identifier(result['viewId']); relative(result['targetPath'])
         if result['expectedTargetHash'] is not None:
             identifier(result['expectedTargetHash'])
-        import config
+        from memvane.settings import config
         if (type(result['sourceFingerprints']) is not dict
                 or type(result['sourceFingerprints'].get('fingerprints')) is not list
                 or type(result['sourceSpans']) is not list
@@ -382,7 +382,7 @@ def _receipt(receipt, kind):
     schema = receipt.get('schema') if isinstance(receipt, dict) else None
     if schema == RECEIPT_V2 and kind in LINE_SPAN_KINDS:
         exact(receipt, RECEIPT_V2_FIELDS)
-        import config
+        from memvane.settings import config
         identifier(receipt['verdict_digest']); text(receipt['verify_engine'])
         if receipt['verified_mode'] not in config.VERIFIED_MODES:
             fail('receipt_invalid')

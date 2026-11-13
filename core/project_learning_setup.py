@@ -54,7 +54,7 @@ LOCK_NAME='project-learning-setup.lock'
 
 def _project_settings(project):
     """The project's settings file: `.memvane/` first, then `.auto-context/`."""
-    import project_dir
+    from memvane.settings import project_dir
     return project_dir.settings_path(project) or project_dir.folder(project)/project_dir.SETTINGS
 
 def proposal_sha256(value):
@@ -636,7 +636,7 @@ def recover(project,root):
     root=Path(root)
     previous=read_private_json(_path(root/NAME,private=True))
     project,root=_namespace(project,root,mode=previous.get('plan',{}).get('mode','default'))
-    import settings_lock
+    from memvane.settings import settings_lock
     # Match activation's lock order: namespace first, then the shared project
     # writer lock. Keep both through verification and every restoration write.
     with _locked(root), settings_lock.locked(project):

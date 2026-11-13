@@ -164,7 +164,7 @@ class Checks(unittest.TestCase):
   self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
  def test_rejected_quality_does_not_starve_next_fresh_batch(self):
   from context_learning.evaluation_queue import EvaluationQueue
-  import config
+  from memvane.settings import config
   self.profile['localTrain']=True
   evaluations=EvaluationQueue(self.root);job=evaluations.ensure(self.cycle,'pin','val');evaluations.finish(job['id'],'blocked')
   cfg={'sharedLearning':{'enabled':True,'root':str(self.root),'profile':learning_profile.SCHEMA}}
@@ -173,7 +173,7 @@ class Checks(unittest.TestCase):
    self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'waiting_fresh_batch');train.assert_called_once()
  def test_waiting_small_candidate_does_not_starve_new_quality_sized_batch(self):
   from context_learning.evaluation_queue import EvaluationQueue
-  import config
+  from memvane.settings import config
   self.profile['localTrain']=True
   queue=EvaluationQueue(self.root);job=queue.ensure(self.cycle,'pin','val');queue.finish(job['id'],'waiting_quality')
   cfg={'sharedLearning':{'enabled':True,'root':str(self.root),'profile':learning_profile.SCHEMA}}
@@ -187,7 +187,7 @@ class Checks(unittest.TestCase):
   retry=A.read_journal(self.root)['retry_at']
   with patch.object(A.time,'time',return_value=retry+1):self.assertEqual(self.run_apply()['status'],'applied')
  def test_staged_fallback_never_dispatches_foreign_namespace_in_shared_history(self):
-  import config
+  from memvane.settings import config
   self.profile['localTrain']=True
   other=self.root/'other-namespace';other.mkdir(mode=0o700)
   foreign=LearningQueue(other).plan(self.train,approval=runtime_authorization.proposal_sha256(self.grant),cohort='test',family='family',minimum=5,maximum=100)

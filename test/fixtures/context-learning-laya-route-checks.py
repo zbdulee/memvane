@@ -25,7 +25,7 @@ from unittest.mock import patch
 CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
 
-import config
+from memvane.settings import config
 import laya_host_response as response
 import laya_index_host_route
 import laya_install_journal

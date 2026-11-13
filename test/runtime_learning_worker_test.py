@@ -91,7 +91,7 @@ class FullWorkerChecks(unittest.TestCase):
 
     @contextmanager
     def handler_env(self,train=no_inline_training):
-        import config
+        from memvane.settings import config
         from context_learning import history_lifecycle
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
@@ -244,7 +244,7 @@ class FullWorkerChecks(unittest.TestCase):
         """Run the full child body once with a real inherited-style lease FD."""
         fd=os.open(self.shared/shared.FULL_WORKER_LOCK,os.O_RDWR|os.O_CREAT,0o600)
         fcntl.flock(fd,fcntl.LOCK_EX)
-        import config
+        from memvane.settings import config
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
              patch.object(shared,'run',side_effect=result) as worker, \
@@ -257,7 +257,7 @@ class FullWorkerChecks(unittest.TestCase):
         """Run the training child body once; the teacher path must stay unused."""
         fd=os.open(self.shared/shared.FULL_WORKER_LOCK,os.O_RDWR|os.O_CREAT,0o600)
         fcntl.flock(fd,fcntl.LOCK_EX)
-        import config
+        from memvane.settings import config
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
              patch('context_learning.laya_learning.ready',return_value=setup=='ready'), \
@@ -327,7 +327,7 @@ class FullWorkerChecks(unittest.TestCase):
         fcntl.flock(holder,fcntl.LOCK_EX)
         stray=os.open(self.shared/shared.FULL_WORKER_LOCK,os.O_RDWR)
         try:
-            import config
+            from memvane.settings import config
             with patch.object(config,'find_project_config',return_value={'config':{}}), \
                  patch.object(shared,'_safe_root',return_value=self.shared), \
                  patch.object(shared,'run',side_effect=AssertionError('duplicate owner')), \

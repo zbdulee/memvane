@@ -159,7 +159,7 @@ class OverlayChecks(unittest.TestCase):
         self.assertEqual(self.query(), [])
 
     def test_twenty_compact_cards_reach_actual_extractor_payload_and_prompt(self):
-        import config
+        from memvane.settings import config
         import wiki_compile_worker as worker
         import wiki_dedup_judge
         from extractors.lib import build_prompt, render_existing_context_section

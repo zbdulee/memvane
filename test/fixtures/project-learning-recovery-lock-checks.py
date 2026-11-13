@@ -2,7 +2,7 @@
 import json,tempfile,threading
 from pathlib import Path
 from unittest.mock import patch
-import settings_lock
+from memvane.settings import settings_lock
 import project_learning_setup as setup
 from context_learning.local_cycle import _atomic_json
 from context_learning.runtime_setup import learning_state_base
