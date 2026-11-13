@@ -54,7 +54,7 @@ class RealProviderChecks(provider_fixture.Base):
             case,reader=seed.case,seed.reader
             upgrade=importlib.import_module('laya_active_upgrade')
             host=importlib.import_module('memvane.host.host_response')
-            dispatch=importlib.import_module('laya_reader_dispatch')
+            dispatch=importlib.import_module('memvane.recall.reader_dispatch')
             new=case.home/'warm-target';new.mkdir()
             target={**case.proof,'pluginRoot':str(new),'sourceCommit':'a'*40,
                     'bundleManifestSha256':'b'*64,'ownershipManifestSha256':'f'*64}
@@ -144,7 +144,7 @@ class RealProviderChecks(provider_fixture.Base):
                 mock.patch.object(provider_class,'embed_document_chunks',return_value=[{'seq':0,'pos':0,'vector':[1.0,0.0,0.0,0.0]}]):
             seed.setUp()
             opens=importlib.import_module('laya_reader_open')
-            dispatch=importlib.import_module('laya_reader_dispatch')
+            dispatch=importlib.import_module('memvane.recall.reader_dispatch')
             provider=provider_fixture.ReviewedLocalQmdProvider(manifest)
             candidate.root=seed.case.project;candidate.scope=seed.case.route['scopeId']
             wiki=seed.case.auto/'wiki'/'cards';wiki.mkdir(parents=True,exist_ok=True)
@@ -181,7 +181,7 @@ class RealProviderChecks(provider_fixture.Base):
                                     provider=changed,prompt='hello',deadline=time.monotonic()+10):pass
 
     def test_provider_child_crash_is_not_treated_as_unavailable(self):
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         provider=provider_fixture.ReviewedLocalQmdProvider(self.old_manifest())
         child=mock.Mock(returncode=1)
         child.communicate.return_value=('', 'synthetic child failure')
@@ -192,7 +192,7 @@ class RealProviderChecks(provider_fixture.Base):
                         prompt='synthetic query',deadline=time.monotonic()+3):pass
 
     def test_provider_invalid_prompt_is_not_treated_as_unavailable(self):
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         provider=provider_fixture.ReviewedLocalQmdProvider(self.old_manifest())
         with mock.patch.object(dispatch,'_vector_proof',return_value={'syntheticFixture':True}):
             with self.assertRaisesRegex(ValueError,'provider_text_invalid'):
@@ -200,7 +200,7 @@ class RealProviderChecks(provider_fixture.Base):
                         prompt='',deadline=time.monotonic()+3):pass
 
     def test_provider_trickled_socket_does_not_extend_absolute_deadline(self):
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         manifest=self.old_manifest()
         server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
         server.bind(manifest['serviceSocketPath']);server.listen(1)
@@ -227,7 +227,7 @@ class RealProviderChecks(provider_fixture.Base):
         self.assertFalse(worker.is_alive())
 
     def test_approved_vector_uses_real_provider_socket_once(self):
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         manifest=self.old_manifest()
         service=provider_fixture.start_owned_embed_service(manifest,admit=lambda:True)
         self.addCleanup(service.stop)
@@ -263,7 +263,7 @@ class VectorCapabilityChecks(vector_fixture.VectorCase):
             store,repository,handle,manifest,recipe,profile=self.configured()
             self.fill(store,handle,manifest,recipe,profile,embedder=lambda values,_profile:[[1.0,0.0,0.0] for _ in values])
             _generation,pin=self.publish(store,handle,manifest,recipe,profile);store.release(pin)
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         endpoint=dispatch._issue_candidate(store._path,repository=repository,scope_id=store._scope,
             worktree_id=handle.worktree_id,checkout=self.root,deadline=time.monotonic()+10)
         opens=importlib.import_module('laya_reader_open')
@@ -355,7 +355,7 @@ class VectorCapabilityChecks(vector_fixture.VectorCase):
             'embeddingFingerprint':candidate['embedding_fingerprint'],
             'dimension':candidate['dimension'],'metric':candidate['metric']},
             'providerManifest':{'modelSha256':candidate['model_sha']}}
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         self.assertTrue(dispatch._approved_profile_matches(candidate,proof))
         for section,key,value in (('vectorProfile','modelId','other'),
                                   ('vectorProfile','embeddingFingerprint','f'*64),
@@ -374,7 +374,7 @@ class VectorCapabilityChecks(vector_fixture.VectorCase):
     def test_descriptor_binds_sealed_vector_profile(self):
         store,repository,handle,_manifest,recipe,profile,generation,pin=self.ready()
         store.release(pin)
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         endpoint=dispatch._issue_candidate(store._path,repository=repository,scope_id=store._scope,
             worktree_id=handle.worktree_id,checkout=self.root,deadline=time.monotonic()+10)
         self.assertEqual(endpoint.record['generation'],generation)
@@ -388,7 +388,7 @@ class CapabilityChecks(fixture.ReaderChecks):
         self.git(self.root,'add','.')
         self.git(self.root,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','seed')
         store,repository,handle,_=self.published()
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         endpoint=dispatch._issue_candidate(store._path,repository=repository,scope_id=store._scope,
             worktree_id=handle.worktree_id,checkout=self.root,deadline=time.monotonic()+10)
         (self.root/'notes'/'new.md').write_text('new staged source',encoding='utf8')
@@ -398,7 +398,7 @@ class CapabilityChecks(fixture.ReaderChecks):
 
     def test_candidate_descriptor_reads_bound_checkout_without_writes(self):
         store,repository,handle,generation=self.published()
-        dispatch=importlib.import_module('laya_reader_dispatch')
+        dispatch=importlib.import_module('memvane.recall.reader_dispatch')
         self.assertEqual(dispatch.reader_capabilities(),frozenset(('v6-ro-v1','schema3-ro-v1')))
         before=store._path.read_bytes()
         endpoint=dispatch._issue_candidate(store._path,repository=repository,scope_id=store._scope,

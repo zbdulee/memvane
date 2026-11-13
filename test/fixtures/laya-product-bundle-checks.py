@@ -494,7 +494,7 @@ print(json.dumps(result))'''
 
     def laya_runtime(self, native=b'synthetic native'):
         """A sealed Laya embedding runtime in this HOME, copied from a vendor tree."""
-        import laya_embed_runtime
+        from memvane.provider import embed_runtime as laya_embed_runtime
         vendor = self.root / 'vendor'
         if vendor.exists():
             shutil.rmtree(vendor)

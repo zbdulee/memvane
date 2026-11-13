@@ -452,7 +452,7 @@ def seal_generation(tree, home):
 
     Same bytes give the same content-addressed name under any home.
     """
-    import laya_embed_runtime as R
+    from memvane.provider import embed_runtime as R
     rows = []
     for path in sorted(p for p in tree.rglob('*') if p.is_file()):
         executable = bool(path.stat().st_mode & 0o100)
@@ -615,7 +615,7 @@ class ProviderReproof(ReproofBase):
 
     def test_moved_runtime_model_socket_and_closure_reattest_under_old_profile(self):
         from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
-        from laya_provider_reproof import attestation_record, reattest
+        from memvane.provider.provider_reproof import attestation_record, reattest
         new, closure, socket = self.moved()
         review = self.review(new, closure, socket)
         # A moved closure changes the path-derived profile the review proposes.
@@ -643,7 +643,7 @@ class ProviderReproof(ReproofBase):
         self.validate(record)
 
     def test_moved_paths_without_closure_move_keep_the_exact_profile(self):
-        from laya_provider_reproof import reattest
+        from memvane.provider.provider_reproof import reattest
         new, _closure, socket = self.moved()
         review = self.review(new, self.old_att['dependencyClosure'], socket)
         self.assertEqual(review['reviewedProvider']['vectorProfile'],
@@ -672,7 +672,7 @@ class ProviderReproof(ReproofBase):
             self.old_att, self.review(new, tampered, socket), self.root))
 
     def test_unpinned_old_runtime_is_never_equivalent_automatically(self):
-        from laya_provider_reproof import reattest
+        from memvane.provider.provider_reproof import reattest
         unpinned = self.unpinned()
         self.validate(unpinned)
         new, closure, socket = self.moved()
@@ -684,7 +684,7 @@ class ProviderReproof(ReproofBase):
         self.assertTrue(auto.provider_equivalent(self.old_att, review, self.root))
 
     def test_validator_refuses_a_profile_closure_that_is_not_the_same_files(self):
-        from laya_provider_reproof import attestation_record, reattest
+        from memvane.provider.provider_reproof import attestation_record, reattest
         new, closure, socket = self.moved()
         again = reattest(self.old_att, self.review(new, closure, socket)['reviewedProvider'])
         record = attestation_record(proof=self.proof(again['vectorProfile']),

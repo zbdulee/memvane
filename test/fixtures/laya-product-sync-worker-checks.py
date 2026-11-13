@@ -147,7 +147,7 @@ class WorkerChecks(unittest.TestCase):
         service.stop.assert_called_once_with()
 
     def test_selected_wake_prewarms_before_a_no_change_scan(self):
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         from memvane.journal import install_journal as laya_install_journal
         self.decision['projectRoot'] = str(self.project)
         controller, service, _calls, _start, patches = self.wiring()

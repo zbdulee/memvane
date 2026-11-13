@@ -561,7 +561,7 @@ class RowsMixin:
         self._require_write()
         entry = self._check(handle)
         base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
-        import laya_view_vectors as vectors
+        from memvane.store import view_vectors as vectors
         spec = vectors.spec(vector_spec)
         manifest = vals.manifest(manifest, handle.policy_digest)
         saved = self._observe(entry, deadline=deadline)
@@ -708,7 +708,7 @@ class RowsMixin:
                 else:
                     final[item['path']] = new
             final = [final[path] for path in _sorted_paths(final)]
-            import laya_view_vectors as vectors
+            from memvane.store import view_vectors as vectors
             spec = None if job[8] is None else vectors.spec(v.parse_canonical(job[8]))
             stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items,
                                  spec, final_sources, source_items, final_card_sources, card_items)
@@ -1357,7 +1357,7 @@ class RowsMixin:
     def _rows_search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work, deadline_seconds,
                            path_prefixes, excluded_paths):
         """Exact max-cosine over the pinned head's eligible cards and the sealed spec's sets."""
-        import laya_view_vectors as vectors
+        from memvane.store import view_vectors as vectors
         deadline = time.monotonic() + vectors.options(limit, max_float_work, deadline_seconds,
                                                       path_prefixes, excluded_paths)
         v.identifier(profile_id)

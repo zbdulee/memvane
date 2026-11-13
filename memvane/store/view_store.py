@@ -22,11 +22,11 @@ from memvane.store.blob_store import (BlobStore, _bound_settings, _current_file_
                              _worktree_record, _worktree_row)
 from memvane.store import view_fts as view_fts
 from memvane.store import view_values as vals
-import laya_view_vectors as vectors
+from memvane.store import view_vectors as vectors
 from memvane.store.view_fill import FillMixin
 from memvane.store.view_reader import ReaderMixin
 from memvane.store.view_rows import RowsMixin
-from laya_view_vectors import VectorMixin
+from memvane.store.view_vectors import VectorMixin
 
 # Publication cut budget; only an O(1) source identity and the commit run under it.
 _CUT_SECONDS = 1.0

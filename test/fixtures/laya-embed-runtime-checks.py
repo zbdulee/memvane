@@ -31,7 +31,7 @@ CORE = FIXTURES.parents[1] / 'core'
 sys.path.insert(0, str(FIXTURES))
 sys.path.insert(0, str(CORE))
 import laya_bundle_upgrade as auto  # noqa: E402
-import laya_embed_runtime as R  # noqa: E402
+from memvane.provider import embed_runtime as R  # noqa: E402
 from memvane.install import product_bundle as bundle  # noqa: E402
 from memvane.install import product_install as product  # noqa: E402
 from memvane.kernel.errors import IndexContractError  # noqa: E402
@@ -39,7 +39,7 @@ from memvane.provider.domain.profile import profile_identity  # noqa: E402
 from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,  # noqa: E402
                                        ReviewedLocalQmdProvider, recipe_fingerprint)
 from memvane.provider.adapters.local_embed_service import start_owned_embed_service  # noqa: E402
-from laya_provider_reproof import attestation_record, reattest  # noqa: E402
+from memvane.provider.provider_reproof import attestation_record, reattest  # noqa: E402
 
 REAL_REVIEW = product.review_local_provider
 RUNTIME_ID = 'qmd-2.5.3-node-llama-cpp-3.18.1'

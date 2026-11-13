@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.kernel.errors import IndexContractError
-from laya_embed_resident import (_write_state, admit_query, ensure_running,
+from memvane.resident.embed_resident import (_write_state, admit_query, ensure_running,
                                  read_owner_state, wait_for_release)
 
 
@@ -170,7 +170,7 @@ class ResidentChecks(unittest.TestCase):
     def test_pending_and_selected_route_share_one_owner_identity(self):
         from memvane.sync import product_sync_worker as sync
         from memvane.route import index_host_route as route
-        from laya_embed_resident import _owned_route, _owner_identity
+        from memvane.resident.embed_resident import _owned_route, _owner_identity
         with tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp') as root:
             project = Path(root).resolve() / 'project'
             project.mkdir()

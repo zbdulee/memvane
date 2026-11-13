@@ -79,7 +79,7 @@ class Schema3RecallChecks(unittest.TestCase):
         self.addCleanup(self.u10.doCleanups)
         self.case = self.u10.case
         self.host = importlib.import_module('memvane.host.host_response')
-        self.dispatch = importlib.import_module('laya_reader_dispatch')
+        self.dispatch = importlib.import_module('memvane.recall.reader_dispatch')
         self.event_log = importlib.import_module('event_log')
         self.runtime = importlib.import_module('laya_index_runtime')
 
@@ -203,7 +203,7 @@ class Schema3RecallChecks(unittest.TestCase):
     # ---- completion 2 -----------------------------------------------------
     def test_02_unsealed_view_and_admission_refusal_serve_lexical_with_named_fallback(self):
         self.u10.switched()
-        resident = importlib.import_module('laya_embed_resident')
+        resident = importlib.import_module('memvane.resident.embed_resident')
         embed = importlib.import_module('memvane.provider.adapters.local_embed_provider')
 
         class UsableManifest:

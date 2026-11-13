@@ -846,7 +846,7 @@ def _reactivate(generation, manifest, closure, home, files=None):
 # directories (``latest``, ``lts-*``) never select an unchecked binary.
 MIN_NODE_MAJOR = 22
 NODE_MAJORS = (22, 24, 26)
-LOCK_DIR = Path(__file__).resolve().parents[1] / 'locks' / 'laya-embed-runtime'
+LOCK_DIR = Path(__file__).resolve().parents[2] / 'locks' / 'laya-embed-runtime'
 MODEL_URL = ('https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/'
              + MODEL_NAME)
 MAX_MODEL_BYTES = 2 * 1024 * 1024 * 1024

@@ -104,7 +104,7 @@ def _provider_vector(provider,prompt,budget):
     payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,
                         'allowed':sorted(_PROVIDER_ERRORS)},
                        ensure_ascii=True,separators=(',',':'))
-    child=subprocess.Popen([sys.executable,'-B','-I','-c',_PROVIDER_CHILD,str(Path(__file__).resolve().parent.parent)],
+    child=subprocess.Popen([sys.executable,'-B','-I','-c',_PROVIDER_CHILD,str(Path(__file__).resolve().parents[2])],
                            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
         remaining=deadline-time.monotonic()
@@ -137,7 +137,7 @@ def _provider_vector(provider,prompt,budget):
 @contextmanager
 def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline):
     """Bind one provider result to the live v6 snapshot and calling context."""
-    from laya_view_vectors import query_values
+    from memvane.store.view_vectors import query_values
     from memvane.kernel.errors import IndexContractError
     proof=_vector_proof(authority,snapshot,decision,provider,deadline)
     remaining=min(2,deadline-time.monotonic())
@@ -206,7 +206,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         raise ValueError('reader_endpoint_invalid')
     valid=None
     if query_vector is not None:
-        from laya_view_vectors import query_values
+        from memvane.store.view_vectors import query_values
         query_values(query_vector)
         valid=[entry for entry in _approved_vectors.get()
                if entry[0] is authority and authority is endpoint and entry[1] is None
@@ -220,7 +220,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     from memvane.route.index_host_route import wiki_index_roots
     from memvane.sync.source_scan import auxiliary_wiki_row
     from memvane.store.blob_values import BlobStoreError
-    from laya_view_vectors import DEFERRED
+    from memvane.store.view_vectors import DEFERRED
     queries=[query for query in _hybrid_fts_queries(
         prompt,tuple(decision['recallSettings'].get('lexicalPatterns',())) ) if query]
 

@@ -71,7 +71,7 @@ def chunker_sha(embedding_fingerprint):
     max_chars, overlap, window = FALLBACK_CHARS
     return v.digest('memvane-provider-chunker-v1', {
         'embedding_fingerprint': v.identifier(embedding_fingerprint),
-        'chunker_js_sha256': hashlib.sha256((Path(__file__).resolve().parent.parent / 'memvane/provider/adapters/laya_qmd_chunking.mjs').read_bytes()).hexdigest(),
+        'chunker_js_sha256': hashlib.sha256((Path(__file__).resolve().parents[2] / 'memvane/provider/adapters/laya_qmd_chunking.mjs').read_bytes()).hexdigest(),
         'chunk_rules': CHUNK_RULES,
         'resplit_fallback': {'rule': 'qmd-first-pass', 'max_chars': max_chars, 'overlap_chars': overlap,
                              'window_chars': window, 'unit': 'utf16-code-unit'}})

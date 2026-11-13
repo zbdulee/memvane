@@ -936,7 +936,7 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     if not _writer_floor_allowed(proof):
         return 'writer_floor'
     from memvane.journal.install_journal import verify_selected_route
-    from laya_embed_resident import (_TRANSIENT_FAILURES, _failure_decision,
+    from memvane.resident.embed_resident import (_TRANSIENT_FAILURES, _failure_decision,
                                      read_owner_state)
     current = verify_selected_route(decision)
     _recall_epoch(current)
@@ -1010,7 +1010,7 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
     path = manifest.get('serviceSocketPath')
     if not isinstance(path, str) or os.path.lexists(path):
         return None
-    from laya_embed_resident import ensure_running
+    from memvane.resident.embed_resident import ensure_running
     from memvane.kernel.errors import IndexContractError
     from memvane.kernel.resource_deferred import ResourceDeferred
     try:
@@ -1271,7 +1271,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     """
     from memvane.settings import config
     from memvane.journal import journal_reader as reader
-    import laya_reader_dispatch as dispatch
+    from memvane.recall import reader_dispatch as dispatch
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     degraded = main_proof is None
@@ -1306,7 +1306,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
             provider = None
             vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
                 r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
-    from laya_embed_resident import admit_query
+    from memvane.resident.embed_resident import admit_query
     try:
         admit_query()
     except Exception:

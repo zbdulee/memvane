@@ -240,7 +240,7 @@ def review_local_provider(*, plugin_root, state_root,
     caller must accept the returned digest, and prepare repeats every check.
     """
     import platform
-    import laya_embed_runtime
+    from memvane.provider import embed_runtime as laya_embed_runtime
     from memvane.provider.domain.profile import profile_identity
     from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                            _hash_file, recipe_fingerprint)
@@ -570,7 +570,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.store.blob_store import _regular
     from memvane.install.ledger_common import _read_json, _write
     from memvane.store.view_store import ViewStore, _skip_patterns
-    from laya_view_vectors import provider_spec
+    from memvane.store.view_vectors import provider_spec
     from memvane.sync.sync_owner_lock import sync_owner
     state = _private_parent(state_root)
     project = _checked_project(project_root)

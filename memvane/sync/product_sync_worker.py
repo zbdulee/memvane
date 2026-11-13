@@ -266,7 +266,7 @@ def _selected_service(decision, manifest, admit, start_service):
     owner outside this lane.
     """
     if start_service is start_owned_embed_service:
-        from laya_embed_resident import AttachedService, probe
+        from memvane.resident.embed_resident import AttachedService, probe
         # This callback runs with the provider lane held. Starting its new
         # owner here could race that lane on a model failure between prewarm
         # and embedding; the next durable sync wake starts it outside the lane.
@@ -1330,7 +1330,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
     ends; a refusal is remembered for the rest of the pass. The spec is None
     when the provider recipe has no view recipe (the view stays lexical).
     """
-    from laya_view_vectors import provider_spec
+    from memvane.store.view_vectors import provider_spec
     spec = _schema3_vector_spec(proof)
     context = {'spec': spec, 'provider': None, 'refused': None, 'calls': 0, 'stash': {}}
     if spec is None:
@@ -1357,7 +1357,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
                 raise IndexContractError('selected_provider_proof_changed')
             if start_service is start_owned_embed_service:
                 # Outside the provider lane: adoption is requested, never awaited.
-                from laya_embed_resident import ensure_running
+                from memvane.resident.embed_resident import ensure_running
                 ensure_running(decision['projectRoot'], manifest)
             controller = coordinator or Coordinator()
             observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)
@@ -1418,7 +1418,7 @@ def _code(exc):
 
 
 def _schema3_vector_spec(proof):
-    from laya_view_vectors import provider_spec
+    from memvane.store.view_vectors import provider_spec
     return provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
 
 
@@ -1450,7 +1450,7 @@ def _schema3_chunker(context, current):
     embedder embeds each window alone.
     """
     from memvane.store import blob_values as v
-    from laya_view_vectors import FALLBACK_CHARS, qmd_first_pass
+    from memvane.store.view_vectors import FALLBACK_CHARS, qmd_first_pass
 
     stats = context.setdefault('stats', {'providerMs': 0})
 
@@ -1617,7 +1617,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         if not registered:
             vectors['acquire'](current())
             _mark_schema3_write(writer, proof, marks)
-            from laya_view_vectors import register_provider_spec
+            from memvane.store.view_vectors import register_provider_spec
             if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
                 v.fail('vector_spec_mismatch')
         _entry, _saved, _job, targets, stored = store._rows_fill_plan(handle, recipe_id, profile_id)

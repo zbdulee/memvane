@@ -95,7 +95,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         self.assertEqual(first['state'], 'indexed', first)
         retrieval = importlib.import_module('memvane.wiki.compile.wiki_compile_retrieval')
         selected = importlib.import_module('wiki_selected_laya')
-        dispatch = importlib.import_module('laya_reader_dispatch')
+        dispatch = importlib.import_module('memvane.recall.reader_dispatch')
         captured, queries = [], []
         original_search = retrieval.selected_search
         original_query = dispatch.query_endpoint

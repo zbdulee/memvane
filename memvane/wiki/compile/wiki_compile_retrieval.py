@@ -392,7 +392,7 @@ def query_provider(bound):
     from memvane.host import host_response as response
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
-    from laya_embed_resident import admit_query
+    from memvane.resident.embed_resident import admit_query
     provider = ReviewedLocalQmdProvider(bound[1]['providerManifest'])
     try:
         admit_query()
@@ -429,7 +429,7 @@ def _schema3_search(bound, text):
     vector-only relevance rule needs; otherwise the list is lexical only.
     """
     from memvane.journal import journal_reader as reader
-    import laya_reader_dispatch as dispatch
+    from memvane.recall import reader_dispatch as dispatch
     from memvane.journal import reader_lease as lease
     from memvane.settings import project_dir
     from memvane.route.index_host_route import wiki_index_roots
@@ -475,8 +475,8 @@ def _schema3_cosines(bound, record, current, text, generation):
     """
     from memvane.host import host_response as response
     from memvane.journal import journal_reader as reader
-    from laya_reader_dispatch import _approved_profile_matches
-    from laya_view_vectors import DEFERRED
+    from memvane.recall.reader_dispatch import _approved_profile_matches
+    from memvane.store.view_vectors import DEFERRED
     from memvane.store.blob_values import BlobStoreError
     decision, _proof = bound
     if record.get('vector_profile') is None:

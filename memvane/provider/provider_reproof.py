@@ -62,7 +62,7 @@ def _reviewed_closure(attestation):
 
 def _runtime_files(old_attestation, new_manifest):
     """(old, new) runtime file digests; raises when either cannot be read."""
-    from laya_embed_runtime import attested_files, sealed_files_sha256
+    from memvane.provider.embed_runtime import attested_files, sealed_files_sha256
     return (attested_files(old_attestation),
             sealed_files_sha256(new_manifest.get('moduleEntryPath')))
 

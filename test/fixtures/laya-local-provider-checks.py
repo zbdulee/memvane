@@ -22,7 +22,7 @@ from memvane.kernel.errors import IndexContractError
 from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                        ReviewedLocalQmdProvider, recipe_fingerprint)
 from memvane.provider.adapters.local_embed_service import start_owned_embed_service
-from laya_embed_resident import probe
+from memvane.resident.embed_resident import probe
 
 
 def sha(path):

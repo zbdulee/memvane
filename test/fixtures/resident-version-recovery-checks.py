@@ -20,7 +20,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / 'core'))
 from context_learning import inference_service as learning
 from context_learning import resource_coordination as resources
-import laya_embed_resident as owner
+from memvane.resident import embed_resident as owner
 import laya_resident_service as host
 from laya_index_a import IndexContractError
 

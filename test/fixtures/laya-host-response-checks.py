@@ -133,7 +133,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
 
 class ResponseChecks(unittest.TestCase):
     def setUp(self):
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         admission = patch.object(laya_embed_resident, 'admit_query')
         admission.start()
         self.addCleanup(admission.stop)
@@ -216,7 +216,7 @@ class ResponseChecks(unittest.TestCase):
         from memvane.journal import install_journal as laya_install_journal
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         from memvane.settings import config
         from memvane.kernel.resource_deferred import ResourceDeferred
         decision = {**DECISION,
@@ -1498,7 +1498,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_cold_provider_wakes_owner_without_qmd_fallback(self):
         from memvane.journal import install_journal as laya_install_journal
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         from memvane.runtime import runtime_work
         decision = v2_decision()
         with patch.object(laya_install_journal, 'verify_selected_route',
@@ -1512,7 +1512,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_provider_failure_and_identity_transition_have_distinct_codes(self):
         from memvane.journal import install_journal as laya_install_journal
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         from memvane.runtime import runtime_work
         decision = v2_decision()
         state = {'terminal': True, 'reason': 'attestation_invalid'}
@@ -1540,7 +1540,7 @@ class ResponseChecks(unittest.TestCase):
         # it directly instead of waiting for a backed-off sync wake.
         import time as clock
         from memvane.journal import install_journal as laya_install_journal
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         from memvane.runtime import runtime_work
         from laya_index_a import IndexContractError
         from memvane.kernel.resource_deferred import ResourceDeferred
@@ -1656,7 +1656,7 @@ class BundleDriftChecks(unittest.TestCase):
     """Host plugin update: read-only published generation, every write fenced."""
 
     def setUp(self):
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         admission = patch.object(laya_embed_resident, 'admit_query')
         admission.start()
         self.addCleanup(admission.stop)
@@ -1850,7 +1850,7 @@ class EndpointRecallChecks(unittest.TestCase):
     def serve(self, rows, *, title_only=frozenset(), locations=None):
         from contextlib import ExitStack, contextmanager, nullcontext
         from memvane.journal import journal_reader as laya_journal_reader
-        import laya_reader_dispatch
+        from memvane.recall import reader_dispatch as laya_reader_dispatch
         from memvane.journal import reader_lease as laya_reader_lease
         import laya_reader_open
         from laya_v6_reader import ReaderResult
@@ -1921,7 +1921,7 @@ class ProofRetryChecks(unittest.TestCase):
     def setUp(self):
         import sqlite3
         from memvane.kernel import hook_budget
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         for patcher in (patch.object(laya_embed_resident, 'admit_query'),
                         patch.object(hook_budget, '_deadline', None)):
             patcher.start()
@@ -1981,7 +1981,7 @@ class ProofRetryChecks(unittest.TestCase):
         """
         from contextlib import ExitStack, nullcontext
         from memvane.settings import config
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         import laya_incremental_docs_query
         from memvane.journal import install_journal as laya_install_journal
         import laya_index_runtime

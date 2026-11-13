@@ -25,7 +25,7 @@ CORE = FIXTURES.parents[1] / 'core'
 REPO = FIXTURES.parents[1]
 sys.path.insert(0, str(CORE))
 EMBED = runpy.run_path(str(FIXTURES / 'laya-embed-runtime-checks.py'))
-import laya_embed_runtime as R  # noqa: E402
+from memvane.provider import embed_runtime as R  # noqa: E402
 from memvane.kernel import safe_rmtree  # noqa: E402
 
 MACHO = b'\xcf\xfa\xed\xfe' + b'synthetic node binary'

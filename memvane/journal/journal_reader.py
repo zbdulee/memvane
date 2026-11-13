@@ -504,7 +504,7 @@ def resettled_pair(old, new):
 
 def _adopted_vector_spec(record, proof, *, deadline):
     """The current main head's vector spec when it is the install provider's, else None."""
-    from laya_view_vectors import provider_spec
+    from memvane.store.view_vectors import provider_spec
     expected = provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
     if expected is None:
         return None
@@ -527,7 +527,7 @@ def resettle_selection(decision, owner):
     from contextlib import closing
     from memvane.sync.sync_owner_lock import validate_sync_owner
     from memvane.journal.reader_windows import _Lifetime
-    from laya_view_vectors import provider_spec
+    from memvane.store.view_vectors import provider_spec
     import time
     project = Path(decision['projectRoot'])
     state = Path(decision['journalPath']).parent

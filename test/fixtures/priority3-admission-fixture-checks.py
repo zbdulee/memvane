@@ -34,7 +34,7 @@ def load(name, filename):
 
 CAPACITY = load('admission_capacity_fixture', 'laya-host-capacity-checks.py')
 SYNC = load('admission_sync_fixture', 'laya-product-sync-worker-checks.py')
-import laya_embed_resident as owner
+from memvane.resident import embed_resident as owner
 from memvane.host import host_response as response
 from memvane.journal import install_journal as journal
 from memvane.provider.adapters import local_embed_provider as provider

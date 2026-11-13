@@ -91,7 +91,7 @@ class Checks(unittest.TestCase):
         from memvane.journal import install_journal as laya_install_journal
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         import laya_incremental_docs_query
         decision = {'state': 'candidate', 'projectRoot': '/synthetic/project',
                     'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
@@ -261,7 +261,7 @@ class Checks(unittest.TestCase):
 
     def vector_host(self, stack, *, admit=None, provider=None, owner_state=None):
         """Selected route whose query vector is missing; records the provider calls."""
-        import laya_embed_resident
+        from memvane.resident import embed_resident as laya_embed_resident
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from memvane.runtime import runtime_work
         decision, proof, rows, _settings = self.host(stack)

@@ -71,7 +71,7 @@ class Coordinator:
 class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
     def setUp(self):
         super().setUp()
-        self.VV = importlib.import_module('laya_view_vectors')
+        self.VV = importlib.import_module('memvane.store.view_vectors')
         self.provider_calls = []
         self.split = set()  # card bodies (by marker) the stub provider re-splits
         real = self.VV.provider_specs
@@ -801,7 +801,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         decision = self.J.select_route(str(self.case.project), action='recall')
         payload = {'cwd': str(self.case.project), 'prompt': 'kestrelprobe', 'session_id': 'drift-probe'}
         provider_module = importlib.import_module('memvane.provider.adapters.local_embed_provider')
-        resident = importlib.import_module('laya_embed_resident')
+        resident = importlib.import_module('memvane.resident.embed_resident')
         def degraded_recall():
             with self.seed.authority(), \
                     mock.patch.object(host, '__file__', str(self.case.plugin / 'core' / 'laya_host_response.py')), \
@@ -1119,7 +1119,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import os
         import tempfile
         rc = importlib.import_module('context_learning.resource_coordination')
-        resident = importlib.import_module('laya_embed_resident')
+        resident = importlib.import_module('memvane.resident.embed_resident')
         from memvane.kernel.resource_deferred import ResourceDeferred
         root = Path(tempfile.mkdtemp(prefix='lanes-', dir=os.environ.get('HOME'))).resolve()
         policy = self.worker.EMBED_POLICY
@@ -1268,7 +1268,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import os
         import tempfile
         rc = importlib.import_module('context_learning.resource_coordination')
-        resident = importlib.import_module('laya_embed_resident')
+        resident = importlib.import_module('memvane.resident.embed_resident')
         from memvane.kernel.resource_deferred import ResourceDeferred
         self.select_schema3()
         markers = self.cold_cards('adm', 10)

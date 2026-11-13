@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import laya_embed_resident as owner
+from memvane.resident import embed_resident as owner
 import laya_resident_service as svc
 from laya_index_a import IndexContractError
 from memvane.kernel.resource_deferred import ResourceDeferred

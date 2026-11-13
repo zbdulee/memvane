@@ -203,7 +203,7 @@ class BuildCase(unittest.TestCase):
 
 class BuildProgressTests(BuildCase):
     def test_default_build_warms_pending_owner_and_borrows_it(self):
-        from laya_embed_resident import AttachedService
+        from memvane.resident.embed_resident import AttachedService
         self.corpus(1)
         self.register()
         with mock.patch('laya_embed_resident.ensure_running',
@@ -226,7 +226,7 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(FakeProvider.calls, ['wiki/f000.md'])
 
     def test_fresh_build_attaches_the_resident_model_in_the_lane(self):
-        from laya_embed_resident import AttachedService
+        from memvane.resident.embed_resident import AttachedService
         self.corpus(1)
         self.register()
         with mock.patch('laya_embed_resident.ensure_running',

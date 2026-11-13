@@ -314,7 +314,7 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
     if RUNTIME_FILES_FIELD in attestation:
         # The sealed runtime.json of the generation the provider runs from
         # (its name addresses every file); the worker start re-hashes them.
-        from laya_embed_runtime import RuntimeUnavailable, sealed_files_sha256
+        from memvane.provider.embed_runtime import RuntimeUnavailable, sealed_files_sha256
         sealed = attestation[RUNTIME_FILES_FIELD]
         try:
             observed = sealed_files_sha256(provider['moduleEntryPath'])

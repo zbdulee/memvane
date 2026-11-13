@@ -59,7 +59,7 @@ class Schema3EndpointChecks(unittest.TestCase):
         self.addCleanup(self.seed.doCleanups)
         self.case, self.reader, self.lease = self.seed.case, self.seed.reader, self.seed.lease
         self.bridge = self.seed.bridge
-        self.dispatch = importlib.import_module('laya_reader_dispatch')
+        self.dispatch = importlib.import_module('memvane.recall.reader_dispatch')
         self.migration = importlib.import_module('laya_shadow_migration')
         self.views = importlib.import_module('memvane.store.view_store')
         self.opens = importlib.import_module('laya_reader_open')

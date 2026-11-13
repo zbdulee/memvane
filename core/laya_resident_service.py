@@ -577,7 +577,7 @@ def _worker_key(manifest):
     The fingerprint omits ``dimension``, which the worker config applies, so
     two installs of one recipe at different dimensions never share a worker.
     """
-    from laya_embed_resident import _IDENTITY
+    from memvane.resident.embed_resident import _IDENTITY
     return tuple(manifest[key] for key in _IDENTITY) + tuple(
         manifest[key] for key in ('modelId', 'dimension'))
 
@@ -590,7 +590,7 @@ def _worker_socket(root, key):
 
 def default_prove(project):
     """Prove one selected or preview installation."""
-    from laya_embed_resident import _owned_route
+    from memvane.resident.embed_resident import _owned_route
     return _owned_route(Path(project))
 
 
@@ -1086,7 +1086,7 @@ class Service:
         from memvane.kernel.resource_deferred import ResourceDeferred
         try:
             decision, proof, _mode = self.prove(project)
-            from laya_embed_resident import _owner_identity
+            from memvane.resident.embed_resident import _owner_identity
             owned = _owner_identity(decision, proof) == binding.identity
         except ResourceDeferred:
             # A busy sync owner lock (owner_busy) is contention, not lost
@@ -1123,7 +1123,7 @@ class Service:
         backoff (and the cooldown after the last attempt) bounds the
         re-hashing instead of a 5 s loop.
         """
-        from laya_embed_resident import _MAX_FAILURES, _write_state
+        from memvane.resident.embed_resident import _MAX_FAILURES, _write_state
         if str(exc) != 'worker_selection_changed':
             return 5
         fingerprint = manifest.get('embeddingFingerprint')
@@ -1175,7 +1175,7 @@ class Service:
         _event(targets, 'resident.adopt', outcome, reason)
 
     def _adopt(self, project):
-        from laya_embed_resident import _owner_identity, _write_state
+        from memvane.resident.embed_resident import _owner_identity, _write_state
         from memvane.provider.adapters.local_embed_service import (_private_parent, _remove_stale_socket,
                                               bind_private)
         try:
@@ -1288,7 +1288,7 @@ class Service:
             self._later(project, 2)
 
     def _load(self, project, decision, proof, mode, manifest, key, seal):
-        from laya_embed_resident import _failure_decision, _write_state
+        from memvane.resident.embed_resident import _failure_decision, _write_state
         with self.lock:
             worker = self.workers.get(key)
             if worker is None:
@@ -1338,7 +1338,7 @@ class Service:
             self.cold_load.release()
 
     def _load_attested(self, project, decision, proof, mode, manifest, worker, seal):
-        from laya_embed_resident import (_FAILURE_COOLDOWN_SECONDS,
+        from memvane.resident.embed_resident import (_FAILURE_COOLDOWN_SECONDS,
                                          _MAX_FAILURES, _write_state)
         reason = None
         handle = None
@@ -1460,7 +1460,7 @@ class Service:
                 os.unlink(path)
 
     def _release(self, project, *, reason):
-        from laya_embed_resident import _write_state
+        from memvane.resident.embed_resident import _write_state
         binding = self.bindings.pop(project, None)
         if binding is None:
             return
@@ -1550,7 +1550,7 @@ class Service:
                 worker.inflight += 1
                 reserved = worker
             if request == {'kind': 'status'}:
-                from laya_embed_resident import _IDENTITY
+                from memvane.resident.embed_resident import _IDENTITY
                 conn.sendall(json.dumps({**{key: manifest[key] for key in _IDENTITY},
                                          'status': 'ready'}).encode())
                 conn.close()
