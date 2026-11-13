@@ -21,7 +21,7 @@ sys.path.insert(0, str(HERE.parents[1] / 'core'))
 from context_learning import inference_service as learning
 from context_learning import resource_coordination as resources
 from memvane.resident import embed_resident as owner
-import laya_resident_service as host
+from memvane.resident import resident_service as host
 from laya_index_a import IndexContractError
 
 spec = importlib.util.spec_from_file_location('resident_fixture_for_retry_gates',

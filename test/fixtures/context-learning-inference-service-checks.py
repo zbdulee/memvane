@@ -266,7 +266,7 @@ class BundleSignatureTests(unittest.TestCase):
 
     def test_version_only_release_requests_hosted_service_adoption(self):
         import shutil
-        import laya_resident_service as host
+        from memvane.resident import resident_service as host
         source = Path(service.__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory(prefix='qmd-version-sig-') as temp:
             roots = []

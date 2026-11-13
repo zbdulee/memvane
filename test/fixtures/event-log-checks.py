@@ -201,7 +201,7 @@ class WriterChecks(Base):
         self.assertNotIn('BODY', (self.state / event_log.NAME).read_text())
 
     def test_resident_service_drain_forced_exit_and_adopt(self):
-        import laya_resident_service as service
+        from memvane.resident import resident_service as service
         targets = [(self.state, 'install-1')]
         fake = SimpleNamespace(draining=threading.Event(), bundle={'version': '0.41.6'},
                                lock=threading.RLock(), bindings={

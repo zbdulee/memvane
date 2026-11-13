@@ -27,7 +27,7 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.resident import embed_resident as resident
 from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI, ReviewedLocalQmdProvider,
                                        recipe_fingerprint)
-import laya_resident_service as svc
+from memvane.resident import resident_service as svc
 
 DIM = 4
 TIME_SCALE = .02  # subprocess drain checks: budget 9.6 s, successor wait 12 s

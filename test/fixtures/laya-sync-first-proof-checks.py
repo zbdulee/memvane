@@ -969,7 +969,7 @@ class SyncFirstProofChecks(unittest.TestCase):
     def test_resident_ownership_proof_reads_a_busy_sync_owner_as_deferral(self):
         """The resident service rechecks a binding through this proof: a held
         sync owner lock is ResourceDeferred('owner_busy'), not lost ownership."""
-        import laya_resident_service as resident_service
+        from memvane.resident import resident_service as resident_service
         from memvane.kernel.resource_deferred import ResourceDeferred
         with self.fixture.F.warm(),self.seed.authority(), \
                 mock.patch.object(self.J, '_executing_root', return_value=self.case.plugin):

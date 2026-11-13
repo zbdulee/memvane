@@ -19,6 +19,7 @@ TARGETS = {
     'hook-serve': ('memvane/host/host_response.py', 'serve-stdin'),
     'host-ack': ('core/context_learning_host_ack.py', None),
     'setup': ('core/setup_entry.py', None),
+    'resident-service': ('memvane/resident/resident_service.py', None),
     'runtime-work': ('memvane/runtime/runtime_work.py', None),
     'runtime-monitor': ('memvane/runtime/runtime_monitor.py', None),
     'wiki-extract': ('core/wiki_extract.py', None),

@@ -232,7 +232,7 @@ def ensure_running(project, manifest, *, service_root=None, spawn=None):
     if status == 'mismatch':
         raise ResourceDeferred('laya_service_identity_transition')
     _failure_decision(manifest)
-    from laya_resident_service import request_adopt
+    from memvane.resident.resident_service import request_adopt
     request_adopt(str(project), root=service_root, spawn=spawn)
     raise ResourceDeferred('laya_service_preparing')
 

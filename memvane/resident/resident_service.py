@@ -334,7 +334,7 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
         if learning_root is None:
             learning_root = _learning_root()
         # -I: the hosted learning inference requires an isolated interpreter.
-        argv = [_interpreter(root, python), '-I', '-B', str(Path(__file__).resolve()), 'serve',
+        argv = [_interpreter(root, python), '-I', '-B', str(Path(__file__).resolve().parents[2] / 'entry/run.py'), 'resident-service', 'serve',
                 str(root), str(learning_root) if learning_root else '-', str(fd)]
         fds = (fd,)
         (spawn or default_spawn)(argv, pass_fds=fds)
@@ -739,7 +739,7 @@ def default_admit():
 def default_start_worker(manifest, admit):
     from memvane.provider.adapters.local_embed_provider import _hash_file
     from memvane.provider.adapters.local_embed_service import start_owned_embed_service
-    root = Path(__file__).resolve().parent.parent / 'memvane/provider/adapters'
+    root = Path(__file__).resolve().parents[2] / 'memvane/provider/adapters'
     provider, worker = root / 'local_embed_provider.py', root / 'laya_local_embed_worker.mjs'
     if (_hash_file(str(provider)) != manifest['providerArtifactSha256']
             or _hash_file(str(worker)) != manifest['workerSha256']):

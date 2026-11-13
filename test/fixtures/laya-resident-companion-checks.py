@@ -49,7 +49,7 @@ class CompanionResidentChecks(unittest.TestCase):
         self.companion.mkdir(mode=0o700, exist_ok=True)
         self.W = importlib.import_module('memvane.sync.product_sync_worker')
         self.E = importlib.import_module('memvane.resident.embed_resident')
-        self.S = importlib.import_module('laya_resident_service')
+        self.S = importlib.import_module('memvane.resident.resident_service')
         self.assertEqual(J.journal_version(self.case.journal), 5)
 
     @contextmanager
@@ -304,7 +304,7 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
         self.assertNotEqual(self.a.case.plugin, self.b.case.plugin)
         self.W = importlib.import_module('memvane.sync.product_sync_worker')
         self.E = importlib.import_module('memvane.resident.embed_resident')
-        self.S = importlib.import_module('laya_resident_service')
+        self.S = importlib.import_module('memvane.resident.resident_service')
         self.bundle = importlib.import_module('memvane.install.product_bundle')
         temp = tempfile.TemporaryDirectory(prefix='h8s-', dir='/tmp')
         self.addCleanup(temp.cleanup)

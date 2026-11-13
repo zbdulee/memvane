@@ -17,7 +17,7 @@ from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import sync_owner
 from memvane.wiki.intake import wiki_discovery as discovery
 from memvane.resident import embed_resident as resident
-import laya_resident_service as resident_service
+from memvane.resident import resident_service as resident_service
 from memvane.journal import install_journal as journal
 
 PROBE=r'''
