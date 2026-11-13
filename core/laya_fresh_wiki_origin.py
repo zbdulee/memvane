@@ -59,7 +59,6 @@ UPGRADE_STALLED = 'bundle_upgrade_stalled'
 # A recall whose route changed under it this soon after the upgrade worker
 # last wrote its status raced the upgrade's own route switch.
 UPGRADE_RECENT_SECONDS = 30
-RECOVERY_CODE = 'bundle_upgrade_fenced'
 
 class FreshWikiBlocked(RuntimeError):
     pass
@@ -143,21 +142,6 @@ def upgrade_window(cwd, *, now_ns=None) -> bool:
         return False
 
 
-def request_recovery(cwd):
-    """Ask the upgrade worker to finish a fenced upgrade; never waits or raises.
-
-    The worker resumes an interrupted intent. Its status file throttles the
-    request, and a worker still holding the upgrade lock is never doubled.
-    """
-    record = _fence_record(cwd)
-    if record is None or record['phase'] != 'upgrading':
-        return None
-    try:
-        import laya_bundle_upgrade
-        return laya_bundle_upgrade.request(record['projectRoot'], record['journalPath'],
-                                           RECOVERY_CODE)
-    except Exception:
-        return None
 
 
 def settle_decision(cwd, action, decision, select, *, clock=time.monotonic,

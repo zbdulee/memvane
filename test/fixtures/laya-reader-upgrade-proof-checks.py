@@ -515,8 +515,7 @@ class UpgradeProofChecks(unittest.TestCase):
                 mock.patch.object(upgrade,'_provider_file_identity',return_value=[[str(new/'p.py'),1,2,3,4,5]]),
                 mock.patch.object(upgrade,'_wait_for_sockets'),
                 mock.patch.object(host,'__file__',str(case.plugin/'core/laya_host_response.py')),
-                mock.patch('runtime_work.request',side_effect=AssertionError('worktree woke worker')),
-                mock.patch('laya_fresh_wiki_origin.request_recovery',side_effect=AssertionError('worktree requested recovery'))):
+                mock.patch('runtime_work.request',side_effect=AssertionError('worktree woke worker'))):
                 stack.enter_context(patch)
             intent=upgrade._prepare(case.project,case.state,case.journal,case.home,new,
                                     target['sourceCommit'],review['proposalSha256'],'/synthetic/model',3)
@@ -557,10 +556,8 @@ class UpgradeProofChecks(unittest.TestCase):
             held=case.state/'test-held-journal.sqlite'
             case.journal.rename(held)
             try:
-                with mock.patch('laya_fresh_wiki_origin.request_recovery') as recovery:
-                    damaged=route.select_route(str(linked),action='recall')
+                damaged=route.select_route(str(linked),action='recall')
                 self.assertEqual(damaged['state'],'blocked',damaged)
-                recovery.assert_not_called()
             finally:
                 held.rename(case.journal)
 
@@ -1239,8 +1236,7 @@ class UpgradeProofChecks(unittest.TestCase):
                     'GEMINI_SANDBOX':''}), \
                  mock.patch.object(host,'__file__',str(case.plugin/'core/laya_host_response.py')), \
                  mock.patch.object(core_bridge.subprocess,'run',side_effect=fence_after_classifier), \
-                 mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker')), \
-                 mock.patch('laya_fresh_wiki_origin.request_recovery',side_effect=AssertionError('reader requested recovery')):
+                 mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker')):
                 answer=hooks['pre_llm_call'](user_message='otter',working_directory=str(case.project))
                 self.assertTrue(fenced)
                 self.assertIn('otter',(answer or {}).get('context',''))
@@ -1260,8 +1256,7 @@ class UpgradeProofChecks(unittest.TestCase):
                         with lease.resolve_endpoint(case.project,action='recall',host_root=companion):
                             pass
             with mock.patch.object(host,'__file__',str(case.plugin/'core/laya_host_response.py')), \
-                 mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker')), \
-                 mock.patch('laya_fresh_wiki_origin.request_recovery',side_effect=AssertionError('reader requested recovery')):
+                 mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker')):
                 serve=getattr(host,'serve_endpoint_recall',None)
                 self.assertTrue(callable(serve),'fenced reader host entry is required')
                 for host_name in ('claude','codex','hermes'):
@@ -1346,8 +1341,7 @@ p=json.loads(Path(os.environ['MEMVANE_TEST_HOOK_AUTHORITY']).read_text())
 case=SimpleNamespace(plugin=Path(p['plugin']),proof=p['proof'])
 helper=base.JournalReaderChecks('runTest')
 with helper.full_authority(case,reader,lease), mock.patch.object(base.J,'_verified_executing_root',return_value=str(root)), \\
-     mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker')), \\
-     mock.patch('laya_fresh_wiki_origin.request_recovery',side_effect=AssertionError('reader requested recovery')):
+     mock.patch('runtime_work.request',side_effect=AssertionError('reader woke worker')):
     sys.argv=sys.argv[1:]
     runpy.run_path(sys.argv[0],run_name='__main__')
 ''',encoding='utf8')

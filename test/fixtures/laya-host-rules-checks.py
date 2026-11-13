@@ -62,24 +62,20 @@ class RecallRulesChecks(unittest.TestCase):
         import laya_fresh_wiki_origin as fresh
         import laya_host_response as host
         with patch.object(fresh, 'upgrade_fenced', return_value=True) as fenced, \
-             patch.object(fresh, 'request_recovery') as recovery, \
              patch.object(fresh, 'upgrade_stalled', return_value=True) as stalled, \
              patch.object(fresh, 'upgrade_window') as window:
             self.assertEqual(host._upgrade_recall_notice({'cwd': '/p'}, '/fallback', 'other'),
                              host._UPGRADE_NOTICES['bundle_upgrade_stalled'])
             fenced.assert_called_once_with('/p')
-            recovery.assert_called_once_with('/p')
             stalled.assert_called_once_with('/p')
             window.assert_not_called()
         with patch.object(fresh, 'upgrade_fenced', return_value=False), \
-             patch.object(fresh, 'request_recovery') as recovery, \
              patch.object(fresh, 'upgrade_window', return_value=True) as window:
             self.assertIsNone(host._upgrade_recall_notice({'cwd': '/p'}, '/fallback', 'other'))
             window.assert_not_called()
             self.assertEqual(host._upgrade_recall_notice({'cwd': '/p'}, '/fallback', 'selected_route_changed'),
                              host._UPGRADE_NOTICES['bundle_upgrade_in_progress'])
             window.assert_called_once_with('/p')
-            recovery.assert_not_called()
 
     def test_main_returns_zero_only_for_upgrade_transition(self):
         import hook_budget
