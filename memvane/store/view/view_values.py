@@ -14,7 +14,7 @@ import time
 from memvane.store.blob import blob_values as v
 from memvane.kernel import errors as primitives
 
-MAX_MEMBERS = 20000
+from memvane.store.types import MAX_MEMBERS, STAGE_ITEM_FIELDS
 MAX_SOURCES = 20000
 MAX_WIKI_BYTES = 64 * 1024 * 1024
 MAX_MANIFEST_BYTES = 32 * 1024 * 1024
@@ -32,7 +32,6 @@ SOURCE_CONTENT_SCHEMA = 'memvane-source-content-v1'
 SOURCE_OBSERVATION_SCHEMA = 'memvane-source-observation-v1'
 SOURCE_OBSERVATION_FIELDS = ('worktree_id', 'branch_key', 'path', 'tracked_state',
                              'binding_state', 'content_id', 'legacy_fingerprint_id')
-STAGE_ITEM_FIELDS = ('path', 'action', 'input_sha', 'blob_sha', 'trust_digest', 'metadata_json')
 
 
 def source_content(source_sha, byte_length):

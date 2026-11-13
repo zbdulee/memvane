@@ -6,6 +6,7 @@ failed or deferred attempt leaves the wake for the runtime dispatcher to retry.
 """
 from __future__ import annotations
 from memvane.resident.types import EMBED_POLICY
+from memvane.store import types as store_types
 
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -398,7 +399,7 @@ def _schema3_wiki_cards(root):
     would refuse to admit (not owned, linked, too large) is counted, not read.
     """
     from memvane.store import api as v
-    from memvane.store.view import view_values as view_values
+    from memvane.store import api as view_values
     cards, skipped = [], 0
     for base, dirs, files in os.walk(root, followlinks=False):
         dirs[:] = sorted(name for name in dirs if not name.startswith('.'))
@@ -414,11 +415,11 @@ def _schema3_wiki_cards(root):
             except FileNotFoundError:
                 continue
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_nlink != 1 or info.st_size > v.MAX_BODY):
+                    or info.st_nlink != 1 or info.st_size > store_types.MAX_BODY):
                 skipped += 1
                 continue
             cards.append(path)
-            if len(cards) > view_values.MAX_MEMBERS:
+            if len(cards) > store_types.MAX_MEMBERS:
                 raise IndexContractError('schema3_wiki_too_many_cards')
     return sorted(cards), skipped
 
@@ -484,9 +485,9 @@ def _publish_schema3(decision, proof, writer, vectors=None):
                                                        deadline, marks)
                 outcome = _publish_schema3_view(store, writer, linked_decision,
                                                 proof, worktree_id, None, deadline, marks, vectors)
-            except checkout.CheckoutUnavailable as exc:
+            except store_types.CheckoutUnavailable as exc:
                 outcome = {'state': 'held', 'reason': exc.reason}
-            except v.BlobStoreError as exc:
+            except store_types.BlobStoreError as exc:
                 if exc.reason not in SCHEMA3_LINKED_HELD:
                     raise
                 outcome = {'state': 'held', 'reason': exc.reason}
@@ -673,7 +674,7 @@ def _compiled_intent_is_stored(store, handle, intent):
     trust = values.digest('memvane-card-attestation-v1', spec)
     try:
         return store.attestation(trust) == spec
-    except values.BlobStoreError:
+    except store_types.BlobStoreError:
         return False
 
 
@@ -735,7 +736,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
             if (witness_name != 'compile-' + wiki_verify_worker.compile_intent_id(witness) + '.consumed.json'
                     or not _compiled_intent_is_stored(store, handle, witness)):
                 witness = None
-        except (OSError, ValueError, TypeError, KeyError, values.BlobStoreError):
+        except (OSError, ValueError, TypeError, KeyError, store_types.BlobStoreError):
             witness = None
         candidates = [name for name in names if name > after][:255]
         for candidate in candidates:
@@ -756,7 +757,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
                     result['superseded'] += 1
                 finally:
                     os.close(candidate_fd)
-            except (OSError, ValueError, TypeError, KeyError, values.BlobStoreError):
+            except (OSError, ValueError, TypeError, KeyError, store_types.BlobStoreError):
                 continue
         sweep_after = candidates[-1] if candidates else after
         sweep_done = witness is None or not any(name > sweep_after for name in names)
@@ -810,7 +811,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
                 store.put_compiled_attestation(handle.worktree_id, intent, policy_digest=handle.policy_digest)
                 normal.validate_normal_writer(writer)
                 outcome = 'consumed'
-            except (values.BlobStoreError, KeyError, TypeError, ValueError, UnicodeError) as exc:
+            except (store_types.BlobStoreError, KeyError, TypeError, ValueError, UnicodeError) as exc:
                 if initial is None:
                     continue
                 reason = ('provenance_parity_mismatch' if str(exc) == 'provenance_parity_mismatch'
@@ -849,7 +850,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     from memvane.journal import writer_scope as normal
     from memvane.wiki.card.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
     from memvane.store.api import regular as _regular
-    from memvane.store.view import view_values as view_values
+    from memvane.store import api as view_values
     from memvane.store.api import skip_patterns as _skip_patterns
     import uuid
     if vectors is None:
@@ -876,7 +877,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         current = {}
         for path in paths:
             try:
-                raw, _node, _root = _regular(root, path, v.MAX_BODY)
+                raw, _node, _root = _regular(root, path, store_types.MAX_BODY)
             except OSError:
                 v.fail('wiki_card_unavailable')
             current[path] = (v.hash_bytes(raw), raw)
@@ -995,7 +996,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if vector['state'] == 'lexical_first':
             generation, vector = _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest,
                                                               vectors, deadline)
-    except v.BlobStoreError as exc:
+    except store_types.BlobStoreError as exc:
         if exc.reason in SCHEMA3_BINDING_REASONS:
             return {'state': 'deferred', 'reason': 'schema3_binding_changed',
                     'detail': exc.reason, 'storeFormat': 'schema3'}
@@ -1027,8 +1028,8 @@ def _schema3_rows_baseline(store, db, handle, head):
     this pass's observation without reading a stored manifest.
     """
     import json
-    from memvane.store.view import view_rows as view_rows
-    from memvane.store.view import view_values as view_values
+    from memvane.store import api as view_rows
+    from memvane.store import api as view_values
     cold = head['gen_id'] is None
 
     def member(row):
@@ -1042,7 +1043,7 @@ def _schema3_rows_baseline(store, db, handle, head):
         staged = dict(opened)
         for item in db.execute('SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json FROM s_stage_items '
                                'WHERE job_id=? ORDER BY path', (job[0],)).fetchall():
-            new = view_rows._item_row(view_values.check_stage_item(dict(zip(view_values.STAGE_ITEM_FIELDS,
+            new = view_rows.stage_item_row(view_values.check_stage_item(dict(zip(store_types.STAGE_ITEM_FIELDS,
                                                                              tuple(item)))))
             if new is None:
                 staged.pop(item[0], None)
@@ -1064,7 +1065,7 @@ def _schema3_rows_baseline(store, db, handle, head):
 
 def _schema3_head_same(store, head, baseline, observed, handle):
     """The head was published from exactly this observation at the same HEAD."""
-    from memvane.store.view import view_values as view_values
+    from memvane.store import api as view_values
     if baseline['head_oid'] != handle.head_oid:
         return False
     wanted = []
@@ -1097,7 +1098,7 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
             missing = any(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
                                      (blob, spec['recipe_id'], spec['profile_id'])).fetchone() is None
                           for blob in blobs)
-    except v.BlobStoreError as exc:
+    except store_types.BlobStoreError as exc:
         if exc.reason not in ('recipe_missing', 'profile_missing'):
             raise
         missing = True
@@ -1355,7 +1356,7 @@ def _schema3_chunker(context, current):
         kept = [row['pos'] for row in rows] == [pos for pos, _text in parts]
         if not kept:
             parts = qmd_first_pass(body, *FALLBACK_CHARS)
-        if len(parts) > v.MAX_CHUNKS:
+        if len(parts) > store_types.MAX_CHUNKS:
             # The store refuses the set; only this card's vectors wait.
             raise _VectorMemberBlocked('chunk_set_too_large')
         if kept:
@@ -1490,7 +1491,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         with store._session():
             store._recipe(recipe_id); store._profile(profile_id)
         registered = True
-    except v.BlobStoreError as exc:
+    except store_types.BlobStoreError as exc:
         if exc.reason not in ('recipe_missing', 'profile_missing'):
             raise
         registered = False
@@ -1552,8 +1553,8 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                 step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
                                        embedder=embedder, write_fence=fence,
                                        expected_cursor=status['cursor'], max_files=files,
-                                       max_bytes=v.MAX_BODY, deadline_seconds=seconds)
-            except v.BlobStoreError as exc:
+                                       max_bytes=store_types.MAX_BODY, deadline_seconds=seconds)
+            except store_types.BlobStoreError as exc:
                 if exc.reason not in SCHEMA3_FILL_DEADLINES:
                     raise
                 # Content sets committed before the deadline stay (cache hits

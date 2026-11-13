@@ -1,7 +1,6 @@
 """Public store value operations."""
 from __future__ import annotations
 
-from memvane.store.types import BlobStoreError, CheckoutUnavailable, MAX_BODY, MAX_CHUNKS, SHA, UUID
 
 
 def capture_matches(*args, **kwargs):
@@ -111,4 +110,29 @@ def provenance_digests(*args, **kwargs):
 
 def relative(*args, **kwargs):
     from memvane.store.blob.blob_values import relative as implementation
+    return implementation(*args, **kwargs)
+
+
+def skipped(*args, **kwargs):
+    from memvane.store.view.view_values import skipped as implementation
+    return implementation(*args, **kwargs)
+
+
+def check_stage_item(*args, **kwargs):
+    from memvane.store.view.view_values import check_stage_item as implementation
+    return implementation(*args, **kwargs)
+
+
+def source_content(*args, **kwargs):
+    from memvane.store.view.view_values import source_content as implementation
+    return implementation(*args, **kwargs)
+
+
+def source_observation(*args, **kwargs):
+    from memvane.store.view.view_values import source_observation as implementation
+    return implementation(*args, **kwargs)
+
+
+def stage_item_row(*args, **kwargs):
+    from memvane.store.view.view_rows import _item_row as implementation
     return implementation(*args, **kwargs)

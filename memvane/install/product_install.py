@@ -564,7 +564,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.app import runtime_dispatch as dispatch
     from memvane.sync import api as sync
     from memvane.store import api as values
-    from memvane.store.view import view_values as view_values
+    from memvane.store import api as view_values, types as store_types
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
     from memvane.store.api import regular as _regular
@@ -637,7 +637,7 @@ def finalize_initial_build(*, project_root, state_root):
                         paths = [p for p in found if not view_values.skipped(p, skips)]
                         current = {}
                         for path in paths:
-                            raw, _node, _root = _regular(tree['wiki_root'], path, values.MAX_BODY)
+                            raw, _node, _root = _regular(tree['wiki_root'], path, store_types.MAX_BODY)
                             current[path] = values.hash_bytes(raw)
                         if current != {p: member['blob_sha'] for p, member in baseline['old'].items()}:
                             _fail('initial_build_out_of_date')
