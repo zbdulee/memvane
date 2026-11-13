@@ -25,7 +25,7 @@ from memvane.settings import api as source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
-from memvane.wiki.card import yaml_scalars
+from memvane.wiki.card import api as yaml_scalars
 
 ALLOWED_TYPES = {
     "concept",

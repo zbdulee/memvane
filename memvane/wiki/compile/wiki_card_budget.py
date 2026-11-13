@@ -322,7 +322,7 @@ def measure_card(card_text: str, tokenizer=None) -> dict:
     """
     body = derived_body(card_text)
     if body is None:
-        from memvane.wiki.card import yaml_scalars
+        from memvane.wiki.card import api as yaml_scalars
         match = yaml_scalars.FRONTMATTER_RE.match(card_text) if isinstance(card_text, str) else None
         rest = card_text[match.end():] if match else ''
         if rest.strip() and '\x00' not in rest:

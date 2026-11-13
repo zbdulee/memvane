@@ -66,7 +66,7 @@ from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.card import source_spans
 from memvane.wiki.card.api import card_sources_allowed
-from memvane.wiki.card import yaml_scalars
+from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
 
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —

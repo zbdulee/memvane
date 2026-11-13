@@ -13,7 +13,7 @@ from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import wiki_selected_laya
-from memvane.wiki.card import yaml_scalars
+from memvane.wiki.card import api as yaml_scalars
 from memvane.settings.api import is_wiki_meta_page
 
 from memvane.wiki.card.types import MAX_CARDS

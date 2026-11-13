@@ -23,6 +23,8 @@ exit 0이어야 한다). 대신 열린 인용부호처럼 **값이 잘렸다고 
 """
 
 from __future__ import annotations
+
+from memvane.wiki.card.types import SAFE_KEY_RE, SOURCE_SPANS_KEY, MAX_SOURCE_SPANS, FRONTMATTER_RE
 import hashlib
 import re
 
@@ -31,7 +33,6 @@ BLOCK_SCALAR_HEADERS = {">", "|", ">-", "|-", ">+", "|+", ">>", "|2", ">2"}
 # flow mapping의 키로 허용할 형태. 키도 모델(extractor)이 주므로 개행·구두점이 든 키는
 # 매핑을 벗어나 새 줄을 만들 수 있다 — 안전한 식별자만 통과시킨다.
 # (wiki_compile.SAFE_YAML_KEY_RE가 이 상수를 그대로 재노출한다: 정의는 한 곳이다.)
-SAFE_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 
 # Compiler-owned provenance has a deliberately closed schema.  Model-provided
 # ``sources`` remains an open audit field; source revisions are the current
@@ -46,8 +47,6 @@ NONNEGATIVE_INT_RE = re.compile(r"0|[1-9][0-9]*")
 # numbers, and any malformed sibling makes the whole list unusable.
 SOURCE_SPAN_KEYS = ("path", "sourceSha256", "startLine", "endLine", "spanSha256")
 SOURCE_SPAN_KEY_SET = frozenset(SOURCE_SPAN_KEYS)
-SOURCE_SPANS_KEY = "sourceSpans"
-MAX_SOURCE_SPANS = 16
 MAX_SPAN_LINES = 200
 MAX_SPAN_PATH_CHARS = 512
 # Eight digits bound both the token length handed to ``int`` and the value.
@@ -613,9 +612,7 @@ def fold_inline(value) -> str:
 
 
 # frontmatter 블록 경계의 SSOT. `wiki_compile.FRONTMATTER_RE` 가 이 객체의 별칭이다 —
-# 카드 본문 지문(`card_body_hash`)을 쓰는 쪽과 읽는 쪽이 **같은 경계**로 잘라야 하고,
 # 정의가 두 벌이면 갈린다(이 모듈이 두 번 깨진 그 클래스다).
-FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
 
 def card_body_hash(text: str) -> str | None:
