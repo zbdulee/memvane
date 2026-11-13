@@ -1,6 +1,7 @@
 """Actual sync owner consumes compiled evidence on an unchanged view."""
 from contextlib import closing
 import hashlib
+import copy
 import importlib.util
 from pathlib import Path
 import sqlite3
@@ -13,7 +14,7 @@ spec.loader.exec_module(rows)
 
 
 class Contract:
-    def test_unchanged_pass_consumes_intent_once(self):
+    def prepare_intent(self):
         import laya_blob_values as values
         import laya_ledger_common as ledger
         import wiki_verify_worker
@@ -50,6 +51,10 @@ class Contract:
         ledger._write(path, intent, replace=False)
         with closing(sqlite3.connect(self.store_path)) as db:
             before = db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0]
+        return head, trust, data, intent, path, before
+
+    def test_unchanged_pass_consumes_intent_once(self):
+        head, trust, data, intent, path, before = self.prepare_intent()
         result, _ = self.run_pass()
         self.assertEqual(result.get('provenance', {}).get('consumed'), 1)
         self.assertTrue(path.with_suffix('.consumed.json').is_file())
@@ -59,6 +64,78 @@ class Contract:
         self.assertEqual(result.get('provenance', {}).get('consumed', 0), 0)
         with closing(sqlite3.connect(self.store_path)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0], before + 1)
+
+    def test_tampered_parity_is_rejected_without_store_write(self):
+        import laya_ledger_common as ledger
+        head, trust, data, intent, path, before = self.prepare_intent()
+        intent['sourceFingerprints']['fingerprints'][0]['source_sha'] = 'b' * 64
+        ledger._write(path, intent, replace=True)
+        result, _ = self.run_pass()
+        self.assertEqual(result['provenance']['rejected'].get('provenance_parity_mismatch'), 1)
+        self.assertTrue(path.with_suffix('.rejected.json').is_file())
+        self.assertEqual(self.head(), head)
+        with closing(sqlite3.connect(self.store_path)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0], before)
+
+    def test_intent_with_absent_card_waits_without_write(self):
+        import laya_ledger_common as ledger
+        import wiki_verify_worker
+        head, trust, data, intent, path, before = self.prepare_intent()
+        path.unlink()
+        intent['cardSha'] = 'd' * 64
+        new_path = path.parent / ('compile-' + wiki_verify_worker._compile_intent_id(intent) + '.json')
+        ledger._write(new_path, intent, replace=False)
+        result, _ = self.run_pass()
+        self.assertEqual(result['provenance']['waiting'], 1)
+        self.assertTrue(new_path.is_file())
+        self.assertEqual(self.head(), head)
+        with closing(sqlite3.connect(self.store_path)) as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0], before)
+
+    def test_newer_consumed_supersedes_older_waiting(self):
+        import laya_ledger_common as ledger
+        import laya_blob_values as values
+        import wiki_verify_worker
+        head, trust, data, current, path, before = self.prepare_intent()
+        old = copy.deepcopy(current)
+        old['cardSha'] = 'd' * 64
+        old['sourceFingerprints']['scanId'] = '3' * 32
+        old['sourceFingerprints']['observedNs'] = 3
+        old['sourceFingerprints']['fingerprints'][0]['scan_id'] = '3' * 32
+        old['sourceFingerprints']['fingerprints'][0]['observed_ns'] = 3
+        old['result_digest'] = values.compile_result_digest({k:v for k,v in old.items() if k not in ('kind','verdict_digest','result_digest')}, old['verdict_digest'])
+        old_path = path.parent / ('compile-' + wiki_verify_worker._compile_intent_id(old) + '.json')
+        ledger._write(old_path, old, replace=False)
+        self.run_pass()
+        self.assertTrue(path.with_suffix('.consumed.json').is_file())
+        result, _ = self.run_pass()
+        self.assertTrue(old_path.with_suffix('.superseded.json').is_file())
+        self.assertFalse(old_path.exists())
+
+    def test_waiting_queue_rotates_to_valid_intent(self):
+        import laya_ledger_common as ledger
+        import wiki_verify_worker
+        head, trust, data, current, path, before = self.prepare_intent()
+        n = 0
+        added = 0
+        while added < 600:
+            n += 1
+            waiting = copy.deepcopy(current)
+            waiting['cardSha'] = hashlib.sha256(str(n).encode()).hexdigest()
+            name = 'compile-' + wiki_verify_worker._compile_intent_id(waiting) + '.json'
+            if name >= path.name:
+                continue
+            p = path.parent / name
+            p.write_bytes(ledger._canon(waiting)); p.chmod(0o600)
+            added += 1
+        consumed = 0
+        for _ in range(3):
+            result, _ = self.run_pass()
+            consumed += result['provenance']['consumed']
+            if consumed:
+                break
+        self.assertEqual(consumed, 1)
+        self.assertTrue(path.with_suffix('.consumed.json').is_file())
 
 
 class GenerationSync(Contract, rows.publish.Schema3SyncPublishChecks):
