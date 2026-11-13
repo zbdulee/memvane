@@ -59,7 +59,7 @@ from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
-from memvane.settings import config as qmd_config
+from memvane.settings.api import _config as qmd_config
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.engines import api as engines

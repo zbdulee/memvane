@@ -27,7 +27,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace import api as cp, types as ct
-from memvane.settings import config as qmd_config
+from memvane.settings.api import _config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
 
 VERDICT_VALUES = {"duplicate", "distinct", "unclear"}

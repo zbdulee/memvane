@@ -9,7 +9,7 @@ import subprocess
 
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.settings import config as qmd_config
+from memvane.settings.api import _config as qmd_config
 
 BUILTIN_EXTRACTOR_ENGINES = {"claude", "codex", "hermes"}
 MAX_ENGINE_COOLDOWN_SECS = qmd_cooldown.MAX_COOLDOWN_SECS

@@ -366,7 +366,7 @@ def notify(paths, *, cwd, host, origin):
 
 def drain(decision, *, recheck, owner=None):
     """Full-proof owner consumes current hints using existing compile policy."""
-    from memvane.settings import config
+    from memvane.settings.api import _config as config
     from memvane.journal import api as journal
     from memvane.wiki.intake import wiki_compile_enqueue as enqueue
     from memvane.wiki.workspace import api as wiki_selected_laya

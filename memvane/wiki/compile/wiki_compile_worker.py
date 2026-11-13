@@ -31,7 +31,7 @@ from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_a
     plan_engine_order, load_engine_cooldowns, cooling_engines,
     resolve_extractor_argv, run_extractor)
 from memvane.settings import api as project_dir
-from memvane.settings import config as qmd_config
+from memvane.settings.api import _config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import api as source_text
 from memvane.settings.api import select_collections

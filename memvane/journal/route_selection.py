@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import stat
 
-from memvane.settings import config
+from memvane.settings.api import _config as config
 from memvane.settings import api as project_dir, types as project_types
 from memvane.route.api import (canonical_absolute as _canonical_absolute,
     candidate_paths as _candidate_paths, classify_v4 as _classify_v4,

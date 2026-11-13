@@ -2,6 +2,17 @@
 from __future__ import annotations as _annotations
 
 from contextlib import contextmanager as _contextmanager
+from importlib import import_module as _import_module
+
+
+class _ConfigOperations:
+    """Settings configuration operations exposed through the domain API."""
+
+    def __getattr__(self, name):
+        return getattr(_import_module('memvane.settings.config'), name)
+
+
+_config = _ConfigOperations()
 
 
 def diagnostic_enabled(*args, **kwargs):

@@ -20,7 +20,7 @@ from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
-from memvane.settings import config as qmd_config
+from memvane.settings.api import _config as qmd_config
 from memvane.settings import api as source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import types as wiki_markers
