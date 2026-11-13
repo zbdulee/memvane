@@ -188,7 +188,6 @@ def _recover_manifest_link(install_id, parent, parent_fd, parent_info):
 
 def prepare_windows(installer):
     """Prepare locks, without claiming old owners or all writers are quiesced."""
-    R._installer(installer)
     endpoint, _scope = _owner(installer)
     record = endpoint.record
     row = L._read_v5_bundle(Path(record['state']) / 'install-journal.sqlite')
@@ -801,12 +800,10 @@ def _connection_binding(owner, db, *, cleanup=False):
     _pid, installer, scope, node, sealed_manifest = _component(owner.component)
     if cleanup:
         # Existing transaction completion grants no new write authority.
-        # Its independent lifetime and held locks survive mover revocation.
+        # Its independent lifetime and held locks survive scope revocation.
         # Require the originally issued namespace, main and journal instead
         # of reacquiring an already revoked writer scope.
-        import laya_writer_scope as normal
-        endpoint = (scope.endpoint if type(installer) is normal.NormalWriter
-                    else R._installer(installer))
+        endpoint = scope.endpoint
         R._need(scope.pid == os.getpid()
                 and R._node(scope.project) == scope.project_node
                 and R._node(scope.state) == scope.state_node,

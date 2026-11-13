@@ -182,26 +182,16 @@ def _readonly(path, state, *, recover=False):
         raise journal.JournalEvidenceError('reader_store_invalid') from exc
 
 
-def _selected_proof(state, project, executing_root, *, allow_drift):
+def _selected_proof(state, project, executing_root):
     import laya_fresh_wiki_origin as fresh
     state = _state(state)
-    project, executing_root = Path(project), Path(executing_root)
+    project = Path(project)
     decision = journal.select_route(str(project), action='recall')
-    try:
-        proof = journal.verify_selected_route(decision)
-    except Exception as exc:
-        if not allow_drift or not journal.is_bundle_drift(exc):
-            raise
-        proof = journal.verify_selected_route_read_only(decision)
-        _need(proof.get('readOnlyAllowed') is True and proof.get('productRouteAllowed') is False,
-              'reader_installer_unproved')
-    _need((proof.get('productRouteAllowed') is True or
-           (allow_drift and proof.get('readOnlyAllowed') is True))
-          and proof.get('executingPluginRoot') == str(executing_root)
+    proof = journal.verify_selected_route(decision)
+    _need(proof.get('productRouteAllowed') is True
           and proof['projectRoot'] == str(project) and proof['journalPath'] == str(state / _JOURNAL),
           'reader_installer_unproved')
-    if allow_drift:
-        proof = {**proof, 'readerDecision': decision}
+    proof = {**proof, 'readerDecision': decision}
     ledger = fresh._load(state / fresh.LEDGER)
     info = journal.inspect_journal(state / _JOURNAL)
     return state, project, decision, proof, ledger, info
@@ -293,19 +283,18 @@ def _schema3_store(state, project, proof, decision, db_path, worktree_id):
                 worktree_binding=tree[1], settings_policy_digest=meta[3])
 
 
-def _schema3_evidence(state, project, root, stored, *, allow_drift):
+def _schema3_evidence(state, project, root, stored):
     """Reprove installation identity and the schema3 store; no v6 store is opened.
 
     CAS-time facts (head_floor, parity, vector profile) are copied from the
     stored record; the floor is checked against the live head at query/CAS.
     """
-    state, project, decision, proof, ledger, info = _selected_proof(state, project, root,
-                                                                    allow_drift=allow_drift)
+    state, project, decision, proof, ledger, info = _selected_proof(state, project, root)
     return _schema3_record(state, project, decision, proof, ledger, info, stored)
 
 
 def _schema3_record(state, project, decision, proof, ledger, info, stored, *, sealed_attestation=None):
-    """Schema3 record after the caller proves the selection (also the fenced upgrade proof)."""
+    """Schema3 record after the caller proves the selection."""
     _install_checks(state, project, decision, proof, ledger, info)
     raw = _attestation(state, ledger, sealed_attestation)
     store = _schema3_store(state, project, proof, decision, stored['db_path'], stored['worktree_id'])
@@ -399,127 +388,13 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
         store.close()
 
 
-def _successor_chain(db, endpoint_id, stored, target_sha, target_identity, *, max_epoch, fenced=False):
-    """Validate immutable, activation-committed provider successors for one endpoint."""
-    _need(db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_successors'").fetchone(),
-          'reader_successor_missing')
-    current_sha, identity, last_epoch = stored['attestation_sha256'], None, 0
-    previous_item = None
-
-    def restored_predecessor(item, before_epoch):
-        # Restore seals are committed before a supported rollback changes the
-        # journal. They bind the exact activation, predecessor and epoch.
-        for seal_endpoint, packed in db.execute(
-                'SELECT endpoint_id,record FROM upgrade_read_seals WHERE endpoint_id=?', (endpoint_id,)):
-            seal = json.loads(packed, object_pairs_hook=journal._pairs,
-                              parse_constant=journal._nonfinite)
-            if type(seal) is not dict or seal.get('schema') != 'memvane-upgrade-restore-v1':
-                continue
-            source = seal.get('journalBefore')
-            if (seal_endpoint == endpoint_id and _raw(seal).decode('utf8') == packed
-                    and seal.get('endpointId') == endpoint_id
-                    and seal.get('intentSha256') == item['intentSha256']
-                    and type(source) is dict and source.get('state') == 'active'
-                    and source.get('newWriteSeen') is False
-                    and type(source.get('epoch')) is int
-                    and item['epoch'] <= source['epoch'] < before_epoch
-                    and source.get('selected') == item['toIdentity']
-                    and source.get('previous') == item['fromIdentity']
-                    and source.get('providerAttestationSha256') == item['toAttestation']
-                    and source.get('previousProviderAttestationSha256') == item['fromAttestation']):
-                return True
-        return False
-
-    rows = db.execute('SELECT epoch,intent_sha256,record FROM upgrade_read_successors '
-                      'WHERE endpoint_id=? ORDER BY epoch', (endpoint_id,)).fetchall()
-    if fenced:
-        rows = [row for row in rows if row[0] <= max_epoch]
-    for epoch, intent_sha, packed in rows:
-        item = json.loads(packed, object_pairs_hook=journal._pairs, parse_constant=journal._nonfinite)
-        if (type(item) is dict and previous_item is not None
-                and (item.get('fromAttestation') != current_sha or item.get('fromIdentity') != identity)):
-            _need(item.get('fromAttestation') == previous_item['fromAttestation']
-                  and item.get('fromIdentity') == previous_item['fromIdentity']
-                  and restored_predecessor(previous_item, epoch), 'reader_successor_invalid')
-            current_sha, identity = item['fromAttestation'], item['fromIdentity']
-        _need(type(item) is dict and _raw(item).decode('utf8') == packed and
-              set(item) == {'schema','intentSha256','endpointId','epoch','fromAttestation',
-                            'toAttestation','fromIdentity','toIdentity'} and
-              item['schema'] == 'memvane-reader-successor-v1' and item['intentSha256'] == intent_sha and
-              item['endpointId'] == endpoint_id and item['epoch'] == epoch and
-              type(item['fromIdentity']) is dict and type(item['toIdentity']) is dict and
-              type(epoch) is int and last_epoch < epoch <= max_epoch and
-              item['fromAttestation'] == current_sha and
-              (identity is None or item['fromIdentity'] == identity), 'reader_successor_invalid')
-        seal_row = db.execute('SELECT endpoint_id,record FROM upgrade_read_seals WHERE intent_sha256=?',
-                              (intent_sha,)).fetchone()
-        _need(seal_row is not None and seal_row[0] == endpoint_id, 'reader_successor_invalid')
-        from laya_active_upgrade import _reader_seal
-        seal = _reader_seal(db, intent_sha, endpoint_id)
-        source = (seal.get('recovery',{}).get('journalBefore')
-                  if type(seal) is dict and seal.get('schema') == 'memvane-upgrade-reader-v2'
-                  else seal.get('journalBefore') if type(seal) is dict else None)
-        _need(type(seal) is dict and type(source) is dict and
-              type(source.get('epoch')) is int and
-              _raw(seal).decode('utf8') == seal_row[1] and
-              seal.get('intentSha256') == intent_sha and seal.get('endpointId') == endpoint_id and
-              source.get('selected') == item['fromIdentity'] and
-              source.get('providerAttestationSha256') == current_sha and
-              source.get('epoch') + 2 == epoch and
-              item['toIdentity'].get('installId') == stored['install_id'] and
-              item['toIdentity'].get('vectorProfile',{}).get('profileId') == stored['profile'] and
-              type(item['toAttestation']) is str and journal.SHA.fullmatch(item['toAttestation']),
-              'reader_successor_invalid')
-        if seal.get('schema') in ('memvane-upgrade-reader-v2','memvane-upgrade-reader-retarget-v1'):
-            _need(seal['targetIdentity'] == item['toIdentity'] and
-                  seal['targetAttestationSha256'] == item['toAttestation'] and
-                  (seal['schema'] != 'memvane-upgrade-reader-v2' or
-                   seal['recovery'].get('mode') == 'switch'), 'reader_successor_invalid')
-        current_sha, identity, last_epoch = item['toAttestation'], item['toIdentity'], epoch
-        previous_item = item
-    if rows and (current_sha != target_sha or identity != target_identity):
-        # A supported rollback restores the immediately preceding bundle while
-        # the immutable receipt for the reverted activation remains present.
-        # Validate the complete forward chain above before accepting that exact
-        # predecessor and only when the live journal proves the restoration.
-        row = journal._row(db)
-        selected_restored = (row['state'] in ('restored_old', 'pending')
-                             and row['selected'] == row['previous'] == target_identity
-                             and row['provider_attestation_sha'] == target_sha)
-        activating = (row['state'] == 'active' and row['epoch'] == max_epoch + 1
-                      and row['previous'] == target_identity
-                      and row['previous_provider_attestation_sha'] == target_sha)
-        _need((selected_restored or activating or fenced) and row['epoch'] > last_epoch
-              and item['fromAttestation'] == target_sha
-              and item['fromIdentity'] == target_identity
-              and restored_predecessor(item, max_epoch),
-              'reader_successor_unproved')
-        return
-    _need(rows and current_sha == target_sha and identity == target_identity, 'reader_successor_unproved')
-
-
-def _attestation_step(db, endpoint_id, stored, raw):
-    """The live journal selects ``raw`` at the end of ``endpoint_id``'s sealed successor chain.
-
-    ``stored`` (the endpoint's record) carries an earlier bundle's attestation:
-    a bundle upgrade left it there and reads follow the chain.
-    """
-    row = journal._row(db)
-    _need(row['state'] in ('active','restored_old') and row['pending'] is None and
-          row['provider_attestation_sha'] == _sha(raw), 'reader_successor_unproved')
-    _successor_chain(db, endpoint_id, stored, _sha(raw), row['selected'], max_epoch=row['epoch'])
-
-
 def _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof):
     _preserve_node_devices(stored, current)
     if 'legacy_sidecar_baseline' in stored:
         current['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
     _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
     current['creation_epoch'] = stored['creation_epoch']
-    if raw != attestation:
-        current['attestation_sha256'] = stored['attestation_sha256']
-        with _readonly(Path(state) / _JOURNAL, Path(state)) as db:
-            _attestation_step(db, endpoint_id, stored, raw)
+    _need(raw == attestation, 'reader_endpoint_changed')
     packed = _raw(current)
     _need(packed == _raw(stored) and _sha(attestation) == stored['attestation_sha256'] and
           endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed), 'reader_endpoint_changed')
@@ -534,7 +409,7 @@ def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
           and stored['creation_epoch'] >= 1 and stored.get('store_format') == 'schema3',
           'reader_endpoint_invalid')
     options = {}
-    current, raw, proof = _schema3_evidence(state, project, root, stored, allow_drift=True)
+    current, raw, proof = _schema3_evidence(state, project, root, stored)
     packed = _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof)
     token = object.__new__(VerifiedEndpoint)
     object.__setattr__(token, 'endpoint_id', endpoint_id)
@@ -556,8 +431,7 @@ def _recheck(endpoint):
     _check_reader_scope(endpoint)
     state, project, root, options, packed, raw = _issued[endpoint]
     saved = json.loads(packed)
-    record, attestation, proof = _schema3_evidence(state, project, root, saved,
-                                                   allow_drift=endpoint in _read_only)
+    record, attestation, proof = _schema3_evidence(state, project, root, saved)
     _need(_match_persisted(state, endpoint.endpoint_id, saved, raw, record, attestation, proof) == packed,
           'reader_endpoint_changed')
     return saved, raw, proof
@@ -729,7 +603,7 @@ def _resettle_inputs(state, project, executing_root):
                                     (selected.preferred_endpoint,)).fetchone()
     if stored.get('store_format') != 'schema3':
         return None
-    current, raw, proof = _schema3_evidence(path.parent, project, executing_root, stored, allow_drift=False)
+    current, raw, proof = _schema3_evidence(path.parent, project, executing_root, stored)
     _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
     current['creation_epoch'] = stored['creation_epoch']
     return path, selected, stored, attestation, current, raw, proof
@@ -738,10 +612,6 @@ def _resettle_inputs(state, project, executing_root):
 def settings_resettle_pending(state, project, executing_root) -> bool:
     """The selected schema3 record differs from the install only in its recall settings.
 
-    A record a bundle upgrade left on its predecessor attestation may differ
-    in that attestation too, when the successor chain proves the step. That
-    is the difference the sync owner re-seals (``resettle_selection``);
-    until it does, the persisted reader refuses with ``reader_endpoint_changed``.
     Read-only and authority-free: a recall uses it only to answer without
     context instead of with an error. Any other difference, or a failed
     proof, is False.
@@ -755,8 +625,7 @@ def settings_resettle_pending(state, project, executing_root) -> bool:
                 and {k for k in stored if stored[k] != current[k]} - _RESETTLED_WITH == {'settings'}):
             return False
         if raw != attestation:
-            with _readonly(path, path.parent) as db:
-                _attestation_step(db, selected.preferred_endpoint, stored, raw)
+            return False
         return True
     except Exception:
         return False
@@ -770,12 +639,8 @@ def resettle_selection(state, project, executing_root):
     without a vector spec adopts the main head's spec once the owner has
     published a vector generation of the install provider's spec. When the
     result differs from the stored record only as ``resettled_pair`` allows,
-    one journal image transaction selects the re-sealed record. A record a
-    bundle upgrade left on its predecessor attestation is re-sealed with the
-    current one only when that transaction proves the step on the
-    endpoint's sealed successor chain (``_attestation_step``, as a persisted
-    read does); an unproved step raises and writes nothing. Returns
-    ``'resealed'`` or ``'unchanged'``; any other difference is left for the reader to refuse (``reader_endpoint_changed``).
+    one journal image transaction selects the re-sealed record. The selected
+    attestation must match. Returns ``'resealed'`` or ``'unchanged'``.
     Recall itself never re-seals.
     """
     import time
@@ -796,8 +661,7 @@ def resettle_selection(state, project, executing_root):
         now, record = _selection(db)
         _need(now.preferred_endpoint == selected.preferred_endpoint and now.epoch == selected.epoch
               and record == stored, 'stale_reader_cas')
-        if raw != attestation:
-            _attestation_step(db, now.preferred_endpoint, record, raw)
+        _need(raw == attestation, 'reader_endpoint_changed')
         transition = _sha(b'memvane-reader-resettle-v1\0' + endpoint_id.encode('ascii')
                           + str(now.epoch).encode('ascii'))[:32]
         _need(not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
@@ -844,7 +708,6 @@ def mutate_image(journal_path, operation, *, before_replace=None):
     with _readonly(path, path.parent) as before:
         _, record = _selection(before)
     with _transition(record['install_id']) as lockfd:
-        _need(not os.path.lexists(path.parent / journal._INITIAL_INTENT), 'initial_conversion_unsettled')
         image = path.with_name('.reader-next.sqlite')
         _discard_staging(lockfd, image)
         for suffix in ('', '-journal', '-wal', '-shm'):

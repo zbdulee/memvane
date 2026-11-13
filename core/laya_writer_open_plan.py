@@ -146,9 +146,8 @@ def _snapshot(project, executing_root):
             attestation, attestation_sha = J._attestation(path)
             R._need(attestation is not None and attestation_sha == bundle['provider_attestation_sha'],
                     'writer_plan_attestation_changed')
-            if attestation_sha != record['attestation_sha256']:
-                R._successor_chain(db, selection.preferred_endpoint, record, attestation_sha,
-                                   bundle['selected'], max_epoch=bundle['epoch'])
+            R._need(attestation_sha == record['attestation_sha256'],
+                    'writer_plan_attestation_changed')
         store_format = record['store_format']
         R._need(bundle['state'] in ('active', 'restored_old') and bundle['pending'] is None
                 and ((store_format == 'v6' and record['capability'] == 'v6-ro-v1')
@@ -156,9 +155,7 @@ def _snapshot(project, executing_root):
                          and record['checkout_policy'] == 'selected-main-schema3-v1')),
                 'writer_selection_unavailable')
         selected = bundle['selected']
-        R._need(type(selected) is dict and selected['bundleKind'] == 'full_plugin'
-                and selected['pluginRoot'] == str(root) == decision['pluginRoot'],
-                'writer_bundle_unavailable')
+        R._need(type(selected) is dict, 'writer_selection_unavailable')
         R._need(record['install_id'] == selected['installId'] == decision['installId']
                 and J.ID.fullmatch(record['install_id']) is not None
                 and record['scope'] == bundle['scope_id'] == decision['scopeId']
