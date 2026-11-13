@@ -244,6 +244,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/kernel/paths.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/kernel/persistent_identity.py": {
       "context": "kernel",
       "layer": "adapter",
@@ -687,6 +692,11 @@
     "memvane/registry/memvane_registry.py": {
       "context": "registry",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/registry/types.py": {
+      "context": "registry",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/resident/__init__.py": {

@@ -42,7 +42,7 @@ import time
 
 SCHEMA = 'memvane-project-registry-v1'
 # Inside the existing per-user ``auto-context`` entry of the state base: an
-# older bundle counts at most ``laya_external_edits.MAX_STATE_ENTRIES`` state
+# older bundle counts at most ``registry.types.MAX_STATE_ENTRIES`` state
 # base entries before its install-name filter, so the registry adds none.
 PARENT = 'auto-context'
 DIRECTORY = 'registry'
@@ -193,7 +193,7 @@ def _directory(home, create):
         if name == PARENT and create and not os.path.lexists(cursor):
             # Creating it is one more state base entry: never past the
             # older bundles' entry limit.
-            from memvane.wiki.intake.external_edits import MAX_STATE_ENTRIES
+            from memvane.registry.types import MAX_STATE_ENTRIES
             if len(os.listdir(parent)) >= MAX_STATE_ENTRIES:
                 _fail('registry_state_base_full')
         _owned_dir(cursor, create=create, private=name == DIRECTORY)
@@ -356,13 +356,13 @@ def _home_install(state, home):
 
 def _canonical(path):
     """``path`` in the file system's spelling, through its nearest existing directory."""
-    from memvane.host import onboarding_choice
+    from memvane.kernel.paths import canonical
     current = Path(os.path.abspath(path))
     rest = []
     while not current.is_dir() and current.parent != current:
         rest.append(current.name)
         current = current.parent
-    return Path(onboarding_choice.canonical(current), *reversed(rest))
+    return Path(canonical(current), *reversed(rest))
 
 
 def _within(root, path):
