@@ -223,7 +223,7 @@ def deferred_result(exc):
 
 
 
-def _queue_busy(queue: Path):
+def _queue_busy(queue: Path, *, receipt_writer=None):
     """True if ``queue`` holds rows or a live claim, decided under its lock.
 
     Dead-owner ``<queue>.claimed.*`` rows are requeued first. Claim presence and
@@ -239,7 +239,7 @@ def _queue_busy(queue: Path):
     with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            reclaim_orphaned_claimed(queue)
+            reclaim_orphaned_claimed(queue, receipt_writer=receipt_writer)
             if any(child.name.startswith(prefix) for child in queue.parent.iterdir()):
                 return True
             return bool(queue.exists() and queue.stat().st_size)

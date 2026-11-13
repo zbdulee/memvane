@@ -140,4 +140,5 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
         item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
     if active_unresolved:
         return False
-    return not (_queue_busy(source) | _queue_busy(verify))
+    from memvane.wiki.intake.api import write_discard_receipt
+    return not (_queue_busy(source, receipt_writer=write_discard_receipt) | _queue_busy(verify))

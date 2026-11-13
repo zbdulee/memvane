@@ -40,7 +40,7 @@ def _is_pid_alive(pid: int) -> bool:
         return False
 
 
-def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue_count: int):
+def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue_count: int, *, receipt_writer=None):
     # 이 원장은 claim_queue 경로에서 쓰여 config 컨텍스트가 없으므로 이름을 고정한다
     ledger_path = compile_dir / cp.DISCARD_LEDGER
     source_obj = job.get("source")
@@ -73,8 +73,9 @@ def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue
         "requeue_count": requeue_count,
     }
     if queue_name == cp.SOURCE_QUEUE:
-        from memvane.wiki.intake import api as laya_wiki_backfill
-        receipt = laya_wiki_backfill.write_discard_receipt(job)
+        if receipt_writer is None:
+            raise ValueError('backfill_discard_authority_unavailable')
+        receipt = receipt_writer(job)
         if receipt is not None:
             payload['backfillReceipt'] = receipt
     # Audit framing is not authoritative. A torn append cannot strand a cohort:
@@ -82,7 +83,7 @@ def _write_discard_ledger(compile_dir: Path, queue_name: str, job: dict, requeue
     append_jsonl(ledger_path, payload)
 
 
-def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT):
+def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT, *, receipt_writer=None):
     """
     고아 *.claimed.* 파일들을 감지하여 원본 큐(path)로 requeue 하거나,
     requeue 횟수가 max_requeue 초과시 폐기하고 원장에 남긴다.
@@ -149,7 +150,7 @@ def reclaim_orphaned_claimed(path: Path, max_requeue: int = MAX_REQUEUE_COUNT):
                         # 큐가 영구 wedge되는 것을 막고, 다음 회차에서 수렴하여 MAX_REQUEUE_COUNT 도달 시 정리를 보장함.
                         req_cnt = 1
                     if req_cnt > max_requeue:
-                        _write_discard_ledger(path.parent, path.name, data, req_cnt)
+                        _write_discard_ledger(path.parent, path.name, data, req_cnt, receipt_writer=receipt_writer)
                     else:
                         data["_requeue_count"] = req_cnt
                         lines_to_requeue.append(json.dumps(data, ensure_ascii=False))
@@ -194,13 +195,13 @@ def read_queue(path: Path):
     return rows
 
 
-def claim_queue(path: Path) -> Path | None:
+def claim_queue(path: Path, *, receipt_writer=None) -> Path | None:
     claimed = path.with_name(f"{path.name}.claimed.{os.getpid()}.{uuid.uuid4().hex}")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            reclaim_orphaned_claimed(path)
+            reclaim_orphaned_claimed(path, receipt_writer=receipt_writer)
             if not path.exists():
                 return None
             try:

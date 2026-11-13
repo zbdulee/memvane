@@ -1690,10 +1690,10 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
                  selected_route) -> int:
     recover_pending_refreshes(root, config, queue)
 
-    claimed = claim_queue(queue)
+    from memvane.wiki.intake import api as laya_wiki_backfill
+    claimed = claim_queue(queue, receipt_writer=laya_wiki_backfill.write_discard_receipt)
     # Reaping holds the source-queue lock. ACK outside it to preserve discovery
     # -> enqueue lock order, including the empty-queue/crash-recovery path.
-    from memvane.wiki.intake import api as laya_wiki_backfill
     laya_wiki_backfill.reconcile_discards(selected_route)
     if claimed is None:
         if selected_route is not None:
