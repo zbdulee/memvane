@@ -133,7 +133,7 @@ def log(message: str) -> None:
 
 
 def snapshot_path(project_key: str) -> Path:
-    from memvane.wiki.workspace import scan_state
+    from memvane.wiki.workspace import api as scan_state
     return scan_state.state_dir() / f"{project_key}-wiki-dedup.json"
 
 
@@ -250,7 +250,7 @@ def run(cwd: str) -> dict:
     from memvane.wiki.workspace import api as cp, types as ct
     from memvane.settings import api as project_dir
     from memvane.settings import config as qmd_config
-    from memvane.wiki.workspace import scan_state
+    from memvane.wiki.workspace import api as scan_state
     from memvane.wiki.workspace import api as wiki_selected_laya
 
     result = {"state": "skipped", "cards": 0, "compared": 0, "queued": 0,

@@ -1528,7 +1528,7 @@ def main() -> int:
         return _compile_locked(root, config, compile_cfg, mode, wiki_root, candidate,
                                args.regenerate, check=True)
     wiki_root = safe_managed_dir(root, wiki_rel)
-    compile_dir = safe_managed_dir(root, cp.compile_rel(root))
+    compile_dir = safe_managed_dir(root, project_dir.compile_rel(root))
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1

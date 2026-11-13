@@ -32,11 +32,6 @@ def ledger(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def compile_rel(*args, **kwargs):
-    from memvane.settings.api import compile_rel as implementation
-    return implementation(*args, **kwargs)
-
-
 def try_compile_run_lock(*args, **kwargs):
     from memvane.wiki.workspace.compile_paths import try_compile_run_lock as implementation
     return implementation(*args, **kwargs)
@@ -84,11 +79,6 @@ def claim_queue(*args, **kwargs):
     from memvane.wiki.workspace.queue import claim_queue as implementation
     return implementation(*args, **kwargs)
 
-
-
-def reclaim_orphaned_claimed(*args, **kwargs):
-    from memvane.wiki.workspace.queue import reclaim_orphaned_claimed as implementation
-    return implementation(*args, **kwargs)
 
 
 def request_lifecycle(*args, **kwargs):
@@ -139,4 +129,24 @@ def queue_busy(*args, **kwargs):
 
 def deferred_result(*args, **kwargs):
     from memvane.wiki.workspace.wiki_selected_laya import deferred_result as implementation
+    return implementation(*args, **kwargs)
+
+
+def state_dir(*args, **kwargs):
+    from memvane.wiki.workspace.scan_state import state_dir as implementation
+    return implementation(*args, **kwargs)
+
+
+def project_key(*args, **kwargs):
+    from memvane.wiki.workspace.scan_state import project_key as implementation
+    return implementation(*args, **kwargs)
+
+
+def read_state(*args, **kwargs):
+    from memvane.wiki.workspace.scan_state import read_state as implementation
+    return implementation(*args, **kwargs)
+
+
+def write_state_atomic(*args, **kwargs):
+    from memvane.wiki.workspace.scan_state import write_state_atomic as implementation
     return implementation(*args, **kwargs)

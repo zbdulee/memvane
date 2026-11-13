@@ -96,7 +96,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.settings import config as qmd_config
 from memvane.kernel import memvane_paths
-from memvane.wiki.workspace import scan_state
+from memvane.wiki.workspace import api as scan_state
 from memvane.settings import api as source_text
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import wiki_source_missing as wsm

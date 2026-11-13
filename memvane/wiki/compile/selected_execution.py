@@ -58,14 +58,14 @@ def _run(project: Path):
     bound = selected(project)
     if bound is None or bound[0]['projectRoot'] != str(project):
         return {'state': 'deferred', 'reason': 'selected_compile_route_unavailable'}
-    from memvane.wiki.workspace.queue_paths import _safe_queue_path
+    from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path
     from memvane.wiki.workspace import api as cp, types as ct
     source = _safe_queue_path(project, cp.rel(ct.SOURCE_QUEUE))
     verify = _safe_queue_path(project, cp.rel(ct.VERIFY_QUEUE))
     if source is None or verify is None:
         return {'state': 'deferred', 'reason': 'unsafe_compile_queues'}
     from memvane.wiki.lifecycle import api as wiki_lifecycle_request
-    from memvane.wiki.workspace.lifecycle_requests import claim as claim_lifecycle
+    from memvane.wiki.workspace.api import claim_lifecycle
     try:
         lifecycle = claim_lifecycle(project)
     except (OSError, ValueError):
