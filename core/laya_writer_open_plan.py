@@ -89,12 +89,13 @@ def _schema3_store(record, state, decision):
 
     One query_only connection reads ``store_meta`` and the main worktree row;
     ``laya_blob_store`` validates header, schema and worktree evidence. The
-    store is never the route's v6 ``dbPath``.
+    store is the route's single ``storePath``.
     """
     import laya_blob_store as blobs
     import laya_blob_values as values
     path = Path(record['db_path'])
-    R._need(path.is_absolute() and str(path) != decision['dbPath'], 'writer_plan_store_changed')
+    R._need(path.is_absolute() and str(path) == decision.get('storePath'),
+            'writer_plan_store_changed')
     node = R._file(path, state)
     R._need(R.persistent_node_equal(record['db_node'], node), 'writer_plan_store_changed')
     # Plans are captured and validated under the queue owner: this read may

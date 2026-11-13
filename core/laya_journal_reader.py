@@ -263,7 +263,8 @@ def _schema3_shape(record):
 def _schema3_store(state, project, proof, decision, db_path, worktree_id):
     """Current store identity of one private schema3 store and its main worktree."""
     path = Path(db_path)
-    _need(path.is_absolute() and str(path) != decision['dbPath'], 'reader_store_path_invalid')
+    _need(path.is_absolute() and str(path) == decision.get('storePath'),
+          'reader_store_path_invalid')
     node = _file(path, state)
     with _readonly(path, state) as db:
         meta = db.execute('SELECT incarnation,scope_id,repository_json,settings_policy_digest '
