@@ -39,11 +39,9 @@ SCHEMA3_POLICY = 'selected-main-schema3-v1'
 # query resolves the view head and checks it against head_floor.
 _SCHEMA3_STORE = ('store_format', 'capability', 'checkout_policy', 'incarnation', 'db_path', 'db_node',
                   'repository_digest', 'worktree_id', 'worktree_binding', 'settings_policy_digest',
-                  'vector_profile', 'vector_recipe', 'head_floor', 'parity', 'creation_epoch')
+                  'vector_profile', 'vector_recipe', 'head_floor', 'creation_epoch')
 _SCHEMA3_KEYS = frozenset(INSTALL_IDENTITY + _SCHEMA3_STORE)
 _FLOOR_KEYS = frozenset(('view_id', 'epoch', 'ordinal'))
-PARITY_KEYS = ('migration_id', 'generation', 'digest')
-_RECEIPT_KEYS = frozenset(PARITY_KEYS + ('candidate', 'candidate_incarnation'))
 
 
 # Endpoint record fields holding ``[st_dev, st_ino]``. APFS renumbers devices
@@ -239,8 +237,7 @@ def _schema3_shape(record):
     """Exact persisted schema3 record shape; no store is opened."""
     try:
         from laya_blob_values import SHA, UUID
-        from laya_view_values import GEN_ID
-        floor, parity, node = record['head_floor'], record['parity'], record['db_node']
+        floor, node = record['head_floor'], record['db_node']
         return (set(record) == _SCHEMA3_KEYS and record['capability'] == SCHEMA3_CAPABILITY
                 and record['checkout_policy'] == SCHEMA3_POLICY
                 and all(type(record[k]) is str and SHA.fullmatch(record[k]) for k in
@@ -253,14 +250,11 @@ def _schema3_shape(record):
                 and all(type(n) is int for n in node)
                 and ((record['vector_profile'] is None and record['vector_recipe'] is None) or
                      (type(record['vector_profile']) is str and type(record['vector_recipe']) is str))
-                and isinstance(floor, (dict, MappingProxyType)) and set(floor) == _FLOOR_KEYS
-                and type(floor['view_id']) is str and SHA.fullmatch(floor['view_id'])
-                and type(floor['epoch']) is int and floor['epoch'] >= 1
-                and type(floor['ordinal']) is int and floor['ordinal'] >= 1
-                and isinstance(parity, (dict, MappingProxyType)) and set(parity) == set(PARITY_KEYS)
-                and type(parity['migration_id']) is str and journal.ID.fullmatch(parity['migration_id'])
-                and type(parity['generation']) is str and GEN_ID.fullmatch(parity['generation'])
-                and type(parity['digest']) is str and SHA.fullmatch(parity['digest'])
+                and (floor is None or (isinstance(floor, (dict, MappingProxyType))
+                     and set(floor) == _FLOOR_KEYS
+                     and type(floor['view_id']) is str and SHA.fullmatch(floor['view_id'])
+                     and type(floor['epoch']) is int and floor['epoch'] >= 1
+                     and type(floor['ordinal']) is int and floor['ordinal'] >= 1))
                 and type(record['creation_epoch']) is int and record['creation_epoch'] >= 1)
     except (KeyError, TypeError):
         return False
@@ -286,7 +280,7 @@ def _schema3_store(state, project, proof, decision, db_path, worktree_id):
 def _schema3_evidence(state, project, root, stored):
     """Reprove installation identity and the schema3 store; no v6 store is opened.
 
-    CAS-time facts (head_floor, parity, vector profile) are copied from the
+    CAS-time facts (head_floor and vector profile) are copied from the
     stored record; the floor is checked against the live head at query/CAS.
     """
     state, project, decision, proof, ledger, info = _selected_proof(state, project, root)
@@ -304,7 +298,7 @@ def _schema3_record(state, project, decision, proof, ledger, info, stored, *, se
                   settings=_sha(_raw(decision['recallSettings'])), roots=decision['collections'],
                   store_format='schema3', capability=SCHEMA3_CAPABILITY, checkout_policy=SCHEMA3_POLICY,
                   vector_profile=stored['vector_profile'], vector_recipe=stored['vector_recipe'],
-                  head_floor=_plain(stored['head_floor']), parity=_plain(stored['parity']), **store)
+                  head_floor=_plain(stored['head_floor']), **store)
     return _preserve_node_devices(stored, record), raw, proof
 
 
