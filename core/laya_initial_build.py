@@ -275,17 +275,11 @@ def create_or_verify(identity):
     return stored
 
 
-def _pointer_dir(create, *, legacy=False):
-    """``~/.local/state/memvane/initial-builds``, created 0700 only if asked.
-
-    ``legacy`` names the directory earlier releases used; it is read (and
-    retired from) but never created.
-    """
+def _pointer_dir(create):
+    """Return the private initial-build pointer directory."""
     import memvane_paths
-    if legacy and create:
-        _fail('initial_build_pointer_legacy_create')
     cursor = Path.home()
-    parts = memvane_paths.LEGACY_STATE_PARTS if legacy else memvane_paths.STATE_PARTS
+    parts = memvane_paths.STATE_PARTS
     for name in (*parts, POINTERS):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
@@ -300,14 +294,13 @@ def _pointer_dir(create, *, legacy=False):
 
 
 def _pointer_dirs():
-    """Existing pointer directories, current first, then the legacy one."""
-    return [directory for directory in (_pointer_dir(create=False),
-                                        _pointer_dir(create=False, legacy=True))
-            if directory is not None]
+    """Return the current pointer directory when it exists."""
+    directory = _pointer_dir(create=False)
+    return [directory] if directory is not None else []
 
 
 def registered_pointer_path(project_root):
-    """Path of the project's existing pointer (current directory first), or None."""
+    """Path of the project's existing pointer, or None."""
     for directory in _pointer_dirs():
         path = pointer_path(project_root, directory)
         if path.exists() or path.is_symlink():
@@ -325,14 +318,6 @@ def register_project(identity):
     _validate_identity(identity)
     pointer = {'schema': POINTER_SCHEMA, 'projectRoot': identity['projectRoot'],
                'stateRoot': identity['stateRoot'], 'installId': identity['installId']}
-    legacy = _pointer_dir(create=False, legacy=True)
-    if legacy is not None:
-        earlier = pointer_path(identity['projectRoot'], legacy)
-        prior = _read_json(earlier)
-        if prior is not None:
-            if prior != pointer:
-                _fail('initial_build_already_registered')
-            return str(earlier)
     path = pointer_path(identity['projectRoot'], _pointer_dir(create=True))
     existing = _read_json(path)
     if existing is None:
