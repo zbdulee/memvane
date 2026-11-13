@@ -1793,14 +1793,10 @@ class RowsMixin:
     def _eligible_members(self, gen_id, *, after=None, limit=None):
         """``[(path, blob_sha)]`` of a generation's eligible cards in path order, either format."""
         with self._joined_session() as db:
-            if not self._rows:
-                sql = 'SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1'
-                args = [gen_id]
-            else:
-                view_id, ordinal = self._generation_rows_at(db, gen_id)
-                sql = ('SELECT path,blob_sha FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
-                       'AND (gen_to IS NULL OR gen_to>?)')
-                args = [view_id, ordinal, ordinal]
+            view_id, ordinal = self._generation_rows_at(db, gen_id)
+            sql = ('SELECT path,blob_sha FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
+                   'AND (gen_to IS NULL OR gen_to>?)')
+            args = [view_id, ordinal, ordinal]
             if after is not None:
                 sql += ' AND path>?'
                 args.append(after)
@@ -1812,9 +1808,6 @@ class RowsMixin:
 
     def _eligible_count(self, gen_id):
         with self._joined_session() as db:
-            if not self._rows:
-                return db.execute('SELECT COUNT(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
-                                  (gen_id,)).fetchone()[0]
             view_id, ordinal = self._generation_rows_at(db, gen_id)
             return db.execute('SELECT COUNT(*) FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
                               'AND (gen_to IS NULL OR gen_to>?)', (view_id, ordinal, ordinal)).fetchone()[0]
@@ -1822,10 +1815,6 @@ class RowsMixin:
     def _eligible_member_after(self, gen_id, after):
         """``(path, blob_sha, title)`` of the first eligible card after ``after`` in binary order, or None."""
         with self._joined_session() as db:
-            if not self._rows:
-                return db.execute('SELECT path,blob_sha,display_title FROM wiki_members '
-                                  'WHERE gen_id=? AND eligible=1 AND path>? ORDER BY path COLLATE BINARY LIMIT 1',
-                                  (gen_id, after)).fetchone()
             view_id, ordinal = self._generation_rows_at(db, gen_id)
             row = db.execute('SELECT path,blob_sha,title FROM s_cards WHERE view_id=? AND eligible=1 AND gen_from<=? '
                              'AND (gen_to IS NULL OR gen_to>?) AND path>? ORDER BY path COLLATE BINARY LIMIT 1',
@@ -1835,12 +1824,6 @@ class RowsMixin:
     def _prepared_stage(self, gen_id, handle):
         """The base head (and legacy marker) of a prepared or published generation, either format."""
         with self._joined_session() as db:
-            if not self._rows:
-                row = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
-                                 'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (gen_id,)).fetchone()
-                if row is None:
-                    v.fail('generation_missing')
-                return vals.check_stage(v.parse_canonical(row['stage_json']), handle, self._incarnation)
             published = db.execute('SELECT g.view_id,g.epoch,p.gen_id FROM s_generations g LEFT JOIN s_generations p '
                                    'ON p.view_id=g.view_id AND p.ordinal=g.prior_ordinal WHERE g.gen_id=?',
                                    (gen_id,)).fetchone()

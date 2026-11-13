@@ -1160,8 +1160,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         cold = head['gen_id'] is None
         with store._session() as db:
             row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
-            baseline = (_schema3_rows_baseline if store._rows else _schema3_generation_baseline)(
-                store, db, handle, head)
+            baseline = _schema3_rows_baseline(store, db, handle, head)
         old, carry = baseline['old'], baseline['carry']
         if row is None or (binding is not None and row['binding_digest'] != binding):
             v.fail('wiki_binding_changed')
@@ -1202,13 +1201,9 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 # views keep the pass deadline (``_publish_schema3``).
                 deadline = max(deadline, time.monotonic() + SCHEMA3_VECTOR_SECONDS)
             sealed = baseline['vector_spec']
-            if store._rows:
-                # Row heads fill their own eligible cards; the manifest is built only to publish.
-                vector = _schema3_vectors(store, writer, proof, marks, handle, None, sealed, vectors, deadline,
-                                          window=window)
-            else:
-                vector = _schema3_vectors(store, writer, proof, marks, handle, baseline['manifest'], sealed,
-                                          vectors, deadline, window=window)
+            # Row heads fill their own eligible cards; the manifest is built only to publish.
+            vector = _schema3_vectors(store, writer, proof, marks, handle, None, sealed, vectors, deadline,
+                                      window=window)
             if vector['state'] != 'complete':
                 return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
                         'vector': vector, 'provenance': provenance}
@@ -1269,14 +1264,11 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                         complete=True, sources=sources, members=[members[p] for p in sorted(members)])
         staging = pending and (cold or held)
         vector = {'state': 'pending', 'reason': 'schema3_view_preparing'}
-        if not staging and store._rows:
+        if not staging:
             # A row head fills its own cards: the vector generation follows the
             # lexical one unless every eligible set is already stored.
             vector = _schema3_rows_covered(store, manifest, baseline['vector_spec'], vectors,
                                            {members[p]['blob_sha'] for p in changed if p in members})
-        elif not staging:
-            vector = _schema3_vectors(store, writer, proof, marks, handle, manifest, None,
-                                      vectors, deadline)
         spec = vectors['spec'] if vector['state'] == 'complete' else None
         if not staging:
             # The last fill call may run past the pass deadline (one document):
@@ -1300,7 +1292,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                     'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
                     'removed': len(removed), 'pending': pending, 'skipped': skipped, 'provenance': provenance}
         store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
-        if store._rows and vector['state'] == 'lexical_first':
+        if vector['state'] == 'lexical_first':
             generation, vector = _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest,
                                                               vectors, deadline)
     except v.BlobStoreError as exc:
@@ -1403,8 +1395,6 @@ def _schema3_rows_baseline(store, db, handle, head):
 
 def _schema3_head_same(store, head, baseline, observed, handle):
     """The head was published from exactly this observation at the same HEAD."""
-    if not store._rows:
-        return _schema3_sources_same(store, baseline['manifest'], observed, handle)
     import laya_view_values as view_values
     if baseline['head_oid'] != handle.head_oid:
         return False
@@ -1848,10 +1838,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             from laya_view_vectors import register_provider_spec
             if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
                 v.fail('vector_spec_mismatch')
-        if store._rows:
-            _entry, _saved, _job, targets, stored = store._rows_fill_plan(handle, recipe_id, profile_id)
-        else:
-            _entry, _saved, _job, targets, stored = store._fill_plan(handle, manifest, recipe_id, profile_id)
+        _entry, _saved, _job, targets, stored = store._rows_fill_plan(handle, recipe_id, profile_id)
         cursor = 0 if stored is None else stored
         before = _schema3_embedded(store, targets, recipe_id, profile_id)
         missing = len(targets) - before

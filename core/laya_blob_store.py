@@ -535,7 +535,6 @@ class BlobStore:
             obj._reader_only = reader_only
             obj._fts_guard = fts_guard
             obj._incarnation, obj._policy = initial_meta['incarnation'], initial_meta['settings_policy_digest']
-            obj._rows = True
             return obj
         except BlobStoreError:
             if db is not None: db.close()

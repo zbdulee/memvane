@@ -430,15 +430,11 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
 
     def rollback_generation(self, handle, *, expected_head, deadline=None):
         """Row format only: reverse the head's last publication as a new generation."""
-        if not self._rows:
-            v.fail('row_format_required')
         return self._rows_rollback(handle, expected_head=expected_head, deadline=deadline)
 
 
     def collect_view_rows(self, handle, *, limit=256, deadline=None):
         """Row format only: one bounded batch of view rows outside the head and its prior."""
-        if not self._rows:
-            v.fail('row_format_required')
         return self._rows_collect(handle, limit=limit, deadline=deadline)
 
     def head(self, handle):
