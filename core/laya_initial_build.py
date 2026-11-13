@@ -1,55 +1,4 @@
-"""Durable record of one inactive initial memvane-db build (installer-owned).
-
-An install whose corpus one synchronous call cannot cover registers a build
-instead of embedding in-process. The build's data lives in the stores the
-capacity path already makes durable: the private candidate A-int DB, its
-claim queue, the source catalog, the binding store and the vector chunk
-cache. This module owns only the small record that names those stores, the
-per-user pointer the runtime wake uses to find it from a project path, and
-the phase the installer's finalize gate reads.
-
-Phases (``PHASES``):
-
-* ``registered``: install created every store, the journal is
-  ``candidate_ready`` and no route is selected yet. No source byte has
-  been read and nothing is staged.
-* ``building``: a bounded runtime step ran; the candidate head does not yet
-  serve a complete, servable catalog snapshot with a vector seal (scan, fill,
-  stage, a newer scan or a deferral is pending). ``progress`` names why.
-* ``sealed``: the head of the private, unselected candidate serves the
-  catalog's current snapshot under a stored binding and a vector seal for the
-  reviewed profile, and no newer scan is pending. ``sealed`` is evidence of
-  *that* snapshot only, never of the live tree.
-* ``blocked``: a step reported a block that retrying cannot clear (invalid
-  source, vector budget, a member the provider refuses). It is re-evaluated by
-  every wake and cleared by an explicit rescan.
-* ``bound``: finalize bound the sealed candidate to its selection ledger
-  (``laya_fresh_wiki_origin`` ledger and project marker). The wake does
-  nothing more; activation is a separate explicit installer step. Between
-  the marker and this phase (an interrupted finalize) the wake defers
-  without stepping, and a repeated finalize records ``bound``. A retired
-  binding keeps the record ``bound`` for good; ``retire_project_pointer``
-  releases the project pointer so a fresh install (its own state root and
-  record) can register.
-* ``upgrading``: the installer owns an inactive bundle replacement. Older
-  workers reject this unknown phase; current workers defer without writing.
-  The original identity and stores remain available for explicit recovery.
-* ``retired``: an explicit, audited abandon of a build that never did any
-  work (still ``registered``, nothing read or written; see
-  ``laya_product_install.abandon_unused_initial_build``). Terminal and
-  written before the project pointer is released. A worker that knows it
-  ACKs; a worker that predates it fails closed on the unknown phase
-  (``initial_build_record_invalid``), so it can never step or publish.
-
-Freshness is separate from ``sealed``: ``request_freshness`` records a time T
-and requests a catalog scan. ``freshness_satisfied`` is true only when the
-sealed snapshot came from a scan *started* at or after T. Anything else is
-"freshness unknown", and finalize refuses it.
-
-Nothing here selects a route, writes a project file, deletes a store or
-loads a model. A partial catalog never publishes or deletes: only
-``sync_step`` publishes, and only from a COMPLETE snapshot.
-"""
+"""Persist initial build identity, phase, ownership and project pointer."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -604,7 +553,7 @@ def _progress(result):
 def transition(record, result, sealed=None):
     """Pure: the phase and fields one step answer moves ``record`` to.
 
-    ``sealed`` is ``evidence(...)`` when the head serves a servable snapshot;
+    ``sealed`` contains the proof when the head serves a servable snapshot;
     only then can the build be ``sealed``. A ``blocked`` answer is kept with
     its reason and path; ``pending`` and ``deferred`` are ``building``.
     Returns the keyword changes for ``advance`` (empty when nothing changed).
@@ -629,60 +578,6 @@ def transition(record, result, sealed=None):
     else:
         _fail('initial_build_result_invalid')
     return {key: value for key, value in changes.items() if record.get(key) != value}
-
-
-def evidence(runtime, generation, profile_id):
-    """Sealed-candidate facts, or None while the head does not serve them.
-
-    Every fact is re-read from the stores: the head generation, its source
-    manifest, the stored binding (whose name commits to it), the catalog's
-    current snapshot and its scan start time, and the vector seal. The head
-    binding must serve the same bytes from the same live root nodes as a
-    fresh capture of the current snapshot (``same_bound_source``); like
-    ``sync_step``, an unchanged rescan does not need a new generation, so its
-    scan id may be older than the snapshot's. A pending newer scan, a
-    replaced root or a missing binding answers None (not sealed).
-    """
-    from laya_index_capacity import (binding_digest, capture_bound_generation_binding,
-                                     generation_digest, same_bound_source)
-    from laya_index_sync import _head
-    from laya_index_vector import verify_generation_seal
-    catalog, store, index = runtime.catalog, runtime.binding_store, runtime.index
-    if catalog is None or store is None:
-        _fail('capacity_not_configured')
-    if not isinstance(generation, str) or not catalog.status()['servable']:
-        return None
-    snapshot = catalog.require_servable()
-    head, epoch = _head(runtime)
-    if head is None or head[0] != generation or head[2] != epoch:
-        return None
-    digest = generation_digest(generation)
-    binding = store.get(runtime.scope, generation, store.db_incarnation)
-    if (digest is None or binding is None or binding_digest(binding) != digest
-            or binding.source_manifest != head[1]):
-        return None
-    try:
-        captured = capture_bound_generation_binding(index, catalog, snapshot)
-    except IndexContractError:
-        return None
-    if not same_bound_source(binding, captured):
-        return None
-    index.db.execute('BEGIN')
-    try:
-        seal = verify_generation_seal(index, generation)
-        index.db.rollback()
-    except BaseException:
-        index.db.rollback()
-        raise
-    if seal['profile_id'] != profile_id:
-        return None
-    return {'generation': generation, 'bindingDigest': digest,
-            'sourceManifest': head[1], 'catalogScanId': snapshot.scan_id,
-            'catalogRawDigest': snapshot.raw_digest, 'files': snapshot.files,
-            'bytes': snapshot.bytes,
-            'scanStartedNs': catalog.snapshot_started_ns(snapshot),
-            'vectorProfileId': profile_id, 'vectorRows': seal['rows_count'],
-            'dbIncarnation': binding.db_incarnation}
 
 
 def request_freshness(record, catalog):
