@@ -48,7 +48,7 @@ class GuardError(Exception):pass
 class Policy:
     # Initial conservative proposals, not measured safe limits for this Mac.
     resource_limits=True
-    min_available_percent=35
+    min_available_percent=20
     max_tree_rss_fraction=.15
     max_tree_cpu_fraction=MAX_CPU_FRACTION
     max_swap_growth_fraction=.01

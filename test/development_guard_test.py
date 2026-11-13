@@ -205,7 +205,7 @@ class GuardChecks(unittest.TestCase):
                 'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
         self.assertIsNone(guard.violation(policy,{**sample,'pressure':'warning'},[],0))
         for changes,reason in [({'pressure':'critical'},'os_memory_pressure'),
-                ({'available_percent':34},'relative_available'),
+                ({'available_percent':19},'relative_available'),
                 ({'available_percent':None},'monitor_unavailable'),
                 ({'swap_bytes':101},'swap_growth'),({'load_per_cpu':2},'system_load')]:
             self.assertEqual(guard.violation(policy,{**sample,**changes},[],0),reason)
@@ -223,7 +223,8 @@ class GuardChecks(unittest.TestCase):
         sample={'total_bytes':10000,'available_percent':70,'pressure':'warning',
                 'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
         self.assertIsNone(guard.violation(guard.Policy(),sample,[],0))
-        self.assertEqual(guard.violation(guard.Policy(),{**sample,'available_percent':34},[],0),'relative_available')
+        self.assertIsNone(guard.violation(guard.Policy(),{**sample,'available_percent':20},[],0))
+        self.assertEqual(guard.violation(guard.Policy(),{**sample,'available_percent':19},[],0),'relative_available')
         sample['pressure']='normal'
         self.assertEqual(guard.violation(guard.Policy(),sample,[proc(500,1,500,cpu=150)],0),'tree_cpu')
         self.assertEqual(guard.command_for('model-test',['node','--test','one.test.mjs']),
