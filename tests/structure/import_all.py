@@ -35,6 +35,20 @@ for name in modules:
         importlib.import_module(name)
     except BaseException as exc:  # noqa: BLE001 - report every kind
         failures[name] = ''.join(traceback.format_exception_only(type(exc), exc)).strip()
+# Every process entry named in entry/run.py resolves to a callable.
+import ast
+for node in ast.parse((ROOT / 'entry/run.py').read_text(encoding='utf8')).body:
+    if isinstance(node, ast.Assign) and any(getattr(t, 'id', None) == 'TARGETS' for t in node.targets):
+        for command, (target, _prefix, _argv) in ast.literal_eval(node.value).items():
+            module_name, function_name = target.split(':', 1)
+            try:
+                if not callable(getattr(importlib.import_module(module_name), function_name)):
+                    failures['entry:' + command] = target + ' is not callable'
+            except BaseException as exc:  # noqa: BLE001
+                failures['entry:' + command] = target + ': ' + type(exc).__name__ + ': ' + str(exc)
+        break
+else:
+    failures['entry/run.py'] = 'TARGETS table not found'
 scripts = [ROOT / 'entry/run.py', ROOT / 'entry/setup.py'] + sorted(ROOT.glob('skills/*/scripts/*.py'))
 for script in scripts:
     # entry/setup.py is an alias that always runs; its import check is a --help run.
