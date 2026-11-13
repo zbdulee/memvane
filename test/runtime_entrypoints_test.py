@@ -31,7 +31,7 @@ class EntryPoints(unittest.TestCase):
 
     def admission(self):
         self.assertIsNotNone(importlib.util.find_spec('runtime_admission'),'remaining entry-point facade missing')
-        import runtime_admission as a
+        from memvane.runtime import runtime_admission as a
         self.stack.enter_context(patch.object(a,'Coordinator',return_value=self.c))
         self.stack.enter_context(patch.object(a,'sample',return_value=self.report))
         return a

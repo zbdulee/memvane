@@ -168,7 +168,7 @@ class FakeFile:
 class PlatformObservation(unittest.TestCase):
     def module(self):
         self.assertIsNotNone(importlib.util.find_spec('resource_platform'),'platform adapters missing')
-        import resource_platform
+        from memvane.runtime import resource_platform
         return resource_platform
 
     def test_apple_silicon_capabilities_keep_gpu_and_thermal_unknown(self):
@@ -262,7 +262,7 @@ class PlatformObservation(unittest.TestCase):
 
     def test_mps_controls_are_memory_checks_not_utilization_or_gpu_quotas(self):
         self.assertIsNotNone(importlib.util.find_spec('resource_controls'),'control adapters missing')
-        from resource_controls import MpsMemoryControl
+        from memvane.runtime.resource_controls import MpsMemoryControl
         torch=Mock();torch.mps.driver_allocated_memory.return_value=901
         torch.mps.recommended_max_memory.return_value=1000
         with self.assertRaisesRegex(ValueError,'training_memory_budget'):MpsMemoryControl.check(torch,{'reserveFraction':.1})

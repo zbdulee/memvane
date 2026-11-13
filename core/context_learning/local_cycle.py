@@ -38,7 +38,7 @@ def _safe_file(path, *, max_size=2 * 1024 * 1024 * 1024):
 
 
 def _hash(path):
-    from runtime_admission import hash_file
+    from memvane.runtime.runtime_admission import hash_file
     return hash_file(_safe_file(path))
 
 

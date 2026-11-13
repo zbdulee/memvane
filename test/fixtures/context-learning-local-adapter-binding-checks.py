@@ -117,7 +117,7 @@ class LocalBinding(unittest.TestCase):
     def test_inventory_admission_checkpoints_are_batched(self):
         # Per-read checkpoints made a full inventory exceed the 1s foreground
         # preparation budget; the count path must stay bounded, start to end.
-        import runtime_admission
+        from memvane.runtime import runtime_admission
         files=self.many_files();calls=[]
         with patch.object(binding,'_PACE_SECONDS',float('inf')),\
                 patch.object(runtime_admission,'preparation_checkpoint',side_effect=lambda:calls.append(1)):
@@ -126,14 +126,14 @@ class LocalBinding(unittest.TestCase):
         self.assertGreaterEqual(len(calls),2)
         self.assertLessEqual(len(calls),2+(4*files)//binding._PACE_STEPS)
     def test_inventory_time_bound_forces_checkpoints(self):
-        import runtime_admission
+        from memvane.runtime import runtime_admission
         files=self.many_files(20);calls=[]
         with patch.object(binding,'_PACE_SECONDS',0),\
                 patch.object(runtime_admission,'preparation_checkpoint',side_effect=lambda:calls.append(1)):
             binding._local_code(self.source,self.home)
         self.assertGreater(len(calls),files)
     def test_inventory_resource_stop_interrupts_reads(self):
-        import runtime_admission
+        from memvane.runtime import runtime_admission
         from context_learning.local_cycle import ResourceDeferred
         files=self.many_files();calls=[]
         def checkpoint():

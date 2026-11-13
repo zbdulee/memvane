@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_product_sync_worker as worker
 import runtime_work
-import runtime_wake_policy
+from memvane.runtime import runtime_wake_policy
 from context_learning.local_cycle import ResourceDeferred
 import laya_host_response as response
 from laya_index_a import IndexContractError, LayaIndexA

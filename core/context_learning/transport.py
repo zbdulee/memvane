@@ -85,7 +85,7 @@ def _numeric_usage(value):
 
 def run_teacher(sample, *, enabled=False, **options):
     if enabled is not True:return {'status':'disabled','cli_invocations':0}
-    from runtime_admission import provider
+    from memvane.runtime.runtime_admission import provider
     from .local_cycle import ResourceDeferred
     try:
         with provider():return _run_teacher_admitted(sample,enabled=True,**options)
@@ -103,7 +103,7 @@ def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_T
     Codex retains builtin context; its exec stream is not an empty-catalog proof.
     Caller must not log the returned labels when they contain private excerpts.
     """
-    from runtime_admission import PreSendDeferred
+    from memvane.runtime.runtime_admission import PreSendDeferred
     report = {'status': 'disabled', 'cli_invocations': 0,
               'resolved_model': 'unreported', 'resolved_effort': 'unreported'}
     if enabled is not True:
@@ -156,7 +156,7 @@ def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_T
             if any((p / '.git').exists() for p in (directory, *directory.parents)):
                 raise TransportFailure('git_ancestor_present')
             deadline = time.monotonic() + timeout
-            from runtime_admission import provider_popen
+            from memvane.runtime.runtime_admission import provider_popen
             process = provider_popen(args, cwd=cwd, env=environment,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE, start_new_session=True)

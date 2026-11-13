@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from resource_platform import normal_pressure,number
+from memvane.runtime.resource_platform import normal_pressure,number
 
 SCHEMA='qmd-one-shot-calibration-v1'
 _states={}

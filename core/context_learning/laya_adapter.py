@@ -424,7 +424,7 @@ def _training_limits(request, model_sha, device):
 def _check_mps_budget(torch, limits):
     if limits is None or limits['device'] != 'mps':
         return
-    from resource_controls import MpsMemoryControl
+    from memvane.runtime.resource_controls import MpsMemoryControl
     MpsMemoryControl.check(torch,limits)
 
 

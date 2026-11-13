@@ -6,7 +6,7 @@ imported inside the handler, so importing this table never loads learning code.
 """
 from pathlib import Path
 
-import runtime_wake_policy as wake_policy
+from memvane.runtime import runtime_wake_policy as wake_policy
 
 
 def retired(row):

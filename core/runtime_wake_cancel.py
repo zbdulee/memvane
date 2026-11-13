@@ -22,7 +22,7 @@ import sqlite3
 import stat
 import time
 
-import runtime_wake_policy as wake_policy
+from memvane.runtime import runtime_wake_policy as wake_policy
 
 KIND = 'laya-sync'
 FIXTURE_SCHEMA = 'qmd-release-qa-fixture-v1'

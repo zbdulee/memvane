@@ -851,7 +851,7 @@ def resolve_extractor_argv(
 
 def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> tuple[dict | None, str | None, int | None]:
     try:
-        from runtime_admission import provider_run
+        from memvane.runtime.runtime_admission import provider_run
         proc = provider_run(
             argv,
             input=json.dumps(payload, ensure_ascii=False),

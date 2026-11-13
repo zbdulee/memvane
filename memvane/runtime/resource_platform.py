@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import time
-from resource_controls import capabilities
+from memvane.runtime.resource_controls import capabilities
 
 
 def number(value):

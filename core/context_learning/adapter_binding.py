@@ -47,7 +47,7 @@ _PACE_SECONDS = .05
 
 class _Pacer:
     def __init__(self):
-        from runtime_admission import preparation_checkpoint
+        from memvane.runtime.runtime_admission import preparation_checkpoint
         self._checkpoint = preparation_checkpoint
         self.checkpoint()
 
@@ -83,7 +83,7 @@ def _owned_bytes(path, home, limit, *, pace=None):
                 or before.st_size > limit):
             raise ValueError('unsupported_adapter')
         if pace is None:
-            from runtime_admission import preparation_checkpoint as pace
+            from memvane.runtime.runtime_admission import preparation_checkpoint as pace
         parts=[];remaining=limit+1
         while remaining:
             pace()

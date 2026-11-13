@@ -89,7 +89,7 @@ class CpuThreads(unittest.TestCase):
         torch.set_num_interop_threads.assert_called_once_with(1)
 
     def test_provider_cpu_refusal_precedes_dispatch_intent(self):
-        cpu=self.cpu();import runtime_admission as admission
+        cpu=self.cpu();from memvane.runtime import runtime_admission as admission
         from context_learning.resource_coordination import Coordinator
         c=Coordinator(self.root);before=Mock()
         report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
@@ -99,7 +99,7 @@ class CpuThreads(unittest.TestCase):
         before.assert_not_called()
 
     def test_provider_child_retains_share_after_popen_returns(self):
-        cpu=self.cpu();import runtime_admission as admission
+        cpu=self.cpu();from memvane.runtime import runtime_admission as admission
         from context_learning.resource_coordination import Coordinator
         c=Coordinator(self.root);held=[]
         report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}

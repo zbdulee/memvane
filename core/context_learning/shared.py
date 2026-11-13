@@ -804,7 +804,7 @@ def enqueue(config, project, sample, compact_sources):
 
 def resource_report(policy, *, detailed=False, admission=True,deadline=None):
     """OS adapter observations plus explicit configured memory policy."""
-    from resource_platform import adapter_for,normal_pressure,number
+    from memvane.runtime.resource_platform import adapter_for,normal_pressure,number
     from .bounded_calibration import pressure_ready,verdict
     from .memory_policy import assess
     from .resource_coordination import observation_fresh
@@ -2056,7 +2056,7 @@ def _check_owned_lease(root, fd):
 
 def _settle_owned(root, name, state, result, project, *, handoff=False):
     """Record one child outcome under the lease; retries keep a durable wake."""
-    import runtime_wake_policy
+    from memvane.runtime import runtime_wake_policy
     status = result.get("status") if isinstance(result, dict) else None
     status = status[:80] if isinstance(status, str) and status else "failed"
     retry = status in runtime_wake_policy.RETRY

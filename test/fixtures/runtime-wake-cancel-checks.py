@@ -16,7 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path.cwd() / 'core'))
 import runtime_work
 import runtime_wake_cancel as cancel
-import runtime_wake_policy as wake_policy
+from memvane.runtime import runtime_wake_policy as wake_policy
 import laya_initial_build as initial_build
 import laya_install_journal
 import laya_index_host_route

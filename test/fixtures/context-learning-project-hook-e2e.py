@@ -165,7 +165,7 @@ else:
     sys.path.insert(0,str(installs['codex']/'core'))
     isolate(home,observation_bootstrap='\nsys.path.insert(0,'+repr(str(installs['codex']/'core'))+')\n'
         +RESOURCE_OBSERVER+'\nsys.path.pop(0)\n')
-    import resource_platform
+    from memvane.runtime import resource_platform
     resource_observer=resource_platform.adapter_for(sys.platform)
     from context_learning import general_teacher, shared, project_scope
     from context_learning.resource_coordination import Coordinator
@@ -372,7 +372,7 @@ assert not attempts,attempts
         resource_observer.level = 'warning'
         resource_observer.free = 5  # warning alone no longer defers; scarce memory does
         from context_learning.resource_coordination import decision
-        import runtime_admission
+        from memvane.runtime import runtime_admission
         observed = runtime_admission.sample(runtime_admission.POLICY)
         assert observed['memory_pressure']['level']=='warning' and observed['ready'] is False
         assert decision(runtime_admission.POLICY,observed)['ready'] is False

@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib,json,os,re,stat,time
 from pathlib import Path
-from runtime_admission import prepared,preparation_checkpoint
+from memvane.runtime.runtime_admission import prepared,preparation_checkpoint
 from .store import canonical
 from .dataset import read_private_json
 from .laya_adapter import EDIT_INPUT_VIEW,model_identity

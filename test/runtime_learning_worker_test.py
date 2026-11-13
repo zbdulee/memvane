@@ -352,7 +352,7 @@ class WakeQueueChecks(unittest.TestCase):
         self.assertGreater(self.queue.pending()[0]['revision'],first)
 
     def test_capacity_deferred_wake_is_retained_then_promoted(self):
-        import runtime_wake_policy
+        from memvane.runtime import runtime_wake_policy
         with patch.object(self.runtime,'MAX_WAKES',3),patch.object(runtime_wake_policy,'MAX_OVERFLOW',1):
             self.assertEqual(self.queue.offer('learning','/a',now=0),'queued')
             self.assertEqual(self.queue.offer('learning','/b',now=0),'queued')

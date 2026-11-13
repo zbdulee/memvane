@@ -27,7 +27,7 @@ from laya_index_a import IndexContractError, LayaIndexA
 import laya_product_install as product
 import laya_product_sync_worker as worker
 import runtime_wake_cancel as wake_cancel
-import runtime_wake_policy as wake_policy
+from memvane.runtime import runtime_wake_policy as wake_policy
 import runtime_work
 
 SCOPE = 'c' * 32

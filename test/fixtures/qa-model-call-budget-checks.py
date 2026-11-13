@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, 'core')
-from runtime_admission import PreSendDeferred, provider_run
+from memvane.runtime.runtime_admission import PreSendDeferred, provider_run
 import qa_model_budget
 
 with tempfile.TemporaryDirectory() as tmp:

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import fcntl
 import math
 import os
-from resource_controls import CpuThreads
+from memvane.runtime.resource_controls import CpuThreads
 
 MAX_CPU_FRACTION=.25
 _TORCH_CONFIGURED=None

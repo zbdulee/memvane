@@ -78,7 +78,7 @@ def _quality_ready(train, validation, cohort):
 
 
 def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=None):
-    from runtime_admission import preparation
+    from memvane.runtime.runtime_admission import preparation
     from .shared import resource_report
     try:
         with preparation():prepared=_prepare_staged(root,policy,grant)
@@ -127,7 +127,7 @@ def _prepare_staged(root,policy,grant):
         cohort_train, validation = training_and_validation(db, _project(root, grant), grant)
     if len(cohort_train)>2000 or len(validation)>2000:
         return {'status':'cohort_source_revoked'}
-    from runtime_admission import preparation_checkpoint
+    from memvane.runtime.runtime_admission import preparation_checkpoint
     def active(rows):
         result=[]
         for r in rows:
@@ -354,7 +354,7 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
 
 def evaluate_pending(root,policy,cycle_id,*,trainer_factory=None,coordinator=None):
     """Quality-only recovery: never reserves or calls a training operation."""
-    from runtime_admission import preparation
+    from memvane.runtime.runtime_admission import preparation
     from .shared import resource_report
     from .resource_coordination import Coordinator
     try:
@@ -511,7 +511,7 @@ def _train_once(trainer,request,folder):
     _atomic_json(path,intent)
     done=completion(request)
     if done is not None:return {'schema_version':1,'status':'trained'},{'recovered_completion':True}
-    from runtime_admission import preparation
+    from memvane.runtime.runtime_admission import preparation
     cursor_path=folder/'resume/cursor.json'
     if cursor_path.exists() or cursor_path.is_symlink():
         with preparation():

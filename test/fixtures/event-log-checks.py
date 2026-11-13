@@ -177,7 +177,7 @@ class WriterChecks(Base):
 
     def test_wake_and_index_publish(self):
         import laya_runtime_dispatch as dispatch
-        from runtime_wake_policy import DispatchFailure
+        from memvane.runtime.runtime_wake_policy import DispatchFailure
         target = {'terminal': False, 'journalPath': self.decision['journalPath'],
                   'installId': 'install-1', 'generation': 'g1', 'selectionEpoch': 4,
                   'sourceCommit': 'c' * 40}

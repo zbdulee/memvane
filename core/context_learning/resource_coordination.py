@@ -51,7 +51,7 @@ def observation_fresh(report,*,now=None):
 
 
 def decision(policy,report,*,resident_credit=0,now=None):
-    from resource_platform import normal_pressure,number
+    from memvane.runtime.resource_platform import normal_pressure,number
     from .bounded_calibration import pressure_ready
     result={'ready':False,'reason':'resource_unknown','microbatch_size':None}
     if not observation_fresh(report,now=now):return {**result,'reason':'resource_observation_stale'}

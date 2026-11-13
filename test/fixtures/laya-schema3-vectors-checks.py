@@ -1000,7 +1000,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
     def sync_execute(self, project, passes):
         """A laya-sync dispatch stand-in: one real pass; non-done results raise
         the dispatcher's ``target_deferred`` (laya_runtime_dispatch)."""
-        policy = importlib.import_module('runtime_wake_policy')
+        policy = importlib.import_module('memvane.runtime.runtime_wake_policy')
 
         def execute(row):
             self.assertEqual((row['kind'], row['target']), ('laya-sync', project))

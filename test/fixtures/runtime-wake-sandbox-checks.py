@@ -108,7 +108,7 @@ class TestRuntimeRootGuard(Decoy):
                 mock.patch.dict(os.environ, {'TMPDIR': '/usr'}):
             self.assertFalse(runtime_lease.in_platform_temp('/usr/share/memvane-project'))
             import runtime_handlers
-            import runtime_wake_policy
+            from memvane.runtime import runtime_wake_policy
             with self.assertRaises(runtime_wake_policy.TargetMissing):
                 runtime_handlers.laya_sync({'kind': 'laya-sync',
                                             'target': '/usr/share/memvane-gone-project'})
