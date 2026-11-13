@@ -53,6 +53,7 @@ MAX_CAPACITY_ROUNDS = 64
 # Wall-clock bound of one initial-build wake (checked between rounds). The
 # rest stays durable in the catalog, fill cursor and claim queue.
 BUILD_WAKE_SECONDS = 45
+PRIORITY_YIELD_MAX_ATTEMPTS = 3
 
 
 def _deferred(exc):
