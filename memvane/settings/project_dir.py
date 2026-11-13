@@ -63,3 +63,20 @@ def compile_dir(root, create: bool = False):
     elif create:
         path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def ledger(root, name: str):
+    """상수 이름 하나를 실제 경로로. compile 디렉터리 밖을 가리키면 None.
+
+    `safe_compile_file`이 하던 symlink-escape 검사를 그대로 유지한다 — 이름이 상수라도
+    파일 자체가 밖을 가리키는 symlink일 수 있다(그 경우 append가 프로젝트 밖을 덮어쓴다).
+    """
+    base = compile_dir(root)
+    if base is None:
+        return None
+    path = (base / name).resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return None
+    return path

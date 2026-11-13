@@ -10,3 +10,5 @@ FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 
 SUMMARY_TRUNCATION_MARK = "… (이하 생략)"
 SOURCE_KIND_FILE = "file"
+
+SOURCE_REFRESH_PENDING = "source-refresh-pending.jsonl"

@@ -16,7 +16,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.settings.api import ledger
+from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
 from memvane.wiki.card import yaml_scalars
 
 FRESH = "fresh"
@@ -34,7 +35,7 @@ def _now_iso() -> str:
 
 
 def _pending_path(root: Path) -> Path | None:
-    return cp.ledger(Path(root).resolve(), cp.SOURCE_REFRESH_PENDING)
+    return ledger(Path(root).resolve(), SOURCE_REFRESH_PENDING)
 
 
 def _pending_lock_path(path: Path) -> Path:
@@ -442,11 +443,11 @@ def quarantine_corrupt_pending(root: Path) -> dict | None:
                 reason = "strict_reject"
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             root_path = Path(root).resolve()
-            target = cp.ledger(root_path, "{}{}.jsonl".format(CORRUPT_QUARANTINE_PREFIX, stamp))
+            target = ledger(root_path, "{}{}.jsonl".format(CORRUPT_QUARANTINE_PREFIX, stamp))
             if target is not None and target.exists():
                 # Never overwrite an earlier quarantine; that would destroy the
                 # very evidence this function preserves.
-                target = cp.ledger(root_path, "{}{}-{}.jsonl".format(
+                target = ledger(root_path, "{}{}-{}.jsonl".format(
                     CORRUPT_QUARANTINE_PREFIX, stamp, uuid.uuid4().hex[:8]))
             if target is None:
                 return None

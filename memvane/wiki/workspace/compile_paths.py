@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from memvane.settings import api as project_dir
-from memvane.settings.api import compile_rel, compile_dir
+from memvane.settings.api import compile_rel, compile_dir, ledger
 
 # 프로젝트 활성 폴더(`project_dir.active_name`) 아래 `compile/`. 상수는 새 프로젝트
 # 기준값이고, 프로젝트가 있으면 `compile_rel(root)`가 활성 폴더를 따른다
@@ -39,7 +39,7 @@ COMPILE_DIR = project_dir.CURRENT + "/compile"
 # --- 원장/큐 (JSONL) --------------------------------------------------------
 CANDIDATES = "candidates.jsonl"
 SOURCE_QUEUE = "source-queue.jsonl"
-SOURCE_REFRESH_PENDING = "source-refresh-pending.jsonl"
+from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
 TOMBSTONES = "tombstones.jsonl"
 MANIFEST = "generated-manifest.jsonl"
 MERGE_NEEDED = "merge-needed.jsonl"
@@ -76,21 +76,6 @@ def under(root, name: str) -> Path:
 
 
 
-def ledger(root, name: str):
-    """상수 이름 하나를 실제 경로로. compile 디렉터리 밖을 가리키면 None.
-
-    `safe_compile_file`이 하던 symlink-escape 검사를 그대로 유지한다 — 이름이 상수라도
-    파일 자체가 밖을 가리키는 symlink일 수 있다(그 경우 append가 프로젝트 밖을 덮어쓴다).
-    """
-    base = compile_dir(root)
-    if base is None:
-        return None
-    path = (base / name).resolve()
-    try:
-        path.relative_to(base)
-    except ValueError:
-        return None
-    return path
 
 
 def _lock_base(root, *, folder=None, create=False):

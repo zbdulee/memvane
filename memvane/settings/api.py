@@ -121,3 +121,8 @@ def resolver(*args, **kwargs):
 def decision_resolver(*args, **kwargs):
     from memvane.settings.source_label import decision_resolver as implementation
     return implementation(*args, **kwargs)
+
+
+def ledger(*args, **kwargs):
+    from memvane.settings.project_dir import ledger as implementation
+    return implementation(*args, **kwargs)
