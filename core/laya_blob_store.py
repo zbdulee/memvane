@@ -672,14 +672,8 @@ class BlobStore:
             worktree = _worktree_record(saved, self._repository, self._policy)
             if cache is not None:
                 cache['worktrees'][worktree_id] = (saved, worktree)
-        legacy = isinstance(proof, dict) and proof.get('schema') == 'memvane-v6-wiki-admission-v1'
-        if legacy:
-            v.exact(proof, ('schema', 'blob_sha', 'worktree_id', 'path', 'binding_digest',
-                            'wiki_root', 'wiki_identity', 'repository_digest',
-                            'capture', 'endpoint_id', 'observation'))
-        else:
-            v.exact(proof, ('blob_sha', 'worktree_id', 'path', 'file', 'binding_digest',
-                            'wiki_root', 'wiki_identity', 'repository_digest', 'capture'))
+        v.exact(proof, ('blob_sha', 'worktree_id', 'path', 'file', 'binding_digest',
+                        'wiki_root', 'wiki_identity', 'repository_digest', 'capture'))
         capture = proof['capture']
         capture_key = (worktree_id, v.canonical(capture)) if cache is not None else None
         capture_valid = cache is not None and capture_key in cache['captures']
@@ -699,14 +693,10 @@ class BlobStore:
                     {'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']}, proof['wiki_identity'])
                 or proof['repository_digest'] != worktree['repositoryDigest']
                 or not capture_valid
-                or v.digest('memvane-v6-wiki-admission-v1' if legacy else 'memvane-wiki-admission-v1', proof)
+                or v.digest('memvane-wiki-admission-v1', proof)
                    != admission['proof_digest']):
             v.fail('blob_admission_invalid')
         v.relative(proof['path'])
-        if legacy:
-            v.identifier(proof['endpoint_id'])
-            v.identifier(proof['observation'])
-            return body
         v.exact(proof['file'], ('dev', 'ino', 'size', 'mtime_ns', 'ctime_ns'))
         for number in proof['file'].values():
             v.integer(number)
@@ -732,7 +722,7 @@ class BlobStore:
         return {'blob_sha': sha, 'trust_digest': trust}
 
     def _put_legacy_attestation(self, db, *, blob_sha, worktree_id, branch_key, evidence,
-                                provenance_scan, verify_only=False):
+                                provenance_scan):
         sources, seen_fingerprints, assigned_spans = [], set(), set()
         for revision in evidence['revisions']:
             fingerprint = self._put_fingerprint(db, dict(
@@ -740,7 +730,7 @@ class BlobStore:
                 path=revision['path'], source_sha=revision['sha256'],
                 byte_length=revision['size'], head_oid=None, tracked_state='unknown',
                 binding_state='legacy_unbound', scan_id=provenance_scan['id'],
-                observed_ns=provenance_scan['observed_ns']), verify_only=verify_only)
+                observed_ns=provenance_scan['observed_ns']))
             if fingerprint not in seen_fingerprints:
                 pair = (revision['path'], revision['sha256'])
                 spans = ([{'kind': 'legacy-lines-v1', **span} for span in evidence['spans']
@@ -755,8 +745,7 @@ class BlobStore:
         return self._put_attestation(db, dict(blob_sha=blob_sha,
             verification_kind='legacy_verified', engine_identity=LEGACY_ENGINE_IDENTITY,
             policy_digest=self._policy, receipt=dict(schema='memvane-card-evidence-v1',
-                verdict='verified', result_digest=receipt, prior_trust=None), sources=sources),
-            verify_only=verify_only)
+                verdict='verified', result_digest=receipt, prior_trust=None), sources=sources))
 
     def _ingest(self, worktree_id, path, *, attest=None):
         self._require_write()
@@ -1016,7 +1005,7 @@ class BlobStore:
             cache['fingerprints'][key] = spec
         return spec
 
-    def _put_fingerprint(self, db, spec, *, verify_only=False):
+    def _put_fingerprint(self, db, spec):
         spec = v.fingerprint(spec, self._repository['gitObjectFormat'])
         key = v.digest('memvane-source-fingerprint-v1', spec)
         worktree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (spec['worktree_id'],)).fetchone()
@@ -1027,8 +1016,6 @@ class BlobStore:
         if old:
             if self._fingerprint(key) != spec:
                 v.fail('source_fingerprint_conflict')
-        elif verify_only:
-            v.fail('migration_staged_missing')
         else:
             _insert(db, 'source_fingerprints', dict(fingerprint_id=key, **spec))
         return key
@@ -1117,7 +1104,7 @@ class BlobStore:
                 return result
             previous, key = current, current['receipt']['prior_trust']
 
-    def _put_attestation(self, db, spec, *, verify_only=False):
+    def _put_attestation(self, db, spec):
         spec = v.attestation(spec)
         key = v.digest('memvane-card-attestation-v1', spec)
         self._blob(spec['blob_sha']); self._source_claims(spec)
@@ -1127,8 +1114,6 @@ class BlobStore:
         if old:
             if self._attestation(key) != spec:
                 v.fail('card_attestation_conflict')
-        elif verify_only:
-            v.fail('migration_staged_missing')
         else:
             _insert(db, 'card_attestations', dict(trust_digest=key,
                 **{k: spec[k] for k in ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest')},
