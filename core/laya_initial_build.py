@@ -347,45 +347,6 @@ def register_project(identity):
     return str(path)
 
 
-def relocate_project_pointer(old_pointer, new_pointer):
-    """Point the project's wake at its moved state root; idempotent.
-
-    Writes the new pointer in the MemVane directory (replacing only this
-    install's exact old pointer there), then removes this install's pointer
-    from the pre-rename directory. A pointer of another install refuses.
-    """
-    keys = {'schema', 'projectRoot', 'stateRoot', 'installId'}
-    if (not isinstance(old_pointer, dict) or not isinstance(new_pointer, dict) or
-            set(old_pointer) != keys or set(new_pointer) != keys or
-            old_pointer['schema'] != POINTER_SCHEMA or
-            any(old_pointer[key] != new_pointer[key] for key in
-                ('schema', 'projectRoot', 'installId'))):
-        _fail('initial_build_pointer_invalid')
-    project = old_pointer['projectRoot']
-    path = pointer_path(project, _pointer_dir(create=True))
-    current = _read_json(path)
-    if current is None:
-        try:
-            _write_json(path, new_pointer, replace=False)
-        except IndexContractError as exc:
-            if str(exc) != 'initial_build_record_exists':
-                raise
-        current = _read_json(path)
-    elif current == old_pointer:
-        _write_json(path, new_pointer, replace=True)
-        current = _read_json(path)
-    if current != new_pointer:
-        _fail('initial_build_pointer_changed')
-    legacy = _pointer_dir(create=False, legacy=True)
-    if legacy is not None:
-        earlier = pointer_path(project, legacy)
-        held = _read_json(earlier)
-        if held is not None:
-            if held not in (old_pointer, new_pointer):
-                _fail('initial_build_pointer_changed')
-            os.unlink(earlier)
-            _fsync_dir(legacy)
-    return str(path)
 
 
 RETIRED_POINTER = 'retired-build-pointer.json'
@@ -533,50 +494,8 @@ def advance(record, **changes):
     return updated
 
 
-def rebind_inactive_upgrade(record, new_identity):
-    """CAS only the reviewed route and attestation of an upgrading build.
-
-    The candidate stores, scope, install ID and vector profile cannot move.
-    Caller holds both the install lock and build owner lock. The separate
-    installer intent makes an interrupted multi-file switch recoverable.
-    """
-    _validate_identity(new_identity)
-    current = read(record['identity']['stateRoot'])
-    if current != record or current['phase'] != 'upgrading':
-        _fail('initial_build_upgrade_stale')
-    old = current['identity']
-    changed = {'routeSha256', 'attestationSha256', 'providerProposalSha256'}
-    if any(old[key] != new_identity[key] for key in old.keys() - changed):
-        _fail('initial_build_upgrade_identity_mismatch')
-    updated = {**current, 'identity': new_identity,
-               'epoch': current['epoch'] + 1, 'updatedNs': time.time_ns()}
-    _validate(updated)
-    _write_json(record_path(old['stateRoot']), updated, replace=True)
-    return updated
 
 
-def rebind_bound_upgrade(record, new_identity):
-    """CAS only the reviewed route and attestation of a ``bound`` build.
-
-    A bound build keeps its phase and sealed evidence: ``bound`` is terminal
-    for the build worker. Only an installer-owned bundle replacement
-    (``laya_bound_upgrade``) calls this, holding the install, operation and
-    build owner locks, with its own recoverable intent.
-    """
-    _validate_identity(new_identity)
-    current = read(record['identity']['stateRoot'])
-    if current != record or current['phase'] != 'bound':
-        _fail('initial_build_upgrade_stale')
-    old = current['identity']
-    changed = {'routeSha256', 'attestationSha256', 'providerProposalSha256'}
-    if set(old) != set(new_identity) or any(
-            old[key] != new_identity[key] for key in old.keys() - changed):
-        _fail('initial_build_upgrade_identity_mismatch')
-    updated = {**current, 'identity': new_identity,
-               'epoch': current['epoch'] + 1, 'updatedNs': time.time_ns()}
-    _validate(updated)
-    _write_json(record_path(old['stateRoot']), updated, replace=True)
-    return updated
 
 
 def _progress(result):
