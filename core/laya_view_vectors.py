@@ -47,9 +47,9 @@ def spec(value):
 
 # The installed provider's view vector identity (decision K5). The recipe and
 # profile are derived from the install's reviewed provider manifest and route
-# vector profile only, so the migration copy, the sync fill and the reader all
-# name the same content-addressed IDs. The recipe is the QMD regex/token chunk
-# recipe the v6 provider embeds with (900/135/200 tokens), and the tokenizer is
+# vector profile only, so sync fill and the reader name the same
+# content-addressed IDs. The recipe uses regex/token chunking
+# (900/135/200 tokens), and the tokenizer is
 # the model's own. A document the provider keeps on its first chunking pass
 # (``qmd_first_pass``) has those chunks; a document the provider re-splits
 # over its token window (no reproducible text here) has the fallback windows
