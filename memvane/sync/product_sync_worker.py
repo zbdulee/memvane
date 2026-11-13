@@ -21,7 +21,7 @@ import time
 from memvane.sync.intent_ack import _ack_compile_intent
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.learning.context_learning.resource_coordination import Coordinator
-from memvane.learning.context_learning.shared import resource_report
+from memvane.learning.api import resource_report
 from memvane.kernel.errors import IndexContractError
 from memvane.route.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots

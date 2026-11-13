@@ -26,7 +26,7 @@ def learning_plan(args):
     old=root/profile.INSTALL
     row=None
     if args.accepted_learning_profile and (old.exists() or old.is_symlink()):
-        from memvane.learning.context_learning.dataset import read_private_json
+        from memvane.learning.api import read_private_json
         previous=read_private_json(old)
         if previous['acceptedSha256']==args.accepted_learning_profile:
             row=previous['proposal']

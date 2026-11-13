@@ -108,7 +108,7 @@ def yield_requested(root,*,now=None):
 
 
 def sample():
-    from memvane.learning.context_learning.shared import resource_report
+    from memvane.learning.api import resource_report
     return resource_report(POLICY,detailed=True,admission=False)
 
 

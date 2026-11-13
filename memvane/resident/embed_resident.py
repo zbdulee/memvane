@@ -245,7 +245,7 @@ def admit_query(*, coordinator=None, report=None):
     the next prompt can retry; no prompt is persisted in a background queue.
     """
     from memvane.learning.context_learning.resource_coordination import Coordinator
-    from memvane.learning.context_learning.shared import resource_report
+    from memvane.learning.api import resource_report
     from memvane.sync.types import EMBED_POLICY
 
     try:

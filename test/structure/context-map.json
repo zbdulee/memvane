@@ -324,6 +324,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/learning/api.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/learning/context_learning/__init__.py": {
       "context": "learning",
       "layer": "adapter",
@@ -677,6 +682,11 @@
     "memvane/learning/selector_maintenance.py": {
       "context": "learning",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/types.py": {
+      "context": "learning",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/provider/__init__.py": {

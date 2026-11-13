@@ -815,7 +815,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                     _write(ledger_path, ledger, replace=True)
                 proof = journal_module.verify_selected_route(decision)
                 try:
-                    from memvane.learning.selector_maintenance import request as request_selector_maintenance
+                    from memvane.learning.api import request_selector_maintenance
                     request_selector_maintenance(decision, force=True, owner=owner)
                 except (OSError, ValueError, RuntimeError):
                     pass  # Selection is complete; a later SessionStart can retry.

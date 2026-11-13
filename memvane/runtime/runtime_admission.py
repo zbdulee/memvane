@@ -26,7 +26,7 @@ from memvane.runtime.types import PreSendDeferred
 
 
 def sample(policy,*,deadline=None):
-    from memvane.learning.context_learning.shared import resource_report
+    from memvane.learning.api import resource_report
     try:return resource_report(policy,detailed=True,admission=False,deadline=deadline)
     except (OSError,ValueError,TypeError,KeyError):return None
 
