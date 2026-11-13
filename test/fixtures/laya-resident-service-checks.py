@@ -198,6 +198,12 @@ class ServiceChecks(Fixture):
              patch.object(svc.time, 'monotonic', return_value=106):
             service.tick()
         self.assertEqual(sum(project in drift for project in observed), 9)
+        with patch.object(service, 'registered', return_value=drift + [full]), \
+             patch.object(service, 'prove', side_effect=prove), \
+             patch.object(service, '_load', side_effect=loading), \
+             patch.object(svc.time, 'monotonic', return_value=137):
+            service.tick()
+        self.assertEqual(sum(project in drift for project in observed), 18)
 
     def test_public_sockets_never_appear_with_a_loose_mode(self):
         # Clients refuse a socket with group/other bits; one seen between

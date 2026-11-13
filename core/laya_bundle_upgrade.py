@@ -1169,6 +1169,7 @@ def run(project_root, *, root=None, home=None):
             _event(state, 'bundle.upgrade', 'started', hostLayout=_host(root, home),
                    attempt=attempts, operation=operation, **moves)
             diagnostic = {}
+            seal_writes = set()
             try:
                 import laya_project_dir_move
                 import laya_state_move
@@ -1188,7 +1189,8 @@ def run(project_root, *, root=None, home=None):
                 from laya_inactive_upgrade import backup_proof_scope, upgrade_events
                 # Stage events of this upgrade carry the same operation id;
                 # retries reuse backup proofs whose file stamps did not move.
-                with upgrade_events(operation=operation), backup_proof_scope():
+                from laya_product_bundle import track_seal_writes
+                with upgrade_events(operation=operation), backup_proof_scope(), track_seal_writes() as seal_writes:
                     result = _upgrade_with_backoff(project, state, root, home)
                 result = {**result, **_convert_journal(project, state, root, home)}
                 status = ('current' if result.get('status') == 'current'
@@ -1274,6 +1276,9 @@ def run(project_root, *, root=None, home=None):
             _event(state, 'bundle.upgrade', result.get('status'), result.get('reason'),
                    ms=(time.monotonic() - started) * 1000, kind=result.get('kind'),
                    attempt=attempts, operation=operation,
+                   codexSealWritten=(True if (any(_host(Path(path), home) == 'codex' for path in seal_writes)
+                                     or (_host(root, home) == 'codex' and result.get('codexSealWritten') is True))
+                                     else None),
                    **diagnostic, **({'file': result['file']} if 'file' in result else {}), **moves)
             results.append({'stateRoot': str(state), **{
                 key: value for key, value in result.items()

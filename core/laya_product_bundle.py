@@ -8,6 +8,8 @@ packaging time, not inferred from a caller-supplied revision string.
 from __future__ import annotations
 
 import errno
+import contextvars
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -19,6 +21,24 @@ import unicodedata
 
 from laya_package import require_no_lazy_fetch
 from persistent_identity import persistent_identity_equal
+
+_seal_writes = contextvars.ContextVar('laya_seal_writes', default=None)
+
+
+@contextmanager
+def track_seal_writes():
+    writes = set()
+    token = _seal_writes.set(writes)
+    try:
+        yield writes
+    finally:
+        _seal_writes.reset(token)
+
+
+def _record_seal_write(root):
+    writes = _seal_writes.get()
+    if writes is not None:
+        writes.add(str(root))
 
 
 SCHEMA = 'laya-product-bundle-v1'
@@ -845,9 +865,11 @@ def adopt_host_loaded_plugin(source_root, plugin_root, *, commit_id,
                 _fail('bundle_manifest_mismatch')
             return proof
         _reseal(metadata, manifest_raw, owner_raw)
+        _record_seal_write(installed)
     else:
         os.mkdir(metadata, 0o700)
         _write(metadata / 'manifest.json', manifest_raw)
+        _record_seal_write(installed)
         _write(metadata / 'ownership-manifest.json', owner_raw)
         fd = os.open(metadata, os.O_RDONLY)
         try:
@@ -992,6 +1014,7 @@ def seal_companion_host_copy(owner_root, plugin_root, *, expected_owner=None):
         entries[name] = live
     os.mkdir(metadata, 0o700)
     _write(metadata / 'manifest.json', manifest_raw)
+    _record_seal_write(companion)
     _write(metadata / 'ownership-manifest.json', _canonical(
         {'schema': FULL_OWNER_SCHEMA, 'pluginRoot': str(companion),
          'bundleManifestSha256': owner['bundleManifestSha256'], 'entries': entries}))

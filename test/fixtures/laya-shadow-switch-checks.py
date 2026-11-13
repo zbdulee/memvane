@@ -219,11 +219,14 @@ class ShadowSwitchChecks(unittest.TestCase):
                 return db.execute('SELECT count(*) FROM pins').fetchone()[0]
 
         self.assertEqual(pins(), 0)
-        before = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
         with self.driver(), mock.patch.object(self.reader, 'seal_current_reader',
                                                side_effect=AssertionError('recovery path used')):
-            result = self.M.switch_rehearsal(self.case.project)
-        self.assertEqual((snapshot(self.case.state), snapshot(Path(self.case.db).parent)), before)
+            before = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+            result = self.M.switch_rehearsal(self.case.project, executing_root=self.case.plugin)
+            after = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+        emit('rehearsal-file-differences', paths=[(i, name) for i in range(2)
+             for name in sorted(set(before[i]) | set(after[i])) if before[i].get(name) != after[i].get(name)])
+        self.assertEqual(after, before)
         self.assertEqual(pins(), 0)
         checks = result['checks']
         for name in ('record_comparison', 'parity_receipt', 'claude_receipt',
@@ -237,10 +240,14 @@ class ShadowSwitchChecks(unittest.TestCase):
              mock.patch.object(self.reader, 'upgraded_pair', return_value=False), \
              mock.patch.object(self.reader, 'seal_current_reader',
                                side_effect=AssertionError('recovery path used')):
-            mismatch = self.M.switch_rehearsal(self.case.project)
+            before_mismatch = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+            mismatch = self.M.switch_rehearsal(self.case.project, executing_root=self.case.plugin)
+            after_mismatch = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
         self.assertEqual(mismatch['checks']['record_comparison']['reason'], 'reader_install_changed')
-        self.assertEqual((snapshot(self.case.state), snapshot(Path(self.case.db).parent)), before)
+        self.assertEqual(after_mismatch, before_mismatch)
         self.assertEqual(pins(), 0)
+        emit('rehearsal-read-only-proof', stateAndStoreFilesBytesInodesMtimesUnchanged=True,
+             beforePins=0, afterPins=0, mismatchReason='reader_install_changed')
 
 
     # ---- completion: passes alone reach switched ---------------------------

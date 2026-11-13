@@ -2293,6 +2293,37 @@ def _project_dir_moved(decision) -> bool:
         return False
 
 
+def _codex_seal_notice(decision):
+    """Best-effort recent event notice; it does not observe hook trust."""
+    from datetime import datetime, timezone
+    state = event_log.state_root_for_decision(decision)
+    if state is None:
+        return None
+    try:
+        now = datetime.now(timezone.utc).timestamp()
+        pending = False
+        for row in event_log.read(state, max_bytes=1024 * 1024):
+            if row.get('event') != 'bundle.upgrade':
+                continue
+            try:
+                stamp = datetime.fromisoformat(row['ts'].replace('Z', '+00:00')).timestamp()
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not 0 <= now - stamp <= 86400:
+                continue
+            if row.get('codexSealWritten') is True:
+                pending = True
+            elif row.get('outcome') == 'codex_hook_notice':
+                pending = False
+        if not pending:
+            return None
+        event_log.emit('bundle.upgrade', outcome='codex_hook_notice', state_root=state,
+                       host='claude')
+        return '[memvane] Codex hook approval may need to be renewed after the bundle seal.'
+    except Exception:
+        return None
+
+
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
@@ -2440,6 +2471,10 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             if block_notice:
                 move_notice = (move_notice + "\n" + block_notice if move_notice
                                else block_notice)
+            if host == 'claude':
+                trust_notice = _codex_seal_notice(decision)
+                if trust_notice:
+                    move_notice = (move_notice + "\n" + trust_notice if move_notice else trust_notice)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
@@ -2631,6 +2666,10 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
+        if host == 'claude' and action == 'update-queued':
+            trust_notice = _codex_seal_notice(decision)
+            if trust_notice:
+                notice += '\n' + trust_notice
         if host == 'hermes':
             return {'status': 'bundle_upgrade_pending', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',

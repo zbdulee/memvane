@@ -235,6 +235,19 @@ class WorkerBase(Base):
 
 
 class WorkerChecks(WorkerBase):
+    def test_claude_worker_records_codex_seal_created_during_upgrade(self):
+        import event_log
+        import laya_product_bundle as bundle
+        codex = self.home / '.codex' / 'plugins' / 'cache' / 'mkt' / 'memvane' / '0.44.22'
+        codex.mkdir(parents=True)
+        def upgrade(**_kwargs):
+            bundle._record_seal_write(codex)
+            return {'status': 'active_upgrade_complete'}
+        results, _calls, _rescan, _wake = self.run_worker('active', installed='2' * 40, active=upgrade)
+        self.assertEqual(results[0]['status'], 'active_upgrade_complete')
+        rows = event_log.read(self.state)
+        self.assertEqual(sum(row.get('codexSealWritten') is True for row in rows), 1)
+
     def test_codex_seal_write_is_recorded_on_upgrade_event(self):
         import event_log
         self.root = self.home / '.codex' / 'plugins' / 'cache' / 'mkt' / 'memvane' / '0.44.22'

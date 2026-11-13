@@ -169,6 +169,25 @@ class ResponseChecks(unittest.TestCase):
                        and r.get('codexSealWritten') is not True]
             self.assertEqual(len(notices), 1)
 
+    def test_codex_seal_notice_ignores_old_events_and_notices_each_new_seal(self):
+        import event_log
+        from datetime import datetime, timedelta, timezone
+        with tempfile.TemporaryDirectory(prefix='seal-window-') as temp:
+            state = Path(temp).resolve()
+            decision = {**DECISION, 'journalPath': str(state / 'install-journal.sqlite')}
+            old = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+            with patch.object(event_log, '_now_iso', return_value=old):
+                self.assertTrue(event_log.emit('bundle.upgrade', outcome='companion_sealed',
+                                               state_root=state, codexSealWritten=True))
+            self.assertIsNone(response._codex_seal_notice(decision))
+            self.assertTrue(event_log.emit('bundle.upgrade', outcome='companion_sealed',
+                                           state_root=state, codexSealWritten=True))
+            self.assertIn('Codex hook', response._codex_seal_notice(decision))
+            self.assertIsNone(response._codex_seal_notice(decision))
+            self.assertTrue(event_log.emit('bundle.upgrade', outcome='companion_sealed',
+                                           state_root=state, codexSealWritten=True))
+            self.assertIn('Codex hook', response._codex_seal_notice(decision))
+
     def assert_rejected(self, code, rows, decision=DECISION):
         with self.assertRaises(response.HostResponseError) as caught:
             response.render_context(decision, rows)
@@ -1718,6 +1737,23 @@ class BundleDriftChecks(unittest.TestCase):
             return_value=self.read_only))
         wake = stack.enter_context(patch.object(runtime_work, 'request'))
         return full, ro, wake
+
+    def test_claude_drift_session_includes_pending_codex_seal_notice(self):
+        import event_log
+        import laya_install_journal
+        with tempfile.TemporaryDirectory(prefix='drift-seal-') as temp:
+            state = Path(temp).resolve()
+            decision = {**self.decision, 'journalPath': str(state / 'install-journal.sqlite')}
+            event_log.emit('bundle.upgrade', outcome='companion_sealed', state_root=state,
+                           codexSealWritten=True)
+            with patch.object(laya_install_journal, 'verify_selected_route_read_only',
+                              return_value=self.read_only), \
+                 patch.object(response, '_bundle_upgrade_notice', return_value='upgrade pending'), \
+                 patch.object(response, '_move_notices', return_value=None):
+                result = response._serve_bundle_drift('update-queued', 'claude', decision,
+                                                       {'hook_event_name': 'SessionStart'},
+                                                       self.read_only, 'executing_code_outside_bundle')
+            self.assertIn('Codex hook', result['hookSpecificOutput']['additionalContext'])
 
     def test_bundle_mismatch_legacy_route_never_bypasses_required_selection(self):
         from contextlib import ExitStack, nullcontext

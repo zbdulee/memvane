@@ -13,6 +13,8 @@ const cases = [
   ['ingest progress', 'laya-schema3-sync-publish-checks.py', 'Schema3SyncPublishChecks.test_ingest_pending_detail_requires_committed_progress'],
   ['Codex notice', 'laya-host-response-checks.py', 'ResponseChecks.test_codex_seal_is_announced_once_in_claude_session_start'],
   ['Codex seal event', 'laya-bundle-auto-upgrade-checks.py', 'WorkerChecks.test_codex_seal_write_is_recorded_on_upgrade_event'],
+  ['Codex seal by Claude', 'laya-bundle-auto-upgrade-checks.py', 'WorkerChecks.test_claude_worker_records_codex_seal_created_during_upgrade'],
+  ['Codex notice during drift', 'laya-host-response-checks.py', 'BundleDriftChecks.test_claude_drift_session_includes_pending_codex_seal_notice'],
 ];
 for (const [name, file, method] of cases) {
   test(name, () => {

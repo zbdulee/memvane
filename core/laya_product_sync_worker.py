@@ -603,7 +603,7 @@ def service_worker_attestation(decision, expected):
     project, plan_root = Path(decision['projectRoot']), Path(decision['pluginRoot'])
 
     def reprove():
-        with worker_journal_access(project) as access, journal.read_only_journals():
+        with worker_journal_access(project, wait=True) as access, journal.read_only_journals():
             proof = _selected_v5_proof(project, decision, access.owner, plan_root=plan_root)
         return proof, _journal_view(decision)
     before, view = guarded(reprove)
@@ -843,6 +843,8 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
             # or ends ``blocked`` on a provider defect of the install.
             state = 'blocked' if waiting[0]['state'] == 'provider_blocked' else waiting[0]['state']
             result = {**result, 'state': state, 'reason': waiting[0].get('reason')}
+            if state == 'pending' and waiting[0] is main and main.get('progress', 0) > 0:
+                result['progressKind'] = 'vector'
         detail = _schema3_vector_detail(result)
         if detail:
             result = {**result, 'detail': detail}
@@ -1238,6 +1240,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     if any(item['state'] in ('pending', 'deferred') and not (advanced and item in budget) for item in linked):
         result['state'] = 'pending'
         result.setdefault('reason', 'schema3_linked_pending')
+        result.pop('progressKind', None)
     return result, proof
 
 
@@ -1482,12 +1485,14 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if cold and pending:
             # No partial first generation: recall answers view_preparing until complete.
             return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
+                    **({'progressKind': 'ingest'} if ingested else {}),
                     'generation': None, 'prepared': generation, 'ingested': ingested,
                     'removed': len(removed), 'pending': pending, 'skipped': skipped}
         if staging:
             # Published cards wait for new bytes: the head stays, the prepared
             # progress is the next pass's carry.
             return {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
+                    **({'progressKind': 'ingest'} if ingested else {}),
                     'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
                     'removed': len(removed), 'pending': pending, 'skipped': skipped}
         store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
@@ -1505,6 +1510,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
               'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector}
     if pending:
         result['reason'] = 'schema3_ingest_backlog'
+        if ingested:
+            result['progressKind'] = 'ingest'
     return result
 
 
