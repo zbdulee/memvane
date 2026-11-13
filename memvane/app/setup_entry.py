@@ -134,7 +134,7 @@ def main(argv=None):
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
                            'restore-index-origin'):
-            from memvane.install import product_install as product
+            from memvane.install import api as product
             installed = Path(__file__).resolve(strict=True).parents[2]
             if args.action != 'plan-fresh-wiki-origin' and not args.state_root:
                 raise ValueError('state_root_required')
@@ -154,7 +154,7 @@ def main(argv=None):
                     model_path=args.provider_model_file,
                     dimension=args.provider_dimension)
             else:
-                state = product._private_parent(args.state_root)
+                state = product.private_parent(args.state_root)
                 journal = state / 'journal.sqlite'
                 if args.action == 'index-origin-status':
                     from memvane.journal.install_journal import inspect_journal
@@ -181,8 +181,8 @@ def main(argv=None):
                     result = product.restore_origin_selection(
                         project_root=args.project, state_root=state)
                 else:
-                    route = product._read_private(state / 'route.json', 8192)
-                    with product._install_lock(state):
+                    route = product.read_private(state / 'route.json', 8192)
+                    with product.install_lock(state):
                         if args.action == 'activate-index-origin':
                             if not args.approve_index_origin_activation:
                                 raise ValueError('index_origin_activation_approval_required')

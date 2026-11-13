@@ -164,6 +164,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/install/api.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/install/initial_build.py": {
       "context": "install",
       "layer": "adapter",
@@ -187,6 +192,11 @@
     "memvane/install/runtime_wake_cancel.py": {
       "context": "install",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/types.py": {
+      "context": "install",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/journal/__init__.py": {
