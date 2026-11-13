@@ -35,6 +35,33 @@ def _module_name(path):
     return old_guard.name_for(path)
 
 
+def _import_targets(tree, path, names):
+    """Resolve import statements, including delayed and relative imports."""
+    module = _module_name(path)
+    is_package = path.endswith('/__init__.py')
+    for node in ast.walk(tree):
+        candidates = []
+        if isinstance(node, ast.Import):
+            candidates = [item.name for item in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ''
+            if node.level:
+                package = module.split('.') if is_package else module.split('.')[:-1]
+                drop = node.level - 1
+                package = package[:len(package) - drop] if drop <= len(package) else []
+                base = '.'.join(package + ([base] if base else []))
+            for item in node.names:
+                child = base + '.' + item.name if base else item.name
+                candidates.append(child if child in names else base)
+        for candidate in set(candidates):
+            parts = candidate.split('.')
+            while parts and '.'.join(parts) not in names:
+                parts.pop()
+            target = names.get('.'.join(parts)) if parts else None
+            if target:
+                yield node.lineno, target
+
+
 def _hook_closures(snapshot, trees):
     target = trees.get('entry/run.py')
     rows = {}
@@ -133,14 +160,15 @@ def inspect(config, baseline=None):
              for p in files if (ROOT / p).is_file()}
     issues = {f'G{i}': [] for i in range(1, 9)}
     issues['G1'].extend(errors)
-    for phase, edges in snapshot['graph'].items():
-        for src, dst, count in edges:
-            if src not in files or dst not in files:
+    names = {_module_name(path): path for path in trees}
+    for src, tree in trees.items():
+        for lineno, dst in _import_targets(tree, src, names):
+            if dst not in files:
                 continue
             left, right = files[src]['context'], files[dst]['context']
             if left == right or right == 'kernel':
                 continue
-            edge = f'{src}:{phase}:{dst}:{count}'
+            edge = f'{src}:{lineno}:{dst}'
             if dst.startswith('memvane/') and not dst.endswith(('/api.py', '/types.py')):
                 issues['G1'].append(edge)
             if left != 'app' and ranks[right] >= ranks[left]:
@@ -238,7 +266,7 @@ def main():
         snapshot, closures, issues, unknown = inspect(config, baseline)
     print(json.dumps({'counts': {k: len(v) for k, v in issues.items()},
                       'issues': issues, 'unknown_patch_targets': unknown,
-                      'limitations': ['G1 and G2 cover classified source modules; test imports are not yet classified', 'G5 does not yet check every non-stdlib top-level import or private export', 'G6 closure follows static top-level imports and requires hook target verification', 'G7 dynamic import and adapter checks are incomplete', 'G8 examines statically identifiable Python patch calls; JavaScript embedded Python and dynamic targets require further analysis'],
+                      'limitations': ['G1 and G2 cover resolved import statements in classified source modules; test imports and nonliteral dynamic imports are not yet classified', 'G5 does not yet check every non-stdlib top-level import or private export', 'G6 closure follows static top-level imports and requires hook target verification', 'G7 dynamic import and adapter checks are incomplete', 'G8 examines statically identifiable Python patch calls; JavaScript embedded Python and dynamic targets require further analysis'],
                       'metrics': snapshot['metrics']}, ensure_ascii=False, sort_keys=True))
     return 1 if any(issues.values()) else 0
 
