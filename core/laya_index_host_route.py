@@ -37,6 +37,7 @@ SCHEMA_V2 = "laya-index-route-v2"
 # and can neither serve nor move (downgrade) an install this release owns.
 SCHEMA_V3 = "memvane-route-v3"
 SCHEMA_V4 = "memvane-route-v4"
+SELECTION_SCHEMA_V1 = "memvane-selection-v1"
 RECORD = "route.json"
 QMD_SELECTION_MARKER = "selection.json"
 MAX_RECORD_BYTES = 8192
@@ -412,7 +413,7 @@ def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
     folder = project_dir.active_name(root)
     cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
     vector_profile = _vector_profile(record['vectorProfile'])
-    return _decision('candidate', 'route_record_valid', projectRoot=str(root),
+    return _decision('candidate', 'route_record_valid', routeSchema=SCHEMA_V4, projectRoot=str(root),
                      stateRoot=str(state), storePath=str(store),
                      storeIncarnation=record['storeIncarnation'],
                      stateFormat=record['stateFormat'], scopeId=record['scopeId'],
@@ -790,14 +791,34 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
         # The marker stays through restoration. Only its durable ledger can
         # classify an absent route as legacy.
         from laya_ledger_common import _read_json
-        from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
-                                            classify_marker as classify_fresh)
         marker_root, marker_path = markers[0]
         try:
             marker_record = _read_json(marker_path)
             schema = marker_record.get('schema') if isinstance(marker_record, dict) else None
         except (OSError, RuntimeError, ValueError, TypeError):
             schema = None
+        if schema == SELECTION_SCHEMA_V1:
+            try:
+                if (set(marker_record) != {'schema', 'projectRoot', 'installId', 'routeSha256'}
+                        or type(marker_record['projectRoot']) is not str
+                        or type(marker_record['installId']) is not str
+                        or not INCARNATION.fullmatch(marker_record['installId'])
+                        or type(marker_record['routeSha256']) is not str
+                        or not SHA256.fullmatch(marker_record['routeSha256'])
+                        or len(records) != 1 or records[0][0] != marker_root):
+                    raise ValueError('selection_marker_invalid')
+                route_bytes = _read_regular(records[0][2], MAX_RECORD_BYTES)
+                route = json.loads(route_bytes.decode('utf-8'), object_pairs_hook=_pairs)
+                if (not isinstance(route, dict) or route.get('schema') != SCHEMA_V4
+                        or route.get('installId') != marker_record['installId']
+                        or route.get('projectRoot') != marker_record['projectRoot']
+                        or hashlib.sha256(route_bytes).hexdigest() != marker_record['routeSha256']):
+                    raise ValueError('selection_marker_invalid')
+                return _classify_record(*records[0], current)
+            except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
+                return _decision('blocked', 'selection_marker_invalid')
+        from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
+                                            classify_marker as classify_fresh)
         selection = (classify_fresh(marker_root, marker_path, marker_path.parent / RECORD)
                      if schema == FRESH_MARKER_SCHEMA else 'blocked')
         if selection == 'blocked':
@@ -819,7 +840,10 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if len(records) != 1:
         return _decision("blocked", "ambiguous_route_records")
     root, auto, path = records[0]
-    return _classify_record(root, auto, path, current)
+    result = _classify_record(root, auto, path, current)
+    if result.get('routeSchema') == SCHEMA_V4 and not markers:
+        return _decision('blocked', 'selection_marker_missing')
+    return result
 
 
 def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
