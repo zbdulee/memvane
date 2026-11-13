@@ -149,6 +149,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/host/onboarding_notice.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/host/types.py": {
       "context": "host",
       "layer": "domain",

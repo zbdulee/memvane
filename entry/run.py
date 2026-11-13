@@ -14,7 +14,7 @@ sys.dont_write_bytecode = True
 TARGETS = {
     'hook-classify': ('memvane.route.index_host_route:main', ('classify-hook',), True),
     'classify': ('memvane.route.index_host_route:main', ('classify',), True),
-    'onboarding-notice': ('memvane.route.index_host_route:main', ('onboarding-notice',), True),
+    'onboarding-notice': ('memvane.host.onboarding_notice:main', (), True),
     'hook-serve': ('memvane.host.host_response:main', ('serve-stdin',), True),
     'host-ack': ('memvane.app.entry_commands:host_ack', (), False),
     'setup': ('memvane.app.setup_entry:main', (), True),
