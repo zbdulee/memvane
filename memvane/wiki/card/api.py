@@ -15,3 +15,8 @@ def verified_wiki_locations(*args, **kwargs):
 def archive_card(*args, **kwargs):
     from memvane.wiki.card.archive import archive_card as implementation
     return implementation(*args, **kwargs)
+
+
+def frontmatter_sections(*args, **kwargs):
+    from memvane.wiki.card.yaml_scalars import frontmatter_sections as implementation
+    return implementation(*args, **kwargs)

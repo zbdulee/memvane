@@ -24,6 +24,7 @@ from memvane.settings import config as qmd_config
 from memvane.settings import source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import wiki_markers
+from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
 from memvane.wiki.card import yaml_scalars
 
 ALLOWED_TYPES = {
@@ -956,22 +957,6 @@ def markdown_page(candidate: dict, summary: str, status: str, redactions: list[s
     return "\n".join(lines)
 
 
-def _frontmatter_sections(frontmatter: str) -> list[tuple[str, list[str]]] | None:
-    """Split parsed frontmatter into top-level key sections, preserving bytes."""
-    sections: list[tuple[str, list[str]]] = []
-    for line in frontmatter.splitlines():
-        if line.startswith(" "):
-            if not sections:
-                return None
-            sections[-1][1].append(line)
-            continue
-        if ":" not in line:
-            return None
-        key = line.split(":", 1)[0].strip()
-        if not key or any(existing == key for existing, _ in sections):
-            return None
-        sections.append((key, [line]))
-    return sections
 
 
 @wiki_mutation_lock.guard_path

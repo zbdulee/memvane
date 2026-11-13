@@ -13,7 +13,6 @@ from pathlib import Path
 from memvane.settings import project_dir
 from memvane.wiki.card import wiki_card
 from memvane.settings import resolve_paths as qmd_resolve_paths
-from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import yaml_scalars
 
 # 카드가 있는데 소스 항목을 하나도 파일로 읽을 수 없는 상태를 "소실"로 볼 수 없는 사유.
@@ -51,7 +50,7 @@ def declared_source_records(block: str) -> tuple[list[dict], str]:
     근거로 한 판정(백필·퇴역)이 통째로 우회된다. 같은 이유로 파서가 본 항목 수와 실제
     줄 수가 어긋나도 `invalid` 다. 비파일 항목(session/url)은 레코드로 그대로 낸다.
     """
-    sections = wc._frontmatter_sections(block)
+    sections = yaml_scalars.frontmatter_sections(block)
     if sections is None:
         return [], SOURCES_INVALID
     lines = None
@@ -82,7 +81,7 @@ def declared_source_records(block: str) -> tuple[list[dict], str]:
 
 
 def frontmatter_block(text: str) -> str | None:
-    match = wc.FRONTMATTER_RE.match(text)
+    match = yaml_scalars.FRONTMATTER_RE.match(text)
     return match.group(1) if match else None
 
 
