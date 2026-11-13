@@ -107,6 +107,13 @@ def resolve(kind, value):
                     if isinstance(record.get('sealed'), dict) else None}
     else:
         raise DispatchFailure('target_unavailable')
+    from memvane_version import writer_floor_allows
+    try:
+        writable = writer_floor_allows(proof.get('writerFloor'))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise DispatchFailure('target_journal_changed') from exc
+    if not writable:
+        raise DispatchFailure('writer_floor')
     if any(not isinstance(value, str) or not value for value in stable.values()):
         raise DispatchFailure('target_identity_invalid')
     root = Path(__file__).resolve().parent.parent

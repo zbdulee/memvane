@@ -21,3 +21,12 @@ def version_key(version):
     tail = (1,) if pre is None else (0, *[(0, int(part), '') if part.isdigit()
                                           else (1, 0, part) for part in pre.split('.')])
     return tuple(int(match.group(n)) for n in (1, 2, 3)) + (tail,)
+
+
+def writer_floor_allows(floor):
+    """Whether the running version may write at a validated minimum version."""
+    required = version_key(floor) if isinstance(floor, str) else None
+    running = version_key(plugin_version())
+    if required is None or running is None:
+        raise ValueError('invalid_writer_floor')
+    return running >= required
