@@ -50,7 +50,6 @@ from memvane.kernel.bundle_paths import entry_argv
 from memvane.runtime.runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 from memvane.runtime import runtime_wake_policy as wake_policy
 # Re-exported: drain's default executor and external callers keep this object.
-from memvane.runtime.runtime_handlers import dispatch
 
 POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,
         'targetHeadroomFraction':.35}
@@ -230,7 +229,7 @@ def _promote_overflow(db,now):
         db.execute('DELETE FROM wake_overflow WHERE id=?',(row['id'],))
 
 
-def drain(queue,*,execute=dispatch,ready=None,clock=time.monotonic,wall=time.time,
+def drain(queue,*,execute,ready=None,clock=time.monotonic,wall=time.time,
           sleep=time.sleep,max_seconds=60,max_runs=8,lease_fd=None):
     if not 0<max_seconds<=60 or not 1<=max_runs<=8:raise ValueError('invalid_runtime_budget')
     fd=_lock(queue.root/'runtime-worker.lock') if lease_fd is None else lease_fd
@@ -520,7 +519,7 @@ def _handoff():
     finally:os.close(fd)
 
 
-def _handoff_worker(queue,handoff_fd):
+def _handoff_worker(queue,handoff_fd,*,execute):
     """Wait as the one handoff contender, then drain as an ordinary worker.
 
     The handoff lock only limits waiting contenders to one; it is released as
@@ -543,7 +542,7 @@ def _handoff_worker(queue,handoff_fd):
         os.close(handoff_fd);handoff_fd=None
         # A queued kernel waiter gets the old owner's released lease before
         # that owner can self-rewake. drain preserves the shared revision ACK.
-        _drain_and_rewake(queue,lease)
+        _drain_and_rewake(queue,lease,execute=execute)
     finally:
         if lease is not None:
             try:os.close(lease)
@@ -567,7 +566,7 @@ def request(kind,target='',*,start=True,pull_due=False,delay=0):
                       'dropped':'deferred_queue_capacity'}[offered]}
 
 
-def _drain_and_rewake(queue,fd):
+def _drain_and_rewake(queue,fd,*,execute):
     """Keep a pending durable wake live after this bounded owner exits.
 
     drain closes its passed lease before returning. The successor is spawned
@@ -575,7 +574,7 @@ def _drain_and_rewake(queue,fd):
     another owner or a concurrent request can win safely. Checking even after
     a drained result closes the enqueue-versus-last-read race.
     """
-    try:return drain(queue,lease_fd=fd)
+    try:return drain(queue,lease_fd=fd,execute=execute)
     finally:wake()
 
 
@@ -584,12 +583,12 @@ def hook_wake():
     wake()
 
 
-def main(argv):
+def main(argv, *, execute):
     if argv==['wake']:hook_wake();return 0
     if argv[:1]==['worker'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_lease_changed')
-        _drain_and_rewake(queue,fd);return 0
+        _drain_and_rewake(queue,fd,execute=execute);return 0
     if argv[:1]==['timer'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd)
         expected=(queue.root/TIMER_LOCK).stat()
@@ -603,10 +602,5 @@ def main(argv):
         expected=(queue.root/'runtime-worker-handoff.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):
             raise ValueError('runtime_handoff_lease_changed')
-        _handoff_worker(queue,fd);return 0
+        _handoff_worker(queue,fd,execute=execute);return 0
     return 2
-
-
-if __name__=='__main__':
-    try:raise SystemExit(main(sys.argv[1:]))
-    except (OSError,ValueError,sqlite3.Error):raise SystemExit(75)

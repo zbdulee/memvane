@@ -4,6 +4,8 @@ Each handler revalidates setup/ownership/authorization itself right before its
 side effect and returns True only when the wake may be ACKed. Owner modules are
 imported inside the handler, so importing this table never loads learning code.
 """
+from __future__ import annotations
+
 from pathlib import Path
 
 from memvane.runtime import runtime_wake_policy as wake_policy

@@ -79,6 +79,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/app/runtime_handlers.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/app/setup_entry.py": {
       "context": "app",
       "layer": "adapter",
@@ -860,11 +865,6 @@
       "pinned": false
     },
     "memvane/runtime/runtime_cpu.py": {
-      "context": "runtime",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/runtime/runtime_handlers.py": {
       "context": "runtime",
       "layer": "adapter",
       "pinned": false
