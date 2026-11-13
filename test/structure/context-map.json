@@ -696,16 +696,6 @@
       "layer": "application",
       "pinned": false
     },
-    "core/laya_vector_block.py": {
-      "context": "sync",
-      "layer": "application",
-      "pinned": false
-    },
-    "core/laya_vector_diagnose.py": {
-      "context": "sync",
-      "layer": "application",
-      "pinned": false
-    },
     "core/laya_view_fill.py": {
       "context": "store",
       "layer": "adapter",
