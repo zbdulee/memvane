@@ -706,8 +706,8 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     if not _writer_floor_allowed(proof):
         return 'writer_floor'
     from memvane.journal.install_journal import verify_selected_route
-    from memvane.resident.embed_resident import (_TRANSIENT_FAILURES, _failure_decision,
-                                     read_owner_state)
+    from memvane.resident.types import TRANSIENT_FAILURES as _TRANSIENT_FAILURES
+    from memvane.resident.api import failure_decision as _failure_decision, read_owner_state
     current = verify_selected_route(decision)
     _recall_epoch(current)
     if current != proof:
@@ -780,7 +780,7 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
     path = manifest.get('serviceSocketPath')
     if not isinstance(path, str) or os.path.lexists(path):
         return None
-    from memvane.resident.embed_resident import ensure_running
+    from memvane.resident.api import ensure_running
     from memvane.kernel.errors import IndexContractError
     from memvane.kernel.resource_deferred import ResourceDeferred
     try:
@@ -1076,7 +1076,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
             provider = None
             vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
                 r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
-    from memvane.resident.embed_resident import admit_query
+    from memvane.resident.api import admit_query
     try:
         admit_query()
     except Exception:

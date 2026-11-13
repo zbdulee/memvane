@@ -263,13 +263,13 @@ def _selected_service(decision, manifest, admit, start_service):
     owner outside this lane.
     """
     if start_service is start_owned_embed_service:
-        from memvane.resident.embed_resident import AttachedService, probe
+        from memvane.resident.api import attached_service, probe
         # This callback runs with the provider lane held. Starting its new
         # owner here could race that lane on a model failure between prewarm
         # and embedding; the next durable sync wake starts it outside the lane.
         status = probe(manifest)
         if status == 'ready':
-            return AttachedService()
+            return attached_service()
         raise ResourceDeferred('laya_service_identity_transition' if status == 'mismatch'
                                else 'laya_service_preparing')
     return start_service(manifest, admit=admit)
@@ -1339,7 +1339,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
                 raise IndexContractError('selected_provider_proof_changed')
             if start_service is start_owned_embed_service:
                 # Outside the provider lane: adoption is requested, never awaited.
-                from memvane.resident.embed_resident import ensure_running
+                from memvane.resident.api import ensure_running
                 ensure_running(decision['projectRoot'], manifest)
             controller = coordinator or Coordinator()
             observed = report if report is not None else resource_report(EMBED_POLICY, detailed=True)

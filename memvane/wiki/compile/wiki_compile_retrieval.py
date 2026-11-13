@@ -392,7 +392,7 @@ def query_provider(bound):
     from memvane.host import host_response as response
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
-    from memvane.resident.embed_resident import admit_query
+    from memvane.resident.api import admit_query
     provider = ReviewedLocalQmdProvider(bound[1]['providerManifest'])
     try:
         admit_query()

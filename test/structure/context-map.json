@@ -749,6 +749,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/resident/api.py": {
+      "context": "resident",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/resident/embed_resident.py": {
       "context": "resident",
       "layer": "adapter",
@@ -757,6 +762,11 @@
     "memvane/resident/resident_service.py": {
       "context": "resident",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/resident/types.py": {
+      "context": "resident",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/route/__init__.py": {

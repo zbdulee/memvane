@@ -31,7 +31,7 @@ _REASONS = frozenset(('starting', 'ready', 'resource_deferred',
                       'attestation_invalid', 'unexpected'))
 _MAX_FAILURES = 3
 _FAILURE_COOLDOWN_SECONDS = 300
-_TRANSIENT_FAILURES = frozenset(('startup_failed', 'worker_exited'))
+from memvane.resident.types import TRANSIENT_FAILURES as _TRANSIENT_FAILURES
 
 
 def _state_path(socket_path):

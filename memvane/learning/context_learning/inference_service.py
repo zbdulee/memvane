@@ -515,7 +515,7 @@ def _ensure(root, python, deadline, *, spawn=None):
     root = resident._private_state(root)
     if _hosted_ready(root, python, deadline):
         return
-    from memvane.resident import resident_service as host
+    from memvane.resident import api as host
     try:
         state = host.ensure_service(python=python, learning_root=root)
     except Exception as exc:
