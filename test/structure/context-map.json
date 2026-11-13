@@ -551,22 +551,7 @@
       "layer": "application",
       "pinned": false
     },
-    "core/laya_incremental_docs.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "core/laya_incremental_docs_query.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": false
-    },
     "core/laya_index_a.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": true
-    },
-    "core/laya_index_capacity.py": {
       "context": "v6",
       "layer": "adapter",
       "pinned": true
@@ -579,11 +564,6 @@
     "core/laya_index_host_route.py": {
       "context": "host",
       "layer": "application",
-      "pinned": true
-    },
-    "core/laya_index_runtime.py": {
-      "context": "v6",
-      "layer": "adapter",
       "pinned": true
     },
     "core/laya_index_source_port.py": {
@@ -725,11 +705,6 @@
       "context": "v6",
       "layer": "adapter",
       "pinned": false
-    },
-    "core/laya_source_catalog.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": true
     },
     "core/laya_source_exclusion.py": {
       "context": "host",
@@ -1136,10 +1111,8 @@
     "core/laya_bundle_upgrade.py",
     "core/laya_host_response.py",
     "core/laya_index_a.py",
-    "core/laya_index_capacity.py",
     "core/laya_index_claim_queue.py",
     "core/laya_index_host_route.py",
-    "core/laya_index_runtime.py",
     "core/laya_index_source_port.py",
     "core/laya_initial_build.py",
     "core/laya_install_journal.py",
@@ -1153,7 +1126,6 @@
     "core/laya_product_sync_worker.py",
     "core/laya_qmd_chunking.mjs",
     "core/laya_resident_service.py",
-    "core/laya_source_catalog.py",
     "core/laya_wake_entry.py",
     "core/persistent_identity.py",
     "core/runtime_monitor.py",
