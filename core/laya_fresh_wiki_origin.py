@@ -307,7 +307,7 @@ def activate(project_root, journal_path, route_bytes):
                                         for item in row['collections']}}
         raw = {item['name'] for item in row['collections'] if item['role'] == 'raw'}
         baseline = laya_wiki_discovery._raw_snapshot(decision, raw)
-        laya_wiki_discovery.seed_source_snapshot(decision, baseline)
+        laya_wiki_discovery.seed_source_snapshot(decision, baseline, generation=row['indexGeneration'])
         row = _change(ledger, row['epoch'], 'prepared', 'switching')
         _write(route, route_bytes, replace=False)
         journal = inspect_journal(journal_path)

@@ -74,9 +74,6 @@ MAX_MEMBERS = 50_000
 RAW_SCAN_MAX_FILES = 4096
 RAW_SCAN_MAX_BYTES = 64_000_000
 MAX_GRANT_COUNT = 1000
-MAX_LINEAGE = 4096
-# Standalone synthetic routes can start without a pre-activation cursor.
-FIRST_RUN_LINEAGE_STEPS = 1
 HOOK_LOCK_SECONDS = 1.0
 WORKER_LOCK_SECONDS = 5.0
 _HEX32 = re.compile(r'[0-9a-f]{32}\Z')
@@ -482,90 +479,10 @@ def _validate_state(value, decision):
         raise DiscoveryBlocked('state_corrupt')
 
 
-def _members(db, scope, gen):
-    from laya_store_primitives import _digest
-    row = db.execute('SELECT scope,state,digest FROM generations WHERE gen=?', (gen,)).fetchone()
-    if row is None or row[0] != scope or row[1] != 'published':
-        raise DiscoveryBlocked('generation_unproved')
-    count = db.execute('SELECT COUNT(*) FROM membership WHERE gen=?', (gen,)).fetchone()[0]
-    if count > MAX_MEMBERS:
-        raise DiscoveryBlocked('membership_over_cap')
-    rows = db.execute('SELECT path,hash,eligible FROM membership WHERE gen=? AND scope=?',
-                      (gen, scope)).fetchall()
-    if len(rows) != count or _digest(scope, rows) != row[2]:
-        raise DiscoveryBlocked('membership_digest')
-    return rows
 
 
-def _lineage_root(db, scope, head, steps=None):
-    """Earliest published ancestor of head along sealed `base_gen` links.
-
-    ``steps`` stops after that many links and returns the generation reached
-    (still fully checked); None walks to the baseless first generation.
-
-    Stage binds `base_gen` to the head it replaced and publish CASes on it,
-    so the chain is the scope's publication order and ends at a baseless
-    first generation. Only seal and generation rows are read, never
-    membership. A missing seal, missing or unpublished or foreign ancestor,
-    a cycle or more than MAX_LINEAGE generations fails closed.
-    """
-    gen, seen = head, set()
-    while True:
-        if gen in seen:
-            raise DiscoveryBlocked('lineage_cycle')
-        if steps is None and len(seen) >= MAX_LINEAGE:
-            # A step limit is its own bound; MAX_LINEAGE caps a full walk.
-            raise DiscoveryBlocked('lineage_over_cap')
-        seen.add(gen)
-        row = db.execute('''SELECT g.scope,g.state,s.scope,s.base_gen FROM generations g
-                            LEFT JOIN candidate_seals s ON s.gen=g.gen WHERE g.gen=?''',
-                         (gen,)).fetchone()
-        if gen == head and (row is None or row[2] is None):
-            raise DiscoveryBlocked('head_base_unproved')
-        if row is None or row[0] != scope or row[1] != 'published' or row[2] != scope:
-            raise DiscoveryBlocked('lineage_broken')
-        if row[3] is None or (steps is not None and len(seen) > steps):
-            return gen
-        if not isinstance(row[3], str) or not _GENERATION.fullmatch(row[3]):
-            raise DiscoveryBlocked('lineage_broken')
-        gen = row[3]
 
 
-def _read_view(decision, base, *, coordination=None):
-    """Prove the selected wiki generation and its sealed lineage in one read.
-
-    The source change cursor is separate from membership. A synthetic route
-    without a cursor checks one sealed predecessor for structural continuity;
-    this generation is not used as a raw source baseline.
-    """
-    from laya_index_a import LayaIndexA
-    scope, incarnation, _queue, _roots, _raw = _binding(decision)
-    index = LayaIndexA(decision['dbPath'], **({'coordination': coordination} if coordination is not None else {}))
-    try:
-        if index.incarnation() != incarnation:
-            raise DiscoveryBlocked('db_incarnation_changed')
-        db = index.db
-        db.execute('BEGIN')
-        try:
-            index._check_header(db)
-            row = db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
-            if row is None:
-                raise DiscoveryBlocked('head_missing')
-            head = row[0]
-            if base is None:
-                base = _lineage_root(db, scope, head, FIRST_RUN_LINEAGE_STEPS)
-            if not isinstance(head, str) or not _GENERATION.fullmatch(head) \
-                    or not isinstance(base, str) or not _GENERATION.fullmatch(base):
-                raise DiscoveryBlocked('generation_unproved')
-            head_rows = _members(db, scope, head)
-            base_rows = head_rows if base == head else _members(db, scope, base)
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
-    finally:
-        index.close()
-    return head, base, base_rows, head_rows
 
 
 class _PendingOverflow(Exception):
@@ -574,44 +491,22 @@ class _PendingOverflow(Exception):
         self.count = count
 
 
-def _raw_snapshot(decision, raw, *, coordination=None, schema3=False):
-    """Scan bounded raw roots without adding raw bodies to Laya membership.
-
-    Only names and hashes leave this function. The source port checks every
-    path without following symlinks and refuses an unstable file. Its bounded
-    4096-file/64-MB scan is off-hook; the source port still checks each path.
-    A schema3 selection opens no v6 database: its view store has no
-    exclusion table, so the scan runs without one.
-    """
+def _raw_snapshot(decision, raw):
+    """Scan bounded raw roots without opening an index or retaining bodies."""
     from laya_store_primitives import IndexContractError
     from source_scan import scan_collections
-    if schema3:
-        roots = {name: decision['collectionRoots'][name] for name in raw}
-        try:
-            scan = scan_collections(roots, decision['scopeId'], None,
-                                    max_files=RAW_SCAN_MAX_FILES,
-                                    max_bytes=RAW_SCAN_MAX_BYTES)
-        except IndexContractError as exc:
-            raise DiscoveryBlocked('raw_source_stale') from exc
-        return {file.path: file.sha256 for file in scan.files if file.eligible}
-    from laya_index_a import LayaIndexA
-    index = LayaIndexA(decision['dbPath'], **({'coordination': coordination} if coordination is not None else {}))
+    roots = {name: decision['collectionRoots'][name] for name in raw}
     try:
-        if index.incarnation() != decision['dbIncarnation']:
-            raise DiscoveryBlocked('db_incarnation_changed')
-        roots = {name: decision['collectionRoots'][name] for name in raw}
-        scan = scan_collections(roots, decision['scopeId'], index,
+        scan = scan_collections(roots, decision['scopeId'], None,
                                 max_files=RAW_SCAN_MAX_FILES,
                                 max_bytes=RAW_SCAN_MAX_BYTES)
-        return {file.path: file.sha256 for file in scan.files if file.eligible}
     except IndexContractError as exc:
         raise DiscoveryBlocked('raw_source_stale') from exc
-    finally:
-        index.close()
+    return {file.path: file.sha256 for file in scan.files if file.eligible}
 
 
-def seed_source_snapshot(decision, baseline):
-    """Pre-activation baseline for an exact, still-inactive v2 candidate.
+def seed_source_snapshot(decision, baseline, *, generation):
+    """Pre-activation baseline for the published initial view.
 
     Cutover calls this before publishing its route and rechecks source proof
     afterward. A failed activation retains the inert snapshot; another
@@ -619,16 +514,16 @@ def seed_source_snapshot(decision, baseline):
     """
     state_path, _grants, lock = _paths(decision)
     _scope, _inc, _queue, _roots, raw = _binding(decision)
-    if (not isinstance(baseline, dict) or len(baseline) > MAX_MEMBERS
+    if (not isinstance(generation, str) or not _GENERATION.fullmatch(generation)
+            or not isinstance(baseline, dict) or len(baseline) > MAX_MEMBERS
             or any(not _raw_path(path, raw) or not isinstance(sha, str)
                    or not _HEX64.fullmatch(sha) for path, sha in baseline.items())):
         raise DiscoveryBlocked('baseline_invalid')
     with _locked(lock, WORKER_LOCK_SECONDS):
         # A background origin plan can accept more raw files than the bounded
         # discovery scan. Refuse *before* route publication rather than select
-        # a candidate whose source cursor can never advance. The QMD inventory
-        # may lag the source files: retain that baseline so the next selected
-        # sync discovers the intervening revisions instead of hiding them.
+        # a candidate whose source cursor can never advance. Retain the
+        # supplied baseline so the next sync discovers intervening revisions.
         _raw_snapshot(decision, raw)
         existing = _read(state_path)
         if existing is not None:
@@ -636,8 +531,7 @@ def seed_source_snapshot(decision, baseline):
             if existing['rawSnapshot'] != baseline:
                 raise DiscoveryBlocked('baseline_changed')
             return existing['rawSnapshot']
-        head, _base, _base_rows, _head_rows = _read_view(decision, None)
-        _write(state_path, _state_doc(decision, head, baseline, {}))
+        _write(state_path, _state_doc(decision, generation, baseline, {}))
         return baseline
 
 
@@ -669,7 +563,7 @@ def _outcome(state, reason=None, **extra):
     return {'state': state, 'reason': reason, **extra}
 
 
-def drain_after_sync(decision, observed, *, recheck, coordination=None, view_generation=None,
+def drain_after_sync(decision, observed, *, recheck, view_generation=None,
                      raw_snapshot=None):
     """Discover, journal and enqueue changed raw revisions; bounded, one pass.
 
@@ -678,9 +572,8 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None, view_gen
     blocked (fail closed; no cursor write, the observed active grants are retired
     with the wake) and retry (transient; keep the wake). Unexpected errors
     propagate, so the runtime dispatcher keeps the wake and its grants.
-    ``view_generation`` is a schema3 selection's view head: it replaces the
-    v6 head and lineage read as the cursor generation, and no v6 component
-    is opened. ``raw_snapshot`` is that pass's own raw scan (the sync's
+    ``view_generation`` is the selected view head. ``raw_snapshot`` is
+    that pass's own raw scan (the sync's
     source observation, same roots and bounds); without one the raw roots are
     scanned here.
     """
@@ -695,7 +588,7 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None, view_gen
         with _locked(lock, WORKER_LOCK_SECONDS):
             try:
                 return _drain_locked(decision, seen_ids, recheck, state_path,
-                                     grants_path, roots, raw, observed.get('engines', {}), coordination,
+                                     grants_path, roots, raw, observed.get('engines', {}),
                                      view_generation, raw_snapshot)
             except DiscoveryBlocked:
                 # The dispatcher ACKs a blocked run's wake, so the grants it
@@ -712,18 +605,18 @@ def drain_after_sync(decision, observed, *, recheck, coordination=None, view_gen
         return _outcome('blocked', str(exc))
 
 
-def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination,
+def _drain_locked(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines,
                   view_generation=None, raw_snapshot=None):
     # Whether this run starts the cursor; a blocked run raises and writes none.
     starting = not os.path.lexists(state_path)
     result = _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines,
-                         coordination, view_generation, raw_snapshot)
+                         view_generation, raw_snapshot)
     if starting:
         result['cursorStarted'] = True
     return result
 
 
-def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines, coordination,
+def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw, seen_engines,
                 view_generation=None, raw_snapshot=None):
     recheck()
     state = _read(state_path)
@@ -748,19 +641,12 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
                           recorded_engines[grant] == seen_engines.get(grant)), 'unknown')
                for kind in live}
     used = {grant for kind in live for grant in usable[kind]}
-    if view_generation is None:
-        head, base, _base_rows, _head_rows = _read_view(
-            decision, state['baseGen'] if state is not None else None, coordination=coordination)
-        snapshot = _raw_snapshot(decision, raw, coordination=coordination)
-    else:
-        # schema3: the view store's own epochs order publication; the cursor
-        # only records which head it last saw (a pre-switch v6 id included).
-        if not isinstance(view_generation, str) or not _GENERATION.fullmatch(view_generation):
-            raise DiscoveryBlocked('generation_unproved')
-        head = view_generation
-        base = state['baseGen'] if state is not None else head
-        snapshot = (dict(raw_snapshot) if isinstance(raw_snapshot, dict)
-                    else _raw_snapshot(decision, raw, schema3=True))
+    if not isinstance(view_generation, str) or not _GENERATION.fullmatch(view_generation):
+        raise DiscoveryBlocked('generation_unproved')
+    head = view_generation
+    base = state['baseGen'] if state is not None else head
+    snapshot = (dict(raw_snapshot) if isinstance(raw_snapshot, dict)
+                else _raw_snapshot(decision, raw))
     import laya_wiki_backfill as backfill
     # Existing synthetic/noninstalled cursors have no backfill contract. Keep
     # their unchanged/no-pending sync independent of compile configuration.
