@@ -273,7 +273,7 @@ legacy 설정에서 세션 시작·동기화 trigger를 명시적으로 끈 경�
 시도할 수 있습니다.
 
 `.memvane/wiki`에는 카드만 있습니다. 카드 작성 규칙은 플러그인 번들의
-`core/wiki_card_rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
+`memvane/wiki/card/rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
 생성·수정·삭제 기록은 설치 state 디렉터리 이벤트 로그(`events.jsonl`)의 `wiki`
 이벤트입니다. 이전 버전이
 만든 `SCHEMA.md`·`index.md`·`log.md`가 wiki 루트에 남아 있어도 카드로 취급하지

@@ -2,9 +2,9 @@
 
 MemVane 색인 기반 자동 컨텍스트 주입 훅을 **Claude Code · Codex · Hermes Agent · Antigravity(Gemini)** 에서 동작시키는 플러그인 MemVane(플러그인 id `memvane`, marketplace `memvane-marketplace`). 사용자 안내는 `README.md` 참고. 이 문서는 코드 작업 시 알아야 할 구조·명령·함정에 집중한다.
 
-사용자용 문서와 응답에서는 설치 후 운영 인터페이스를 **자연어 요청 또는 노출된 skill 호출** 중심으로 안내한다. `core/`·`skills/`의 shell command는 유지보수/디버깅 인터페이스이므로, 사용자가 명시적으로 요청한 경우나 개발자 문서가 아닌 이상 README 같은 public docs에 직접 실행 흐름으로 노출하지 않는다.
+사용자용 문서와 응답에서는 설치 후 운영 인터페이스를 **자연어 요청 또는 노출된 skill 호출** 중심으로 안내한다. `entry/`·`skills/`의 shell command는 유지보수/디버깅 인터페이스이므로, 사용자가 명시적으로 요청한 경우나 개발자 문서가 아닌 이상 README 같은 public docs에 직접 실행 흐름으로 노출하지 않는다.
 
-개발 시에는 **Claude Code · Codex · Hermes Agent** 세 host의 동작성을 모두 고려한다. 공통 로직은 `core/`에 두고, host별 adapter/hook 차이(Claude/Codex command hook, Hermes Python plugin 및 observer-only `post_tool_call`)가 깨지지 않는지 함께 확인한다.
+개발 시에는 **Claude Code · Codex · Hermes Agent** 세 host의 동작성을 모두 고려한다. 공통 로직은 `memvane/` 도메인에 두고, host별 adapter/hook 차이(Claude/Codex command hook, Hermes Python plugin 및 observer-only `post_tool_call`)가 깨지지 않는지 함께 확인한다.
 ## 개발 협업 방식과 Claude 활용
 
 이 절은 프로젝트 개발 작업의 협업 방식이다. 기존 권한·보안·자원 규칙을 완화하지 않으며, 사용자 승인 범위를 넘는 실행은 별도로 확인한다. 현재 사용자의 다른 에이전트 토큰 예산이 부족하므로 Claude를 우선 활용한다.
@@ -39,9 +39,9 @@ bash skills/update/scripts/update.sh <프로젝트>          # 선택된 MemVane
 bash skills/wiki-compile/scripts/wiki-compile.sh <프로젝트> < compact.json  # compact durable summary → wiki_compile.py
 
 # ROOT = 설치된 플러그인 루트(예: 이 버전의 Claude plugin cache 경로). 아래 동작은 --project 없이 실행한다.
-python3 -B "$ROOT/memvane/app/setup_entry.py" index-runtime-status                    # Laya embed runtime 상태(read-only)
-python3 -B "$ROOT/memvane/app/setup_entry.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]  # 새 머신의 runtime 구성(npm registry·모델 다운로드)
-python3 -B "$ROOT/memvane/app/setup_entry.py" gc-index-runtime [--approve-index-runtime-gc]  # 지울 세대 목록 / 승인 시 삭제
+python3 -B "$ROOT/entry/setup.py" index-runtime-status                    # Laya embed runtime 상태(read-only)
+python3 -B "$ROOT/entry/setup.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]  # 새 머신의 runtime 구성(npm registry·모델 다운로드)
+python3 -B "$ROOT/entry/setup.py" gc-index-runtime [--approve-index-runtime-gc]  # 지울 세대 목록 / 승인 시 삭제
 ```
 
 개발 중에는 변경한 로직과 영향 범위의 focused 검사를 우선 실행한다. 전체 검사는 변경과 focused 검사가 준비된 뒤 머지 직전 최종 커밋을 대상으로 한 번 실행한다. 검사는 해당 커밋의 별도 worktree에서 비동기로 시작할 수 있으며, 실행 중에는 그 worktree를 수정하지 않고 다른 독립 작업을 진행할 수 있다. 단독 가드를 쓰는 전체 검사 중에는 다른 검사·리뷰를 시작하지 않는다. 검사 결과를 확인하고 필요한 독립 리뷰와 후속 조치가 끝나기 전에는 머지하지 않는다. 실패를 고치는 등 제품 코드나 검사에 영향을 주는 변경으로 최종 커밋이 달라지면 새 커밋에 필요한 전체 검증을 다시 실행한다. 동일 커밋에서 필수 Python 버전과 허용된 분할 검사 각각의 결과를 확인한다.
@@ -51,21 +51,22 @@ python3 -B "$ROOT/memvane/app/setup_entry.py" gc-index-runtime [--approve-index-
 - `QMD_FORCE_DEAD_PIDS=<pid>[,<pid>…]` — 고아 `*.claimed.*` 회수 테스트 전용. `_is_pid_alive`가 **목록에 정확히 일치하는 pid만** 죽은 것으로 취급한다(전체 무력화가 아니다 — 그래야 실환경에 새도 피해가 그 pid로 한정된다). 테스트가 "확실히 죽은 pid"를 구하려고 방금 종료한 자식의 pid를 쓰면 바쁜 머신에서 재할당되어 flaky해지므로, 가정 대신 이 주입을 쓴다. **실환경에서 절대 설정하지 말 것** — 살아 있는 워커를 죽은 것으로 판정해 진행 중인 배치를 회수하면 같은 잡이 두 번 처리되어 유료 호출이 이중 과금된다
 - `QMD_SANDBOX` / `GEMINI_SANDBOX` / `--sandbox` — 디스패처·코어 즉시 무출력 종료
 
-테스트 작성 시 주의: **새 벽시계 단정 전에 "그 회귀를 개수·상태로 표현할 수 있는가"를 먼저 묻는다** — 대개 가능하고 그러면 부하와 무관해진다(예산이 곱해지면 프로브·질의 **개수**가 늘고, 30초 대기는 하네스 timeout이 `res.signal`을 남기고, 백그라운드로 넘겼어야 할 일을 기다렸으면 완료 **마커가 존재**한다). 실측으로 `notEqual(status, 0)`이 공허하게 통과하던 자리가 있었다 — `spawnSync`는 timeout 시 `status: null`·`signal: 'SIGTERM'`을 주므로 버그가 있는 세계에서도 통과했고 벽시계가 유일한 검출자였다. **폴링 대기에 `execFileSync('sleep', …)`를 쓰지 말 것** — 폴 1회당 프로세스 스폰이라 부하가 곧 폴링 비용이고, 관측된 간헐 실패가 전부 이 형태에서 났다. `waitUntil`(동기) / `waitUntilAsync`(자식 프로세스를 다루는 테스트 — 동기 sleep은 SIGCHLD 수확을 막아 좀비를 "살아 있음"으로 읽는다)를 쓴다. **테스트가 제품 데이터를 건드리면 안 된다** — 이벤트 로그는 검증된 install state root(0700, symlink 없는 경로)에만 쓰므로, 테스트는 임시 HOME과 fixture state root(`realpath`로 푼 임시 디렉터리)를 쓰고 소유자의 라이브 로그에 닿지 않는다. 테스트 작성 시 주의: `execFileSync`는 반드시 `encoding:'utf8'`을 줄 것 (없으면 Buffer 반환 → `.trim()` 에러). 병렬 실행에서 `core/__pycache__`가 spurious 실패를 유발할 수 있어 `.gitignore` 처리돼 있다. **node 테스트 프로세스 안에 http 서버를 띄워 훅에 응답시키려 하지 말 것** — `execFileSync`가 자기 event loop를 막아 서버가 요청을 처리하지 못한다. stub 서버가 필요하면 Python driver(스레드 서버 + subprocess)에서 띄운다.
-**테스트가 제품 데이터를 건드리면 안 된다** — 이벤트 로그는 검증된 install state root(0700, symlink 없는 경로)에만 쓰므로, 테스트는 임시 HOME과 fixture state root(`realpath`로 푼 임시 디렉터리)를 쓰고 소유자의 라이브 로그에 닿지 않는다. 테스트 작성 시 주의: `execFileSync`는 반드시 `encoding:'utf8'`을 줄 것 (없으면 Buffer 반환 → `.trim()` 에러). 병렬 실행에서 `core/__pycache__`가 spurious 실패를 유발할 수 있어 `.gitignore` 처리돼 있다.
+테스트 작성 시 주의: **새 벽시계 단정 전에 "그 회귀를 개수·상태로 표현할 수 있는가"를 먼저 묻는다** — 대개 가능하고 그러면 부하와 무관해진다(예산이 곱해지면 프로브·질의 **개수**가 늘고, 30초 대기는 하네스 timeout이 `res.signal`을 남기고, 백그라운드로 넘겼어야 할 일을 기다렸으면 완료 **마커가 존재**한다). 실측으로 `notEqual(status, 0)`이 공허하게 통과하던 자리가 있었다 — `spawnSync`는 timeout 시 `status: null`·`signal: 'SIGTERM'`을 주므로 버그가 있는 세계에서도 통과했고 벽시계가 유일한 검출자였다. **폴링 대기에 `execFileSync('sleep', …)`를 쓰지 말 것** — 폴 1회당 프로세스 스폰이라 부하가 곧 폴링 비용이고, 관측된 간헐 실패가 전부 이 형태에서 났다. `waitUntil`(동기) / `waitUntilAsync`(자식 프로세스를 다루는 테스트 — 동기 sleep은 SIGCHLD 수확을 막아 좀비를 "살아 있음"으로 읽는다)를 쓴다. **테스트가 제품 데이터를 건드리면 안 된다** — 이벤트 로그는 검증된 install state root(0700, symlink 없는 경로)에만 쓰므로, 테스트는 임시 HOME과 fixture state root(`realpath`로 푼 임시 디렉터리)를 쓰고 소유자의 라이브 로그에 닿지 않는다. 테스트 작성 시 주의: `execFileSync`는 반드시 `encoding:'utf8'`을 줄 것 (없으면 Buffer 반환 → `.trim()` 에러). 병렬 실행에서 `__pycache__`가 spurious 실패를 유발할 수 있어 `.gitignore` 처리돼 있다. **node 테스트 프로세스 안에 http 서버를 띄워 훅에 응답시키려 하지 말 것** — `execFileSync`가 자기 event loop를 막아 서버가 요청을 처리하지 못한다. stub 서버가 필요하면 Python driver(스레드 서버 + subprocess)에서 띄운다.
+**테스트가 제품 데이터를 건드리면 안 된다** — 이벤트 로그는 검증된 install state root(0700, symlink 없는 경로)에만 쓰므로, 테스트는 임시 HOME과 fixture state root(`realpath`로 푼 임시 디렉터리)를 쓰고 소유자의 라이브 로그에 닿지 않는다. 테스트 작성 시 주의: `execFileSync`는 반드시 `encoding:'utf8'`을 줄 것 (없으면 Buffer 반환 → `.trim()` 에러). 병렬 실행에서 `__pycache__`가 spurious 실패를 유발할 수 있어 `.gitignore` 처리돼 있다.
 ## 아키텍처 (큰 그림)
 
-**2층 구조: 플랫폼 무관 코어 1벌 + 얇은 host adapter.** 인덱스·임베딩 런타임은 Laya가 소유한다(아래 host route, `laya_resident_service.py`).
+**도메인 구조: 플랫폼 무관 기능은 `memvane/`에, host별 진입은 얇은 adapter에 둔다.** 인덱스·임베딩 런타임은 resident service가 소유한다.
 
 ```
-core/      ← 모든 로직. 플랫폼/도메인 무관 core. stdin {prompt,cwd} → stdout 훅 JSON
+memvane/   ← 도메인별 구현과 공통 kernel
+entry/     ← 프로세스 진입점
 hooks/     ← Claude/Codex/Gemini run-hook 디스패처 + hooks.json/hooks-codex.json. route 분류 후 선택된 route만 코어로 패스스루
-hermes_adapter/ ← Hermes Agent plugin hook adapter(pre_llm_call/on_session_start/pre_tool_call/post_tool_call) → core로 패스스루
+hermes_adapter/ ← Hermes Agent plugin hook adapter(pre_llm_call/on_session_start/pre_tool_call/post_tool_call) → memvane으로 패스스루
 ```
 
 편집 후 자동 인덱싱: 선택된 route의 PostToolUse `index` action이 Laya full-scan sync owner를 깨운다(`laya_host_response.py`). 성공한 agent Bash(`file-change-event`)도 같은 full-scan wake를 낸다. 실제 인덱싱은 hook 밖의 durable worker가 한다.
 
-host route의 분류·실패 동작은 `host-route.md`를 읽는다.
+host route의 분류·실패 동작은 `memvane/host/README.md`를 읽는다.
 
 영속 파일·디렉터리 identity는 canonical 경로와 inode 및 기록된 내용·metadata 필드로 대조한다. macOS APFS의 `st_dev`는 부팅마다 달라질 수 있어 프로세스 간 대조에서 제외한다. 저장된 dev 값·endpoint ID·manifest 바이트와 SHA·scopeId seed는 유지한다. 서로 다른 부팅에 봉인된 두 reader endpoint record의 `*_node`(project·state·저장소)도 inode로 대조한다(`laya_journal_reader.records_agree`의 선택 검증과 reader lease journal 이미지 대조). 같은 프로세스의 fd/path·전후 관측은 dev도 대조하고, 원문 탐색의 장치 경계는 열린 root fd의 현재 dev를 기준으로 한다.
 - **쓰기 반환값을 확인할지 말지는 "조용한 실패가 무엇을 잃는가"로 가른다.** 전부 확인하는 것은 과하고(노이즈이며 기존 판단을 뒤집는다) 전부 무시하는 것은 이 저장소에서 네 번 반복된 버그 클래스다. 기준 셋:
@@ -75,7 +76,7 @@ host route의 분류·실패 동작은 `host-route.md`를 읽는다.
   각 호출부에 **분류 근거를 한 줄 주석으로** 남긴다 — 다음 사람이 이 판단을 다시 하지 않게, 그리고 "전부 고쳐라" 스윕이 3번 항목을 건드리지 않게.
 ## 운영상 함정 (디버깅 시 참고)
 
-- **python 하한은 3.9다 — 새 `core/*.py`에 PEP 604(`X | None`) annotation을 쓰면 `from __future__ import annotations`를 함께 넣어라.** 훅은 `bare python3`을 실행하고(`hooks/run-hook`) macOS는 `/usr/bin/python3`으로 3.9를 탑재한다. annotation은 정의 시점에 평가되므로 future import가 없으면 **모듈 import 자체가 TypeError로 죽어** 훅이 exit 1(host의 "hook failed")이 되고 플러그인이 통째로 무동작한다. 이 클래스는 개발 머신 python이 3.10+면 **전혀 보이지 않는다** — 실측으로 시스템 python 3.9에서 764개 중 365개가 실패하는 동안 3.13에서는 0 실패였다. 이 클래스를 잡는 전용 테스트는 없으므로 리뷰에서 확인하고, `match`/`except*`처럼 future import로 구제되지 않는 3.10+ 전용 구문도 쓰지 않는다. 시스템 python으로 `npm test`를 돌리면 남는 실패는 제품 결함이 아니라 환경 산물이다: PyYAML 대조 테스트(시스템 python에 PyYAML 부재 — 테스트가 가용성을 의도적으로 단정한다).
+- **python 하한은 3.9다 — 새 Python 모듈에 PEP 604(`X | None`) annotation을 쓰면 `from __future__ import annotations`를 함께 넣어라.** 훅은 `bare python3`을 실행하고(`hooks/run-hook`) macOS는 `/usr/bin/python3`으로 3.9를 탑재한다. annotation은 정의 시점에 평가되므로 future import가 없으면 **모듈 import 자체가 TypeError로 죽어** 훅이 exit 1(host의 "hook failed")이 되고 플러그인이 통째로 무동작한다. 이 클래스는 개발 머신 python이 3.10+면 **전혀 보이지 않는다** — 실측으로 시스템 python 3.9에서 764개 중 365개가 실패하는 동안 3.13에서는 0 실패였다. 이 클래스를 잡는 전용 테스트는 없으므로 리뷰에서 확인하고, `match`/`except*`처럼 future import로 구제되지 않는 3.10+ 전용 구문도 쓰지 않는다. 시스템 python으로 `npm test`를 돌리면 남는 실패는 제품 결함이 아니라 환경 산물이다: PyYAML 대조 테스트(시스템 python에 PyYAML 부재 — 테스트가 가용성을 의도적으로 단정한다).
 - **`queryTimeout`(기본 **5초**)의 정의는 `memvane/settings/config.py`의 `DEFAULT_CONFIG["queryTimeout"]` 하나다.** `context_learning/selection_read.py`가 학습 선택 읽기의 deadline으로 쓴다(0.2~30초 클램프). hook 프로세스 전체 deadline은 `memvane/kernel/hook_budget.py`가 정한다(기본 18초, `QMD_HOOK_TOTAL_SECONDS`로 2~20초). **"3초 예산"을 기본값이나 판정 기준으로 인용하지 말 것** — 근거 없는 수치다. 상세는 `docs/settings.md`의 "blocking 훅의 시간 예산".
 - **macOS 시스템 python 3.9의 Apple libsqlite3는 `-wal`·`-shm` 없이 남은 WAL 헤더 DB를 `?mode=ro`로 열지 못한다.** Homebrew python이 닫은 DB를 hook이 읽는 경로가 여기에 걸린다. 기존 DB를 읽기 전용으로 여는 코드는 `laya_store_primitives._query_only_uri`(darwin + 3.9에서 `mode=rw`와 `PRAGMA query_only`)를 쓴다. 새 읽기 경로에 `?mode=ro`를 직접 쓰지 말 것.
 - **빈 출력은 정상 동작일 수 있다.** 미온보딩 프로젝트(`legacy` route)·sandbox·결과 0건은 모두 의도적으로 무출력 종료한다. 빈 출력 ≠ 버그. 선택된 route의 모든 hook 호출은 설치 이벤트 로그 `<install state root>/events.jsonl`에 한 줄을 남긴다(`memvane/diagnostics/event_log.py`, `laya_host_response._event_scope`). recall 줄은 `outcome`(`served`/`empty`/`refused`), 최종 `reason`(`selected`/`no_results_after_filter`/`no_candidates`/refusal code), 경로상의 진단 `notes`(`laya_vector_*`·`laya_selector_*`·`laya_recall_proof_retry`·`laya_wiki_rows_filtered` 등), 실제 주입한 카드 `cards[{path, sha}]`, `selection_fallback`·`vector_fallback`·`degraded`(`worktree`·`reader_endpoint`)를 담고(schema3 reader recall은 `store_format`·`reader_endpoint`도 담는다), 프롬프트는 `{sha256, chars}`로만 남긴다. 설치 단위 파일이라 `install`·`session` 필드로 귀속된다. 쓰기는 best-effort라 hook을 실패시키지 않고 stdout(모델 컨텍스트)엔 나가지 않는다. 읽기는 `memvane:logs` 스킬(`skills/logs/scripts/logs.py`)로 한다.

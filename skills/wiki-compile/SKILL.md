@@ -36,7 +36,7 @@ Create or queue generated wiki markdown from a compact durable conclusion.
 
 ## Input contract
 
-The deterministic implementation path is `core/wiki_extract.py`, which converts compact input into `core/wiki_compile.py` candidate JSON.
+The deterministic implementation path is `memvane/wiki/compile/wiki_extract.py`, which converts compact input into `memvane/wiki/compile/wiki_compile.py` candidate JSON.
 
 Supported compact shape:
 
@@ -61,6 +61,6 @@ Also supported: `{"candidates":[...]}` with the same compact fields, plus an opt
 - Do not paste raw transcript, role-labeled chat logs, credentials, or temporary progress.
 - Query-time recall remains read-only; this skill is an explicit writer path.
 - The wrapper honors the project settings (`.memvane/settings.json`) opt-in and `compile.mode` (activation is `mode != "off"`) through core config.
-- Card-writing rules live in the bundle: `$ROOT/core/wiki_card_rules/default.md` (and `novel.md` for a novel project, e.g. one with `04_Manuscript/` at its root). Read them before composing a summary; the project wiki has no rules file of its own.
+- Card-writing rules live in the bundle: `$ROOT/memvane/wiki/card/rules/default.md` (and `novel.md` for a novel project, e.g. one with `04_Manuscript/` at its root). Read them before composing a summary; the project wiki has no rules file of its own.
 - The writer emits `status: generated`; recall serves a card only after auto-verify promotes it to `verified`. A card is never canon either way.
 - If the compact input is transcript-shaped, the extractor/writer rejects it and redacts transcript text in the candidate queue.
