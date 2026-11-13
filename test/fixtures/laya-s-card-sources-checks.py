@@ -181,22 +181,19 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         return self.publish_admitted(store, handle, admitted)
 
     def two_stores(self):
-        """A generation-format and a row-format store over one worktree registration."""
+        """Two independent row-format stores over one worktree registration."""
         # Fingerprints carry the worktree id, so equal attestations need the same worktree.
         repository, worktree = self.bind()
         stores = []
-        for path, rows in ((self.state / 'generation-format.db', False), (self.db, True)):
+        for path in (self.state / 'first.db', self.db):
             store = self.track(self.Store.create(str(path), project_root=str(self.root), repository=repository,
-                                                 worktree=worktree, scope_id=self.scope, row_generations=rows))
+                                                 worktree=worktree, scope_id=self.scope))
             stores.append((store, store.capture_view(worktree['worktreeId'])))
         return stores
 
     def source_rows(self, store, handle):
         """Card source rows of the head: ``card_sources`` ordinals or ``s_card_sources`` rows."""
-        if store._rows:
-            return len(self.card_source_rows(store, handle))
-        return store._db.execute('SELECT COUNT(*) FROM card_sources WHERE gen_id=?',
-                                 (store.head(handle)['gen_id'],)).fetchone()[0]
+        return len(self.card_source_rows(store, handle))
 
     def recall_output(self, store, handle):
         """What recall consumes: searched rows, their card locations and the cards' trust."""
@@ -207,34 +204,28 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
             locations = store.card_locations(pin, ['cards/a.md'])
         finally:
             store.release(pin)
-        if store._rows:
-            trust = [tuple(r) for r in store._db.execute(
-                'SELECT path,trust_digest,eligible FROM s_cards WHERE view_id=? AND gen_to IS NULL ORDER BY path',
-                (handle.view_id,))]
-        else:
-            trust = [tuple(r) for r in store._db.execute(
-                'SELECT path,trust_digest,eligible FROM wiki_members WHERE gen_id=? ORDER BY path',
-                (store.head(handle)['gen_id'],))]
+        trust = [tuple(r) for r in store._db.execute(
+            'SELECT path,trust_digest,eligible FROM s_cards WHERE view_id=? AND gen_to IS NULL ORDER BY path',
+            (handle.view_id,))]
         return dict(rows=rows, locations=locations, trust=trust)
 
-    def test_07_writer_legacy_card_citing_one_path_at_two_revisions_publishes_like_the_generation_format(self):
+    def test_07_writer_legacy_card_citing_one_path_at_two_revisions_publishes_in_two_stores(self):
         """The product producer reaches two observations of one source path.
 
         ``ingest_attested_card`` turns each frontmatter ``sourceRevisions``
         entry into a ``legacy_unbound`` fingerprint and dedupes only equal
         fingerprints; the reader rule it applies (``current_source=False``)
         does not compare revisions with the file, so one path at two shas is
-        one attestation with two sources of that path. The generation format
-        keeps both as ``card_sources`` ordinals.
+        one attestation with two sources of that path.
         """
         self.two_revision_card()
         results = {}
         (generation_store, generation_handle), (row_store, row_handle) = self.two_stores()
-        for name, store, handle in (('generation', generation_store, generation_handle),
+        for name, store, handle in (('first', generation_store, generation_handle),
                                     ('row', row_store, row_handle)):
             self.publish_two_revision_card(store, handle)
             results[name] = self.recall_output(store, handle)
-        generation = results['generation']
+        generation = results['first']
         self.assertEqual([row['path'] for row in generation['rows']], ['cards/a.md'])
         self.assertEqual(generation['locations'],
                          {'cards/a.md': ['notes/src.md#L1-L2', 'notes/src.md#L3-L4']})
