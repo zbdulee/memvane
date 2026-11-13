@@ -55,6 +55,11 @@ def _exception_detail(exc):
     return None
 
 
+def _read_v1_build(state):
+    from memvane.journal.api import build
+    return build.read_v1(state)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
@@ -160,12 +165,10 @@ def main(argv=None):
                     from memvane.journal.api import inspect_journal
                     result = {'status': 'inspected', 'journal': inspect_journal(journal),
                               'routeFile': str(state / 'route.json')}
-                    from memvane.journal.api import read_v1_build as read_build
-                    if read_build(state) is not None:
+                    if _read_v1_build(state) is not None:
                         result['initialBuild'] = product.initial_build_status(state)
                 elif args.action in ('index-build-status','index-build-rescan'):
-                    from memvane.journal.api import read_v1_build as read_build
-                    build = read_build(state)
+                    build = _read_v1_build(state)
                     if build is None or build['identity']['projectRoot'] != str(Path(args.project).resolve()):
                         raise ValueError('initial_build_project_mismatch')
                     result = (product.initial_build_status(state)

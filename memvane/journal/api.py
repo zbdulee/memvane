@@ -93,24 +93,25 @@ def service_worker_attestation(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def build_canonical(*args, **kwargs):
-    from memvane.journal.build_record import _canon as implementation
-    return implementation(*args, **kwargs)
+class _BuildOperations:
+    def canonical(self, *args, **kwargs):
+        from memvane.journal.build_record import _canon as implementation
+        return implementation(*args, **kwargs)
+
+    def private_dir(self, *args, **kwargs):
+        from memvane.journal.build_record import _private_dir as implementation
+        return implementation(*args, **kwargs)
+
+    def read_json(self, *args, **kwargs):
+        from memvane.journal.build_record import _read_json as implementation
+        return implementation(*args, **kwargs)
+
+    def read_v1(self, *args, **kwargs):
+        from memvane.journal.build_record import read_v1 as implementation
+        return implementation(*args, **kwargs)
 
 
-def build_private_dir(*args, **kwargs):
-    from memvane.journal.build_record import _private_dir as implementation
-    return implementation(*args, **kwargs)
-
-
-def read_build_json(*args, **kwargs):
-    from memvane.journal.build_record import _read_json as implementation
-    return implementation(*args, **kwargs)
-
-
-def read_v1_build(*args, **kwargs):
-    from memvane.journal.build_record import read_v1 as implementation
-    return implementation(*args, **kwargs)
+build = _BuildOperations()
 
 
 
@@ -150,3 +151,32 @@ def verify_preview_route(*args, **kwargs):
 def select_route(*args, **kwargs):
     from memvane.journal.route_selection import select_route as implementation
     return implementation(*args, **kwargs)
+
+
+class _WriterOperations:
+    def build_writer_scope(self, *args, **kwargs):
+        from memvane.journal.writer_scope import build_writer_scope as implementation
+        return implementation(*args, **kwargs)
+
+    def selected_v1_writer_scope(self, *args, **kwargs):
+        from memvane.journal.writer_scope import selected_v1_writer_scope as implementation
+        return implementation(*args, **kwargs)
+
+    def admission_proof(self, *args, **kwargs):
+        from memvane.journal.writer_scope import admission_proof as implementation
+        return implementation(*args, **kwargs)
+
+    def writer_store(self, *args, **kwargs):
+        from memvane.journal.writer_scope import writer_store as implementation
+        return implementation(*args, **kwargs)
+
+    def mark_new_write(self, *args, **kwargs):
+        from memvane.journal.writer_scope import mark_new_write as implementation
+        return implementation(*args, **kwargs)
+
+    def validate_normal_writer(self, *args, **kwargs):
+        from memvane.journal.writer_scope import validate_normal_writer as implementation
+        return implementation(*args, **kwargs)
+
+
+writer = _WriterOperations()

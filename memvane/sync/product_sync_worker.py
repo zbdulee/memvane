@@ -30,7 +30,8 @@ from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
-from memvane.journal.api import cas_mark_new_write, inspect_journal, read_v1_build, selected_project_proof as _selected
+from memvane.journal.api import build as build_record
+from memvane.journal.api import cas_mark_new_write, inspect_journal, selected_project_proof as _selected
 from memvane.provider.api import reviewed_provider_class
 ReviewedLocalQmdProvider = reviewed_provider_class()
 from memvane.provider.api import start_owned_embed_service
@@ -232,7 +233,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
     """Publish the registered main view under the existing build and sync owners."""
     from contextlib import ExitStack
     from memvane.install import api as build
-    from memvane.journal import writer_scope as normal
+    from memvane.journal.api import writer as normal
     from memvane.store.api import view_store_class
     ViewStore = view_store_class()
     state = Path(decision['stateRoot'])
@@ -262,7 +263,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
             with build.build_owner(state) as owned:
                 if not owned:
                     raise ResourceDeferred('owner_busy')
-                record = read_v1_build(state)
+                record = build_record.read_v1(state)
                 if record != expected_build:
                     raise IndexContractError('initial_build_identity_changed')
                 build.build_advance_v1(record, phase='ready' if complete else 'building',
@@ -373,7 +374,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     asks for query vectors (``resettle_selection``).
     """
     from contextlib import ExitStack
-    from memvane.journal import writer_scope as normal
+    from memvane.journal.api import writer as normal
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:
@@ -455,7 +456,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         vectors = {'spec': None}
     from memvane.store import api as v
     from memvane.store import api as checkout
-    from memvane.journal import writer_scope as normal
+    from memvane.journal.api import writer as normal
     from memvane.store.api import view_store_class
     ViewStore = view_store_class()
     info = normal.writer_store(writer)
@@ -618,7 +619,7 @@ def _mark_schema3_write(writer, proof, marks):
     ``proof`` is the pass's admission proof; the fresh one is kept in
     ``marks['proof']`` for ``_after_sync``.
     """
-    from memvane.journal import writer_scope as normal
+    from memvane.journal.api import writer as normal
     fresh = normal.mark_new_write(writer)
     expected_epoch = proof['selectionEpoch'] + (0 if proof.get('buildPending') else 1)
     if (fresh.get('selectionEpoch') != expected_epoch
@@ -685,7 +686,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     from memvane.store import api as values
     from memvane.journal import api as ledger
     from memvane.journal import journal_reader as reader
-    from memvane.journal import writer_scope as normal
+    from memvane.journal.api import writer as normal
     from memvane.wiki.card.api import card_support as source_spans
     from memvane.wiki.card import api as wiki_card
     from memvane.wiki.verify import api as wiki_verify_worker
@@ -849,7 +850,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     gets its vector generation from the same manifest.
     """
     from memvane.store import api as v
-    from memvane.journal import writer_scope as normal
+    from memvane.journal.api import writer as normal
     from memvane.wiki.card.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
     from memvane.store.api import regular as _regular
     from memvane.store import api as view_values
@@ -1114,7 +1115,7 @@ def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, 
 
     Returns ``(generation, vector)``; an unfinished fill keeps the lexical head.
     """
-    from memvane.journal import writer_scope as normal
+    from memvane.journal.api import writer as normal
     vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline)
     head = store.head(handle)
     if vector['state'] != 'complete':

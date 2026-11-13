@@ -13,7 +13,12 @@ import tempfile
 import time
 
 from memvane.kernel.errors import IndexContractError
-from memvane.journal.api import build_canonical as _canon, build_private_dir as _private_dir, read_build_json as _read_json, read_v1_build as read_v1
+from memvane.journal.api import build as build_record
+
+_canon = build_record.canonical
+_private_dir = build_record.private_dir
+_read_json = build_record.read_json
+read_v1 = build_record.read_v1
 from memvane.journal.types import MAX_RECORD_BYTES, V1_BUILD_SCHEMA, V1_BUILD_FILE, V1_BUILD_IDENTITY
 
 SCHEMA = 'laya-initial-build-v1'
