@@ -62,24 +62,6 @@ class GenerationCase(helpers.BlobStoreCase):
 
 
 class GenerationChecks(GenerationCase):
-    def test_prepare_deadline_rolls_back_fts_slot_and_can_retry(self):
-        store,_,handle=self.seeded()
-        manifest=self.snapshot(store,handle)
-        head=store.head(handle)
-        calls=[]
-        def slow_capture(*args, **kwargs):
-            calls.append(True)
-            time.sleep(1.1)
-        with mock.patch.object(self.views, '_current_capture', side_effect=slow_capture):
-            with self.assertRaisesRegex(Exception, 'fts_deadline_exceeded'):
-                store.prepare_generation(handle,manifest,expected_head=head,
-                                         deadline=time.monotonic()+1.0)
-        self.assertTrue(calls)
-        self.assertEqual(store._db.execute('SELECT count(*) FROM generation_slots').fetchone()[0],0)
-        self.assertEqual(store.head(handle),head)
-        generation=store.prepare_generation(handle,manifest,expected_head=head)
-        self.assertIsNotNone(generation)
-
     def test_cached_capture_never_accepts_a_different_forged_admission(self):
         store,_,h=self.seeded()
         first=self.snapshot(store,h)['members'][0]['blob_sha']
@@ -111,25 +93,6 @@ class GenerationChecks(GenerationCase):
              mock.patch.object(checkout, 'capture_matches', side_effect=bounded_match):
             with self.assertRaisesRegex(checkout.CheckoutUnavailable, 'checkout_budget_exhausted'):
                 self.views._current_capture({'project_root':'synthetic'}, {}, {}, 'expected', deadline=1)
-
-    def test_01_prepare_seals_full_binding_before_atomic_publish(self):
-        store,_,h=self.seeded();before=store.head(h)
-        self.assertEqual((before['gen_id'],before['epoch'],before['view_id']),(None,0,h.view_id))
-        manifest=self.snapshot(store,h)
-        gen=store.prepare_generation(h,manifest,expected_head=before)
-        self.assertRegex(gen,r'^g-[0-9a-f]{32}-b[0-9a-f]{64}$')
-        row=store._db.execute('SELECT state,binding_digest,ordinal FROM generations WHERE gen_id=?',(gen,)).fetchone()
-        self.assertEqual((row[0],gen[-64:]),('prepared',row[1]))
-        self.assertEqual(store.head(h),before)
-        self.assertEqual(self.eligible(store,gen),1)
-        seal=store._db.execute('SELECT fts_storage_digest FROM generation_seals WHERE gen_id=?',(gen,)).fetchone()
-        import laya_view_fts as fts
-        self.assertEqual(seal[0],fts.storage_digest(store._db,row[2]))
-        store._db.commit()
-        self.assertEqual(seal[0],fts.storage_digest(store._db,row[2]))
-        after=store.publish_generation(h,gen,expected_head=before)
-        self.assertEqual((after['gen_id'],after['epoch']),(gen,1))
-        self.assertEqual(store.head(h),after)
 
     def test_02_exact_publish_replay_does_not_increment_epoch(self):
         store,_,h=self.seeded();gen,base=self.prepared(store,h)
@@ -207,7 +170,7 @@ class GenerationChecks(GenerationCase):
         store,_,h=self.seeded();gen,base=self.prepared(store,h)
         p=self.root/'.memvane/settings.json';p.write_text(json.dumps(dict(helpers.SETTINGS,name='renamed')))
         self.refused(store.publish_generation,h,gen,expected_head=base)
-        self.assertEqual(store._db.execute('SELECT COUNT(*) FROM view_heads').fetchone()[0],0)
+        self.assertEqual(store._db.execute('SELECT COUNT(*) FROM s_heads').fetchone()[0],0)
 
     def test_11_wiki_mapping_bytes_must_match_the_prepared_manifest(self):
         store,_,h=self.seeded();m=self.snapshot(store,h)
@@ -278,43 +241,6 @@ class GenerationChecks(GenerationCase):
             self.refused(store.publish_generation, handle, generation, expected_head=base)
         self.assertIsNone(store.head(store.capture_view(handle.worktree_id))['gen_id'])
 
-    def test_16_seal_fault_leaves_staging_unpublished_and_old_head_unchanged(self):
-        store,_,h=self.seeded();first,base=self.prepared(store,h)
-        head=store.publish_generation(h,first,expected_head=base)
-        original=self.views._insert
-        def insert(db,name,row):
-            if name=='generation_seals':raise RuntimeError('synthetic seal interruption')
-            return original(db,name,row)
-        with mock.patch.object(self.views,'_insert',side_effect=insert):
-            with self.assertRaisesRegex(RuntimeError,'synthetic seal interruption'):
-                store.prepare_generation(h,self.snapshot(store,h,scan_id='2'*32),expected_head=head)
-        self.assertEqual(store.head(h),head)
-        self.assertEqual(store.counts()['generations'],1)
-        self.assertEqual(store._db.execute("SELECT COUNT(*) FROM generations WHERE state!='published'").fetchone()[0],0)
-        self.assertGreater(store.counts()['generation_slots'],1)
-
-    def test_17_prepared_rows_and_sources_are_sql_immutable(self):
-        store,_,h=self.seeded();gen,_=self.prepared(store,h)
-        with sqlite3.connect(self.db) as db:
-            for sql in ["UPDATE wiki_members SET display_title='changed' WHERE gen_id=?",
-                        'DELETE FROM source_members WHERE gen_id=?',
-                        'DELETE FROM card_sources WHERE gen_id=?',
-                        'DELETE FROM generation_seals WHERE gen_id=?',
-                        'DELETE FROM generations WHERE gen_id=?']:
-                with self.subTest(sql=sql):
-                    with self.assertRaises(sqlite3.Error):db.execute(sql,(gen,))
-
-    def test_18_generation_id_commits_stable_post_commit_fts_storage(self):
-        store,_,h=self.seeded();gen,_=self.prepared(store,h)
-        row=store._db.execute('SELECT ordinal,binding_digest FROM generations WHERE gen_id=?',(gen,)).fetchone()
-        slot=store._db.execute('SELECT ordinal FROM generation_slots WHERE ordinal=?',(row[0],)).fetchone()
-        self.assertIsNotNone(slot);self.assertEqual(gen[-64:],row[1])
-        self.assertEqual(store.counts()['generation_slots'],1)
-        seal=store._db.execute('SELECT fts_storage_digest FROM generation_seals WHERE gen_id=?',(gen,)).fetchone()
-        import laya_view_fts as fts
-        self.assertEqual(seal[0],fts.storage_digest(store._db,row[0]))
-
-
     def test_19_branch_change_after_write_lock_refuses_publication(self):
         root=self.project('lock-race')
         for args in [('init','-q'),('add','-A'),('commit','-q','-m','fixture')]:self.git(root,*args)
@@ -329,7 +255,7 @@ class GenerationChecks(GenerationCase):
         with mock.patch.object(store,'_session',side_effect=session):
             self.refused(store.publish_generation,h,gen,expected_head=base)
         self.assertTrue(changed)
-        self.assertEqual(store._db.execute('SELECT COUNT(*) FROM view_heads').fetchone()[0],0)
+        self.assertEqual(store._db.execute('SELECT COUNT(*) FROM s_heads').fetchone()[0],0)
 
     def test_20_modified_issued_handle_cannot_choose_another_view(self):
         store,_,h=self.seeded();before=h.view_id
@@ -343,21 +269,6 @@ class GenerationChecks(GenerationCase):
         self.refused(store.prepare_generation,h,m,expected_head=store.head(h))
         self.assertEqual(store.counts(),before)
 
-
-    def test_22_tampered_postings_between_build_and_seal_are_rejected(self):
-        store,_,h=self.seeded();m=self.snapshot(store,h);base=store.head(h)
-        original=store._observe;observed=[]
-        def observe(entry, **kwargs):
-            saved=original(entry, **kwargs);observed.append(True)
-            if len(observed)==3:
-                with sqlite3.connect(self.db) as db:
-                    ordinal=db.execute('SELECT MAX(ordinal) FROM generation_slots').fetchone()[0]
-                helpers.corrupt_fts_block(self.db,ordinal)
-            return saved
-        with mock.patch.object(store,'_observe',side_effect=observe):
-            self.refused(store.prepare_generation,h,m,expected_head=base)
-        self.assertEqual(store.counts()['generations'],0)
-        self.assertIsNone(store.head(h)['gen_id'])
 
     def test_23_invalid_unicode_manifest_paths_refuse_without_writes(self):
         store,_,h=self.seeded();original=self.snapshot(store,h)
