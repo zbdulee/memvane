@@ -438,8 +438,6 @@ def _schema3_search(bound, text):
     from resource_deferred import ResourceDeferred
     decision, proof = bound
     project = Path(decision['projectRoot'])
-    if project_dir.layout(decision['projectRoot']) == 'split':
-        raise ValueError('project_dir_split')
     names = tuple(sorted(wiki_index_roots(decision['collections'])))
     with sync_owner(Path(decision['queuePath'])) as owner:
         if owner is None:

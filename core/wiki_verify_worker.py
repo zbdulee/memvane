@@ -981,7 +981,6 @@ def process_verify_job(
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
     import wiki_selected_laya
-    job = rebased_job(root, job)
     selected_route = wiki_selected_laya.selected(root)
     checkout = None
     if selected_route is not None and isinstance(job.get('sourceFingerprints'), dict):
@@ -1388,17 +1387,6 @@ def apply_negative_verdict(
     return True
 
 
-def rebased_job(root: Path, job: dict) -> dict:
-    """A queued job's card paths in the project's active folder.
-
-    A job queued before the project folder moved names
-    ``.auto-context/wiki/...``; it is the same card under ``.memvane/wiki``.
-    """
-    if not isinstance(job, dict):
-        return job
-    moved = {key: project_dir.rebase_rel(job[key], root)
-             for key in ('targetPath', 'pendingPath') if isinstance(job.get(key), str)}
-    return {**job, **moved} if moved else job
 
 
 def _dedup_by_target(rows: list, root: Path | None = None) -> list:
@@ -1408,7 +1396,7 @@ def _dedup_by_target(rows: list, root: Path | None = None) -> list:
     for raw_line, job in rows:
         if job is None:
             continue
-        key = project_dir.rebase_rel(job.get("targetPath", ""), root)
+        key = job.get("targetPath", "")
         ts = wcw._parse_ts(job.get("ts")) or 0.0
         if key not in latest:
             order.append(key)
@@ -1456,7 +1444,7 @@ def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict
         for _, raw_job in rows:
             if not isinstance(raw_job, dict):
                 continue
-            job = rebased_job(root, raw_job)
+            job = raw_job
             rel = job.get('targetPath')
             if not isinstance(rel, str) or not rel or Path(rel).is_absolute():
                 continue
@@ -1536,7 +1524,6 @@ def _cleanup_pending(root: Path, queue: Path, claimed: Path, snapshots: dict, ro
                             return False
                         if not isinstance(job, dict):
                             return False
-                        job = rebased_job(root, job)
                         pending = job.get('pendingPath')
                         if isinstance(pending, str):
                             referenced.add(root / pending)
@@ -1642,7 +1629,7 @@ def run(
     cleanup_paths = set()
     for _, job in rows:
         if isinstance(job, dict):
-            rebased = rebased_job(root, job)
+            rebased = job
             pending = rebased.get('pendingPath')
             if isinstance(pending, str) and _valid_cleanup_marker(rebased):
                 cleanup_paths.add((root / pending, _cleanup_job_key(rebased)))
@@ -1674,7 +1661,7 @@ def run(
     processed_count = 0
     try:
         for idx, (raw_line, job) in enumerate(to_process):
-            rebased = rebased_job(root, job)
+            rebased = job
             pending = rebased.get('pendingPath')
             if (job.get('_requeue_count') and isinstance(pending, str)
                     and (root / pending, _cleanup_job_key(rebased)) in cleanup_paths):
@@ -1708,7 +1695,7 @@ def run(
                 except ValueError:
                     continue
                 if isinstance(deferred, dict):
-                    pending = rebased_job(root, deferred).get('pendingPath')
+                    pending = deferred.get('pendingPath')
                     if isinstance(pending, str):
                         remaining_paths.add(root / pending)
             for path, fingerprint in pending_snapshots.items():

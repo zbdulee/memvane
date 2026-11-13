@@ -434,7 +434,7 @@ def resolve_target(root: Path, wiki_root: Path, candidate: dict, suggested_type:
         if outcome == "use":
             return normalized, "explicit", []
         if outcome == "legacy":
-            target = (root / project_dir.rebase_rel(raw_target.strip(), root)).resolve()
+            target = (root / raw_target.strip()).resolve()
             try:
                 target.relative_to(wiki_root)
             except ValueError:

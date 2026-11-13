@@ -230,7 +230,6 @@ def _safe_queue_path(project_root, configured_path=None):
     if (len(rel.parts) < 3 or not project_dir.is_folder_name(rel.parts[0])
             or rel.parts[1] != "compile"):
         return None
-    rel = Path(project_dir.rebase_rel(rel.as_posix(), project_root))
     root = Path(project_root).resolve()
     target = root / rel
     current = root

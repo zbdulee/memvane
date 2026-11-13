@@ -30,8 +30,6 @@ def _owner_scope(bound, owner):
 def _compile_proof(decision, *, owner=None):
     import project_dir
     from laya_install_journal import verify_selected_route_for_write
-    if project_dir.layout(decision['projectRoot'])=='split':
-        raise ValueError('project_dir_split')
     active=_compile_owner.get()
     if owner is None and active is not None and active[0][0]==decision:
         owner=active[1]

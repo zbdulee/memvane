@@ -58,9 +58,6 @@ INCARNATION = re.compile(r"[0-9a-f]{32}\Z")
 PACKAGE_GENERATION = re.compile(r"g-[0-9a-f]{32}\Z")
 COLLECTION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 PROVIDER_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
-# A write action on a project whose `.memvane/` lost its settings to an older
-# branch checkout (``project_dir.layout`` ``split``).
-PROJECT_DIR_SPLIT = "project_dir_split"
 ROUTED_ACTIONS = frozenset({"recall", "update", "update-queued", "gate", "posttool",
                             "index", "compile", "file-change-event"})
 MAX_HOOK_BYTES = 2 * 1024 * 1024
@@ -131,8 +128,7 @@ def selected_collection_roots(project_root, collections):
     roots = {}
     for item in collections:
         value = item['sourceRoot']
-        if not _canonical_absolute(value) or not (Path(value).is_dir() or
-                                                  _split_wiki(Path(project_root), value)):
+        if not _canonical_absolute(value) or not Path(value).is_dir():
             raise ValueError('selected_collection_root_invalid')
         roots[item['name']] = value
     raw_root = Path(next(item['sourceRoot'] for item in collections
@@ -298,25 +294,12 @@ def _multi_compile_supported(raw: dict, cfg: dict, root: Path,
         return False
 
 
-def _split_wiki(root: Path, value: object) -> bool:
-    """``<root>/.memvane/wiki`` gone under an older branch checkout (``split``).
-
-    The selected identity still names it: search keeps the published index and
-    the edit gate keeps working while every writer holds (``project_dir_split``).
-    """
-    folder = Path(root) / project_dir.CURRENT
-    return (value in (project_dir.CURRENT + "/" + project_dir.WIKI,
-                      str(folder / project_dir.WIKI)) and
-            not os.path.lexists(folder / project_dir.WIKI) and
-            project_dir._real_dir(folder) and project_dir.layout(root) == "split")
 
 
 def _source_for_collection(root: Path, relative: object) -> str:
     if (not isinstance(relative, str) or not relative or Path(relative).is_absolute()
             or ".." in Path(relative).parts):
         raise ValueError("invalid_collection_path")
-    if _split_wiki(root, relative):
-        return str(root / relative)
     source = root / relative
     if (source.is_symlink() or not source.is_dir()
             or any(parent.is_symlink() for parent in (source, *source.parents)
@@ -764,13 +747,6 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if len(records) != 1:
         return _decision("blocked", "ambiguous_route_records")
     root, auto, path = records[0]
-    if action not in ("recall", "gate") and project_dir.layout(root) == "split":
-        # An older branch is checked out over a moved project: its
-        # `.auto-context/` is not indexed and a missing or partial
-        # `.memvane/wiki` is never published as a deletion. Search keeps the
-        # published index and the edit gate keeps allowing edits; every index
-        # and wiki writer holds.
-        return _decision("blocked", PROJECT_DIR_SPLIT)
     return _classify_record(root, auto, path, current)
 
 
