@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.host import host_response as response
 from memvane.journal import install_journal as journal
 
@@ -22,7 +22,7 @@ class GateResponseChecks(unittest.TestCase):
         self.root = str(Path(self.temp.name).resolve())
         self.decision = {'state': 'candidate', 'projectRoot': self.root,
                          'pluginRoot': str(Path(response.__file__).resolve().parents[1])}
-        self.proof = {'productRouteAllowed': True}
+        self.proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
         self.event = {'cwd': self.root, 'hook_event_name': 'PreToolUse',
                       'tool_name': 'Edit', 'tool_input': {'file_path': 'note.md'}}
 
@@ -49,26 +49,26 @@ class GateResponseChecks(unittest.TestCase):
     def test_worktree_codex_allow_is_empty(self):
         main = {**self.decision}
         decision = {'state': 'worktree', 'mainRoute': main}
-        with patch.object(journal, 'verify_selected_route_read_only',
-                          return_value={'readOnlyAllowed': True}):
+        with patch.object(journal, 'verify_selected_route',
+                          return_value=self.proof):
             self.assertEqual(response.serve_selected('gate', 'codex', decision, self.event), {})
 
     def test_worktree_claude_allow_is_empty(self):
         decision = {'state': 'worktree', 'mainRoute': self.decision}
-        with patch.object(journal, 'verify_selected_route_read_only',
-                          return_value={'readOnlyAllowed': True}):
+        with patch.object(journal, 'verify_selected_route',
+                          return_value=self.proof):
             self.assertEqual(response.serve_selected('gate', 'claude', decision, self.event), {})
 
     def test_worktree_other_hosts_and_proof_rejection(self):
         decision = {'state': 'worktree', 'mainRoute': self.decision}
-        with patch.object(journal, 'verify_selected_route_read_only',
-                          return_value={'readOnlyAllowed': True}):
+        with patch.object(journal, 'verify_selected_route',
+                          return_value=self.proof):
             self.assertEqual(response.serve_selected('gate', 'hermes', decision, self.event),
                              {'action': 'continue'})
-        with patch.object(journal, 'verify_selected_route_read_only',
-                          return_value={'readOnlyAllowed': False}):
+        with patch.object(journal, 'verify_selected_route',
+                          return_value={**self.proof, 'productRouteAllowed': False}):
             for host in ('codex', 'claude', 'hermes'):
-                with self.assertRaisesRegex(response.HostResponseError, 'worktree_read_only_unapproved'):
+                with self.assertRaisesRegex(response.HostResponseError, 'worktree_selection_unapproved'):
                     response.serve_selected('gate', host, decision, self.event)
 
     def test_invalid_gate_exits_three_without_output_for_both_hosts(self):

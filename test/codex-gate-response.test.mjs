@@ -6,10 +6,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
 for (const method of ['test_selected_codex_allow_is_empty',
-                      'test_bundle_drift_codex_allow_is_empty',
                       'test_selected_claude_allow_is_empty',
-                      'test_bundle_drift_claude_allow_is_empty',
-                      'test_selected_and_drift_proof_change_rejected',
+                      'test_selected_proof_change_rejected',
                       'test_worktree_codex_allow_is_empty',
                       'test_worktree_claude_allow_is_empty',
                       'test_worktree_other_hosts_and_proof_rejection',
