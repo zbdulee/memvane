@@ -195,7 +195,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             return {'state': 'held_branch', 'survivors': [], 'reason': hold}
         shared = set()
         if shared_cards:
-            from memvane.host.host_response import _verified_wiki_row
+            from memvane.wiki.card.api import verified_wiki_row
             wiki_name = next((item['name'] for item in selected[0]['collections']
                               if item['role'] == 'wiki'
                               and Path(item['sourceRoot']).resolve() == wiki_root), None)
@@ -211,7 +211,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
                         candidate != old_card and all(item is not None for item in proof)
                         and any(key(item) == key(revision) for item in proof)
                         and not any(key(item) == deleted for item in proof)
-                        and _verified_wiki_row({
+                        and verified_wiki_row({
                             'path': wiki_name + '/' + candidate.relative_to(wiki_root).as_posix(),
                             'body': body}, selected[0], current_source=True)
                         for candidate, body, proof in observed)

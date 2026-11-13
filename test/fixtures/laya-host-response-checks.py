@@ -16,6 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
 from memvane.diagnostics import event_log
 from memvane.host import host_response as response
+from memvane.wiki.card import api as card_api
 import laya_index_vector as vector
 
 SCOPE = "6" * 32
@@ -536,21 +537,21 @@ class ResponseChecks(unittest.TestCase):
             digest = yaml_scalars.card_body_hash(frontmatter.replace('{digest}', '0' * 64))
             body = frontmatter.replace('{digest}', digest)
             card = row(path='wiki/card.md', body=body)
-            self.assertTrue(response._verified_wiki_row(card, decision))
+            self.assertTrue(card_api.verified_wiki_row(card, decision))
             before = source.stat()
             os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
-            self.assertTrue(response._verified_wiki_row(card, decision))
+            self.assertTrue(card_api.verified_wiki_row(card, decision))
             source.write_text('new source not compiled yet', encoding='utf-8')
-            self.assertFalse(response._verified_wiki_row(card, decision))
-            self.assertTrue(response._verified_wiki_row(
+            self.assertFalse(card_api.verified_wiki_row(card, decision))
+            self.assertTrue(card_api.verified_wiki_row(
                 card, decision, current_source=False))
-            self.assertFalse(response._verified_wiki_row(
+            self.assertFalse(card_api.verified_wiki_row(
                 row(path='wiki/card.md', body=body.replace('Source fact.', 'Forged fact.')),
                 decision, current_source=False))
             retained = source.stat()
             source.write_text('modified source', encoding='utf-8')
             os.utime(source, ns=(retained.st_atime_ns, retained.st_mtime_ns))
-            self.assertFalse(response._verified_wiki_row(card, decision))
+            self.assertFalse(card_api.verified_wiki_row(card, decision))
 
     def test_v2_hierarchy_never_backfills_raw_when_wiki_unverified(self):
         import laya_index_capacity
@@ -570,7 +571,7 @@ class ResponseChecks(unittest.TestCase):
         with patch.object(response, '_v2_phase', side_effect=[
                 ([row(path='wiki/card.md')], True),
                 ([row(path='raw/chapter.md')], True)]) as phase, \
-             patch.object(response, '_verified_wiki_row', return_value=False), \
+             patch.object(card_api, 'verified_wiki_row', return_value=False), \
              patch.object(laya_index_capacity, 'open_pinned_candidate_query',
                           return_value=FakeBoundCandidates()), \
              patch.object(wiki_freshness, 'unresolved_pending_refreshes_strict',
@@ -594,22 +595,22 @@ class ResponseChecks(unittest.TestCase):
                 return self.span_card({**revision, 'collection': collection,
                                        'path': path})
             for current in (False, True):
-                self.assertTrue(response._verified_wiki_row(
+                self.assertTrue(card_api.verified_wiki_row(
                     card('raw'), decision, current_source=current))
-                self.assertTrue(response._verified_wiki_row(
+                self.assertTrue(card_api.verified_wiki_row(
                     card('other-project'), decision, current_source=current))
             why = {}
-            self.assertFalse(response._verified_wiki_row(
+            self.assertFalse(card_api.verified_wiki_row(
                 card('wiki'), decision, current_source=False, reasons=why))
             self.assertEqual(why, {'source_outside_raw_roots': 1})
             (project / 'outside.md').write_bytes(self.SPAN_SOURCE)
             why = {}
-            self.assertFalse(response._verified_wiki_row(
+            self.assertFalse(card_api.verified_wiki_row(
                 card('other-project', 'outside.md'), decision,
                 current_source=False, reasons=why))
             self.assertEqual(why, {'source_outside_raw_roots': 1})
             why = {}
-            self.assertFalse(response._verified_wiki_row(
+            self.assertFalse(card_api.verified_wiki_row(
                 row(path='wiki/card.md', body='---\ntitle: Draft\nstatus: generated\n'
                     'createdBy: qmd-auto-context\n---\nbody\n'),
                 decision, current_source=False, reasons=why))
@@ -831,8 +832,8 @@ class ResponseChecks(unittest.TestCase):
                            '---\n## Summary\nSource fact.\n')
             digest = yaml_scalars.card_body_hash(frontmatter.replace('{digest}', '0' * 64))
             card = row(path='wiki/keep.md', body=frontmatter.replace('{digest}', digest))
-            self.assertTrue(response._verified_wiki_row(card, decision))
-            self.assertFalse(response._verified_wiki_row(
+            self.assertTrue(card_api.verified_wiki_row(card, decision))
+            self.assertFalse(card_api.verified_wiki_row(
                 card, decision, source_skip_paths=('build',)))
 
     def test_v2_refills_before_fusion_and_reports_exclusion_cap(self):
@@ -1046,26 +1047,26 @@ class ResponseChecks(unittest.TestCase):
                     'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
                     + json.dumps(revision) + '\n{digest_line}---\n## Summary\nSource fact.\n')
             absent = base.replace('{digest_line}', '')
-            self.assertTrue(response._verified_wiki_row(
+            self.assertTrue(card_api.verified_wiki_row(
                 row(path='wiki/card.md', body=absent), decision, current_source=False))
             empty = base.replace('{digest_line}', 'verifiedBodyHash: ""\n')
-            self.assertTrue(response._verified_wiki_row(
+            self.assertTrue(card_api.verified_wiki_row(
                 row(path='wiki/card.md', body=empty), decision, current_source=False))
             bound = base.replace('{digest_line}', 'verifiedBodyHash: {digest}\n')
             digest = yaml_scalars.card_body_hash(bound.replace('{digest}', '0' * 64))
             good = bound.replace('{digest}', digest)
-            self.assertTrue(response._verified_wiki_row(
+            self.assertTrue(card_api.verified_wiki_row(
                 row(path='wiki/card.md', body=good), decision, current_source=False))
             # A present digest still binds the bytes.
             for forged in (good.replace('Source fact.', 'Forged fact.'),
                            bound.replace('{digest}', '0' * 64),
                            bound.replace('{digest}', 'not-a-digest')):
-                self.assertFalse(response._verified_wiki_row(
+                self.assertFalse(card_api.verified_wiki_row(
                     row(path='wiki/card.md', body=forged), decision, current_source=False))
             # Provenance is still required: no sourceRevisions, no card.
             legacy = ('---\ntitle: Legacy\nstatus: verified\n'
                       'createdBy: qmd-auto-context\n---\n## Summary\nOld fact.\n')
-            self.assertFalse(response._verified_wiki_row(
+            self.assertFalse(card_api.verified_wiki_row(
                 row(path='wiki/card.md', body=legacy), decision, current_source=False))
 
     # ── verifier-cited source spans on selected v2 wiki cards ──────────────────
@@ -1110,17 +1111,17 @@ class ResponseChecks(unittest.TestCase):
             for spans_text, expected in ((single, ('docs/a.md#L2-L2',)),
                                          (multi, ('docs/a.md#L2-L3',))):
                 located = {}
-                self.assertTrue(response._verified_wiki_row(
+                self.assertTrue(card_api.verified_wiki_row(
                     self.span_card(revision, spans_text), decision, frozenset(), located))
                 self.assertEqual(located, {'wiki/card.md': expected})
             # Legacy card without the key: accepted, file-level only.
             located = {}
-            self.assertTrue(response._verified_wiki_row(
+            self.assertTrue(card_api.verified_wiki_row(
                 self.span_card(revision), decision, frozenset(), located))
             self.assertEqual(located, {})
             # Same line bytes, but the revision moved: the whole card is stale.
             (project / 'docs' / 'a.md').write_bytes(b'new\n' + self.SPAN_SOURCE)
-            self.assertFalse(response._verified_wiki_row(
+            self.assertFalse(card_api.verified_wiki_row(
                 self.span_card(revision, single), decision))
 
     def test_v2_wiki_bad_or_stale_source_spans_reject_the_card(self):
@@ -1141,7 +1142,7 @@ class ResponseChecks(unittest.TestCase):
             for name, entries in cases.items():
                 with self.subTest(name=name):
                     located = {}
-                    self.assertFalse(response._verified_wiki_row(
+                    self.assertFalse(card_api.verified_wiki_row(
                         self.span_card(revision, 'sourceSpans:\n' + entries),
                         decision, frozenset(), located))
                     self.assertEqual(located, {})
@@ -1149,7 +1150,7 @@ class ResponseChecks(unittest.TestCase):
                                'inline_value': 'sourceSpans: []\n',
                                'empty_list': 'sourceSpans:\n'}.items():
                 with self.subTest(name=name):
-                    self.assertFalse(response._verified_wiki_row(
+                    self.assertFalse(card_api.verified_wiki_row(
                         self.span_card(revision, text), decision))
 
     def test_v2_source_locations_follow_returned_wiki_rows_only(self):

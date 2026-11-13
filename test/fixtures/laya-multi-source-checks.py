@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
 from memvane.host import host_response as laya_host_response
+from memvane.wiki.card import api as card_api
 from memvane.route.index_host_route import wiki_index_roots
 from memvane.wiki.card import yaml_scalars
 from laya_index_source_port import (publish_collections_from_source,
@@ -144,7 +145,7 @@ class MultiSourceTests(unittest.TestCase):
                         'collectionRoots': {'plans': str(self.raw), 'wiki': str(self.wiki)},
                         'collections': collections}
             locations = {}
-            self.assertTrue(laya_host_response._verified_wiki_row(
+            self.assertTrue(card_api.verified_wiki_row(
                 row, decision, source_locations=locations))
             context = laya_host_response.render_context(
                 decision, [row], source_locations=locations)

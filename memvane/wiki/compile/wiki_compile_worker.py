@@ -493,7 +493,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
     Checked BEFORE any extractor spawn so one content revision is paid for once
     across triggers and after a claim/replay. The proof is the durable card
     itself (no new ledger), judged by the selected recall contract
-    (`laya_host_response._verified_wiki_row`: qmd-created, verified, body digest,
+    (`card_api.verified_wiki_row`: qmd-created, verified, body digest,
     raw-collection revisions whose sha256/size match the file now) — a
     skipped source is exactly one that recall would serve.
 
@@ -507,7 +507,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
     if bound is None:
         return None
     try:
-        from memvane.host import host_response as laya_host_response
+        from memvane.wiki.card import api as card_api
         from memvane.wiki.card import wiki_card
         decision = bound[0]
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
@@ -596,7 +596,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
                         return None
                 except (AttributeError, TypeError, ValueError):
                     return None
-            if not laya_host_response._verified_wiki_row({"body": body}, decision, pending_sources):
+            if not card_api.verified_wiki_row({"body": body}, decision, pending_sources):
                 return None
             proof = proof or rel_card.as_posix()
         return proof

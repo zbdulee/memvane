@@ -1840,7 +1840,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
     if selected is not None and action == "updated":
-        from memvane.host.host_response import _verified_wiki_row
+        from memvane.wiki.card.api import verified_wiki_row
         wiki_name = next((item['name'] for item in selected[0]['collections']
                           if item['role'] == 'wiki' and
                           Path(item['sourceRoot']).resolve() == wiki_root.resolve()), None)
@@ -1850,7 +1850,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                               'findings': ['selected_wiki_unresolved']}
             append_jsonl(candidate_path, record)
             return 0
-        if wiki_name is not None and _verified_wiki_row(
+        if wiki_name is not None and verified_wiki_row(
                 {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
                  'body': old}, selected[0], current_source=False):
             if (not verify_cfg.get("enabled", True)

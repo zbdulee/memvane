@@ -974,9 +974,24 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/card/api.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/card/source_spans.py": {
       "context": "wiki/card",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/trust.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/types.py": {
+      "context": "wiki/card",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/wiki/card/wiki_card.py": {

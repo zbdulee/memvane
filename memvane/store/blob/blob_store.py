@@ -32,11 +32,11 @@ LEGACY_RESULT_SCHEMA = 'memvane-legacy-card-evidence-v1'
 
 def legacy_card_evidence(row, decision):
     """Describe the existing reader's trust evidence, without granting authority."""
-    from memvane.host import host_response as laya_host_response
+    from memvane.wiki.card import api as card_api
     from memvane.wiki.card import source_spans
     from memvane.wiki.card import wiki_card
 
-    locators = laya_host_response._verified_wiki_locations(
+    locators = card_api.verified_wiki_locations(
         row, decision, frozenset(), tuple(decision['recallSettings']['skipPaths']),
         current_source=False)
     if locators is None:

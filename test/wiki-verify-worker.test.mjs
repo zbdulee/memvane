@@ -392,7 +392,8 @@ test('actual compiler pending job verifies and publishes its 16-character source
     const script = [
       'import json,sys', 'from pathlib import Path', 'from unittest.mock import patch',
       'sys.path.insert(0,"core")',
-      'import wiki_compile as wc, wiki_selected_laya, laya_host_response, config',
+      'import wiki_compile as wc, wiki_selected_laya, config',
+      'from memvane.wiki.card import api as card_api',
       'root=Path(sys.argv[1]).resolve(); candidate=json.loads(sys.argv[2])',
       'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
       'decision={"projectRoot":str(root),"recallSettings":{"skipPaths":[]},',
@@ -400,7 +401,7 @@ test('actual compiler pending job verifies and publishes its 16-character source
       ' "collectionRoots":{"proj-wiki":str(wiki)}}',
       'with patch.object(wiki_selected_laya,"selected",return_value=(decision,{})):',
       ' with patch.object(wiki_selected_laya,"recheck"):',
-      '  with patch.object(laya_host_response,"_verified_wiki_row",return_value=True):',
+      '  with patch.object(card_api,"verified_wiki_row",return_value=True):',
       '   wc._compile_locked(root,cfg,cfg["compile"],"auto-wiki",wiki,candidate,False)',
     ].join('\n');
     const compileOutput = execFileSync('python3', ['-B', '-c', script, project, JSON.stringify(candidate)], {

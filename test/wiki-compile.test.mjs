@@ -148,7 +148,8 @@ test('selected replacement stages a hidden candidate without overwriting the pub
       'from pathlib import Path',
       'from unittest.mock import patch',
       'sys.path.insert(0,"core")',
-      'import wiki_compile as wc, wiki_selected_laya, laya_host_response, config',
+      'import wiki_compile as wc, wiki_selected_laya, config',
+      'from memvane.wiki.card import api as card_api',
       'root=Path(sys.argv[1]); candidate=json.loads(sys.argv[2])',
       'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
       'decision={"projectRoot":str(root),"recallSettings":{"skipPaths":[]},',
@@ -156,7 +157,7 @@ test('selected replacement stages a hidden candidate without overwriting the pub
       ' "collectionRoots":{"proj-wiki":str(wiki)}}',
       'with patch.object(wiki_selected_laya,"selected",return_value=(decision,{})):',
       ' with patch.object(wiki_selected_laya,"recheck"):',
-      '  with patch.object(laya_host_response,"_verified_wiki_row",return_value=True):',
+      '  with patch.object(card_api,"verified_wiki_row",return_value=True):',
       '   wc._compile_locked(root,cfg,cfg["compile"],"auto-wiki",wiki,candidate,False)',
     ].join('\n');
     execFileSync('python3', ['-B', '-c', script, work, JSON.stringify(candidate)],
@@ -186,7 +187,8 @@ test('selected replacement fails closed when its wiki collection root cannot be 
     const script = [
       'import json,sys', 'from pathlib import Path', 'from unittest.mock import patch',
       'sys.path.insert(0,"core")',
-      'import wiki_compile as wc, wiki_selected_laya, laya_host_response, config',
+      'import wiki_compile as wc, wiki_selected_laya, config',
+      'from memvane.wiki.card import api as card_api',
       'root=Path(sys.argv[1]); candidate=json.loads(sys.argv[2])',
       'cfg=config.load_project_config(str(root)); wiki=root/".auto-context/wiki"',
       'decision={"projectRoot":str(root),"recallSettings":{"skipPaths":[]},',
@@ -195,7 +197,7 @@ test('selected replacement fails closed when its wiki collection root cannot be 
       ' "collectionRoots":{"proj-wiki":str(root/"different-wiki")}}',
       'with patch.object(wiki_selected_laya,"selected",return_value=(decision,{})):',
       ' with patch.object(wiki_selected_laya,"recheck"):',
-      '  with patch.object(laya_host_response,"_verified_wiki_row",return_value=True):',
+      '  with patch.object(card_api,"verified_wiki_row",return_value=True):',
       '   wc._compile_locked(root,cfg,cfg["compile"],"auto-wiki",wiki,candidate,False)',
     ].join('\n');
     execFileSync('python3', ['-B', '-c', script, work, JSON.stringify(candidate)],
