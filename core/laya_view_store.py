@@ -25,10 +25,246 @@ import laya_view_values as vals
 import laya_view_vectors as vectors
 from laya_view_fill import FillMixin
 from laya_view_reader import ReaderMixin
+from laya_view_rows import RowsMixin
 from laya_view_vectors import VectorMixin
 
 # Publication cut budget; only an O(1) source identity and the commit run under it.
 _CUT_SECONDS = 1.0
+
+
+def _apply_card_delta(db, view_id, ordinal, old, new):
+    """Persist one checked card interval and rollback references in caller's transaction.
+
+    The caller proves and seals the generation, trust, head, FTS and checkout;
+    this helper does not publish or authorize any of them.
+    """
+    v.identifier(view_id);v.integer(ordinal,1)
+    if not db.in_transaction:
+        v.fail('generation_transaction_required')
+    fields=('path','blob_sha','title','eligible','trust_digest','metadata_json')
+    if old is None and new is None:v.fail('card_delta_invalid')
+    for value in (old,new):
+        if value is None:continue
+        v.exact(value,fields)
+        vals.card_path(value['path']);v.identifier(value['blob_sha']);v.text(value['title'])
+        if type(value['eligible']) is not int or value['eligible'] not in (0,1):
+            v.fail('card_delta_invalid')
+        if value['trust_digest'] is not None:v.identifier(value['trust_digest'])
+        if value['eligible'] and value['trust_digest'] is None:v.fail('card_delta_invalid')
+        v.parse_canonical(value['metadata_json'])
+    path=(old if old is not None else new)['path']
+    if old is not None and new is not None and old['path']!=new['path']:
+        v.fail('card_delta_invalid')
+    generation=db.execute('SELECT prior_ordinal FROM s_generations WHERE view_id=? AND ordinal=?', (view_id,ordinal)).fetchone()
+    if generation is None:
+        v.fail('generation_missing')
+    # A view's first generation has no prior to roll back to; its rows are
+    # the whole corpus, so it records no rollback delta.
+    reversible=generation[0] is not None
+    row=db.execute('SELECT path,blob_sha,title,eligible,trust_digest,metadata_json,gen_from '
+                   'FROM s_cards WHERE view_id=? AND path=? AND gen_to IS NULL', (view_id,path)).fetchone()
+    actual=None if row is None else dict(zip(fields,tuple(row[:len(fields)])))
+    if actual!=old or (row is not None and row[len(fields)]>=ordinal):
+        v.fail('card_delta_conflict')
+    if old==new:return False
+    key=v.canonical([path])
+    db.execute('SAVEPOINT s_card_delta')
+    try:
+        if old is not None:
+            changed=db.execute('UPDATE s_cards SET gen_to=? WHERE view_id=? AND path=? AND gen_to IS NULL',
+                               (ordinal,view_id,path)).rowcount
+            if changed!=1:v.fail('card_delta_conflict')
+        if new is not None:
+            db.execute('INSERT INTO s_cards(view_id,path,gen_from,gen_to,blob_sha,title,eligible,trust_digest,metadata_json) '
+                       'VALUES (?,?,?,NULL,?,?,?,?,?)',
+                       (view_id,new['path'],ordinal,new['blob_sha'],new['title'],new['eligible'],
+                        new['trust_digest'],new['metadata_json']))
+        if reversible:
+            db.execute('INSERT INTO s_deltas(view_id,ordinal,rel,key_json,old_json,new_json) VALUES (?,?,?,?,?,?)',
+                       (view_id,ordinal,'card',key,None if old is None else v.canonical(old),
+                        None if new is None else v.canonical(new)))
+            for side,value in (('old',old),('new',new)):
+                if value is not None:
+                    db.execute('INSERT INTO s_delta_blobs(view_id,ordinal,rel,key_json,side,blob_sha) VALUES (?,?,?,?,?,?)',
+                               (view_id,ordinal,'card',key,side,value['blob_sha']))
+    except BaseException:
+        db.execute('ROLLBACK TO s_card_delta');db.execute('RELEASE s_card_delta')
+        raise
+    db.execute('RELEASE s_card_delta')
+    return True
+
+
+def _stage_start_job(db, identity):
+    """Create or resume a structurally identical stage under a caller proof."""
+    fields = ('view_id', 'job_id', 'incarnation', 'base_gen_id', 'base_epoch',
+              'capture_json', 'policy_digest', 'scan_digest')
+    v.exact(identity, fields)
+    if not db.in_transaction:
+        v.fail('stage_transaction_required')
+    v.identifier(identity['view_id']); v.identifier(identity['job_id'], v.UUID)
+    v.identifier(identity['incarnation'], v.UUID)
+    v.identifier(identity['policy_digest']); v.identifier(identity['scan_digest'])
+    epoch, gen = v.integer(identity['base_epoch']), identity['base_gen_id']
+    if ((epoch == 0) != (gen is None) or
+            (gen is not None and (not isinstance(gen, str) or not vals.GEN_ID.fullmatch(gen)))):
+        v.fail('stage_base_invalid')
+    if not isinstance(v.parse_canonical(identity['capture_json']), dict):
+        v.fail('stage_capture_invalid')
+    row = db.execute('SELECT view_id,job_id,incarnation,base_gen_id,base_epoch,capture_json,'
+                     'policy_digest,scan_digest,state FROM s_stage_jobs WHERE view_id=?',
+                     (identity['view_id'],)).fetchone()
+    if row is not None:
+        if tuple(row[:len(fields)]) != tuple(identity[key] for key in fields):
+            v.fail('stage_identity_changed')
+        if row[len(fields)] != 'collecting':
+            v.fail('stage_job_not_collecting')
+        return False
+    db.execute('INSERT INTO s_stage_jobs '
+               '(view_id,job_id,incarnation,base_gen_id,base_epoch,capture_json,policy_digest,'
+               'scan_digest,scan_complete,state) VALUES (?,?,?,?,?,?,?,?,1,?)',
+               (*(identity[key] for key in fields), 'collecting'))
+    return True
+
+
+def _stage_put_item(db, job_id, item):
+    """Insert one stage action or accept an identical replay in caller's transaction.
+
+    The owning writer must prove the job's view, scan, head and capture and
+    advance its cursor in the same transaction; this helper proves none of them.
+    """
+    v.identifier(job_id, v.UUID)
+    item = vals.check_stage_item(item)
+    if not db.in_transaction:
+        v.fail('stage_transaction_required')
+    job = db.execute('SELECT state FROM s_stage_jobs WHERE job_id=?', (job_id,)).fetchone()
+    if job is None or job[0] != 'collecting':
+        v.fail('stage_job_not_collecting')
+    fields = vals.STAGE_ITEM_FIELDS
+    old = db.execute('SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json '
+                     'FROM s_stage_items WHERE job_id=? AND path=?', (job_id, item['path'])).fetchone()
+    if old is not None:
+        if tuple(old) != tuple(item[key] for key in fields):
+            v.fail('stage_replay_mismatch')
+        return False
+    db.execute('INSERT INTO s_stage_items '
+               '(job_id,path,action,input_sha,blob_sha,trust_digest,metadata_json) '
+               'VALUES (?,?,?,?,?,?,?)', (job_id, *(item[key] for key in fields)))
+    return True
+
+
+def _stage_put_batch(db, job_id, expected_cursor, observed_paths, items):
+    """Write one verified scan page and its cursor in the caller's transaction.
+
+    Callers prove the page, current capture and scan identity before entering;
+    no filesystem or authority proof is performed by this helper.
+    """
+    v.identifier(job_id, v.UUID)
+    if not db.in_transaction:
+        v.fail('stage_transaction_required')
+    if expected_cursor is not None:
+        vals.card_path(expected_cursor)
+    if type(observed_paths) is not list or not 1 <= len(observed_paths) <= 64 or type(items) is not list:
+        v.fail('stage_page_invalid')
+    for path in observed_paths:
+        vals.card_path(path)
+    order = [path.encode('utf8') for path in observed_paths]
+    if (order != sorted(set(order)) or
+            (expected_cursor is not None and order[0] <= expected_cursor.encode('utf8'))):
+        v.fail('stage_page_invalid')
+    checked = [vals.check_stage_item(item) for item in items]
+    paths = [item['path'] for item in checked]
+    if len(set(paths)) != len(paths) or not set(paths).issubset(observed_paths):
+        v.fail('stage_page_invalid')
+    row = db.execute('SELECT state,cursor_path FROM s_stage_jobs WHERE job_id=?', (job_id,)).fetchone()
+    if row is None or row[0] != 'collecting' or row[1] != expected_cursor:
+        v.fail('stage_cursor_conflict')
+    db.execute('SAVEPOINT s_stage_page')
+    try:
+        for item in checked:
+            _stage_put_item(db, job_id, item)
+        count = db.execute('SELECT COUNT(*) FROM s_stage_items WHERE job_id=?', (job_id,)).fetchone()[0]
+        if count > vals.MAX_MEMBERS:
+            v.fail('stage_items_too_many')
+        changed = db.execute('UPDATE s_stage_jobs SET cursor_path=? '
+                             'WHERE job_id=? AND state=? AND cursor_path IS ?',
+                             (observed_paths[-1], job_id, 'collecting', expected_cursor)).rowcount
+        if changed != 1:
+            v.fail('stage_cursor_conflict')
+    except BaseException:
+        db.execute('ROLLBACK TO s_stage_page')
+        db.execute('RELEASE s_stage_page')
+        raise
+    db.execute('RELEASE s_stage_page')
+
+
+def _stage_apply_page(db, identity, expected_cursor, observed_paths, items):
+    """Bind a page to the job identity and write both under one savepoint.
+
+    The caller must hold the existing writer scope and verify the actual
+    capture, complete scan, page bytes and head before calling and committing.
+    """
+    if not db.in_transaction:
+        v.fail('stage_transaction_required')
+    db.execute('SAVEPOINT s_stage_apply')
+    try:
+        _stage_start_job(db, identity)
+        _stage_put_batch(db, identity['job_id'], expected_cursor, observed_paths, items)
+    except BaseException:
+        db.execute('ROLLBACK TO s_stage_apply')
+        db.execute('RELEASE s_stage_apply')
+        raise
+    db.execute('RELEASE s_stage_apply')
+
+
+def _stage_mark_abandon(db, job_id):
+    """Mark the caller-proved stage for bounded cleanup; no content is removed."""
+    v.identifier(job_id, v.UUID)
+    if not db.in_transaction:
+        v.fail('stage_transaction_required')
+    row = db.execute('SELECT state FROM s_stage_jobs WHERE job_id=?', (job_id,)).fetchone()
+    if row is None:
+        v.fail('stage_job_missing')
+    if row[0] == 'abandon':
+        return False
+    if row[0] not in ('collecting', 'ready'):
+        v.fail('stage_job_invalid')
+    db.execute("UPDATE s_stage_jobs SET state='abandon',discard_relation='card_source',discard_key=NULL "
+               'WHERE job_id=?', (job_id,))
+    return True
+
+
+def _stage_discard_step(db, job_id, *, limit):
+    """Remove up to limit stage children. Caller proves writer and claim exclusion."""
+    v.identifier(job_id, v.UUID)
+    v.integer(limit, 1, 64)
+    if not db.in_transaction:
+        v.fail('stage_transaction_required')
+    row = db.execute('SELECT state,discard_relation FROM s_stage_jobs WHERE job_id=?', (job_id,)).fetchone()
+    if row is None or row[0] != 'abandon':
+        v.fail('stage_job_not_abandoned')
+    relations = (('card_source', 's_stage_card_source_changes', 'card_path,source_path'),
+                 ('source', 's_stage_source_changes', 'path'),
+                 ('item', 's_stage_items', 'path'))
+    names = [entry[0] for entry in relations] + ['job']
+    if row[1] not in names:
+        v.fail('stage_discard_invalid')
+    index = names.index(row[1])
+    while index < len(relations):
+        name, table, order = relations[index]
+        rows = db.execute(f'SELECT rowid,{order} FROM {table} WHERE job_id=? ORDER BY {order} LIMIT ?',
+                          (job_id, limit)).fetchall()
+        if rows:
+            for child in rows:
+                db.execute(f'DELETE FROM {table} WHERE job_id=? AND rowid=?', (job_id, child[0]))
+            key = v.canonical(list(rows[-1][1:]))
+            db.execute('UPDATE s_stage_jobs SET discard_relation=?,discard_key=? WHERE job_id=?',
+                       (name, key, job_id))
+            return len(rows)
+        index += 1
+        db.execute('UPDATE s_stage_jobs SET discard_relation=?,discard_key=NULL WHERE job_id=?',
+                   (names[index], job_id))
+    db.execute('DELETE FROM s_stage_jobs WHERE job_id=? AND state=?', (job_id, 'abandon'))
+    return 0
 
 
 @dataclass(frozen=True)
@@ -102,7 +338,7 @@ def _current_capture(saved, repository, policy, expected, *, deadline=None):
         v.fail('checkout_changed')
 
 
-class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
+class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
     _handle_type = ViewHandle
 
     @classmethod
@@ -190,6 +426,8 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return handle
 
     def _head(self, db, handle):
+        if self._rows:
+            return self._rows_head(db, handle)
         row = db.execute('SELECT gen_id,epoch FROM view_heads WHERE view_id=?', (handle.view_id,)).fetchone()
         if row is None:
             return dict(view_id=handle.view_id, gen_id=None, epoch=0, incarnation=self._incarnation)
@@ -206,6 +444,27 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             v.fail('view_head_invalid')
         return dict(view_id=handle.view_id, gen_id=row['gen_id'], epoch=row['epoch'],
                     incarnation=self._incarnation)
+
+    def rollback_generation(self, handle, *, expected_head, deadline=None):
+        """Row format only: reverse the head's last publication as a new generation."""
+        if not self._rows:
+            v.fail('row_format_required')
+        return self._rows_rollback(handle, expected_head=expected_head, deadline=deadline)
+
+    def convert_to_row_format(self, *, deadline=None, parity=None):
+        """Generation format only: convert every view's head and its base in one transaction.
+
+        ``parity`` (``{gen_id, receipt_digest}``) anchors the published
+        generation a selected record's parity receipt names. Closes this
+        store; reopen it to use the row format.
+        """
+        return self._rows_convert(deadline=deadline, parity=parity)
+
+    def collect_view_rows(self, handle, *, limit=256, deadline=None):
+        """Row format only: one bounded batch of view rows outside the head and its prior."""
+        if not self._rows:
+            v.fail('row_format_required')
+        return self._rows_collect(handle, limit=limit, deadline=deadline)
 
     def head(self, handle):
         entry = self._check(handle)
@@ -344,8 +603,99 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
             return side_rows
         return vals.fts_rows(bodies, deadline=deadline)
 
+    def _legacy_evidence(self, handle, manifest, legacy_snapshot, spec, derive_manifest, deadline):
+        """Members, corpora and v6 observation of a legacy import; both store formats use it.
+
+        Returns ``(manifest, legacy)``; with ``derive_manifest`` the manifest is
+        built from the proved members.
+        """
+        import laya_shadow_migration as migration
+        bounded = type(legacy_snapshot) is dict and 'observation' in legacy_snapshot
+        commitments = legacy_snapshot.get('commitments') if bounded else None
+        v.exact(legacy_snapshot, (('observation' if bounded else 'snapshot'),
+                                  'endpoint', 'decision', 'provenance_scan',
+                                  *(('commitments',) if commitments is not None else ()),
+                                  *(('build_id',) if commitments is not None and 'build_id' in legacy_snapshot
+                                    else ())))
+        if commitments is not None:
+            v.exact(commitments, ('migration_id', 'verification', 'corpora'))
+            v.identifier(commitments['migration_id'], v.UUID)
+            v.exact(commitments['corpora'], ('verification_digest', 'base', 'sidecar'))
+            if (type(commitments['verification']) is not dict or
+                    commitments['corpora']['verification_digest'] != commitments['verification'].get('digest') or
+                    commitments['corpora']['base'] is None):
+                v.fail('migration_commitment_mismatch')
+        if (spec is not None or (not derive_manifest and
+                (manifest['sources'] or manifest['scan_id'] != legacy_snapshot['provenance_scan'].get('id')))):
+            v.fail('migration_manifest_mismatch')
+        source_args = {key: value for key, value in legacy_snapshot.items()
+                       if key not in ('commitments', 'build_id')}
+        source_deadline = min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30
+        # A committed migration reuses its verified page chains: one pinned
+        # metadata read must refold to them, so prepare does not re-read
+        # every old body while writers keep moving the source.
+        reused = (migration.reuse_committed_members(self, worktree_id=handle.worktree_id,
+                      endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                      provenance_scan=legacy_snapshot['provenance_scan'],
+                      observation=legacy_snapshot['observation'], commitments=commitments,
+                      deadline=source_deadline)
+                  if commitments is not None else None)
+        evidence = reused['evidence'] if reused is not None else (
+            migration.collect_generation_members if bounded else migration.verify_generation_members)(
+            self, worktree_id=handle.worktree_id, **source_args, deadline=source_deadline)
+        if derive_manifest:
+            manifest = vals.manifest({'scan_id': legacy_snapshot['provenance_scan']['id'],
+                'policy_digest': handle.policy_digest, 'revocation_epoch': 0,
+                'complete': True, 'sources': [], 'members': evidence['members']}, handle.policy_digest)
+        if sorted(evidence['members'], key=lambda row: row['path']) != sorted(
+                manifest['members'], key=lambda row: row['path']):
+            v.fail('migration_manifest_mismatch')
+        if reused is not None:
+            commitment, corpus = reused['sidecar_commitment'], reused['corpus']
+            needs_sidecar = commitment is not None
+        elif bounded:
+            commitment = migration.inspect_sidecar_bounded(endpoint=legacy_snapshot['endpoint'],
+                decision=legacy_snapshot['decision'], observation=evidence['observation'],
+                deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+            needs_sidecar = commitment is not None
+            corpus = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
+                endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=False)
+        else:
+            needs_sidecar = migration.sidecar_fts_required(legacy_snapshot['snapshot'],
+                endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+            corpus = migration.stage_base_fts_corpus(self, worktree_id=handle.worktree_id,
+                snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
+                decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, allow_sidecar=True)
+        legacy = {'observation': evidence['observation'],
+                  'paths': sorted(row['path'] for row in evidence['members']),
+                  'fts_paths': evidence['fts_paths'], 'corpus_observation': corpus['observation'],
+                  'corpus': corpus['members'], 'scan': dict(legacy_snapshot['provenance_scan']),
+                  'active_fts': evidence['active_fts']}
+        if needs_sidecar:
+            if reused is not None:
+                side = reused['sidecar_corpus']
+            elif bounded:
+                side = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
+                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                    observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=True)
+            else:
+                side = migration.stage_sidecar_fts_corpus(self, worktree_id=handle.worktree_id,
+                    snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
+                    decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+                commitment = migration.sidecar_fts_commitment(legacy_snapshot['snapshot'],
+                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
+                    deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
+            legacy.update(sidecar_corpus=side['members'], sidecar_observation=side['observation'],
+                          sidecar_commitment=commitment, fts_sources=evidence['fts_sources'])
+        return manifest, legacy
+
     def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None, legacy_snapshot=None,
                            deadline=None):
+        if self._rows:
+            return self._rows_prepare(handle, manifest, expected_head=expected_head, vector_spec=vector_spec,
+                                      legacy_snapshot=legacy_snapshot, deadline=deadline)
         if deadline is not None:
             if (type(deadline) not in (int, float) or not math.isfinite(deadline)
                     or time.monotonic() >= deadline):
@@ -361,86 +711,8 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         skips = _skip_patterns(saved)
         legacy = None
         if legacy_snapshot is not None:
-            import laya_shadow_migration as migration
-            bounded = type(legacy_snapshot) is dict and 'observation' in legacy_snapshot
-            commitments = legacy_snapshot.get('commitments') if bounded else None
-            v.exact(legacy_snapshot, (('observation' if bounded else 'snapshot'),
-                                      'endpoint', 'decision', 'provenance_scan',
-                                      *(('commitments',) if commitments is not None else ()),
-                                      *(('build_id',) if commitments is not None and 'build_id' in legacy_snapshot
-                                        else ())))
-            if commitments is not None:
-                v.exact(commitments, ('migration_id', 'verification', 'corpora'))
-                v.identifier(commitments['migration_id'], v.UUID)
-                v.exact(commitments['corpora'], ('verification_digest', 'base', 'sidecar'))
-                if (type(commitments['verification']) is not dict or
-                        commitments['corpora']['verification_digest'] != commitments['verification'].get('digest') or
-                        commitments['corpora']['base'] is None):
-                    v.fail('migration_commitment_mismatch')
-            if (spec is not None or (not derive_manifest and
-                    (manifest['sources'] or manifest['scan_id'] != legacy_snapshot['provenance_scan'].get('id')))):
-                v.fail('migration_manifest_mismatch')
-            source_args = {key: value for key, value in legacy_snapshot.items()
-                           if key not in ('commitments', 'build_id')}
-            source_deadline = min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30
-            # A committed migration reuses its verified page chains: one pinned
-            # metadata read must refold to them, so prepare does not re-read
-            # every old body while writers keep moving the source.
-            reused = (migration.reuse_committed_members(self, worktree_id=handle.worktree_id,
-                          endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                          provenance_scan=legacy_snapshot['provenance_scan'],
-                          observation=legacy_snapshot['observation'], commitments=commitments,
-                          deadline=source_deadline)
-                      if commitments is not None else None)
-            evidence = reused['evidence'] if reused is not None else (
-                migration.collect_generation_members if bounded else migration.verify_generation_members)(
-                self, worktree_id=handle.worktree_id, **source_args, deadline=source_deadline)
-            if derive_manifest:
-                manifest = vals.manifest({'scan_id': legacy_snapshot['provenance_scan']['id'],
-                    'policy_digest': handle.policy_digest, 'revocation_epoch': 0,
-                    'complete': True, 'sources': [], 'members': evidence['members']}, handle.policy_digest)
-            if sorted(evidence['members'], key=lambda row: row['path']) != sorted(
-                    manifest['members'], key=lambda row: row['path']):
-                v.fail('migration_manifest_mismatch')
-            if reused is not None:
-                commitment, corpus = reused['sidecar_commitment'], reused['corpus']
-                needs_sidecar = commitment is not None
-            elif bounded:
-                commitment = migration.inspect_sidecar_bounded(endpoint=legacy_snapshot['endpoint'],
-                    decision=legacy_snapshot['decision'], observation=evidence['observation'],
-                    deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                needs_sidecar = commitment is not None
-                corpus = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
-                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                    observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=False)
-            else:
-                needs_sidecar = migration.sidecar_fts_required(legacy_snapshot['snapshot'],
-                    endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                    deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                corpus = migration.stage_base_fts_corpus(self, worktree_id=handle.worktree_id,
-                    snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
-                    decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, allow_sidecar=True)
-            legacy = {'observation': evidence['observation'],
-                      'paths': sorted(row['path'] for row in evidence['members']),
-                      'fts_paths': evidence['fts_paths'], 'corpus_observation': corpus['observation'],
-                      'corpus': corpus['members'], 'scan': dict(legacy_snapshot['provenance_scan']),
-                      'active_fts': evidence['active_fts']}
-            if needs_sidecar:
-                if reused is not None:
-                    side = reused['sidecar_corpus']
-                elif bounded:
-                    side = migration.stage_fts_corpus_bounded(self, worktree_id=handle.worktree_id,
-                        endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                        observation=evidence['observation'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30, sidecar=True)
-                else:
-                    side = migration.stage_sidecar_fts_corpus(self, worktree_id=handle.worktree_id,
-                        snapshot=legacy_snapshot['snapshot'], endpoint=legacy_snapshot['endpoint'],
-                        decision=legacy_snapshot['decision'], deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                    commitment = migration.sidecar_fts_commitment(legacy_snapshot['snapshot'],
-                        endpoint=legacy_snapshot['endpoint'], decision=legacy_snapshot['decision'],
-                        deadline=min(deadline, time.monotonic() + 30) if deadline is not None else time.monotonic() + 30)
-                legacy.update(sidecar_corpus=side['members'], sidecar_observation=side['observation'],
-                              sidecar_commitment=commitment, fts_sources=evidence['fts_sources'])
+            manifest, legacy = self._legacy_evidence(handle, manifest, legacy_snapshot, spec, derive_manifest,
+                                                     deadline)
         with self._session() as db:
             if self._head(db, handle) != base:
                 v.fail('view_head_conflict')
@@ -599,6 +871,9 @@ class ViewStore(FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return stage
 
     def publish_generation(self, handle, gen_id, *, expected_head, legacy_snapshot=None, deadline=None):
+        if self._rows:
+            return self._rows_publish(handle, gen_id, expected_head=expected_head,
+                                      legacy_snapshot=legacy_snapshot, deadline=deadline)
         if deadline is not None and (type(deadline) not in (int, float)
                 or not math.isfinite(deadline) or time.monotonic() >= deadline):
             v.fail('fts_deadline_exceeded')

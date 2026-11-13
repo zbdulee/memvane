@@ -93,6 +93,17 @@ class Routing(unittest.TestCase):
                    side_effect=lambda decision, action='update': self.full_proof(decision))
         self.wake = self.patch(runtime_work, 'request', return_value={'status': 'queued'})
         self.patch(response, '_request_wiki_lifecycle')
+        # Owner discovery reads the selected project registry; the product
+        # backfill registers the selected installs (registry v1).
+        self.backfill_registry()
+
+    def backfill_registry(self):
+        import memvane_registry
+        for _ in range(8):
+            if memvane_registry.reconcile(max_rows=64, seconds=60.0,
+                                          backfill_page=64)['complete']:
+                return
+        raise AssertionError('registry backfill incomplete')
 
     def patch(self, obj, name, **kw):
         patcher = patch.object(obj, name, **kw)
@@ -427,6 +438,18 @@ class HookRouting(Routing):
         self.assertNotIn(('laya-sync', str(pending.project)), self.wakes())
         self.assertFalse((pending.folder / 'compile').exists())
 
+    def test_unregistered_nested_install_in_a_complete_registry_does_not_route(self):
+        nested = installs.make_install(self.home, self.b.project / 'nested', 'nested',
+                                        '8' * 32, '9' * 32)
+        self.owners.append(nested)
+        self.bundles.add(nested)
+        self.backfill_registry()  # complete; the nested install is not routable
+        path = nested.project / 'note.md'
+        path.write_text('nested owner\n')
+        self.assertEqual(self.index(self.event(path)), {})
+        self.assertNotIn(('laya-sync', str(self.b.project)), self.wakes())
+        self.assertNotIn(('laya-sync', str(nested.project)), self.wakes())
+
     def test_incomplete_owner_discovery_does_not_choose_an_earlier_parent(self):
         nested = installs.make_install(self.home, self.b.project / 'nested', 'nested',
                                         '8' * 32, '9' * 32)
@@ -434,6 +457,12 @@ class HookRouting(Routing):
         self.bundles.add(nested)
         path = nested.project / 'note.md'
         path.write_text('nested owner\n')
+        # The owner cap applies to the bounded scan, which runs while the
+        # registry backfill is incomplete.
+        import memvane_registry
+        with contextlib.closing(sqlite3.connect(str(memvane_registry.registry_path()))) as db:
+            db.execute('UPDATE scans SET complete_at=NULL')
+            db.commit()
         with patch.object(external(), 'MAX_INSTALLS', 2):
             self.assertEqual(self.index(self.event(path)), {})
         self.assertNotIn(('laya-sync', str(self.b.project)), self.wakes())

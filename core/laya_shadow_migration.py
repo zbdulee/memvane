@@ -1150,7 +1150,7 @@ def compare_lexical_queries(snapshot, *, endpoint, decision, store, pin, queries
         roots = wiki_index_roots(decision['collections'])
         with readers._validation_deadline(snapshot.connections, deadline), store._reading(deadline) as db:
             generation, _, _, _ = store._read_pinned(db, pin, deadline)
-            name = fts_table(generation['ordinal'], sidecar=True)
+            name = store._pin_fts_table(pin, sidecar=True)
             for query in queries:
                 try:
                     old_probe = side.execute('SELECT d.path,d.hash,d.body FROM docs_fts f '
@@ -1259,7 +1259,7 @@ def compare_incremental_lexical_prompts(snapshot, *, endpoint, decision, store, 
             raise IndexContractError('migration_snapshot_changed')
         if 'sidecar_corpus' not in legacy:
             raise IndexContractError('migration_lexical_sidecar_unproved')
-        name = fts_table(generation['ordinal'], sidecar=True)
+        name = store._pin_fts_table(pin, sidecar=True)
         active = legacy['active_fts']['sidecar']
         paths_json = json.dumps(list(active), ensure_ascii=False, separators=(',', ':'))
         full_paths = legacy['fts_paths']
@@ -1419,7 +1419,7 @@ def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin
                 or legacy['observation'] != selected['observation']):
             raise IndexContractError('migration_snapshot_changed')
         paired = 'sidecar_corpus' in legacy
-        side_table = fts_table(generation['ordinal'], sidecar=True)
+        side_table = store._pin_fts_table(pin, sidecar=True)
         # An unpaired (no sidecar) generation records no per-path FTS origin.
         full_paths, sources = legacy['fts_paths'], legacy.get('fts_sources')
         side_json = json.dumps(list(legacy['active_fts']['sidecar']), ensure_ascii=False,
@@ -2876,16 +2876,12 @@ def publish_shadow_generation(store, generation, *, project, executing_root, dea
                     store.release(pin)
                 trace['outcome'] = 'published'
                 return published
-            with store._session() as db:
-                row = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
-                                 'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (generation,)).fetchone()
-                if row is None:
-                    values.fail('generation_missing')
-                stage = view_values.check_stage(values.parse_canonical(row['stage_json']),
-                                                handle, store._incarnation)
+            stage = store._prepared_stage(generation, handle)
             legacy = stage.get('legacy')
-            if (legacy is None or legacy['observation'] != intent['observation']
-                    or legacy['scan'] != intent['provenance_scan']):
+            # A row-format stage keeps only its scan digest: publish re-derives and compares it.
+            if (legacy is None or (legacy.get('observation') is not None and (
+                    legacy['observation'] != intent['observation']
+                    or legacy['scan'] != intent['provenance_scan']))):
                 raise IndexContractError('migration_snapshot_changed')
             published = store.publish_generation(handle, generation, expected_head=stage['base'],
                 legacy_snapshot={'endpoint': endpoint, 'decision': decision,
@@ -3472,17 +3468,14 @@ def _candidate_sample(store, intent, record, deadline):
                     or legacy.get('observation') != record['observation']
                     or values.digest('memvane-read-pin-seal-v1', seal) != store._pinned(pin)['seal']):
                 raise IndexContractError('migration_snapshot_changed')
-            count = db.execute('SELECT count(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
-                               (pin.gen_id,)).fetchone()[0]
+            count = store._eligible_count(pin.gen_id)
             if count != len(legacy['paths']):
                 raise IndexContractError('migration_recall_parity_mismatch')
             if record['pages'] and count != record['members']:
                 raise IndexContractError('migration_recall_parity_mismatch')
             sampled = min(count, 10)
             after = '' if record['cursor'] is None else record['cursor']['after']
-            member = db.execute('SELECT path,blob_sha,display_title FROM wiki_members '
-                                'WHERE gen_id=? AND eligible=1 AND path>? '
-                                'ORDER BY path COLLATE BINARY LIMIT 1', (pin.gen_id, after)).fetchone()
+            member = store._eligible_member_after(pin.gen_id, after)
             paired = 'sidecar_corpus' in legacy
         prompt_hash, hit, next_cursor = None, False, None
         if record['prompts'] < sampled:
@@ -4757,14 +4750,7 @@ def _entered(manager, value):
 
 
 def _candidate_members(store, generation, after, limit):
-    with store._session() as db:
-        if after is None:
-            rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
-                              'ORDER BY path LIMIT ?', (generation, limit)).fetchall()
-        else:
-            rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
-                              'AND path>? ORDER BY path LIMIT ?', (generation, after, limit)).fetchall()
-        return [(row[0], row[1]) for row in rows]
+    return store._eligible_members(generation, after=after, limit=limit)
 
 
 def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
@@ -4801,9 +4787,7 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
             trace['outcome'] = 'vectors_complete'
             return intent
         if record is None:
-            with store._session() as db:
-                total = db.execute('SELECT COUNT(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
-                                   (receipt['generation'],)).fetchone()[0]
+            total = store._eligible_count(receipt['generation'])
             record = {'migration_id': intent['migration_id'], 'generation': receipt['generation'],
                       'candidate_incarnation': receipt['candidate_incarnation'],
                       'recipe_id': spec['recipe_id'], 'profile_id': spec['profile_id'],

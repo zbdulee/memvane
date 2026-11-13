@@ -10,6 +10,10 @@ import laya_view_fts
 APP_ID = 0x4D564231
 SCHEMA_VERSION = 3
 FORMAT = 'memvane-git-blob-candidate-v3'
+# Row-generation format: per-view interval rows and one head FTS per view.
+ROW_SCHEMA_VERSION = 4
+ROW_FORMAT = 'memvane-git-blob-candidate-v4'
+FORMATS = {SCHEMA_VERSION: FORMAT, ROW_SCHEMA_VERSION: ROW_FORMAT}
 
 
 def _text(name):
@@ -33,7 +37,7 @@ def _integer(name, lower=0):
 TABLES = {
     'store_meta': f'''CREATE TABLE store_meta(
       singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-      {_text('format')}, schema_version INTEGER NOT NULL CHECK(schema_version=3),
+      {_text('format')}, schema_version INTEGER NOT NULL CHECK(schema_version=__VERSION__),
       {_uuid('repo_id')}, {_uuid('scope_id')}, {_uuid('incarnation')},
       common_git_dir TEXT, common_dev INTEGER, common_ino INTEGER,
       {_text('project_rel')}, git_object_format TEXT,
@@ -119,15 +123,34 @@ KEYS = {'store_meta': (('singleton',),),
         'attestation_sources': (('trust_digest', 'ordinal'), ('trust_digest', 'fingerprint_id'))}
 
 
-TABLES.update(laya_view_schema.tables(_text,_sha,_uuid,_integer))
-KEYS.update(laya_view_schema.immutable_keys())
-TABLES.update(laya_fill_schema.tables(_text, _sha, _uuid, _integer))
-KEYS.update(laya_fill_schema.immutable_keys())
+_BASE_TABLES, _BASE_KEYS = TABLES, KEYS
 
 
-def statements():
-    result = list(TABLES.values())
-    for table, keys in KEYS.items():
+def _layout(version):
+    if version not in FORMATS:
+        raise ValueError('schema_version')
+    tables = {name: (ddl.replace('__VERSION__', str(version)) if name == 'store_meta' else ddl)
+              for name, ddl in _BASE_TABLES.items()}
+    keys = dict(_BASE_KEYS)
+    if version == SCHEMA_VERSION:
+        tables.update(laya_view_schema.tables(_text, _sha, _uuid, _integer))
+        keys.update(laya_view_schema.immutable_keys())
+    else:
+        tables.update(laya_view_schema.row_tables(_text, _sha, _uuid, _integer))
+        keys.update(laya_view_schema.row_immutable_keys())
+    tables.update(laya_fill_schema.tables(_text, _sha, _uuid, _integer))
+    keys.update(laya_fill_schema.immutable_keys())
+    return tables, keys
+
+
+TABLES, KEYS = _layout(SCHEMA_VERSION)
+ROW_TABLES, ROW_KEYS = _layout(ROW_SCHEMA_VERSION)
+
+
+def statements(version=SCHEMA_VERSION):
+    tables, immutable = _layout(version)
+    result = list(tables.values())
+    for table, keys in immutable.items():
         tests = []
         for columns in keys:
             condition = ' AND '.join(f'{c}=NEW.{c}' for c in columns)
@@ -145,31 +168,33 @@ def statements():
         'CREATE INDEX source_by_sha ON source_fingerprints(source_sha)',
         'CREATE INDEX attestation_by_blob ON card_attestations(blob_sha)',
         'CREATE INDEX attestation_by_source ON attestation_sources(fingerprint_id,trust_digest)'))
-    result.extend(laya_view_schema.statements())
+    result.extend(laya_view_schema.statements() if version == SCHEMA_VERSION
+                  else laya_view_schema.row_statements())
     result.extend(laya_fill_schema.statements())
     return result
 
 
-def manifest(db):
+def manifest(db, version=SCHEMA_VERSION):
     rows = sorted(tuple(row) for row in db.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
-    dynamic=set(laya_view_fts.schema_rows(db))
+    dynamic = set(laya_view_fts.schema_rows(db) if version == SCHEMA_VERSION
+                  else laya_view_fts.head_schema_rows(db))
     return hash_bytes(canonical([row for row in rows if row not in dynamic]).encode('utf8'))
 
 
-@lru_cache(maxsize=1)
-def expected_manifest():
+@lru_cache(maxsize=2)
+def expected_manifest(version=SCHEMA_VERSION):
     db = sqlite3.connect(':memory:')
     try:
-        for ddl in statements():
+        for ddl in statements(version):
             db.execute(ddl)
-        return manifest(db)
+        return manifest(db, version)
     finally:
         db.close()
 
 
-def create(db):
-    for ddl in statements():
+def create(db, version=SCHEMA_VERSION):
+    for ddl in statements(version):
         db.execute(ddl)
     db.execute(f'PRAGMA application_id={APP_ID}')
-    db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+    db.execute(f'PRAGMA user_version={version}')

@@ -876,7 +876,7 @@ class NoActivation(CheckoutCase):
                              'laya_blob_lease', 'laya_blob_fill', 'laya_fill_schema',
                              'laya_view_schema', 'laya_view_fts',
                              'laya_view_values', 'laya_view_store', 'laya_view_reader',
-                             'laya_view_fill', 'laya_view_vectors', 'laya_shadow_migration'}
+                             'laya_view_fill', 'laya_view_rows', 'laya_view_vectors', 'laya_shadow_migration'}
         users = sorted(str(path.relative_to(REPO))
                        for path in [*(REPO / 'core').rglob('*.py'), REPO / 'hooks/run-hook',
                                     *(REPO / 'hermes_adapter').rglob('*.py')]
@@ -910,7 +910,8 @@ class NoActivation(CheckoutCase):
             # rollback hold) plus its explicit resume.
             'core/laya_product_sync_worker.py': {
                 '_publish_schema3', '_schema3_linked_worktree', '_publish_schema3_view',
-                '_schema3_wiki_cards', '_schema3_stage', '_schema3_vector_context',
+                '_schema3_wiki_cards', '_schema3_generation_baseline', '_schema3_rows_baseline',
+                '_schema3_head_same', '_schema3_rows_covered', '_schema3_vector_context',
                 '_schema3_vector_spec', '_schema3_chunker', '_schema3_vectors',
                 'shadow_pass', '_shadow_gate', '_shadow_open', '_shadow_step',
                 '_shadow_vector_spec', '_shadow_warm_key', '_restart_shadow', '_orphaned_intent',

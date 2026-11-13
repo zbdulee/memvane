@@ -34,6 +34,58 @@ STAGE_FIELDS = ('schema', 'build_id', 'incarnation', 'view', 'worktree_binding',
 STAGE_SCHEMA = 'memvane-generation-stage-v2'
 LEGACY_STAGE_SCHEMA = 'memvane-generation-stage-legacy-v1'
 VECTORS = vectors.coverage_digest(None, [])
+SOURCE_CONTENT_SCHEMA = 'memvane-source-content-v1'
+SOURCE_OBSERVATION_SCHEMA = 'memvane-source-observation-v1'
+SOURCE_OBSERVATION_FIELDS = ('worktree_id', 'branch_key', 'path', 'tracked_state',
+                             'binding_state', 'content_id', 'legacy_fingerprint_id')
+STAGE_ITEM_FIELDS = ('path', 'action', 'input_sha', 'blob_sha', 'trust_digest', 'metadata_json')
+
+
+def source_content(source_sha, byte_length):
+    """Identity of observed bytes; checkout and length are not identity inputs."""
+    v.identifier(source_sha)
+    v.integer(byte_length)
+    return dict(content_id=v.digest(SOURCE_CONTENT_SCHEMA, source_sha),
+                source_sha=source_sha, byte_length=byte_length)
+
+
+def check_source_content(row, source_sha, byte_length):
+    """Validate a persisted content row before reusing it for an observation."""
+    v.exact(row, ('content_id', 'source_sha', 'byte_length'))
+    expected = source_content(source_sha, byte_length)
+    if row != expected or type(row['byte_length']) is not int:
+        v.fail('source_content_mismatch')
+    return expected
+
+
+def source_observation(*, worktree_id, branch_key, path, tracked_state, binding_state,
+                       content_id, legacy_fingerprint_id):
+    """Scoped identity only; the caller must separately prove the observation."""
+    v.identifier(worktree_id, v.UUID)
+    v.source_path(path)
+    try:
+        branch_valid = isinstance(branch_key, str) and 0 < len(branch_key.encode('utf8')) <= 4096
+    except UnicodeError:
+        branch_valid = False
+    if not branch_valid:
+        v.fail('source_branch_invalid')
+    if tracked_state not in ('tracked', 'untracked', 'unknown') or binding_state not in ('observed', 'legacy_unbound'):
+        v.fail('source_state_invalid')
+    if (content_id is None) == (legacy_fingerprint_id is None):
+        v.fail('source_observation_invalid')
+    v.identifier(content_id if content_id is not None else legacy_fingerprint_id)
+    data = dict(worktree_id=worktree_id, branch_key=branch_key, path=path,
+                tracked_state=tracked_state, binding_state=binding_state,
+                content_id=content_id, legacy_fingerprint_id=legacy_fingerprint_id)
+    return dict(observation_id=v.digest(SOURCE_OBSERVATION_SCHEMA, data), **data)
+
+
+def check_source_observation(row):
+    v.exact(row, ('observation_id', *SOURCE_OBSERVATION_FIELDS))
+    expected = source_observation(**{key: row[key] for key in SOURCE_OBSERVATION_FIELDS})
+    if row != expected:
+        v.fail('source_observation_mismatch')
+    return expected
 
 
 def _plain(value, limit=MAX_MANIFEST_BYTES):
@@ -48,6 +100,23 @@ def card_path(path):
     if not path.endswith('.md') or path in RESERVED:
         v.fail('wiki_card_path_invalid')
     return path
+
+
+def check_stage_item(value):
+    """Validate one normalized card delta before a durable stage write."""
+    v.exact(value, STAGE_ITEM_FIELDS)
+    card_path(value['path'])
+    if value['action'] == 'delete':
+        if any(value[key] is not None for key in ('input_sha', 'blob_sha', 'trust_digest', 'metadata_json')):
+            v.fail('stage_item_invalid')
+    elif value['action'] == 'put':
+        v.identifier(value['input_sha']); v.identifier(value['blob_sha'])
+        if value['trust_digest'] is not None:
+            v.identifier(value['trust_digest'])
+        v.parse_canonical(value['metadata_json'])
+    else:
+        v.fail('stage_item_invalid')
+    return {key: value[key] for key in STAGE_ITEM_FIELDS}
 
 
 def manifest(value, policy_digest):

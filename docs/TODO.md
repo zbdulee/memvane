@@ -70,8 +70,12 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
 
 - **현재 동작.**
   - 세션 프로젝트는 hook payload `cwd`에서 위로 올라가며 `.memvane/settings.json`을 찾아 정한다(`config._project_search_dirs`).
-  - 프로젝트 밖 원문 편집 라우팅(`laya_external_edits`)은 편집 hook마다 state base(`~/.local/state/memvane/<install>`)를 최대 128개(`MAX_INSTALLS`)까지 훑는다. 각 install의 journal 메타데이터를 읽고 가장 긴 원문 root 접두사로 대상을 고른다(2초 예산).
-  - 초기 빌드 pointer(`initial-builds/<projectRoot 해시>.json`), 설치별 state 디렉터리, 연결 worktree view가 따로 흩어져 있다. 사용자 단위 단일 색인은 없다.
+  - 선택 프로젝트 레지스트리 v1(`core/memvane_registry.py`, `docs/project-registry.md`)이 선택된 main checkout과 연결 worktree 경로를 조회 색인으로 가진다. 활성화 성공 뒤 등록, restore·retire·abandon 성공 뒤 해제 반영, 선택 route SessionStart·대시보드 조회의 유계 reconcile까지다.
+  - 프로젝트 밖 원문 편집 라우팅(`laya_external_edits`)은 backfill이 완료된 레지스트리의 `active` main 행만 후보로 증명하고 state base를 훑지 않는다. 레지스트리가 없거나 읽을 수 없으면 라우팅하지 않는다.
+  - 세션 프로젝트 해석은 레지스트리를 쓰지 않는다. 활성 선택 해제(첫 선택 쓰기 뒤 uninstall), 프로젝트 root 이전, schema3 worktree view ID·준비 상태 기록은 남아 있다.
+  - resident service는 레지스트리를 reconcile하지 않는다. resident 연결은 resident 변경 승인 시 `memvane_registry.reconcile()` 1줄 호출로 붙인다.
+  - 외부 편집의 완료 조회는 편집 경로와 owner root 사이에 다른 프로젝트 폴더가 있으면 라우팅하지 않는다. 열거 경로(backfill 미완료)는 레지스트리 도입 전과 같아서 등록되지 않은 중첩 프로젝트 아래 편집도 바깥 owner로 전달될 수 있다. 열거 경로에도 같은 검사를 둘지는 별도로 정한다.
+  - 초기 빌드 pointer(`initial-builds/<projectRoot 해시>.json`), 설치별 state 디렉터리, 연결 worktree view는 레지스트리와 별개로 남는다.
   - uninstall 뒤 정리 단계가 없다. retire·abandon·restore는 저장소와 journal을 남기고, 거절된 prepare도 state 디렉터리를 남긴다(2026-11-10 관측: 잠금 파일만 있는 `efb6dee9…`). 이런 디렉터리도 계속 훑기 대상이다.
 - **목표.**
   - 사용자 단위 레지스트리 DB(state base 아래 SQLite)가 등록 경로를 가진다. 항목은 프로젝트 root, worktree root, install id, state root, 종류(main·worktree), 상태다.
@@ -101,7 +105,22 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
 
 ## 세대 저장 구조: 전체 사본에서 행 단위 버전으로
 
-PR10 GC 뒤에 진행한다. 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다. 저장 스키마·recall 읽기 경로·봉인 증명이 함께 바뀐다.
+### S v1 이후: 공유 content GC
+
+S v1은 view 행·FTS·stage/delta·세대만 GC한다. 여러 view가 공유하는 blob 본문·admission·attestation·source fingerprint·chunk/embedding set·recipe/profile은 보존하므로 현재+직전 세대 밖의 공유 내용도 남는다. PR10 v1 실사용 확인 뒤 아래 조건을 다시 검토한다. 인계 보고서 `/Users/dulee/work/memvane-handoff/context/claude-handoff-s-blob-gc-locks-20261112.md`의 분석은 현재 코드의 정적 추론이며 경합 재현이나 S 구현 검증 결과가 아니다.
+
+활성화 후보는 다음 R1~R6을 모두 검증한다.
+
+- **R1:** 선택 sync의 issued owner·writer scope 안에서 모든 게시·fill이 정상 반환된 뒤 같은 프로세스·스레드에서만 실행하고, 이후 기존 메모리 blob ID·fill target을 재사용하지 않는다. 실패·defer pass에서는 실행하지 않는다.
+- **R2:** journal이 선택한 S 형식 schema3 store만 대상으로 하고 inode·incarnation·writer proof를 대조한다. shadow 후보, 선택 해제 store, 연결 worktree route는 제외한다.
+- **R3:** 각 유계 `BEGIN IMMEDIATE`에서 모든 참조를 다시 확인하고 vector→embedding set→chunk→chunk set→attestation source→attestation→admission→blob 순으로 삭제한다. FK 위반·busy는 전체 rollback 후 defer한다.
+- **R4:** set 단위 FK 부재만 보지 않는다. 모든 view의 head·직전, stage, delta, 진행/완료 fill 대상, parity 및 외부 record, trust chain과 `coverage=complete`의 암묵 참조에 도달하는 blob을 보호한다. 살아 있는 blob의 모든 recipe/profile set을 보존한다.
+- **R5:** orphan prepared/stage만 head/epoch를 transaction에서 재확인한 뒤 유계 batch로 정리하고 crash 뒤 재개를 검증한다.
+- **R6:** 남아 있는 모든 구 번들이 실제 S 형식의 매 transaction에서 fail-closed하고 쓰지 않는지 양 Python 교차 시험한 뒤에만 활성화한다. 새 lock·소유 계약 변경이 필요하다고 확인되면 사용자에게 결정받는다.
+
+실제 활성화 전 합성 RED/GREEN: (1) chunk set commit과 embedding callback 사이의 GC, (2) lexical head의 complete/partial fill set과 `coverage=complete`의 묵시 참조, (3) journal CAS 뒤 switched 기록 전 crash 및 stale shadow vector/prepare 핸들. 구 bundle RW 핸들의 형식 fence도 교차 시험한다. head 관측과 게시 순서에 따른 결과를 각각 기록하고, 예상 오류·고착은 재현 전 사실로 취급하지 않는다. 현재+직전 view 행 GC와 그 자체의 RED는 S v1 범위다.
+
+PR6·7 이후, PR8 이전의 S 단계로 진행한다. 설계 문서를 독립 리뷰하고 사용자 승인을 받은 다음 구현한다. 저장 스키마·recall 읽기 경로·봉인 증명이 함께 바뀐다.
 
 - **현재 동작.**
   - 게시(publish)마다 새 세대를 만든다. v6 색인은 세대마다 `gen_fts_N` 테이블 세트, schema3 view store는 `prepare_generation`(`core/laya_view_store.py`)의 새 FTS 가상 테이블에 eligible 카드 본문 **전체**를 다시 넣는다. 카드 한 장만 바뀐 pass도 corpus 전체를 복사한다.
@@ -117,17 +136,17 @@ PR10 GC 뒤에 진행한다. 설계 문서를 먼저 쓰고 리뷰를 받은 다
   - 큰 store는 sync·shadow migration·업그레이드 백업·해시 검증 시간을 함께 늘린다. SE에서 변경 없는 sync는 약 4분, 업그레이드 백업·검증은 20분 이상 걸렸다.
   - GC가 mark-copy라 실행할 때 남길 데이터 크기만큼 여유 디스크가 필요하다.
 - **목표.** 증가량과 보존 비용이 바뀐 카드 수에 비례하고, 게시·롤백·GC가 corpus 복사 없이 끝난다.
-- **방향 초안.**
-  - 읽기·쓰기 격리와 원자적 게시는 SQLite WAL 스냅숏 격리와 트랜잭션 커밋으로 충족한다. 세대마다 별도 사본을 두지 않는다.
+- **S v1 방향.**
+  - SQLite rollback journal과 기존 lock 소유 계약을 유지한다.
   - 카드 행에 유효 구간(`gen_from`, `gen_to`)을 둔다. 바뀐 카드만 새 행으로 추가하고, 이전 행은 `gen_to`를 닫는다. 삭제된 카드는 행을 닫기만 한다.
-  - 게시는 현재 세대 번호 한 칸을 바꾸는 것이고, 롤백은 그 번호를 직전 세대로 되돌리는 것이다.
-  - FTS 색인은 하나로 두고, 검색 시 현재 세대에서 유효한 행만 필터링한다(external content FTS5 + rowid 필터, 또는 세대 범위 조건 join).
-  - GC는 보존할 가장 오래된 세대보다 먼저 닫힌 행을 지우는 단일 삭제다.
-  - 원문 지문은 같은 HEAD에서 바이트가 같은 원문이면 이전 scan 지문을 이어받는다(PR10 결정 초안의 R3 선택지 2).
+  - rollback은 마지막 게시의 변경분을 역적용하는 새 게시다.
+  - 각 view의 FTS는 head만 담고 게시 transaction에서 변경 카드만 갱신한다.
+  - GC는 현재 head와 직전 세대를 보호하면서 view 행을 유계 batch로 회수한다. 공유 content GC는 위 후속 항목으로 미룬다.
+  - 원문 content 지문은 HEAD를 포함하지 않고, 경로별 tracked 등 관측 증거를 별도로 보존한다. 세대마다 manifest·files 전체를 복사하지 않는다.
 - **먼저 정할 계약.**
-  - 봉인 증명: 지금 세대 digest는 세대 전체에 대한 값이다. 카드별 해시의 머클 루트처럼 변경분만 다시 계산하는 구조로 바꿀지, 그때 attestation·journal·route가 무엇을 봉인하는지 정한다.
+  - 봉인 증명: 새 세대 digest와 기존 attestation·journal·route의 결속을 정하고 검증한다.
   - 삭제 방지 트리거와 정확 일치 DDL 검사: GC 삭제 경로만 허용하도록 재설계한다. 구 번들이 새 store를 열 때의 동작(거절 코드)도 정한다.
-  - recall 성능: 세대 필터가 붙은 FTS5 질의의 지연을 카드 1천·4천·2만 장에서 실측한다. 기준은 hook 2초 예산 안의 기존 지연이다.
+  - recall 성능: head 전용 FTS5 질의의 지연을 카드 1천·4천·2만 장에서 실측한다. 기준은 hook 2초 예산 안의 기존 지연이다.
   - shadow migration·reader 전환과의 관계: 새 형식을 schema 버전 올림으로 넣을지, 별도 migration 단계로 넣을지 정한다. rollback 창(Q1 변경 결정: 전환 직후 닫고 이후 직전 세대로만 롤백)과 맞춘다.
   - 동시 읽기: 장기 reader(구 번들 호스트, 늦게 끝나는 recall)가 읽는 세대를 GC가 지우지 않게 하는 lease 규칙을 행 단위 기준으로 다시 정한다.
   - 벡터: member vector·chunk set이 카드 버전 행을 어떻게 참조하는지, 같은 본문 카드의 임베딩 재사용 규칙.

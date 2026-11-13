@@ -112,10 +112,9 @@ def _schema3_members(root, decision):
                 or len(names) != 1):
             raise ValueError('laya_learning_schema3_endpoint_changed')
         with reader._schema3_pin(record, deadline=deadline) as (store, _handle, pin):
-            with store._reading(deadline) as db:
-                rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? '
-                                  'AND eligible=1 ORDER BY path COLLATE BINARY',
-                                  (pin.gen_id,)).fetchmany(MAX_DOCUMENTS + 1)
+            with store._reading(deadline):
+                # Either store format: the pinned generation's eligible cards in binary path order.
+                rows = store._eligible_members(pin.gen_id, limit=MAX_DOCUMENTS + 1)
             generation = pin.gen_id
     return generation, [(names[0] + '/' + path, sha) for path, sha in rows]
 

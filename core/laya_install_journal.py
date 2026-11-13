@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
@@ -536,6 +537,7 @@ _reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
 _legacy_identity_reads = ContextVar('journal_legacy_identity_reads', default=False)
 _legacy_worker_recovery = ContextVar('journal_legacy_worker_recovery', default=None)
 _writer_identity_reads = ContextVar('journal_writer_identity_reads', default=None)
+_reader_deadline = ContextVar('journal_reader_deadline', default=None)
 _CURRENT_IDENTITY_BINDING = object()
 
 
@@ -597,7 +599,7 @@ def _identity_connection(path, *, binding=_CURRENT_IDENTITY_BINDING):
     if binding is None:
         from laya_index_a import _query_only_uri
         db = sqlite3.connect(_query_only_uri(path.resolve(strict=True)),
-                             uri=True, timeout=2)
+                             uri=True, timeout=_reader_timeout())
         try:
             db.execute('PRAGMA query_only=ON')
         except BaseException:
@@ -617,6 +619,31 @@ def _finish_identity_reads(binding, row):
         snapshot = binding.check()
         if _canon(row) != _canon(snapshot['bundle']):
             _fail('writer_identity_journal_changed')
+
+
+@contextmanager
+def reader_deadline(deadline):
+    """Bound every journal reader's busy wait by a ``time.monotonic`` deadline.
+
+    A caller with its own small budget (the registry reconcile of a hook)
+    keeps a locked journal from holding it for the reader's 2 second wait.
+    Past the deadline a read fails at once with ``journal_unavailable``.
+    """
+    token = _reader_deadline.set(deadline)
+    try:
+        yield
+    finally:
+        _reader_deadline.reset(token)
+
+
+def _reader_timeout():
+    deadline = _reader_deadline.get()
+    if deadline is None:
+        return 2
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise JournalEvidenceError('journal_unavailable')
+    return min(2, left)
 
 
 @contextmanager
@@ -744,7 +771,8 @@ def _open(path, *, write):
             if version not in (3, 4):
                 _fail('journal_unavailable')
         uri = path.as_uri() + ('?mode=rw' if write else '?mode=ro')
-        db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
+        db = sqlite3.connect(uri, uri=True, timeout=2 if write else _reader_timeout(),
+                             isolation_level=None)
         try:
             if not write:
                 db.execute('PRAGMA query_only=ON')
@@ -763,7 +791,8 @@ def _open(path, *, write):
                 recovered = _recover_interrupted_transaction(path)
             if not recovered:
                 raise
-            db = sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)
+            db = sqlite3.connect(uri, uri=True, timeout=_reader_timeout(),
+                                 isolation_level=None)
             db.execute('PRAGMA query_only=ON')
             version = _schema_version(db)
         if version is None:
