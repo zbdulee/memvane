@@ -26,6 +26,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import time
 
 import project_dir
 
@@ -597,113 +598,150 @@ def request_initial_build_rescan(state_root):
 
 
 def finalize_initial_build(*, project_root, state_root):
-    """Bind a sealed, fresh initial build to its selection ledger; never activates.
-
-    Two calls. The first finds no satisfied freshness, requests a scan that
-    starts now and wakes the build (``freshness_pending``). Once the build
-    has re-sealed from a scan started after that request, the next call
-    re-checks the reviewed plan, the inactive journal and attestation and
-    the live sealed evidence, then binds through ``laya_fresh_wiki_origin``
-    (ledger ``prepared``, then the project marker). Unknown freshness, a
-    pending or blocked scan, or any changed evidence refuses.
-
-    Repeating it is safe. After an interruption between the ledger, the
-    marker and the build record, it re-proves the same binding, completes
-    what is missing and records ``bound``. Once the ledger moved on it only
-    reports the phase.
-    """
-    import laya_initial_build as initial_build
+    """Seal the ready single-store head in the prepared journal and ledger."""
+    import laya_initial_build as build
+    import laya_install_journal as journal
+    import laya_journal_reader as reader
+    import laya_runtime_dispatch as dispatch
+    import laya_product_sync_worker as sync
+    import laya_blob_values as values
+    import laya_view_values as view_values
+    import wiki_mutation_lock
+    from contextlib import closing
+    from laya_blob_store import _regular
+    from laya_ledger_common import _read_json, _write
+    from laya_view_store import ViewStore, _skip_patterns
+    from laya_view_vectors import provider_spec
+    from sync_owner_lock import sync_owner
     state = _private_parent(state_root)
-    with _install_lock(state), initial_build.owner(state) as owned:
+    project = _checked_project(project_root)
+    with _install_lock(state), build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = initial_build.read(state)
-        if record is None:
-            _fail('initial_build_missing')
-        if record['phase'] == 'upgrading':
-            _fail('inactive_bundle_upgrade_pending')
-        return _finalize_fresh_wiki_locked(record, project_root, state)
-
-
-def _finalize_fresh_wiki_locked(record, project_root, state):
-    """Bind a fresh wiki build without inventing a QMD source or backup."""
-    import laya_initial_build as initial_build
-    import laya_fresh_wiki_origin as fresh
-    from contextlib import closing
-    from laya_index_host_route import wiki_index_roots
-    from laya_index_runtime import LayaIndexRuntime
-    from laya_install_journal import inspect_journal
-    from laya_source_catalog import LayaSourceCatalog
-    identity = record['identity']
-    if identity['projectRoot'] != str(project_root):
-        _fail('initial_build_project_mismatch')
-    if record['phase'] == 'retired':
-        _fail('initial_build_retired')
-    if record['phase'] == 'blocked':
-        return {'status': 'initial_build_blocked', 'blocked': record['blocked']}
-    ledger_path = state / fresh.LEDGER
-    cutover = fresh._load(ledger_path) if ledger_path.exists() or ledger_path.is_symlink() else None
-    if cutover is not None and (record['sealed'] is None or
-            cutover['indexGeneration'] != record['sealed']['generation'] or
-            cutover['candidateDb'] != identity['candidateDb']):
-        _fail('fresh_wiki_selection_already_exists')
-    if cutover is not None and cutover['phase'] != 'prepared':
-        if record['phase'] != 'bound':
-            record = initial_build.advance(record, phase='bound')
-        return {'status': 'cutover_' + cutover['phase'],
-                'cutoverPhase': cutover['phase'],
-                'journalPath': identity['journalPath'],
-                'generation': cutover['indexGeneration'],
-                'buildPhase': record['phase']}
-    if record['phase'] == 'bound' and cutover is None:
-        _fail('initial_build_bound_without_cutover')
-    roots = wiki_index_roots(identity['collections'])
-    if cutover is None and not initial_build.freshness_satisfied(record):
-        if record['phase'] == 'building' and record['freshness'] is not None:
-            return {'status': 'freshness_pending', 'phase': record['phase'],
-                    'progress': record['progress'],
-                    'wake': _request_build_wake(identity['projectRoot'])}
-        with closing(LayaSourceCatalog(identity['catalogDb'], roots,
-                                       identity['scopeId'], wiki_only=True)) as catalog:
-            record = initial_build.request_freshness(record, catalog)
-        return {'status': 'freshness_pending', 'phase': record['phase'],
-                'freshness': record['freshness'],
-                'wake': _request_build_wake(identity['projectRoot'])}
-    plan = plan_fresh_wiki_origin(project_root, _bound_marker=cutover is not None)
-    if plan['proposalSha256'] != identity['proposalSha256']:
-        _fail('reviewed_origin_plan_changed')
-    journal = inspect_journal(identity['journalPath'])
-    if (journal['state'] != 'candidate_ready' or
-            journal['pendingRouteSha256'] != identity['routeSha256'] or
-            journal['newWriteSeen']):
-        _fail('initial_build_journal_changed')
-    approval = preflight_product_candidate(identity['journalPath'])
-    if approval['attestationSha256'] != identity['attestationSha256']:
-        _fail('initial_build_attestation_changed')
-    sealed = record['sealed']
-    with LayaIndexRuntime(source_root=roots, scope=identity['scopeId'],
-                          db_path=identity['candidateDb'],
-                          queue_path=identity['queueDb'],
-                          db_incarnation=identity['dbIncarnation'],
-                          catalog_path=identity['catalogDb'],
-                          binding_store_path=identity['bindingStore']) as runtime:
-        live = initial_build.evidence(runtime, sealed['generation'],
-                                      identity['vectorProfileId'])
-    if live != sealed:
-        _fail('initial_build_candidate_changed')
-    route_bytes = _read_private(identity['routeFile'], 8192)
-    if hashlib.sha256(route_bytes).hexdigest() != identity['routeSha256']:
-        _fail('initial_build_route_changed')
-    row = fresh.bind(project_root=Path(project_root),
-                     journal_path=identity['journalPath'],
-                     route_bytes=route_bytes, sealed=sealed, identity=identity)
-    if record['phase'] != 'bound':
-        record = initial_build.advance(record, phase='bound')
-    return {'status': 'cutover_' + row['phase'], 'cutoverPhase': row['phase'],
-            'journalPath': identity['journalPath'],
-            'candidateDb': identity['candidateDb'],
-            'routeFile': identity['routeFile'],
-            'generation': sealed['generation'], 'buildPhase': record['phase']}
+        record = build.read_v1(state)
+        if record is None or record['identity']['projectRoot'] != str(project):
+            _fail('initial_build_project_mismatch')
+        if record['phase'] != 'ready':
+            return {'status': 'initial_build_pending', 'phase': record['phase']}
+        identity = record['identity']
+        with sync_owner(Path(identity['storePath']), wait=False) as owner:
+            if owner is None:
+                _fail('owner_busy')
+            with wiki_mutation_lock.lock(project):
+                dispatch.resolve('laya-sync', str(project))
+                row = journal.inspect_journal(identity['journalPath'])
+                attestation, digest = journal._attestation(Path(identity['journalPath']))
+                if digest != identity['attestationSha256'] or row['state'] != 'prepared':
+                    _fail('initial_build_journal_changed')
+                manifest = journal._v1_provider_manifest(attestation, row['vectorProfile'])
+                spec = provider_spec(manifest, row['vectorProfile'])
+                if spec is None:
+                    _fail('initial_build_vector_spec_unavailable')
+                decision = sync.select_route(str(project), action='recall')
+                if decision.get('state') != 'preview':
+                    _fail('initial_build_route_changed')
+                from laya_store_primitives import _query_only_uri
+                with closing(sqlite3.connect(_query_only_uri(Path(identity['storePath'])), uri=True)) as db:
+                    db.execute('PRAGMA query_only=ON')
+                    meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+                    trees = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                                       (str(project),)).fetchall()
+                if meta is None or len(trees) != 1:
+                    _fail('initial_build_store_changed')
+                repository = json.loads(meta[0], object_pairs_hook=_unique)
+                worktree_id = trees[0][0]
+                store = ViewStore.open_reader(identity['storePath'], repository=repository,
+                                              scope_id=identity['scopeId'])
+                try:
+                    if store._incarnation != identity['storeIncarnation']:
+                        _fail('initial_build_store_changed')
+                    handle = store.capture_view(worktree_id)
+                    pin = store.pin_view(handle)
+                    try:
+                        head = store.head(handle)
+                        vector = store._pinned(pin)['vector']
+                        if (head['gen_id'] is None or vector is None
+                                or vector['recipe_id'] != spec['recipe_id']
+                                or vector['profile_id'] != spec['profile_id']):
+                            _fail('initial_build_vectors_pending')
+                        with store._session() as db:
+                            tree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?',
+                                              (worktree_id,)).fetchone()
+                            baseline = sync._schema3_rows_baseline(store, db, handle, head)
+                            head_row = db.execute('SELECT ordinal FROM s_heads WHERE view_id=?',
+                                                  (handle.view_id,)).fetchone()
+                        if tree is None or head_row is None:
+                            _fail('initial_build_store_changed')
+                        found, _skipped = sync._schema3_wiki_cards(tree['wiki_root'])
+                        skips = _skip_patterns(dict(tree))
+                        paths = [p for p in found if not view_values.skipped(p, skips)]
+                        current = {}
+                        for path in paths:
+                            raw, _node, _root = _regular(tree['wiki_root'], path, values.MAX_BODY)
+                            current[path] = values.hash_bytes(raw)
+                        if current != {p: member['blob_sha'] for p, member in baseline['old'].items()}:
+                            _fail('initial_build_out_of_date')
+                        scan = {}
+                        observed = sync._schema3_sources(decision, handle, time.monotonic() + 45,
+                                                         raw_scan=scan)
+                        if 'snapshot' not in scan or not sync._schema3_head_same(
+                                store, head, baseline, observed, handle):
+                            _fail('initial_build_out_of_date')
+                        if store.head(handle) != head:
+                            _fail('initial_build_head_changed')
+                        store_evidence = reader._schema3_store(state, project,
+                            {'scopeId': identity['scopeId']}, decision,
+                            identity['storePath'], worktree_id)
+                        sealed = dict(install_id=identity['installId'], project=str(project),
+                            project_node=reader._node(project), state=str(state),
+                            state_node=reader._node(state), scope=identity['scopeId'],
+                            attestation_sha256=digest, profile=row['vectorProfile']['profileId'],
+                            settings=reader._sha(reader._raw(decision['recallSettings'])),
+                            roots=decision['collections'], store_format='schema3',
+                            capability=reader.SCHEMA3_CAPABILITY, checkout_policy=reader.SCHEMA3_POLICY,
+                            vector_profile=spec['profile_id'], vector_recipe=spec['recipe_id'],
+                            head_floor={'view_id': head['view_id'], 'epoch': head['epoch'],
+                                        'ordinal': head_row[0]},
+                            creation_epoch=(row['reader']['creation_epoch'] if row['reader'] else row['epoch'] + 1),
+                            **store_evidence)
+                        if not reader._schema3_shape(sealed):
+                            _fail('initial_build_reader_invalid')
+                    finally:
+                        store.release(pin)
+                finally:
+                    store.close()
+                path, db = journal._open(identity['journalPath'], write=True)
+                with closing(db):
+                    db.execute('BEGIN IMMEDIATE')
+                    try:
+                        current_row = journal._inspect_v1_row(db)
+                        if current_row != {k: v for k, v in row.items() if k != 'journalPath'}:
+                            _fail('initial_build_journal_changed')
+                        if current_row['reader'] is None:
+                            db.execute('INSERT INTO reader(id,record) VALUES(1,?)', (journal._canon(sealed),))
+                            changed = db.execute("UPDATE selection SET epoch=epoch+1,vector_recipe=? "
+                                "WHERE id=1 AND epoch=? AND state='prepared'",
+                                (spec['recipe_id'], row['epoch'])).rowcount
+                            if changed != 1:
+                                _fail('initial_build_journal_changed')
+                        elif current_row['reader'] != sealed:
+                            _fail('initial_build_reader_changed')
+                        journal._inspect_v1_row(db)
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+                ledger_path = state / 'ledger.json'
+                ledger = {'schema': 'memvane-install-ledger-v1', 'epoch': 1,
+                          'phase': 'prepared', 'identity': identity}
+                if ledger_path.exists() or ledger_path.is_symlink():
+                    if _read_json(ledger_path) != ledger:
+                        _fail('initial_build_ledger_changed')
+                else:
+                    _write(ledger_path, ledger, replace=False)
+                return {'status': 'initial_build_finalized', 'phase': 'prepared',
+                        'journalPath': str(path), 'routeFile': str(state / 'route.json'),
+                        'generation': head['gen_id']}
 
 
 def retire_drifted_origin(*, project_root, state_root):
