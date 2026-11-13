@@ -201,14 +201,25 @@ def mismatch_scenarios(project, state):
         stage(label + '_writer', code=code, out=out, stderr=err, row=after)
         need(after['epoch'] == baseline['epoch'], label + '_writer_changed_journal', row=after)
     newer = plugin_copy('plugin-v101', version='1.0.1')
-    code, out, err = session_start(project, root=newer)
-    stage('newer_session_start', code=code, out=out[-800:], stderr=err[-300:])
-    need(code == 0, 'newer_session_start_failed', stderr=err)
-    deadline = time.monotonic() + 300
+    # Activation's forced selector request holds the per-install ten-minute
+    # request floor; move that request back as if the floor had passed.
+    from memvane.journal.api import ledger_read_json, ledger_write
+    request = state / 'selector-heal-request.json'
+    floor = ledger_read_json(request) if request.exists() else None
+    stage('request_floor', request=floor)
+    if floor is not None:
+        ledger_write(request, {'requestedNs': time.time_ns() - 11 * 60 * 10**9}, replace=True)
     row = journal_row(state)
-    while time.monotonic() < deadline and row['max_plugin_version'] != '1.0.1':
-        time.sleep(2)
-        row = journal_row(state)
+    for attempt in range(6):  # a SessionStart skips the request while a sync holds the owner
+        code, out, err = session_start(project, root=newer)
+        stage('newer_session_start', attempt=attempt, code=code, out=out[-300:], stderr=err[-300:])
+        need(code == 0, 'newer_session_start_failed', stderr=err)
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and row['max_plugin_version'] != '1.0.1':
+            time.sleep(2)
+            row = journal_row(state)
+        if row['max_plugin_version'] == '1.0.1':
+            break
     stage('newer_recorded', row=row)
     need(row['max_plugin_version'] == '1.0.1', 'heal_warm_version_not_recorded', row=row)
     code, context, err = recall(project, 'what does the glacier protocol keep?')
