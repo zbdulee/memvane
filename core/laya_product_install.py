@@ -569,50 +569,29 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
 
 
 def initial_build_status(state_root):
-    """Read-only build record plus the catalog's durable scan backlog."""
+    """Read the single-store build's durable phase."""
     import laya_initial_build as initial_build
-    from contextlib import closing
-    from laya_source_catalog import LayaSourceCatalog
-    from laya_index_host_route import wiki_index_roots
     state = _private_parent(state_root)
-    record = initial_build.read(state)
+    record = initial_build.read_v1(state)
     if record is None:
         _fail('initial_build_missing')
-    identity = record['identity']
-    roots = wiki_index_roots(identity['collections'])
-    with closing(LayaSourceCatalog(identity['catalogDb'], roots, identity['scopeId'],
-                                   wiki_only=True)) as catalog:
-        scan = catalog.status()
     return {'status': 'initial_build', 'phase': record['phase'],
-            'progress': record['progress'], 'blocked': record['blocked'],
-            'sealed': record['sealed'], 'freshness': record['freshness'],
-            'freshnessSatisfied': initial_build.freshness_satisfied(record),
-            'catalog': scan}
+            'reason': record['reason'], 'epoch': record['epoch']}
 
 
 def request_initial_build_rescan(state_root):
-    """Explicitly request a scan (also clears a source block) and wake the build."""
+    """Request another bounded build pass through the existing sync wake."""
     import laya_initial_build as initial_build
-    from contextlib import closing
-    from laya_source_catalog import LayaSourceCatalog
-    from laya_index_host_route import wiki_index_roots
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = initial_build.read(state)
+        record = initial_build.read_v1(state)
         if record is None:
             _fail('initial_build_missing')
-        if record['phase'] == 'upgrading':
-            _fail('inactive_bundle_upgrade_pending')
-        identity = record['identity']
-        roots = wiki_index_roots(identity['collections'])
-        with closing(LayaSourceCatalog(identity['catalogDb'], roots,
-                                       identity['scopeId'], wiki_only=True)) as catalog:
-            record = initial_build.request_freshness(record, catalog)
+        record = initial_build.advance_v1(record, phase='building')
     return {'status': 'rescan_requested', 'phase': record['phase'],
-            'freshness': record['freshness'],
-            'wake': _request_build_wake(identity['projectRoot'])}
+            'wake': _request_build_wake(record['identity']['projectRoot'])}
 
 
 def finalize_initial_build(*, project_root, state_root):

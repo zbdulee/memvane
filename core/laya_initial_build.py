@@ -316,6 +316,21 @@ def create_v1(identity):
     return read_v1(state)
 
 
+def advance_v1(record, *, phase, reason=None):
+    """CAS the build phase while its existing owner lock is held."""
+    if phase not in ('registered', 'building', 'ready'):
+        _fail('initial_build_change_invalid')
+    if reason is not None and (type(reason) is not str or len(reason) > 256):
+        _fail('initial_build_change_invalid')
+    state = record['identity']['stateRoot']
+    if read_v1(state) != record:
+        _fail('initial_build_stale_cas')
+    updated = {**record, 'phase': phase, 'reason': reason,
+               'epoch': record['epoch'] + 1, 'updatedNs': time.time_ns()}
+    _write_json(Path(state) / V1_BUILD_FILE, updated, replace=True)
+    return read_v1(state)
+
+
 def read(state_root):
     """The validated record, or None when no build was registered here."""
     record = _read_json(record_path(_private_dir(state_root)))

@@ -173,12 +173,12 @@ def main(argv=None):
                 if args.action == 'index-origin-status':
                     from laya_install_journal import inspect_journal
                     result = {'status': 'inspected', 'journal': inspect_journal(journal),
-                              'routeFile': str(state / 'reviewed-route.json')}
-                    from laya_initial_build import read as read_build
+                              'routeFile': str(state / 'route.json')}
+                    from laya_initial_build import read_v1 as read_build
                     if read_build(state) is not None:
                         result['initialBuild'] = product.initial_build_status(state)
                 elif args.action in ('index-build-status','index-build-rescan'):
-                    from laya_initial_build import read as read_build
+                    from laya_initial_build import read_v1 as read_build
                     build = read_build(state)
                     if build is None or build['identity']['projectRoot'] != str(Path(args.project).resolve()):
                         raise ValueError('initial_build_project_mismatch')
