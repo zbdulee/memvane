@@ -22,7 +22,7 @@ import re
 import stat
 import unicodedata
 
-from memvane.settings import config
+from memvane.settings import api as config
 from memvane.settings import api as project_dir, types as project_types
 from memvane.route.types import (FIELDS, FIELDS_V2, FIELDS_V3, FIELDS_V4,
                                  MAX_RECORD_BYTES, MAX_SETTINGS_BYTES,

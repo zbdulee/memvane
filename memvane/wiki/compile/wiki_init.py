@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-from memvane.settings import config as qmd_config
+from memvane.settings import api as qmd_config
 from memvane.settings import api as project_dir, types as project_types
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 
