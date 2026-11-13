@@ -388,44 +388,6 @@ def _lock_dir(install_id, *, create):
     return journal_directory('reader-locks', install_id, create=create)
 
 
-def _stored_endpoint(db, endpoint_id):
-    _need(type(endpoint_id) is str and journal.SHA.fullmatch(endpoint_id), 'reader_endpoint_invalid')
-    row = db.execute('SELECT record,attestation FROM read_endpoints WHERE endpoint_id=?',
-                     (endpoint_id,)).fetchone()
-    _need(row and isinstance(row[0], str) and isinstance(row[1], bytes) and len(row[0]) <= 65536
-          and len(row[1]) <= 1024 * 1024, 'reader_endpoint_invalid')
-    packed = row[0].encode('utf8')
-    record = json.loads(packed)
-    _need(isinstance(record, dict) and _raw(record) == packed and
-          _sha(b'memvane-reader-endpoint-v1\0' + packed) == endpoint_id
-          and record.get('store_format') == 'schema3' and _schema3_shape(record)
-          and record.get('attestation_sha256') == _sha(row[1]), 'reader_endpoint_invalid')
-    return record
-
-
-def _selection(db):
-    _need(journal._schema_version(db) == 5, 'reader_schema_unknown')
-    rows = db.execute('SELECT epoch,preferred_endpoint,previous_endpoint,transition_id FROM reader_selection').fetchall()
-    _need(len(rows) == 1, 'reader_selection_invalid')
-    selected = object.__new__(ReaderSelection)
-    for name, value in zip(('epoch', 'preferred_endpoint', 'previous_endpoint', 'transition_id'), rows[0]):
-        object.__setattr__(selected, name, value)
-    last = db.execute('SELECT epoch,preferred_endpoint,previous_endpoint,transition_id '
-                      'FROM reader_transitions ORDER BY epoch DESC LIMIT 1').fetchone()
-    _need(last == rows[0] and type(selected.epoch) is int and selected.epoch >= 1 and
-          (selected.epoch == 1) == (selected.previous_endpoint is None)
-          and type(selected.transition_id) is str and journal.ID.fullmatch(selected.transition_id),
-          'reader_selection_invalid')
-    record = _stored_endpoint(db, selected.preferred_endpoint)
-    if selected.previous_endpoint is not None:
-        previous = _stored_endpoint(db, selected.previous_endpoint)
-        fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
-                  else ('install_id',))
-        _need(records_agree(record, previous, fields) or resettled_pair(previous, record),
-              'reader_install_changed')
-    return selected, record
-
-
 def _journal(path):
     path = Path(path)
     _need(path.name == _JOURNAL, 'invalid_journal_path')
@@ -434,16 +396,13 @@ def _journal(path):
     return path
 
 
-def read_selection(journal: Path) -> ReaderSelection:
-    from memvane.journal.install_journal import JournalEvidenceError
-    for attempt in range(3):
-        path = _journal(journal)
-        try:
-            with _readonly(path, path.parent) as db:
-                return _selection(db)[0]
-        except JournalEvidenceError as exc:
-            if str(exc) != 'reader_store_changed' or attempt == 2:
-                raise
+def selected_reader(journal_path):
+    """``(endpoint_id, epoch, record)`` of a v1 journal's selected reader; grants nothing."""
+    path = _journal(journal_path)
+    row = journal.inspect_journal(path)
+    record = row.get('reader')
+    _need(row['state'] == 'selected' and isinstance(record, dict), 'reader_selection_invalid')
+    return _sha(b'memvane-reader-endpoint-v1\0' + _raw(record)), row['epoch'], record
 
 
 def _insert_endpoint(db, endpoint, record, raw):

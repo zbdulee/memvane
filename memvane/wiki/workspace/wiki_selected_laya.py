@@ -94,8 +94,7 @@ def schema3_checkout(bound):
         return None
     with journal.read_only_journals():
         journal_path = reader._journal(path)
-        with reader._readonly(journal_path, journal_path.parent) as db:
-            selection, record = reader._selection(db)
+        endpoint, epoch, record = reader.selected_reader(journal_path)
         if record.get('store_format') != 'schema3':
             return None
         recheck(bound)
@@ -127,8 +126,7 @@ def schema3_checkout(bound):
             worktree = _worktree_record(saved, repository, store._policy)
         finally:
             store.close()
-        issued = _Schema3Checkout(decision, selection.preferred_endpoint, selection.epoch,
-                                  repository, worktree)
+        issued = _Schema3Checkout(decision, endpoint, epoch, repository, worktree)
         if not issued._selection_current():
             raise ValueError('reader_selection_changed')
         return issued
@@ -149,10 +147,8 @@ class _Schema3Checkout:
         if select_route(self.decision['projectRoot'], action='compile') != self.decision:
             return False
         with journal.read_only_journals():
-            path = reader._journal(self.decision['journalPath'])
-            with reader._readonly(path, path.parent) as db:
-                selection, record = reader._selection(db)
-            if (selection.preferred_endpoint != self.endpoint or selection.epoch != self.epoch
+            endpoint, epoch, record = reader.selected_reader(self.decision['journalPath'])
+            if (endpoint != self.endpoint or epoch != self.epoch
                     or record.get('store_format') != 'schema3'):
                 return False
             current = reader._schema3_store(Path(record['state']), Path(record['project']),

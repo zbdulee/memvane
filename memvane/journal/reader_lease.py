@@ -169,30 +169,6 @@ def reader_lifetime(install_id, *, exclusive):
             os.close(parent_fd)
 
 
-def _image(db):
-    """Capture one complete immutable journal image, including its CAS prefix."""
-    bundle = reader.journal._row(db)
-    selected, stored = reader._selection(db)
-    transitions = tuple(db.execute('SELECT epoch,preferred_endpoint,previous_endpoint,transition_id '
-                                   'FROM reader_transitions ORDER BY epoch'))
-    endpoints = {row[0]: (row[1], row[2]) for row in db.execute(
-        'SELECT endpoint_id,record,attestation FROM read_endpoints')}
-    records = {key: reader._stored_endpoint(db, key) for key in endpoints}
-    _need(len(transitions) == selected.epoch, 'reader_selection_invalid')
-    previous = None
-    referenced = set()
-    for epoch, preferred, old, transition in transitions:
-        _need(old == previous and type(transition) is str
-              and reader.journal.ID.fullmatch(transition), 'reader_selection_invalid')
-        referenced.add(preferred)
-        previous = preferred
-    _need(tuple(row[0] for row in transitions) == tuple(range(1, selected.epoch + 1))
-          and transitions[-1] == (selected.epoch, selected.preferred_endpoint,
-                                  selected.previous_endpoint, selected.transition_id)
-          and referenced == set(endpoints), 'reader_selection_invalid')
-    return bundle, selected, stored, transitions, endpoints, records
-
-
 def _forward_image(before, after):
     """Admit only an exact immutable prefix followed by reader-only CAS steps."""
     old_bundle, old, old_stored, prefix, endpoints, _ = before
@@ -206,13 +182,6 @@ def _forward_image(before, after):
         _need(reader.records_agree({name: record.get(name) for name in fields}, old_stored, fields)
               and current[key][1] == endpoints[old.preferred_endpoint][1],
               'reader_install_changed')
-
-
-def _read_v5_bundle(path):
-    """Read a candidate journal without the legacy writer-recovery opener."""
-    with reader._readonly(path, path.parent) as db:
-        _need(reader.journal._schema_version_read(db) == 5, 'reader_schema_unknown')
-        return reader.journal._row(db)
 
 
 @contextmanager
