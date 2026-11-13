@@ -21,8 +21,7 @@ import sys
 import threading
 import time
 
-from laya_index_a import IndexContractError, LayaIndexA
-from laya_index_claim_queue import ClaimQueue, UnknownDatabase
+from laya_store_primitives import IndexContractError
 from laya_index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
@@ -399,8 +398,8 @@ def preflight_product_candidate(journal_path, *, require_executing=False):
 def _executing_from_candidate(plugin_root):
     """The verifier and its loaded Laya dependencies must be the sealed files."""
     core = Path(plugin_root) / 'core'
-    required = ('laya_install_journal', 'laya_product_bundle', 'laya_index_a',
-                'laya_index_claim_queue', 'laya_index_host_route', 'laya_package',
+    required = ('laya_install_journal', 'laya_product_bundle', 'laya_store_primitives',
+                'laya_index_host_route', 'laya_package',
                 'config')
     for name in required:
         module = sys.modules.get(name)
@@ -1297,6 +1296,8 @@ def _executing_root():
 
 
 def _verify_selected_route(decision, *, dispatch_target=False, read_only=False):
+    from laya_index_a import LayaIndexA
+    from laya_index_claim_queue import ClaimQueue, UnknownDatabase
     """Read-only product proof for a host-validated candidate decision.
 
     The caller must still construct LayaIndexRuntime, which rechecks DB and

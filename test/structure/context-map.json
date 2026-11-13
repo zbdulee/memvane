@@ -551,16 +551,6 @@
       "layer": "application",
       "pinned": false
     },
-    "core/laya_index_a.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": true
-    },
-    "core/laya_index_claim_queue.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": true
-    },
     "core/laya_index_host_route.py": {
       "context": "host",
       "layer": "application",
@@ -672,11 +662,6 @@
       "pinned": false
     },
     "core/laya_reader_lease.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "core/laya_reader_open.py": {
       "context": "v6",
       "layer": "adapter",
       "pinned": false
@@ -1105,8 +1090,6 @@
     "core/extractors/hermes_adapter.py",
     "core/laya_bundle_upgrade.py",
     "core/laya_host_response.py",
-    "core/laya_index_a.py",
-    "core/laya_index_claim_queue.py",
     "core/laya_index_host_route.py",
     "core/laya_index_source_port.py",
     "core/laya_initial_build.py",

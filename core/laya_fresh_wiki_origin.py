@@ -15,9 +15,7 @@ import sqlite3
 import stat
 import time
 
-from laya_index_a import LayaIndexA
 import project_dir
-from laya_index_claim_queue import ClaimQueue
 from laya_install_journal import (cas_activate, cas_restore_fresh,
                                   inspect_journal, preflight_product_candidate)
 from laya_ledger_common import (_fsync_dir, _identity, _ledger_lock,
@@ -289,6 +287,8 @@ def _change(path, epoch, phase, next_phase):
 
 
 def _proof(row, route_bytes, *, restore=False):
+    from laya_index_a import LayaIndexA
+    from laya_index_claim_queue import ClaimQueue
     from laya_index_host_route import wiki_index_roots
     from laya_index_runtime import LayaIndexRuntime, capacity_store_paths
     from laya_initial_build import evidence
