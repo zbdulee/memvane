@@ -267,7 +267,7 @@ def _nested_project(path, project, deadline):
     edit back (True), never routes it unchecked, including a deadline that
     passes during the last stat.
     """
-    from memvane.settings import project_dir
+    from memvane.settings import api as project_dir
     from memvane.sync.source_scan import MAX_DEPTH
     try:
         between = len(path.relative_to(project).parts) - 1

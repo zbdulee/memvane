@@ -3,10 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-CURRENT = '.memvane'
-NAMES = (CURRENT,)
-SETTINGS = 'settings.json'
-WIKI = 'wiki'
+from memvane.settings.types import CURRENT, NAMES, SETTINGS, WIKI
 
 
 def active_name(project) -> str:

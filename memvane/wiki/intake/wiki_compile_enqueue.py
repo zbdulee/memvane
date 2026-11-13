@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
 from memvane.wiki.workspace import compile_paths as cp
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.wiki.intake import posttool
 from memvane.wiki.card import wiki_freshness

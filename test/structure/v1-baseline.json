@@ -14,8 +14,10 @@
       "@unicodedata",
       "memvane/route/index_host_route.py",
       "memvane/settings/__init__.py",
+      "memvane/settings/api.py",
       "memvane/settings/config.py",
-      "memvane/settings/project_dir.py"
+      "memvane/settings/project_dir.py",
+      "memvane/settings/types.py"
     ],
     "hook-serve": [
       "@argparse",
@@ -39,8 +41,10 @@
       "memvane/recall/types.py",
       "memvane/route/index_host_route.py",
       "memvane/settings/__init__.py",
+      "memvane/settings/api.py",
       "memvane/settings/config.py",
-      "memvane/settings/project_dir.py"
+      "memvane/settings/project_dir.py",
+      "memvane/settings/types.py"
     ]
   },
   "size_exceptions": {

@@ -1,6 +1,8 @@
 """Public project settings operations."""
 from __future__ import annotations
 
+from memvane.settings.types import CURRENT, NAMES, SETTINGS, WIKI
+
 
 def auxiliary_wiki_row(*args, **kwargs):
     from memvane.settings.source_text import auxiliary_wiki_row as implementation
@@ -15,4 +17,51 @@ def compile_rel(*args, **kwargs):
 
 def compile_dir(*args, **kwargs):
     from memvane.settings.project_dir import compile_dir as implementation
+    return implementation(*args, **kwargs)
+
+
+def active_name(*args, **kwargs):
+    from memvane.settings.project_dir import active_name as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def folder(*args, **kwargs):
+    from memvane.settings.project_dir import folder as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def wiki_rel(*args, **kwargs):
+    from memvane.settings.project_dir import wiki_rel as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def is_folder_name(*args, **kwargs):
+    from memvane.settings.project_dir import is_folder_name as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def is_folder(*args, **kwargs):
+    from memvane.settings.project_dir import is_folder as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def runtime_file(*args, **kwargs):
+    from memvane.settings.project_dir import runtime_file as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def settings_path(*args, **kwargs):
+    from memvane.settings.project_dir import settings_path as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def settings_candidates(*args, **kwargs):
+    from memvane.settings.project_dir import settings_candidates as implementation
     return implementation(*args, **kwargs)

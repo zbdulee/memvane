@@ -10,7 +10,7 @@
 from __future__ import annotations
 import sys
 from pathlib import Path
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 from memvane.wiki.card import wiki_card
 from memvane.settings import resolve_paths as qmd_resolve_paths
 from memvane.wiki.card import yaml_scalars

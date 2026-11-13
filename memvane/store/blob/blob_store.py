@@ -230,7 +230,7 @@ def _settings_identity(root):
     """
     from memvane.settings import config
     from memvane.route import index_host_route as routes
-    from memvane.settings import project_dir
+    from memvane.settings import api as project_dir
     from pathlib import PurePosixPath
     settings = project_dir.settings_path(root)
     if settings is None:

@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import compile_paths as cp
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import source_text

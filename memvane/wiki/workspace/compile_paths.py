@@ -28,7 +28,7 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 from memvane.settings.api import compile_rel, compile_dir
 
 # 프로젝트 활성 폴더(`project_dir.active_name`) 아래 `compile/`. 상수는 새 프로젝트

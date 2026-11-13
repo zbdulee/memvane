@@ -19,7 +19,7 @@ from pathlib import Path
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import compile_paths as cp
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.settings import source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge

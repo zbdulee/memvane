@@ -431,7 +431,7 @@ def _schema3_search(bound, text):
     from memvane.journal import journal_reader as reader
     from memvane.recall import reader_dispatch as dispatch
     from memvane.journal import reader_lease as lease
-    from memvane.settings import project_dir
+    from memvane.settings import api as project_dir
     from memvane.route.index_host_route import wiki_index_roots
     from memvane.sync.sync_owner_lock import sync_owner
     from memvane.sync.product_sync_worker import _owned_selected_proof

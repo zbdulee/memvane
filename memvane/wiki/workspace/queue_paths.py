@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import fcntl
 from pathlib import Path
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 from memvane.wiki.workspace import compile_paths as cp
 
 

@@ -121,7 +121,7 @@ def _preflight_multi_settings(route, project_root):
                                        _multi_settings_supported, _pairs,
                                        _read_regular, _source_for_collection,
                                        settings_identity_digest)
-    from memvane.settings import project_dir
+    from memvane.settings import api as project_dir
     settings = (project_dir.settings_path(project_root) or
                 project_dir.folder(project_root) / project_dir.SETTINGS)
     if settings.is_symlink():

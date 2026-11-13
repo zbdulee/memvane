@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 from memvane.settings import config as qmd_config
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 from memvane.wiki.workspace import wiki_mutation_lock
 
 

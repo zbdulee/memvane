@@ -248,7 +248,7 @@ def _cosine(left: list[float], right: list[float]) -> float:
 def run(cwd: str) -> dict:
     """One bounded scan for the project at ``cwd``; returns a summary."""
     from memvane.wiki.workspace import compile_paths as cp
-    from memvane.settings import project_dir
+    from memvane.settings import api as project_dir
     from memvane.settings import config as qmd_config
     from memvane.wiki.workspace import scan_state
     from memvane.wiki.workspace import wiki_selected_laya

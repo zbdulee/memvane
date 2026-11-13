@@ -15,7 +15,7 @@ import stat
 import sys
 import time
 
-from memvane.settings import project_dir
+from memvane.settings import api as project_dir
 
 from memvane.journal.install_journal import inspect_journal
 
@@ -718,7 +718,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.journal import journal_reader as reader
     from memvane.sync import product_sync_worker as sync
     from memvane.wiki.intake import wiki_discovery as discovery
-    from memvane.settings import project_dir
+    from memvane.settings import api as project_dir
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
     from memvane.route.index_host_route import _classify_v4, SELECTION_SCHEMA_V1
