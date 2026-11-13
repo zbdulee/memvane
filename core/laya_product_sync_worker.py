@@ -1315,37 +1315,6 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     return result
 
 
-def _schema3_generation_baseline(store, db, handle, head):
-    """Format 3: ``old`` members, staged ``carry``, the head's sealed ``manifest`` and ``vector_spec``.
-
-    A cold view publishes nothing until complete; its progress is the newest
-    generation it prepared and never published. A warm view's progress is the
-    newest generation prepared over this head: its members passed prepare's
-    byte check, and one whose bytes are still current is carried, not
-    re-ingested.
-    """
-    import laya_blob_values as v
-    cold = head['gen_id'] is None
-    base = (head['gen_id'] if not cold else next(iter(db.execute(
-        "SELECT gen_id FROM generations WHERE view_id=? AND state='prepared' "
-        'ORDER BY ordinal DESC LIMIT 1', (handle.view_id,)).fetchone() or ()), None))
-    old = {} if base is None else {m['path']: m for m in store._stored(db, base)[0]}
-    carry, manifest, spec = {}, None, None
-    if not cold:
-        staged = db.execute(
-            "SELECT g.gen_id,s.stage_json FROM generations g JOIN generation_slots s "
-            "ON s.ordinal=g.ordinal WHERE g.view_id=? AND g.state='prepared' "
-            'ORDER BY g.ordinal DESC LIMIT 1', (handle.view_id,)).fetchone()
-        over = staged and v.parse_canonical(staged[1]).get('base')
-        if over and (over.get('gen_id'), over.get('epoch')) == (head['gen_id'], head['epoch']):
-            carry = {m['path']: m for m in store._stored(db, staged[0])[0]}
-        sealed = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
-                            'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (head['gen_id'],)).fetchone()
-        if sealed is None:
-            v.fail('generation_missing')
-        stage = v.parse_canonical(sealed[0])
-        manifest, spec = stage['manifest'], stage['vector_spec']
-    return dict(old=old, carry=carry, manifest=manifest, vector_spec=spec)
 
 
 def _schema3_rows_baseline(store, db, handle, head):
@@ -1504,20 +1473,6 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
     return {path: tuple(value) for path, value in observed.items()}
 
 
-def _schema3_sources_same(store, manifest, observed, handle):
-    """The stored manifest's sources are exactly this observation at the same HEAD."""
-    if len(manifest['sources']) != len(observed):
-        return False
-    with store._session():
-        for source in manifest['sources']:
-            if source['presence'] != 'present' or source['path'] not in observed:
-                return False
-            spec = store._fingerprint(source['fingerprint_id'])
-            if ((spec['source_sha'], spec['byte_length'], spec['tracked_state']) != observed[source['path']]
-                    or (spec['worktree_id'], spec['branch_key'], spec['head_oid'], spec['binding_state'])
-                    != (handle.worktree_id, handle.branch_key, handle.head_oid, 'observed')):
-                return False
-    return True
 
 
 def _schema3_put_sources(store, handle, scan, observed):
