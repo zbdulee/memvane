@@ -380,7 +380,7 @@ def drain(decision, *, recheck, owner=None):
     def verify():
         if owner is None:
             return journal.verify_selected_route_for_write(decision, 'compile')
-        from memvane.sync.api import owned_selected_proof as _owned_selected_proof
+        from memvane.journal.api import owned_selected_proof as _owned_selected_proof
         return _owned_selected_proof(decision, owner)
 
     proof = verify()

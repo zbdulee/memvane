@@ -525,7 +525,7 @@ def _adopted_vector_spec(record, proof, *, deadline):
 def resettle_selection(decision, owner):
     """Re-seal the selected reader under the existing sync owner and lifetime."""
     from contextlib import closing
-    from memvane.sync.api import validate_sync_owner
+    from memvane.runtime.api import validate_sync_owner
     from memvane.journal.reader_windows import _Lifetime
     from memvane.store.api import provider_spec
     import time

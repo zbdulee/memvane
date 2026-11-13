@@ -26,7 +26,7 @@ from memvane.kernel.errors import IndexContractError
 from memvane.route.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
-from memvane.sync.sync_owner_lock import sync_owner
+from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError
 from memvane.journal.api import cas_mark_new_write, inspect_journal
 from memvane.provider.api import reviewed_provider_class
@@ -150,16 +150,6 @@ def _initial_build_waiting(controller, project):
         except (OSError, ValueError, sqlite3.Error):
             pass
     return bool(waiting)
-
-
-def _owned_selected_proof(decision, owner):
-    """Reprove the selected route while the sync owner is held."""
-    from memvane.sync.sync_owner_lock import validate_sync_owner
-    from memvane.journal.api import verify_selected_route_for_write
-    validate_sync_owner(owner, Path(decision['storePath']))
-    proof = verify_selected_route_for_write(decision)
-    validate_sync_owner(owner, Path(decision['storePath']))
-    return proof
 
 
 def _selected(project, *, owner_wait=False):
@@ -1622,7 +1612,8 @@ def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
                 return {**result, 'state': 'deferred', 'reason': 'owner_busy'}
 
             def recheck():
-                if _owned_selected_proof(decision, owner) != proof:
+                from memvane.journal.api import owned_selected_proof
+                if owned_selected_proof(decision, owner) != proof:
                     raise IndexContractError('selected_proof_changed')
             from memvane.wiki.intake import api as laya_external_edits
             from memvane.wiki.workspace.api import owner_scope as _owner_scope

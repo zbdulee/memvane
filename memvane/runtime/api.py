@@ -6,6 +6,16 @@ def handler_done(*args, **kwargs):
     from memvane.runtime.runtime_wake_policy import handler_done as implementation
     return implementation(*args, **kwargs)
 
+
+def sync_owner(*args, **kwargs):
+    from memvane.runtime.sync_owner_lock import sync_owner as implementation
+    return implementation(*args, **kwargs)
+
+
+def validate_sync_owner(*args, **kwargs):
+    from memvane.runtime.sync_owner_lock import validate_sync_owner as implementation
+    return implementation(*args, **kwargs)
+
 from memvane.runtime.types import PreSendDeferred
 
 

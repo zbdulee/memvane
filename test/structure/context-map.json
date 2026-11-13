@@ -209,6 +209,11 @@
       "layer": "application",
       "pinned": false
     },
+    "memvane/journal/application/selected_proof.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/journal/application/service_proof.py": {
       "context": "journal",
       "layer": "application",
@@ -919,6 +924,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/runtime/sync_owner_lock.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/runtime/types.py": {
       "context": "runtime",
       "layer": "domain",
@@ -1110,11 +1120,6 @@
       "pinned": false
     },
     "memvane/sync/product_sync_worker.py": {
-      "context": "sync",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/sync/sync_owner_lock.py": {
       "context": "sync",
       "layer": "adapter",
       "pinned": false

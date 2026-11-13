@@ -572,7 +572,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.store.api import view_store_class, skip_patterns as _skip_patterns
     ViewStore = view_store_class()
     from memvane.store.api import provider_spec
-    from memvane.sync.api import sync_owner
+    from memvane.runtime.api import sync_owner
     state = _private_parent(state_root)
     project = _checked_project(project_root)
     with _install_lock(state), build.owner(state) as owned:
@@ -726,7 +726,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.route.types import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write
     from memvane.journal.reader_lease import reader_lifetime
-    from memvane.sync.api import sync_owner
+    from memvane.runtime.api import sync_owner
     project = _checked_project(project_root)
     journal = Path(journal_path)
     state = _private_parent(journal.parent)
@@ -849,7 +849,7 @@ def _restore_v1_locked(project, state):
     from memvane.route.types import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write, _fsync_dir
     from memvane.journal.reader_lease import reader_lifetime
-    from memvane.sync.api import sync_owner
+    from memvane.runtime.api import sync_owner
     from memvane.wiki.workspace import wiki_mutation_lock
     with build.owner(state) as owned:
         if not owned:
