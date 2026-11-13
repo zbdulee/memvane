@@ -420,7 +420,7 @@ def _schema3_wiki_cards(root):
     Dot segments, root meta pages and links are not cards; a file the store
     would refuse to admit (not owned, linked, too large) is counted, not read.
     """
-    from memvane.store.blob import blob_values as v
+    from memvane.store import api as v
     from memvane.store.view import view_values as view_values
     cards, skipped = [], 0
     for base, dirs, files in os.walk(root, followlinks=False):
@@ -473,7 +473,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     """
     if vectors is None:
         vectors = {'spec': None}
-    from memvane.store.blob import blob_values as v
+    from memvane.store import api as v
     from memvane.store.checkout import checkout_view as checkout
     from memvane.journal import writer_scope as normal
     from memvane.store.view.view_store import ViewStore
@@ -672,7 +672,7 @@ def _read_compile_intent(fd):
 
 def _compiled_intent_is_stored(store, handle, intent):
     """A consumed filename is a witness only if its exact evidence is stored."""
-    from memvane.store.blob import blob_values as values
+    from memvane.store import api as values
     result = {key: value for key, value in intent.items()
               if key not in ('kind', 'verdict_digest', 'result_digest')}
     if (intent.get('kind') != 'compile' or intent['viewId'] != handle.view_id
@@ -701,7 +701,7 @@ def _compiled_intent_is_stored(store, handle, intent):
 
 def _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current):
     """Consume bounded compile intents without changing the view's member trust."""
-    from memvane.store.blob import blob_values as values
+    from memvane.store import api as values
     from memvane.install import ledger_common as ledger
     from memvane.journal import journal_reader as reader
     from memvane.journal import writer_scope as normal
@@ -867,7 +867,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     result's ``vector`` names why the vectors wait. An unchanged lexical head
     gets its vector generation from the same manifest.
     """
-    from memvane.store.blob import blob_values as v
+    from memvane.store import api as v
     from memvane.journal import writer_scope as normal
     from memvane.wiki.lifecycle import api as wiki_lifecycle
     from memvane.store.blob.blob_store import _regular
@@ -1108,7 +1108,7 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
     the lexical generation is published first and the head's own fill follows
     (design: a row head fills its eligible cards).
     """
-    from memvane.store.blob import blob_values as v
+    from memvane.store import api as v
     spec = vectors.get('spec')
     if spec is None:
         return {'state': 'off'}
@@ -1352,7 +1352,7 @@ def _schema3_chunker(context, current):
     recipe's fallback windows (``FALLBACK_CHARS``) and keeps no vector, so the
     embedder embeds each window alone.
     """
-    from memvane.store.blob import blob_values as v
+    from memvane.store import api as v
     from memvane.store.view.view_vectors import FALLBACK_CHARS, qmd_first_pass
 
     stats = context.setdefault('stats', {'providerMs': 0})
@@ -1498,7 +1498,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     ``provider_blocked``: the install's provider cannot be proved
     (``SCHEMA3_PROVIDER_DEFECTS``); the wake ends ``blocked``.
     """
-    from memvane.store.blob import blob_values as v
+    from memvane.store import api as v
     from memvane.store.view.view_fill import MAX_FILES
     spec = vectors.get('spec')
     if spec is None:

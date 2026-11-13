@@ -563,7 +563,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.journal import journal_reader as reader
     from memvane.app import runtime_dispatch as dispatch
     from memvane.sync import api as sync
-    from memvane.store.blob import blob_values as values
+    from memvane.store import api as values
     from memvane.store.view import view_values as view_values
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing

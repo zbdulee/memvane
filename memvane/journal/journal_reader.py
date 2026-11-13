@@ -192,7 +192,7 @@ def _repository_digest(text):
 def _schema3_shape(record):
     """Exact persisted schema3 record shape; no store is opened."""
     try:
-        from memvane.store.blob.blob_values import SHA, UUID
+        from memvane.store.types import SHA, UUID
         floor, node = record['head_floor'], record['db_node']
         return (set(record) == _SCHEMA3_KEYS and record['capability'] == SCHEMA3_CAPABILITY
                 and record['checkout_policy'] == SCHEMA3_POLICY
@@ -253,7 +253,7 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
     (lexical-first); a vector profile other than the endpoint's is refused.
     """
     from memvane.store.view.view_store import ViewStore
-    from memvane.store.blob.blob_values import fail
+    from memvane.store.api import fail
     state, path = Path(record['state']), Path(record['db_path'])
     target, project = record['worktree_id'], record['project']
     with _readonly(path, state) as db:
@@ -508,7 +508,7 @@ def _adopted_vector_spec(record, proof, *, deadline):
     expected = provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
     if expected is None:
         return None
-    from memvane.store.blob.blob_values import BlobStoreError
+    from memvane.store.types import BlobStoreError
     try:
         unbound = dict(record, vector_profile=None, vector_recipe=None)
         with _schema3_pin(unbound, deadline=deadline) as (store, _handle, pin):

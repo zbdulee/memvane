@@ -52,7 +52,7 @@ def _approved_profile_matches(candidate, proof):
     """Compare profile facts; this check alone grants no caller authority."""
     if not isinstance(candidate,dict) or not isinstance(proof,dict) or proof.get('productRouteAllowed') is not True:
         return False
-    from memvane.store.blob.blob_values import profile as validate_profile
+    from memvane.store.api import profile as validate_profile
     try:
         validate_profile(candidate)
     except (TypeError, ValueError):
@@ -220,7 +220,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     from memvane.recall.domain.rules import _fuse_verified_lists, _hybrid_fts_queries, _fail
     from memvane.route.api import wiki_index_roots
     from memvane.settings.api import auxiliary_wiki_row
-    from memvane.store.blob.blob_values import BlobStoreError
+    from memvane.store.types import BlobStoreError
     from memvane.store.view.view_vectors import DEFERRED
     queries=[query for query in _hybrid_fts_queries(
         prompt,tuple(decision['recallSettings'].get('lexicalPatterns',())) ) if query]

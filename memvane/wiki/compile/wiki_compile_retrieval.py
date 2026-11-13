@@ -480,7 +480,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     from memvane.journal import journal_reader as reader
     from memvane.recall.api import approved_profile_matches
     from memvane.store.view.view_vectors import DEFERRED
-    from memvane.store.blob.blob_values import BlobStoreError
+    from memvane.store.types import BlobStoreError
     decision, _proof = bound
     if record.get('vector_profile') is None:
         return {}
