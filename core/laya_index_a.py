@@ -20,16 +20,11 @@ import uuid
 
 
 from laya_store_primitives import (IndexContractError, _query_only_uri, _qmd_title,
-                                   _qmd_fts_text, _cjk)
+                                   _qmd_fts_text, _cjk, _digest)
 
 
 class InjectedFault(RuntimeError):
     pass
-
-
-def _digest(scope, entries):
-    return hashlib.sha256(json.dumps([scope, sorted(entries)], ensure_ascii=False,
-                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 class _StreamDigest:

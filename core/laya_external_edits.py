@@ -261,14 +261,14 @@ def _nested_project(path, project, deadline):
     sees every install (a nested one, or the cap refuses). An unregistered
     nested project is therefore never routed to its registered parent.
 
-    Bounded: at most the source tree depth (``laya_index_source_port.
+    Bounded: at most the source tree depth (``source_scan.
     MAX_DEPTH``) parent folders, two stats each, checked against the hook
     deadline before each one. A deeper path or a spent deadline holds the
     edit back (True), never routes it unchecked, including a deadline that
     passes during the last stat.
     """
     import project_dir
-    from laya_index_source_port import MAX_DEPTH
+    from source_scan import MAX_DEPTH
     try:
         between = len(path.relative_to(project).parts) - 1
     except ValueError:

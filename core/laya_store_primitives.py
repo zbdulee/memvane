@@ -2,6 +2,8 @@
 from bisect import bisect_right
 from pathlib import Path
 import re
+import hashlib
+import json
 import sys
 import time
 
@@ -89,5 +91,11 @@ def _qmd_fts_text(text, *, deadline=None):
     if len(text) > 4096 and deadline is not None and time.monotonic() >= deadline:
         raise IndexContractError('fts_deadline_exceeded')
     return out
+
+
+
+def _digest(scope, entries):
+    return hashlib.sha256(json.dumps([scope, sorted(entries)], ensure_ascii=False,
+                                     separators=(',', ':')).encode('utf-8')).hexdigest()
 
 

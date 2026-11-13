@@ -218,7 +218,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     from laya_host_response import (HYBRID_LIST_LIMIT, _fuse_verified_lists, _hybrid_fts_queries,
                                     _fail)
     from laya_index_host_route import wiki_index_roots
-    from laya_index_source_port import auxiliary_wiki_row
+    from source_scan import auxiliary_wiki_row
     from laya_blob_values import BlobStoreError
     from laya_view_vectors import DEFERRED
     queries=[query for query in _hybrid_fts_queries(

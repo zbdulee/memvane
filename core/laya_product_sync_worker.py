@@ -1477,7 +1477,7 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
     none, so discovery scans (and blocks) on its own.
     """
     import git_branch_safety
-    from laya_index_source_port import scan_collections
+    from source_scan import scan_collections
     from laya_wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
     project = Path(decision['projectRoot'])
     roots = {item['name']: item['sourceRoot'] for item in decision['collections'] if item.get('role') == 'raw'}
