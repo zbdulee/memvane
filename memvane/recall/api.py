@@ -35,3 +35,8 @@ def approved_query_vector(*args, **kwargs):
 def query_endpoint(*args, **kwargs):
     from memvane.recall.reader_dispatch import query_endpoint as implementation
     return implementation(*args, **kwargs)
+
+
+def serve_schema3_recall(*args, **kwargs):
+    from memvane.recall.selected_recall import serve_schema3_recall as implementation
+    return implementation(*args, **kwargs)

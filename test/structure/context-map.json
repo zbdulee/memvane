@@ -779,6 +779,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/recall/selected_recall.py": {
+      "context": "recall",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/recall/types.py": {
       "context": "recall",
       "layer": "domain",
