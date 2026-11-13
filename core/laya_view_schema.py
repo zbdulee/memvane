@@ -232,7 +232,9 @@ _IN_FLIGHT = """(SELECT g.ordinal FROM s_generations g WHERE g.view_id={view}
 def row_tables(text,sha,uuid,integer):
     """View registrations and reserved deletion receipts."""
     return {
-      'views':tables(text,sha,uuid,integer)['views'],
+      'views':f'''CREATE TABLE views(
+        {sha('view_id')} PRIMARY KEY, {uuid('worktree_id')} REFERENCES worktrees(worktree_id),
+        {text('branch_key')}, UNIQUE(worktree_id,branch_key))''',
       # Reserved deletion/hold proof per view path; metadata only, no writer yet.
       'delete_receipts':f'''CREATE TABLE delete_receipts(
         {sha('receipt_id')} PRIMARY KEY, {sha('view_id')} REFERENCES views(view_id),
