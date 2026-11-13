@@ -1,6 +1,7 @@
 """Bounded source scans for configured collection roots."""
 
 from __future__ import annotations
+from memvane.sync.types import MAX_DEPTH
 
 import hashlib
 import os
@@ -17,7 +18,6 @@ from memvane.settings.api import (DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS
 
 STALE = "index_stale"
 EXCLUSION_KINDS = frozenset({"path", "hash"})
-MAX_DEPTH = 32
 MAX_ENTRIES = 50_000
 MAX_REL_PATH_BYTES = 4096
 _READ_CHUNK = 64 * 1024

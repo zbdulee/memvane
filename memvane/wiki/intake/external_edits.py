@@ -268,7 +268,7 @@ def _nested_project(path, project, deadline):
     passes during the last stat.
     """
     from memvane.settings import api as project_dir
-    from memvane.sync.source_scan import MAX_DEPTH
+    from memvane.sync.types import MAX_DEPTH
     try:
         between = len(path.relative_to(project).parts) - 1
     except ValueError:
@@ -380,7 +380,7 @@ def drain(decision, *, recheck, owner=None):
     def verify():
         if owner is None:
             return journal.verify_selected_route_for_write(decision, 'compile')
-        from memvane.sync.product_sync_worker import _owned_selected_proof
+        from memvane.sync.api import owned_selected_proof as _owned_selected_proof
         return _owned_selected_proof(decision, owner)
 
     proof = verify()

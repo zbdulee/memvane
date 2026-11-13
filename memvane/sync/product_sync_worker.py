@@ -5,6 +5,7 @@ route, installer journal, provider attestation and DB/queue incarnation. A
 failed or deferred attempt leaves the wake for the runtime dispatcher to retry.
 """
 from __future__ import annotations
+from memvane.sync.types import EMBED_POLICY
 
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -32,8 +33,6 @@ from memvane.provider.adapters.local_embed_service import start_owned_embed_serv
 
 # A conservative cold-start proxy, not a measured GGUF/native peak. The
 # installed-candidate resource QA must measure and review this envelope.
-EMBED_POLICY = {'maxRssMib': 2048, 'minAvailableMib': 768,
-                'maxLoadPerCpu': 1, 'targetHeadroomFraction': .35}
 
 # RQA-RACE-01 Part B only. Unset (the product default) reads no file and
 # never waits. Set, it names `<fixture>/.qa-laya-sync-barrier.json` beside a

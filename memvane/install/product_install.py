@@ -562,7 +562,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.journal import install_journal as journal
     from memvane.journal import journal_reader as reader
     from memvane.app import runtime_dispatch as dispatch
-    from memvane.sync import product_sync_worker as sync
+    from memvane.sync import api as sync
     from memvane.store.blob import blob_values as values
     from memvane.store.view import view_values as view_values
     from memvane.wiki.workspace import wiki_mutation_lock
@@ -571,7 +571,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.install.ledger_common import _read_json, _write
     from memvane.store.view.view_store import ViewStore, _skip_patterns
     from memvane.store.view.view_vectors import provider_spec
-    from memvane.sync.sync_owner_lock import sync_owner
+    from memvane.sync.api import sync_owner
     state = _private_parent(state_root)
     project = _checked_project(project_root)
     with _install_lock(state), build.owner(state) as owned:
@@ -626,12 +626,12 @@ def finalize_initial_build(*, project_root, state_root):
                         with store._session() as db:
                             tree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?',
                                               (worktree_id,)).fetchone()
-                            baseline = sync._schema3_rows_baseline(store, db, handle, head)
+                            baseline = sync.schema3_rows_baseline(store, db, handle, head)
                             head_row = db.execute('SELECT ordinal FROM s_heads WHERE view_id=?',
                                                   (handle.view_id,)).fetchone()
                         if tree is None or head_row is None:
                             _fail('initial_build_store_changed')
-                        found, _skipped = sync._schema3_wiki_cards(tree['wiki_root'])
+                        found, _skipped = sync.schema3_wiki_cards(tree['wiki_root'])
                         skips = _skip_patterns(dict(tree))
                         paths = [p for p in found if not view_values.skipped(p, skips)]
                         current = {}
@@ -641,9 +641,9 @@ def finalize_initial_build(*, project_root, state_root):
                         if current != {p: member['blob_sha'] for p, member in baseline['old'].items()}:
                             _fail('initial_build_out_of_date')
                         scan = {}
-                        observed = sync._schema3_sources(decision, handle, time.monotonic() + 45,
+                        observed = sync.schema3_sources(decision, handle, time.monotonic() + 45,
                                                          raw_scan=scan)
-                        if 'snapshot' not in scan or not sync._schema3_head_same(
+                        if 'snapshot' not in scan or not sync.schema3_head_same(
                                 store, head, baseline, observed, handle):
                             _fail('initial_build_out_of_date')
                         if store.head(handle) != head:
@@ -716,7 +716,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.install import initial_build as build
     from memvane.journal import install_journal as journal_module
     from memvane.journal import journal_reader as reader
-    from memvane.sync import product_sync_worker as sync
+    from memvane.sync import api as sync
     from memvane.wiki.intake import api as discovery
     from memvane.settings import api as project_dir
     from memvane.wiki.workspace import wiki_mutation_lock
@@ -724,7 +724,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.route.index_host_route import _classify_v4, SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write
     from memvane.journal.reader_lease import reader_lifetime
-    from memvane.sync.sync_owner_lock import sync_owner
+    from memvane.sync.api import sync_owner
     project = _checked_project(project_root)
     journal = Path(journal_path)
     state = _private_parent(journal.parent)
@@ -777,11 +777,11 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                             or head['epoch'] != floor['epoch']):
                         _fail('initial_build_head_changed')
                     with store._session() as db:
-                        baseline = sync._schema3_rows_baseline(store, db, handle, head)
+                        baseline = sync.schema3_rows_baseline(store, db, handle, head)
                     scan = {}
-                    observed = sync._schema3_sources(decision, handle, time.monotonic() + 45,
+                    observed = sync.schema3_sources(decision, handle, time.monotonic() + 45,
                                                      raw_scan=scan)
-                    if 'snapshot' not in scan or not sync._schema3_head_same(
+                    if 'snapshot' not in scan or not sync.schema3_head_same(
                             store, head, baseline, observed, handle):
                         _fail('initial_build_out_of_date')
                     discovery.seed_source_snapshot(decision, scan['snapshot'], generation=head['gen_id'])
@@ -849,7 +849,7 @@ def _restore_v1_locked(project, state):
     from memvane.route.index_host_route import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write, _fsync_dir
     from memvane.journal.reader_lease import reader_lifetime
-    from memvane.sync.sync_owner_lock import sync_owner
+    from memvane.sync.api import sync_owner
     from memvane.wiki.workspace import wiki_mutation_lock
     with build.owner(state) as owned:
         if not owned:

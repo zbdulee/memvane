@@ -31,7 +31,7 @@ def _request_owned(decision, owner, *, force):
     from memvane.journal.install_journal import inspect_journal
     from memvane.install.ledger_common import _read_json, _write
     from memvane.kernel.memvane_version import plugin_version, version_key
-    from memvane.sync.sync_owner_lock import validate_sync_owner
+    from memvane.sync.api import validate_sync_owner
     validate_sync_owner(owner, Path(decision['storePath']))
     row = inspect_journal(decision['journalPath'])
     running, highest = version_key(plugin_version()), version_key(row['maxPluginVersion'])
@@ -69,7 +69,7 @@ def request(decision, *, force=False, owner=None):
         return
     if owner is not None:
         return _request_owned(decision, owner, force=force)
-    from memvane.sync.sync_owner_lock import sync_owner
+    from memvane.sync.api import sync_owner
     with sync_owner(Path(decision['storePath']), wait=False) as held:
         if held is not None:
             return _request_owned(decision, held, force=force)
@@ -83,7 +83,7 @@ def run(project, *, force=False):
     from memvane.journal.install_journal import (_open, _inspect_v1_row, inspect_journal,
                                       verify_selected_route_for_write)
     from memvane.kernel.memvane_version import plugin_version, version_key
-    from memvane.sync.sync_owner_lock import sync_owner, validate_sync_owner
+    from memvane.sync.api import sync_owner, validate_sync_owner
     project = str(Path(project).resolve(strict=True))
     decision = select_route(project, action='update')
     proof = verify_selected_route_for_write(decision)

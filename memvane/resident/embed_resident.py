@@ -246,7 +246,7 @@ def admit_query(*, coordinator=None, report=None):
     """
     from memvane.learning.context_learning.resource_coordination import Coordinator
     from memvane.learning.context_learning.shared import resource_report
-    from memvane.sync.product_sync_worker import EMBED_POLICY
+    from memvane.sync.types import EMBED_POLICY
 
     try:
         # The learning lane root may be mid-move (a sentinel where the old
@@ -350,7 +350,7 @@ def wait_for_release(socket_path, timeout=3):
 
 def _owned_route(project):
     """Prove one selected or pending installation using its own route contract."""
-    from memvane.sync.product_sync_worker import _selected
+    from memvane.sync.api import selected as _selected
     try:
         decision, proof = _selected(project)
         return decision, proof, 'selected'

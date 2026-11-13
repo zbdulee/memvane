@@ -9,7 +9,7 @@ import time
 from memvane.journal import install_journal as J
 from memvane.journal import journal_reader as R
 from memvane.journal import reader_windows as W
-from memvane.sync.sync_owner_lock import validate_sync_owner
+from memvane.sync.api import validate_sync_owner
 
 # Keep abandoned admissions strongly owned. Only explicit creator exit can
 # release their lifetime and queue pin; no generator/finalizer does cleanup.

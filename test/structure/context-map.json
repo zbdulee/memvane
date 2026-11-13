@@ -1039,6 +1039,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/sync/api.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/sync/intent_ack.py": {
       "context": "sync",
       "layer": "adapter",
@@ -1057,6 +1062,11 @@
     "memvane/sync/sync_owner_lock.py": {
       "context": "sync",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/sync/types.py": {
+      "context": "sync",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/wiki/__init__.py": {

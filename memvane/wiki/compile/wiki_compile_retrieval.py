@@ -434,8 +434,8 @@ def _schema3_search(bound, text):
     from memvane.journal import reader_lease as lease
     from memvane.settings import api as project_dir
     from memvane.route.api import wiki_index_roots
-    from memvane.sync.sync_owner_lock import sync_owner
-    from memvane.sync.product_sync_worker import _owned_selected_proof
+    from memvane.sync.api import sync_owner
+    from memvane.sync.api import owned_selected_proof as _owned_selected_proof
     from memvane.kernel.bundle_paths import plugin_root
     from memvane.kernel.resource_deferred import ResourceDeferred
     decision, proof = bound

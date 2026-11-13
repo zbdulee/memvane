@@ -34,19 +34,19 @@ def _compile_proof(decision, *, owner=None):
     if owner is None and active is not None and active[0][0]==decision:
         owner=active[1]
     if owner is not None:
-        from memvane.sync.product_sync_worker import _owned_selected_proof
+        from memvane.sync.api import owned_selected_proof as _owned_selected_proof
         return _owned_selected_proof(decision,owner)
     if 'journalPath' not in decision:
         return verify_selected_route_for_write(decision,'compile')
     from memvane.journal import install_journal as journal
-    from memvane.sync.sync_owner_lock import sync_owner
+    from memvane.sync.api import sync_owner
     from memvane.kernel.resource_deferred import ResourceDeferred
     with sync_owner(Path(decision['storePath'])) as acquired:
         if acquired is None:
             raise ResourceDeferred('owner_busy')
         with journal.read_only_journals():
             if journal.journal_version(decision['journalPath'])==5:
-                from memvane.sync.product_sync_worker import _owned_selected_proof
+                from memvane.sync.api import owned_selected_proof as _owned_selected_proof
                 return _owned_selected_proof(decision,acquired)
             with journal.legacy_identity_reads():
                 return verify_selected_route_for_write(decision,'compile')
