@@ -1918,21 +1918,15 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
             observed = candidate.get('sourceFingerprints')
             fingerprints = None
             if selected is not None and isinstance(observed, dict):
-                import laya_host_response
-                try:
-                    schema3 = laya_host_response._selected_store_format(selected[0]) == 'schema3'
-                except (OSError, RuntimeError, ValueError, sqlite3.Error):
-                    schema3 = False
-                if schema3:
-                    rows = observed.get('fingerprints')
-                    if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
-                        first = rows[0]
-                        if (all(row.get('scan_id') == first.get('scan_id')
-                                and row.get('observed_ns') == first.get('observed_ns') for row in rows)
-                                and isinstance(first.get('scan_id'), str)
-                                and type(first.get('observed_ns')) is int):
-                            fingerprints = {**observed, 'scanId': first['scan_id'],
-                                            'observedNs': first['observed_ns']}
+                rows = observed.get('fingerprints')
+                if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
+                    first = rows[0]
+                    if (all(row.get('scan_id') == first.get('scan_id')
+                            and row.get('observed_ns') == first.get('observed_ns') for row in rows)
+                            and isinstance(first.get('scan_id'), str)
+                            and type(first.get('observed_ns')) is int):
+                        fingerprints = {**observed, 'scanId': first['scan_id'],
+                                        'observedNs': first['observed_ns']}
             from wiki_compile_enqueue import _append_jsonl
             _append_jsonl(verify_queue_path, [{
                 "ts": now_iso(),
