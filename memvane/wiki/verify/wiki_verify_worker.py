@@ -62,6 +62,7 @@ from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_compile_worker as wcw
+from memvane.wiki.engines import api as engines
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.card import source_spans
@@ -102,7 +103,7 @@ def verify_engine_pool(compile_cfg: dict, vcfg: dict) -> list[str]:
     picked = [e for e in (vcfg.get("builtins") or []) if isinstance(e, str) and e]
     if not picked:
         # 상속 목록은 `wcw.extractor_engine_pool`이 SSOT다(dedup judge도 같은 함수를 쓴다).
-        picked = wcw.extractor_engine_pool(compile_cfg)
+        picked = engines.extractor_engine_pool(compile_cfg)
     ordered = []
     for engine in picked:
         if engine not in ordered:
@@ -158,7 +159,7 @@ def plan_verify_attempts(
         resolve_builtins.append(producing)
     producing_attributable = bool(
         producing and producing != qmd_config.UNKNOWN_ENGINE
-        and wcw.resolve_extractor_argv(compile_cfg, producing, builtins=resolve_builtins) is not None
+        and engines.resolve_extractor_argv(compile_cfg, producing, builtins=resolve_builtins) is not None
     )
     if mode == "off" and not producing_attributable:
         return [], mode, "producing_engine_unavailable"
@@ -168,13 +169,13 @@ def plan_verify_attempts(
 
     # 순서 규칙은 dedup judge와 공용이다(`wcw.plan_engine_order`가 SSOT). 여기 남는 것은
     # verify 고유의 것들 — argv 해석, 식힘 건너뛰기, mode 라벨, 빈 계획의 사유다.
-    order = wcw.plan_engine_order(pool, producing, mode, producing_attributable)
+    order = engines.plan_engine_order(pool, producing, mode, producing_attributable)
 
     attempts: list[dict] = []
     seen_argv: list[list[str]] = []
     skipped_cooling = 0
     for engine in order:
-        primary = wcw.resolve_extractor_argv(compile_cfg, engine, builtins=resolve_builtins)
+        primary = engines.resolve_extractor_argv(compile_cfg, engine, builtins=resolve_builtins)
         if primary is None or primary in seen_argv:
             continue
         seen_argv.append(primary)
@@ -217,11 +218,11 @@ def engine_cooldown_path(root: Path) -> Path:
 # 쓴다 — flock read-modify-write·만료 클램프·원자 쓰기 반환값 확인을 두 벌 두지 않는다).
 # 여기 남는 것은 **경로**뿐이고, 그것이 verify와 dedup을 분리하는 유일한 차이다.
 def load_engine_cooldowns(root: Path) -> dict:
-    return wcw.load_engine_cooldowns(engine_cooldown_path(root))
+    return engines.load_engine_cooldowns(engine_cooldown_path(root))
 
 
 def cooling_engines(root: Path) -> set:
-    return wcw.cooling_engines(engine_cooldown_path(root))
+    return engines.cooling_engines(engine_cooldown_path(root))
 
 
 def set_engine_cooldown(root: Path, key: str, seconds: int) -> bool:
@@ -231,7 +232,7 @@ def set_engine_cooldown(root: Path, key: str, seconds: int) -> bool:
     메커니즘이다 — 기록이 없으면 다음 run이 같은 엔진을 다시 부르고 degrade가 일어나지 않아
     정지가 그대로 돌아온다. 조용히 실패하면 그 사실을 알 방법이 없다.
     """
-    return wcw.set_engine_cooldown(engine_cooldown_path(root), key, seconds)
+    return engines.set_engine_cooldown(engine_cooldown_path(root), key, seconds)
 
 
 def log_verdict(log_path: Path, payload: dict) -> None:
@@ -1124,7 +1125,7 @@ def process_verify_job(
         "timeout": timeout,
         "_qmd": {"reasoningEffort": {
             "requested": qmd_config.resolve_reasoning_effort(compile_cfg, attempts[0]["engine"], "verify"),
-            "capabilityDeclared": attempts[0]["argv"] == wcw._builtin_adapter_argv(attempts[0]["engine"]),
+            "capabilityDeclared": attempts[0]["argv"] == engines.builtin_adapter_argv(attempts[0]["engine"]),
         }},
     }
     # 실패 분류 경계 — 두 요구를 동시에 만족시켜야 한다:
@@ -1148,10 +1149,10 @@ def process_verify_job(
             compile_cfg, attempt["engine"], "verify"
         )
         payload["_qmd"]["reasoningEffort"]["capabilityDeclared"] = (
-            attempt["argv"] == wcw._builtin_adapter_argv(attempt["engine"])
+            attempt["argv"] == engines.builtin_adapter_argv(attempt["engine"])
         )
         attempted.append(attempt["engine"])
-        parsed, reason, returncode = wcw.run_extractor(attempt["argv"], payload, timeout, root)
+        parsed, reason, returncode = engines.run_extractor(attempt["argv"], payload, timeout, root)
         if returncode != 127:
             # 이 계획에 아직 시도하지 않은 후보가 남았는가 — 실패 처리의 degrade 판단에 쓴다.
             has_more = index + 1 < len(attempts)

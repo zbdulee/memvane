@@ -11,11 +11,11 @@ import json
 import os
 import re
 import sqlite3
-import shutil
 import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.kernel.atomic_rename import write_text_atomic
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import api as cp, types as ct
@@ -611,40 +611,6 @@ def trim_jsonl(path: Path, max_bytes: int = LOG_MAX_BYTES) -> None:
 
 
 @wiki_mutation_lock.guard_path
-def write_text_atomic(path: Path, text: str) -> bool:
-    """기존 파일 덮어쓰기의 **단일 원자적 쓰기 경로**(카드·wiki 산출물 공용).
-
-    `write_text`는 truncate 후 write다. 쓰기가 중간에 실패하면(ENOSPC·quota·EFBIG)
-    호출자는 예외/실패를 받는데 **파일은 이미 잘려 있다**(실측:
-    `patch_frontmatter_fields` 자동 경로에서 40054B 카드 → 2048B).
-    자동 경로가 더 나쁘다 — verify worker가 `status: verified`를 스탬프하다 실패하면
-    예외가 `run()` 밖으로 나가 job은 requeue되지만, 다음 회차 `card_state`가 **절단본**을
-    읽어 `changed_during_verify`로 skip한다. 사람이 개입하지 않으므로 조용한 영구 손상이다.
-    카드가 그 지식의 유일한 기록일 수 있다는 이유로 자동 삭제를 금지한 정책과 정반대다.
-
-    임시파일은 **같은 디렉터리**에 만든다(다른 파일시스템이면 rename이 원자적이지 않다).
-    원본이 있으면 **권한을 이식한다** — `os.replace`는 임시파일 권한(umask 기준 0644)을
-    남기므로, 이식하지 않으면 0600 카드가 0644로 **넓어지는** 회귀가 된다.
-    """
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    try:
-        with open(tmp, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            shutil.copymode(path, tmp)
-        except OSError:
-            # 원본이 없거나(신규 생성) 권한을 못 읽는 경우 — 기본 권한으로 진행한다.
-            pass
-        os.replace(tmp, path)
-        return True
-    except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        return False
 
 
 def write_jsonl_atomic(path: Path, rows: list[dict]) -> None:

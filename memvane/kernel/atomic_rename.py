@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import os
+import shutil
 import sys
 
 
@@ -54,3 +55,26 @@ def atomic_json(path, value):
         os.replace(name, path)
     finally:
         if os.path.exists(name): os.unlink(name)
+
+
+def write_text_atomic(path: Path, text: str) -> bool:
+    """Replace text atomically in the same directory, preserving existing mode."""
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            shutil.copymode(path, tmp)
+        except OSError:
+            # 원본이 없거나(신규 생성) 권한을 못 읽는 경우 — 기본 권한으로 진행한다.
+            pass
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False

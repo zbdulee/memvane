@@ -208,7 +208,7 @@ def judge_engine_pool(compile_cfg: dict) -> list[str]:
     QMD_ENGINE is honored only when that engine is actually configured; an unconfigured
     host (gemini on a claude/codex-only project) must not resolve to a dead label.
     """
-    from memvane.wiki.compile import wiki_compile_worker as wcw
+    from memvane.wiki.engines import api as wcw
 
     pool = wcw.extractor_engine_pool(compile_cfg)
     env = os.environ.get("QMD_ENGINE", "")
@@ -246,7 +246,7 @@ def plan_judge_attempts(
     `cooled` are cooldown keys whose last PAID call failed; skipping them is what makes
     the next run degrade to the next candidate instead of re-billing the same failure.
     """
-    from memvane.wiki.compile import wiki_compile_worker as wcw
+    from memvane.wiki.engines import api as wcw
 
     mode = cross_engine_mode(compile_cfg)
     # 귀속이 **경로 차원에서** 불가능하면 require를 적용하지 않는다(`require_waived` 참조).
@@ -351,7 +351,7 @@ def judge_pair(
     """
     # Lazy import: wiki_compile_worker imports wiki_compile, which imports this
     # module -- a module-level import here would close the cycle.
-    from memvane.wiki.compile import wiki_compile_worker as wcw
+    from memvane.wiki.engines import api as wcw
 
     if not is_enabled(compile_cfg):
         return None, {"outcome": OUTCOME_UNAVAILABLE, "reason": "judge_disabled"}
@@ -392,7 +392,7 @@ def judge_pair(
         "timeout": timeout,
         "_qmd": {"reasoningEffort": {
             "requested": qmd_config.resolve_reasoning_effort(compile_cfg, attempts[0]["engine"], "semanticDedup"),
-            "capabilityDeclared": attempts[0]["argv"] == wcw._builtin_adapter_argv(attempts[0]["engine"]),
+            "capabilityDeclared": attempts[0]["argv"] == wcw.builtin_adapter_argv(attempts[0]["engine"]),
         }},
     }
 
@@ -407,7 +407,7 @@ def judge_pair(
             compile_cfg, candidate["engine"], "semanticDedup"
         )
         payload["_qmd"]["reasoningEffort"]["capabilityDeclared"] = (
-            candidate["argv"] == wcw._builtin_adapter_argv(candidate["engine"])
+            candidate["argv"] == wcw.builtin_adapter_argv(candidate["engine"])
         )
         attempted.append(candidate["engine"])
         parsed, reason, returncode = wcw.run_extractor(candidate["argv"], payload, timeout, root)
@@ -498,7 +498,7 @@ def _back_off(root: Path, jcfg: dict, key: str, has_more: bool) -> dict:
     종점을 보장하고, 두 기록 모두 실패하면 사실을 `cooldownWriteFailed`로 표면화한다 —
     조용히 삼키면 다음 run이 같은 후보를 다시 유료로 부른다.
     """
-    from memvane.wiki.compile import wiki_compile_worker as wcw
+    from memvane.wiki.engines import api as wcw
 
     seconds = _int(jcfg.get("cooldownSeconds"), DEFAULT_COOLDOWN_SECONDS)
     if has_more and wcw.set_engine_cooldown(engine_cooldown_path(root), key, seconds):
