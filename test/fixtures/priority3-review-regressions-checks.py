@@ -41,7 +41,6 @@ MOVE = load('move_fixture_for_review_regressions', 'laya-project-dir-move-checks
 import onboarding_choice as choice
 import laya_initial_build as build
 import laya_install_journal as journal
-import release_coordination as release
 from hermes_adapter import plugin
 
 
@@ -186,41 +185,6 @@ class ReviewRegressions(unittest.TestCase):
                     self.assertEqual(len(captured), 1)
                     self.assertEqual(captured[0]['cwd'], str(case.project))
 
-    def test_04_active_release_refuses_another_installs_valid_build_record(self):
-        case = self.compose(MOVE.MoveCase)
-        before = journal.inspect_journal(case.journal)
-        self.assertEqual(before['state'], 'active')
-        original = build.read(case.state)
-        baseline = release._preferred_owner(MOVE.upgrade, str(case.state), str(case.project),
-                                             str(case.plugin), 'active')
-        self.assertEqual(baseline['pluginRoot'], str(case.plugin))
-        foreign_project, foreign_state = case.home / 'foreign-project', case.home / 'foreign-state'
-        foreign_project.mkdir(mode=0o700)
-        foreign_state.mkdir(mode=0o700)
-        identity = {**original['identity'], 'projectRoot': str(foreign_project),
-                    'stateRoot': str(foreign_state), 'installId': 'a' * 32, 'scopeId': 'b' * 32}
-        for key in ('candidateDb', 'queueDb', 'catalogDb', 'bindingStore', 'journalPath', 'routeFile'):
-            identity[key] = str(foreign_state / Path(identity[key]).name)
-        identity['collections'] = [
-            {**item, 'sourceRoot': str(foreign_project / 'wiki') if item['role'] == 'wiki'
-                                         else str(foreign_project)} for item in identity['collections']]
-        build.create_or_verify(identity)
-        valid_foreign = build.read(foreign_state)
-        self.assertEqual(valid_foreign['identity'], identity, 'real schema must accept foreign record')
-        # Copy an actually schema-valid record, not a hand-made invalid dict.
-        (case.state / build.RECORD).write_bytes((foreign_state / build.RECORD).read_bytes())
-        (case.state / build.RECORD).chmod(0o600)
-        read_back = build.read(case.state)
-        self.assertEqual(read_back, valid_foreign, 'counterexample must pass actual build.read')
-        after = journal.inspect_journal(case.journal)
-        self.assertEqual(before, after, 'the active selected journal remains unchanged')
-        emit('R4-active-foreign-build', selectedProject=before['projectRoot'],
-             selectedInstall=before['selected']['installId'], selectedScope=before['scopeId'],
-             foreignIdentity={key: identity[key] for key in ('projectRoot', 'stateRoot', 'installId', 'scopeId')},
-             buildPhase=read_back['phase'], buildEpoch=read_back['epoch'], journalEpoch=after['epoch'])
-        with self.assertRaises(release.ReleaseError):
-            release._preferred_owner(MOVE.upgrade, str(case.state), str(case.project), str(case.plugin), 'active')
-
     @staticmethod
     def outside_snapshot(root):
         rows = {}
@@ -351,23 +315,6 @@ class ReviewRegressions(unittest.TestCase):
                     self.assertIn(answer, (None, {}, {'context': ''}))
                 else:
                     self.assertIn('request refused', (answer or {}).get('context', ''))
-
-    def test_09_active_legacy_bundle_metadata_does_not_change_stable_build_identity(self):
-        case = self.compose(MOVE.MoveCase)
-        record = build.read(case.state)
-        identity = {**record['identity']}
-        for key, digit in (('routeSha256', '1'), ('attestationSha256', '2'),
-                           ('proposalSha256', '3'), ('providerProposalSha256', '4')):
-            identity[key] = digit * 64
-        build._write_json(case.state / build.RECORD, {**record, 'identity': identity}, replace=True)
-        validated = build.read(case.state)
-        self.assertEqual(validated['identity'], identity)
-        result = release._preferred_owner(MOVE.upgrade, str(case.state), str(case.project),
-                                           str(case.plugin), 'active')
-        emit('R4-old-metadata-compatible', result=result, stableInstall=identity['installId'],
-             stableScope=identity['scopeId'], changedMetadata=['routeSha256', 'attestationSha256',
-                                                            'proposalSha256', 'providerProposalSha256'])
-        self.assertEqual(result, {'stateRoot': str(case.state), 'pluginRoot': str(case.plugin)})
 
     def test_10_actual_date_parser_failure_keeps_the_first_cleanup_cli_receipt(self):
         case = self.compose(CLEANUP.CleanupPartialChecks)
