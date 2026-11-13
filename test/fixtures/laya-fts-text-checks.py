@@ -12,7 +12,7 @@ import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import laya_index_a as a
+import laya_store_primitives as a
 
 
 def reference(text):

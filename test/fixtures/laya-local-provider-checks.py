@@ -18,7 +18,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'core'))
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                        ReviewedLocalQmdProvider, recipe_fingerprint)
 from laya_local_embed_service import start_owned_embed_service

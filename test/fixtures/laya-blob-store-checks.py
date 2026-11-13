@@ -420,16 +420,6 @@ class BlobStoreChecks(BlobStoreCase):
             self.refused(store.ingest_card, wid, 'cards/a.md')
         self.assertEqual(store.counts(), before)
 
-    def test_16_real_v6_database_is_unchanged_on_candidate_refusal(self):
-        import laya_index_a
-        path = self.state / 'v6.db'
-        index = laya_index_a.LayaIndexA(path, create=True)
-        index.close()
-        repository, _ = self.bind()
-        before = path.read_bytes()
-        self.refused(self.reopen, repository, path=path)
-        self.assertEqual(path.read_bytes(), before)
-
     def test_17_oversized_card_is_refused_before_admission(self):
         store, _, wid = self.create()
         (self.wiki() / 'cards/large.md').write_bytes(b'x' * (4 * 1024 * 1024 + 1))

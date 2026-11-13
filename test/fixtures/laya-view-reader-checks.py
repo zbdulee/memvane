@@ -316,15 +316,15 @@ class ReaderChecks(helpers.GenerationCase):
             db.execute(trigger)
         self.refused(store.search,pin,'hello',1)
 
-    def test_13_per_generation_cjk_bm25_matches_v6_fts(self):
-        import laya_index_a as legacy
+    def test_13_cjk_bm25_matches_reference_fts(self):
+        import laya_store_primitives as legacy
         store,_,h=self.seeded();m=self.snapshot(store,h)
         texts={'public/한글.md':('# 한글 제목\n한글 검색 내용\n','한글 제목'),
                'public/second.md':('# Other\n한글 한글 검색\n','Other')}
         for path,(body,title) in texts.items():self.add_member(store,h,m,path,body.encode(),title)
         gen,base=self.prepared(store,h,m);store.publish_generation(h,gen,expected_head=base)
         ref=sqlite3.connect(':memory:');self.addCleanup(ref.close)
-        ref.execute(legacy._gen_fts_ddl('gen_fts_1'))
+        ref.execute("CREATE VIRTUAL TABLE gen_fts_1 USING fts5(filepath,title,body,path_key UNINDEXED,tokenize='porter unicode61')")
         for member in m['members']:
             doc=store.document(member['blob_sha'])
             ref.execute('INSERT INTO gen_fts_1 VALUES(?,?,?,?)',
@@ -334,17 +334,6 @@ class ReaderChecks(helpers.GenerationCase):
         actual=store.search(store.pin_view(h),q,10)
         self.assertEqual([r['path'] for r in actual],[r[0] for r in expected])
         for a,b in zip(actual,expected):self.assertAlmostEqual(a['score'],b[1],places=12)
-
-    def test_14_legacy_v6_reader_remains_separately_usable(self):
-        import laya_index_a as legacy
-        path=self.state/'legacy-v6.db';index=legacy.LayaIndexA(path,create=True)
-        try:
-            self.assertEqual(index.db.execute('PRAGMA user_version').fetchone()[0],6)
-            self.assertNotIn('views',{r[0] for r in index.db.execute("SELECT name FROM sqlite_master WHERE type='table'")})
-        finally:index.close()
-        repository,_=self.bind();before=path.read_bytes()
-        self.refused(self.reopen,repository,path=path)
-        self.assertEqual(path.read_bytes(),before)
 
     def test_15_verifier_checks_all_generations_and_unsealed_slots(self):
         store,_,h,_=self.published();self.assertIs(store.verify_views(),True)

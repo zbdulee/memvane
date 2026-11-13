@@ -29,7 +29,7 @@ sys.path.insert(0, str(CORE))
 import laya_product_bundle as bundle  # noqa: E402
 import laya_product_install as product  # noqa: E402
 import memvane_paths  # noqa: E402
-from laya_index_vector import profile_identity  # noqa: E402
+from laya_vector_primitives import profile_identity  # noqa: E402
 from laya_local_embed_provider import recipe_fingerprint  # noqa: E402
 
 CLOSURE_KEYS = ('approvedProviderId', 'embeddingFingerprint', 'dependencyClosureSha256')
