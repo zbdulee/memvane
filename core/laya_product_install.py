@@ -566,7 +566,7 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
     if Path(source_root).resolve(strict=True) == Path(plugin_root).resolve(strict=True):
         _fail('source_checkout_cannot_be_installed_root')
     state = _prepare_state_root(state_root, install_id)
-    journal = state / 'install-journal.sqlite'
+    journal = state / 'journal.sqlite'
     socket = state / 'runtime' / 'laya-embed.sock'
     if len(str(socket).encode('utf-8')) > 100:
         _fail('install_socket_path_too_long')
@@ -1020,7 +1020,7 @@ def retire_drifted_origin(*, project_root, state_root):
         if record is None:
             _fail('initial_build_missing')
         identity = record['identity']
-        journal = state / 'install-journal.sqlite'
+        journal = state / 'journal.sqlite'
         if (identity['projectRoot'] != str(project) or
                 identity['stateRoot'] != str(state) or
                 identity['journalPath'] != str(journal)):
@@ -1317,7 +1317,7 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
         if record is None:
             _fail('initial_build_missing')
         identity = record['identity']
-        journal = state / 'install-journal.sqlite'
+        journal = state / 'journal.sqlite'
         if (identity['projectRoot'] != str(project) or identity['stateRoot'] != str(state) or
                 identity['journalPath'] != str(journal) or identity['installId'] != install_id):
             _fail('unused_build_identity_mismatch')
@@ -1481,7 +1481,7 @@ def retired_build_pointer(project_root):
             return None
         identity = record['identity']
         state = Path(identity['stateRoot'])
-        if identity['journalPath'] != str(state / 'install-journal.sqlite'):
+        if identity['journalPath'] != str(state / 'journal.sqlite'):
             return None
     except Exception:  # a hint only; the real refusal stays the caller's
         return None
@@ -1574,7 +1574,7 @@ def restore_origin_selection(*, project_root, state_root):
     import laya_fresh_wiki_origin as fresh
     project = _checked_project(project_root)
     state = _private_parent(state_root)
-    journal = state / 'install-journal.sqlite'
+    journal = state / 'journal.sqlite'
     if not (state / fresh.LEDGER).exists():
         _fail('cutover_ledger_missing')
     return _restore_fresh_wiki_selection(project, state, journal)
@@ -1651,13 +1651,13 @@ def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_
         _fail('install_socket_path_too_long')
     if (not root.is_absolute() or root.is_symlink() or
             Path(source_root).resolve(strict=True) == root.resolve(strict=True) or
-            route_hint.get('journalPath') != str(parent / 'install-journal.sqlite') or
+            route_hint.get('journalPath') != str(parent / 'journal.sqlite') or
             route_hint.get('pluginRoot') != str(root) or
             not isinstance(reviewed_provider, dict) or
             set(reviewed_provider) - {PROFILE_CLOSURE_FIELD} !=
             {'vectorProfile', 'providerManifest', 'dependencyClosure'}):
         _fail('invalid_install_request')
-    journal = parent / 'install-journal.sqlite'
+    journal = parent / 'journal.sqlite'
     with (nullcontext() if _already_locked else _install_lock(parent)):
         proof = adopt_host_loaded_plugin(source_root, root, commit_id=commit_id,
                                           vector_profile=reviewed_provider['vectorProfile'])
@@ -1763,7 +1763,7 @@ def main(argv=None):
     root = _installed_root()
     state_root = (_private_parent(args.state_root)
                   if args.action in ('status', 'activate', 'recover') else None)
-    journal = state_root / 'install-journal.sqlite' if state_root else None
+    journal = state_root / 'journal.sqlite' if state_root else None
     if args.action == 'plan-fresh-wiki':
         result = plan_fresh_wiki_origin(args.project_root)
     elif args.action == 'build-status':

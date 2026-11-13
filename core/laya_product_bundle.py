@@ -271,7 +271,7 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
             provider['dependencyClosureApproved'] is not True):
         _fail('production_provider_profile_mismatch')
     journal_path = Path(attestation['journalPath']) if type(attestation['journalPath']) is str else Path('.')
-    if (not journal_path.is_absolute() or journal_path.name != 'install-journal.sqlite' or
+    if (not journal_path.is_absolute() or journal_path.name != 'journal.sqlite' or
             journal_path.is_symlink() or
             str(journal_path.resolve(strict=False)) != str(journal_path)):
         _fail('production_journal_path_invalid')

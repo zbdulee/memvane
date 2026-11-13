@@ -469,12 +469,12 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
         if not _canonical_absolute(journal_path):
             raise ValueError("invalid_journal_path")
         if record['schema'] == SCHEMA:
-            if journal_path != str(Path(plugin_root).parent / "install-journal.sqlite"):
+            if journal_path != str(Path(plugin_root).parent / "journal.sqlite"):
                 raise ValueError("invalid_journal_path")
         else:
             private = Path(journal_path).parent
             info = private.lstat()
-            if (Path(journal_path).name != 'install-journal.sqlite' or
+            if (Path(journal_path).name != 'journal.sqlite' or
                     private.is_symlink() or not private.is_dir() or
                     info.st_uid != os.getuid() or
                     stat.S_IMODE(info.st_mode) & 0o077):
@@ -611,7 +611,7 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
         state = Path(identity['stateRoot'])
         route_path = state / 'reviewed-route.json'
         if (identity['routeFile'] != str(route_path)
-                or identity['journalPath'] != str(state / 'install-journal.sqlite')
+                or identity['journalPath'] != str(state / 'journal.sqlite')
                 or identity['projectRoot'] != str(root)):
             return _decision('blocked', 'initial_preview_identity_mismatch')
         raw = _read_regular(route_path, MAX_RECORD_BYTES)

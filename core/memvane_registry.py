@@ -373,7 +373,7 @@ def _within(root, path):
 
 def _journal_state(state_root):
     import laya_install_journal as journal
-    return journal.inspect_journal(Path(state_root) / 'install-journal.sqlite')
+    return journal.inspect_journal(Path(state_root) / 'journal.sqlite')
 
 
 def _prove_main(project, state=None):
@@ -391,7 +391,7 @@ def _prove_main(project, state=None):
     if decision.get('projectRoot') != str(project) or not isinstance(journal_path, str):
         raise _Unproved('route_mismatch')
     proved_state = Path(journal_path).parent
-    if Path(journal_path).name != 'install-journal.sqlite' or (
+    if Path(journal_path).name != 'journal.sqlite' or (
             state is not None and proved_state != Path(state)):
         raise _Unproved('route_mismatch')
     install = decision.get('installId')
@@ -411,7 +411,7 @@ def _released(project, state):
         decision = routes._select_route(str(project), action='index')
         route_state = decision.get('state')
         if route_state == 'candidate':
-            if decision.get('journalPath') == str(Path(state) / 'install-journal.sqlite'):
+            if decision.get('journalPath') == str(Path(state) / 'journal.sqlite'):
                 return False
         elif route_state != 'legacy':
             return False
@@ -834,7 +834,7 @@ def _backfill(home, now, page, clock, deadline, git_deadline):
                 if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
                         or info.st_mode & 0o077):
                     continue
-                meta = journal.inspect_journal(state / 'install-journal.sqlite')
+                meta = journal.inspect_journal(state / 'journal.sqlite')
                 project = meta.get('projectRoot')
                 if meta.get('state') in SELECTED_JOURNAL_STATES and isinstance(project, str):
                     register(project, state, explicit=False, home=home, now=now,

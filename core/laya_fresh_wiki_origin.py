@@ -56,7 +56,7 @@ def _sha(raw):
 def _paths(project_root, journal_path):
     project, journal = Path(project_root), Path(journal_path)
     if (not project.is_absolute() or project.resolve(strict=True) != project or
-            not journal.is_absolute() or journal.name != 'install-journal.sqlite' or
+            not journal.is_absolute() or journal.name != 'journal.sqlite' or
             journal.is_symlink() or journal.parent.resolve(strict=True) != journal.parent):
         _fail('fresh_wiki_paths_invalid')
     marker, route = (project_dir.runtime_file(project, MARKER),

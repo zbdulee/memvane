@@ -169,7 +169,7 @@ def main(argv=None):
                     dimension=args.provider_dimension)
             else:
                 state = product._private_parent(args.state_root)
-                journal = state / 'install-journal.sqlite'
+                journal = state / 'journal.sqlite'
                 if args.action == 'index-origin-status':
                     from laya_install_journal import inspect_journal
                     result = {'status': 'inspected', 'journal': inspect_journal(journal),

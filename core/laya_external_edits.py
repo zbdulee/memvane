@@ -225,7 +225,7 @@ def _targets(origin, deadline):
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
                     or info.st_mode & 0o077):
                 continue
-            pointer = state / 'install-journal.sqlite'
+            pointer = state / 'journal.sqlite'
             metadata = journal.inspect_journal(pointer)
             project = metadata.get('projectRoot')
             if (metadata.get('state') not in ('active', 'restored_old')

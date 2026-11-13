@@ -300,7 +300,7 @@ def _route(raw, journal_path):
 def _private_parent(path):
     try:
         path = Path(path)
-        if not path.is_absolute() or path.is_symlink() or path.name != 'install-journal.sqlite':
+        if not path.is_absolute() or path.is_symlink() or path.name != 'journal.sqlite':
             _fail('invalid_journal_path')
         parent = path.parent
         if parent.is_symlink() or not parent.is_dir():
@@ -1295,7 +1295,7 @@ def _verify_selected_route(decision, *, dispatch_target=False):
     raw = _observed_route({'project_root': decision.get('projectRoot')}, None)
     route, digest = _route(raw, journal)
     allowed = {digest}
-    if (journal != journal.parent / 'install-journal.sqlite' or
+    if (journal != journal.parent / 'journal.sqlite' or
             (route['schema'] == ROUTE_SCHEMA and engine.parent != journal.parent)):
         _fail('journal_engine_root_mismatch')
     fresh = select_route(route['projectRoot'], action='recall')

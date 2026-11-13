@@ -190,7 +190,7 @@ def prepare_windows(installer):
     """Prepare locks, without claiming old owners or all writers are quiesced."""
     endpoint, _scope = _owner(installer)
     record = endpoint.record
-    row = L._read_v5_bundle(Path(record['state']) / 'install-journal.sqlite')
+    row = L._read_v5_bundle(Path(record['state']) / 'journal.sqlite')
     R._need(row['pending'] is None and row['state'] in ('active', 'restored_old')
             and row['selected']['installId'] == record['install_id'],
             'reader_install_changed')
