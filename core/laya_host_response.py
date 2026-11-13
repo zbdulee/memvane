@@ -1292,14 +1292,8 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
                            main_proof=None, linked=None) -> dict:
     """Serve the journal-preferred reader endpoint.
 
-    A v6 endpoint answers during or immediately after a fence. A schema3
-    endpoint answers there and also for the main checkout's selected route:
-    ``main_proof`` is then that route's full proof (non-degraded: a cold
-    provider may be woken), never a drift or fence read.
-
-    ``linked`` is the ``worktree`` decision of a linked git worktree recall.
-    A schema3 endpoint then serves that worktree's own view (never the main
-    one); a v6 endpoint ignores it and serves the main checkout as before.
+    ``main_proof`` is the selected route proof. ``linked`` reads only the
+    linked worktree view.
     """
     if main_proof is not None and drift_decision is None:
         _fail('reader_selection_unproved')
@@ -1311,16 +1305,9 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
             not isinstance(prompt,str) or not prompt.strip()):
         _fail('invalid_query_prompt')
     requested = Path(requested).resolve(strict=True)
-    import laya_fresh_wiki_origin as fresh
-    if drift_decision is None:
-        hint = fresh._fence_record(requested)
-        if hint is None or hint['phase'] not in ('upgrading', 'active'):
-            _fail('reader_selection_unproved')
-        project = Path(hint['projectRoot'])
-    else:
-        if not isinstance(drift_decision,dict) or drift_decision.get('state') != 'candidate':
-            _fail('reader_selection_unproved')
-        project = Path(drift_decision['projectRoot'])
+    if not isinstance(drift_decision, dict) or drift_decision.get('state') != 'candidate':
+        _fail('reader_selection_unproved')
+    project = Path(drift_decision['projectRoot'])
     if (project.resolve(strict=True) != project or
             (requested != project and project not in requested.parents)):
         _fail('reader_selection_unproved')
@@ -1329,10 +1316,6 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
     import laya_journal_reader as reader
     deadline = time.monotonic() + hook_budget.remaining()
     root = Path(__file__).resolve().parents[1]
-    if drift_decision is None:
-        journal_path = reader._journal(Path(hint['journalPath']))
-        initial = lease._read_v5_bundle(journal_path)
-        initial_install = initial['selected']['installId']
     with ExitStack() as stack:
         for attempt in range(2):
             try:
@@ -1361,12 +1344,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
                     raise
         _record,_att,proof = reader._recheck(endpoint)
         decision = proof.get('readerDecision')
-        if (not isinstance(decision,dict) or
-                (drift_decision is not None and decision != drift_decision) or
-                (drift_decision is None and
-                 (proof.get('installId') != initial_install or
-                  proof.get('journalPath') != str(journal_path) or
-                  proof.get('projectRoot') != str(project)))):
+        if not isinstance(decision, dict) or decision != drift_decision:
             _fail('reader_selection_unproved')
         return _serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
                                      decision=decision, project=project, prompt=prompt,
@@ -1538,20 +1516,6 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
         except Exception as exc:
             if getattr(exc, '_memvane_reader_attempted', False):
                 raise
-            cwd = payload.get('cwd', decision.get('projectRoot'))
-            import laya_fresh_wiki_origin as fresh
-            if isinstance(cwd, str) and fresh.upgrade_fenced(cwd):
-                from laya_index_host_route import select_route_settled
-                hinted = select_route_settled(cwd, action='recall')
-            else:
-                hinted = {}
-            if (hinted.get('state') == 'reader' and
-                    hinted.get('projectRoot') == _decision_project_root(decision)):
-                try:
-                    return serve_endpoint_recall(host,payload,cwd=cwd)
-                except Exception as reader_exc:
-                    reader_exc._memvane_reader_attempted = True
-                    raise
             retry = _recall_retry_decision(exc, decision, payload, started)
             if retry is None:
                 raise
@@ -2023,16 +1987,11 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     """
     from laya_install_journal import verify_selected_route_read_only as recheck
     main = decision.get('mainRoute')
-    if not isinstance(main, dict) or main.get('state') not in ('candidate','reader'):
+    if not isinstance(main, dict) or main.get('state') != 'candidate':
         _fail('worktree_route_invalid')
-    if main.get('state') == 'reader':
-        if action != 'recall':
-            _fail('worktree_route_invalid')
-        proof = None
-    else:
-        proof = recheck(main)
-        if proof.get('readOnlyAllowed') is not True:
-            _fail('worktree_read_only_unapproved')
+    proof = recheck(main)
+    if proof.get('readOnlyAllowed') is not True:
+        _fail('worktree_read_only_unapproved')
     _trace_fields(degraded='worktree')
     if action == 'recall':
         try:
@@ -2041,17 +2000,11 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
             if state is not None:
                 state.pop('ownView', None)
             response = serve_endpoint_recall(host,main_payload,cwd=main['projectRoot'],
-                drift_decision=main if main.get('state') == 'candidate' else None,
+                drift_decision=main,
                 linked=decision)
             cwd = payload.get('cwd', decision.get('worktreeProjectRoot'))
             current = select_route(cwd, action='recall') if isinstance(cwd,str) else {}
-            fenced_after_pin = (main.get('state') == 'candidate' and
-                current.get('state') == 'worktree' and
-                all(current.get(key) == decision.get(key) for key in _WORKTREE_IDENTITY) and
-                isinstance(current.get('mainRoute'),dict) and
-                current['mainRoute'].get('state') == 'reader' and
-                current['mainRoute'].get('projectRoot') == main.get('projectRoot'))
-            if current != decision and not fenced_after_pin:
+            if current != decision:
                 _fail('selected_route_changed')
         except Exception as exc:
             exc._memvane_reader_attempted = True
@@ -2147,34 +2100,7 @@ def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top
 
 
 def _reselect(cwd, action):
-    decision = select_route(cwd, action=action)
-    if decision.get('state') == 'blocked' and action == 'recall':
-        from laya_index_host_route import select_route_settled
-        return select_route_settled(cwd, action=action)
-    return decision
-
-
-_UPGRADE_NOTICES = {
-    'bundle_upgrade_in_progress':
-        '[memvane] bundle upgrade in progress; no context for this prompt',
-    'bundle_upgrade_stalled':
-        '[memvane] bundle upgrade stopped mid-way and is being finished; '
-        'no context for this prompt'}
-def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
-    """The notice for a recall a bundle upgrade interrupted, or None.
-
-    A fenced route (in progress or stopped) answers without context.
-    """
-    cwd = payload.get('cwd') if isinstance(payload, dict) else None
-    cwd = cwd if isinstance(cwd, str) else fallback_cwd
-    try:
-        import laya_fresh_wiki_origin as fresh
-        from laya_host_rules import fence_reason
-        if fresh.upgrade_fenced(cwd):
-            return _UPGRADE_NOTICES[fence_reason(fresh.upgrade_stalled(cwd))]
-    except Exception:
-        return None
-    return None
+    return select_route(cwd, action=action)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2194,7 +2120,6 @@ def main(argv: list[str] | None = None) -> int:
     except hook_budget.HookDeadlineExceeded:
         pass
     decision = payload = None
-    reader_attempt = False
     started = time.monotonic()
     try:
         if payload_file is None:
@@ -2206,24 +2131,10 @@ def main(argv: list[str] | None = None) -> int:
             with open(payload_file, "r", encoding="utf-8") as handle:
                 payload = json.load(handle)
         cwd = payload.get("cwd", fallback_cwd)
-        if action == 'recall' and selection.get('state') == 'reader':
-            reader_attempt = True
-            response = serve_endpoint_recall(host,payload,cwd=cwd)
-            print(json.dumps(response,ensure_ascii=True,allow_nan=False,separators=(',',':')),flush=True)
-            return 0
         if selection["state"] not in ("candidate", "preview", "worktree"):
-            if action == "recall" and selection.get("reason") in _UPGRADE_NOTICES:
-                print(_UPGRADE_NOTICES[selection["reason"]], file=sys.stderr)
-                return 0
             _fail("selected_route_unavailable")
         decision = _reselect(cwd, action)
         if decision != selection:
-            if (action == 'recall' and decision.get('state') == 'reader' and
-                    decision.get('projectRoot') == _decision_project_root(selection)):
-                reader_attempt = True
-                response = serve_endpoint_recall(host,payload,cwd=cwd)
-                print(json.dumps(response,ensure_ascii=True,allow_nan=False,separators=(',',':')),flush=True)
-                return 0
             _fail("selected_route_changed")
         with learning_capture() as capture:
             response = (serve_preview(action, host, decision, payload)
@@ -2238,22 +2149,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         code = _refusal_code(exc)
-        # A recall that a bundle upgrade's fence or route switch interrupted
-        # answers without context, never with an error.
-        notice = (_upgrade_recall_notice(payload, fallback_cwd, code)
-                  if action == "recall" and not reader_attempt and
-                  not getattr(exc,'_memvane_reader_attempted',False) else None)
-        upgrading = notice is not None
         # Hook stderr is intentionally terse. No source body, path, or secrets.
-        print(notice if upgrading else f"[memvane] {code}; request refused",
-              file=sys.stderr)
+        print(f"[memvane] {code}; request refused", file=sys.stderr)
         if not getattr(exc, '_memvane_event_logged', False) and decision is not None:
             # Refused before the traced call (route changed under the hook):
             # still one line, so a refusal never reads as "the hook did not run".
             event_log.emit(action, outcome='refused', reason=code,
                            ms=event_log.elapsed_ms(started), decision=decision, host=host,
                            session=event_log.session_id(payload))
-        return 0 if upgrading else 3
+        return 3
 
 
 if __name__ == "__main__":

@@ -192,8 +192,6 @@ class HermesRecall(Base):
                                              return_value=self.decision))
             stack.enter_context(patch.object(host_response, 'serve_selected',
                                              side_effect=serve))
-            stack.enter_context(patch.object(host_response, '_upgrade_recall_notice',
-                                             return_value=None))
             if capture_error:
                 stack.enter_context(patch.object(
                     diag, 'capture', side_effect=RuntimeError('synthetic logger failure')))

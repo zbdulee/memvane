@@ -23,7 +23,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import sqlite3
 import stat
 import sys
 import unicodedata
@@ -673,16 +672,11 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
         if main_project.resolve(strict=True) != main_project:
             return None
         main_decision = _select_route(str(main_project), action=action)
-        if main_decision.get("state") == "blocked":
-            # A v5 fence is a read hint before the legacy settle/wake path.
-            main_decision = (select_route_settled(str(main_project), action=action)
-                             if action == 'recall' else
-                             _settle_moves(str(main_project), action, main_decision))
         if _settings_identity(project) != _settings_identity(main_project):
             return None
         if main_decision.get('state') == 'blocked':
             return _decision('blocked', 'linked_worktree_main_blocked')
-        if (main_decision.get("state") not in ('candidate','reader')
+        if (main_decision.get("state") != 'candidate'
                 or main_decision.get("projectRoot") != str(main_project)):
             return None
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
@@ -746,43 +740,6 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     return _classify_record(root, auto, path, current)
 
 
-def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
-    """Resolve the route and settle a recall's upgrade fence."""
-    decision = select_route(cwd, action=action)
-    if decision.get("state") != "blocked":
-        return decision
-    if action == 'recall':
-        try:
-            import laya_fresh_wiki_origin as fresh
-            import laya_journal_reader as reader
-            hint = fresh._fence_record(cwd)
-            if hint is not None and hint['phase'] == 'upgrading':
-                try:
-                    path = reader._journal(Path(hint['journalPath']))
-                    with reader._readonly(path, path.parent) as db:
-                        version = reader.journal._schema_version_read(db)
-                except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
-                    return _decision('blocked', 'reader_journal_unproved')
-                if version == 5:
-                    return _decision('reader', 'fenced_reader_hint', projectRoot=hint['projectRoot'])
-                if version not in (3,4):
-                    return _decision('blocked', 'reader_journal_unproved')
-        except (OSError, ValueError, TypeError, KeyError, sqlite3.Error):
-            return _decision('blocked', 'reader_journal_unproved')
-    return _settle_moves(cwd, action, decision)
-
-
-def _settle_moves(cwd: str, action: str, decision: dict) -> dict:
-    """Settle a bundle upgrade fence."""
-    if decision.get('state') != 'blocked':
-        return decision
-    try:
-        import laya_fresh_wiki_origin as fresh
-        return fresh.settle_decision(cwd, action, decision, select_route)
-    except Exception:
-        return decision
-
-
 def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
     """Classify bounded event bytes, including legacy malformed-input behavior."""
     try:
@@ -802,7 +759,7 @@ def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
         cwd = payload.get("cwd", fallback_cwd)
         if not isinstance(cwd, str) or not Path(cwd).is_absolute():
             raise ValueError("invalid_hook_cwd")
-        return select_route_settled(cwd, action=action)
+        return select_route(cwd, action=action)
     except (OSError, ValueError, TypeError, UnicodeError, RuntimeError) as exc:
         return _decision("blocked", str(exc) or "invalid_hook_payload")
 
@@ -888,67 +845,19 @@ def onboarding_lines(root: str, session: str | None) -> str:
     return notice + "\n" + ONBOARDING_ANSWER_PREFIX + json.dumps(answer, ensure_ascii=False)
 
 
-UPGRADE_NOTICE = ('[memvane] plugin bundle upgrade in progress; search resumes '
-                  'when it finishes.')
-UPGRADE_STALLED_NOTICE = ('[memvane] plugin bundle upgrade stopped mid-way; a background '
-                          'run is asked to finish it. Until then prompts get no '
-                          'MemVane context.')
-
-
-def project_dir_notice(payload_file: str, fallback_cwd: str) -> str | None:
-    """One SessionStart line for a blocked project whose folders need attention.
-
-    ``split`` (an older branch checked out over ``.memvane/``) and
-    ``conflict`` name what the owner does; ``adopt`` (git brought the
-    renamed folder, the runtime files are still in ``.auto-context/``) and a
-    move in progress request the upgrade worker. Never waits.
-    """
-    cwd = fallback_cwd
-    try:
-        payload = json.loads(_read_regular(Path(payload_file), MAX_HOOK_BYTES).decode("utf-8"))
-        if isinstance(payload, dict) and isinstance(payload.get("cwd"), str):
-            cwd = payload["cwd"]
-    except (OSError, ValueError, TypeError, UnicodeError):
-        pass
-    return project_dir_notice_for(cwd)
-
-
-def project_dir_notice_for(cwd: str) -> str | None:
-    """``project_dir_notice`` for an event cwd (Hermes calls it directly)."""
-    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
-        return None
-    try:
-        import laya_fresh_wiki_origin as fresh
-        if fresh.upgrade_in_progress(cwd) or fresh.upgrade_stalled(cwd):
-            # A fenced upgrade (live or stopped) has a session notice.
-            return (UPGRADE_STALLED_NOTICE if fresh.upgrade_stalled(cwd)
-                    else UPGRADE_NOTICE)
-    except Exception:
-        pass
-    return None
-
-
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) == 3 and args[0] == "classify":
-        decision = select_route_settled(args[2], action=args[1])
+        decision = select_route(args[2], action=args[1])
     elif len(args) == 4 and args[0] == "classify-hook":
         decision = select_hook_route(args[1], args[2], args[3])
-    elif len(args) == 3 and args[0] in ("onboarding-notice", "project-dir-notice"):
-        notice = (onboarding_notice if args[0] == "onboarding-notice"
-                  else project_dir_notice)(args[1], args[2])
+    elif len(args) == 3 and args[0] == "onboarding-notice":
+        notice = onboarding_notice(args[1], args[2])
         if notice:
             print(notice)
         return 0
     else:
         return 2
-    if (args[0] == "classify-hook" and args[1] == "recall" and
-            decision["state"] == "blocked" and
-            decision.get("reason") in ("bundle_upgrade_in_progress",
-                                       "bundle_upgrade_stalled")):
-        # The dispatcher answers this recall without context, not an error.
-        print("upgrading")
-        return 0
     print(decision["state"])
     return 0
 

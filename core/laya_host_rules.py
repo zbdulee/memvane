@@ -47,10 +47,6 @@ def reader_reseal_candidate(code, has_route):
     return code == 'reader_endpoint_changed' and has_route
 
 
-def fence_reason(stalled):
-    return 'bundle_upgrade_stalled' if stalled else 'bundle_upgrade_in_progress'
-
-
 def is_session(action):
     return action in ('update', 'update-queued')
 

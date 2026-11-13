@@ -40,25 +40,11 @@ class RecallRulesChecks(unittest.TestCase):
         self.assertEqual(rules.selection_final([]), 'no_results_after_filter')
         self.assertEqual(rules.selection_final([{}]), 'selected')
 
-    def test_fence_reason(self):
-        self.assertEqual(rules.fence_reason(True), 'bundle_upgrade_stalled')
-        self.assertEqual(rules.fence_reason(False), 'bundle_upgrade_in_progress')
-
     def test_reseal_requires_matching_endpoint_and_route(self):
         for code, present, expected in [('reader_endpoint_changed', True, True),
                                         ('reader_endpoint_changed', False, False),
                                         ('selected_route_changed', True, False)]:
             self.assertEqual(rules.reader_reseal_candidate(code, present), expected)
-
-    def test_upgrade_notice_for_fenced_route(self):
-        import laya_fresh_wiki_origin as fresh
-        import laya_host_response as host
-        with patch.object(fresh, 'upgrade_fenced', return_value=True) as fenced, \
-             patch.object(fresh, 'upgrade_stalled', return_value=True) as stalled:
-            self.assertEqual(host._upgrade_recall_notice({'cwd': '/p'}, '/fallback', 'other'),
-                             host._UPGRADE_NOTICES['bundle_upgrade_stalled'])
-            fenced.assert_called_once_with('/p')
-            stalled.assert_called_once_with('/p')
 
 class ActionRulesChecks(unittest.TestCase):
     def test_bundle_drift_actions(self):

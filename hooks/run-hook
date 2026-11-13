@@ -73,7 +73,7 @@ case "$_laya_route_state" in
     fi
     exit 0
     ;;
-  candidate|preview|worktree|reader)
+  candidate|preview|worktree)
     # worktree (linked git worktree of a selected main checkout) serves a
     # published generation read-only.
     # Replace this shell with the synchronous writer/query process. A host
@@ -85,29 +85,7 @@ case "$_laya_route_state" in
     exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
-  upgrading)
-    # Recall only: a bundle upgrade fences the selected route (in progress,
-    # or stopped and asked to finish). This prompt gets no context; it is
-    # not a refusal.
-    echo '[memvane] bundle upgrade pending; no context for this prompt' >&2
-    exit 0
-    ;;
   blocked)
-    if [ "$ACTION" = "update-queued" ]; then
-      # A project folder that needs the owner (an older branch checked out
-      # over .memvane/, both folders holding cards) or that is moving to
-      # .memvane/ names it once at SessionStart instead of failing silently.
-      _laya_notice="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" project-dir-notice \
-        "$_laya_route_payload" "$_laya_route_fallback" 2>/dev/null)" || _laya_notice=""
-      if [ -n "$_laya_notice" ]; then
-        if [ "$ENGINE" = codex ]; then
-          printf '%s' "$_laya_notice" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
-        else
-          printf '%s\n' "$_laya_notice"
-        fi
-        exit 0
-      fi
-    fi
     echo '[memvane] selected route unavailable; request refused' >&2
     exit 3
     ;;

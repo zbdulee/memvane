@@ -95,7 +95,7 @@ def _laya_route_state(action: str, cwd: str) -> str:
                     # upgrade fence, in addition to Python process startup.
                     timeout=3.0, env=_env(), check=False,
                 )
-            allowed = {"legacy", "candidate", "preview", "blocked", "worktree", "upgrading", "reader"}
+            allowed = {"legacy", "candidate", "preview", "blocked", "worktree"}
         else:
             result = subprocess.run(
                 [sys.executable, str(selector), "classify", action, cwd],
@@ -212,17 +212,6 @@ def recall_context(
             return None
         prompt = user_message or kwargs.get("message") or ""
         route_state = _laya_route_state("recall", _cwd(cwd, **kwargs))
-        if route_state == 'reader':
-            selected_route = True
-            core = Path(__file__).resolve().parent.parent / 'core'
-            if str(core) not in sys.path:
-                sys.path.insert(0,str(core))
-            from laya_host_response import serve_endpoint_recall
-            selected_cwd = _cwd(cwd, **kwargs)
-            return _with_session_notice(selected_cwd, serve_endpoint_recall(
-                'hermes', {'prompt':prompt,'cwd':selected_cwd}, cwd=selected_cwd))
-        if route_state == "upgrading":
-            return None
         if route_state in ("candidate", "worktree", "preview"):
             selected_route = True
             # The installed core rechecks the route and the installer-owned
@@ -231,23 +220,10 @@ def recall_context(
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
             from laya_index_host_route import select_route
-            from laya_host_response import (serve_selected, serve_preview,
-                                            _upgrade_recall_notice, _refusal_code)
+            from laya_host_response import serve_selected, serve_preview
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") != route_state:
-                import laya_fresh_wiki_origin as fresh
-                if fresh.upgrade_fenced(selected_cwd):
-                    from laya_index_host_route import select_route_settled
-                    hinted = select_route_settled(selected_cwd, action='recall')
-                    if hinted.get('state') == 'reader':
-                        from laya_host_response import serve_endpoint_recall
-                        route_state = 'reader'
-                        return _with_session_notice(selected_cwd, serve_endpoint_recall(
-                            'hermes', {'prompt': prompt, 'cwd': selected_cwd}, cwd=selected_cwd))
-                if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
-                                           'selected_route_changed') is not None:
-                    return None
                 return {"context": "[memvane] selected route changed; request refused"}
             serve = serve_preview if route_state == "preview" else serve_selected
             return _with_session_notice(selected_cwd, serve(
@@ -262,16 +238,6 @@ def recall_context(
         # Rechecking is read-only; even if the marker changes, no QMD path ran.
         if selected_route:
             _log_recall_failure(decision, exc)
-            try:
-                from laya_host_response import _upgrade_recall_notice, _refusal_code
-                selected_cwd = _cwd(cwd, **kwargs)
-                if route_state != 'reader' and not getattr(exc, '_memvane_reader_attempted', False) and _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
-                                           _refusal_code(exc)) is not None:
-                    return None
-            except Exception:
-                # A broken core cannot escape the hook through its optional
-                # upgrade diagnostic; unproved failures keep the refusal.
-                pass
             return {"context": "[memvane] selected proof or query failed; request refused"}
     return None
 
@@ -298,21 +264,7 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
                 _remember_notice(selected_cwd, answer.get("notice"))
             return None
         if route_state != "legacy":
-            # A project folder that needs the owner or is moving to .memvane/
-            # requests the upgrade worker here, as the command hooks do.
-            notice = None
-            try:
-                core = Path(__file__).resolve().parent.parent / "core"
-                if str(core) not in sys.path:
-                    sys.path.insert(0, str(core))
-                from laya_index_host_route import project_dir_notice_for
-                notice = project_dir_notice_for(_cwd(cwd, **kwargs))
-            except Exception as exc:  # pragma: no cover - hook isolation
-                logger.debug("memvane project folder notice failed: %s", exc)
-            if notice:
-                _remember_notice(_cwd(cwd, **kwargs), notice)
-            else:
-                logger.warning("[memvane] selected route unavailable; request refused")
+            logger.warning("[memvane] selected route unavailable; request refused")
         # Not onboarded: no index work. Hermes has no SessionStart notice channel.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("memvane session update failed: %s", exc)
