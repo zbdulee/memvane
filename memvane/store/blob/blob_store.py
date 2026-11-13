@@ -228,9 +228,9 @@ def _settings_identity(root):
     outside that identity (``skipPaths`` and other options) are not bound;
     readers take ``skipPaths`` from ``config`` here at each use.
     """
-    from memvane.settings import config
+    from memvane.settings import api as config
     from memvane.route import api as routes
-    from memvane.settings import api as project_dir
+    from memvane.settings import api as project_dir, types as project_types
     from pathlib import PurePosixPath
     settings = project_dir.settings_path(root)
     if settings is None:
@@ -245,15 +245,15 @@ def _settings_identity(root):
     rows = []
     for item in collections:
         parts = PurePosixPath(os.path.relpath(item['sourceRoot'], root).replace(os.sep, '/')).parts
-        if parts and parts[0] in project_dir.NAMES:
-            parts = (project_dir.CURRENT, *parts[1:])
+        if parts and parts[0] in project_types.NAMES:
+            parts = (project_types.CURRENT, *parts[1:])
         rows.append({'name': item['name'], 'role': item['role'],
                      'sourceRoot': str(PurePosixPath(*parts)) if parts else '.'})
     policy = v.digest('memvane-candidate-policy-v2', {
         'schema': routes.SETTINGS_IDENTITY_SCHEMA,
         'collections': sorted(rows, key=lambda item: item['name'])})
-    config_value = config.normalize_config(config.expand_minimal_settings(value, project_dir.CURRENT),
-                                           project_dir.CURRENT)
+    config_value = config.normalize_config(config.expand_minimal_settings(value, project_types.CURRENT),
+                                           project_types.CURRENT)
     return {'policy_digest': policy, 'collections': collections, 'wiki_root': str(wiki),
             'raw_config': value, 'config': config_value}
 

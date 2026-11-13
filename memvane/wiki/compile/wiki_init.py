@@ -16,7 +16,7 @@ import sys
 import tempfile
 
 from memvane.settings import config as qmd_config
-from memvane.settings import api as project_dir
+from memvane.settings import api as project_dir, types as project_types
 from memvane.wiki.workspace import wiki_mutation_lock
 
 
@@ -125,7 +125,7 @@ def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
 
         collection_paths = config.get("collectionPaths") if isinstance(config.get("collectionPaths"), dict) else {}
         collection_paths = {key: value for key, value in collection_paths.items() if isinstance(key, str) and isinstance(value, str)}
-        collection_paths[wiki_collection] = settings_dir.name + "/" + project_dir.WIKI
+        collection_paths[wiki_collection] = settings_dir.name + "/" + project_types.WIKI
         config["collectionPaths"] = collection_paths
 
         collection_roles = config.get("collectionRoles") if isinstance(config.get("collectionRoles"), dict) else {}

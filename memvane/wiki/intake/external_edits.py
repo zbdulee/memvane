@@ -268,7 +268,7 @@ def _nested_project(path, project, deadline):
     edit back (True), never routes it unchecked, including a deadline that
     passes during the last stat.
     """
-    from memvane.settings import api as project_dir
+    from memvane.settings import api as project_dir, types as project_types
     from memvane.wiki.intake.types import MAX_DEPTH
     try:
         between = len(path.relative_to(project).parts) - 1
@@ -279,9 +279,9 @@ def _nested_project(path, project, deadline):
     for parent in list(path.parents)[:max(between, 0)]:
         if time.monotonic() >= deadline:
             return True
-        for name in project_dir.NAMES:
+        for name in project_types.NAMES:
             try:
-                if stat.S_ISREG(os.stat(parent / name / project_dir.SETTINGS).st_mode):
+                if stat.S_ISREG(os.stat(parent / name / project_types.SETTINGS).st_mode):
                     return True
             except FileNotFoundError:
                 continue

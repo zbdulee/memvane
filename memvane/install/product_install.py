@@ -15,7 +15,7 @@ import stat
 import sys
 import time
 
-from memvane.settings import api as project_dir
+from memvane.settings import api as project_dir, types as project_types
 
 from memvane.journal.api import inspect_journal
 
@@ -147,7 +147,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     installer builds a separate private generation from the canonical wiki
     root. No QMD database is read, copied, or selected.
     """
-    from memvane.settings import config
+    from memvane.settings import api as config
     from memvane.route.api import (multi_settings_supported as _multi_settings_supported,
                                        multi_compile_supported as _multi_compile_supported,
                                        selected_collection_roots,
@@ -195,7 +195,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
                          if item['role'] == 'raw'))
     wiki_root = Path(next(item['sourceRoot'] for item in collections
                           if item['role'] == 'wiki'))
-    if (raw_root != project or wiki_root != project_dir.folder(project) / project_dir.WIKI
+    if (raw_root != project or wiki_root != project_dir.folder(project) / project_types.WIKI
             or not _multi_compile_supported(source_settings, cfg, project,
                                              str(wiki_root))):
         _fail('fresh_wiki_origin_settings_unsupported')

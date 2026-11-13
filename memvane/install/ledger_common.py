@@ -45,15 +45,15 @@ def _sha(raw):
 
 def _preflight_multi_settings(route, project_root):
     """Refuse a route the selected host cannot serve before publication."""
-    from memvane.settings import config
+    from memvane.settings import api as config
     from memvane.route.api import (multi_compile_supported as _multi_compile_supported,
                                        multi_settings_supported as _multi_settings_supported,
                                        pairs as _pairs, read_regular as _read_regular,
                                        source_for_collection as _source_for_collection,
                                        settings_identity_digest)
-    from memvane.settings import api as project_dir
+    from memvane.settings import api as project_dir, types as project_types
     settings = (project_dir.settings_path(project_root) or
-                project_dir.folder(project_root) / project_dir.SETTINGS)
+                project_dir.folder(project_root) / project_types.SETTINGS)
     if settings.is_symlink():
         _fail('cutover_settings_unsafe')
     raw = _read_regular(settings, 2 * 1024 * 1024)

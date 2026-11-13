@@ -28,7 +28,7 @@ import stat
 from contextlib import contextmanager
 from pathlib import Path
 
-from memvane.settings import api as project_dir
+from memvane.settings import api as project_dir, types as project_types
 from memvane.settings.api import compile_rel, compile_dir, ledger
 from memvane.wiki.workspace.types import (COMPILE_DIR, CANDIDATES, SOURCE_QUEUE,
     TOMBSTONES, MANIFEST, MERGE_NEEDED, VERIFY_QUEUE, VERIFY_LOG, VERIFY_SKIPPED,
@@ -58,7 +58,7 @@ def _lock_base(root, *, folder=None, create=False):
     """An existing project folder's real compile directory, without aliases."""
     root = Path(root).resolve(strict=True)
     directory = project_dir.folder(root) if folder is None else Path(folder)
-    if directory not in tuple(root / name for name in project_dir.NAMES):
+    if directory not in tuple(root / name for name in project_types.NAMES):
         raise OSError('unsafe compile project folder')
     if folder is None and create and not os.path.lexists(directory):
         directory.mkdir(mode=0o700)

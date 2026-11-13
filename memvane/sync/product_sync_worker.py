@@ -594,13 +594,13 @@ def _linked_decision(decision, project):
     (a branch may keep ``.auto-context`` while main uses ``.memvane``, or the
     reverse): the selector's settings identity treats the two names alike.
     """
-    from memvane.settings import api as project_dir
+    from memvane.settings import api as project_dir, types as project_types
     main = Path(decision['projectRoot'])
     folder = project_dir.active_name(project)
 
     def rebased(root):
         parts = Path(root).relative_to(main).parts
-        if parts and parts[0] in project_dir.NAMES:
+        if parts and parts[0] in project_types.NAMES:
             parts = (folder, *parts[1:])
         return str(project.joinpath(*parts))
     return {**decision, 'projectRoot': str(project),

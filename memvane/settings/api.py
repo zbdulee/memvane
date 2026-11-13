@@ -1,7 +1,6 @@
 """Public project settings operations."""
 from __future__ import annotations
 
-from memvane.settings.types import CURRENT, NAMES, SETTINGS, WIKI
 
 
 def diagnostic_enabled(*args, **kwargs):
@@ -144,4 +143,24 @@ def load_project_config(*args, **kwargs):
 
 def normalize_config(*args, **kwargs):
     from memvane.settings.config import normalize_config as implementation
+    return implementation(*args, **kwargs)
+
+
+def role_map(*args, **kwargs):
+    from memvane.settings.config import role_map as implementation
+    return implementation(*args, **kwargs)
+
+
+def expand_minimal_settings(*args, **kwargs):
+    from memvane.settings.config import expand_minimal_settings as implementation
+    return implementation(*args, **kwargs)
+
+
+def is_minimal_settings(*args, **kwargs):
+    from memvane.settings.config import is_minimal_settings as implementation
+    return implementation(*args, **kwargs)
+
+
+def compile_active(*args, **kwargs):
+    from memvane.settings.config import compile_active as implementation
     return implementation(*args, **kwargs)

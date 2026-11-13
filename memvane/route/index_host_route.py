@@ -28,7 +28,7 @@ import sys
 import unicodedata
 
 from memvane.settings import config
-from memvane.settings import api as project_dir
+from memvane.settings import api as project_dir, types as project_types
 from memvane.route.types import (FIELDS, FIELDS_V2, FIELDS_V3, FIELDS_V4,
                                  MAX_HOOK_BYTES, MAX_RECORD_BYTES, MAX_SETTINGS_BYTES,
                                  QMD_SELECTION_MARKER, RECORD, SCHEMA, SCHEMA_V2,
@@ -120,8 +120,8 @@ def selected_collection_roots(project_root, collections):
     if raw_root == wiki_root or raw_root in wiki_root.parents or wiki_root in raw_root.parents:
         project = Path(project_root)
         if (raw_root != project or
-                wiki_root not in tuple(project / name / project_dir.WIKI
-                                       for name in project_dir.NAMES)):
+                wiki_root not in tuple(project / name / project_types.WIKI
+                                       for name in project_types.NAMES)):
             raise ValueError('selected_collection_roots_overlap')
     return roots
 
@@ -690,7 +690,7 @@ def _settings_identity(project: Path) -> tuple:
                      object_pairs_hook=_pairs)
     if not config.is_minimal_settings(raw):
         raise ValueError("invalid_route_settings")
-    folder = project_dir.CURRENT
+    folder = project_types.CURRENT
     cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
     paths = cfg.get("collectionPaths")
     return (cfg.get("name"), cfg.get("indexing"), tuple(cfg.get("collections") or ()),
@@ -728,7 +728,7 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
         for directory in (current, *current.parents):
             for name in (RECORD, QMD_SELECTION_MARKER):
                 if any(os.path.lexists(directory / folder / name)
-                       for folder in project_dir.NAMES):
+                       for folder in project_types.NAMES):
                     return None
             if directory == worktree:
                 break

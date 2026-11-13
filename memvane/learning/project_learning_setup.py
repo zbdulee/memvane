@@ -54,8 +54,8 @@ LOCK_NAME='project-learning-setup.lock'
 
 def _project_settings(project):
     """The project's settings file: `.memvane/` first, then `.auto-context/`."""
-    from memvane.settings import api as project_dir
-    return project_dir.settings_path(project) or project_dir.folder(project)/project_dir.SETTINGS
+    from memvane.settings import api as project_dir, types as project_types
+    return project_dir.settings_path(project) or project_dir.folder(project)/project_types.SETTINGS
 
 def proposal_sha256(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
