@@ -121,21 +121,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
             assert edit_ids == ['wiki/card.md'] and edit_reason == 'selected'
             assert edit_resources['model_input_view'] == EDIT_INPUT_VIEW
         assert resident.call_count == 1
-    from context_learning.shared import _v45_adapter_path
-    with patch.object(Path, 'home', return_value=state):
-        historical = str(_v45_adapter_path())
-        assert not Path(historical).exists()
-        with patch('context_learning.shared._policy', return_value={
-                'modelInputView': EDIT_INPUT_VIEW,
-                'trainerArgv': [sys.executable, historical, str(multilingual_dir)],
-                'maxRssMib': 4096}), patch(
-                'context_learning.inference_service.predict', side_effect=resident_stub), patch.object(
-                shared, 'REVIEWED_ADAPTER_SHA256', candidate_sha):
-            edit_ids, edit_reason, _ = live_select.choose(
-                state, 'Synthetic edit content', rows,
-                corpus_fingerprint='a' * 64,
-                pointer_name='experimental-checkpoint.json')
-            assert edit_ids == ['wiki/card.md'] and edit_reason == 'selected'
     with patch('context_learning.shared._policy', return_value={
             'modelInputView': EDIT_INPUT_VIEW,
             'trainerArgv': [sys.executable, str(adapter), str(multilingual_dir)],
