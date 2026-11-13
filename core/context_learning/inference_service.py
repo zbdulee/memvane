@@ -70,8 +70,8 @@ def service_root(*, create=False, home=None):
         import pwd
         home = pwd.getpwuid(os.getuid()).pw_dir
     home = Path(home).resolve()
-    from .runtime_setup import learning_state_base
-    root = learning_state_base(home) / 'laya-inference'
+    import memvane_paths
+    root = memvane_paths.state_base(home) / 'wake'
     _check_root(root, home)
     if create:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)

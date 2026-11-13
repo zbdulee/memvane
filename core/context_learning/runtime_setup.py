@@ -95,8 +95,8 @@ def runtime_base(home=None):
 
 
 def learning_state_base(home=None):
-    """Support directory for learning state."""
-    return _support_dir(home)
+    """Versioned learning state; managed runtime generations remain shared."""
+    return _support_dir(home)/'v1'
 
 
 def default_managed_root(home=None):
