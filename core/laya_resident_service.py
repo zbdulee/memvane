@@ -43,7 +43,6 @@ LEASE = 'service.lock'
 SUCCESSOR = 'successor.lock'
 PID = 'service.pid.json'
 PROJECTS = 'projects'
-# How often the service checks whether the pre-rename service directory can go.
 INTERPRETER = 'interpreter.json'
 WIRE_LIMIT = 64 * 1024
 REQUEST_LIMIT = 5_100_000
