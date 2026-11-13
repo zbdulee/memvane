@@ -80,7 +80,7 @@ def run(project, *, force=False):
     from contextlib import closing
     from memvane.learning.context_learning import selector_heal
     from memvane.journal.api import select_route
-    from memvane.journal.install_journal import (_open, _inspect_v1_row, inspect_journal,
+    from memvane.journal.api import (_api_open as _open, _api_inspect_v1_row as _inspect_v1_row, inspect_journal,
                                       verify_selected_route_for_write)
     from memvane.kernel.memvane_version import plugin_version, version_key
     from memvane.runtime.api import sync_owner, validate_sync_owner

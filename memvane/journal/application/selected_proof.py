@@ -24,7 +24,7 @@ def selected_project_proof(project, *, owner_wait=False):
 def owned_selected_proof(decision, owner):
     """Reprove the selected route while the sync owner is held."""
     from memvane.runtime.api import validate_sync_owner
-    from memvane.journal.install_journal import verify_selected_route_for_write
+    from memvane.journal.api import verify_selected_route_for_write
     validate_sync_owner(owner, Path(decision['storePath']))
     proof = verify_selected_route_for_write(decision)
     validate_sync_owner(owner, Path(decision['storePath']))

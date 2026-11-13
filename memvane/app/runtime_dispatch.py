@@ -88,7 +88,7 @@ def resolve(kind, value):
         except (OSError, RuntimeError, ValueError) as exc:
             raise DispatchFailure('target_journal_changed') from exc
         if record.get('schema') == 'memvane-initial-build-v1':
-            from memvane.journal.install_journal import _attestation, _route, _v1_provider_manifest
+            from memvane.journal.api import _api_attestation as _attestation, _api_route as _route, _api_v1_provider_manifest as _v1_provider_manifest
             from memvane.route.api import classify_v4 as _classify_v4, read_regular as _read_regular
             from memvane.route.types import MAX_RECORD_BYTES
             import hashlib

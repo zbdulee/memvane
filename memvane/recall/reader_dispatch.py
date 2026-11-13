@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from memvane.journal import journal_reader as journal
+from memvane.journal.api import _reader as journal
 
 @dataclass(frozen=True)
 class ReaderResult:
@@ -74,7 +74,7 @@ def _persisted_schema3(endpoint):
 
 
 def _vector_proof(authority,snapshot,decision,provider,deadline):
-    from memvane.journal import reader_lease as leases
+    from memvane.journal.api import _reader as leases
     from memvane.provider.api import reviewed_provider_class
     ReviewedLocalQmdProvider = reviewed_provider_class()
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
@@ -190,7 +190,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     worktree project root. A view sealed without vectors answers lexical
     lists only (``lexical_only``).
     """
-    from memvane.journal import reader_lease as leases
+    from memvane.journal.api import _reader as leases
     selected=leases._reader_selections.get(endpoint)
     if (not _persisted_schema3(endpoint) or selected is None
             or selected.preferred_endpoint!=endpoint.endpoint_id):

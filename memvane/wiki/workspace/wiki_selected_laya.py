@@ -92,7 +92,7 @@ def schema3_checkout(bound):
         return None
     decision = bound[0]
     from memvane.journal import api as journal
-    from memvane.journal import journal_reader as reader
+    from memvane.journal.api import _reader as reader
     path = decision.get('journalPath')
     if not isinstance(path, str) or journal.journal_version(path) != 5:
         return None
@@ -148,7 +148,7 @@ class _Schema3Checkout:
 
     def _selection_current(self):
         from memvane.journal import api as journal
-        from memvane.journal import journal_reader as reader
+        from memvane.journal.api import _reader as reader
         from memvane.journal.api import select_route
         if select_route(self.decision['projectRoot'], action='compile') != self.decision:
             return False

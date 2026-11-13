@@ -458,7 +458,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     from memvane.kernel.memvane_version import same_major
     from memvane.route.types import SCHEMA_V4
     from memvane.route.api import classify_v4 as _classify_v4
-    from memvane.journal.install_journal import _route
+    from memvane.journal.api import _api_route as _route
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
     if not same_major(1):
@@ -487,7 +487,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
 def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id):
     """Register the reviewed single-store build under the existing install lock."""
     from memvane.install import initial_build as initial_build
-    from memvane.journal.install_journal import stage_v1_attestation, create_v1_journal
+    from memvane.journal.api import _api_stage_v1_attestation as stage_v1_attestation, _api_create_v1_journal as create_v1_journal
     existing = initial_build.lookup(plan['projectRoot'])
     if existing is not None and (existing['identity']['stateRoot'] != str(state)
                                  or existing['identity']['installId'] != install_id):
@@ -514,7 +514,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
                 'storePath': store['storePath'], 'storeNode': store['storeNode'],
                 'storeIncarnation': store['storeIncarnation'], 'journalPath': str(journal),
                 'routeSha256': route_sha, 'attestationSha256': staged['attestationSha256']}
-    from memvane.journal.reader_lease import _prepare_lifetime
+    from memvane.journal.api import _api_prepare_lifetime as _prepare_lifetime
     _prepare_lifetime(install_id)
     with initial_build.owner(state) as owned:
         if not owned:
@@ -559,8 +559,8 @@ def request_initial_build_rescan(state_root):
 def finalize_initial_build(*, project_root, state_root):
     """Seal the ready single-store head in the prepared journal and ledger."""
     from memvane.install import initial_build as build
-    from memvane.journal import install_journal as journal
-    from memvane.journal import journal_reader as reader
+    from memvane.journal.api import _install_journal as journal
+    from memvane.journal.api import _reader as reader
     from memvane.app import runtime_dispatch as dispatch
     from memvane.sync import api as sync
     from memvane.store import api as values
@@ -715,8 +715,8 @@ def _checked_project(project_root):
 def activate_origin_selection(project_root, journal_path, route_bytes):
     """Publish or recover the proved v1 selection under the install lock."""
     from memvane.install import initial_build as build
-    from memvane.journal import install_journal as journal_module
-    from memvane.journal import journal_reader as reader
+    from memvane.journal.api import _install_journal as journal_module
+    from memvane.journal.api import _reader as reader
     from memvane.sync import api as sync
     from memvane.wiki.intake import api as discovery
     from memvane.settings import api as project_dir
@@ -725,7 +725,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.route.api import classify_v4 as _classify_v4
     from memvane.route.types import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write
-    from memvane.journal.reader_lease import reader_lifetime
+    from memvane.journal.api import _api_reader_lifetime as reader_lifetime
     from memvane.runtime.api import sync_owner
     project = _checked_project(project_root)
     journal = Path(journal_path)
@@ -844,11 +844,11 @@ def restore_origin_selection(*, project_root, state_root):
         return _restore_v1_locked(project, state)
 def _restore_v1_locked(project, state):
     from memvane.install import initial_build as build
-    from memvane.journal import install_journal as journal
+    from memvane.journal.api import _install_journal as journal
     from contextlib import closing
     from memvane.route.types import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write, _fsync_dir
-    from memvane.journal.reader_lease import reader_lifetime
+    from memvane.journal.api import _api_reader_lifetime as reader_lifetime
     from memvane.runtime.api import sync_owner
     from memvane.wiki.workspace.api import file_coordination as workspace_files
     with build.owner(state) as owned:

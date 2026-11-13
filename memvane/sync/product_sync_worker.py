@@ -386,7 +386,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
                                                    report=report, start_service=start_service)
                 vectors['rawScan'] = raw_scan
                 result, proof = _publish_schema3(decision, proof, writer, vectors)
-            from memvane.journal.journal_reader import resettle_selection
+            from memvane.journal.api import _api_resettle_selection as resettle_selection
             status, proof = resettle_selection(decision, owner)
             if status != 'unchanged':
                 result = {**result, 'readerResettle': status}
@@ -685,7 +685,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     """Consume bounded compile intents without changing the view's member trust."""
     from memvane.store import api as values
     from memvane.journal import api as ledger
-    from memvane.journal import journal_reader as reader
+    from memvane.journal.api import _reader as reader
     from memvane.journal.api import writer as normal
     from memvane.wiki.card.api import card_support as source_spans
     from memvane.wiki.card import api as wiki_card
@@ -1309,7 +1309,7 @@ def _schema3_vector_spec(proof):
 
 def _schema3_worker_manifest(decision, proof):
     """The worker attestation's provider manifest for the current proof (closure rehash)."""
-    from memvane.journal import install_journal as journal
+    from memvane.journal.api import _install_journal as journal
     with journal.read_only_journals():
         if proof.get('buildPending'):
             from memvane.app import runtime_dispatch as dispatch
