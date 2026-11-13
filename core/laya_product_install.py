@@ -1372,9 +1372,7 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
                 entry.get('installId') != install_id or entry.get('sourceCommit') != commit_id):
             _fail('unused_build_journal_changed')
         if allow_started:
-            from laya_ledger_common import refuse_qmd_origin
             from laya_fresh_wiki_origin import LEDGER as FRESH_LEDGER
-            refuse_qmd_origin(state)
             if (state / FRESH_LEDGER).exists():
                 _fail('inactive_build_cutover_started')
         route_bytes = _read_private(identity['routeFile'], 8192)
@@ -1457,7 +1455,6 @@ def _abandon_initial_build(*, project_root, state_root, install_id, commit_id,
                 current_ownership['sha256'] != ownership['sha256']):
             _fail('unused_build_changed')
         if allow_started:
-            refuse_qmd_origin(state)
             if (state / FRESH_LEDGER).exists():
                 _fail('inactive_build_cutover_started')
         clear = {'sealed': None, 'progress': None, 'freshness': None, 'blocked': None}
@@ -1545,10 +1542,8 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     never retried here.
     """
     import laya_fresh_wiki_origin as fresh
-    from laya_ledger_common import refuse_qmd_origin
     project = _checked_project(project_root)
     journal = Path(journal_path)
-    refuse_qmd_origin(journal.parent)
     if not (journal.parent / fresh.LEDGER).exists():
         _fail('cutover_ledger_missing')
     row = fresh._load(journal.parent / fresh.LEDGER)
@@ -1560,10 +1555,8 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
 def recover_origin_selection(project_root, journal_path, route_bytes):
     """Settle an interrupted selection; an ``active`` result wakes the selected sync."""
     import laya_fresh_wiki_origin as fresh
-    from laya_ledger_common import refuse_qmd_origin
     project = _checked_project(project_root)
     journal = Path(journal_path)
-    refuse_qmd_origin(journal.parent)
     if not (journal.parent / fresh.LEDGER).exists():
         _fail('cutover_ledger_missing')
     row = fresh.recover(project, journal, route_bytes)
@@ -1585,11 +1578,9 @@ def restore_origin_selection(*, project_root, state_root):
     published is withdrawn.
     """
     import laya_fresh_wiki_origin as fresh
-    from laya_ledger_common import refuse_qmd_origin
     project = _checked_project(project_root)
     state = _private_parent(state_root)
     journal = state / 'install-journal.sqlite'
-    refuse_qmd_origin(state)
     if not (state / fresh.LEDGER).exists():
         _fail('cutover_ledger_missing')
     return _restore_fresh_wiki_selection(project, state, journal)

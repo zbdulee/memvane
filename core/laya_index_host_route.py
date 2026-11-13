@@ -12,8 +12,7 @@ The route's ``settingsSha256`` binds the resolved settings identity
 and source root, which include the wiki root). Editing ``skipPaths`` keeps that
 identity; renaming a collection changes it and blocks. A route that binds any
 other digest (such as the settings file bytes) blocks as
-``route_settings_changed``. A QMD-origin selection marker blocks as
-``qmd_origin_detach_required``.
+``route_settings_changed``.
 """
 from __future__ import annotations
 
@@ -714,8 +713,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if markers:
         # The marker stays through restoration. Only its durable ledger can
         # classify an absent route as legacy.
-        from laya_ledger_common import (QMD_MARKER_SCHEMA,
-                                        QMD_ORIGIN_DETACH_REQUIRED, _read_json)
+        from laya_ledger_common import _read_json
         from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
                                             classify_marker as classify_fresh)
         marker_root, marker_path = markers[0]
@@ -724,8 +722,6 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
             schema = marker_record.get('schema') if isinstance(marker_record, dict) else None
         except (OSError, RuntimeError, ValueError, TypeError):
             schema = None
-        if schema == QMD_MARKER_SCHEMA:
-            return _decision("blocked", QMD_ORIGIN_DETACH_REQUIRED)
         selection = (classify_fresh(marker_root, marker_path, marker_path.parent / RECORD)
                      if schema == FRESH_MARKER_SCHEMA else 'blocked')
         if selection == 'blocked':

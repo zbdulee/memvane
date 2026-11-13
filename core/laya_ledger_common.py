@@ -23,9 +23,6 @@ from pathlib import Path
 import stat
 import tempfile
 
-QMD_LEDGER = 'qmd-cutover.json'
-QMD_MARKER_SCHEMA = 'laya-qmd-selection-marker-v1'
-QMD_ORIGIN_DETACH_REQUIRED = 'qmd_origin_detach_required'
 # One project-wide lock name shared by every origin and by older installed
 # bundle copies; renaming it would stop cross-version mutual exclusion.
 OPERATION_LOCK = 'laya-qmd-cutover-operation.lock'
@@ -237,18 +234,5 @@ def _operation_lock(marker_path):
         os.close(fd)
 
 
-def qmd_ledger_present(state_root):
-    """True when ``state_root`` still holds a QMD-origin selection ledger."""
-    path = Path(state_root) / QMD_LEDGER
-    return path.exists() or path.is_symlink()
 
 
-def refuse_qmd_origin(state_root):
-    """Refuse a state root still bound to a QMD-origin ledger.
-
-    Only the detach step of releases 0.37.8 to 0.37.10 converts such a
-    ledger to the fresh-wiki ledger; this code never activates, upgrades or
-    restores it.
-    """
-    if qmd_ledger_present(state_root):
-        _fail(QMD_ORIGIN_DETACH_REQUIRED)

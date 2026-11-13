@@ -184,10 +184,8 @@ def _readonly(path, state, *, recover=False):
 
 def _selected_proof(state, project, executing_root, *, allow_drift):
     import laya_fresh_wiki_origin as fresh
-    from laya_ledger_common import refuse_qmd_origin
     state = _state(state)
     project, executing_root = Path(project), Path(executing_root)
-    refuse_qmd_origin(state)
     decision = journal.select_route(str(project), action='recall')
     try:
         proof = journal.verify_selected_route(decision)

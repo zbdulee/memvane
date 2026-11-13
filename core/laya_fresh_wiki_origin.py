@@ -329,8 +329,7 @@ def bind(*, project_root, journal_path, route_bytes, sealed, identity):
     """Bind an already sealed, fresh and inactive private candidate."""
     ledger, marker, route = _paths(project_root, journal_path)
     with _operation_lock(marker):
-        if (route.exists() or route.is_symlink() or
-                (Path(journal_path).parent / 'qmd-cutover.json').exists()):
+        if route.exists() or route.is_symlink():
             _fail('fresh_wiki_selection_already_exists')
         journal = inspect_journal(journal_path)
         if (journal['state'] != 'candidate_ready' or journal['newWriteSeen'] or
