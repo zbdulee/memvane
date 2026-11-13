@@ -93,25 +93,6 @@ def _capture_learning(slot: list, started: float) -> None:
         pass
 
 
-def _record_loaded_receipt(host: str, decision, payload) -> None:
-    """After the answer is flushed: this host's loaded-reader receipt while a
-    shadow migration waits for the reader switch (bounded; never raises)."""
-    try:
-        import hook_budget
-        from laya_bridge_observer import record_hook_receipt
-        deadline = time.monotonic() + hook_budget.remaining()
-        status = record_hook_receipt(payload, host, decision, deadline=deadline)
-        if status in ('recorded', 'complete'):
-            event_log.emit('migration.bridge', outcome=status, decision=decision, host=host,
-                           session=event_log.session_id(payload))
-    except Exception:
-        pass
-
-
-class HostResponseError(ValueError):
-    """Fixed diagnostic code; never includes document body or source path."""
-
-
 def _fail(code: str):
     raise HostResponseError(code)
 
@@ -3135,53 +3116,8 @@ def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
     return None
 
 
-def _serve_qa_stdin(action, host, fallback_cwd):
-    """Reserved preflight only: no settle, serving, learning or wake path."""
-    from laya_bridge_observer import qa_hook_reply, qa_session_start
-    # The loaded-reader probe reads what is left of the hook budget.
-    import hook_budget
-    try:
-        hook_budget.arm(watchdog=False, export=False)
-    except hook_budget.HookDeadlineExceeded:
-        pass
-    payload, decision = {}, {}
-    try:
-        raw = sys.stdin.buffer.read(MAX_HOOK_BYTES + 1)
-        if len(raw) > MAX_HOOK_BYTES:
-            raise ValueError('reader_hosts_pending')
-        payload = json.loads(raw.decode('utf8'))
-        if not isinstance(payload, dict):
-            raise ValueError('reader_hosts_pending')
-        cwd = payload.get('cwd', fallback_cwd)
-        if not isinstance(cwd, str) or not cwd:
-            raise ValueError('reader_hosts_pending')
-        decision = select_route(cwd, action=action)
-    except Exception:
-        payload, decision = {}, {}
-    root = Path(__file__).resolve().parents[1]
-    if action == 'recall':
-        try:
-            answer = qa_hook_reply(payload, host, decision, root)
-        except Exception:
-            answer = None
-        if not isinstance(answer, dict) or answer.get('decision') != 'block':
-            answer = {'decision': 'block', 'reason': 'MemVane bridge preflight'}
-        print(json.dumps(answer, ensure_ascii=True, allow_nan=False, separators=(',', ':')), flush=True)
-        return 0
-    if qa_session_start(payload, host, decision, root):
-        print('{}', flush=True)
-        return 0
-    print('[memvane] reader_hosts_pending; request refused', file=sys.stderr)
-    return 3
-
-
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) == 4 and args[0] == 'serve-qa-stdin':
-        _, action, host, fallback_cwd = args
-        if action not in ('recall', 'update-queued'):
-            return 2
-        return _serve_qa_stdin(action, host, fallback_cwd)
     if len(args) == 4 and args[0] == "serve-stdin":
         _, action, host, fallback_cwd = args
         payload_file = None
@@ -3228,13 +3164,6 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(response,ensure_ascii=True,allow_nan=False,separators=(',',':')),flush=True)
                 return 0
             _fail("selected_route_changed")
-        if (action == 'recall' and host in ('claude', 'codex') and
-                os.environ.get('MEMVANE_BRIDGE_HOOK_ENTRY') == 'hooks/run-hook:recall:' + host):
-            from laya_bridge_readiness import registered_response
-            challenge = registered_response(payload, host, decision, Path(__file__).resolve().parents[1])
-            if challenge is not None:
-                print(json.dumps(host_payload(host, json.dumps(challenge))), flush=True)
-                return 0
         with learning_capture() as capture:
             response = (serve_preview(action, host, decision, payload)
                         if decision['state'] == 'preview' else
@@ -3244,7 +3173,6 @@ def main(argv: list[str] | None = None) -> int:
         if action == "recall":
             # Learning work starts only after the context is in the pipe; a
             # host that kills this process on timeout still has the answer.
-            _record_loaded_receipt(host, decision, payload)
             _capture_learning(capture, started)
         return 0
     except Exception as exc:

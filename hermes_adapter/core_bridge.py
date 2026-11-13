@@ -249,11 +249,6 @@ def recall_context(
                                            'selected_route_changed') is not None:
                     return None
                 return {"context": "[memvane] selected route changed; request refused"}
-            if os.environ.get('MEMVANE_BRIDGE_PREFLIGHT'):
-                from laya_bridge_readiness import registered_response
-                challenge = registered_response({'prompt': prompt}, 'hermes', decision, core.parent)
-                if challenge is not None:
-                    return {'context': json.dumps(challenge)}
             serve = serve_preview if route_state == "preview" else serve_selected
             return _with_session_notice(selected_cwd, serve(
                 "recall", "hermes", decision, {"prompt": prompt, "cwd": selected_cwd}))

@@ -21,5 +21,4 @@ host route: `hooks/run-hook`은 등록된 모든 action을 먼저 `core/laya_ind
 - Hermes는 Claude/Codex hook JSON을 읽지 않고 Python plugin system을 쓴다. root `plugin.yaml` + `__init__.py`가 `hermes_adapter.plugin.register(ctx)`를 노출한다.
 - Hook mapping: `pre_llm_call`→`recall`, `on_session_start`→`update-queued`, `pre_tool_call`→`gate`, `post_tool_call`→`posttool`+`index`. `hermes_adapter/core_bridge.py`가 route를 분류해 선택된 route에서만 `laya_index_host_route.select_route` → `laya_host_response.serve_selected`로 넘긴다. `legacy`는 무작업이고, 그 밖의 상태는 경고만 남기며 QMD로 폴백하지 않는다(gate는 block).
 - Hermes `post_tool_call` 반환값은 observer-only라 같은 턴 모델 컨텍스트에 posttool 힌트를 주입하지 않는다. 따라서 Hermes 경로의 편집 후 동작은 자동 인덱싱 중심이며, Claude/Codex posttool 컨텍스트 주입과 동일하다고 문서화하면 안 된다.
-- reader 전환(`laya_shadow_migration`)의 loaded receipt는 Claude·Codex recall hook만 남긴다. 현재·이전 플러그인 id의 Hermes 사본이 설치된 계정에서는 전환 게이트가 `switch_hosts_unsupported`로 멈추고 그 설치는 v6 reader를 계속 읽는다.
 - Hermes `on_session_start`도 context 주입 채널이 없어(반환값 미사용) SessionStart 안내가 표면화되지 않는다. 미온보딩 프로젝트의 온보딩 안내도 Hermes에는 나가지 않는다.
