@@ -63,9 +63,11 @@ from memvane.settings import config as qmd_config
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.engines import api as engines
-from memvane.wiki.card import wiki_freshness
+from memvane.wiki.card.api import card_support
+wiki_freshness = card_support.freshness
 from memvane.wiki.card import wiki_source_missing as wsm
-from memvane.wiki.card.api import source_spans
+from memvane.wiki.card.api import card_support as card_operations
+source_spans = card_operations.source_spans
 from memvane.wiki.card.api import card_sources_allowed
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue

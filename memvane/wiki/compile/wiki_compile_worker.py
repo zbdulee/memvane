@@ -41,7 +41,8 @@ from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, saf
                                         requeue_lines, append_jsonl, read_queue, claim_queue)
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_card_budget
-from memvane.wiki.card import wiki_freshness
+from memvane.wiki.card.api import card_support
+wiki_freshness = card_support.freshness
 from memvane.wiki.card import api as yaml_scalars
 
 

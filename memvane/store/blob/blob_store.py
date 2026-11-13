@@ -33,7 +33,7 @@ LEGACY_RESULT_SCHEMA = 'memvane-legacy-card-evidence-v1'
 def legacy_card_evidence(row, decision):
     """Describe the existing reader's trust evidence, without granting authority."""
     from memvane.wiki.card import api as card_api
-    from memvane.wiki.card.api import source_spans
+    from memvane.wiki.card.api import card_support as source_spans
     from memvane.wiki.card import api as wiki_card
 
     locators = card_api.verified_wiki_locations(
@@ -44,7 +44,7 @@ def legacy_card_evidence(row, decision):
     body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
     block = body[4:body.index('\n---\n', 4)]
     revisions = wiki_card.frontmatter_source_revisions(block)
-    _, spans = source_spans.read_card_spans(block)
+    _, spans = source_spans.source_spans.read_card_spans(block)
     return {'revisions': revisions, 'spans': spans, 'locators': list(locators)}
 
 
@@ -73,8 +73,8 @@ def current_revision_evidence(evidence, current_sources):
             if r['path'] not in judged or (r['sha256'], r['size']) == judged[r['path']]]
     pairs = {(r['path'], r['sha256']) for r in kept}
     spans = [span for span in evidence['spans'] if (span['path'], span['sourceSha256']) in pairs]
-    from memvane.wiki.card.api import source_spans
-    return {'revisions': kept, 'spans': spans, 'locators': [source_spans.locator(span) for span in spans]}
+    from memvane.wiki.card.api import card_support as source_spans
+    return {'revisions': kept, 'spans': spans, 'locators': [source_spans.source_spans.locator(span) for span in spans]}
 
 
 def _current_sources(value):

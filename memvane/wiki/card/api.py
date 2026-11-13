@@ -61,57 +61,43 @@ def card_body_hash(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-class source_spans:
+def _forward(module, name, *args, **kwargs):
+    from importlib import import_module
+    return getattr(import_module(module), name)(*args, **kwargs)
+
+
+class _source_spans:
     """Public source-span parsing and binding operations."""
+    is_invalid = staticmethod(lambda value: value == 'invalid')
+    bound_to_revisions = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'bound_to_revisions', *a, **k))
+    bind_to_card = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'bind_to_card', *a, **k))
+    card_revisions = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'card_revisions', *a, **k))
+    derive_spans = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'derive_spans', *a, **k))
+    evidence_item = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'evidence_item', *a, **k))
+    locator = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'locator', *a, **k))
+    read_card_spans = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'read_card_spans', *a, **k))
+    verify_span = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', 'verify_span', *a, **k))
+    _frontmatter_block = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.source_spans', '_frontmatter_block', *a, **k))
 
-    @staticmethod
-    def is_invalid(value):
-        return value == 'invalid'
 
-    @staticmethod
-    def bound_to_revisions(*args, **kwargs):
-        from memvane.wiki.card.source_spans import bound_to_revisions as implementation
-        return implementation(*args, **kwargs)
+class card_support:
+    """Public card support operations grouped by their stored contract."""
+    source_spans = _source_spans
 
-    @staticmethod
-    def bind_to_card(*args, **kwargs):
-        from memvane.wiki.card.source_spans import bind_to_card as implementation
-        return implementation(*args, **kwargs)
-
-    @staticmethod
-    def card_revisions(*args, **kwargs):
-        from memvane.wiki.card.source_spans import card_revisions as implementation
-        return implementation(*args, **kwargs)
-
-    @staticmethod
-    def derive_spans(*args, **kwargs):
-        from memvane.wiki.card.source_spans import derive_spans as implementation
-        return implementation(*args, **kwargs)
-
-    @staticmethod
-    def evidence_item(*args, **kwargs):
-        from memvane.wiki.card.source_spans import evidence_item as implementation
-        return implementation(*args, **kwargs)
-
-    @staticmethod
-    def locator(*args, **kwargs):
-        from memvane.wiki.card.source_spans import locator as implementation
-        return implementation(*args, **kwargs)
-
-    @staticmethod
-    def read_card_spans(*args, **kwargs):
-        from memvane.wiki.card.source_spans import read_card_spans as implementation
-        return implementation(*args, **kwargs)
-
-    @staticmethod
-    def verify_span(*args, **kwargs):
-        from memvane.wiki.card.source_spans import verify_span as implementation
-        return implementation(*args, **kwargs)
-
-    @staticmethod
-    def _frontmatter_block(*args, **kwargs):
-        from memvane.wiki.card.source_spans import _frontmatter_block as implementation
-        return implementation(*args, **kwargs)
+    class freshness:
+        FRESH = 'fresh'
+        STALE = 'stale'
+        UNKNOWN = 'unknown'
+        check_card = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'check_card', *a, **k))
+        compare_revision = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'compare_revision', *a, **k))
+        latest_unresolved_pending = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'latest_unresolved_pending', *a, **k))
+        resolve_pending_refresh = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'resolve_pending_refresh', *a, **k))
+        same_revision = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'same_revision', *a, **k))
+        snapshot_bytes = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'snapshot_bytes', *a, **k))
+        snapshot_file = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'snapshot_file', *a, **k))
+        unresolved_pending_refreshes = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'unresolved_pending_refreshes', *a, **k))
+        unresolved_pending_refreshes_strict = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'unresolved_pending_refreshes_strict', *a, **k))
+        record_pending_refresh = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'record_pending_refresh', *a, **k))
 
 
 

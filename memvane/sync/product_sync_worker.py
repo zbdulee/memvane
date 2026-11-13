@@ -686,7 +686,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     from memvane.journal import api as ledger
     from memvane.journal import journal_reader as reader
     from memvane.journal import writer_scope as normal
-    from memvane.wiki.card.api import source_spans
+    from memvane.wiki.card.api import card_support as source_spans
     from memvane.wiki.card import api as wiki_card
     from memvane.wiki.verify import api as wiki_verify_worker
 
@@ -797,14 +797,14 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
                     result['waiting'] += 1
                     continue
                 text = image[1].decode('utf8')
-                block = source_spans._frontmatter_block(text)
+                block = source_spans.source_spans._frontmatter_block(text)
                 if block is None:
                     raise ValueError('provenance_parity_mismatch')
                 revisions = wiki_card.frontmatter_source_revisions(block)
-                span_state, spans = source_spans.read_card_spans(block)
+                span_state, spans = source_spans.source_spans.read_card_spans(block)
                 found = {(r['path'], r['sha256'], r['size']) for r in revisions}
                 expected = {(fp['path'], fp['source_sha'], fp['byte_length']) for fp in fingerprints}
-                if (found != expected or source_spans.is_invalid(span_state)
+                if (found != expected or source_spans.source_spans.is_invalid(span_state)
                         or spans != sorted(intent['sourceSpans'], key=lambda s: (s['path'], s['startLine'], s['endLine']))):
                     raise ValueError('provenance_parity_mismatch')
                 attempted += 1

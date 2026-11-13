@@ -66,7 +66,8 @@ def _query(query, limit, prefixes, exclusions, seconds):
 
 def _card_locations(db, gen_id, paths):
     """``{wiki_path: [locator, ...]}`` from one generation's card_sources rows."""
-    from memvane.wiki.card.api import source_spans
+    from memvane.wiki.card.api import card_support
+    source_spans = card_support.source_spans
     locations = {}
     sql = ('SELECT wiki_path,spans_json FROM card_sources WHERE gen_id=? AND wiki_path IN (' +
            ','.join('?' for _ in paths) + ') ORDER BY wiki_path,ordinal')

@@ -371,16 +371,16 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
 
 def changed_sources(info: dict) -> list[tuple[dict, str]] | None:
     """`[(revision, current_sha)]` whose bytes differ; None when unreadable."""
-    from memvane.wiki.card import wiki_freshness
+    from memvane.wiki.card.api import card_support as wiki_freshness
 
     changed = []
     for revision, resolved in info["present"]:
-        state, _reason = wiki_freshness.compare_revision(resolved, revision)
-        if state == wiki_freshness.FRESH:
+        state, _reason = wiki_freshness.freshness.compare_revision(resolved, revision)
+        if state == wiki_freshness.freshness.FRESH:
             continue
-        if state != wiki_freshness.STALE:
+        if state != wiki_freshness.freshness.STALE:
             return None
-        snapshot = wiki_freshness.snapshot_file(resolved)
+        snapshot = wiki_freshness.freshness.snapshot_file(resolved)
         if snapshot is None:
             return None
         changed.append((revision, snapshot["sha256"]))
@@ -389,11 +389,11 @@ def changed_sources(info: dict) -> list[tuple[dict, str]] | None:
 
 def backfill_revisions(info: dict) -> list[dict] | None:
     """Closed-schema revisions of a BACKFILL card's current source bytes; None if unreadable."""
-    from memvane.wiki.card import wiki_freshness
+    from memvane.wiki.card.api import card_support as wiki_freshness
 
     revisions = []
     for source, resolved in info["present"]:
-        snapshot = wiki_freshness.snapshot_file(resolved)
+        snapshot = wiki_freshness.freshness.snapshot_file(resolved)
         if snapshot is None:
             return None
         revisions.append({**source, "sha256": snapshot["sha256"], "size": snapshot["size"],
