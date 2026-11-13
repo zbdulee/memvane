@@ -411,7 +411,8 @@ def _create_v1_store(project_root, state_root, scope_id):
     """Create one new format-4 store under the installer's lock."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane.store import api as checkout
-    from memvane.store.view.view_store import ViewStore
+    from memvane.store.api import view_store_class
+    ViewStore = view_store_class()
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
     project = _checked_project(project_root)
@@ -451,7 +452,6 @@ def _create_v1_store(project_root, state_root, scope_id):
     return {'storePath': str(path), 'storeNode': [info.st_dev, info.st_ino],
             'storeIncarnation': incarnation, 'repository': repository,
             'worktree': worktree, 'settingsPolicyDigest': policy}
-
 def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     """Stage a route bound to a validated local store and project settings."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
@@ -567,9 +567,10 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.store.view import view_values as view_values
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
-    from memvane.store.blob.blob_store import _regular
+    from memvane.store.api import regular as _regular
     from memvane.install.ledger_common import _read_json, _write
-    from memvane.store.view.view_store import ViewStore, _skip_patterns
+    from memvane.store.api import view_store_class, skip_patterns as _skip_patterns
+    ViewStore = view_store_class()
     from memvane.store.api import provider_spec
     from memvane.sync.api import sync_owner
     state = _private_parent(state_root)
@@ -841,7 +842,6 @@ def restore_origin_selection(*, project_root, state_root):
     state = _private_parent(state_root)
     with _install_lock(state):
         return _restore_v1_locked(project, state)
-
 def _restore_v1_locked(project, state):
     from memvane.install import initial_build as build
     from memvane.journal import install_journal as journal

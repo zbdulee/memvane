@@ -255,7 +255,8 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
     from contextlib import ExitStack
     from memvane.install import initial_build as build
     from memvane.journal import writer_scope as normal
-    from memvane.store.view.view_store import ViewStore
+    from memvane.store.api import view_store_class
+    ViewStore = view_store_class()
     state = Path(decision['stateRoot'])
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
@@ -477,7 +478,8 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     from memvane.store import api as v
     from memvane.store import api as checkout
     from memvane.journal import writer_scope as normal
-    from memvane.store.view.view_store import ViewStore
+    from memvane.store.api import view_store_class
+    ViewStore = view_store_class()
     info = normal.writer_store(writer)
     deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
     store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
@@ -871,9 +873,9 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     from memvane.store import api as v
     from memvane.journal import writer_scope as normal
     from memvane.wiki.lifecycle import api as wiki_lifecycle
-    from memvane.store.blob.blob_store import _regular
+    from memvane.store.api import regular as _regular
     from memvane.store.view import view_values as view_values
-    from memvane.store.view.view_store import _skip_patterns
+    from memvane.store.api import skip_patterns as _skip_patterns
     import uuid
     if vectors is None:
         vectors = {'spec': None}

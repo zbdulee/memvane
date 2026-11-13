@@ -44,6 +44,26 @@ def register_provider_spec(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def view_store_class():
+    from memvane.store.view.view_store import ViewStore
+    return ViewStore
+
+
+def regular(*args, **kwargs):
+    from memvane.store.blob.blob_store import _regular as implementation
+    return implementation(*args, **kwargs)
+
+
+def skip_patterns(*args, **kwargs):
+    from memvane.store.view.view_store import _skip_patterns as implementation
+    return implementation(*args, **kwargs)
+
+
+def worktree_record(*args, **kwargs):
+    from memvane.store.blob.blob_store import _worktree_record as implementation
+    return implementation(*args, **kwargs)
+
+
 def attestation(*args, **kwargs):
     from memvane.store.blob.blob_values import attestation as implementation
     return implementation(*args, **kwargs)

@@ -251,7 +251,8 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
     ``view_preparing``. Any pinned view may be sealed without vectors
     (lexical-first); a vector profile other than the endpoint's is refused.
     """
-    from memvane.store.view.view_store import ViewStore
+    from memvane.store.api import view_store_class
+    ViewStore = view_store_class()
     from memvane.store.api import fail
     state, path = Path(record['state']), Path(record['db_path'])
     target, project = record['worktree_id'], record['project']

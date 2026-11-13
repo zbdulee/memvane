@@ -812,7 +812,7 @@ def _supersede_job_intent(root, config, job, target, decision):
     from memvane.install import ledger_common as ledger
     try:
         wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
-        from memvane.store.blob.blob_store import _regular
+        from memvane.store.api import regular as _regular
         from memvane.store.types import MAX_BODY
         card, _, _ = _regular(wiki_root, target.relative_to(wiki_root).as_posix(), MAX_BODY)
         card_sha = hashlib.sha256(card).hexdigest()

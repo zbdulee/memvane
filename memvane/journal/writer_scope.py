@@ -56,7 +56,8 @@ class _SelectedWriterContext:
         self.marked = False
 
     def __enter__(self):
-        from memvane.store.view.view_store import ViewStore
+        from memvane.store.api import view_store_class
+        ViewStore = view_store_class()
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread()
                 and not self.entered and not self.finished, 'normal_writer_reentered')
         try:
@@ -135,7 +136,8 @@ class _BuildWriterContext:
         from memvane.install import initial_build as build
         from memvane.app import runtime_dispatch as dispatch
         from memvane.journal.install_journal import _attestation, _v1_provider_manifest, inspect_journal
-        from memvane.store.view.view_store import ViewStore
+        from memvane.store.api import view_store_class
+        ViewStore = view_store_class()
         from memvane.kernel.errors import _query_only_uri
         import sqlite3
         from contextlib import closing

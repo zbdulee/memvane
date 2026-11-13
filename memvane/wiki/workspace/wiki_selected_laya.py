@@ -120,12 +120,13 @@ def schema3_checkout(bound):
             row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
         reader._need(row is not None and reader._repository_digest(row[0]) == record['repository_digest'],
                      'reader_store_changed')
-        from memvane.store.view.view_store import ViewStore
+        from memvane.store.api import view_store_class
+        ViewStore = view_store_class()
         store = ViewStore.open_reader(record['db_path'], repository=json.loads(row[0]), scope_id=record['scope'])
         try:
             saved, _capture = store._observe_worktree(record['worktree_id'])
             reader._need(saved['binding_digest'] == record['worktree_binding'], 'reader_store_changed')
-            from memvane.store.blob.blob_store import _worktree_record
+            from memvane.store.api import worktree_record as _worktree_record
             repository = store._repository
             worktree = _worktree_record(saved, repository, store._policy)
         finally:
