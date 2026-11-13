@@ -17,7 +17,7 @@ The notice's second line, `[memvane] onboarding-answer <JSON>`, holds the exact 
 
 ## Minimal settings
 
-Onboarding reads only minimal settings: `.memvane/settings.json` with `{name, skipPaths}`. Any other shape refuses as `minimal_settings_required`; report that and ask the user to write the minimal file (the `name` slug derives the raw collection `<slug>` at the project root and the wiki collection `<slug>-wiki` at `.memvane/wiki`). Never rewrite settings.json on the user's behalf. A selected route binds the resolved settings identity, so editing `skipPaths` keeps it selected; changing `name` changes the identity and blocks the route as `route_settings_changed`.
+Onboarding reads `.memvane/settings.json` with required `name` and optional `skipPaths` and `diagnostics`. Other keys or an invalid `name` or `skipPaths` refuse as `minimal_settings_required`; report that and ask the user to write the minimal file (the `name` slug derives the raw collection `<slug>` at the project root and the wiki collection `<slug>-wiki` at `.memvane/wiki`). Never rewrite settings.json on the user's behalf. A selected route binds the resolved settings identity, so editing `skipPaths` keeps it selected; changing `name` changes the identity and blocks the route as `route_settings_changed`.
 
 Projects that only have `.auto-context/` need the owner to move it to `.memvane/` before onboarding.
 

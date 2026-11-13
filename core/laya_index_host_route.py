@@ -312,7 +312,7 @@ def _source_for_collection(root: Path, relative: object) -> str:
 def _derived_collections(record: dict, root: Path, settings_bytes: bytes) -> list:
     """The ``{name, role, sourceRoot}`` set the settings file resolves to."""
     raw = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
-    if not isinstance(raw, dict):
+    if not config.is_minimal_settings(raw):
         raise ValueError("invalid_route_settings")
     folder = project_dir.active_name(root)
     cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
@@ -619,7 +619,7 @@ def _settings_identity(project: Path) -> tuple:
         raise ValueError("route_settings_not_selected")
     raw = json.loads(_read_regular(settings, MAX_SETTINGS_BYTES).decode("utf-8"),
                      object_pairs_hook=_pairs)
-    if not isinstance(raw, dict):
+    if not config.is_minimal_settings(raw):
         raise ValueError("invalid_route_settings")
     folder = project_dir.CURRENT
     cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)

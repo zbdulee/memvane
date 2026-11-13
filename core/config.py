@@ -322,14 +322,8 @@ DEFAULT_REASONING_EFFORT = {
 # ---------------------------------------------------------------------------
 # Minimal settings model
 #
-# 프로젝트 settings가 `name`(필수)과 `skipPaths`(선택)만 가지면 나머지 effective 설정은
-# 플러그인이 결정적으로 유도한다. 다른 키가 하나라도 있으면 legacy 파일이며 지금까지와
-# 똑같이 정규화한다(부분 유도 없음). 이미 선택된 memvane-db route는 settings 바이트 해시에
-# 묶여 있으므로 legacy 파일의 해석은 이 모델 때문에 바뀌지 않는다.
-# `diagnostics`는 상세 진단 동의(opt-in)일 뿐 collection·경로·role·recall·compile을
-# 정하지 않는다. 그래서 이 키가 있어도 minimal 모델이 유지되고(값이 무엇이든) 유도되는
-# identity가 바뀌지 않는다 — 값 오타 하나가 프로젝트를 legacy(pending, collection 없음)로
-# 떨어뜨리면 안 된다.
+# 프로젝트 settings는 name, skipPaths, diagnostics만 받는다. 나머지
+# effective 설정은 플러그인이 유도한다.
 MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths", "diagnostics"})
 MINIMAL_SETTINGS_MODEL = "minimal"
 MINIMAL_RAW_COLLECTION_PATH = "."
@@ -363,11 +357,10 @@ def _minimal_skip_paths(value):
 
 
 def is_minimal_settings(raw):
-    """`{name, skipPaths?}`만 가진 유효한 settings인가.
+    """name과 선택적인 skipPaths·diagnostics만 가진 유효한 settings인가.
 
     `name`이 없거나 slug가 비거나 `skipPaths`가 비어 있지 않은 문자열 목록이 아니면
-    minimal이 아니다 — legacy 정규화로 떨어져 collection이 비고(pending) 아무것도
-    인덱싱하지 않는다(fail-closed).
+    minimal이 아니며 프로젝트 설정으로 사용하지 않는다.
     """
     return (isinstance(raw, dict) and "name" in raw
             and set(raw) <= MINIMAL_SETTINGS_KEYS
@@ -1304,31 +1297,6 @@ def _candidate_configs(directory):
             for path in project_dir.settings_candidates(directory)]
 
 
-def _declared_project_owner(scope):
-    """Keep the nearest story config as its search scope; owner is separate."""
-    scope = Path(scope).resolve()
-    home = Path.home().resolve()
-    if scope == home or not _is_within(scope, home):
-        return scope
-    for parent in scope.parents:
-        if parent == home:
-            break
-        settings = project_dir.settings_path(parent)
-        if settings is None or settings.is_symlink():
-            continue
-        try:
-            raw = json.loads(settings.read_text())
-            names = raw.get('ownedScopes') if isinstance(raw, dict) else None
-            if (isinstance(names, list) and scope.parent == parent
-                    and scope.name in names and all(
-                        isinstance(name, str) and name not in ('', '.', '..')
-                        and '/' not in name and '\\' not in name for name in names)):
-                return parent
-        except (OSError, ValueError, TypeError):
-            continue
-    return scope
-
-
 def find_project_config(cwd):
     """cwd→부모(HOME 경계)로 project config를 찾고 normalized config와 위치를 반환한다.
 
@@ -1373,7 +1341,8 @@ def _find_project_config_unsafe(cwd):
         try:
             with open(config_file, "r", encoding="utf-8") as f:
                 parsed = json.load(f)
-            config = normalize_config(parsed, project_dir.active_name(project_root))
+            config = normalize_config(parsed if is_minimal_settings(parsed) else {},
+                                      project_dir.active_name(project_root))
             if config.get("indexing") is False:
                 config["collections"] = []
             return {
@@ -1381,7 +1350,7 @@ def _find_project_config_unsafe(cwd):
                 "configPath": str(config_file),
                 "configFormat": config_format,
                 "projectRoot": str(project_root),
-                "projectOwner": str(_declared_project_owner(project_root)),
+                "projectOwner": str(project_root),
             }
         except (json.JSONDecodeError, OSError):
             pass
@@ -1418,9 +1387,8 @@ def load_project_config(cwd):
 def load_project_config_raw(cwd):
     """Return the raw JSON object for the discovered project config, or {}.
 
-    minimal settings(`{name, skipPaths}`)는 legacy 모양으로 펼쳐 반환하고
-    `settingsModel: "minimal"`을 붙인다(`resolve_paths`가 raw collection을 QMD 인덱스에서
-    뺀다). legacy 파일은 읽은 그대로다."""
+    지원하는 settings는 내부 설정 모양으로 펼치고 `settingsModel`을 붙인다.
+    지원하지 않는 설정은 빈 dict다."""
     found = find_project_config(cwd)
     config_path = found.get("configPath")
     if not config_path:
@@ -1432,7 +1400,7 @@ def load_project_config_raw(cwd):
         folder = project_dir.active_name(found.get("projectRoot"))
         expanded = expand_minimal_settings(parsed, folder)
         return {**expanded, "settingsModel": MINIMAL_SETTINGS_MODEL}
-    return parsed
+    return {}
 
 
 def main():
