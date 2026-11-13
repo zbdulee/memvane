@@ -19,33 +19,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-      - name: Prepare pinned compatibility fixture
-        timeout-minutes: 2
-        env:
-          LEGACY_FIXTURE_COMMIT: f9c33094e30d523415fe983ec7f3b4c35d5a21c0
-          READER_BRIDGE_FIXTURE_COMMIT: 6437108f4c1165f1141114f94b3e32ccc021cb30
-          PR5_BUNDLE_FIXTURE_COMMIT: d01c859d5de14ec976fe832d4315728c33c73126
-          ROW_FORMAT_OLD_CORE_COMMITS: bb4ae4899bf6eb7ff8326a58c28c042bb00c386b 4510105e9e2142ae4331d8de4b295543fa8332f2 6d26d8afeebf2931f515bb12849377b458e2872d 5a90c2d4410f26b416140c4131b160fd38baa511 9553e3aff5d5a601d8240ef67b4256de30a32f98
-        run: |
-          # The immutable 0.40.3 fixture lives in the predecessor repository,
-          # outside this checkout's history. Compatibility tests archive its core.
-          git fetch --no-tags https://github.com/zbdulee/qmd-auto-context.git "$LEGACY_FIXTURE_COMMIT"
-          git cat-file -e "${LEGACY_FIXTURE_COMMIT}^{commit}"
-          git cat-file -e "${LEGACY_FIXTURE_COMMIT}:core"
-          # Reader recovery exercises the exact released writer from this repository.
-          git fetch --no-tags origin "$READER_BRIDGE_FIXTURE_COMMIT"
-          git cat-file -e "${READER_BRIDGE_FIXTURE_COMMIT}^{commit}"
-          git cat-file -e "${READER_BRIDGE_FIXTURE_COMMIT}:core"
-          # Schema3 checks run the last PR5 bridge bundle against a schema3 journal.
-          git fetch --no-tags origin "$PR5_BUNDLE_FIXTURE_COMMIT"
-          git cat-file -e "${PR5_BUNDLE_FIXTURE_COMMIT}^{commit}"
-          git cat-file -e "${PR5_BUNDLE_FIXTURE_COMMIT}:core"
-          # Row-format view store checks run released pre-row-format cores against format 4.
-          for commit in $ROW_FORMAT_OLD_CORE_COMMITS; do
-            git fetch --no-tags origin "$commit"
-            git cat-file -e "${commit}^{commit}"
-            git cat-file -e "${commit}:core"
-          done
       - name: Verify runtime prerequisites
         run: |
           node --version

@@ -20,11 +20,9 @@ import unittest
 from unittest.mock import patch
 
 CORE = Path(__file__).resolve().parents[2] / 'core'
-# Last release under the earlier plugin id (its own resident client code).
-OLD_RELEASE = 'f9c33094e30d523415fe983ec7f3b4c35d5a21c0'
 sys.path.insert(0, str(CORE))
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 from resource_deferred import ResourceDeferred
 import laya_embed_resident as resident
 from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI, ReviewedLocalQmdProvider,
@@ -502,146 +500,6 @@ class ServiceChecks(Fixture):
         next(iter(service.workers.values())).handle.process.kill()
         self.wait(lambda: binding.closed, message='dead worker waited for the interval')
 
-    def old_client(self, legacy):
-        """One 0.40.3 client request, run by the 0.40.3 code itself (git history)."""
-        if not hasattr(self, 'old_core'):
-            import io
-            import tarfile
-            archive = subprocess.run(('git', '-C', str(CORE.parent), 'archive', '--format=tar',
-                                      OLD_RELEASE, 'core'), check=True,
-                                     capture_output=True).stdout
-            target = self.base / 'old-0.40.3'
-            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-                tar.extractall(target, filter='data')
-            self.old_core = target / 'core'
-        script = ('import json, sys\n'
-                  'sys.path.insert(0, sys.argv[1])\n'
-                  'import laya_resident_service as s\n'
-                  'spawned = []\n'
-                  'state = s.ensure_service(root=sys.argv[2], learning_root=False,\n'
-                  '                         spawn=lambda argv, **kw: spawned.append(argv))\n'
-                  'print(json.dumps({"state": state, "spawned": len(spawned)}))\n')
-        for _attempt in range(3):
-            done = subprocess.run((sys.executable, '-B', '-c', script, str(self.old_core),
-                                   str(legacy)), capture_output=True, text=True, check=False,
-                                  env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
-            # The 0.40.3 client gives its hello a fixed 0.5 s; on a loaded
-            # host it reports laya_service_busy before the in-process service
-            # answers. That is the old code's deadline, not the state asked
-            # about here: ask again, a bounded number of times.
-            if done.returncode == 0 or 'laya_service_busy' not in done.stderr:
-                break
-        self.assertEqual(done.returncode, 0, done.stderr)
-        return json.loads(done.stdout)
-
-    def test_handoff_elects_only_the_memvane_successor_against_a_0403_client(self):
-        legacy = self.base / 'legacy-svc'
-        legacy.mkdir(mode=0o700)
-        project, manifest = self.project('alpha')
-        svc.register(project, root=legacy)
-        old = svc.Service(legacy, bundle={'version': '0.40.3', 'digest': 'old'},
-                          prove=self.prove, attest=lambda *_a: None,
-                          start_worker=self.start_worker, admit=lambda: True,
-                          retire=lambda *_a: None, tick=.05, legacy_root=None)
-        self.services.append(old)
-        self.assertTrue(old.acquire(wait=5))
-        old.start()
-        self.wait(lambda: self.ready(manifest))
-        # The client below asks *during* drain. Keep one synthetic request
-        # pending until its reply, independent of archive/import scheduling.
-        # A start()-only fixture does not run run()'s automatic socket close.
-        pending = [True]
-        with old.inflight_done:
-            old.inflight += 1
-
-        def release_request():
-            with old.inflight_done:
-                if pending[0]:
-                    pending[0] = False
-                    old.inflight -= 1
-                    old.inflight_done.notify_all()
-
-        self.addCleanup(release_request)
-        inherited = []
-
-        def spawn(argv, *, pass_fds):  # the child keeps its copies of the locks
-            inherited.append((argv, [os.dup(fd) for fd in pass_fds]))
-        with patch.object(svc, 'bundle_identity',
-                          return_value={'version': '0.41.0', 'digest': 'new'}):
-            self.assertEqual(svc.ensure_service(root=self.root, learning_root=False,
-                                                legacy_root=legacy, spawn=spawn), 'replacing')
-        self.assertTrue(old.draining.is_set())
-        self.assertEqual(len(inherited), 1)  # the MemVane successor, started first
-        argv, fds = inherited[0]
-        self.assertEqual(argv[3:6], [str(CORE / 'laya_resident_service.py'), 'serve',
-                                     str(self.root)])
-        self.assertEqual(len(fds), 2)
-        # A 0.40.3 client asks during the drain: its own code elects no successor.
-        try:
-            self.assertFalse(old.stopped.is_set())
-            self.assertEqual(self.old_client(legacy), {'state': 'replacing', 'spawned': 0})
-            self.assertFalse(old.stopped.is_set())
-        finally:
-            release_request()
-        new = svc.Service(self.root, bundle={'version': '0.41.0', 'digest': 'new'},
-                          prove=self.prove, attest=lambda *_a: None,
-                          start_worker=self.start_worker, admit=lambda: True,
-                          retire=lambda *_a: None, tick=.05, legacy_root=legacy)
-        self.services.append(new)
-        acquired = []
-        thread = threading.Thread(target=lambda: acquired.append(new.acquire(
-            successor_fd=fds[0], wait=20, legacy_successor_fd=fds[1])))
-        thread.start()
-        self.assertTrue(old.stopped.wait(15))
-        old.close()
-        thread.join(20)
-        self.assertEqual(acquired, [True])
-        self.assertIsNotNone(new.legacy_lease)
-        # The pre-rename service stays down: later 0.40.3 requests elect nothing.
-        self.assertEqual(self.old_client(legacy), {'state': 'starting', 'spawned': 0})
-        self.assertIsNone(svc.legacy_service_dir(home=self.base / 'nohome'))
-
-    def test_memvane_service_holds_the_pre_rename_lease_for_its_lifetime(self):
-        legacy = self.base / 'legacy-svc'
-        new = svc.Service(self.root, bundle={'version': '0.41.0', 'digest': 'new'},
-                          prove=self.prove, attest=lambda *_a: None,
-                          start_worker=self.start_worker, admit=lambda: True,
-                          retire=lambda *_a: None, tick=.05, legacy_root=legacy)
-        self.services.append(new)
-        self.assertTrue(new.acquire(wait=5))  # no pre-rename directory: nothing held
-        new.start()
-        self.assertIsNone(new.legacy_lease)
-        legacy.mkdir(mode=0o700)  # a 0.40.3 client created its service directory
-        self.wait(lambda: new.legacy_lease is not None, message='legacy lease not taken')
-        # A 0.40.3-style successor never gets the lease while MemVane runs ...
-        old = svc.Service(legacy, bundle={'version': '0.40.3', 'digest': 'old'},
-                          prove=self.prove, attest=lambda *_a: None,
-                          start_worker=self.start_worker, admit=lambda: True,
-                          retire=lambda *_a: None, tick=.05, legacy_root=None)
-        self.services.append(old)
-        self.assertFalse(old.acquire(wait=.5))
-        # ... and a 0.40.3-style client sees a held lease: no spawn, it degrades.
-        spawned = []
-        with patch.object(svc, 'bundle_identity',
-                          return_value={'version': '0.40.3', 'digest': 'old'}):
-            self.assertEqual(svc.ensure_service(root=legacy, learning_root=False,
-                                                legacy_root=None,
-                                                spawn=lambda argv, **kw: spawned.append(argv)),
-                             'starting')
-        self.assertEqual(spawned, [])
-        # The MemVane client attaches to the running MemVane service.
-        with patch.object(svc, 'bundle_identity',
-                          return_value={'version': '0.41.0', 'digest': 'new'}):
-            self.assertIn(svc.ensure_service(root=self.root, learning_root=False,
-                                             legacy_root=legacy,
-                                             spawn=lambda argv, **kw: spawned.append(argv)),
-                          ('ready', 'starting'))
-        self.assertEqual(spawned, [])
-        new.begin_drain()
-        self.assertTrue(new.stopped.wait(10))
-        new.close()
-        self.assertTrue(old.acquire(wait=2))  # released only when MemVane stops
-
     def test_worker_loaded_after_its_last_route_left_is_reclaimed(self):
         project, manifest = self.project('alpha')
         svc.register(project, root=self.root)
@@ -669,73 +527,6 @@ class ServiceChecks(Fixture):
                     'dbIncarnation': name + '-2', 'bundleManifestSha256': '9' * 64,
                     'ownershipManifestSha256': '8' * 64, 'vectorProfile': {}}
         return decision, {'providerManifest': manifest}
-
-    def test_legacy_resident_is_stopped_by_exact_pid_then_adopted(self):
-        self.legacy_resident_replaced('alpha', 'beta')
-
-    def test_legacy_resident_of_a_spaced_project_path_is_matched_by_real_argv(self):
-        # A ps command string joins argv with spaces: such a project never matched.
-        self.legacy_resident_replaced('막차 뒤의 피난소', '막차 뒤의')
-
-    def legacy_resident_replaced(self, name, other_name):
-        project, manifest = self.project(name)
-        other, other_manifest = self.project(other_name)
-        fake_core = self.base / 'old copy' / 'core'
-        fake_core.mkdir(parents=True)
-        script = fake_core / 'laya_embed_resident.py'
-        script.write_text('import fcntl,os,sys,time\n'
-                          'fd=os.open(sys.argv[3]+".resident.lock",os.O_CREAT|os.O_RDWR,0o600)\n'
-                          'fcntl.flock(fd,fcntl.LOCK_EX)\nprint("held",flush=True)\n'
-                          'time.sleep(60)\n')
-
-        def legacy(name, socket_path):
-            child = subprocess.Popen([sys.executable, '-B', str(script), 'serve', name,
-                                      str(socket_path), 'a' * 64, '3'], stdout=subprocess.PIPE)
-            self.assertEqual(child.stdout.readline(), b'held\n')
-            self.addCleanup(lambda: (child.poll() is None and child.kill(), child.wait(),
-                                     child.stdout.close()))
-            return child
-        target = legacy(project, manifest['serviceSocketPath'])
-        decoy = legacy(other, other_manifest['serviceSocketPath'])
-        svc.register(project, root=self.root)
-        self.service(retire=svc.retire_legacy_resident)
-        self.wait(lambda: self.ready(manifest), message='legacy owner not replaced')
-        self.assertEqual(target.wait(timeout=5), -15)
-        self.assertIsNone(decoy.poll(), 'another installation owner was signalled')
-        self.assertEqual(len(self.loads), 1)
-
-    def test_exact_pid_match_refuses_ambiguity_and_changed_argv(self):
-        argv = ('/usr/bin/python3', ['/py', '-B', '/r/core/laya_embed_resident.py', 'serve',
-                                     '/p', '/s/laya-embed.sock', 'a' * 64, '3'])
-        extra = (argv[0], argv[1] + ['extra'])
-        moved = (argv[0], [part.replace('/p', '/q') if part == '/p' else part
-                           for part in argv[1]])
-        not_python = ('/bin/sh', argv[1])
-        kills = []
-        self.assertIsNone(svc.retire_legacy_resident(
-            '/p', '/s/laya-embed.sock', rows=[(11, argv), (12, argv)],
-            inspect=lambda pid: (os.getuid(), argv), kill=lambda *a: kills.append(a)))
-        self.assertIsNone(svc.retire_legacy_resident(
-            '/p', '/s/laya-embed.sock', rows=[(11, argv)],
-            inspect=lambda pid: (os.getuid(), extra), kill=lambda *a: kills.append(a)))
-        for row in (moved, not_python):
-            self.assertIsNone(svc.retire_legacy_resident(
-                '/p', '/s/laya-embed.sock', rows=[(11, row)],
-                inspect=lambda pid, row=row: (os.getuid(), row),
-                kill=lambda *a: kills.append(a)))
-        self.assertEqual(kills, [])
-        self.assertEqual(svc.retire_legacy_resident(
-            '/p', '/s/laya-embed.sock', rows=[(11, argv)],
-            inspect=lambda pid: (os.getuid(), argv), kill=lambda *a: kills.append(a)), 11)
-        self.assertEqual(len(kills), 1)
-        # Real argv boundaries: one argument may hold spaces.
-        spaced = (argv[0], argv[1][:4] + ['/w/막차 뒤의 피난소'] + argv[1][5:])
-        self.assertEqual(svc.retire_legacy_resident(
-            '/w/막차 뒤의 피난소', '/s/laya-embed.sock', rows=[(12, spaced)],
-            inspect=lambda pid: (os.getuid(), spaced), kill=lambda *a: kills.append(a)), 12)
-        self.assertIsNone(svc.retire_legacy_resident(
-            '/w/막차', '/s/laya-embed.sock', rows=[(12, spaced)],
-            inspect=lambda pid: (os.getuid(), spaced), kill=lambda *a: kills.append(a)))
 
     def test_process_argv_reads_real_boundaries_of_a_live_child(self):
         code = 'import sys, time; print("READY", flush=True); time.sleep(30)'

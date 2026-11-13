@@ -36,10 +36,7 @@ const ALLOWED = {
   'docs/dev/contexts/skills.md': [/"name": "qmd-auto-context"/],
   'docs/dev/contexts/installation-naming.md': [/CREATED_BY_NAMES/, /managed-by: qmd-auto-context/,
                 /이전 이름과의 호환 shim/, /\.\.\.\/qmd-auto-context/, /CACHE_IDENTITIES/],
-  // CI fetches the immutable 0.40.3 compatibility fixture by pinned commit
-  // from the predecessor repository; that historical source keeps its name.
-  '.github/workflows/test.yml': [
-    /^ {10}git fetch --no-tags https:\/\/github\.com\/zbdulee\/qmd-auto-context\.git "\$LEGACY_FIXTURE_COMMIT"$/],
+
 };
 
 test('no user-facing earlier product name outside documented compatibility shims', () => {

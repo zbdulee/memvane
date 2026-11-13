@@ -701,9 +701,6 @@ print(json.dumps(result))'''
     # Runtime file pinning has its own checks (laya-embed-runtime,
     # laya-journal-v4). This synthetic manifest names no Laya runtime
     # generation, so it reads as one pinned generation here.
-    # This legacy v4 fixture has empty synthetic stores; bridge conversion and
-    # mandatory host evidence are tested with published v5-capable stores in
-    # laya-reader-upgrade-proof-checks.py.
     @mock.patch('laya_active_upgrade._prepare_v4_bridge', new=lambda *a, **kw: None)
     @mock.patch('laya_embed_runtime.sealed_files_sha256', new=lambda _path: 'f' * 64)
     def test_fresh_wiki_active_upgrade_uses_real_journal_and_ledger(self):
