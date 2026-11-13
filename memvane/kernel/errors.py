@@ -12,10 +12,35 @@ class IndexContractError(ValueError):
     pass
 
 
+_APPLE_SQLITE = None
+
+
+def _apple_sqlite():
+    """True when this process links Apple's libsqlite3 (CommonCrypto codec options)."""
+    global _APPLE_SQLITE
+    if _APPLE_SQLITE is None:
+        import sqlite3
+        try:
+            db = sqlite3.connect(':memory:')
+            try:
+                options = {row[0] for row in db.execute('PRAGMA compile_options')}
+            finally:
+                db.close()
+        except sqlite3.Error:
+            options = set()
+        _APPLE_SQLITE = bool(options & {'CCCRYPT256', 'CODEC=see-cccrypt', 'HAS_CODEC_RESTRICTED'})
+    return _APPLE_SQLITE
+
+
 def _query_only_uri(path):
-    """Open existing SQLite data for query_only, including macOS Python 3.9 WAL."""
-    mode = 'rw' if sys.platform == 'darwin' and sys.version_info[:2] == (3, 9) else 'ro'
-    return Path(path).as_uri() + '?mode=' + mode
+    """URI for reading existing SQLite data; callers set ``PRAGMA query_only``.
+
+    Apple's libsqlite3 (macOS system Python 3.9, and any Python linked to it)
+    cannot open a WAL database left without ``-wal``/``-shm`` with
+    ``mode=ro``, so there the file opens ``mode=rw``.
+    """
+    apple = sys.platform == 'darwin' and (sys.version_info[:2] == (3, 9) or _apple_sqlite())
+    return Path(path).as_uri() + '?mode=' + ('rw' if apple else 'ro')
 
 
 def _qmd_title(body, path):

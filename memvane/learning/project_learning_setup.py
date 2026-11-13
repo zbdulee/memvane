@@ -7,7 +7,7 @@ configuration after compare-and-swap checks, preserving new captures/candidates.
 """
 from __future__ import annotations
 import argparse
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import deepcopy
 import fcntl
 import hashlib
@@ -23,6 +23,7 @@ import tempfile
 import uuid
 import math
 
+from memvane.kernel.errors import _query_only_uri
 from memvane.learning.context_learning import project_scope, learning_profile
 from memvane.learning.context_learning.dataset import read_private_json
 from memvane.learning.context_learning.inference_identity import code_identity, file_sha
@@ -566,8 +567,8 @@ def _backup(project,root,plan):
     for source,destination in copies:
         destination.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
         if source.name.endswith('.sqlite3'):
-            with sqlite3.connect(source.as_uri()+'?mode=ro',uri=True,timeout=1) as incoming:
-                with sqlite3.connect(destination) as outgoing:incoming.backup(outgoing)
+            with closing(sqlite3.connect(_query_only_uri(source),uri=True,timeout=1)) as incoming,closing(sqlite3.connect(destination)) as outgoing:
+                incoming.execute('PRAGMA query_only=ON');incoming.backup(outgoing)
             destination.chmod(0o600)
         else:_bytes(destination,source.read_bytes())
         hashes[str(destination.relative_to(backup))]=file_sha(destination)

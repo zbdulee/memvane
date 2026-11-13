@@ -64,7 +64,7 @@
       "memvane/learning/context_learning/history_activation.py": 1083,
       "memvane/learning/context_learning/inference_service.py": 1001,
       "memvane/learning/context_learning/shared.py": 2319,
-      "memvane/learning/project_learning_setup.py": 922,
+      "memvane/learning/project_learning_setup.py": 923,
       "memvane/provider/embed_runtime.py": 1210,
       "memvane/registry/memvane_registry.py": 1000,
       "memvane/resident/resident_service.py": 1629,
