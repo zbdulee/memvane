@@ -56,7 +56,7 @@ from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.wiki.verify.intent_ack import _supersede_compile_intent
 from memvane.wiki.workspace import wiki_activity_log
-from memvane.wiki.card import wiki_markers
+from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir

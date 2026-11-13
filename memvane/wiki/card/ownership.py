@@ -1,7 +1,7 @@
 """Frontmatter and managed-card ownership checks."""
 from __future__ import annotations
 
-from memvane.wiki.card import yaml_scalars, wiki_markers
+from memvane.wiki.card import yaml_scalars, types as wiki_markers
 from memvane.wiki.card.types import FRONTMATTER_RE, AUTO_BLOCK_RE
 
 def unquote_yaml(value: str) -> str:

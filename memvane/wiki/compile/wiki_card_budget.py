@@ -354,7 +354,7 @@ def summary_budget() -> int:
     frontmatter: banner, auto-block markers (16-hex ``sourceHash``) and the
     ``## Summary`` heading.
     """
-    from memvane.wiki.card import wiki_markers
+    from memvane.wiki.card import types as wiki_markers
     scaffold = '\n'.join(['', wiki_markers.AUTO_DISCLAIMER, '',
                           wiki_markers.AUTO_START_TEMPLATE.format(source_hash='0' * 16),
                           '## Summary', '', wiki_markers.AUTO_END, ''])

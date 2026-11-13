@@ -69,7 +69,7 @@ def _verified_wiki_locations(row: dict, decision: dict,
                              current_source: bool = True,
                              reasons: dict | None = None) -> tuple[str, ...] | None:
     from memvane.wiki.card import wiki_card
-    from memvane.wiki.card import wiki_markers
+    from memvane.wiki.card import types as wiki_markers
     from memvane.wiki.card import source_spans
     from memvane.wiki.card import wiki_freshness
     from memvane.wiki.card import yaml_scalars

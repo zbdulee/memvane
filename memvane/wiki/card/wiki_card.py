@@ -2,7 +2,7 @@
 
 Frontmatter parsing, source resolution, body extraction and the recall
 selection log live here. The module imports only the standard library and
-other stdlib-only card modules (``wiki_markers``, ``wiki_freshness``,
+other stdlib-only card modules (``types``, ``wiki_freshness``,
 ``yaml_scalars``, ``resolve_paths``).
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ import re
 
 from memvane.settings import api as qmd_resolve_paths
 from memvane.wiki.card import wiki_freshness
-from memvane.wiki.card import wiki_markers
+from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.card import yaml_scalars
 
 # A card may cite more than one compiler-owned source. Hashing runs in a
@@ -156,7 +156,7 @@ def _strip_leading_summary_heading(text: str) -> str:
 def _auto_block_bounds(body: str) -> tuple[int, int, int, bool]:
     """(auto 내용 시작, auto 내용 끝, 수동 섹션 시작, 종료 마커를 봤는지) — 선형 find 스캔.
 
-    마커 리터럴은 core/wiki_markers.py가 SSOT다(쓰기 쪽 wiki_compile과 공유).
+    마커 리터럴은 card/types.py가 SSOT다(쓰기 쪽 wiki_compile과 공유).
     네 번째 값은 "auto 블록이 온전히 창 안에 들어왔는지"다 — 읽기 창에서 잘렸는지
     판정하는 데 쓴다.
 
@@ -350,7 +350,7 @@ def parse_frontmatter_scalars(block: str, issues: dict | None = None) -> dict:
     한 줄에도 `{}, False`로 **fail-closed** 한다(쓰기 경로에는 옳다). recall은 읽기
     경로라 조금 어긋난 frontmatter에서도 status/title을 살려 fail-open해야 하고,
     wiki_compile은 urllib·wiki_dedup_judge를 끌고 와 blocking hook에 import 비용을
-    더한다. 마커 리터럴은 wiki_markers, **인용/이스케이프 규칙은 yaml_scalars**로 공유한다
+    더한다. 마커 리터럴은 card/types.py, **인용/이스케이프 규칙은 yaml_scalars**로 공유한다
     — 규칙이 갈린 것이 title 오염의 직접 원인이었다.
     `issues`가 주어지면 파싱하지 못한 키의 사유를 담는다(진단용).
     """

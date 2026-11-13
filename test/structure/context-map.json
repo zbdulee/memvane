@@ -1214,11 +1214,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/wiki/card/wiki_markers.py": {
-      "context": "wiki/card",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/wiki/card/wiki_source_missing.py": {
       "context": "wiki/card",
       "layer": "adapter",

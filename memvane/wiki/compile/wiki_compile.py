@@ -24,7 +24,7 @@ from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.settings import api as source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
-from memvane.wiki.card import wiki_markers
+from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
 from memvane.wiki.card.api import parse_frontmatter, auto_writable_text
 from memvane.wiki.card import api as yaml_scalars
@@ -104,7 +104,7 @@ def secret_matches(text: str) -> list[re.Match]:
 def has_secret_like(text: str) -> bool:
     return bool(secret_matches(text))
 TRANSCRIPT_RE = re.compile(r"(?im)^\s*(user|assistant|system|human|ai)\s*:")
-# 마커 리터럴은 core/wiki_markers.py가 SSOT다 — recall의 읽기 스캐너와 같은 문자열을
+# 마커 리터럴은 card/types.py가 SSOT다 — recall의 읽기 스캐너와 같은 문자열을
 # 쓰게 해서 형식 변경이 한쪽만 깨는 일을 막는다(엄격도 차이는 그 모듈 docstring 참고).
 from memvane.wiki.card.types import AUTO_START_RE, AUTO_BLOCK_RE, FRONTMATTER_RE
 
