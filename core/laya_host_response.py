@@ -970,6 +970,8 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     transition raise. The returned codes (resource_deferred, retry_wait,
     preparing, wake_failed) leave recall serving its lexical lists.
     """
+    if not _writer_floor_allowed(proof):
+        return 'writer_floor'
     from laya_install_journal import verify_selected_route
     from laya_embed_resident import (_TRANSIENT_FAILURES, _failure_decision,
                                      read_owner_state)
@@ -1555,6 +1557,8 @@ def _recall_sync_wake(project_root: str, **kwargs):
     """
     import runtime_work
     state = _RECALL_STATE.get()
+    if state is not None and state.get('writer_allowed') is False:
+        return None
     if state is None:
         return runtime_work.request('laya-sync', project_root, **kwargs)
     wakes = state['wakes']
@@ -1666,6 +1670,13 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
     # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
+    allowed = _writer_floor_allowed(proof)
+    if action == 'recall':
+        state = _RECALL_STATE.get()
+        if state is not None:
+            state['writer_allowed'] = allowed
+    elif not allowed and action in ('compile', 'update', 'update-queued', 'index', 'file-change-event'):
+        return _writer_floor_response(action, host)
     if action == "file-change-event" and not _successful_bash(payload):
         # A failed or background Bash still fires the host event.
         if verify_selected_route(decision) != proof:
@@ -1886,6 +1897,24 @@ def _request_worktree_sync(main: dict, proof: dict, recheck) -> None:
         _fail('selected_sync_enqueue_failed')
 
 
+def _writer_floor_allowed(proof):
+    from memvane_version import writer_floor_allows
+    try:
+        return writer_floor_allows(proof['writerFloor'])
+    except (OSError, KeyError, TypeError, ValueError):
+        _fail('writer_floor_invalid')
+
+
+def _writer_floor_response(action, host):
+    if action not in ('update', 'update-queued'):
+        return {}
+    notice = '[memvane] 이 호스트의 플러그인을 올려 주세요.'
+    if host == 'hermes':
+        return {'status': 'writer_floor', 'notice': notice}
+    return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
+                                   'additionalContext': notice}}
+
+
 def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> dict:
     """Serve the linked worktree's own view and offer main-owner sync wakes."""
     from laya_install_journal import verify_selected_route as recheck
@@ -1895,6 +1924,13 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     proof = recheck(main)
     if proof.get('productRouteAllowed') is not True:
         _fail('worktree_selection_unapproved')
+    allowed = _writer_floor_allowed(proof)
+    if action == 'recall':
+        state = _RECALL_STATE.get()
+        if state is not None:
+            state['writer_allowed'] = allowed
+    elif not allowed and action in ('compile', 'update', 'update-queued', 'index', 'file-change-event'):
+        return _writer_floor_response(action, host)
     _trace_fields(degraded='worktree')
     if action == 'recall':
         try:
