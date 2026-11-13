@@ -2028,14 +2028,6 @@ def main(argv=None):
     if not service.acquire(successor_fd=successor_fd,
                            legacy_successor_fd=legacy_successor_fd):
         return 75
-    if learning_root is not None:
-        # Elected before a learning-state move, holding the lease after it:
-        # serve the moved root, never the old one.
-        from context_learning.state_move import current_root
-        moved = current_root(learning_root)
-        if moved != learning_root:
-            service.learning_root = moved
-            service.learning = _learning_host(moved)
     try:
         service.run()
     except Exception:
