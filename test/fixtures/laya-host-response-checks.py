@@ -314,7 +314,7 @@ class ResponseChecks(unittest.TestCase):
             enqueue.assert_called_once_with({**event, 'engine': 'codex'})
 
     def test_selected_session_start_wakes_pending_compile_queue(self):
-        import compile_paths
+        from memvane.wiki.workspace import compile_paths
         import laya_install_journal
         import runtime_work
         from memvane.wiki.card import wiki_freshness

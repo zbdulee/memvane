@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import compile_paths as cp
+from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
 

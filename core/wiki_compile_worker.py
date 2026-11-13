@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.kernel.resource_deferred import ResourceDeferred
-import compile_paths as cp
+from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
@@ -695,7 +695,7 @@ def orientation(root: Path, wiki_root: Path, config: dict, bound) -> dict:
     Nothing here reads the project wiki's root files; the card catalog is the
     selected memvane-db index (`similarPages`).
     """
-    import wiki_activity_log
+    from memvane.wiki.workspace import wiki_activity_log
     return {
         "schema": card_rules(card_rules_preset(root, wiki_root, config)),
         "logTail": wiki_activity_log.tail(root, bound),

@@ -244,7 +244,7 @@ class MeasureChecks(unittest.TestCase):
 
     def test_reason_codes_survive_the_event_log(self):
         from memvane.diagnostics import event_log
-        import wiki_activity_log
+        from memvane.wiki.workspace import wiki_activity_log
         self.assertEqual(wiki_activity_log.REASON_CODES['card_measure'], budget.MEASURE_REASONS)
         self.assertEqual(len(set(budget.MEASURE_REASONS)), len(budget.MEASURE_REASONS))
         for codes in wiki_activity_log.REASON_CODES.values():

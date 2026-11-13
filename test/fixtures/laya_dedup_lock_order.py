@@ -10,7 +10,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'core'))
-import compile_paths as cp
+from memvane.wiki.workspace import compile_paths as cp
 
 
 def hold_writer(root, ready, release):

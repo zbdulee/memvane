@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path.cwd() / 'core'))
-import compile_paths as cp
+from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import config as qmd_config
 import wiki_compile_enqueue as E
 import wiki_source_intent as I

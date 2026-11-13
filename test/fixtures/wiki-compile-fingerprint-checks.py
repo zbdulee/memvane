@@ -370,7 +370,7 @@ class FingerprintChecks(unittest.TestCase):
         import contextlib
         import io
         import laya_host_response
-        import wiki_activity_log
+        from memvane.wiki.workspace import wiki_activity_log
         import wiki_compile
         project = Project(self.base, 'schema3-queue', git_repo=True)
         self.assertEqual(self.run_job(project, project.binding()), (True, False, []))
@@ -399,7 +399,7 @@ class FingerprintChecks(unittest.TestCase):
         import contextlib
         import io
         import laya_host_response
-        import wiki_activity_log
+        from memvane.wiki.workspace import wiki_activity_log
         import wiki_compile
         project = Project(self.base, 'writer-reader-busy', git_repo=True)
         self.assertEqual(self.run_job(project, project.binding()), (True, False, []))

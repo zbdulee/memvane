@@ -642,7 +642,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         import laya_host_response as response
         import laya_wiki_discovery as discovery
         import laya_external_edits
-        import compile_paths as cp
+        from memvane.wiki.workspace import compile_paths as cp
         import runtime_work
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected()
@@ -672,7 +672,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         import laya_wiki_discovery as discovery
         import laya_external_edits
         import wiki_compile_enqueue as enqueue
-        import compile_paths as cp
+        from memvane.wiki.workspace import compile_paths as cp
         import runtime_work
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected()
@@ -708,7 +708,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_legacy_v4_compile_edit_with_owned_enqueue_wakes(self):
         import laya_host_response as response
-        import compile_paths as cp
+        from memvane.wiki.workspace import compile_paths as cp
         import runtime_work
         with self._compile_warm(),self.seed.authority():
             self.publish_v4()
@@ -828,7 +828,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         import laya_external_edits
         import laya_wiki_discovery as discovery
         import runtime_work
-        import compile_paths as cp
+        from memvane.wiki.workspace import compile_paths as cp
         with self.fixture.F.warm(),self.seed.authority():
             decision,proof=self.selected()
             state,_grants,_lock=discovery._paths(decision)
@@ -918,7 +918,7 @@ class SyncFirstProofChecks(unittest.TestCase):
     def test_external_edit_inbox_enqueues_with_existing_sync_owner(self):
         import laya_external_edits as external
         import laya_wiki_discovery as discovery
-        import compile_paths as cp
+        from memvane.wiki.workspace import compile_paths as cp
         import runtime_work
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected()

@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-import scan_state
+from memvane.wiki.workspace import scan_state
 
 REQUEST_VERSION = 1
 REQUEST_SUFFIX = "-wiki-lifecycle-request.json"

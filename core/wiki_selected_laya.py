@@ -268,7 +268,7 @@ def _run(project: Path):
     if bound is None or bound[0]['projectRoot'] != str(project):
         return {'state': 'deferred', 'reason': 'selected_compile_route_unavailable'}
     from wiki_compile_enqueue import _safe_queue_path
-    import compile_paths as cp
+    from memvane.wiki.workspace import compile_paths as cp
     source = _safe_queue_path(project, cp.rel(cp.SOURCE_QUEUE))
     verify = _safe_queue_path(project, cp.rel(cp.VERIFY_QUEUE))
     if source is None or verify is None:

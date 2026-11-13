@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import compile_paths as cp
+from memvane.wiki.workspace import compile_paths as cp
 from memvane.wiki.card import yaml_scalars
 
 FRESH = "fresh"

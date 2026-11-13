@@ -1044,7 +1044,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     result = runtime_work.request("laya-sync", decision["projectRoot"], **defer)
     from laya_host_rules import check_compile_queue
     if check_compile_queue('collections' in decision, action):
-        import compile_paths
+        from memvane.wiki.workspace import compile_paths
         from memvane.wiki.card import wiki_freshness
         root = Path(decision['projectRoot'])
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)

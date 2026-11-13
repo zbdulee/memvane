@@ -135,7 +135,7 @@ def log(message: str) -> None:
 
 
 def snapshot_path(project_key: str) -> Path:
-    import scan_state
+    from memvane.wiki.workspace import scan_state
     return scan_state.state_dir() / f"{project_key}-wiki-dedup.json"
 
 
@@ -249,10 +249,10 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 def run(cwd: str) -> dict:
     """One bounded scan for the project at ``cwd``; returns a summary."""
-    import compile_paths as cp
+    from memvane.wiki.workspace import compile_paths as cp
     from memvane.settings import project_dir
     from memvane.settings import config as qmd_config
-    import scan_state
+    from memvane.wiki.workspace import scan_state
     import wiki_selected_laya
 
     result = {"state": "skipped", "cards": 0, "compared": 0, "queued": 0,

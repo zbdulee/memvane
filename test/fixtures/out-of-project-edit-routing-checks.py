@@ -28,7 +28,7 @@ from unittest.mock import patch
 FIXTURES = Path(__file__).resolve().parent
 sys.path.insert(0, str(FIXTURES.parents[1] / 'core'))
 sys.path.insert(1, str(FIXTURES))
-import compile_paths  # noqa: E402
+from memvane.wiki.workspace import compile_paths  # noqa: E402
 import laya_embed_resident  # noqa: E402
 import laya_host_response as response  # noqa: E402
 import laya_index_host_route as routes  # noqa: E402

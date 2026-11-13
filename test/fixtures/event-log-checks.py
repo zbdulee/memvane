@@ -158,7 +158,7 @@ class WriterChecks(Base):
                          ('refused', 'selected_route_changed', 's3'))
 
     def test_wiki_card_writes_and_retirement(self):
-        import wiki_activity_log
+        from memvane.wiki.workspace import wiki_activity_log
         import wiki_source_retire
         bound = (self.decision, {})
         wiki_activity_log.append('/p', 'created', 'concepts/a.md', 'A', bound, reason='compile')

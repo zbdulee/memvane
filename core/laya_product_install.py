@@ -565,7 +565,7 @@ def finalize_initial_build(*, project_root, state_root):
     import laya_product_sync_worker as sync
     from memvane.store import blob_values as values
     from memvane.store import view_values as view_values
-    import wiki_mutation_lock
+    from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
     from memvane.store.blob_store import _regular
     from laya_ledger_common import _read_json, _write
@@ -719,7 +719,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     import laya_product_sync_worker as sync
     import laya_wiki_discovery as discovery
     from memvane.settings import project_dir
-    import wiki_mutation_lock
+    from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
     from laya_index_host_route import _classify_v4, SELECTION_SCHEMA_V1
     from laya_ledger_common import _read_json, _write
@@ -850,7 +850,7 @@ def _restore_v1_locked(project, state):
     from laya_ledger_common import _read_json, _write, _fsync_dir
     from laya_reader_lease import reader_lifetime
     from sync_owner_lock import sync_owner
-    import wiki_mutation_lock
+    from memvane.wiki.workspace import wiki_mutation_lock
     with build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')

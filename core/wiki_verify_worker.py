@@ -55,10 +55,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import wiki_activity_log
+from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.card import wiki_markers
-import wiki_mutation_lock
-import compile_paths as cp
+from memvane.wiki.workspace import wiki_mutation_lock
+from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
 import wiki_compile as wc

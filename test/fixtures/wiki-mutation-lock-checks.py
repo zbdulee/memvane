@@ -8,7 +8,7 @@ import time
 
 sys.path.insert(0, str(Path.cwd() / 'core'))
 import wiki_compile as wc
-import wiki_mutation_lock as wl
+from memvane.wiki.workspace import wiki_mutation_lock as wl
 
 with tempfile.TemporaryDirectory(prefix='qmd-wiki-mutation-lock-') as temporary:
     root = Path(temporary)

@@ -17,7 +17,7 @@ import tempfile
 
 from memvane.settings import config as qmd_config
 from memvane.settings import project_dir
-import wiki_mutation_lock
+from memvane.wiki.workspace import wiki_mutation_lock
 
 
 def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
