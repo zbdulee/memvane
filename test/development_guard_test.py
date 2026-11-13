@@ -203,7 +203,8 @@ class GuardChecks(unittest.TestCase):
         policy=guard.Policy()
         sample={'total_bytes':10000,'available_percent':70,'pressure':'normal',
                 'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
-        for changes,reason in [({'pressure':'warning'},'os_memory_pressure'),
+        self.assertIsNone(guard.violation(policy,{**sample,'pressure':'warning'},[],0))
+        for changes,reason in [({'pressure':'critical'},'os_memory_pressure'),
                 ({'available_percent':34},'relative_available'),
                 ({'available_percent':None},'monitor_unavailable'),
                 ({'swap_bytes':101},'swap_growth'),({'load_per_cpu':2},'system_load')]:
@@ -221,7 +222,8 @@ class GuardChecks(unittest.TestCase):
     def test_actual_model_test_keeps_resource_limits_and_sequential_launcher(self):
         sample={'total_bytes':10000,'available_percent':70,'pressure':'warning',
                 'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
-        self.assertEqual(guard.violation(guard.Policy(),sample,[],0),'os_memory_pressure')
+        self.assertIsNone(guard.violation(guard.Policy(),sample,[],0))
+        self.assertEqual(guard.violation(guard.Policy(),{**sample,'available_percent':34},[],0),'relative_available')
         sample['pressure']='normal'
         self.assertEqual(guard.violation(guard.Policy(),sample,[proc(500,1,500,cpu=150)],0),'tree_cpu')
         self.assertEqual(guard.command_for('model-test',['node','--test','one.test.mjs']),
@@ -277,7 +279,7 @@ class GuardChecks(unittest.TestCase):
             os.chmod(keep,0o755)
             self.assertFalse(guard.usable_test_runtime_root(os.path.realpath(keep)))
 
-    def test_warning_allows_mock_job_but_refuses_actual_model_before_launch(self):
+    def test_low_available_allows_mock_job_but_refuses_actual_model(self):
         from types import SimpleNamespace
         sample={'total_bytes':10000,'available_percent':20,'pressure':'warning',
                 'swap_bytes':200,'load_per_cpu':2,'cpu_count':2}

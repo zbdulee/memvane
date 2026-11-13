@@ -232,7 +232,7 @@ def violation(policy,sample,rows,baseline_swap,*,calibration_policy=None,report=
     if sample['total_bytes']<=0 or sample['cpu_count']<=0 or not 0<=sample['available_percent']<=100:return 'monitor_unavailable'
     if sample.get('pressure') not in ('normal','warning','critical'):return 'monitor_unavailable'
     if calibration_policy is None:
-        if sample['pressure']!='normal':return 'os_memory_pressure'
+        if sample['pressure']=='critical':return 'os_memory_pressure'
         if sample['available_percent']<policy.min_available_percent:return 'relative_available'
     else:
         if sample['pressure']=='critical':return 'os_memory_pressure'

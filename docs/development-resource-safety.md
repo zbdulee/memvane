@@ -79,7 +79,7 @@ small Python-only safety tests, which perform no real host probes or model work.
 The 35% available-memory proposal is conservative and uncalibrated. On a 24 GiB
 machine that is approximately 8.4 GiB, but macOS `memory_pressure -Q` measures a
 different notion of headroom than free pages alone. Admission and continuation
-also require normal OS memory pressure, swap growth no greater than 1% of
+also reject critical OS memory pressure, require swap growth no greater than 1% of
 physical RAM since admission, and load per CPU no greater than 0.75.
 
 The aggregate observed child tree is limited to 15% of physical RAM
