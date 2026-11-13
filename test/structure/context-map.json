@@ -591,16 +591,6 @@
       "layer": "adapter",
       "pinned": true
     },
-    "core/laya_index_sync.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": true
-    },
-    "core/laya_index_vector.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": true
-    },
     "core/laya_initial_build.py": {
       "context": "install",
       "layer": "adapter",
@@ -1151,8 +1141,6 @@
     "core/laya_index_host_route.py",
     "core/laya_index_runtime.py",
     "core/laya_index_source_port.py",
-    "core/laya_index_sync.py",
-    "core/laya_index_vector.py",
     "core/laya_initial_build.py",
     "core/laya_install_journal.py",
     "core/laya_legacy_journal_probe.py",

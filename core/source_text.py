@@ -2,7 +2,7 @@
 
 This module is the single place that decides which raw source files count as
 text documents and which directory names are never walked. The raw scan
-(`laya_index_source_port`, `laya_source_catalog`), the compile enqueue gate and
+(`source_scan`), the compile enqueue gate and
 the compile worker all read these values. The embed provider and worker are
 not gated here: they are provider-reviewed artifacts, and the memvane-db index embeds
 only ``.md`` wiki cards.

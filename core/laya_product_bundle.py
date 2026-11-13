@@ -478,7 +478,6 @@ def _plugin_paths(source, commit_id, *, required_paths=None):
     except UnicodeError as exc:
         raise BundleEvidenceError('invalid_commit_path') from exc
     required = ({'hooks/run-hook', 'core/laya_index_runtime.py',
-                 'core/laya_index_vector.py',
                  'core/laya_local_embed_provider.py',
                  'core/laya_local_embed_service.py',
                  'core/laya_local_embed_worker.mjs',
@@ -486,7 +485,6 @@ def _plugin_paths(source, commit_id, *, required_paths=None):
                  'core/laya_index_host_route.py', 'core/laya_host_response.py',
                  'core/laya_initial_build.py',
                  'core/laya_product_sync_worker.py',
-                 'core/laya_index_sync.py',
                  'core/laya_source_catalog.py', 'core/laya_index_capacity.py',
                  'core/laya_product_install.py',
                  'core/laya_product_bundle.py', 'core/laya_install_journal.py',
@@ -941,7 +939,6 @@ def inspect_full_plugin_candidate(plugin_root):
     profile = validate_vector_profile(manifest.get('vectorProfile'),
                                       manifest['artifacts'])
     if (not {'hooks/run-hook', 'core/laya_index_runtime.py',
-             'core/laya_index_vector.py',
              'core/laya_local_embed_provider.py',
              'core/laya_local_embed_service.py',
              'core/laya_local_embed_worker.mjs',
@@ -949,7 +946,6 @@ def inspect_full_plugin_candidate(plugin_root):
              'core/laya_index_host_route.py', 'core/laya_host_response.py',
              'core/laya_initial_build.py',
              'core/laya_product_sync_worker.py',
-             'core/laya_index_sync.py',
              'core/laya_source_catalog.py', 'core/laya_index_capacity.py',
              'core/laya_product_install.py',
              'core/laya_product_bundle.py', 'core/laya_install_journal.py',
