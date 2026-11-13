@@ -70,7 +70,7 @@ class SyncLeaseChecks(unittest.TestCase):
             with closing(sqlite3.connect(path)) as db:
                 db.execute('CREATE TABLE fixture(value TEXT)');db.execute("INSERT INTO fixture VALUES('preserved')");db.commit()
             path.chmod(0o600)
-        self.lock=Path(str(self.queue)+'.sync.lock')
+        self.lock=self.home/'sync.lock'
     def probe(self):
         result=subprocess.run([sys.executable,'-B','-I','-c',PROBE,str(self.lock)],
             encoding='utf8',capture_output=True,timeout=5)
