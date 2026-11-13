@@ -1267,9 +1267,6 @@ def close_connection(db, *, deadline=None):
     return False
 
 
-def create_sidecar_owned(component, *, identity=None, deadline):
-    from laya_sidecar_create import create_sidecar_owned as create
-    return create(component, identity=identity, deadline=deadline)
 
 
 def _local_pending():
