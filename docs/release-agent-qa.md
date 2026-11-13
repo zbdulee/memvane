@@ -1053,7 +1053,7 @@ Scenarios respect domain ownership. Two rules apply:
 
 | Changed paths | Rerun in addition to core smoke |
 |---|---|
-| `memvane/host/host_response.py`, `memvane/store/view_reader.py`, `memvane/wiki/card/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
+| `memvane/host/host_response.py`, `memvane/store/view/view_reader.py`, `memvane/wiki/card/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
 | `memvane/sync/sync_owner_lock.py`, `memvane/sync/product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
 | `memvane/wiki/**`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `memvane/learning/**` | RES-01, RES-02 |
