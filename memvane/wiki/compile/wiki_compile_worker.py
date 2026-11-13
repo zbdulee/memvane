@@ -30,7 +30,7 @@ from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import api as source_text
-from memvane.settings.collection_match import select_collections
+from memvane.settings.api import select_collections
 from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from memvane.wiki.intake.wiki_compile_enqueue import _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
@@ -321,7 +321,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
                               if item["role"] == "wiki"))
         if wiki_root.is_symlink() or wiki_root.resolve(strict=True) != wiki_root:
             return None
-        from memvane.settings import source_label
+        from memvane.settings import api as source_label
         label = source_label.decision_resolver(decision)
 
         def same_label(item, revision):
@@ -906,7 +906,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         return True, False, []
     skip_paths = qmd_config.generation_skip_paths(config, selected_route)
     if skip_paths is not None:
-        from memvane.settings.source_exclusion import excluded_source
+        from memvane.settings.api import excluded_source
         if excluded_source(rel, skip_paths):
             append_jsonl(cpath, bounded_failure('skipped', job, 'source_folder_excluded'))
             return True, False, []

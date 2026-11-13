@@ -368,7 +368,7 @@ def _idle_locked(project: Path, source: Path, verify: Path, bound):
     # A selected policy may exclude a source after its old refresh event was
     # recorded. Keep the ledger for reversible re-enrollment, but do not hold
     # the selected compile wake open for a source the worker must not compile.
-    from memvane.settings.source_exclusion import excluded_source
+    from memvane.settings.api import excluded_source
     active_unresolved = [item for item in unresolved if not excluded_source(
         item['sourcePath'], bound[0]['recallSettings']['skipPaths'])]
     if active_unresolved:

@@ -83,3 +83,44 @@ def is_denied_source_path(*args, **kwargs):
 def is_wiki_meta_page(*args, **kwargs):
     from memvane.settings.source_text import is_wiki_meta_page as implementation
     return implementation(*args, **kwargs)
+
+
+def allowed_roots(*args, **kwargs):
+    from memvane.settings.resolve_paths import allowed_roots as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def contained_path(*args, **kwargs):
+    from memvane.settings.resolve_paths import contained_path as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def excluded_source(*args, **kwargs):
+    from memvane.settings.source_exclusion import excluded_source as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def card_sources_allowed(*args, **kwargs):
+    from memvane.settings.source_exclusion import card_sources_allowed as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def select_collections(*args, **kwargs):
+    from memvane.settings.collection_match import select_collections as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def resolver(*args, **kwargs):
+    from memvane.settings.source_label import resolver as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def decision_resolver(*args, **kwargs):
+    from memvane.settings.source_label import decision_resolver as implementation
+    return implementation(*args, **kwargs)

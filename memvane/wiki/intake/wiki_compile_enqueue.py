@@ -21,7 +21,7 @@ from memvane.settings import config as qmd_config
 from memvane.wiki.intake import posttool
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.intake import wiki_source_intent as intent
-from memvane.settings.collection_match import select_collections
+from memvane.settings.api import select_collections
 from memvane.settings import api as source_text
 
 
@@ -356,7 +356,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
     selected_route = wiki_selected_laya.selected(Path(project_root))
     skip_paths = qmd_config.generation_skip_paths(config, selected_route)
     if skip_paths is not None:
-        from memvane.settings.source_exclusion import excluded_source
+        from memvane.settings.api import excluded_source
         if excluded_source(rel_path, skip_paths):
             return None
     record = {

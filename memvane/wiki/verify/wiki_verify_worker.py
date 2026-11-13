@@ -1057,7 +1057,7 @@ def process_verify_job(
         # Old verify jobs may outlive a newly selected source-folder policy.
         # Do not send an excluded raw source or a mixed-source card to a host
         # model; keep its generated file recoverable and unverified.
-        from memvane.settings.source_exclusion import card_sources_allowed, excluded_source
+        from memvane.settings.api import card_sources_allowed, excluded_source
         skips = selected_route[0]['recallSettings']['skipPaths']
         if skips:
             job_revisions = job.get('sourceRevisions')

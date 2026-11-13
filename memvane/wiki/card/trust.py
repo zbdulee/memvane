@@ -73,7 +73,7 @@ def _verified_wiki_locations(row: dict, decision: dict,
     from memvane.wiki.card import source_spans
     from memvane.wiki.card import wiki_freshness
     from memvane.wiki.card import yaml_scalars
-    from memvane.settings.source_exclusion import excluded_source
+    from memvane.settings.api import excluded_source
     body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
     if not body.startswith('---\n'):
         return _rejected(reasons, 'frontmatter_missing')

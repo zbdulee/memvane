@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from memvane.wiki.card import wiki_card
-from memvane.settings import resolve_paths as qmd_resolve_paths
+from memvane.settings import api as qmd_resolve_paths
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import wiki_freshness
 

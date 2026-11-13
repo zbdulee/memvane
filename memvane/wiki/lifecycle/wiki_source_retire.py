@@ -86,7 +86,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
     wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return {'state': 'blocked', 'survivors': []}
-    from memvane.settings import source_label
+    from memvane.settings import api as source_label
     label = source_label.resolver(root, config)
 
     def key(item):

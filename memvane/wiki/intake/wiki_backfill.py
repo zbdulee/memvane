@@ -51,7 +51,7 @@ def _load(decision):
 def _eligible(decision, snapshot, config):
     """Mirror source admission's cheap path filters; enqueue re-proves each file."""
     from memvane.settings import api as source_text
-    from memvane.settings.source_exclusion import excluded_source
+    from memvane.settings.api import excluded_source
     from memvane.wiki.intake import wiki_discovery as d
     _scope, _inc, _queue, roots, raw = d._binding(decision)
     project = Path(decision['projectRoot'])

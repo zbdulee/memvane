@@ -1548,7 +1548,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     from memvane.wiki.workspace import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
-        from memvane.settings.source_exclusion import excluded_source
+        from memvane.settings.api import excluded_source
         skips = selected[0]['recallSettings']['skipPaths']
         sources = candidate.get('sources')
         source_paths = []
@@ -1565,7 +1565,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     identity_index = build_identity_index(wiki_root)
     target, target_reason, target_matches = resolve_target(root, wiki_root, candidate, suggested_type, identity_index)
     if selected is not None and target is not None and target.exists():
-        from memvane.settings.source_exclusion import card_sources_allowed
+        from memvane.settings.api import card_sources_allowed
         try:
             allowed_target = card_sources_allowed(
                 target.read_text(encoding='utf-8'), selected[0]['recallSettings']['skipPaths'])

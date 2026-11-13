@@ -24,7 +24,7 @@ import time
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import api as source_text
 from memvane.wiki.card import wiki_card
-from memvane.settings.source_exclusion import card_sources_allowed
+from memvane.settings.api import card_sources_allowed
 
 REFRESH_FILES = 512
 REFRESH_BYTES = 8 * 1024 * 1024
