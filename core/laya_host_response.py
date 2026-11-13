@@ -1287,12 +1287,16 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     if not isinstance(manifest, dict):
         _fail('vector_provider_missing')
     vector_off: list[str] = []
-    try:
-        provider = ReviewedLocalQmdProvider(manifest)
-    except IndexContractError as exc:
+    if proof.get('providerAvailable') is False:
         provider = None
-        vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
-            r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
+        vector_off.append('provider_artifact_changed')
+    else:
+        try:
+            provider = ReviewedLocalQmdProvider(manifest)
+        except IndexContractError as exc:
+            provider = None
+            vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
+                r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
     from laya_embed_resident import admit_query
     try:
         admit_query()

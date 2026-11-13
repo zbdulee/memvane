@@ -1560,9 +1560,11 @@ def _verify_v1_selected(decision):
             or row['vectorProfile'] != decision['vectorProfile']):
         _fail('selected_route_changed')
     attestation, sha = _attestation(path)
-    if sha != row['attestationSha256']:
+    if (sha != row['attestationSha256'] or not isinstance(attestation, dict)
+            or attestation.get('journalPath') != str(path)):
         _fail('worker_attestation_changed')
-    manifest = _v1_provider_manifest(attestation, row['vectorProfile'])
+    manifest, provider_available = _v1_provider_manifest(
+        attestation, row['vectorProfile'], allow_local_unavailable=True)
     if (inspect_journal(path) != row or read_v1(path.parent) != build
             or _read_json(path.parent / 'ledger.json') != ledger
             or _private_file(route_path, 8192) != raw
@@ -1574,7 +1576,7 @@ def _verify_v1_selected(decision):
             'scopeId': row['scopeId'], 'storePath': row['storePath'],
             'storeIncarnation': row['storeIncarnation'], 'stateFormat': row['stateFormat'],
             'writerFloor': row['writerFloor'], 'vectorProfile': row['vectorProfile'],
-            'providerManifest': manifest}
+            'providerManifest': manifest, 'providerAvailable': provider_available}
 
 
 def verify_selected_route(decision):
@@ -1701,7 +1703,7 @@ def _worker_attestation_manifest(selected):
     return manifest
 
 
-def _v1_provider_manifest(record, profile):
+def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
     """Verify provider bytes and runtime identity using this plugin copy."""
     from laya_local_embed_provider import ReviewedLocalQmdProvider, _hash_file
     if (not isinstance(record, dict)
@@ -1724,21 +1726,31 @@ def _v1_provider_manifest(record, profile):
                 or manifest['serviceSocketPath'] != str(Path(record['journalPath']).parent /
                                                         'runtime' / 'laya-embed.sock')):
             _fail('worker_attestation_invalid')
-        for path_key, hash_key in (('providerPath', 'providerArtifactSha256'),
-                                   ('workerPath', 'workerSha256'), ('nodePath', 'nodeSha256'),
-                                   ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
-            if _hash_file(manifest[path_key]) != manifest[hash_key]:
-                _fail('worker_attestation_invalid')
         provider = ReviewedLocalQmdProvider(manifest)
         if (provider.profile['profile_id'] != profile['profileId']
                 or manifest['providerArtifactSha256'] != profile['providerArtifactSha256']
                 or manifest['approvedProviderId'] != profile['approvedProviderId']
                 or manifest['providerRelativePath'] != profile['providerRelativePath']):
             _fail('worker_attestation_invalid')
+        try:
+            local_available = all(_hash_file(manifest[path_key]) == manifest[hash_key]
+                                  for path_key, hash_key in
+                                  (('providerPath', 'providerArtifactSha256'),
+                                   ('workerPath', 'workerSha256')))
+        except (OSError, ValueError):
+            local_available = False
+        if not local_available:
+            if allow_local_unavailable:
+                return manifest, False
+            _fail('worker_attestation_invalid')
+        for path_key, hash_key in (('nodePath', 'nodeSha256'),
+                                   ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
+            if _hash_file(manifest[path_key]) != manifest[hash_key]:
+                _fail('worker_attestation_invalid')
         _verify_runtime_files(record)
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise JournalEvidenceError('worker_attestation_invalid') from exc
-    return manifest
+    return (manifest, True) if allow_local_unavailable else manifest
 
 
 def _verify_runtime_files(record):
