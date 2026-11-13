@@ -779,12 +779,12 @@ def _compile_intent_id(result):
 
 def _write_compile_intent(checkout, result, verdict_digest, result_digest):
     from memvane.journal import journal_reader as reader
-    from memvane.install import ledger_common as ledger
+    from memvane.journal import api as ledger
     state = reader._state(Path(checkout.decision['journalPath']).parent)
     directory = state / 'provenance-intents'
     try:
         directory.mkdir(mode=0o700)
-        ledger._fsync_dir(state)
+        ledger.ledger_fsync_dir(state)
     except FileExistsError:
         pass
     info = directory.lstat()
@@ -796,9 +796,9 @@ def _write_compile_intent(checkout, result, verdict_digest, result_digest):
     intent = {'kind': 'compile', **result, 'verdict_digest': verdict_digest,
               'result_digest': result_digest}
     try:
-        ledger._write(path, intent, replace=False)
+        ledger.ledger_write(path, intent, replace=False)
     except ledger.CutoverBlocked as exc:
-        if str(exc) != 'cutover_record_exists' or ledger._private_file(path) != ledger._canon(intent):
+        if str(exc) != 'cutover_record_exists' or ledger.ledger_private_file(path) != ledger.ledger_canonical(intent):
             raise
     return path
 
@@ -809,7 +809,7 @@ def _supersede_job_intent(root, config, job, target, decision):
     if decision is None or not isinstance(spec, dict):
         return
     from memvane.journal import journal_reader as reader
-    from memvane.install import ledger_common as ledger
+    from memvane.journal import api as ledger
     try:
         wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
         from memvane.store.api import regular as _regular
@@ -828,7 +828,7 @@ def _supersede_job_intent(root, config, job, target, decision):
         intent_path = directory / ('compile-' + identity + '.json')
         if not os.path.lexists(intent_path):
             return
-        intent = ledger._read_json(intent_path)
+        intent = ledger.ledger_read_json(intent_path)
         if (intent.get('kind') != 'compile' or intent.get('cardSha') != card_sha
                 or intent.get('targetPath') != path or intent.get('viewId') != spec['viewId']
                 or intent.get('sourceFingerprints') != spec):

@@ -1,6 +1,8 @@
 """Public journal selection and worker proof operations."""
 from __future__ import annotations
 
+from memvane.journal.types import CutoverBlocked
+
 
 def inspect_journal(*args, **kwargs):
     from memvane.journal.install_journal import inspect_journal as implementation
@@ -99,4 +101,29 @@ def read_build_json(*args, **kwargs):
 
 def read_v1_build(*args, **kwargs):
     from memvane.journal.build_record import read_v1 as implementation
+    return implementation(*args, **kwargs)
+
+
+def ledger_canonical(*args, **kwargs):
+    from memvane.journal.ledger_io import _canon as implementation
+    return implementation(*args, **kwargs)
+
+
+def ledger_private_file(*args, **kwargs):
+    from memvane.journal.ledger_io import _private_file as implementation
+    return implementation(*args, **kwargs)
+
+
+def ledger_read_json(*args, **kwargs):
+    from memvane.journal.ledger_io import _read_json as implementation
+    return implementation(*args, **kwargs)
+
+
+def ledger_fsync_dir(*args, **kwargs):
+    from memvane.journal.ledger_io import _fsync_dir as implementation
+    return implementation(*args, **kwargs)
+
+
+def ledger_write(*args, **kwargs):
+    from memvane.journal.ledger_io import _write as implementation
     return implementation(*args, **kwargs)

@@ -234,6 +234,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/journal/ledger_io.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/journal/reader_lease.py": {
       "context": "journal",
       "layer": "adapter",

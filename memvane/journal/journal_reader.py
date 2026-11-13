@@ -322,7 +322,7 @@ def _revoke_reader(endpoint):
 
 def _v1_reader_evidence(state, project, saved, *, allow_settings_change=False):
     """Reprove a selected v1 reader without opening a writable component."""
-    from memvane.install.ledger_common import _private_file
+    from memvane.journal.ledger_io import _private_file
     decision = journal.select_route(str(project), action='recall')
     proof = journal.verify_selected_route(decision)
     row = journal.inspect_journal(Path(state) / _JOURNAL)

@@ -410,7 +410,7 @@ def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True
 
 def select_notification_route(project):
     """Classify an external-edit hint without opening the recipient store."""
-    from memvane.install.ledger_common import _read_json
+    from memvane.journal.api import ledger_read_json as _read_json
     try:
         root = Path(project)
         if not root.is_absolute() or root.resolve(strict=True) != root:
@@ -776,7 +776,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if markers:
         # The marker stays through restoration. Only its durable ledger can
         # classify an absent route as legacy.
-        from memvane.install.ledger_common import _read_json
+        from memvane.journal.api import ledger_read_json as _read_json
         marker_root, marker_path = markers[0]
         try:
             marker_record = _read_json(marker_path)

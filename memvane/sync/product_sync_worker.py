@@ -651,7 +651,7 @@ def _mark_schema3_write(writer, proof, marks):
 
 def _read_compile_intent(fd):
     """Read one canonical private intent from the descriptor that will be acknowledged."""
-    from memvane.install import ledger_common as ledger
+    from memvane.journal import api as ledger
     info = os.fstat(fd)
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
             or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 65536):
@@ -666,7 +666,7 @@ def _read_compile_intent(fd):
         return result
     value = json.loads(raw.decode('utf8'), object_pairs_hook=unique,
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite')))
-    if len(raw) != info.st_size or not isinstance(value, dict) or ledger._canon(value) != raw:
+    if len(raw) != info.st_size or not isinstance(value, dict) or ledger.ledger_canonical(value) != raw:
         raise ValueError('provenance_intent_invalid')
     return value, info
 
@@ -705,7 +705,7 @@ def _compiled_intent_is_stored(store, handle, intent):
 def _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current):
     """Consume bounded compile intents without changing the view's member trust."""
     from memvane.store import api as values
-    from memvane.install import ledger_common as ledger
+    from memvane.journal import api as ledger
     from memvane.journal import journal_reader as reader
     from memvane.journal import writer_scope as normal
     from memvane.wiki.card import source_spans
@@ -728,7 +728,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
         return result
     cursor_path = state / 'provenance-intents.cursor'
     try:
-        cursor = ledger._read_json(cursor_path)
+        cursor = ledger.ledger_read_json(cursor_path)
         if not isinstance(cursor, dict):
             raise IndexContractError('provenance_cursor_invalid')
     except FileNotFoundError:
@@ -850,7 +850,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     if last_scanned is not None:
         cursor['last'] = last_scanned
     if witnesses or len(names) > len(scanned) or attempted >= SCHEMA3_MAX_INGEST:
-        ledger._write(cursor_path, cursor, replace=True)
+        ledger.ledger_write(cursor_path, cursor, replace=True)
     return result
 
 

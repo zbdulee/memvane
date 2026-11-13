@@ -14,3 +14,7 @@ V1_BUILD_FILE = 'build.json'
 V1_BUILD_IDENTITY = frozenset(('projectRoot', 'stateRoot', 'installId', 'scopeId',
                                'storePath', 'storeNode', 'storeIncarnation', 'journalPath',
                                'routeSha256', 'attestationSha256'))
+
+
+class CutoverBlocked(RuntimeError):
+    pass
