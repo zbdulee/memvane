@@ -28,7 +28,7 @@ def name_for(path):
 
 def scope_files(root):
     paths = []
-    for folder in ('core', 'hermes_adapter'):
+    for folder in ('core', 'memvane', 'entry', 'hermes_adapter'):
         base = root / folder
         if base.is_dir():
             paths.extend(p.relative_to(root).as_posix() for p in base.rglob('*.py')
