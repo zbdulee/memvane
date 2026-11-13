@@ -65,7 +65,7 @@ from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.engines import api as engines
 from memvane.wiki.card.api import card_support
 wiki_freshness = card_support.freshness
-from memvane.wiki.card import wiki_source_missing as wsm
+from memvane.wiki.card.api import card_support as wsm
 from memvane.wiki.card.api import card_support as card_operations
 source_spans = card_operations.source_spans
 from memvane.wiki.card.api import card_sources_allowed
@@ -642,7 +642,7 @@ def snapshot_revision_evidence(
 
     from memvane.wiki.card import api as wiki_card
 
-    allow_roots = wsm.allow_roots_of(config)
+    allow_roots = wsm.source_missing.allow_roots_of(config)
     loaded = []
     evidence: dict[str, dict] = {}
     for raw in raw_revisions:
@@ -697,7 +697,7 @@ def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
         return None
     revisions = job.get("sourceRevisions")
     return wiki_freshness.check_card(
-        {"sourceRevisions": revisions}, root, wsm.allow_roots_of(config))
+        {"sourceRevisions": revisions}, root, wsm.source_missing.allow_roots_of(config))
 
 
 def card_changed_during_verify(

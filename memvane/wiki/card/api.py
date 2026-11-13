@@ -99,6 +99,12 @@ class card_support:
         unresolved_pending_refreshes_strict = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'unresolved_pending_refreshes_strict', *a, **k))
         record_pending_refresh = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_freshness', 'record_pending_refresh', *a, **k))
 
+    class source_missing:
+        SOURCES_INVALID = 'invalid'
+        declared_source_records = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_source_missing', 'declared_source_records', *a, **k))
+        wiki_root_of = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_source_missing', 'wiki_root_of', *a, **k))
+        allow_roots_of = staticmethod(lambda *a, **k: _forward('memvane.wiki.card.wiki_source_missing', 'allow_roots_of', *a, **k))
+
 
 
 def dump(*args, **kwargs):
