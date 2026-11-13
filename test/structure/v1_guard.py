@@ -171,12 +171,13 @@ def inspect(config, baseline=None):
             if dst not in files:
                 continue
             left, right = files[src]['context'], files[dst]['context']
-            if left == right or right == 'kernel':
+            hermes_boundary = src.startswith('hermes_adapter/') and dst.startswith('memvane/')
+            if right == 'kernel' or (left == right and not hermes_boundary):
                 continue
             edge = f'{src}:{lineno}:{dst}'
             if dst.startswith('memvane/') and not dst.endswith(('/api.py', '/types.py')):
                 issues['G1'].append(edge)
-            if left != 'app' and ranks[right] >= ranks[left]:
+            if not hermes_boundary and left != 'app' and ranks[right] >= ranks[left]:
                 issues['G2'].append(edge)
     kernel = [p for p in trees if p.startswith('memvane/kernel/') and not p.endswith('/__init__.py')]
     size = sum(snapshot['file_sizes'][p] for p in kernel)
