@@ -29,6 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from memvane.settings import project_dir
+from memvane.settings.api import compile_rel, compile_dir
 
 # 프로젝트 활성 폴더(`project_dir.active_name`) 아래 `compile/`. 상수는 새 프로젝트
 # 기준값이고, 프로젝트가 있으면 `compile_rel(root)`가 활성 폴더를 따른다
@@ -61,9 +62,6 @@ CARD_WRITE_LOCK = ".card-write.lock"
 COMPILE_RUN_LOCK = ".compile-run.lock"
 
 
-def compile_rel(root=None) -> str:
-    """프로젝트 루트 기준 compile 디렉터리(`<활성 폴더>/compile`)."""
-    return project_dir.active_name(root) + "/compile"
 
 
 def rel(name: str, root=None) -> str:
@@ -76,25 +74,6 @@ def under(root, name: str) -> Path:
     return Path(root) / compile_rel(root) / name
 
 
-def compile_dir(root, create: bool = False):
-    """`<root>/<활성 폴더>/compile`. root 밖으로 나가면 None.
-
-    판정은 `wiki_compile.safe_managed_dir(root, compile_rel(root))`과 같다
-    (resolve 후 root 포함 + 디렉터리 여부). `create=False`면 존재하지 않아도 경로를
-    돌려준다 — 읽기 경로가 디렉터리를 만드는 부작용을 갖지 않게 한다.
-    """
-    root = Path(root)
-    path = (root / compile_rel(root)).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return None
-    if path.exists():
-        if path.is_symlink() or not path.is_dir():
-            return None
-    elif create:
-        path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def ledger(root, name: str):

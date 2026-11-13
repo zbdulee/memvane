@@ -501,8 +501,8 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
             return 'stale'
         # Once the reviewed candidate is published, the previous completed
         # card must remain recoverable just like a source-deletion retirement.
-        from memvane.wiki.lifecycle import wiki_source_retire
-        if not wiki_source_retire.archive_card(
+        from memvane.wiki.card.api import archive_card
+        if not archive_card(
                 root, live_target, live_target.read_text(encoding='utf-8'), expected):
             return 'retry'
         os.replace(pending, live_target)

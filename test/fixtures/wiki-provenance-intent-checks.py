@@ -367,7 +367,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                 mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin), \
                 mock.patch.object(verify, 'reindex_wiki'), \
                 mock.patch.object(verify, 'wake_pending_retirement'), \
-                mock.patch.object(retire, 'archive_card', return_value=True):
+                mock.patch('memvane.wiki.card.api.archive_card', return_value=True):
             observed = selected.schema3_checkout(selected.selected(project))
             def interrupted_publish(*_args, **_kwargs):
                 if mode == 'crash':

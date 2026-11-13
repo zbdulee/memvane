@@ -10,3 +10,8 @@ def verified_wiki_row(*args, **kwargs):
 def verified_wiki_locations(*args, **kwargs):
     from memvane.wiki.card.trust import _verified_wiki_locations
     return _verified_wiki_locations(*args, **kwargs)
+
+
+def archive_card(*args, **kwargs):
+    from memvane.wiki.card.archive import archive_card as implementation
+    return implementation(*args, **kwargs)
