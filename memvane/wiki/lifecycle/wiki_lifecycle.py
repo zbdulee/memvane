@@ -84,7 +84,7 @@ wiki-dedup resolver from the selected route's stored vectors.
 Fail-open: always exit 0, no stdout without `--json`, exceptions go to the log.
 """
 from __future__ import annotations
-from memvane.wiki.lifecycle.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
+from memvane.wiki.card.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
 
 import argparse
 import json

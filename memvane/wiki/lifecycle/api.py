@@ -1,7 +1,7 @@
 """Public lifecycle operations."""
 from __future__ import annotations
 
-from memvane.wiki.lifecycle.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN, UNTRACKED
+from memvane.wiki.lifecycle.types import UNTRACKED
 
 
 def tracked_states(*args, **kwargs):

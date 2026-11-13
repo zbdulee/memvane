@@ -862,7 +862,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     """
     from memvane.store import api as v
     from memvane.journal import writer_scope as normal
-    from memvane.wiki.lifecycle import api as wiki_lifecycle
+    from memvane.wiki.card.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
     from memvane.store.api import regular as _regular
     from memvane.store.view import view_values as view_values
     from memvane.store.api import skip_patterns as _skip_patterns
@@ -896,8 +896,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 v.fail('wiki_card_unavailable')
             current[path] = (v.hash_bytes(raw), raw)
         changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
-        if (len(removed) > wiki_lifecycle.MASS_DELETE_MIN
-                and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
+        if (len(removed) > MASS_DELETE_MIN
+                and len(removed) > MASS_DELETE_FRACTION * len(old)):
             return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
                     'storeFormat': 'schema3', 'removed': len(removed)}
         scanned = {}

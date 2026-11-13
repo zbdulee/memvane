@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 
 MAX_CARDS = 2_048
+MASS_DELETE_FRACTION = 0.25
+MASS_DELETE_MIN = 3
 
 SAFE_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 SOURCE_SPANS_KEY = "sourceSpans"
