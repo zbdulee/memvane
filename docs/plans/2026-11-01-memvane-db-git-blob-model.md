@@ -44,29 +44,6 @@
 범위는 저장·view·봉인·수명 주기와 안전한 전환이다. 호스트 프로토콜, 임베딩 모델,
 추론 서비스의 API와 학습 동의 정책은 유지한다. 이 설계 작업은 코드·설정·버전을 바꾸지 않는다.
 
-## 2. 현재 구현과 목표의 대응
-
-아래 경로는 저장소 루트 기준이다. 심볼 이름을 기준으로 현재 구현을 확인할 수 있다.
-
-| 현재 위치·구조 | 현재 계약 | 목표의 소유자·변경 경계 |
-|---|---|---|
-| 같은 파일의 `generations`, `candidate_seals`, `receipts`, `pins`, `exclusions`, `gen_fts_<ord>` | building → prepared → published, full membership, claim/manifest seal, view pin, scope 제외. generation별 FTS는 경로·제목·본문을 색인한다. UPDATE/DELETE/REPLACE 방지 trigger가 있다 | 세대는 view·HEAD·원문 지문·trust·파생물까지 묶는다. 제외를 현재 view에 먼저 적용한다. GC가 기존 trigger를 해제하지 않는다 |
-| `core/laya_index_vector.py`, `LayaVectorIndex`, `source_evidence`, `profile_identity` | cache 키는 `(hash, title, profile_id, seq)`. chunk-set seal과 generation vector seal이 별도다. 제목은 Markdown heading 또는 경로에서 유래한다 | path에서 독립적인 입력 recipe를 사용한다. shared chunk/vector set과 view membership seal을 분리한다. legacy title 의존 벡터를 무조건 승계하지 않는다 |
-| `core/laya_index_source_port.py`, `core/laya_source_catalog.py` | no-follow 스캔, 열거/해시/디렉터리·파일 검증/완료 pointer. 미완료 스캔은 완료 snapshot을 대체하지 않는다. catalog에는 파일 metadata와 SHA가 있다 | raw catalog는 지문만, wiki scanner는 blob 입력을 담당한다. scan capture에 worktree·branch·HEAD·operation 상태를 추가한다. partial listing은 삭제 근거가 아니다 |
-| `core/laya_index_capacity.py`, `GenerationBindingStore` | `.bindings.sqlite`가 scope·DB incarnation·root identity·manifest·catalog snapshot을 봉인한다. `g-…-b<digest>` 이름이 binding을 커밋한다 | 같은 DB의 `generation_seals`가 checkout/source/trust root를 포함한다. 이름의 binding digest에 준하는 변조 탐지 계약을 유지한다 |
-| `core/laya_index_claim_queue.py`, `core/laya_index_flow.py`, `core/laya_index_sync.py` | durable claim → stage → seal → publish → ACK. 이전 head를 유지한 채 완료 snapshot만 게시한다 | 작업 키에 view/capture/base-generation을 포함하고 CAS는 해당 view에만 적용한다. stale checkout 작업은 게시·삭제하지 않는다 |
-| `core/laya_vector_capacity.py` | pending scan fill과 complete snapshot fill의 cursor가 별도다. 기본 fill은 8개·2 MB, 한 문서의 sealed set을 먼저 커밋한다 | branch/worktree 간 sealed set cache hit를 공유한다. content lease로 중복 inference를 합친다. 세대 봉인은 모델 없이 수행한다 |
-| `core/laya_incremental_docs.py`, `core/laya_incremental_docs_query.py` | 설치·scope·incarnation·profile에 묶인 `docs(path, hash, title, body, …)` sidecar와 FTS. 먼저 완성된 문서가 기존 경로를 shadow한다 | 설치 전체 `path` overlay는 다른 branch에 적용할 수 없다. 새 모델은 작은 immutable lexical generation으로 먼저 게시하고 sidecar를 제거한다. 전환 중 기존 sidecar의 completed rows도 보존한다 |
-| `core/laya_index_runtime.py`, `LayaIndexRuntime` | 증명된 scope/root/DB/queue를 받는다. capacity sidecar 두 개가 함께 존재해야 한다. runtime은 설치 권한을 만들지 않는다 | `ViewHandle`을 받아 같은 reader transaction에서 head·seal·membership을 pin한다. DB 공유는 접근 권한 공유를 뜻하지 않는다 |
-| `core/laya_index_host_route.py`, `select_route`, `_worktree_route` | candidate/preview/worktree/blocked/legacy를 분류한다. 연결 worktree는 현재 main checkout의 마지막 wiki 세대를 읽기 전용 검색한다 | 공통 저장소의 owner install을 찾되 **검색 view는 호출 checkout**으로 선택한다. main-view fallback은 새 route에서 금지한다. 새 view의 writer는 별도 증명된 worker다 |
-| `core/wiki_lifecycle.py`, `core/wiki_source_retire.py`, `core/git_branch_safety.py` | frontmatter `sourceRevisions`가 근거다. Git 계보 판정과 진행 중 operation 보류가 있다. linked worktree에서는 lifecycle을 실행하지 않는다. archive 후 unlink하고 sync를 요청한다 | DB의 정확한 compile-time 지문을 사용한다. worktree별 계보 증명 뒤 그 view와 그 checkout의 카드만 처리한다. 현재 Git heuristic으로 누락 commit 지문을 만들어내지 않는다 |
-| `core/wiki_card.py`, `core/wiki_compile.py`, `core/laya_host_response.py`의 `_verified_wiki_locations`, `core/laya_source_exclusion.py` | 신뢰 카드·본문 hash·span·skipPaths 확인이 frontmatter 지문을 읽는다. selected recall은 현재 raw 본문을 다시 읽지 않는다 | trust·source spans·skipPaths 검사는 DB provenance join을 사용한다. 검색은 봉인된 wiki bytes만 읽는다. compiler/lifecycle/dedup/learning도 같은 provenance API를 쓴다 |
-| `core/laya_resident_service.py`, `core/laya_product_sync_worker.py` | UID 단위 resident service가 profile별 worker를 공유하고 startup/설치 증명을 한다. cold load를 직렬화한다 | DB별 모델은 만들지 않는다. 현재 profile의 service를 사용하며 GC·migration은 모델을 로드하지 않는다 |
-
-현재 검색이 source-catalog pending 동안 마지막 게시 snapshot을 제공하는 성질과,
-bundle fence 중 빈 컨텍스트가 가능한 성질은 서로 다르다. 후자는 목표의 업데이트 중
-검색 연속성을 충족하지 않으므로 bridge/reader-fence 작업이 schema 전환의 선행 조건이다.
-
 ## 3. identity와 content 계약
 
 ### 3.1 저장소·프로젝트·워크트리·브랜치
@@ -114,8 +91,7 @@ legacy vector는 실제 title·chunk 입력·profile이 정확히 같은 경우�
 
 ## 4. 제안 스키마
 
-설명용 DDL이다. 새 application id와 schema version은 구현 PR에서 예약한다. v6 파일의
-`user_version`만 올려 덮어쓰지 않는다. PK/FK 외에 타입·SHA 형식·no-REPLACE·immutability
+설명용 DDL이다. PK/FK 외에 타입·SHA 형식·no-REPLACE·immutability
 검증 trigger와 private-file 검사는 구현의 필수 조건이다. 아래 JSON은 정규 canonical JSON,
 SHA는 소문자 64 hex, timestamp는 UTC ns, `head_oid`는 Git object-format에 맞는 문자열이다.
 
@@ -321,7 +297,7 @@ FTS는 `wiki_fts_<generation ordinal>`로 path/title/body를 색인한다. ordin
   seal의 count/digest가 일치해야 한다. FK만으로 부족한 부분은 writer와 seal verifier가
   함께 검증한다.
 - raw 행을 `wiki_blobs`·FTS·chunks/vectors에 쓰는 API는 없다. blob 삽입에는 wiki-root
-  membership proof가 필요하다. materialized legacy raw content는 migration 대상에서 제외한다.
+  membership proof가 필요하다.
 
 ## 5. view 해석과 검색
 
@@ -442,7 +418,7 @@ digest 계산에는 gen_id 자신을 넣지 않는다. writer는 완성된 scan�
 manifest를 먼저 정한 뒤 이름을 배정하고 그 이름으로 building rows를 쓴다. seal 때 실제
 rows가 예상 root와 다르면 해당 generation은 게시하지 않는다. `checkout_evidence`에는
 binding을 재검증할 canonical identity/index/operation/manifest metadata를 저장한다.
-endpoint 교체의 journal receipt도 선택한 gen_id/root를 증명한다. DB 안의 seal과 sidecar를
+endpoint 교체의 journal receipt도 선택한 gen_id/root를 증명한다. DB 안의 seal을
 함께 고쳐 쓰는 것만으로 외부 binding을 만족한 것처럼 만들 수 없어야 한다. 이는 기존
 `g-…-b<digest>`의 consistency 보장을 유지하며, 같은 OS 사용자가 DB와 journal을 모두
 임의 수정할 수 있는 상황까지 방어하는 보안 경계라는 뜻은 아니다.
@@ -569,8 +545,6 @@ SE의 약 1,800장은 사용자 제공 크기이며 현재 실사용 DB를 열�
 | 명시적 vector 예산 초과 | lexical 우선, semantic 단계는 budget-deferred; 새 cap의 품질 영향은 별도 검증 | 1/2/4 chunks, 768/2048차원에서 under/over 경계 시험 |
 | bounded scan/fill | catalog 기본 200 work units·5 MB·2,000 stats; fill 8개·2 MB를 출발점으로 사용 | 한 body+한 set 메모리, cursor replay, 큰 단일 문서의 예외 계약 검증 |
 | seal/publish | seal은 stream, head CAS 목표 50 ms/상한 200 ms | full manifest 검증과 CAS 시간 분리. SQLite busy는 defer |
-| migration/GC step | 100 cards 또는 8 MB, 최대 1초를 제안 | FTS·vector bytes 포함, cursor commit 뒤 yield; 초과 시 smaller batch |
-| migration 공간 | old DB+new DB+WAL+예비 공간 사전 계산, 부족하면 시작/추가 copy 보류 | 실제 파일 크기와 예상 copy 크기로 계산, 고정 2배 보장 주장 금지 |
 | idle 서비스 | DB/view 추가 때문에 모델 instance 추가 없음 | 2 projects·2 worktrees의 service binding과 worker count 관측 |
 
 제안 vector float-work 예산 초과를 해결하기 위해 ANN이나 임의 chunk 절삭을 이 PR군에 섞지 않는다.
@@ -604,14 +578,13 @@ learning inference 공유는 DB content/provenance를 프로젝트 간 노출하
 | model unavailable, resource pressure, oversized member | lexical view 유지 | vector fill만 deferred/blocked, cache/cursor 보존 |
 | blob/set hash 손상 | 손상 후보 제외, lexical로 가능한 안전 결과 유지 | candidate quarantine·명시적 repair; 같은 PK 덮어쓰기 금지 |
 | SQLite busy/disk full/copy crash | 선택된 old endpoint 유지 | 짧은 transaction rollback, cursor replay; 불완전 새 DB 선택 금지 |
-| bundle fence/companion-host cache 변화 | bridge의 증명된 현재-view reader 유지 | writer fence, intent 복구. 구 host 존재 시 schema 전환 보류 |
 | endpoint CAS 직전/직후 crash | old 또는 new 하나의 완전한 reader tuple | journal/intent reconcile, mixed incarnation·seal 조합 거절 |
 | worktree 이동·삭제 후 경로 재사용 | binding 일치 view만 검색 | 새로운 UUID 또는 명시 rebind; old view 자동 GC/삭제 금지 |
 | cleanup 중 old reader 존재 | pin한 old store에서 요청 완료 | exclusive lease 실패 시 cleanup defer, 프로세스 종료 없음 |
 | source skipPaths/policy 변경 | 새 policy를 LIMIT 전 적용; 제외 source 카드 누출 금지 | 재seal. 정책 변경을 raw 소실·삭제 증거로 사용하지 않음 |
 
 진단은 `view_id`, `worktree_id`, branch key, abbreviated HEAD, gen/endpoint epoch,
-cache hit/miss, pending 이유, guard 판정과 migration phase를 남긴다. prompt/raw 본문과 비밀은
+cache hit/miss, pending 이유와 guard 판정을 남긴다. prompt/raw 본문과 비밀은
 남기지 않는다. 사용자 안내는 자연어 또는 노출된 skill로 제공하며 내부 maintenance 명령을
 새로운 public 운영 인터페이스로 만들지 않는다.
 
@@ -653,9 +626,6 @@ development guard·파일 병렬도 1·유한 timeout을 유지한다. `developm
 6. **임베딩 입력과 초기 backfill:** 경로 독립 synthetic filename과 새 recipe를 사용하면
    일부 legacy title 기반 벡터는 재생성이 필요하다. lexical 검색을 계속 제공하며 천천히
    backfill하는 안을 적용하는가? 모델/provider 자체 변경은 이 선택에 포함하지 않는다.
-7. **host 호환·rollback 창:** 사용 중인 모든 Claude/Codex/Hermes가 bridge를 로드한 뒤
-   schema를 전환하고, frontmatter-free 카드 활성화 이후에는 구 bundle 완전 downgrade 대신
-   bridge reader rollback만 제공하는 안을 적용하는가? rollback 보존 기간도 함께 정해야 한다.
 
 ## 14. 사용자 결정 (2026-11-01)
 
@@ -667,4 +637,3 @@ development guard·파일 병렬도 1·유한 timeout을 유지한다. `developm
 4. tracked 파일의 로컬 unlink·staged deletion·untracked 소실은 committed deletion 전까지 hold한다.
 5. source SHA·HEAD·worktree 지문은 DB가 소유하고, 사람이 읽는 source path/link는 카드에 유지한다. 기존 카드는 일괄 재작성하지 않고 신규·갱신 카드부터 적용한다.
 6. 경로 독립 recipe로 바뀌는 legacy 벡터는 lexical 검색을 유지하며 천천히 backfill한다.
-7. 모든 Claude/Codex host가 bridge를 로드한 뒤 schema를 전환하고, frontmatter-free 카드 활성화 이후의 rollback은 bridge reader rollback으로 제한한다. rollback 보존 기간은 PR 10의 retention 설계에서 정한다.
