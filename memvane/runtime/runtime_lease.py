@@ -5,14 +5,12 @@ without loading the learning package. ``resident``, ``resource_coordination``
 and ``local_cycle`` re-export these same function objects. No coordinator,
 admission policy, default root or service registration lives here.
 """
-import json
 import os
 from pathlib import Path
 import stat
 import sys
-import tempfile
 
-MAX_FILE = 16 * 1024 * 1024
+from memvane.kernel.atomic_rename import MAX_FILE, atomic_json
 
 
 def platform_temp_roots():
@@ -98,19 +96,3 @@ def coordination_lock(path):
     if os.fstat(fd).st_nlink != 1:
         os.close(fd); raise ValueError('unsafe_coordination_lock')
     return fd
-
-
-def atomic_json(path, value):
-    path = Path(path)
-    # Same bytes as context_learning.store.canonical plus a trailing newline.
-    data = (json.dumps(value, ensure_ascii=False, sort_keys=True,
-                       separators=(',', ':'))+'\n').encode()
-    if len(data) > MAX_FILE: raise ValueError('output_budget_exceeded')
-    fd, name = tempfile.mkstemp(prefix='.write-', dir=path.parent)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, 'wb') as out:
-            out.write(data); out.flush(); os.fsync(out.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name): os.unlink(name)

@@ -12,7 +12,8 @@ import sqlite3
 import stat
 import time
 from . import resident
-from .local_cycle import ResourceDeferred, _atomic_json
+from memvane.kernel.resource_deferred import ResourceDeferred
+from memvane.kernel.atomic_rename import atomic_json as _atomic_json
 from .dataset import read_private_json
 # Re-exported: the same object as the neutral runtime_lease primitive.
 from memvane.runtime.runtime_lease import coordination_lock as _lock

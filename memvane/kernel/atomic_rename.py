@@ -1,5 +1,8 @@
-"""Atomic rename within a directory without replacing an existing name."""
+"""Atomic file writes and renames within a directory."""
 import ctypes
+import json
+from pathlib import Path
+import tempfile
 import os
 import sys
 
@@ -29,3 +32,22 @@ def rename_noreplace(parent_fd, source, target):
     if function(parent_fd, os.fsencode(source), parent_fd, os.fsencode(target), flag) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), target)
+
+
+MAX_FILE = 16 * 1024 * 1024
+
+
+def atomic_json(path, value):
+    path = Path(path)
+    # Same bytes as context_learning.store.canonical plus a trailing newline.
+    data = (json.dumps(value, ensure_ascii=False, sort_keys=True,
+                       separators=(',', ':'))+'\n').encode()
+    if len(data) > MAX_FILE: raise ValueError('output_budget_exceeded')
+    fd, name = tempfile.mkstemp(prefix='.write-', dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'wb') as out:
+            out.write(data); out.flush(); os.fsync(out.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name): os.unlink(name)

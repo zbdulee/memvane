@@ -202,7 +202,7 @@ class _StartupReservation:
         self.controller=controller;self.deadline=time.monotonic()+10
         self.nonce=uuid.uuid4().hex;self.safe=True;self.begun=False
     def begin(self):
-        from memvane.learning.context_learning.local_cycle import _atomic_json
+        from memvane.kernel.atomic_rename import atomic_json as _atomic_json
         with self.controller._gate('control.lock'):
             self.controller.startup_barrier()
             _atomic_json(self.controller.root/'startup-reservation.json',
