@@ -33,7 +33,7 @@ from memvane.settings import source_text
 from memvane.settings.collection_match import select_collections
 from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from memvane.wiki.intake.wiki_compile_enqueue import _source_record
-from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path
+from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_card_budget
 from memvane.wiki.card import wiki_freshness
@@ -275,18 +275,6 @@ def claim_queue(path: Path) -> Path | None:
     return claimed
 
 
-def requeue_lines(path: Path, raw_lines: list[str]):
-    if not raw_lines:
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        try:
-            with path.open("a", encoding="utf-8") as handle:
-                for line in raw_lines:
-                    handle.write(line if line.endswith("\n") else line + "\n")
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def candidate_path(root: Path, compile_cfg: dict) -> Path:

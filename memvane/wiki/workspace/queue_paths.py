@@ -1,6 +1,7 @@
 """Safe compile queue and lock paths."""
 from __future__ import annotations
 
+import fcntl
 from pathlib import Path
 from memvane.settings import project_dir
 from memvane.wiki.workspace import compile_paths as cp
@@ -36,3 +37,17 @@ def _safe_queue_path(project_root, configured_path=None):
 
 def _queue_lock_path(path):
     return path.with_name(f"{path.name}.lock")
+
+
+def requeue_lines(path: Path, raw_lines: list[str]):
+    if not raw_lines:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(_queue_lock_path(path), "a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            with path.open("a", encoding="utf-8") as handle:
+                for line in raw_lines:
+                    handle.write(line if line.endswith("\n") else line + "\n")
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)

@@ -367,7 +367,7 @@ def run(cwd: str) -> dict:
                                  "score": round(score, 6)}, ensure_ascii=False))
     result["pending"] = len(to_scan) - result["compared"]
     if lines:
-        from memvane.wiki.compile.wiki_compile_worker import requeue_lines
+        from memvane.wiki.workspace.api import requeue_lines
         requeue_lines(queue_path, lines)
     result["queued"] = len(lines)
     # Written only after the queue append: a crash before it re-compares the

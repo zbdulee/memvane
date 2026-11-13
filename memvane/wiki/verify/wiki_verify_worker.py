@@ -66,7 +66,7 @@ from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.card import source_spans
 from memvane.wiki.card import yaml_scalars
-from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path
+from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines
 
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
 # `skippedPath`/`deletedPath` 오타가 유료 과금 루프의 입구였던 실패 클래스가 함께 사라진다).
@@ -1656,7 +1656,7 @@ def run(
             if preserve:
                 remaining.append(raw_line)
     finally:
-        wcw.requeue_lines(queue, remaining)
+        requeue_lines(queue, remaining)
         try:
             cleaned = (_cleanup_pending(root, queue, claimed, pending_snapshots, rows)
                        if snapshots_valid else None)
@@ -1681,7 +1681,7 @@ def run(
                 marker = {'fingerprint': list(fingerprint), 'jobKey': _cleanup_job_key(job)}
                 retry.append(json.dumps({**job, '_pendingCleanup': marker},
                                         ensure_ascii=False, sort_keys=True))
-            wcw.requeue_lines(queue, retry)
+            requeue_lines(queue, retry)
         # An unreadable or changed claim may contain late work: leave it intact
         # for normal claimed-queue recovery rather than losing those rows.
         if cleaned is not None:
