@@ -1136,39 +1136,6 @@ class Service:
         self.legacy_lease = fd
         return True
 
-    def _retire_legacy(self, now):
-        """Remove the pre-rename service directory once nothing can use it.
-
-        Only the holder of its lease (this service) removes it, and only when
-        no pre-rename install or plugin copy is left
-        (``laya_state_move.legacy_service_retirable``): nothing can open that
-        lease again, so the lock file is never split between two holders.
-        """
-        if (self.legacy_root is None or self.legacy_lease is None or
-                now < self.legacy_retire_at):
-            return False
-        self.legacy_retire_at = now + LEGACY_RETIRE_SECONDS
-        try:
-            import memvane_paths
-            import laya_state_move
-            from legacy_cleanup import _remove_tree
-            home = self.legacy_root.parents[3]
-            if (self.legacy_root != memvane_paths.legacy_state_base(home) / 'service' or
-                    not laya_state_move.legacy_service_retirable(home)):
-                return False
-            _remove_tree(self.legacy_root, home)
-        except Exception:
-            return False
-        for name in ('legacy_lease', 'legacy_successor'):
-            fd = getattr(self, name)
-            if fd is not None:
-                with suppress(OSError):
-                    os.close(fd)
-                setattr(self, name, None)
-        with suppress(OSError):
-            os.rmdir(self.legacy_root.parent)
-        return True
-
     def start(self):
         for target, name in ((self._control_loop, 'laya-service-control'),
                              (self._tick_loop, 'laya-service-tick')):
@@ -1410,7 +1377,6 @@ class Service:
             if not self._hold_legacy(now):
                 with suppress(Exception):
                     drain_legacy_service(self.legacy_root)
-        self._retire_legacy(now)
         for project in list(self.bindings):
             self._check_owned(project)
         for project in self.registered():

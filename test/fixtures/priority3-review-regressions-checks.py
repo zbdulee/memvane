@@ -35,7 +35,6 @@ def load(name, filename):
     return module
 
 
-CLEANUP = load('cleanup_fixture_for_review_regressions', 'legacy-cleanup-partial-checks.py')
 HERMES = load('hermes_fixture_for_review_regressions', 'hermes-route-recovery-checks.py')
 MOVE = load('move_fixture_for_review_regressions', 'laya-project-dir-move-checks.py')
 import onboarding_choice as choice
@@ -75,40 +74,6 @@ class ReviewRegressions(unittest.TestCase):
         row = HERMES.fresh._load(path)
         HERMES.fresh._change(path, row['epoch'], 'active', 'upgrading')
         return HERMES.fresh._load(path)
-
-    def test_01_cleanup_valid_internal_label_mismatch_preserves_plist_and_trees(self):
-        case = self.compose(CLEANUP.CleanupPartialChecks)
-        name, internal = CLEANUP.cleanup.LABELS[:2]
-        plist = case.plist(name)
-        raw = plistlib.dumps({'Label': internal, 'ProgramArguments': ['/usr/bin/true'],
-                             'RunAtLoad': False}, fmt=plistlib.FMT_XML)
-        raw = raw.replace(b'<plist version="1.0">',
-                          ('<!-- ' + CLEANUP.cleanup.MARKER + ' -->\n<plist version="1.0">').encode(), 1)
-        plist.write_bytes(raw)
-        parsed = plistlib.loads(plist.read_bytes())
-        self.assertEqual(parsed['Label'], internal, 'fixture must be valid plist XML')
-        self.assertNotEqual(plist.stem, parsed['Label'])
-        before = case.tree_bytes()
-        def replies(argv):
-            if argv[1] == 'bootout':
-                return CLEANUP.subprocess.CompletedProcess(argv, 5, '', 'Boot-out failed: 5: Input/output error\n')
-            if argv[-1] == 'gui/%d/%s' % (os.getuid(), name):
-                return CLEANUP.subprocess.CompletedProcess(argv, 113, '',
-                    'Bad request.\nCould not find service "%s" in domain for user gui: %d\n' % (name, os.getuid()))
-            self.assertEqual(argv[-1], 'gui/%d/%s' % (os.getuid(), internal))
-            return CLEANUP.subprocess.CompletedProcess(argv, 0, 'synthetic actual Label is still loaded\n', '')
-        case.launch_reply = replies
-        try:
-            report = case.apply()
-        except CLEANUP.cleanup.CleanupBlocked as exc:
-            report = {'status': 'blocked', 'reason': str(exc)}
-        emit('R1-valid-plist-label', filenameLabel=name, internalLabel=parsed['Label'],
-             report=report, argv=case.commands, plistExists=plist.exists(),
-             beforeTreeFiles=sorted(before), afterTreeFiles=sorted(case.tree_bytes()))
-        self.assertTrue(plist.exists(), 'absence of the filename label must not authorize deleting another job')
-        self.assertEqual(plist.read_bytes(), raw)
-        case.assert_trees_preserved(before)
-        self.assertNotEqual(report['status'], 'cleaned')
 
     def test_02_hermes_actual_fences_after_classify_and_during_serve_are_context_free(self):
         for boundary in ('after-classify', 'during-serve'):
@@ -236,65 +201,6 @@ class ReviewRegressions(unittest.TestCase):
                     self.assertIsNotNone(refused, 'unsafe ancestor must explicitly refuse')
                     self.assertEqual(after, before, 'refusal must precede external mkdir/chmod/write')
 
-    def test_06_sigterm_accepted_but_stop_timeout_keeps_partial_failure_receipt(self):
-        case = self.compose(CLEANUP.CleanupPartialChecks)
-        case.live = True
-        before = case.tree_bytes()
-        ticks = iter(range(1000))
-        def accepted(pid, sig):
-            self.assertEqual((pid, sig), (CLEANUP.PID, signal.SIGTERM))
-            case.signals.append((pid, int(sig)))
-            # Actual observation still reports this exact process alive.
-        report = case.apply(kill=accepted, clock=lambda: next(ticks))
-        emit('R6-signal-stop-timeout', report=report, signals=case.signals,
-             remainingTreeFiles=sorted(case.tree_bytes()), launchctl=case.commands)
-        self.assertEqual(report['status'], 'blocked')
-        case.assert_trees_preserved(before)
-        self.assertEqual(case.signals, [(CLEANUP.PID, int(signal.SIGTERM))])
-        self.assertEqual(case.commands, [])
-        self.assertEqual(report['changesApplied'], 1)
-        self.assertEqual(report['stoppedPids'], [])
-        daemon = next(row for row in report['daemons'] if row.get('pid') == CLEANUP.PID)
-        self.assertTrue(daemon['signalSent'])
-        self.assertEqual(daemon['stop'], 'stop_timeout')
-        self.assertIs(report['partial'], True)
-        self.assertTrue(any(row.get('pid') == CLEANUP.PID and row.get('reason')
-                            for row in report['failed']), 'known stop failure must remain explicit')
-
-    def test_07_valid_readable_plists_and_malformed_marker_only_files(self):
-        for kind in ('xml-0644', 'binary-0644', 'malformed'):
-            with self.subTest(kind=kind), ExitStack() as cleanup:
-                case = self.compose(CLEANUP.CleanupPartialChecks)
-                cleanup.callback(case.doCleanups)
-                label = CLEANUP.cleanup.LABELS[0]
-                plist = case.plist(label)
-                if kind == 'binary-0644':
-                    plist.write_bytes(plistlib.dumps({'Label': label,
-                        'Comment': CLEANUP.cleanup.MARKER, 'ProgramArguments': ['/usr/bin/true']},
-                        fmt=plistlib.FMT_BINARY))
-                elif kind == 'malformed':
-                    plist.write_text('<!-- ' + CLEANUP.cleanup.MARKER + ' -->\n<plist broken')
-                if kind != 'malformed':
-                    plist.chmod(0o644)
-                    self.assertEqual(plistlib.loads(plist.read_bytes())['Label'], label)
-                before = case.tree_bytes()
-                modes = []
-                def reply(argv):
-                    modes.append(stat.S_IMODE(plist.stat().st_mode))
-                    return CLEANUP.subprocess.CompletedProcess(argv, 0, '', '')
-                case.launch_reply = reply
-                report = case.apply()
-                emit('R1-plist-compatibility', kind=kind, report=report, modesAtLaunch=modes)
-                if kind == 'malformed':
-                    self.assertNotEqual(report['status'], 'cleaned')
-                    self.assertTrue(plist.exists())
-                    self.assertEqual(case.commands, [])
-                    case.assert_trees_preserved(before)
-                else:
-                    self.assertEqual(report['status'], 'cleaned')
-                    self.assertEqual(modes, [0o644], 'validation must not chmod LaunchAgents')
-                    self.assertFalse(plist.exists())
-
     def test_08_hermes_recent_normal_transition_is_quiet_only_inside_core_window(self):
         for recent in (False, True):
             with self.subTest(recent=recent), ExitStack() as cleanup:
@@ -315,44 +221,6 @@ class ReviewRegressions(unittest.TestCase):
                     self.assertIn(answer, (None, {}, {'context': ''}))
                 else:
                     self.assertIn('request refused', (answer or {}).get('context', ''))
-
-    def test_10_actual_date_parser_failure_keeps_the_first_cleanup_cli_receipt(self):
-        case = self.compose(CLEANUP.CleanupPartialChecks)
-        first = case.plist(CLEANUP.cleanup.LABELS[0])
-        second = case.plist(CLEANUP.cleanup.LABELS[1])
-        raw = ('<?xml version="1.0" encoding="UTF-8"?>\n<!-- ' + CLEANUP.cleanup.MARKER + ' -->\n'
-               '<plist version="1.0"><dict><key>Label</key><string>' + second.stem + '</string>'
-               '<key>ProgramArguments</key><array><string>/usr/bin/true</string></array>'
-               '<key>LastFixtureDate</key><date>invalid</date></dict></plist>').encode('utf-8')
-        second.write_bytes(raw)
-        second.chmod(0o600)
-        # XML syntax, marker and job identity are valid independently of
-        # plistlib's date conversion. Observe the actual interpreter exception.
-        xml = ElementTree.fromstring(raw)
-        self.assertEqual(xml.find('./dict/string').text, second.stem)
-        self.assertEqual(xml.find('./dict/date').text, 'invalid')
-        parser_error = None
-        try:
-            plistlib.loads(raw)
-        except Exception as exc:  # observation only; never a fabricated parser result
-            parser_error = {'class': type(exc).__module__ + '.' + type(exc).__name__,
-                            'message': str(exc)}
-        before = case.tree_bytes()
-        code, report = case.cli()
-        emit('N1-date-parser-partial-cli', python=sys.version, parserException=parser_error,
-             cliCode=code, report=report, launchctl=case.commands,
-             firstRemoved=not first.exists(), secondPreserved=second.exists(),
-             treeFilesBefore=sorted(before), treeFilesAfter=sorted(case.tree_bytes()))
-        self.assertIsNotNone(parser_error, 'the interpreter must actually reject this date counterexample')
-        self.assertFalse(first.exists(), 'first valid job must actually unload and unlink')
-        self.assertTrue(second.exists())
-        self.assertEqual(second.read_bytes(), raw)
-        case.assert_trees_preserved(before)
-        self.assertEqual((code, report.get('status'), report.get('partial')), (1, 'partial', True))
-        self.assertEqual(report.get('changesApplied'), 1)
-        self.assertIn({'plist': str(first)}, report.get('completed', []))
-        self.assertTrue(any(row.get('plist') == str(second) and row.get('reason')
-                            for row in report.get('failed', [])))
 
     def test_11_selected_registered_hook_contains_host_response_import_failure(self):
         helper, case = self.preview()
@@ -388,42 +256,6 @@ class ReviewRegressions(unittest.TestCase):
         self.assertIsNone(escaped, 'an import error must never leave the registered hook')
         self.assertIn('request refused', (answer or {}).get('context', ''))
         self.assertNotIn('synthetic laya_host_response import unavailable', answer['context'])
-
-    def test_12_replacement_pid_after_confirmed_stop_keeps_partial_blocked_receipt(self):
-        case = self.compose(CLEANUP.CleanupPartialChecks)
-        case.live = True
-        plist = case.plist(CLEANUP.cleanup.LABELS[0])
-        plist_before = plist.read_bytes()
-        before = case.tree_bytes()
-        replacement = CLEANUP.PID + 1
-        observations = []
-        def process_table():
-            rows = ([(CLEANUP.PID, os.getuid(), case.command)] if not observations else
-                    [(replacement, os.getuid(), case.command)])
-            observations.append(rows)
-            return rows
-        case.ps_all = process_table
-        report = case.apply()
-        emit('N3-replacement-after-stop', report=report, processTables=observations,
-             signals=case.signals, oldStillObserved=case.ps(CLEANUP.PID),
-             replacementPid=replacement, launchctl=case.commands,
-             treeFilesBefore=sorted(before), treeFilesAfter=sorted(case.tree_bytes()))
-        self.assertGreaterEqual(len(observations), 2)
-        self.assertEqual(case.signals, [(CLEANUP.PID, int(signal.SIGTERM))])
-        self.assertIsNone(case.ps(CLEANUP.PID), 'actual _stop must confirm the old pid absent')
-        self.assertEqual(report.get('status'), 'blocked')
-        self.assertEqual(report.get('changesApplied'), 1)
-        self.assertEqual(report.get('stoppedPids'), [CLEANUP.PID])
-        daemon = next(row for row in report['daemons'] if row.get('pid') == CLEANUP.PID)
-        self.assertEqual(daemon['stop'], 'stopped')
-        self.assertTrue(any(row.get('pid') == replacement and row.get('command') == case.command
-                            for row in report.get('unverifiedProcesses', [])))
-        case.assert_trees_preserved(before)
-        self.assertEqual(plist.read_bytes(), plist_before)
-        self.assertEqual(case.commands, [])
-        self.assertIs(report.get('partial'), True)
-        self.assertTrue(any(row.get('pid') == replacement and row.get('reason')
-                            for row in report.get('failed', [])), 'replacement failure must remain explicit')
 
 
 if __name__ == '__main__':

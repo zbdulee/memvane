@@ -47,7 +47,7 @@ python3 -B "$ROOT/core/setup_entry.py" gc-index-runtime [--approve-index-runtime
 개발 중에는 변경한 로직과 영향 범위의 focused 검사를 우선 실행한다. 전체 검사는 변경과 focused 검사가 준비된 뒤 머지 직전 최종 커밋을 대상으로 한 번 실행한다. 검사는 해당 커밋의 별도 worktree에서 비동기로 시작할 수 있으며, 실행 중에는 그 worktree를 수정하지 않고 다른 독립 작업을 진행할 수 있다. 단독 가드를 쓰는 전체 검사 중에는 다른 검사·리뷰를 시작하지 않는다. 검사 결과를 확인하고 필요한 독립 리뷰와 후속 조치가 끝나기 전에는 머지하지 않는다. 실패를 고치는 등 제품 코드나 검사에 영향을 주는 변경으로 최종 커밋이 달라지면 새 커밋에 필요한 전체 검증을 다시 실행한다. 동일 커밋에서 필수 Python 버전과 허용된 분할 검사 각각의 결과를 확인한다.
 일반 모의·회귀·통합 검사(`--kind test`, CI 포함), 원격 리뷰(`--kind review`), 해시·스테이징(`--kind hash`)은 학습용 OS 압력·CPU/RSS·headroom·swap·load 제한을 적용하지 않는다. 전역 단독 실행, 파일 병렬도 1, 유한 timeout, 프로세스 수와 소유 식별·정리는 유지한다. 실제 모델을 로딩/학습하는 개발 검사(`--kind model-test`)와 백업(`--kind backup`)은 자원 제한을 유지한다. 명시적 calibration envelope도 항상 자원 검사를 유지한다. 제품 런타임의 학습 admission은 이 구분과 무관하게 그대로 적용된다.
 테스트/설치를 격리 검증할 때 쓰는 env 가드 (테스트 코드가 이걸로 부작용을 막는다):
-- `QMD_SETUP_GUARD_FIXTURE=1` — `npm test`가 켜는 테스트 전용 스위치(`QMD_SANDBOX`와 같은 자리에서 읽힌다). 켜져 있으면 runtime wake를 시작하지 않고, 실제 계정 홈의 Laya embed runtime·legacy cleanup 대상을 읽거나 쓰지 않는다. 운영 hook에서는 설정하지 말 것.
+- `QMD_SETUP_GUARD_FIXTURE=1` — `npm test`가 켜는 테스트 전용 스위치(`QMD_SANDBOX`와 같은 자리에서 읽힌다). 켜져 있으면 runtime wake를 시작하지 않고, 실제 계정 홈의 Laya embed runtime을 읽거나 쓰지 않는다. 운영 hook에서는 설정하지 말 것.
 - `QMD_FORCE_DEAD_PIDS=<pid>[,<pid>…]` — 고아 `*.claimed.*` 회수 테스트 전용. `_is_pid_alive`가 **목록에 정확히 일치하는 pid만** 죽은 것으로 취급한다(전체 무력화가 아니다 — 그래야 실환경에 새도 피해가 그 pid로 한정된다). 테스트가 "확실히 죽은 pid"를 구하려고 방금 종료한 자식의 pid를 쓰면 바쁜 머신에서 재할당되어 flaky해지므로, 가정 대신 이 주입을 쓴다. **실환경에서 절대 설정하지 말 것** — 살아 있는 워커를 죽은 것으로 판정해 진행 중인 배치를 회수하면 같은 잡이 두 번 처리되어 유료 호출이 이중 과금된다
 - `QMD_SANDBOX` / `GEMINI_SANDBOX` / `--sandbox` — 디스패처·코어 즉시 무출력 종료
 
