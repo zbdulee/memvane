@@ -21,11 +21,11 @@ import threading
 import time
 
 from memvane.kernel.errors import IndexContractError
-from memvane.route.index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
+from memvane.route.types import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
-                                   SCHEMA_V3 as ROUTE_SCHEMA_V3, select_route,
-                                   written_schema)
+                                   SCHEMA_V3 as ROUTE_SCHEMA_V3)
+from memvane.route.api import select_route, written_schema
 from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
@@ -354,7 +354,7 @@ def _route(raw, journal_path):
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise JournalEvidenceError('invalid_route_bytes') from exc
     schema = route.get('schema') if isinstance(route, dict) else None
-    from memvane.route.index_host_route import FIELDS_V4, SCHEMA_V4
+    from memvane.route.types import FIELDS_V4, SCHEMA_V4
     if schema == SCHEMA_V4:
         state = Path(journal_path).parent
         if (set(route) != FIELDS_V4 or route.get('status') != 'active'
@@ -845,7 +845,7 @@ def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
     from memvane.settings import api as project_dir
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane.kernel.memvane_version import plugin_version, same_major
-    from memvane.route.index_host_route import _classify_v4
+    from memvane.route.api import classify_v4 as _classify_v4
     path = _private_parent(journal_path)
     require_cached_plugin_for_live_write(path.parent)
     if path.exists() or path.is_symlink():

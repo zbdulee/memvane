@@ -229,17 +229,17 @@ def _settings_identity(root):
     readers take ``skipPaths`` from ``config`` here at each use.
     """
     from memvane.settings import config
-    from memvane.route import index_host_route as routes
+    from memvane.route import api as routes
     from memvane.settings import api as project_dir
     from pathlib import PurePosixPath
     settings = project_dir.settings_path(root)
     if settings is None:
         v.fail('wiki_settings_missing')
     raw, _, _ = _regular(settings.parent, settings.name, SETTINGS_LIMIT)
-    value = json.loads(raw.decode('utf8'), object_pairs_hook=routes._pairs)
+    value = json.loads(raw.decode('utf8'), object_pairs_hook=routes.pairs)
     if not isinstance(value, dict):
         v.fail('wiki_binding_invalid')
-    collections = routes._derived_collections({'schema': routes.SCHEMA_V2}, root, raw)
+    collections = routes.derived_collections({'schema': routes.SCHEMA_V2}, root, raw)
     routes.selected_collection_roots(root, collections)
     wiki = Path(next(iter(routes.wiki_index_roots(collections).values())))
     rows = []

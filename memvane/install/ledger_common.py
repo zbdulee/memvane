@@ -117,9 +117,10 @@ def _write(path, value, *, replace):
 def _preflight_multi_settings(route, project_root):
     """Refuse a route the selected host cannot serve before publication."""
     from memvane.settings import config
-    from memvane.route.index_host_route import (_multi_compile_supported,
-                                       _multi_settings_supported, _pairs,
-                                       _read_regular, _source_for_collection,
+    from memvane.route.api import (multi_compile_supported as _multi_compile_supported,
+                                       multi_settings_supported as _multi_settings_supported,
+                                       pairs as _pairs, read_regular as _read_regular,
+                                       source_for_collection as _source_for_collection,
                                        settings_identity_digest)
     from memvane.settings import api as project_dir
     settings = (project_dir.settings_path(project_root) or

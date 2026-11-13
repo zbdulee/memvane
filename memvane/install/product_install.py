@@ -148,12 +148,12 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     root. No QMD database is read, copied, or selected.
     """
     from memvane.settings import config
-    from memvane.route.index_host_route import (_multi_settings_supported,
-                                       _multi_compile_supported,
+    from memvane.route.api import (multi_settings_supported as _multi_settings_supported,
+                                       multi_compile_supported as _multi_compile_supported,
                                        selected_collection_roots,
-                                       _source_for_collection, _read_regular,
-                                       MAX_SETTINGS_BYTES, RECORD,
-                                       QMD_SELECTION_MARKER)
+                                       source_for_collection as _source_for_collection,
+                                       read_regular as _read_regular)
+    from memvane.route.types import MAX_SETTINGS_BYTES, RECORD, QMD_SELECTION_MARKER
     project = Path(project_root)
     if (not project.is_absolute() or project.is_symlink() or
             project.resolve(strict=True) != project):
@@ -452,12 +452,12 @@ def _create_v1_store(project_root, state_root, scope_id):
             'storeIncarnation': incarnation, 'repository': repository,
             'worktree': worktree, 'settingsPolicyDigest': policy}
 
-
 def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     """Stage a route bound to a validated local store and project settings."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane.kernel.memvane_version import same_major
-    from memvane.route.index_host_route import SCHEMA_V4, _classify_v4
+    from memvane.route.types import SCHEMA_V4
+    from memvane.route.api import classify_v4 as _classify_v4
     from memvane.journal.install_journal import _route
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
@@ -721,7 +721,8 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.settings import api as project_dir
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
-    from memvane.route.index_host_route import _classify_v4, SELECTION_SCHEMA_V1
+    from memvane.route.api import classify_v4 as _classify_v4
+    from memvane.route.types import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write
     from memvane.journal.reader_lease import reader_lifetime
     from memvane.sync.api import sync_owner
@@ -841,12 +842,11 @@ def restore_origin_selection(*, project_root, state_root):
     with _install_lock(state):
         return _restore_v1_locked(project, state)
 
-
 def _restore_v1_locked(project, state):
     from memvane.install import initial_build as build
     from memvane.journal import install_journal as journal
     from contextlib import closing
-    from memvane.route.index_host_route import SELECTION_SCHEMA_V1
+    from memvane.route.types import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write, _fsync_dir
     from memvane.journal.reader_lease import reader_lifetime
     from memvane.sync.api import sync_owner
