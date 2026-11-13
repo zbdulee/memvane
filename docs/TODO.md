@@ -4,17 +4,11 @@
 
 ## 코드
 
-- **진행 중 작업의 재부팅 경계 identity 복구(A9~A15).** 장치 번호를 포함한 중간 기록의 재개 증명과 회귀 검사를 마련한다.
-  대상은 A9 shadow migration intent(`migration_intent_invalid`, sync의 후보 재시작 판정), A10 초기 v5 변환 intent(`initial_conversion_evidence_invalid`), A11 reader image staging note(`reader_image_changed`),
-  A12 이동 seal·재료·layout(`reader_move_material_changed`, `reader_move_layout_changed`, `reader_move_source_changed`, `project_dir_move_store_changed`), A13 bridge challenge·receipt(`reader_hosts_pending`),
-  A14 설치 proposal(`reviewed_origin_plan_changed`, scopeId seed 유지), A15 legacy probe owner(`legacy_probe_unowned_scratch`)다.
-  진행 중 업그레이드의 provider identity가 SHA로만 봉인된 경우(`active_upgrade_new_provider_changed`)도 원본 hash를 유지하는 별도 복구 증명이 필요하다.
 - **`core/laya_initial_build.py`의 `retired` 단계 설명이 코드와 다르다.** docstring은 `retired`를 아무 작업도 하지 않은(`registered`) 빌드의 abandon으로만 설명하고 `abandon_unused_initial_build`만 가리킨다. `abandon_inactive_initial_build`는 일부 빌드된 미선택 후보도 retire한다. docstring을 두 경로에 맞춘다.
 - **`core/laya_host_response.py` `_render_context`의 raw 분기.** 위키 전용 색인에서 비위키 행은 계약 위반인데, else 분기가 이를 `Path(path).stem` 제목으로 렌더링해 위반을 숨긴다. 도달 가능성을 확인하고, 도달하면 `_fail('raw_row_in_selected_index')`로 바꾼다. 같은 파일의 header 문구 "verified source documents"를 "wiki cards"로 고친다.
 
 ## recall 품질
 
-- **대형 설치의 recall provider 준비 및 거절 진단.** 선택된 v6 reader에서 `resident.adopt`가 `adopted`인 뒤에도 `selected_provider_preparing`으로 벡터 검색을 건너뛰는 recall과 `selected_proof_or_query_failed` 거절이 반복된다. 긴 프롬프트의 `laya_selector_invalid_pool`도 함께 관측된다. 서비스 listener 바인딩은 개별 임베딩 요청 성공을 증명하지 않으며, 거절 코드는 원래 예외를 구분하지 않는다. provider 요청 실패·timeout, selector 입력 조건과 거절 원인을 각각 분리해 진단하고, 정상 벡터 recall과 거절 해소를 실제 설치에서 검증한다.
 - **verify defer 루프의 종점.** `wiki_verify_worker`는 검수 직전 원문 freshness가 `FRESH`가 아니면 잡을 `deferred / source_changed_before_verify`로 남기고 큐에 그대로 둔다. 재시도 카운터도 종점도 없어 `recallVerifiedOnly` 아래에서 그 카드는 계속 주입되지 않는다.
   - `content_hash_mismatch`는 검수가 아니라 재컴파일이 필요하다. N회 defer 뒤 compile source 큐로 넘기는 방안이 있다. 단 같은 원문의 compile이 `extractor_failed/source_unreadable`이나 `skipped/verify_inconclusive_suppressed`로 막혀 있으면 루프가 끝나지 않고, `wiki_compile_worker.recover_pending_refreshes`가 매 run 재큐잉하므로 중복 enqueue(이중 과금)가 될 수 있다. `source_unreadable`의 원인부터 진단한다.
   - "N회 defer"를 표현할 상태가 없다. `requeue_lines`는 raw 행을 그대로 다시 쓰고 `_requeue_count`는 compile worker의 orphan claim 경로에만 있다.
@@ -118,43 +112,6 @@ S v1은 view 행·FTS·stage/delta·세대만 GC한다. 여러 view가 공유하
 - **R6:** 남아 있는 모든 구 번들이 실제 S 형식의 매 transaction에서 fail-closed하고 쓰지 않는지 양 Python 교차 시험한 뒤에만 활성화한다. 새 lock·소유 계약 변경이 필요하다고 확인되면 사용자에게 결정받는다.
 
 실제 활성화 전 합성 RED/GREEN: (1) chunk set commit과 embedding callback 사이의 GC, (2) lexical head의 complete/partial fill set과 `coverage=complete`의 묵시 참조, (3) journal CAS 뒤 switched 기록 전 crash 및 stale shadow vector/prepare 핸들. 구 bundle RW 핸들의 형식 fence도 교차 시험한다. head 관측과 게시 순서에 따른 결과를 각각 기록하고, 예상 오류·고착은 재현 전 사실로 취급하지 않는다. 현재+직전 view 행 GC와 그 자체의 RED는 S v1 범위다.
-
-PR6·7 이후, PR8 이전의 S 단계로 진행한다. 설계 문서를 독립 리뷰하고 사용자 승인을 받은 다음 구현한다. 저장 스키마·recall 읽기 경로·봉인 증명이 함께 바뀐다.
-
-- **현재 동작.**
-  - 게시(publish)마다 새 세대를 만든다. v6 색인은 세대마다 `gen_fts_N` 테이블 세트, schema3 view store는 `prepare_generation`(`core/laya_view_store.py`)의 새 FTS 가상 테이블에 eligible 카드 본문 **전체**를 다시 넣는다. 카드 한 장만 바뀐 pass도 corpus 전체를 복사한다.
-  - 원문 지문 행도 원문이 바뀐 pass마다 모든 raw 원문에 한 행씩 새로 쌓인다(`_schema3_put_sources`). 같은 scan id를 요구하는 세대 검증 때문에 재사용하지 않는다.
-- **실측(2026-11-10, service-engineering v6 `laya-build.sqlite`, 읽기 전용).**
-  - 세대 356개, 모두 같은 scope, 모두 `published`. digest가 같은 중복은 2쌍이다.
-  - 3,105,441페이지 × 4KB = 12.7GB, freelist 0. VACUUM만으로는 회수되는 공간이 없다.
-  - 세대당 약 36MB(카드 약 4천 장 × 약 9KB). schema3 기준 합성 실측은 카드 1장당 약 8.3KB/세대(FTS 6.8KB + 세대 행 1.5KB, 카드 바이트의 약 2.8배)다.
-  - 세대 행에 생성 시각이 없어 하루 생성 수는 직접 알 수 없다. 356개 ÷ 약 2주 = 평균 하루 약 25개다. 이벤트 로그의 `wake.sync indexed`는 11/4 15회, 11/5 4회, 11/8 3회, 11/10 1회다.
-- **영향.**
-  - 저장 증가량이 바뀐 카드 수가 아니라 게시 횟수 × corpus 크기에 비례한다.
-  - PR10 GC(Q3: 현재 head + 직전 세대 보존)를 적용해도 보존분은 corpus의 2배이고, 다음 GC 전까지 게시마다 corpus 크기만큼 다시 쌓인다.
-  - 큰 store는 sync·shadow migration·업그레이드 백업·해시 검증 시간을 함께 늘린다. SE에서 변경 없는 sync는 약 4분, 업그레이드 백업·검증은 20분 이상 걸렸다.
-  - GC가 mark-copy라 실행할 때 남길 데이터 크기만큼 여유 디스크가 필요하다.
-- **목표.** 증가량과 보존 비용이 바뀐 카드 수에 비례하고, 게시·롤백·GC가 corpus 복사 없이 끝난다.
-- **S v1 방향.**
-  - SQLite rollback journal과 기존 lock 소유 계약을 유지한다.
-  - 카드 행에 유효 구간(`gen_from`, `gen_to`)을 둔다. 바뀐 카드만 새 행으로 추가하고, 이전 행은 `gen_to`를 닫는다. 삭제된 카드는 행을 닫기만 한다.
-  - rollback은 마지막 게시의 변경분을 역적용하는 새 게시다.
-  - 각 view의 FTS는 head만 담고 게시 transaction에서 변경 카드만 갱신한다.
-  - GC는 현재 head와 직전 세대를 보호하면서 view 행을 유계 batch로 회수한다. 공유 content GC는 위 후속 항목으로 미룬다.
-  - 원문 content 지문은 HEAD를 포함하지 않고, 경로별 tracked 등 관측 증거를 별도로 보존한다. 세대마다 manifest·files 전체를 복사하지 않는다.
-- **먼저 정할 계약.**
-  - 봉인 증명: 새 세대 digest와 기존 attestation·journal·route의 결속을 정하고 검증한다.
-  - 삭제 방지 트리거와 정확 일치 DDL 검사: GC 삭제 경로만 허용하도록 재설계한다. 구 번들이 새 store를 열 때의 동작(거절 코드)도 정한다.
-  - recall 성능: head 전용 FTS5 질의의 지연을 카드 1천·4천·2만 장에서 실측한다. 기준은 hook 2초 예산 안의 기존 지연이다.
-  - shadow migration·reader 전환과의 관계: 새 형식을 schema 버전 올림으로 넣을지, 별도 migration 단계로 넣을지 정한다. rollback 창(Q1 변경 결정: 전환 직후 닫고 이후 직전 세대로만 롤백)과 맞춘다.
-  - 동시 읽기: 장기 reader(구 번들 호스트, 늦게 끝나는 recall)가 읽는 세대를 GC가 지우지 않게 하는 lease 규칙을 행 단위 기준으로 다시 정한다.
-  - 벡터: member vector·chunk set이 카드 버전 행을 어떻게 참조하는지, 같은 본문 카드의 임베딩 재사용 규칙.
-- **검증 기준.**
-  - 카드 1장 변경 게시의 store 증가량이 그 카드 크기 수준이다.
-  - 롤백·GC 시간이 corpus 크기와 무관하다.
-  - SE 규모(카드 약 4천 장)에서 변경 없는 sync가 수 초 안에 끝난다.
-  - 기존 recall 품질과 지연이 유지된다.
-- 새 hook action·wake kind·lock이 필요한지는 설계 단계에서 판단한다.
 
 ## 연결 git worktree의 카드 수명 주기
 

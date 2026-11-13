@@ -7,10 +7,7 @@
 완료된 index generation 하나를 pin하고 위키 카드만 검색한다. 색인 DB에 게시된
 위키 본문과 해시·세대·범위·명시 제외를 확인하며, 현재 원문 파일이나 pending
 refresh 원장을 다시 읽지 않는다. 원문 변경 뒤 위키 생성·색인 게시가 끝나기
-전에는 마지막 완료본이 검색된다. 설치 journal이 schema3 reader를 선택한 설치는 v6 색인 대신
-view store의 게시 세대를 같은 규칙으로 pin한다(아래 linked git worktree 절 참고).
-binding store가 없는 구형 선택 경로는 질의 시 live scan을 사용한다. 흐름은 [위키 색인과 검색 주입](architecture/flows/03-wiki-index-search.md)에
-정리돼 있다.
+전에는 마지막 완료본이 검색된다. view store의 게시 세대를 같은 규칙으로 pin한다.
 
 ## 현재 반영 범위
 
@@ -62,16 +59,11 @@ route record와 selection marker는 추적되지 않는 런타임 파일이라 l
 - cwd와 worktree 루트 사이에 route record나 selection marker가 없다.
 - worktree 안 프로젝트가 main 프로젝트와 같은 상대 경로에 있다.
 - main 프로젝트가 정확히 `candidate`로 분류된다.
-- 양쪽 settings가 같은 이름·collection·경로·role·위키 경로를 유도한다. 프로젝트
-  폴더 이름(`.memvane`·`.auto-context`)은 같은 것으로 보므로, 폴더를 옮기기 전
-  브랜치의 worktree도 main checkout의 색인을 공유한다.
+- 양쪽 settings가 같은 이름·collection·경로·role·위키 경로를 유도한다.
 
-`worktree` route의 검색은 main checkout journal이 선택한 reader 형식에 따라 갈린다.
+`worktree` route는 같은 view store 안의 자기 view만 검색한다.
 
-- v6 reader: main checkout이 마지막으로 게시한 위키 색인을 읽기 전용으로 쓴다.
-  worktree hook은 wake를 남기지 않으므로 worktree에서만 바뀐 내용은 이 색인에
-  반영되지 않는다.
-- schema3 reader: 같은 view store 안의 그 worktree 자기 view만 읽는다. 결과는 그
+- 같은 view store 안의 그 worktree 자기 view만 읽는다. 결과는 그
   worktree checkout에서 게시된 카드뿐이고 main view나 다른 worktree view로
   폴백하지 않는다. 게시된 head가 없으면(처음 보는 worktree·브랜치) `view_preparing`,
   읽는 동안 checkout이 두 번 바뀌면 `checkout_changed`로 컨텍스트 없이 끝난다.
@@ -120,6 +112,5 @@ worktree는 자기 cwd 기준 분류를 그대로 따른다.
   대량 삭제를 `schema3_mass_removal_held`로 보류하고, raw 관측이 상한을 넘거나 실패하면
   manifest `sources`를 비운 채 위키 게시를 계속한다.
 
-schema3 reader 설치는 checkout별 게시 세대와 content set 재사용 키를 가진다. 공유
-set GC, raw 즉시 검색, 공유 위키의 완전한 의존성 판정은 구현돼 있지 않다. v6 reader
-설치의 MemVane 색인 및 recall 경로가 이 계약을 만족한다고 주장하지 않는다.
+view store는 checkout별 게시 세대와 content set 재사용 키를 가진다. 공유
+set GC, raw 즉시 검색, 공유 위키의 완전한 의존성 판정은 구현돼 있지 않다.
