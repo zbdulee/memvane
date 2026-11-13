@@ -1,4 +1,4 @@
-"""Pure recall selection, event, and transition decisions."""
+"""Pure host response selection and action decisions."""
 from __future__ import annotations
 
 _UPGRADE_TRANSITIONS = frozenset((
@@ -58,3 +58,35 @@ def is_upgrade_transition(code):
 
 def fence_reason(stalled):
     return 'bundle_upgrade_stalled' if stalled else 'bundle_upgrade_in_progress'
+
+
+def is_session(action):
+    return action in ('update', 'update-queued')
+
+
+def codex_seal_notice(action, host):
+    return action == 'update-queued' and host == 'claude'
+
+
+def discovery_grant_kind(has_roots, action):
+    if not has_roots or action == 'index':
+        return None
+    return 'sync' if action == 'file-change-event' else 'session_start'
+
+
+def check_compile_queue(has_collections, action):
+    return has_collections and action not in ('index', 'file-change-event')
+
+
+def gate_response(host):
+    return {'action': 'continue'} if host == 'hermes' else {}
+
+
+def drift_action(action):
+    if action == 'recall':
+        return 'recall'
+    if is_session(action):
+        return 'session'
+    if action == 'gate':
+        return 'gate'
+    return 'defer'

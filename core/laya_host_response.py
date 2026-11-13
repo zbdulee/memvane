@@ -1598,7 +1598,8 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     # preexisting request(kind, root) call shape.
     defer = {} if start else {'start': False}
     result = runtime_work.request("laya-sync", decision["projectRoot"], **defer)
-    if 'collections' in decision and action not in ('index', 'file-change-event'):
+    from laya_host_rules import check_compile_queue
+    if check_compile_queue('collections' in decision, action):
         import compile_paths
         import wiki_freshness
         root = Path(decision['projectRoot'])
@@ -2395,9 +2396,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         if action == "gate":
-            if host == "hermes":
-                return {"action": "continue"}
-            return {}
+            from laya_host_rules import gate_response
+            return gate_response(host)
         return {}  # Explicit observer/no-hint PostToolUse; index owns durable sync.
     if action in ("update", "update-queued", "index", "file-change-event"):
         # A successful agent Bash (git switch/pull, rm, mv) may change any
@@ -2424,22 +2424,23 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         # Loading a model or building a vector batch here would occupy the
         # prompt/SessionStart deadline and leave an unowned child on timeout.
         import runtime_work
+        from laya_host_rules import is_session, discovery_grant_kind, codex_seal_notice
         move_notice = None
-        if action in ("update", "update-queued"):
+        if is_session(action):
             _request_journal_v4(decision)
             move_notice = _move_notices(decision)
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         grant_failed = False
-        grant = grant_kind = None
-        if decision.get('collectionRoots') and action != 'index':
+        grant = None
+        grant_kind = discovery_grant_kind(decision.get('collectionRoots'), action)
+        if grant_kind is not None:
             # Provisional record of this event only, made before the wake so
             # the scan of any run that may use it follows the event. Compile
             # consent stays the existing trigger gate, applied off-hook when
             # raw changes are discovered; index, stale recall and wiki-card
             # sync grant nothing.
             import laya_wiki_discovery
-            grant_kind = 'sync' if action == 'file-change-event' else 'session_start'
             try:
                 grant = laya_wiki_discovery.record_grant(decision, grant_kind, engine=host)
             except Exception:
@@ -2475,7 +2476,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             if block_notice:
                 move_notice = (move_notice + "\n" + block_notice if move_notice
                                else block_notice)
-            if host == 'claude':
+            if codex_seal_notice(action, host):
                 trust_notice = _codex_seal_notice(decision)
                 if trust_notice:
                     move_notice = (move_notice + "\n" + trust_notice if move_notice else trust_notice)
@@ -2673,7 +2674,9 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
     wakes one full-scan sync that catches up every source change.
     """
     from laya_install_journal import verify_selected_route_read_only
-    if action == 'recall':
+    from laya_host_rules import drift_action, codex_seal_notice, gate_response
+    policy = drift_action(action)
+    if policy == 'recall':
         import laya_journal_reader as reader
         journal_path = reader._journal(Path(decision['journalPath']))
         with reader._readonly(journal_path, journal_path.parent) as db:
@@ -2687,7 +2690,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
                 raise
         return _serve_recall(host, decision, payload, proof,
                              verify_selected_route_read_only, degraded=True)
-    if action in ('update', 'update-queued'):
+    if policy == 'session':
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
         notice = _bundle_upgrade_notice(decision, code)
@@ -2697,7 +2700,7 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
-        if host == 'claude' and action == 'update-queued':
+        if codex_seal_notice(action, host):
             trust_notice = _codex_seal_notice(decision)
             if trust_notice:
                 notice += '\n' + trust_notice
@@ -2705,13 +2708,11 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
             return {'status': 'bundle_upgrade_pending', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
                                        'additionalContext': notice}}
-    if action == 'gate':
+    if policy == 'gate':
         _verified_edit(decision, payload, action)
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
-        if host == 'hermes':
-            return {'action': 'continue'}
-        return {}
+        return gate_response(host)
     # posttool/compile/index/file-change-event: nothing is
     # queued while the bundle is pending. The post-upgrade full scan covers it.
     if verify_selected_route_read_only(decision) != proof:
@@ -2854,9 +2855,8 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         _request_worktree_sync(main, proof, recheck)
         return {}
     if action == 'gate':
-        if host == 'hermes':
-            return {'action': 'continue'}
-        return {}
+        from laya_host_rules import gate_response
+        return gate_response(host)
     # posttool/compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.
     return {}

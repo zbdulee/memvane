@@ -98,4 +98,39 @@ class RecallRulesChecks(unittest.TestCase):
                 self.assertEqual(host.main(['serve-stdin', 'recall', 'claude', '/p']), expected)
                 self.assertEqual(window.call_count, 1 if expected == 0 else 0)
 
+class ActionRulesChecks(unittest.TestCase):
+    def test_bundle_drift_actions(self):
+        for action, expected in [('recall', 'recall'), ('update', 'session'),
+                ('update-queued', 'session'), ('gate', 'gate'), ('index', 'defer'),
+                ('posttool', 'defer'), ('compile', 'defer'), ('file-change-event', 'defer')]:
+            with self.subTest(action=action):
+                self.assertEqual(rules.drift_action(action), expected)
+
+    def test_session_and_queued_notice(self):
+        for action in ('update', 'update-queued', 'index', 'file-change-event'):
+            with self.subTest(action=action):
+                self.assertEqual(rules.is_session(action), action in ('update', 'update-queued'))
+                for host in ('claude', 'codex', 'hermes'):
+                    self.assertEqual(rules.codex_seal_notice(action, host),
+                                     action == 'update-queued' and host == 'claude')
+
+    def test_grant_is_scoped_to_collection_and_action(self):
+        for roots, action, expected in [(False, 'update', None), (True, 'index', None),
+                (True, 'file-change-event', 'sync'), (True, 'update', 'session_start'),
+                (True, 'update-queued', 'session_start')]:
+            with self.subTest(roots=roots, action=action):
+                self.assertEqual(rules.discovery_grant_kind(roots, action), expected)
+
+    def test_gate_response_for_host(self):
+        for host, expected in [('hermes', {'action': 'continue'}), ('claude', {}), ('codex', {})]:
+            with self.subTest(host=host):
+                self.assertEqual(rules.gate_response(host), expected)
+
+    def test_compile_queue_observation_only_for_session_with_collections(self):
+        for collections in (False, True):
+            for action in ('update', 'update-queued', 'index', 'file-change-event'):
+                with self.subTest(collections=collections, action=action):
+                    self.assertEqual(rules.check_compile_queue(collections, action),
+                                     collections and action in ('update', 'update-queued'))
+
 if __name__ == '__main__': unittest.main()
