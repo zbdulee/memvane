@@ -251,7 +251,7 @@ class GuardChecks(unittest.TestCase):
 
     def test_test_child_gets_a_private_temp_runtime_root_never_an_inherited_bad_one(self):
         from types import SimpleNamespace
-        from runtime_lease import in_platform_temp
+        from memvane.runtime.runtime_lease import in_platform_temp
         sample={'total_bytes':10000,'available_percent':70,'pressure':'normal',
                 'swap_bytes':0,'load_per_cpu':0,'cpu_count':4}
         for inherited in ('relative/root','/usr','/tmp',None):

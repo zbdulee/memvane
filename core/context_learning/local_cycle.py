@@ -23,7 +23,7 @@ from .selection_queue import build_queue
 from .store import canonical, database
 from memvane.kernel.resource_deferred import ResourceDeferred  # re-exported for existing callers
 # Re-exported: the same object and output budget as runtime_lease.
-from runtime_lease import MAX_FILE, atomic_json as _atomic_json
+from memvane.runtime.runtime_lease import MAX_FILE, atomic_json as _atomic_json
 
 MAX_QUESTIONS = 2000
 
@@ -164,7 +164,7 @@ class LocalTrainer:
         if coordination_fd is not None:env['QMD_TRAINER_COORD_FD']=str(coordination_fd)
         from .training_watch import Watch,PROBE_INTERVAL,PROBE_BUDGET,STATS_BUDGET,stop_owned
         from .resource_coordination import Coordinator
-        from runtime_cpu import lease,environment
+        from memvane.runtime.runtime_cpu import lease,environment
         cpu_scope=lease();cpu_budget=cpu_scope.__enter__()
         env=environment(env);inherited=(*inherited,*cpu_budget.fds)
         running_watch=(mode=='train' or control is not None and mode=='predict')

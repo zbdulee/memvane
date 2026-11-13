@@ -26,9 +26,9 @@ import tempfile
 import time
 import uuid
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from runtime_cpu import MAX_CPU_FRACTION,environment as cpu_environment
-from runtime_lease import in_platform_temp,trusted_temp_dir
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from memvane.runtime.runtime_cpu import MAX_CPU_FRACTION,environment as cpu_environment
+from memvane.runtime.runtime_lease import in_platform_temp,trusted_temp_dir
 
 
 def usable_test_runtime_root(raw):

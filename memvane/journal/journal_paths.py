@@ -9,13 +9,13 @@ from memvane.kernel import memvane_paths
 
 def check_journal_namespace(state):
     if 'MEMVANE_TEST_RUNTIME_ROOT' in os.environ:
-        from runtime_lease import in_platform_temp
+        from memvane.runtime.runtime_lease import in_platform_temp
         if not in_platform_temp(state):
             raise ValueError('journal_test_state_unsafe')
 
 
 def _test_root(root, create):
-    from runtime_lease import in_platform_temp, platform_temp_roots
+    from memvane.runtime.runtime_lease import in_platform_temp, platform_temp_roots
     if not root.is_absolute() or root.resolve(strict=False) != root or not in_platform_temp(root):
         raise ValueError('journal_test_root_unsafe')
     boundaries = platform_temp_roots()

@@ -15,7 +15,7 @@ from . import resident
 from .local_cycle import ResourceDeferred, _atomic_json
 from .dataset import read_private_json
 # Re-exported: the same object as the neutral runtime_lease primitive.
-from runtime_lease import coordination_lock as _lock
+from memvane.runtime.runtime_lease import coordination_lock as _lock
 
 SLOTS=64
 MAX_OBSERVATION_AGE=2

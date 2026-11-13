@@ -15,7 +15,7 @@ from unittest.mock import patch
 CORE=Path(__file__).resolve().parents[1]/'core'
 sys.path.insert(0,str(CORE))
 
-import runtime_lease as lease
+from memvane.runtime import runtime_lease as lease
 
 
 class ImportBoundary(unittest.TestCase):

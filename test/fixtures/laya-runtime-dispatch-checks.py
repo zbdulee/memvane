@@ -15,7 +15,7 @@ CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
 import laya_runtime_dispatch as dispatch
 import laya_wake_entry as entry
-from runtime_lease import coordination_lock
+from memvane.runtime.runtime_lease import coordination_lock
 from memvane.runtime.runtime_wake_policy import DispatchFailure, failure_reason
 from laya_product_bundle import (PLUGIN_PREFIXES, PLUGIN_ROOT_FILES,
                                  prepare_full_plugin_candidate)

@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
 from context_learning import shared
-from runtime_lease import atomic_json
+from memvane.runtime.runtime_lease import atomic_json
 
 REAL_POPEN=subprocess.Popen
 NONCE='a'*32

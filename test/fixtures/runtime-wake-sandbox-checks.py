@@ -101,7 +101,7 @@ class TestRuntimeRootGuard(Decoy):
 
     def test_tmpdir_never_widens_the_trusted_temp_area(self):
         import tempfile
-        import runtime_lease
+        from memvane.runtime import runtime_lease
         # A TMPDIR pointing at a real directory (here /usr) is not temp: no
         # test root there, and no immediate drop of a project missing there.
         with mock.patch.object(tempfile, 'tempdir', '/usr'), \

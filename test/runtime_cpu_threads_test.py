@@ -21,7 +21,7 @@ class CpuThreads(unittest.TestCase):
 
     def cpu(self):
         self.assertIsNotNone(importlib.util.find_spec('runtime_cpu'),'CPU policy missing')
-        import runtime_cpu
+        from memvane.runtime import runtime_cpu
         return runtime_cpu
 
     def test_shares_are_derived_from_common_aggregate_fraction(self):

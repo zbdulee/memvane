@@ -46,7 +46,7 @@ sys.dont_write_bytecode = True
 
 from memvane.kernel.resource_deferred import ResourceDeferred
 # Neutral lease primitives: importing this module never loads context_learning.
-from runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
+from memvane.runtime.runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 from memvane.runtime import runtime_wake_policy as wake_policy
 # Re-exported: drain's default executor and external callers keep this object.
 from runtime_handlers import dispatch

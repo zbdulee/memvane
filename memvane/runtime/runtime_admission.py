@@ -88,7 +88,7 @@ def provider_checkpoint():
 
 def provider_options(environment=None):
     fd=_PROVIDER.get()
-    from runtime_cpu import environment as cpu_environment
+    from memvane.runtime.runtime_cpu import environment as cpu_environment
     env=cpu_environment(environment)
     env.pop('QMD_PROVIDER_COORD_FD',None)
     if fd is not None:env['QMD_PROVIDER_COORD_FD']=str(fd)
@@ -116,7 +116,7 @@ def provider_call(function):
 
 def provider_popen(argv,*,before_launch=None,launch_failed=None,defer_launch=None,**options):
     """Fresh check at the actual launch, including inherited/nested providers."""
-    from runtime_cpu import lease
+    from memvane.runtime.runtime_cpu import lease
     with provider():
         marked=False
         scope=nullcontext(None) if _fixture() else lease(Coordinator().root)

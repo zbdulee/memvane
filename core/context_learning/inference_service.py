@@ -49,7 +49,7 @@ def _test_root(create):
     raw = os.environ.get(TEST_ROOT_ENV)
     if not raw:
         return None
-    from runtime_lease import in_platform_temp
+    from memvane.runtime.runtime_lease import in_platform_temp
     base = Path(raw)
     if not base.is_absolute() or not in_platform_temp(base):
         raise ServiceFailure('unsafe_test_root')
@@ -581,7 +581,7 @@ def _ensure_direct(root, python, deadline, *, spawn=subprocess.Popen):
         env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]),
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
-        from runtime_cpu import environment
+        from memvane.runtime.runtime_cpu import environment
         env=environment(env)
         bootstrap = ('import sys,runpy;sys.path.insert(0,' + repr(str(Path(__file__).resolve().parents[1]))
                      + ');sys.argv=["context_learning.inference_service","worker",sys.argv[1]];'
@@ -993,7 +993,7 @@ def main():
     root = service_root()
     if Path(sys.argv[2]) != root:
         raise SystemExit(2)
-    from runtime_cpu import lease
+    from memvane.runtime.runtime_cpu import lease
     with lease(root):_serve(root)
 
 

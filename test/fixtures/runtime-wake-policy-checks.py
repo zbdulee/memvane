@@ -416,7 +416,7 @@ runtime._handoff_worker(queue,fd)
             os.fstat(handoff)
 
     def yield_for(self, seconds):
-        from runtime_lease import atomic_json
+        from memvane.runtime.runtime_lease import atomic_json
         atomic_json(self.root / runtime.YIELD_FILE, {'until': time.time() + seconds})
 
     def test_yield_request_stops_drain_and_spawns_until_it_expires(self):
@@ -440,7 +440,7 @@ runtime._handoff_worker(queue,fd)
         self.assertEqual({argv[3] for argv in spawned}, {'timer'})
         # An expired or absurd request is ignored.
         for until in (time.time() - 1, time.time() + 10 ** 6):
-            from runtime_lease import atomic_json
+            from memvane.runtime.runtime_lease import atomic_json
             atomic_json(self.root / runtime.YIELD_FILE, {'until': until})
             self.assertFalse(runtime.yield_requested(self.root))
         (self.root / runtime.YIELD_FILE).unlink()
@@ -568,7 +568,7 @@ runtime._handoff_worker(queue,fd)
     def test_a_missing_project_outside_temp_backs_off_then_drops_after_a_day(self):
         target = self.root / 'mounted' / 'project'
         self.queue.put('laya-compile', str(target), now=0)
-        import runtime_lease
+        from memvane.runtime import runtime_lease
         import laya_runtime_dispatch
 
         def run(wall, **patches):

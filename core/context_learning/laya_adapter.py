@@ -42,7 +42,7 @@ MODEL_FILES = ('model.safetensors', 'rl_agent_config.json', 'encoder/config.json
 
 
 def _torch():
-    from runtime_cpu import environment,configure_torch
+    from memvane.runtime.runtime_cpu import environment,configure_torch
     os.environ.update(environment({}))
     import torch
     configure_torch(torch)
@@ -787,7 +787,7 @@ def smoke(model_dir, directory):
 
 
 def segment_edit(model_dir, request):
-    from runtime_cpu import environment
+    from memvane.runtime.runtime_cpu import environment
     os.environ.update(environment({}))
     from transformers import AutoTokenizer
     from edit_segments import split_with_offsets
@@ -811,7 +811,7 @@ def segment_edit(model_dir, request):
 
 def main(argv):
     if len(argv) != 4: raise ValueError('usage: MODEL_DIR MODE REQUEST RESULT')
-    from runtime_cpu import environment
+    from memvane.runtime.runtime_cpu import environment
     os.environ.update(environment({}))
     os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',
         HF_DATASETS_OFFLINE='1',TOKENIZERS_PARALLELISM='false',

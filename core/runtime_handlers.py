@@ -32,7 +32,7 @@ def _missing_target(row):
         if Path(row['target']).is_dir():return None
     except (OSError, TypeError, ValueError):
         return None
-    from runtime_lease import in_platform_temp
+    from memvane.runtime.runtime_lease import in_platform_temp
     if in_platform_temp(row['target']):return wake_policy.Dropped('target_missing')
     raise wake_policy.TargetMissing()
 
