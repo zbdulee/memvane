@@ -249,6 +249,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/journal/notification_route.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/journal/reader_lease.py": {
       "context": "journal",
       "layer": "adapter",

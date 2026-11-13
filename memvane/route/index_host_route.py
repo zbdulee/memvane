@@ -407,27 +407,6 @@ def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True
                                       'topN', 'skipPaths', 'lexicalPatterns')})
 
 
-def select_notification_route(project):
-    """Classify an external-edit hint without opening the recipient store."""
-    from memvane.journal.api import ledger_read_json as _read_json
-    try:
-        root = Path(project)
-        if not root.is_absolute() or root.resolve(strict=True) != root:
-            raise ValueError('invalid_project_root')
-        marker = _read_json(project_dir.runtime_file(root, QMD_SELECTION_MARKER))
-        raw = _read_regular(project_dir.runtime_file(root, RECORD), MAX_RECORD_BYTES)
-        route = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
-        if (not isinstance(route, dict) or route.get('schema') != SCHEMA_V4
-                or not isinstance(marker, dict) or set(marker) !=
-                {'schema', 'projectRoot', 'installId', 'routeSha256'}
-                or marker['schema'] != SELECTION_SCHEMA_V1
-                or marker['projectRoot'] != str(root)
-                or marker['installId'] != route.get('installId')
-                or marker['routeSha256'] != hashlib.sha256(raw).hexdigest()):
-            raise ValueError('selection_marker_invalid')
-        return _classify_v4(root, project_dir.settings_path(root), route, inspect_store=False)
-    except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
-        return _decision('blocked', 'selection_marker_invalid')
 
 
 def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:

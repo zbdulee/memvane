@@ -201,7 +201,6 @@ def _targets(origin, deadline):
     each candidate passes the same journal and route proof; a registry row
     grants nothing.
     """
-    from memvane.route import api as routes
     from memvane.journal import api as journal
     from memvane.registry import api as memvane_registry
     view = memvane_registry.routing_rows()
@@ -236,7 +235,7 @@ def _targets(origin, deadline):
                 continue
             if memvane_registry.excluded(view, state.name, project):
                 continue
-            decision = routes.select_notification_route(project)
+            decision = journal.select_notification_route(project)
             if (decision.get('state') != 'candidate' or decision.get('projectRoot') != project
                     or decision.get('journalPath') != str(pointer)):
                 continue

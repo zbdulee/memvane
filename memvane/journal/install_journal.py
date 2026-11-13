@@ -1378,7 +1378,7 @@ def verify_dispatch_target(decision):
 def verify_notification_target(decision):
     """Prove an external-edit hint using only local metadata and the journal."""
     from memvane.settings import api as project_dir
-    from memvane.route.api import select_notification_route
+    from memvane.journal.notification_route import select_notification_route
     from memvane.journal.build_record import read_v1
     from memvane.journal.ledger_io import _private_file, _read_json
     from memvane.kernel.memvane_version import same_major, writer_floor_allows

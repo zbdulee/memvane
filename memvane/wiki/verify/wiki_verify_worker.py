@@ -781,6 +781,7 @@ def _compile_intent_id(result):
 
 def _write_compile_intent(checkout, result, verdict_digest, result_digest):
     from memvane.journal import api as ledger
+    from memvane.journal.types import CutoverBlocked
     state = ledger.reader_state(Path(checkout.decision['journalPath']).parent)
     directory = state / 'provenance-intents'
     try:
@@ -798,7 +799,7 @@ def _write_compile_intent(checkout, result, verdict_digest, result_digest):
               'result_digest': result_digest}
     try:
         ledger.ledger_write(path, intent, replace=False)
-    except ledger.CutoverBlocked as exc:
+    except CutoverBlocked as exc:
         if str(exc) != 'cutover_record_exists' or ledger.ledger_private_file(path) != ledger.ledger_canonical(intent):
             raise
     return path

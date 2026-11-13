@@ -1,7 +1,6 @@
 """Public journal selection and worker proof operations."""
 from __future__ import annotations
 
-from memvane.journal.types import CutoverBlocked
 
 
 def inspect_journal(*args, **kwargs):
@@ -141,4 +140,9 @@ def ledger_write(*args, **kwargs):
 
 def reader_state(*args, **kwargs):
     from memvane.journal.journal_reader import _state as implementation
+    return implementation(*args, **kwargs)
+
+
+def select_notification_route(*args, **kwargs):
+    from memvane.journal.notification_route import select_notification_route as implementation
     return implementation(*args, **kwargs)
