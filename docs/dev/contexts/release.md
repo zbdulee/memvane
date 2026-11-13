@@ -3,6 +3,16 @@
 ### 버전 bump 체크리스트
 릴리스 버전을 올릴 때는 모든 host manifest와 테스트 기대값을 같은 버전으로 맞춘다.
 
+1.x에서는 다음 영속 계약을 유지한다. 모양을 바꾸려면 메이저 버전을 올린다.
+
+- store·journal DDL, application id와 `user_version`.
+- route·ledger·build·attestation JSON의 키 집합과 schema id.
+- sync owner·`sync.lock`·wiki mutation lock의 이름과 위치.
+- wake kind 집합과 target 모양, `recipe_id`·`profile_id` 입력.
+- 카드 frontmatter 필드와 `.memvane/compile/*.jsonl` 행 모양.
+
+보호된 provider·worker 파일이나 `locks/`를 변경하는 1.x 릴리스는 모든 프로젝트의 재빌드가 필요하다.
+
 - `package.json` — project/npm version
 - `plugin.json` — root AGY/Gemini plugin metadata
 - `plugin.yaml` — Hermes Agent plugin metadata

@@ -142,33 +142,22 @@ def private_root(root):
 
 
 def bundle_identity():
-    """This executing bundle: plugin version plus a digest of its code."""
+    """The running plugin version used for resident replacement."""
     global _BUNDLE
     if _BUNDLE is None:
-        plugin = Path(__file__).resolve().parents[1]
+        from memvane_version import plugin_version
         try:
-            version = json.loads((plugin / 'plugin.json').read_text('utf-8'))['version']
+            version = plugin_version()
         except (OSError, ValueError, KeyError, TypeError):
             version = '0'
-        digest = hashlib.sha256()
-        for path in sorted([*plugin.glob('core/*.py'), *plugin.glob('core/*.mjs'),
-                            *plugin.glob('core/context_learning/*.py')]):
-            digest.update(path.relative_to(plugin).as_posix().encode() + b'\0')
-            digest.update(path.read_bytes())
-        _BUNDLE = {'version': str(version), 'digest': digest.hexdigest()}
+        _BUNDLE = {'version': version}
     return dict(_BUNDLE)
 
 
 def _version_key(version):
     """Semver-like order; a prerelease sorts before its release."""
-    match = re.fullmatch(r'(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?',
-                         str(version))
-    if match is None:
-        return None
-    pre = match.group(4)
-    tail = (1,) if pre is None else (0, *[(0, int(part), '') if part.isdigit()
-                                          else (1, 0, part) for part in pre.split('.')])
-    return tuple(int(match.group(n)) for n in (1, 2, 3)) + (tail,)
+    from memvane_version import version_key
+    return version_key(version)
 
 
 def newer(candidate, current):
