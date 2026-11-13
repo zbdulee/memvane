@@ -159,6 +159,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/install/runtime_wake_cancel.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/journal/__init__.py": {
       "context": "journal",
       "layer": "adapter",
@@ -760,11 +765,6 @@
       "pinned": false
     },
     "memvane/runtime/runtime_monitor.py": {
-      "context": "runtime",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/runtime/runtime_wake_cancel.py": {
       "context": "runtime",
       "layer": "adapter",
       "pinned": false

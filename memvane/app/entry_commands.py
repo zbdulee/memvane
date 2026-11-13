@@ -6,10 +6,24 @@ import sqlite3
 import sys
 
 
-def runtime_work():
+def runtime_work_main(argv):
+    if argv[:1]==['cancel-build-wake'] and len(argv)==7 and argv[1::2]==['--project','--revision','--backup-dir']:
+        # Official per-UID queue only; ownership is proven from private build state.
+        from memvane.install import runtime_wake_cancel
+        try:revision=int(argv[4])
+        except ValueError:revision=None
+        result=runtime_wake_cancel.cancel(argv[2],revision,argv[6])
+        print(json.dumps(result,sort_keys=True,default=str));return 0 if result['status']!='refused' else 3
+    if argv[:1]==['build-wake-status'] and len(argv)==3 and argv[1]=='--project':
+        from memvane.install import runtime_wake_cancel
+        print(json.dumps(runtime_wake_cancel.status(argv[2]),sort_keys=True,default=str));return 0
     from memvane.runtime.runtime_work import main
+    return main(argv)
+
+
+def runtime_work():
     try:
-        return main(sys.argv[1:])
+        return runtime_work_main(sys.argv[1:])
     except (OSError, ValueError, sqlite3.Error):
         return 75
 

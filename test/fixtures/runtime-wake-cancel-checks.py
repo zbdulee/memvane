@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path.cwd() / 'core'))
 from memvane.runtime import runtime_work
-from memvane.runtime import runtime_wake_cancel as cancel
+from memvane.app.entry_commands import runtime_work_main
+from memvane.install import runtime_wake_cancel as cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
 from memvane.install import initial_build as initial_build
 from memvane.journal import install_journal as laya_install_journal
@@ -212,12 +213,12 @@ with tempfile.TemporaryDirectory(prefix='wake-cancel-') as name, \
     printed = io.StringIO()
     with patch.object(cancel, 'cancel', side_effect=lambda *a, **k: seen.append((a, k)) or {'status': 'refused'}), \
             contextlib.redirect_stdout(printed):
-        assert runtime_work.main(['cancel-build-wake', '--project', str(project), '--revision', 'x',
+        assert runtime_work_main(['cancel-build-wake', '--project', str(project), '--revision', 'x',
                                   '--backup-dir', str(backups)]) == 3
     assert json.loads(printed.getvalue()) == {'status': 'refused'}
     assert seen == [((str(project), None, str(backups)), {})], seen
     assert cancel.cancel(str(project), None, str(backups), queue=queue)['reason'] == 'invalid_revision'
-    assert runtime_work.main(['cancel-build-wake', '--project', str(project)]) == 2
+    assert runtime_work_main(['cancel-build-wake', '--project', str(project)]) == 2
     results['cliOfficialQueueOnly'] = True
 
 print(json.dumps(results, sort_keys=True))
