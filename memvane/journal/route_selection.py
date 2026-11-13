@@ -198,7 +198,7 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
                 or (current != root and root not in current.parents)
                 or found.get('configPath') != str(project_dir.settings_path(root))):
             return _decision('blocked', 'initial_preview_project_mismatch')
-        from memvane.install import initial_build as laya_initial_build
+        from memvane.journal import initial_build as laya_initial_build
         build = laya_initial_build.lookup(str(root))
         if build is None:
             return None

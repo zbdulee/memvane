@@ -110,6 +110,40 @@ class _BuildOperations:
         from memvane.journal.build_record import read_v1 as implementation
         return implementation(*args, **kwargs)
 
+    def lookup(self, *args, **kwargs):
+        from memvane.journal.initial_build import lookup as implementation
+        return implementation(*args, **kwargs)
+
+    def owner(self, *args, **kwargs):
+        from memvane.journal.initial_build import owner as implementation
+        return implementation(*args, **kwargs)
+
+    def create_v1(self, *args, **kwargs):
+        from memvane.journal.initial_build import create_v1 as implementation
+        return implementation(*args, **kwargs)
+
+    def register_project(self, *args, **kwargs):
+        from memvane.journal.initial_build import register_project as implementation
+        return implementation(*args, **kwargs)
+
+    def advance_v1(self, *args, **kwargs):
+        from memvane.journal.initial_build import advance_v1 as implementation
+        return implementation(*args, **kwargs)
+
+    def registered_pointer_path(self, *args, **kwargs):
+        from memvane.journal.initial_build import registered_pointer_path as implementation
+        return implementation(*args, **kwargs)
+
+    @property
+    def V1_BUILD_FILE(self):
+        from memvane.journal.types import V1_BUILD_FILE
+        return V1_BUILD_FILE
+
+    @property
+    def V1_BUILD_SCHEMA(self):
+        from memvane.journal.types import V1_BUILD_SCHEMA
+        return V1_BUILD_SCHEMA
+
 
 build = _BuildOperations()
 

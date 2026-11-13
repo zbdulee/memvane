@@ -133,7 +133,7 @@ class _BuildWriterContext:
         self.stack = ExitStack()
 
     def __enter__(self):
-        from memvane.install import initial_build as build
+        from memvane.journal import initial_build as build
         from memvane.app import runtime_dispatch as dispatch
         from memvane.journal.install_journal import _attestation, _v1_provider_manifest, inspect_journal
         from memvane.store.api import view_store_class
@@ -220,7 +220,7 @@ def validate_normal_writer(writer, *, deadline=None):
         validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
         return
     if type(writer) is BuildWriter:
-        from memvane.install import initial_build as build
+        from memvane.journal import initial_build as build
         from memvane.app import runtime_dispatch as dispatch
         context = _build_record(writer)
         if deadline is not None:
