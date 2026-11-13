@@ -152,11 +152,6 @@ def create_head(db,view_id):
     _execute(db,head_ddl(view_id))
 
 
-def populate_head(db,view_id,rows):
-    for row in _entries(rows,insertion_order=False):
-        _execute(db,f'INSERT INTO {head_table(view_id)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
-
-
 def head_map_matches(db,view_id,rows):
     """True when the rowid map names exactly the head FTS table's ``rows`` rows (path and rowid).
 
@@ -168,23 +163,6 @@ def head_map_matches(db,view_id,rows):
     joined=_execute(db,f'SELECT COUNT(*) FROM {name} t JOIN s_head_fts_map m ON m.view_id=? AND m.origin=? '
                        f'AND m.fts_rowid=t.rowid AND m.path_key=t.path_key',(view_id,origin))[0][0]
     return table==mapped==joined
-
-
-def head_map_rows(db,view_id):
-    """(path_key, rowid) of the head FTS table and of its map, both path-ordered."""
-    name=head_table(view_id)
-    table=[tuple(r) for r in _execute(db,f'SELECT path_key,rowid FROM {name} ORDER BY path_key COLLATE BINARY,rowid')]
-    mapped=[tuple(r) for r in _execute(db,'SELECT path_key,fts_rowid FROM s_head_fts_map WHERE view_id=? AND origin=? '
-                                        'ORDER BY path_key COLLATE BINARY',(view_id,'base'))]
-    return table,mapped
-
-
-def map_head(db,view_id):
-    """Record every current head FTS row in the rowid map (fresh head FTS only)."""
-    origin='base'
-    for path,rowid in head_map_rows(db,view_id)[0]:
-        _execute(db,'INSERT INTO s_head_fts_map(view_id,origin,path_key,fts_rowid) VALUES (?,?,?,?)',
-                 (view_id,origin,path,rowid))
 
 
 def apply_mapped_head_changes(db,view_id,changes,*,deadline=None):
@@ -399,24 +377,6 @@ def verify_head_index(db,view_id):
         _execute(db,f"INSERT INTO {name}({name}) VALUES('integrity-check')")
     except sqlite3.Error:
         v.fail('fts_integrity_failed')
-
-
-def head_logical_digest(rows,deadline=None):
-    """The logical digest ``head_proof`` returns for the same rows (path order)."""
-    logical=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0')
-    previous=None;size=0
-    for count,item in enumerate(rows,1):
-        _deadline(deadline)
-        if count>MAX_ROWS:v.fail('fts_rows_invalid')
-        row=_entries([item],insertion_order=True)[0]
-        encoded_path=row[3].encode('utf8')
-        if previous is not None and encoded_path<=previous:v.fail('fts_rows_invalid')
-        previous=encoded_path
-        size+=sum(len(value.encode('utf8')) for value in row)
-        if size>MAX_FTS_BYTES:v.fail('fts_rows_too_large')
-        raw=v.canonical(row).encode('utf8')
-        logical.update(len(raw).to_bytes(8,'big'));logical.update(raw)
-    return logical.hexdigest()
 
 
 def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,logical=True):
