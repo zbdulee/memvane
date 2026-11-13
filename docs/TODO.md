@@ -84,7 +84,6 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
 - **lifecycle.**
   - 등록: 온보딩 activate가 성공하면 프로젝트 root를 등록한다. 연결 worktree view가 처음 게시되면 그 worktree root를 같은 install의 하위 항목으로 등록한다.
   - 해제: uninstall(선택 해제)이 끝나면 그 install의 프로젝트·worktree 항목을 지운다. worktree는 `git worktree remove`·prune이 관측되면 해제한다.
-  - 이동: 프로젝트 디렉터리 이동·이름 변경(`laya_project_dir_move`, state move)은 항목을 원자적으로 갱신한다.
   - 프로젝트 폴더 삭제: 등록된 프로젝트·worktree root가 사라지면 그 항목을 해제 대상으로 표시한다. uninstall과 같은 정리 범위를 적용하되, state 디렉터리·저장소·학습 상태 삭제는 uninstall의 승인 규칙을 따른다. 폴더가 다시 나타나면(같은 경로 재생성, 볼륨 재연결) 자동으로 다시 선택하지 않는다. 같은 install로 되살릴지 새 온보딩으로 볼지 정한다.
   - reconcile 시점: 상주 서비스(`laya_resident_service`)가 시작할 때 레지스트리 항목을 실제 폴더와 맞춘다. root 존재 여부, `.memvane` 존재 여부, inode 변경, journal 선택 상태, worktree 등록 상태(`git worktree list`)를 본다. 서비스가 오래 떠 있으면 주기적으로도 맞춘다. 맞추는 동안 공유 lock을 쥐지 않고(`context/pr10-decision-draft.md` §6 원칙), 항목마다 짧게 끝낸다.
   - 외장·네트워크 볼륨처럼 잠시 사라지는 경로는 즉시 해제하지 않는다. 유예 기간(또는 연속 관측 횟수)을 둔다.

@@ -50,7 +50,6 @@
 
 | 현재 위치·구조 | 현재 계약 | 목표의 소유자·변경 경계 |
 |---|---|---|
-| `core/laya_index_a.py`, `_SCHEMA_V6`, `LayaIndexA` | application id `LYA1`, schema 6. `content(hash, body)`는 이미 내용 공유·불변이다. `membership(gen, scope, path, hash, eligible)`와 `head(scope, gen)`이 검색 집합을 정한다 | `wiki_blobs`는 기존 개념을 유지한다. scope 단일 head를 checkout별 `views`·`view_heads`로 나눈다. raw를 content에 복사하지 않는다 |
 | 같은 파일의 `generations`, `candidate_seals`, `receipts`, `pins`, `exclusions`, `gen_fts_<ord>` | building → prepared → published, full membership, claim/manifest seal, view pin, scope 제외. generation별 FTS는 경로·제목·본문을 색인한다. UPDATE/DELETE/REPLACE 방지 trigger가 있다 | 세대는 view·HEAD·원문 지문·trust·파생물까지 묶는다. 제외를 현재 view에 먼저 적용한다. GC가 기존 trigger를 해제하지 않는다 |
 | `core/laya_index_vector.py`, `LayaVectorIndex`, `source_evidence`, `profile_identity` | cache 키는 `(hash, title, profile_id, seq)`. chunk-set seal과 generation vector seal이 별도다. 제목은 Markdown heading 또는 경로에서 유래한다 | path에서 독립적인 입력 recipe를 사용한다. shared chunk/vector set과 view membership seal을 분리한다. legacy title 의존 벡터를 무조건 승계하지 않는다 |
 | `core/laya_index_source_port.py`, `core/laya_source_catalog.py` | no-follow 스캔, 열거/해시/디렉터리·파일 검증/완료 pointer. 미완료 스캔은 완료 snapshot을 대체하지 않는다. catalog에는 파일 metadata와 SHA가 있다 | raw catalog는 지문만, wiki scanner는 blob 입력을 담당한다. scan capture에 worktree·branch·HEAD·operation 상태를 추가한다. partial listing은 삭제 근거가 아니다 |
@@ -63,7 +62,6 @@
 | `core/laya_index_host_route.py`, `select_route`, `_worktree_route` | candidate/preview/worktree/blocked/legacy를 분류한다. 연결 worktree는 현재 main checkout의 마지막 wiki 세대를 읽기 전용 검색한다 | 공통 저장소의 owner install을 찾되 **검색 view는 호출 checkout**으로 선택한다. main-view fallback은 새 route에서 금지한다. 새 view의 writer는 별도 증명된 worker다 |
 | `core/wiki_lifecycle.py`, `core/wiki_source_retire.py`, `core/git_branch_safety.py` | frontmatter `sourceRevisions`가 근거다. Git 계보 판정과 진행 중 operation 보류가 있다. linked worktree에서는 lifecycle을 실행하지 않는다. archive 후 unlink하고 sync를 요청한다 | DB의 정확한 compile-time 지문을 사용한다. worktree별 계보 증명 뒤 그 view와 그 checkout의 카드만 처리한다. 현재 Git heuristic으로 누락 commit 지문을 만들어내지 않는다 |
 | `core/wiki_card.py`, `core/wiki_compile.py`, `core/laya_host_response.py`의 `_verified_wiki_locations`, `core/laya_source_exclusion.py` | 신뢰 카드·본문 hash·span·skipPaths 확인이 frontmatter 지문을 읽는다. selected recall은 현재 raw 본문을 다시 읽지 않는다 | trust·source spans·skipPaths 검사는 DB provenance join을 사용한다. 검색은 봉인된 wiki bytes만 읽는다. compiler/lifecycle/dedup/learning도 같은 provenance API를 쓴다 |
-| `core/laya_bundle_upgrade.py`, `core/laya_active_upgrade.py`, `core/laya_bound_upgrade.py`, `core/laya_inactive_upgrade.py`, `core/laya_fresh_wiki_origin.py` | bundle provenance·provider 비교·intent·ledger `upgrading` fence가 있다. active upgrade는 journal 활성화 뒤 fence 정리까지 복구한다. fence 중 recall은 컨텍스트 없이 exit 0일 수 있다 | bundle 교체와 data-schema migration을 별도 상태 기계로 유지한다. fence가 writer를 막아도 마지막 증명된 reader endpoint는 유지한다 |
 | `core/laya_resident_service.py`, `core/laya_product_sync_worker.py` | UID 단위 resident service가 profile별 worker를 공유하고 startup/설치 증명을 한다. cold load를 직렬화한다 | DB별 모델은 만들지 않는다. 현재 profile의 service를 사용하며 GC·migration은 모델을 로드하지 않는다 |
 
 현재 검색이 source-catalog pending 동안 마지막 게시 snapshot을 제공하는 성질과,
@@ -542,68 +540,7 @@ writer도 old-store write lease를 놓아야 한다. WAL/SHM을 개별 임의 �
 GC로 회수한다. 삭제 ancestry 조건은 사용자 원문/카드의 retirement 권한이고, 어떤 view도
 참조하지 않는 실패 job의 cache 회수에 가짜 Git 삭제 증명을 요구하지 않는다.
 
-## 8. v6에서의 무중단 migration
-
-### 8.1 bridge가 선행한다
-
-0.43.19 reader는 새 view/schema/reader endpoint를 알지 못한다. incompatible DB를 기존
-`candidateDb` 경로에 덮어쓰면 검색이 실패한다. **먼저 v6와 새 format을 모두 읽는 bridge
-bundle을 모든 사용하는 host에 배포한다.** 오래된 host가 새 DB를 열도록 강요하지 않는다.
-capability 없는 host가 남아 있으면 v6 endpoint를 유지하고 최종 전환을 미룬다.
-
-bridge는 현재 v6 검색·검증을 유지하며 journal에 명시된 endpoint만 읽는다. v6 초기 import는
-검증된 main checkout view에만 바인딩한다. 현재 linked-worktree main-index fallback 결과를
-그 worktree의 게시 view라고 등록하지 않는다. 새 view route는 새 provenance/checkout
-계약을 갖춘 후에 활성화한다.
-bridge writer는 기존 sidecar에 현재 없는 단조 증가 publish revision과 durable receipt를
-설치 상태에 추가하고, 아직 실행 중인 구 writer가 쓰기를 끝내도록 기존 operation/write
-lease로 조율한다. 이 writer 계약을 확인하지 못하면 copy를 활성화하지 않는다. revision은
-generation 이름·scan_id만으로 추정하지 않는다.
-
-### 8.2 상태 기계와 copy 경계
-
-```text
-planned → copying → caught_up → shadow_verified → reader_ready → switched
-                                                ↘ deferred / retry
-switched → rollback_retained → cleanup_eligible
-```
-
-1. installer operation lock 아래 intent를 만든다. old route SHA/journal epoch, v6 incarnation,
-   pinned generation, completed incremental-docs snapshot/revision, settings/policy digest,
-   new DB path/incarnation, migration id와 cursor를 기록한다. 경로는 검증된 private state다.
-2. v6 published membership과 completed sidecar rows의 union을 **현재 v6 shadow 규칙과
-   동일하게** capture한다. sidecar가 shadow한 path의 옛 row를 다시 살리지 않는다.
-   장시간 SQLite read transaction을 유지하는 대신 immutable generation과 revision receipt를
-   pin하고 sidecar batch 복사를 짧은 transaction으로 검증한다. endpoint tuple가 바뀌면 재캡처한다.
-3. wiki로 증명된 rows만 `wiki_blobs`로 copy한다. v6 raw content/vector/FTS는 copy하지 않는다.
-   raw catalog에서는 지문만 copy한다. legacy raw가 old rollback DB에 남는 전환 기간은
-   별도 표시하고 cleanup 승인/retention 뒤 old DB를 정리한다. 새로운 DB는 항상 raw-free다.
-4. frontmatter `sourceRevisions`를 읽어 DB provenance로 import하되, 원래 worktree/commit을
-   알 수 없는 지문은 `legacy_unbound`다. import 시점의 HEAD를 과거 compile commit으로
-   적지 않는다. 기존 검증 가능한 카드 trust와 body는 유지하며, 소실 자동 삭제는 보류한다.
-   현재 disk 원문을 다시 읽는 것은 새로운 관측이지 legacy compile 증명의 소급 작성이 아니다.
-5. 기존 byte hash·seal·trust·source span을 검증하고 lexical generation을 먼저 완성한다.
-   입력이 정확히 같은 legacy vector만 그 recipe로 copy한다. 새 recipe backfill은 독립이다.
-6. migration 동안 legacy publish owner를 유지한다. bridge writer가 durable change receipt
-   `(migration_id, old generation/sidecar revision, new generation, view, policy)`를 기록한다.
-   old publish 성공 후 new publish 실패는 old 검색을 계속하며 receipt에서 catch-up한다.
-   새 DB 성공을 위해 old ACK를 먼저 성공한 것처럼 기록하지 않는다. change receipt 누락은
-   pinned old endpoint와 전체 path/SHA 비교로 탐지하고 다시 copy한다.
-7. 마지막 catch-up에서 **writer만** 짧게 quiesce한다. old/new logical mapping, eligibility,
-   frontmatter/DB trust 판정, spans, skipPaths, lexical query corpus, compatible vector 결과를
-   shadow 비교한다. 조건 불일치면 old endpoint를 유지하고 switch하지 않는다.
-8. `reader_ready` 증명에는 새 schema/incarnation·view binding·sealed gen·parity report digest와
-   bridge capability가 포함된다. journal CAS 한 번으로 preferred reader endpoint를 바꾼다.
-   JSON route/ledger 파일 교체가 끼어도 reader는 journal의 old/new immutable endpoint 중
-   일관된 하나를 읽는다. 기존 transaction은 old에서 끝나고 신규 transaction은 new를 pin한다.
-9. rollback 기간에는 v6에 표현할 수 있는 main-view 변경을 old에도 replay한다. 새 worktree
-   view는 v6에 표현할 수 없으므로 bridge/new DB에 유지하고, rollback이 그 view를 main
-   결과로 대체하지 않는다. **reader rollback과 구 bundle 설치는 다르다.** frontmatter 없는
-   카드나 새 view가 있으면 0.43.19로의 완전 downgrade를 자동 허용하지 않는다.
-10. rollback 기간 종료·모든 host capability 확인·reader/write lease 해제·명시적 cleanup
-    조건 후 old DB/sidecar를 정리한다. frontmatter 지문 제거는 그 이후 별도 단계다.
-
-### 8.3 frontmatter 지문 제거
+## 8. frontmatter 지문 제거
 
 처음에는 import/dual reader 기간의 기존 카드 bytes를 그대로 둔다. 이때 DB provenance가
 준비된 카드도 old reader 호환용 frontmatter를 보존한다. 목표 상태의 compiler는 원문 SHA/
@@ -615,47 +552,6 @@ fingerprint-free 카드의 reader/compile/lifecycle/dedup/skipPaths/learning이 
 사용하는 것이 host별로 검증된 후에만 카드 파일 재작성을 시작한다. 이는 사용자의 Git diff를
 만드는 별도 승인 범위이며 migration이 전체 wiki를 자동 수정하지 않는다. 재작성은 새 blob
 SHA로 게시하고 같은 본문이라는 이유로 옛 byte-SHA의 벡터를 임의 승계하지 않는다.
-
-## 9. journal fence·bundle upgrade·권한
-
-bundle identity generation, install/selection epoch, **data generation**은 서로 다른 값이다.
-route의 기존 `generation`은 bundle/install 계약이므로 data gen_id로 덮어쓰지 않는다.
-
-새 journal 계약은 immutable `read_endpoints`와 mutable `reader_selection`을 추가한다.
-endpoint는 `{endpoint_id, install_id, scope_id, store_format, path, incarnation,
-schema_capability, view_binding_policy, provider_attestation_digest, creation_epoch}`를
-커밋한다. selection은 `{epoch, preferred_endpoint, previous_endpoint, transition_id}`다.
-새 route schema의 `store_binding_id`가 그 journal과 repo/worktree resolver 계약을 묶는다.
-정확한 schema 번호는 구현에서 예약하며 구 reader가 해석 가능한 척 필드를 추가하지 않는다.
-구 host 전환은 실제 등록 hook의 v4 bridge preflight 통과로 확인한다. 전역 stale session이나
-이미 실행 중인 구 recall이 없다는 주장은 하지 않는다.
-
-- fence **전** 마지막 정상 endpoint와 read-only trust proof를 durable하게 봉인한다.
-  upgrade ledger의 `upgrading`은 writer/model-start 권한을 막고 reader endpoint를 없애지 않는다.
-- fence 중 recall은 fence-aware journal reader로 같은 checkout의 마지막 증명된 endpoint를
-  읽는다. 현재 `classify-hook → upgrading → empty` 조기 종료 경로도 core 분류/응답 계약에서
-  바꿔야 한다. hook 등록 파일의 변경은 필요하지 않다.
-- read proof는 private-file/root identity, scope/incarnation, sealed view, attestation binding과
-  현재 checkout을 계속 증명한다. bundle 불일치라는 이유로 arbitrary DB를 읽지 않는다.
-  identity 손상·symlink 교체·journal 변조·unknown schema는 여전히 fail-closed다.
-- old endpoint 읽기는 DB schema migration이나 `newWriteSeen` 기록을 하지 않는다. 첫 새 DB/
-  blob/provenance 쓰기 **이전** journal write fence를 통과한다. old selected store가 살아 있어도
-  migration의 첫 쓰기를 `newWriteSeen` 밖으로 숨기지 않는다.
-- bundle upgrade의 intent/fence/activate/finish 순서와 data migration intent는 독립이다.
-  프로젝트 operation lock은 공유하고 두 writer 전환을 겹치지 않는다. order는 operation lock →
-  journal transition → store writer lock이며 model cold load나 Git scan 동안 잡지 않는다.
-- provider path만 다른 동일 artifact의 기존 수락 규칙은 유지한다. model/runtime/closure/
-  provider bytes 또는 input recipe가 바뀌면 새 review/profile/rebuild다. GC도 profile을 바꾸지 않는다.
-- compatible companion host copy, older-host refusal, QMD-origin refusal, state/project move,
-  unfinished activation 복구 계약을 유지한다. schema 전환을 이유로 QMD-origin을 우회하지 않는다.
-- journal activation 후 fence 해제 전 crash는 `finish_activated`에 해당하는 복구가 처리한다.
-  reader는 이 구간에도 endpoint를 유지한다. stopped fence도 경고와 별개로 마지막 유효
-  endpoint를 읽을 수 있어야 한다. 임의 TTL 만료로 reader를 끊지 않는다.
-
-이 연속성 계약은 bridge를 로드한 host부터 보장한다. 이미 실행 중인 구 host가 현재 코드를
-그대로 실행하면서 fence 중 결과를 내도록 만들 수는 없다. 모든 사용 host의 bridge 전환이
-검색 연속성 보장의 배포 선행 조건이다. 변조/손상으로 안전한 endpoint가 하나도 없을 때는
-검색 거절이 올바르며 무조건 fallback하는 가용성 보장은 하지 않는다.
 
 ## 10. 성능·자원 예산
 

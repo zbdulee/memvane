@@ -34,7 +34,7 @@
 
 - `core/config.py`: `diagnostics.enabled` 정규화와 기존 minimal 설정 보존.
 - `core/event_log.py`, 신규 `core/diagnostic_trace.py`: 동의 판정·유계 예외/경고 캡처·조각 및 연결. 새로운 hook action·wake kind는 만들지 않는다.
-- `core/laya_host_response.py`, `core/hook_main.py`, `core/laya_runtime_dispatch.py`, `core/wiki_compile_worker.py`, `core/laya_bundle_upgrade.py`, `hermes_adapter/core_bridge.py`: 기존 오류·경고 경계에서 진단을 연결한다. resident·shadow는 기존 이벤트 경계에서 정보가 남을 때만 캡처한다.
+- `core/laya_host_response.py`, `core/hook_main.py`, `core/laya_runtime_dispatch.py`, `core/wiki_compile_worker.py`, `hermes_adapter/core_bridge.py`: 기존 오류·경고 경계에서 진단을 연결한다. resident는 기존 이벤트 경계에서 정보가 남을 때만 캡처한다.
 - 신규 `core/log_targets.py`, `skills/logs/scripts/logs.py`, `skills/logs/SKILL.md`: 소유자 registry, 안전한 통합 조회와 명시적 상세 표시.
 - 신규 `test/diagnostic-trace.test.mjs`, `test/fixtures/diagnostic-trace-checks.py`, `test/diagnostic-targets.test.mjs`, `test/fixtures/diagnostic-targets-checks.py`; 기존 이벤트·host·worker 테스트를 필요한 범위에서 보강한다.
 - `docs/settings.md`, `docs/architecture.md`, 사용자 안내: 현재 동작·보안·운영 설정과 조회를 설명한다.
