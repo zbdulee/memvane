@@ -804,8 +804,16 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
                         or type(marker_record['installId']) is not str
                         or not INCARNATION.fullmatch(marker_record['installId'])
                         or type(marker_record['routeSha256']) is not str
-                        or not SHA256.fullmatch(marker_record['routeSha256'])
-                        or len(records) != 1 or records[0][0] != marker_root):
+                        or not SHA256.fullmatch(marker_record['routeSha256'])):
+                    raise ValueError('selection_marker_invalid')
+                if not records:
+                    import memvane_paths
+                    try:
+                        memvane_paths.install_root(marker_record['installId']).lstat()
+                    except FileNotFoundError:
+                        return _decision('legacy', 'foreign_install')
+                    raise ValueError('selection_route_missing')
+                if len(records) != 1 or records[0][0] != marker_root:
                     raise ValueError('selection_marker_invalid')
                 route_bytes = _read_regular(records[0][2], MAX_RECORD_BYTES)
                 route = json.loads(route_bytes.decode('utf-8'), object_pairs_hook=_pairs)
