@@ -1,11 +1,13 @@
 """Which install a wake target names: a selected route or a registered initial build.
 
-Read-only. ``app.runtime_dispatch.resolve`` adds the entry-file checks before
-it runs a child; an initial-build writer rechecks the same answer in-process.
+Read-only. ``app.runtime_dispatch.resolve`` asks before it runs a child; an
+initial-build writer and a preview proof recheck the same answer in-process.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import stat
 
 from memvane.journal.types import DispatchTargetError
 
@@ -14,9 +16,10 @@ def dispatch_target(project, *, build):
     """Stable identity and progress of ``project``'s target, or ``{'terminal': True}``.
 
     ``build`` admits a registered initial build behind a not yet selected
-    (``legacy``) route. Raises ``DispatchTargetError`` with a fixed code.
+    (``legacy``) route and names the sync worker as the entry; otherwise the
+    selected wiki worker. Raises ``DispatchTargetError`` with a fixed code.
     """
-    project = Path(project)
+    project = _project(project)
     from memvane.journal.api import select_route
     route = select_route(str(project), action='update')
     if route.get('state') == 'candidate':
@@ -100,4 +103,32 @@ def dispatch_target(project, *, build):
         raise DispatchTargetError('writer_floor')
     if any(not isinstance(value, str) or not value for value in stable.values()):
         raise DispatchTargetError('target_identity_invalid')
+    _check_entries(build)
     return {'terminal': False, **stable, **progress}
+
+
+def _project(value):
+    path = Path(value)
+    if not path.is_absolute() or path.is_symlink() or str(path.resolve(strict=False)) != str(path):
+        raise DispatchTargetError('target_invalid')
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise DispatchTargetError('target_unavailable') from exc
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+        raise DispatchTargetError('target_invalid')
+    return path
+
+
+def _check_entries(build):
+    from memvane.kernel.bundle_paths import entry_path, plugin_root
+    worker = plugin_root() / ('memvane/sync/product_sync_worker.py' if build
+                              else 'memvane/wiki/workspace/wiki_selected_laya.py')
+    for entry in (entry_path(), worker):
+        try:
+            info = entry.lstat()
+        except OSError as exc:
+            raise DispatchTargetError('target_entry_unavailable') from exc
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o022):
+            raise DispatchTargetError('target_entry_invalid')

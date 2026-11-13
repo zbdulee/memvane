@@ -11,7 +11,6 @@ from pathlib import Path
 import re
 import selectors
 import signal
-import stat
 import subprocess
 import sys
 import time
@@ -34,30 +33,11 @@ STABLE_TARGET_FIELDS = ('project', 'installId', 'scopeId', 'storeIncarnation',
                         'storePath', 'journalPath')
 
 
-def _project(value):
-    path = Path(value)
-    if not path.is_absolute() or path.is_symlink() or str(path.resolve(strict=False)) != str(path):
-        raise DispatchFailure('target_invalid')
-    try:
-        info = path.stat()
-    except OSError as exc:
-        raise DispatchFailure('target_unavailable') from exc
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
-        raise DispatchFailure('target_invalid')
-    return path
-
-
-def _bootstrap():
-    """The executing plugin's one-wake bootstrap."""
-    from memvane.kernel.bundle_paths import entry_path
-    return entry_path()
-
-
 def resolve(kind, value):
     """Verify an active route or registered inactive build without executing it."""
     if kind not in KINDS:
         raise DispatchFailure('kind_invalid')
-    project = _project(value)
+    project = Path(value)
     from memvane.journal.api import dispatch_target
     from memvane.journal.types import DispatchTargetError
     try:
@@ -66,17 +46,6 @@ def resolve(kind, value):
         raise DispatchFailure(exc.code) from exc.__cause__
     if target.pop('terminal'):
         return {'terminal': True, 'project': str(project)}
-    root = Path(__file__).resolve().parents[2]
-    worker = root / ('memvane/sync/product_sync_worker.py' if kind == 'laya-sync'
-                     else 'memvane/wiki/workspace/wiki_selected_laya.py')
-    for entry in (_bootstrap(), worker):
-        try:
-            info = entry.lstat()
-        except OSError as exc:
-            raise DispatchFailure('target_entry_unavailable') from exc
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o022):
-            raise DispatchFailure('target_entry_invalid')
     return {'terminal': False, 'project': str(project), **target}
 
 
