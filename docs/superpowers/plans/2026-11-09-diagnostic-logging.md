@@ -18,7 +18,7 @@
 - 기존 event 4096 bytes/line·4 MiB rotation·0600/no-follow·best-effort 및 host output/exit 계약을 유지한다.
 - 상세 최대 16 KiB, base64 조각 240자 이하·최대 96개. header는 version·ID·count·byte length·SHA-256·truncated를 갖는다.
 - 통합 대상 최대 64개, 총 읽기 최대 16 MiB. registry는 `$XDG_CONFIG_HOME/memvane/log-targets.json` 또는 `~/.config/memvane/log-targets.json`, owner-only·0600·no-follow.
-- 보호 파일 `core/laya_local_embed_provider.py`, `core/laya_local_embed_worker.mjs`, `hooks/hooks-codex.json`, `scripts/development_guard.py`와 resident service·shadow migration 구현을 변경하지 않는다.
+- 보호 파일 `core/laya_local_embed_provider.py`, `core/laya_local_embed_worker.mjs`, `hooks/hooks-codex.json`, `scripts/development_guard.py`와 resident service 구현을 변경하지 않는다.
 - 전역 development guard 사용, 일반 검사는 순차, 리뷰는 검사 종료 뒤 단독. 실제 모델·운영 데이터를 시험에 쓰지 않는다.
 - 각 단위는 base RED와 기존 REG를 남기고 수정 뒤 Python 3.13·3.9 GREEN을 기록한다. 알려진 py3.9 환경 실패와 시간 민감 실패는 계획된 절차대로 분리한다.
 

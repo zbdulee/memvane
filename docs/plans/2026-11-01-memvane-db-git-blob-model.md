@@ -58,7 +58,6 @@
 | `core/laya_vector_capacity.py` | pending scan fill과 complete snapshot fill의 cursor가 별도다. 기본 fill은 8개·2 MB, 한 문서의 sealed set을 먼저 커밋한다 | branch/worktree 간 sealed set cache hit를 공유한다. content lease로 중복 inference를 합친다. 세대 봉인은 모델 없이 수행한다 |
 | `core/laya_incremental_docs.py`, `core/laya_incremental_docs_query.py` | 설치·scope·incarnation·profile에 묶인 `docs(path, hash, title, body, …)` sidecar와 FTS. 먼저 완성된 문서가 기존 경로를 shadow한다 | 설치 전체 `path` overlay는 다른 branch에 적용할 수 없다. 새 모델은 작은 immutable lexical generation으로 먼저 게시하고 sidecar를 제거한다. 전환 중 기존 sidecar의 completed rows도 보존한다 |
 | `core/laya_index_runtime.py`, `LayaIndexRuntime` | 증명된 scope/root/DB/queue를 받는다. capacity sidecar 두 개가 함께 존재해야 한다. runtime은 설치 권한을 만들지 않는다 | `ViewHandle`을 받아 같은 reader transaction에서 head·seal·membership을 pin한다. DB 공유는 접근 권한 공유를 뜻하지 않는다 |
-| `core/laya_install_journal.py`, `verify_selected_route*`, `cas_mark_new_write` | journal은 설치·bundle·route·attestation·scope·incarnation을 증명한다. `newWriteSeen`은 첫 쓰기 전 fence다. bundle drift에 한해 증명된 읽기 전용 route를 허용한다 | reader endpoint를 journal에서 독립적으로 봉인한다. v6와 새 DB를 동시에 읽을 수 있는 bridge 뒤에만 DB/route 전환을 허용한다 |
 | `core/laya_index_host_route.py`, `select_route`, `_worktree_route` | candidate/preview/worktree/blocked/legacy를 분류한다. 연결 worktree는 현재 main checkout의 마지막 wiki 세대를 읽기 전용 검색한다 | 공통 저장소의 owner install을 찾되 **검색 view는 호출 checkout**으로 선택한다. main-view fallback은 새 route에서 금지한다. 새 view의 writer는 별도 증명된 worker다 |
 | `core/wiki_lifecycle.py`, `core/wiki_source_retire.py`, `core/git_branch_safety.py` | frontmatter `sourceRevisions`가 근거다. Git 계보 판정과 진행 중 operation 보류가 있다. linked worktree에서는 lifecycle을 실행하지 않는다. archive 후 unlink하고 sync를 요청한다 | DB의 정확한 compile-time 지문을 사용한다. worktree별 계보 증명 뒤 그 view와 그 checkout의 카드만 처리한다. 현재 Git heuristic으로 누락 commit 지문을 만들어내지 않는다 |
 | `core/wiki_card.py`, `core/wiki_compile.py`, `core/laya_host_response.py`의 `_verified_wiki_locations`, `core/laya_source_exclusion.py` | 신뢰 카드·본문 hash·span·skipPaths 확인이 frontmatter 지문을 읽는다. selected recall은 현재 raw 본문을 다시 읽지 않는다 | trust·source spans·skipPaths 검사는 DB provenance join을 사용한다. 검색은 봉인된 wiki bytes만 읽는다. compiler/lifecycle/dedup/learning도 같은 provenance API를 쓴다 |
@@ -605,7 +604,6 @@ learning inference 공유는 DB content/provenance를 프로젝트 간 노출하
 | model unavailable, resource pressure, oversized member | lexical view 유지 | vector fill만 deferred/blocked, cache/cursor 보존 |
 | blob/set hash 손상 | 손상 후보 제외, lexical로 가능한 안전 결과 유지 | candidate quarantine·명시적 repair; 같은 PK 덮어쓰기 금지 |
 | SQLite busy/disk full/copy crash | 선택된 old endpoint 유지 | 짧은 transaction rollback, cursor replay; 불완전 새 DB 선택 금지 |
-| sidecar newer than copied v6 generation | v6의 실제 shadow 결과 유지 | effective endpoint parity까지 catch-up; stale path 부활 금지 |
 | bundle fence/companion-host cache 변화 | bridge의 증명된 현재-view reader 유지 | writer fence, intent 복구. 구 host 존재 시 schema 전환 보류 |
 | endpoint CAS 직전/직후 crash | old 또는 new 하나의 완전한 reader tuple | journal/intent reconcile, mixed incarnation·seal 조합 거절 |
 | worktree 이동·삭제 후 경로 재사용 | binding 일치 view만 검색 | 새로운 UUID 또는 명시 rebind; old view 자동 GC/삭제 금지 |
@@ -627,45 +625,9 @@ development guard·파일 병렬도 1·유한 timeout을 유지한다. `developm
 
 | PR | 범위·완료 조건 | 먼저 실패시킬 테스트 / 기존 회귀 |
 |---|---|---|
-| 1. checkout identity와 view capture | 새 data path 미선택. Git facts, ref/HEAD/index/operation capture, stable worktree binding API | 같은 common dir의 다른 worktree 분리, 같은 branch의 다른 lineage, detached/unborn/non-Git, env 오염, case alias, path reuse. `test/laya-index-host-route.test.mjs`·새 view identity suite |
-| 2. immutable blob/recipe/provenance schema | 별도 candidate format, no raw body API, 동일 bytes 한 row, 명시 recipe/profile | rename/path 없는 heading, byte 충돌, 중복 insert, malformed/partial sets, raw ingestion 거절, provenance가 다른 같은 blob. `test/laya-index-a.test.mjs`·`test/laya-index-vector.test.mjs`와 새 store suite |
-| 3. view generation과 lexical reader | 한 view head CAS, FTS/trust/source seal, 기존 v6 reader 유지 | A 편집 후 B 검색 불변, view filter 이전 LIMIT, pin 중 head swap, zero/held source, skipPaths, FTS CJK parity, legacy bridge query. `test/laya-source-catalog.test.mjs`·`test/laya-fts-text.test.mjs` |
-| 4. 공유 vector fill·coverage seal | caller synthetic path recipe, content lease, bounded cursor, lexical 우선 | 같은 content 두 views의 provider call 1회, title fallback rename, recipe/profile 변경 재embedding, no-op fill write-fence 0회, incomplete set·provider failure·float-work degradation. `test/laya-vector-capacity.test.mjs`·`test/laya-incremental-query.test.mjs` |
-| 5. journal reader endpoint와 fence bridge | v6/new reader capability, writer-only upgrade fence, endpoint CAS/old lease | fence 모든 단계에서 동시 recall, stopped fence, activate 후 crash, route/journal reorder, bundle drift 허용 범위, tamper 거절, legacy Hermes/older host 보류. `test/laya-journal-v4.test.mjs`·`test/laya-active-upgrade.test.mjs`·`test/laya-bundle-auto-upgrade.test.mjs` |
-| 6. migration shadow/catch-up | v6+completed sidecar effective view copy, no automatic switch, parity receipt | main-only import, sidecar shadow 우선, copy 도중 edit, crash cursor, copy 중 disk full/busy, raw bytes/FTS 부재, unknown commit import hold, old/new query 동등성. 새 migration suite와 `test/laya-incremental-docs.test.mjs` |
-| 7. view 선택·증명된 writer 활성화 | bridge host만 새 route, linked worktree도 자기 view, main fallback 제거 | cold view preparing, same-HEAD dirty worktrees, A/B switch during search·compile, no-source-reread recall, main/linked settings 불일치. Claude/Codex/Hermes hook payload·gate·observer 회귀, `test/laya-host-response.test.mjs`·`test/wiki-selected-laya.test.mjs` |
 | 8. DB provenance compile/lifecycle | compile intent recovery, DB source refs, same-worktree+ancestor deletion | missing raw hold/retire 행렬, sparse/index-only deletion, rebase/merge, mixed-source refresh, fingerprint 없음 hold, 25%/3장 경계·cap 우회 방지, archive/unlink crash. 새 lifecycle fixture와 기존 wiki lifecycle/source-retire suite |
 | 9. frontmatter-free 카드 writer | 모든 consumer의 DB provenance 사용, 파일 재작성은 명시 요청만 | provenance 없이 trust 불가, source span/hash/skipPaths 위조, fingerprint-free compile→recall→dedup→learning, 구 host downgrade 거절. 기존 source-spans·compile·dedup suites |
 | 10. retention/GC·운영 확대 | 사용자 retention 결정 뒤 mark-copy, 새 seal, endpoint swap, old lease cleanup | 다른 view refs·active reader·job cache 보존, missing worktree hold, orphan 유예, compaction crash와 no-space, old/new parity. 1,800장/10 views 및 2,048 초과 synthetic budget report |
-
-PR 10은 기존 설치의 upgrade 백업과 QMD origin rollback DB도 조사한다. active·inactive
-intent와 복구 경로, 완료 기록, rollback 창의 참조를 먼저 대조한다. 활성 참조와 확인되지
-않은 항목은 보존하고, 나머지도 보존 기간을 결정하기 전에는 삭제하지 않는다. 정리 계획은
-항목별 근거·논리 크기와 실제 할당 크기·예상 확보량을 미리 보여주고 적용 직전에 잠금 아래
-참조와 파일 identity를 재검증한다. 실제 삭제는 별도 사용자 요청이 필요하다.
-
-운영 진단은 각 PR의 변경 경계에 맞춰 보강한다. PR 5는 bridge의 실패 단계·사유와 최종
-결과를 확인하고, PR 6/7은 migration·view 선택의 재시도 및 결과, PR 8은 compile·wiki
-측정과 최종 쓰기, PR 9/10은 provenance 거절과 retention 결과를 다룬다. 작업 간 연결은
-필요한 범위에서 불투명 ID와 시도 번호를 사용한다. 새 진단 필드는 고정 사유 코드와 숫자
-등으로 제한하며 문서 원문·프롬프트·인증 정보·임의 예외 메시지는 기록하지 않는다.
-공통 이벤트 기록기의 기존 텍스트 디버그 옵션과 stderr 경로도 이 기준에 맞춰 점검하고,
-진단 보강을 배포하기 전에 원문 노출 경로를 제거하거나 안전하게 제한한다.
-
-PR 5의 fence bridge는 PR 6/7 활성화에 선행한다. PR 8은 같은-worktree 지문을 신뢰할 수 있는
-경우부터 적용하고 unknown legacy provenance는 계속 보류한다. PR 9/10은 bridge rollout·
-rollback 종료와 사용자 선택이 끝나기 전 자동 실행하지 않는다. 데이터 schema와 bundle
-버전은 각각 검토하며, 실제 code PR만 저장소의 7개 manifest 버전 규칙을 따른다.
-
-release gate는 다음 증거를 요구한다:
-
-- 두 branch·두 worktrees에서 동일 내용 embedding 재사용, 한 branch 편집 뒤 다른 view
-  mapping/검색 불변, 내용 복귀 cache hit와 새 content 1회 embed;
-- 모든 publish/migration/fence crash point에서 이미 게시된 현재-view 검색이 유지되고
-  다른 view 결과·raw body가 반환/저장되지 않음;
-- source deletion의 same-worktree/known-ancestor/path-absence 조건과 25% 최종 가드;
-- 모든 host의 bridge capability, journal/route/store tamper 거절, rollback 제한과 cleanup lease;
-- fixture 기준 latency/bytes/vector work/DB 성장, full suite 결과와 base 실패 출력.
 
 ## 13. 사용자에게 남기는 질문
 
