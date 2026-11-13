@@ -98,3 +98,32 @@ def wake_queue(*args, **kwargs):
 def runtime_main(*args, **kwargs):
     from memvane.runtime.runtime_work import main as implementation
     return implementation(*args, **kwargs)
+
+
+def configure_torch(*args, **kwargs):
+    from memvane.runtime.runtime_cpu import configure_torch as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def environment(*args, **kwargs):
+    from memvane.runtime.runtime_cpu import environment as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def lease(*args, **kwargs):
+    from memvane.runtime.runtime_cpu import lease as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def in_platform_temp(*args, **kwargs):
+    from memvane.runtime.runtime_lease import in_platform_temp as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def platform_temp_roots(*args, **kwargs):
+    from memvane.runtime.runtime_lease import platform_temp_roots as implementation
+    return implementation(*args, **kwargs)

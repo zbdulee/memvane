@@ -285,7 +285,7 @@ def _private_lock(path):
 
 
 def _atomic_json(path, value):
-    from memvane.runtime.runtime_lease import atomic_json
+    from memvane.kernel.atomic_rename import atomic_json
     atomic_json(path, value)
 
 
@@ -315,7 +315,7 @@ def default_spawn(argv, *, pass_fds):
            if key in os.environ}
     env.update(PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
-    from memvane.runtime.runtime_cpu import environment
+    from memvane.runtime.api import environment
     env = environment(env)
     subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, close_fds=True, pass_fds=pass_fds,
@@ -1580,7 +1580,7 @@ def _learning_host(learning_root):
     def host(stopped):
         from memvane.learning.context_learning import inference_service as learning
         root = Path(learning_root)
-        from memvane.runtime.runtime_cpu import lease
+        from memvane.runtime.api import lease
         while not stopped.is_set():
             try:
                 # The CPU share gates learning only, never the embedding host.

@@ -176,7 +176,7 @@ def rebind(state, *, home=None, deadline=None):
     Nothing runs before ``check_scope`` passes. A policy under an accepted
     learning profile is never rewritten (its acceptance covers the policy).
     """
-    from memvane.runtime.runtime_lease import atomic_json
+    from memvane.kernel.atomic_rename import atomic_json
     policy = _policy(state)
     adapter = running_adapter()
     argv = policy['trainerArgv']
@@ -393,7 +393,7 @@ def warm(project, *, home=None, state=None):
     or a new checkpoint, receipt or code is a new pair.
     """
     import fcntl
-    from memvane.runtime.runtime_lease import atomic_json
+    from memvane.kernel.atomic_rename import atomic_json
     from .contracts import digest
     from .dataset import read_private_json
     from .inference_service import _policy, predict

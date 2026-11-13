@@ -214,7 +214,7 @@ def load_footprint(state, model_dir, view):
 
 def record_footprint(state, model_dir, view, peak_mib):
     """Persist one measured first-load peak growth for later admissions."""
-    from memvane.runtime.runtime_lease import atomic_json
+    from memvane.kernel.atomic_rename import atomic_json
     if type(peak_mib) not in (int, float) or not math.isfinite(peak_mib) or peak_mib <= 0:
         return
     atomic_json(Path(state) / FOOTPRINT_NAME, {
@@ -278,7 +278,7 @@ def _launch(state, python, model_dir, artifact, artifact_sha, input_view,
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
                    QMD_SANDBOX='1')
-        from memvane.runtime.runtime_cpu import environment
+        from memvane.runtime.api import environment
         env=environment(env)
         subprocess.Popen([python, '-m', 'memvane.learning.context_learning.resident', 'worker',
                           str(state), model_dir, str(artifact), artifact_sha,
@@ -521,7 +521,7 @@ def _worker(state, model_dir, artifact, artifact_sha, input_view):
 def main():
     if len(sys.argv) != 7 or sys.argv[1] != 'worker':
         raise SystemExit(2)
-    from memvane.runtime.runtime_cpu import lease
+    from memvane.runtime.api import lease
     with lease():
         _worker(Path(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5],sys.argv[6])
 
