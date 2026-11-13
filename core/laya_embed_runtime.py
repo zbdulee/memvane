@@ -774,17 +774,15 @@ def attested_files(attestation):
 def ensure_for_attestation(attestation, home=None):
     """Select matching attested bytes, reactivating or provisioning as needed.
 
-    The automatic bundle worker requires a full-file digest before this call.
     Owned generations are reverified; external paths can supply a copy when
     its resulting file set reproduces the attestation's explicit digest.
     """
     manifest = attestation.get('providerManifest') if isinstance(attestation, dict) else None
     closure = attestation.get('dependencyClosure') if isinstance(attestation, dict) else None
     owned = _owned_generation(manifest, home)
-    legacy = _legacy_generation(manifest, home) if owned is None else None
-    # A Laya generation (this root's or the pre-rename one) addresses every
+    # An owned runtime generation addresses every
     # file it holds: compare that digest, not only the hashed entries.
-    files = attested_files(attestation) if owned is not None or legacy is not None else (
+    files = attested_files(attestation) if owned is not None else (
         attestation.get(FILES_SHA) if isinstance(attestation, dict) else None)
     try:
         current = select(home)
@@ -799,11 +797,6 @@ def ensure_for_attestation(attestation, home=None):
         # full check. Never copy out of it, or a changed dependency file that
         # the attestation does not hash would be sealed into a new generation.
         return _reactivate(owned, manifest, closure, home, files)
-    if legacy is not None:
-        # A runtime generation under the pre-rename state base: the same rule
-        # holds. Only a fully verified generation is copied, file for file,
-        # and the copy must reproduce its sealed manifest exactly.
-        return _adopt_legacy(legacy, manifest, closure, home, files)
     try:
         return provision_from_attestation(attestation, home)
     except RuntimeUnavailable as exc:
@@ -828,80 +821,8 @@ def _owned_generation(manifest, home):
     return generations / relative.parts[0]
 
 
-def _legacy_generation(manifest, home):
-    """The pre-rename runtime generation an attested module entry lives in."""
-    import memvane_paths
-    entry = manifest.get('moduleEntryPath') if isinstance(manifest, dict) else None
-    if not isinstance(entry, str):
-        return None
-    generations = (memvane_paths.legacy_state_base(home or Path.home()) /
-                   'embed-runtime' / 'generations')
-    try:
-        relative = Path(entry).relative_to(generations)
-    except ValueError:
-        return None
-    if not relative.parts or not GENERATION.fullmatch(relative.parts[0]):
-        _fail('laya_embed_runtime_corrupt')
-    return generations / relative.parts[0]
 
 
-def _adopt_legacy(source, manifest, closure, home, files=None):
-    """Copy one verified pre-rename generation into the runtime, byte for byte.
-
-    The source is re-hashed in full (every file of its sealed manifest, no
-    extra file) and must hold the attested bytes. The copy lands under the
-    same content-addressed name and is re-verified before activation; a
-    generation already there must carry exactly the same manifest.
-    """
-    try:
-        sealed = _verify_generation(source)
-    except FileNotFoundError as exc:
-        raise RuntimeUnavailable('laya_embed_runtime_source_unavailable') from exc
-    except OSError as exc:
-        raise RuntimeUnavailable('laya_embed_runtime_source_unsafe') from exc
-    if not matches(_described(source, sealed), manifest, closure, files):
-        _fail('laya_embed_runtime_mismatch')
-    raw = _canonical(sealed)
-    runtime = _runtime_root(home, create=True)
-    generations = _generations(runtime)
-    with _lock(runtime):
-        target = generations / source.name
-        if target.exists() or target.is_symlink():
-            try:
-                if _verify_generation(target) != sealed:
-                    _fail('laya_embed_runtime_generation_conflict')
-            except (RuntimeUnavailable, OSError):
-                _fail('laya_embed_runtime_generation_conflict')
-        else:
-            for leftover in generations.glob('.staging-*'):
-                _remove_staging(leftover)
-            staging = generations / ('.staging-' + uuid.uuid4().hex)
-            os.mkdir(staging, 0o700)
-            try:
-                for rel, sha, size, executable in sealed['files']:
-                    out = staging / rel
-                    out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    _no_symlink_ancestor(source / rel)
-                    if _copy_file(source / rel, out, executable) != (sha, size):
-                        _fail('laya_embed_runtime_source_changed')
-                _private_tree(staging)
-                _write_private(staging / MANIFEST, raw)
-                os.rename(staging, target)
-            except BaseException:
-                if staging.exists():
-                    _remove_staging(staging)
-                raise
-            try:
-                if _verify_generation(target) != sealed:
-                    _fail('laya_embed_runtime_corrupt')
-            except BaseException:
-                # Never activated: move it back out of the generation names.
-                aside = generations / ('.staging-' + uuid.uuid4().hex)
-                os.rename(target, aside)
-                _remove_staging(aside)
-                raise
-        _activate(runtime, target.name)
-    return select_generation(target, home)
 
 
 def _reactivate(generation, manifest, closure, home, files=None):
@@ -1160,13 +1081,11 @@ def _referenced_generations(home):
     generations = root(home) / 'generations'
     named = set()
     installs = []
-    # Installs not yet moved off the pre-rename state base still count.
-    for base in (memvane_paths.state_base(home or Path.home()),
-                 memvane_paths.legacy_state_base(home or Path.home())):
-        try:
-            installs.extend(path for path in base.iterdir() if path.is_dir())
-        except FileNotFoundError:
-            continue
+    try:
+        installs.extend(path for path in memvane_paths.state_base(home or Path.home()).iterdir()
+                        if path.is_dir())
+    except FileNotFoundError:
+        pass
     if not installs:
         return named, []
     unreadable = []
