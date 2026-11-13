@@ -997,7 +997,6 @@ def snapshot(*, home=None, reconcile=True, now=None):
 
 
 if __name__ == '__main__':
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     if sys.argv[1:] != ['status']:
         print('usage: memvane_registry.py status', file=sys.stderr)
         raise SystemExit(2)

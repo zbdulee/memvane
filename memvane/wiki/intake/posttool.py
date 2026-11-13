@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 # Add current directory to path to import core sibling modules
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
 
 MAX_TEXT_CHARS = 1600
 

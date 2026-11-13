@@ -23,8 +23,6 @@ import copy
 import os
 import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.settings import config as qmd_config
 
 ENGINES = ("claude", "codex", "hermes")

@@ -15,8 +15,6 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
-
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.wiki.card import wiki_card
 from memvane.settings import resolve_paths as qmd_resolve_paths
 from memvane.wiki.compile import wiki_compile as wc

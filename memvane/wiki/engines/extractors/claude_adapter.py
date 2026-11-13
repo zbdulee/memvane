@@ -2,10 +2,7 @@
 """Claude headless extractor adapter. payload(stdin) -> {"candidates":[...]}(stdout)."""
 
 import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import lib
+from memvane.wiki.engines.extractors import lib
 
 def build_command(b, p, effort=None):
     args = [b, "-p", "--safe-mode", "--tools", "", "--permission-mode", "plan",

@@ -50,7 +50,7 @@ def _torch():
 
 
 def _digest(path):
-    runtime=sys.modules.get('runtime_admission')
+    runtime=sys.modules.get('memvane.runtime.runtime_admission')
     if runtime is not None:return runtime.hash_file(path)
     h = hashlib.sha256()
     with Path(path).open('rb') as source:

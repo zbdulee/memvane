@@ -6,7 +6,6 @@ from pathlib import Path
 import sys
 import time
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 from memvane.learning.context_learning.inference_service import _policy
 from memvane.learning.context_learning.inference_identity import prepare
 

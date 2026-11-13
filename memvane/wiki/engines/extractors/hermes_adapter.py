@@ -2,10 +2,7 @@
 """Hermes headless extractor adapter. payload(stdin) -> {"candidates":[...]}(stdout)."""
 
 import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import lib
+from memvane.wiki.engines.extractors import lib
 
 # NOTE: hermes has no documented flag to disable session/checkpoint persistence
 # (unlike claude --no-session-persistence / codex --ephemeral). `-z --safe-mode`

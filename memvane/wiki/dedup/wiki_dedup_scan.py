@@ -46,8 +46,6 @@ from pathlib import Path
 import re
 import sys
 import time
-
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.kernel import memvane_paths
 from memvane.settings import source_text
 from memvane.wiki.compile import wiki_compile as wc

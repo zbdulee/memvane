@@ -39,8 +39,8 @@ def _sha(value):
 
 
 def code_identity():
-    return _sha({str(p.relative_to(Path(__file__).parent.parent)): file_sha(p)
-                 for p in sorted(Path(__file__).parent.parent.rglob('*.py'))})
+    return _sha({str(p.relative_to(Path(__file__).resolve().parents[2])): file_sha(p)
+                 for p in sorted(Path(__file__).resolve().parents[2].rglob('*.py'))})
 
 
 def _private_state(state):

@@ -62,8 +62,6 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
-
 MODEL_MAX_LEN = 1024
 PAIR_OVERHEAD = 38
 BODY_BUDGET = 700

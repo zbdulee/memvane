@@ -7,8 +7,6 @@ import sys
 import json
 import fnmatch
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.settings import config as qmd_config
 
 

@@ -53,8 +53,6 @@ import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.card import wiki_markers
 from memvane.wiki.workspace import wiki_mutation_lock
