@@ -39,7 +39,7 @@ import git_branch_safety  # noqa: E402
 from memvane.store import blob_values as laya_blob_values  # noqa: E402
 from memvane.store import checkout_view as view  # noqa: E402
 import wiki_compile_worker as worker  # noqa: E402
-import wiki_freshness  # noqa: E402
+from memvane.wiki.card import wiki_freshness  # noqa: E402
 import wiki_selected_laya  # noqa: E402
 
 REAL_RUN_GIT = git_branch_safety.run_git

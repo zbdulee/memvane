@@ -178,8 +178,8 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         worker = importlib.import_module('laya_product_sync_worker')
         locks = importlib.import_module('compile_paths')
         mutations = importlib.import_module('wiki_mutation_lock')
-        freshness = importlib.import_module('wiki_freshness')
-        yaml = importlib.import_module('yaml_scalars')
+        freshness = importlib.import_module('memvane.wiki.card.wiki_freshness')
+        yaml = importlib.import_module('memvane.wiki.card.yaml_scalars')
         project = self.case.project
         source = project / 'notes' / 'provenance-source.md'
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -326,8 +326,8 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         verify = importlib.import_module('wiki_verify_worker')
         selected = importlib.import_module('wiki_selected_laya')
         worker = importlib.import_module('laya_product_sync_worker')
-        freshness = importlib.import_module('wiki_freshness')
-        yaml = importlib.import_module('yaml_scalars')
+        freshness = importlib.import_module('memvane.wiki.card.wiki_freshness')
+        yaml = importlib.import_module('memvane.wiki.card.yaml_scalars')
         locks = importlib.import_module('compile_paths')
         mutations = importlib.import_module('wiki_mutation_lock')
         retire = importlib.import_module('wiki_source_retire')

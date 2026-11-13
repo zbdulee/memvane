@@ -10,12 +10,12 @@ from pathlib import Path
 
 import compile_paths as cp
 from memvane.settings import project_dir
-import wiki_card
+from memvane.wiki.card import wiki_card
 import wiki_compile as wc
 import wiki_mutation_lock
 import wiki_activity_log
 import wiki_selected_laya
-import yaml_scalars
+from memvane.wiki.card import yaml_scalars
 from memvane.settings.source_text import is_wiki_meta_page
 
 MAX_CARDS = 2_048

@@ -324,7 +324,7 @@ def measure_card(card_text: str, tokenizer=None) -> dict:
     """
     body = derived_body(card_text)
     if body is None:
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         match = yaml_scalars.FRONTMATTER_RE.match(card_text) if isinstance(card_text, str) else None
         rest = card_text[match.end():] if match else ''
         if rest.strip() and '\x00' not in rest:
@@ -364,7 +364,7 @@ def summary_budget() -> int:
     frontmatter: banner, auto-block markers (16-hex ``sourceHash``) and the
     ``## Summary`` heading.
     """
-    import wiki_markers
+    from memvane.wiki.card import wiki_markers
     scaffold = '\n'.join(['', wiki_markers.AUTO_DISCLAIMER, '',
                           wiki_markers.AUTO_START_TEMPLATE.format(source_hash='0' * 16),
                           '## Summary', '', wiki_markers.AUTO_END, ''])

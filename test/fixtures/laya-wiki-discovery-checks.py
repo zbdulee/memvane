@@ -36,7 +36,7 @@ import laya_wiki_discovery as discovery
 import runtime_handlers
 import runtime_work
 import wiki_compile_enqueue
-import wiki_freshness
+from memvane.wiki.card import wiki_freshness
 
 
 class _Idle(Exception):

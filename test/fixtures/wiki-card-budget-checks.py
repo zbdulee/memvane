@@ -752,7 +752,7 @@ class WorkerRunChecks(unittest.TestCase):
         cfg['compile'].update(mode='guarded', extractor={
             'backends': {'claude': [sys.executable, str(extractor)]}, 'timeout': 30})
         settings.write_text(json.dumps(cfg))
-        import wiki_freshness
+        from memvane.wiki.card import wiki_freshness
         self.assertIsNotNone(wiki_freshness.record_pending_refresh(p.root, 'docs/source.md', 'claude'))
 
         def run():

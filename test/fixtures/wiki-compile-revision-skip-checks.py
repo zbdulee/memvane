@@ -19,10 +19,10 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import wiki_compile as wc
 import wiki_compile_worker as worker
-import wiki_freshness
+from memvane.wiki.card import wiki_freshness
 import wiki_selected_laya
 import wiki_compile_enqueue
-import yaml_scalars as ys
+from memvane.wiki.card import yaml_scalars as ys
 
 
 class RevisionSkipChecks(unittest.TestCase):

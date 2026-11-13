@@ -348,7 +348,7 @@ class ProvenanceChecks(unittest.TestCase):
 
     def legacy_card(self, name, *, status='verified', title='"Legacy card"', before='',
                     body_hash=True, edit=None):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         raw = b'Synthetic source for legacy evidence.\n'
         source = self.project / 'notes' / 'source.md'
         source.parent.mkdir(exist_ok=True); source.write_bytes(raw)

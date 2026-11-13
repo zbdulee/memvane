@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import wiki_card
+from memvane.wiki.card import wiki_card
 from memvane.settings import resolve_paths as qmd_resolve_paths
 import wiki_compile as wc
-import wiki_freshness
+from memvane.wiki.card import wiki_freshness
 
 TYPE_DIRS = {
     "concept": "concepts",

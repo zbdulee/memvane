@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import compile_paths as cp
-import yaml_scalars
+from memvane.wiki.card import yaml_scalars
 
 FRESH = "fresh"
 STALE = "stale"
@@ -538,7 +538,7 @@ def check_card(card: dict, project_root: Path, allow_roots: list[Path]) -> dict:
 
     # Import lazily so recall can later import this module without a module-load
     # cycle.  This remains the one source containment decision for all users.
-    import wiki_card
+    from memvane.wiki.card import wiki_card
 
     for expected in revisions:
         resolved, reason = wiki_card.resolve_existing_source(

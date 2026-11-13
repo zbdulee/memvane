@@ -56,17 +56,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import wiki_activity_log
-import wiki_markers
+from memvane.wiki.card import wiki_markers
 import wiki_mutation_lock
 import compile_paths as cp
 from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
 import wiki_compile as wc
 import wiki_compile_worker as wcw
-import wiki_freshness
-import wiki_source_missing as wsm
-import source_spans
-import yaml_scalars
+from memvane.wiki.card import wiki_freshness
+from memvane.wiki.card import wiki_source_missing as wsm
+from memvane.wiki.card import source_spans
+from memvane.wiki.card import yaml_scalars
 from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path
 
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
@@ -637,7 +637,7 @@ def snapshot_revision_evidence(
     if not isinstance(raw_revisions, list) or not raw_revisions:
         return [], {"state": wiki_freshness.UNKNOWN, "reason": "missing_source_revisions"}, {}
 
-    import wiki_card
+    from memvane.wiki.card import wiki_card
 
     allow_roots = wsm.allow_roots_of(config)
     loaded = []

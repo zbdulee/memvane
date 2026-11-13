@@ -90,7 +90,7 @@ def compile_result_digest(result, verdict_digest):
                 fail('invalid_compile_result')
             identity = current
             paths[row['path']] = row['source_sha']
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         seen = set()
         if len(result['sourceSpans']) > yaml_scalars.MAX_SOURCE_SPANS:
             fail('invalid_compile_result')
@@ -427,7 +427,7 @@ def attestation(spec):
                 allowed = ('legacy_verified',) if line_kind == LEGACY_LINE_SPAN else LINE_SPAN_KINDS
                 if kind not in allowed or mode not in (None, line_kind):
                     fail('source_spans_invalid')
-                import yaml_scalars
+                from memvane.wiki.card import yaml_scalars
                 line_count += 1
                 if line_count > yaml_scalars.MAX_SOURCE_SPANS:
                     fail('source_spans_invalid')

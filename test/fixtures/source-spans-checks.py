@@ -13,9 +13,9 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
-import source_spans
+from memvane.wiki.card import source_spans
 import wiki_compile as wc
-import yaml_scalars
+from memvane.wiki.card import yaml_scalars
 
 SOURCE = (
     "# Title\n"                    # 1

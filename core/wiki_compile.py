@@ -25,8 +25,8 @@ from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
 from memvane.settings import source_text
 import wiki_dedup_judge
-import wiki_markers
-import yaml_scalars
+from memvane.wiki.card import wiki_markers
+from memvane.wiki.card import yaml_scalars
 
 ALLOWED_TYPES = {
     "concept",
@@ -1254,7 +1254,7 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
         emitted = yaml_scalars.dump_source_spans(source_spans)
         if status != "verified" or not emitted:
             return None
-        import source_spans as spans_module
+        from memvane.wiki.card import source_spans as spans_module
         if not spans_module.bound_to_revisions(
                 yaml_scalars.load_source_spans(emitted) or [],
                 spans_module.card_revisions(expected_text)):

@@ -139,7 +139,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         emit('schema3-dedup-scan', state=result['state'], reason=result['reason'])
 
     def test_05_source_revision_backfill_is_off_on_schema3_and_on_for_v6(self):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         retire = importlib.import_module('wiki_source_retire')
         source = self.raw_file('backfill.md', 'Backfill source bytes.\n')
         raw = source.read_bytes()

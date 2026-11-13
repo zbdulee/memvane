@@ -205,7 +205,7 @@ class HostCapacityTests(HostCapacityCase):
                         'recallSettings': {'recallStrategy': 'hierarchical',
                                            'lexicalPatterns': [], 'minScore': 0,
                                            'rawFallbackMinScore': 0, 'skipPaths': []}}
-            import wiki_freshness
+            from memvane.wiki.card import wiki_freshness
             with mock.patch.object(response, '_v2_phase',
                                    return_value=([{'path': 'raw/a.md'}], True)), \
                     mock.patch.object(response, '_verified_wiki_row', return_value=True), \
@@ -225,7 +225,7 @@ class HostCapacityTests(HostCapacityCase):
                     'recallSettings': {'recallStrategy': 'hierarchical',
                                        'lexicalPatterns': [], 'minScore': 0,
                                        'rawFallbackMinScore': 0, 'skipPaths': []}}
-        import wiki_freshness
+        from memvane.wiki.card import wiki_freshness
         from laya_source_catalog import CandidateQuery
         with mock.patch.object(response, '_v2_phase',
                                return_value=([{'path': 'wiki/a.md'}], True)), \

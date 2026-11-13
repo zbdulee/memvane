@@ -50,7 +50,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
     # -- helpers --------------------------------------------------------------
     def card(self, relative, token, source_dir='notes'):
         """A card that passes the reader's verified-frontmatter rule (trusted)."""
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         raw = ('Synthetic source for ' + token + '.\n').encode('utf8')
         source = self.case.project / source_dir / (token + '.md')
         source.parent.mkdir(parents=True, exist_ok=True); source.write_bytes(raw)
@@ -179,7 +179,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         The source file then holds ``current``: the compiled bytes, or other
         bytes that match neither revision (a stale card).
         """
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         older = ('Older source for ' + token + '.\n').encode('utf8')
         compiled = ('Synthetic source for ' + token + '.\n').encode('utf8')
         source = self.case.project / 'notes' / (token + '.md')

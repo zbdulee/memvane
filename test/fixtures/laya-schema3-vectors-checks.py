@@ -313,7 +313,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
 
     def long_card(self, relative, token, lines):
         """A trusted card (as ``card``) whose body adds ``lines`` Korean prose lines."""
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         raw = ('Synthetic source for ' + token + '.\n').encode('utf8')
         source = self.case.project / 'notes' / (token + '.md')
         source.parent.mkdir(exist_ok=True); source.write_bytes(raw)

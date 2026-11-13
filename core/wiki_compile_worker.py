@@ -37,8 +37,8 @@ from wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
 import wiki_compile as wc
 import wiki_card_budget
-import wiki_freshness
-import yaml_scalars
+from memvane.wiki.card import wiki_freshness
+from memvane.wiki.card import yaml_scalars
 
 
 DEFAULT_SOURCE_QUEUE = cp.rel(cp.SOURCE_QUEUE)
@@ -354,7 +354,7 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     evidence. A pathological identity that cannot fit one fair share is omitted
     rather than consuming every other card's summary allowance.
     """
-    import wiki_card
+    from memvane.wiki.card import wiki_card
     from extractors.lib import render_existing_context_section
     cards = []
     for path, score, raw in rows[:qmd_config.DEDUP_TOP_K]:
@@ -510,7 +510,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
         return None
     try:
         import laya_host_response
-        import wiki_card
+        from memvane.wiki.card import wiki_card
         decision = bound[0]
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
         if pending is None:

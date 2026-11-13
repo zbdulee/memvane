@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import hashlib
 
-import yaml_scalars
+from memvane.wiki.card import yaml_scalars
 
 MAX_CLAIMS = 64
 MAX_QUOTE_CHARS = 4000
@@ -150,7 +150,7 @@ def card_revisions(text: str) -> list[dict]:
     block = _frontmatter_block(text)
     if block is None:
         return []
-    import wiki_card
+    from memvane.wiki.card import wiki_card
     return wiki_card.frontmatter_source_revisions(block)
 
 

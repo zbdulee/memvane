@@ -299,7 +299,7 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
                  "hybrid rank score")
         lines.append(f'- "{path}" sha256:{digest[:12]} {label} {number:.4g}')
         if path.split('/', 1)[0] in wiki_names:
-            import wiki_card
+            from memvane.wiki.card import wiki_card
             normalized = body.replace('\r\n', '\n').replace('\r', '\n')
             end = normalized.find('\n---\n', 4)
             if not normalized.startswith('---\n') or end < 0:
@@ -746,11 +746,11 @@ def _verified_wiki_locations(row: dict, decision: dict,
                              source_skip_paths=(), *,
                              current_source: bool = True,
                              reasons: dict | None = None) -> tuple[str, ...] | None:
-    import wiki_card
-    import wiki_markers
-    import source_spans
-    import wiki_freshness
-    import yaml_scalars
+    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import wiki_markers
+    from memvane.wiki.card import source_spans
+    from memvane.wiki.card import wiki_freshness
+    from memvane.wiki.card import yaml_scalars
     from memvane.settings.source_exclusion import excluded_source
     body = row['body'].replace('\r\n', '\n').replace('\r', '\n')
     if not body.startswith('---\n'):
@@ -1045,7 +1045,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     from laya_host_rules import check_compile_queue
     if check_compile_queue('collections' in decision, action):
         import compile_paths
-        import wiki_freshness
+        from memvane.wiki.card import wiki_freshness
         root = Path(decision['projectRoot'])
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
         if pending is None:

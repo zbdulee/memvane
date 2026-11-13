@@ -8,7 +8,7 @@ the leading ``MAX_COMPACT_BODY_BYTES`` on a codepoint boundary, and the model
 adapter then fits that prefix to its token budget.
 """
 from .contracts import digest
-import yaml_scalars
+from memvane.wiki.card import yaml_scalars
 
 MAX_SOURCE_BYTES = 65536
 MAX_COMPACT_BODY_BYTES = 16384

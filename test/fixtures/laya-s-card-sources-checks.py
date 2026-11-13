@@ -135,7 +135,7 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
     def two_revision_card(self, *, current_first=False):
         """A verified writer card whose ``sourceRevisions`` cite ``notes/src.md`` at two shas
         (an older one and the file's current bytes, listed older first unless ``current_first``)."""
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         raw = (self.root / 'notes/src.md').read_bytes()
         older = self.OLDER
         listed = (raw, older) if current_first else (older, raw)
@@ -299,7 +299,7 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
             self.assertEqual([row[0] for row in self.attested(store, judged)], ['notes/src.md', 'notes/src.md'])
 
     def test_14_a_card_citing_its_path_once_is_unchanged_even_when_stale(self):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         raw = (self.root / 'notes/src.md').read_bytes()
         line = yaml_scalars.dump_source_revisions([dict(
             kind='file', path='notes/src.md', collection='fixture', sha256=hashlib.sha256(self.OLDER).hexdigest(),

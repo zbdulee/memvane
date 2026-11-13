@@ -317,7 +317,7 @@ class ResponseChecks(unittest.TestCase):
         import compile_paths
         import laya_install_journal
         import runtime_work
-        import wiki_freshness
+        from memvane.wiki.card import wiki_freshness
         with tempfile.TemporaryDirectory(prefix='laya-host-wake-') as temp:
             root = Path(temp).resolve()
             decision = {**DECISION,
@@ -510,7 +510,7 @@ class ResponseChecks(unittest.TestCase):
                          ["x-double.md", "z-seen-first.md", "a-seen-later.md"])
 
     def test_v2_wiki_provenance_and_source_revision_are_required(self):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         with tempfile.TemporaryDirectory(prefix='laya-wiki-policy-') as temp:
             project = Path(temp).resolve()
             raw = project / 'docs'
@@ -566,7 +566,7 @@ class ResponseChecks(unittest.TestCase):
                                        'lexicalPatterns': [], 'minScore': 0,
                                        'rawFallbackMinScore': 0,
                                        'skipPaths': []}}
-        import wiki_freshness
+        from memvane.wiki.card import wiki_freshness
         with patch.object(response, '_v2_phase', side_effect=[
                 ([row(path='wiki/card.md')], True),
                 ([row(path='raw/chapter.md')], True)]) as phase, \
@@ -738,7 +738,7 @@ class ResponseChecks(unittest.TestCase):
         # including a nested card that shares a meta-page name.
         import io
         import laya_index_capacity
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         index = FakeIndex()
         runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT,
                                   binding_store=object())
@@ -785,7 +785,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_wiki_only_setting_uses_only_wiki_and_checks_sources(self):
         import laya_index_capacity
-        import wiki_freshness
+        from memvane.wiki.card import wiki_freshness
         index = FakeIndex()
         runtime = SimpleNamespace(index=index, scope=SCOPE, source_root=ROOT,
                                   binding_store=object())
@@ -808,7 +808,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertTrue(index.released)
 
     def test_v2_excludes_source_directories_without_matching_wiki_names(self):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         from memvane.settings.source_exclusion import excluded_source
         self.assertTrue(excluded_source('docs/build/a.md', ['build']))
         self.assertTrue(excluded_source('docs/team-workspace/a.md', ['-workspace']))
@@ -1039,7 +1039,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertIn('lexical', capped)
 
     def test_v2_card_without_body_digest_is_served_like_qmd_reader(self):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         with tempfile.TemporaryDirectory(prefix='laya-body-digest-') as temp:
             project, revision, decision = self.span_project(temp)
             base = ('---\ntitle: Synthetic card\nstatus: verified\n'
@@ -1092,7 +1092,7 @@ class ResponseChecks(unittest.TestCase):
 
     @staticmethod
     def span_card(revision, spans_text=''):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         frontmatter = ('---\ntitle: Synthetic card\nstatus: verified\n'
                        'createdBy: qmd-auto-context\nsourceRevisions:\n  - '
                        + json.dumps(revision) + '\n' + spans_text
@@ -1154,7 +1154,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_v2_source_locations_follow_returned_wiki_rows_only(self):
         import laya_index_capacity
-        import wiki_freshness
+        from memvane.wiki.card import wiki_freshness
         with tempfile.TemporaryDirectory(prefix='laya-span-query-') as temp:
             _project, revision, decision = self.span_project(temp)
             good = self.span_card(revision, 'sourceSpans:\n' + self.span_entry(

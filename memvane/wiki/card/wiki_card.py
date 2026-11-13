@@ -12,9 +12,9 @@ from pathlib import Path
 import re
 
 from memvane.settings import resolve_paths as qmd_resolve_paths
-import wiki_freshness
-import wiki_markers
-import yaml_scalars
+from memvane.wiki.card import wiki_freshness
+from memvane.wiki.card import wiki_markers
+from memvane.wiki.card import yaml_scalars
 
 # A card may cite more than one compiler-owned source. Hashing runs in a
 # blocking hook, so the per-card scan has an explicit bound independent of

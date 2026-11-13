@@ -802,8 +802,8 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     import laya_ledger_common as ledger
     import laya_journal_reader as reader
     import laya_writer_scope as normal
-    import source_spans
-    import wiki_card
+    from memvane.wiki.card import source_spans
+    from memvane.wiki.card import wiki_card
     import wiki_verify_worker
 
     result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}

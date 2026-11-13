@@ -100,7 +100,7 @@ from memvane.kernel import memvane_paths
 import scan_state
 from memvane.settings import source_text
 import wiki_compile as wc
-import wiki_source_missing as wsm
+from memvane.wiki.card import wiki_source_missing as wsm
 import wiki_source_retire
 
 DEFAULT_MAX_CARDS = 300
@@ -199,7 +199,7 @@ def count_recall_ineligible(pages: list[Path]) -> int:
     This is the user-facing total behind the `wiki-ineligible` notice, so a
     partial count would report a wrong number. The judgement is recall's own.
     """
-    import wiki_card
+    from memvane.wiki.card import wiki_card
 
     ineligible = 0
     for page in pages:
@@ -273,7 +273,7 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
     belong to another checkout (undecidable). ``label`` (``source_label.resolver``)
     maps a renamed raw collection's old label, by path, to the current one.
     """
-    import wiki_card
+    from memvane.wiki.card import wiki_card
 
     records, parsed = wsm.declared_source_records(block)
     if parsed == wsm.SOURCES_INVALID:
@@ -335,7 +335,7 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
     is the existence SSOT); `present` maps the rest to their resolved path.
     A card with no `sourceRevisions` block goes to `inspect_legacy`.
     """
-    import wiki_card
+    from memvane.wiki.card import wiki_card
 
     text = read_card(page)
     if text is None:
@@ -373,7 +373,7 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
 
 def changed_sources(info: dict) -> list[tuple[dict, str]] | None:
     """`[(revision, current_sha)]` whose bytes differ; None when unreadable."""
-    import wiki_freshness
+    from memvane.wiki.card import wiki_freshness
 
     changed = []
     for revision, resolved in info["present"]:
@@ -391,7 +391,7 @@ def changed_sources(info: dict) -> list[tuple[dict, str]] | None:
 
 def backfill_revisions(info: dict) -> list[dict] | None:
     """Closed-schema revisions of a BACKFILL card's current source bytes; None if unreadable."""
-    import wiki_freshness
+    from memvane.wiki.card import wiki_freshness
 
     revisions = []
     for source, resolved in info["present"]:
@@ -405,7 +405,7 @@ def backfill_revisions(info: dict) -> list[dict] | None:
 
 def legacy_still_missing(info: dict, root: Path, allow_roots: list[Path]) -> bool:
     """Recheck right before retirement: every judged-missing legacy source is still gone."""
-    import wiki_card
+    from memvane.wiki.card import wiki_card
 
     return all(wiki_card.resolve_existing_source(source["path"], root, allow_roots)[1] == "missing"
                for source in info["missing"])

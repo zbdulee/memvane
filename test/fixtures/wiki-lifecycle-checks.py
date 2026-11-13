@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import wiki_lifecycle as lifecycle
 import wiki_selected_laya
-import yaml_scalars
+from memvane.wiki.card import yaml_scalars
 
 COMPILE = {'mode': 'auto-wiki', 'triggers': ['session_start_source', 'post_tool_source']}
 
@@ -210,7 +210,7 @@ class WikiLifecycle(unittest.TestCase):
     # --- legacy cards: no `sourceRevisions`, provenance only in `sources:` ---
 
     def frontmatter_revisions(self, card):
-        import wiki_card as recall
+        from memvane.wiki.card import wiki_card as recall
         text = card.read_text(encoding='utf-8')
         return recall.frontmatter_source_revisions(text.split('\n---', 1)[0])
 

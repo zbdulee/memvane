@@ -581,7 +581,7 @@ class V2WorkerChecks(unittest.TestCase):
         self.decision=decision
 
     def card(self,name,title,summary,source):
-        import yaml_scalars
+        from memvane.wiki.card import yaml_scalars
         info=source.stat()
         revision={'kind':'file','path':source.relative_to(self.home).as_posix(),
                   'collection':'alpha','sha256':hashlib.sha256(source.read_bytes()).hexdigest(),

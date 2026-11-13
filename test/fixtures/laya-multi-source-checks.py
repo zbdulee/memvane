@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
 import laya_host_response
 from laya_index_host_route import wiki_index_roots
-import yaml_scalars
+from memvane.wiki.card import yaml_scalars
 from laya_index_source_port import (publish_collections_from_source,
                                     scan_collections,
                                     search_collections_verified,

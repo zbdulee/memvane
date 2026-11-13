@@ -36,7 +36,7 @@ import laya_install_journal  # noqa: E402
 import runtime_work  # noqa: E402
 import wiki_selected_laya  # noqa: E402
 import wiki_compile_retrieval  # noqa: E402
-import yaml_scalars  # noqa: E402
+from memvane.wiki.card import yaml_scalars  # noqa: E402
 
 GIT_ENV = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_AUTHOR_NAME': 'fixture',

@@ -33,8 +33,8 @@ LEGACY_RESULT_SCHEMA = 'memvane-legacy-card-evidence-v1'
 def legacy_card_evidence(row, decision):
     """Describe the existing reader's trust evidence, without granting authority."""
     import laya_host_response
-    import source_spans
-    import wiki_card
+    from memvane.wiki.card import source_spans
+    from memvane.wiki.card import wiki_card
 
     locators = laya_host_response._verified_wiki_locations(
         row, decision, frozenset(), tuple(decision['recallSettings']['skipPaths']),
@@ -73,7 +73,7 @@ def current_revision_evidence(evidence, current_sources):
             if r['path'] not in judged or (r['sha256'], r['size']) == judged[r['path']]]
     pairs = {(r['path'], r['sha256']) for r in kept}
     spans = [span for span in evidence['spans'] if (span['path'], span['sourceSha256']) in pairs]
-    import source_spans
+    from memvane.wiki.card import source_spans
     return {'revisions': kept, 'spans': spans, 'locators': [source_spans.locator(span) for span in spans]}
 
 
