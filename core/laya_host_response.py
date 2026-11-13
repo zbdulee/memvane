@@ -1001,9 +1001,6 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
     path = manifest.get('serviceSocketPath')
     if not isinstance(path, str) or os.path.lexists(path):
         return None
-    if (proof.get('executingPluginRoot', decision.get('pluginRoot'))
-            != str(Path(__file__).resolve().parent.parent)):
-        return None
     from laya_embed_resident import ensure_running
     from laya_store_primitives import IndexContractError
     from resource_deferred import ResourceDeferred
@@ -1490,10 +1487,9 @@ _RETRYABLE_JOURNAL_CODES = frozenset(('host_route_unverified', 'host_decision_ch
 # A reader CAS (selection) or store replacement seen by a schema3 recall. The
 # journal reader raises JournalEvidenceError, the reader lease ValueError.
 _RETRYABLE_READER_CODES = frozenset(('reader_selection_changed', 'reader_store_changed'))
-# Fields a re-selected decision must share with the first one. Bundle,
-# generation and plugin root move with an upgrade; these never do.
+# Fields a re-selected decision must share with the first one.
 _RECALL_IDENTITY = ('state', 'projectRoot', 'installId', 'scopeId', 'journalPath',
-                    'dbPath', 'queuePath', 'dbIncarnation')
+                    'storePath', 'storeIncarnation')
 _WORKTREE_IDENTITY = ('state', 'worktreeRoot', 'worktreeProjectRoot', 'gitCommonDir')
 
 
