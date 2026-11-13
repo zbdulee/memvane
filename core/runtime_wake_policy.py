@@ -51,7 +51,7 @@ DISPATCH_REASONS = frozenset((
     'target_journal_changed', 'target_identity_invalid',
     'target_entry_unavailable', 'target_entry_invalid',
     'target_launch_failed', 'target_child_failed', 'target_result_invalid',
-    'target_deferred', 'target_preparing', 'writer_floor'))
+    'target_deferred', 'target_preparing', 'writer_floor', 'state_format_mismatch'))
 # A target that has just started (or is still loading) its detached owner is
 # waiting on that owner, not failing. Its wake returns after a fixed delay and
 # does not grow the failure backoff. The query path starts the owner itself,
@@ -236,7 +236,7 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
             and error.detail == 'deferred:deferred:owner_busy'):
         return {'ack': False, 'due': now + retry_delay(attempts),
                 'reason': failure_reason(error), 'count': 0}
-    if isinstance(error, DispatchFailure) and error.code == 'writer_floor':
+    if isinstance(error, DispatchFailure) and error.code in ('writer_floor', 'state_format_mismatch'):
         # A newer host may process this row; never ACK or exhaust its retries.
         return {'ack': False, 'due': now + RETRY_MAX_SECS,
                 'reason': failure_reason(error), 'count': 0}

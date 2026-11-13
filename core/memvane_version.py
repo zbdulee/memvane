@@ -30,3 +30,13 @@ def writer_floor_allows(floor):
     if required is None or running is None:
         raise ValueError('invalid_writer_floor')
     return running >= required
+
+
+def same_major(state_format):
+    """The on-disk state format is the plugin's major version."""
+    if type(state_format) is not int or state_format < 1:
+        raise ValueError('invalid_state_format')
+    running = version_key(plugin_version())
+    if running is None:
+        raise ValueError('invalid_plugin_version')
+    return running[0] == state_format

@@ -1670,6 +1670,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
     # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
         _fail("selected_product_unavailable")
+    if not _major_allowed(proof):
+        return _major_mismatch_response(action, host)
     allowed = _writer_floor_allowed(proof)
     if action == 'recall':
         state = _RECALL_STATE.get()
@@ -1905,6 +1907,29 @@ def _writer_floor_allowed(proof):
         _fail('writer_floor_invalid')
 
 
+def _major_allowed(proof):
+    from memvane_version import same_major
+    try:
+        return same_major(proof['stateFormat'])
+    except (OSError, KeyError, TypeError, ValueError):
+        _fail('state_format_invalid')
+
+
+def _major_mismatch_response(action, host):
+    if action == 'recall':
+        return host_payload(host, '')
+    if action in ('update', 'update-queued'):
+        notice = '[memvane] 이 플러그인 버전에 맞게 다시 온보딩해 주세요.'
+        if host == 'hermes':
+            return {'status': 'state_format_mismatch', 'notice': notice}
+        return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
+                                       'additionalContext': notice}}
+    if action == 'gate':
+        from laya_host_rules import gate_response
+        return gate_response(host)
+    return {}
+
+
 def _writer_floor_response(action, host):
     if action not in ('update', 'update-queued'):
         return {}
@@ -1924,6 +1949,8 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     proof = recheck(main)
     if proof.get('productRouteAllowed') is not True:
         _fail('worktree_selection_unapproved')
+    if not _major_allowed(proof):
+        return _major_mismatch_response(action, host)
     allowed = _writer_floor_allowed(proof)
     if action == 'recall':
         state = _RECALL_STATE.get()
