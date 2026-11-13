@@ -171,6 +171,12 @@ def _validate_identity(writer, role, db):
 
 
 def _approved(proof, snapshot):
+    from memvane_version import writer_floor_allows
+    try:
+        writable = writer_floor_allows(proof['writerFloor'])
+    except (OSError, KeyError, TypeError, ValueError):
+        R._need(False, 'writer_floor_invalid')
+    R._need(writable, 'writer_floor')
     decision, selected = snapshot['decision'], snapshot['bundle']['selected']
     expected = dict(status='installer_active_full_plugin_verified',
         executingPluginRoot=snapshot['executing_root'], pluginRoot=snapshot['executing_root'],
