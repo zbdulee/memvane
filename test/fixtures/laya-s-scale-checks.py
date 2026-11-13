@@ -42,7 +42,7 @@ class ScaleChecks(publish.IncrementalPublicationChecks):
     def build(self, rows):
         repository, worktree = self.bind()
         store = self.Store.create(str(self.db), project_root=str(self.root), repository=repository,
-                                  worktree=worktree, scope_id=self.scope, row_generations=rows)
+                                  worktree=worktree, scope_id=self.scope)
         self.track(store)
         handle = store.capture_view(worktree['worktreeId'])
         wiki = self.root / '.memvane/wiki'
@@ -136,10 +136,6 @@ class ScaleChecks(publish.IncrementalPublicationChecks):
     def test_scale_observation(self):
         out = dict(cards=CARDS, python=sys.version.split()[0], sqlite=sqlite3.sqlite_version,
                    rows=self.measure(True))
-        for path in (self.db, Path(str(self.db) + '-journal')):
-            if path.exists():
-                path.unlink()
-        out['generations'] = self.measure(False)
         print('S_SCALE ' + json.dumps(out, sort_keys=True))
 
 

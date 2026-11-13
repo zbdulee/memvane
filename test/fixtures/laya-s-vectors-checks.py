@@ -14,7 +14,7 @@ class RowVectorChecks(fill.FillCase):
     def rows_configured(self):
         repository, worktree = self.bind()
         store = self.Store.create(str(self.db), project_root=str(self.root), repository=repository,
-                                  worktree=worktree, scope_id=self.scope, row_generations=True)
+                                  worktree=worktree, scope_id=self.scope)
         self.track(store)
         handle = store.capture_view(worktree['worktreeId'])
         manifest = self.snapshot(store, handle)
@@ -117,24 +117,6 @@ class RowVectorChecks(fill.FillCase):
         finally:
             store.release(pin)
         self.assertNotEqual(back['gen_id'], complete['gen_id'])
-
-    def test_generation_format_vector_generation_converts_with_the_same_exact_search(self):
-        store, repository, handle, manifest, r, p = self.configured()
-        self.fill(store, handle, manifest, r, p)
-        self.publish(store, handle, manifest, dict(recipe_id=r, profile_id=p))
-        pin = store.pin_view(handle)
-        before = [(h['path'], h['score']) for h in store.search_exact(pin, [1.0, 0.0], 10, profile_id=p)]
-        store.release(pin)
-        store.convert_to_row_format()
-        again = self.reopen(repository)
-        fresh = again.capture_view(handle.worktree_id)
-        pin = again.pin_view(fresh)
-        try:
-            after = [(h['path'], h['score']) for h in again.search_exact(pin, [1.0, 0.0], 10, profile_id=p)]
-        finally:
-            again.release(pin)
-        self.assertEqual(after, before)
-        self.assertTrue(before)
 
 
 def load_tests(loader, tests, pattern):

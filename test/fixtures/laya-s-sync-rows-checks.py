@@ -24,14 +24,6 @@ class RowStoreReads:
     """Seed the view store in the row format; the checks' direct store reads use the row relations."""
 
     def setUp(self):
-        views = importlib.import_module('laya_view_store')
-        original = views.ViewStore.create.__func__
-
-        def create(cls, *args, **kwargs):
-            kwargs.setdefault('row_generations', True)
-            return original(cls, *args, **kwargs)
-        patcher = mock.patch.object(views.ViewStore, 'create', classmethod(create))
-        patcher.start(); self.addCleanup(patcher.stop)
         super().setUp()
         with self.ro() as db:
             self.assertEqual(db.execute('SELECT schema_version FROM store_meta').fetchone()[0], 4)

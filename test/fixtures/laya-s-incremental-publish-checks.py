@@ -70,8 +70,7 @@ class IncrementalPublicationChecks(seed.GenerationCase):
     def rows_store(self, root=None):
         repository, worktree = self.bind(root)
         store = self.Store.create(str(self.db), project_root=str(root or self.root),
-                                  repository=repository, worktree=worktree, scope_id=self.scope,
-                                  row_generations=True)
+                                  repository=repository, worktree=worktree, scope_id=self.scope)
         self.track(store)
         return store, repository, store.capture_view(worktree['worktreeId'])
 

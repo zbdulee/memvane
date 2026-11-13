@@ -105,21 +105,6 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         self.assertEqual(len(self.card_source_rows(store, handle)), 2)
         self.assertEqual(self.locations(store, handle), {'cards/a.md': ['notes/src.md#L4-L4']})
 
-    def test_05_conversion_keeps_card_source_locations_and_their_delta(self):
-        store, repository, handle = self.seeded()
-        body = b'# Alpha\nhello converted\n'
-        self.publish_manifest(store, handle, self.line_card(store, handle, body, [(2, 3)]))
-        head = self.publish_manifest(store, handle, self.line_card(store, handle, body, [(5, 8)]))
-        store.convert_to_row_format()
-        again = self.reopen(repository)
-        self.track(again)
-        moved = again.capture_view(handle.worktree_id)
-        self.assertEqual(self.locations(again, moved), {'cards/a.md': ['notes/src.md#L5-L8']})
-        self.assertEqual(again._db.execute("SELECT COUNT(*) FROM s_deltas WHERE rel='card_source'").fetchone()[0], 1)
-        back = again.rollback_generation(moved, expected_head=again.head(moved))
-        self.assertEqual(back['epoch'], head['epoch'] + 1)
-        self.assertEqual(self.locations(again, moved), {'cards/a.md': ['notes/src.md#L2-L3']})
-
     def test_06_one_source_path_folds_into_the_lowest_ordinal_observation(self):
         store, _, handle = self.rows_store()
         manifest = self.snapshot(store, handle, body=b'# Alpha\nhello merged\n')
@@ -257,23 +242,6 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         self.assertEqual(json.dumps(results['row'], sort_keys=True).encode('utf8'),
                          json.dumps(generation, sort_keys=True).encode('utf8'))
         self.assertEqual(len(self.card_source_rows(row_store, row_handle)), 1)
-
-    def test_08_conversion_of_a_card_citing_one_path_at_two_revisions_keeps_the_recall_output(self):
-        """A generation-format store holding such a card converts, and recall reads the same bytes."""
-        self.two_revision_card()
-        store, repository, worktree_id = self.create()
-        handle = store.capture_view(worktree_id)
-        self.publish_two_revision_card(store, handle)
-        before = self.recall_output(store, handle)
-        self.assertEqual(before['locations'], {'cards/a.md': ['notes/src.md#L1-L2', 'notes/src.md#L3-L4']})
-        store.convert_to_row_format()
-        again = self.reopen(repository)
-        moved = again.capture_view(worktree_id)
-        self.assertTrue(again._rows)
-        self.assertEqual(json.dumps(self.recall_output(again, moved), sort_keys=True).encode('utf8'),
-                         json.dumps(before, sort_keys=True).encode('utf8'))
-        self.assertEqual(len(self.card_source_rows(again, moved)), 1)
-
 
     # Writer ingest judges one path cited at two revisions by the current source (user decision 11/13 08:45).
 
