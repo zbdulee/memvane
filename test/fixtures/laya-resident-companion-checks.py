@@ -102,7 +102,7 @@ class CompanionResidentChecks(unittest.TestCase):
         # The attestation re-proves the journal before and after hashing the
         # runtime; those re-proofs open the base and queue only inside the
         # journal-bound root's v5 windows, on the companion and owner copy.
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         opened, connect = [], sqlite3.connect
 
         def observe(database, *args, **kwargs):
@@ -200,7 +200,7 @@ class CompanionResidentChecks(unittest.TestCase):
     def test_08_windows_are_taken_again_after_the_runtime_hash(self):
         # The re-proof after the hash takes the windows again: a lock taken
         # while the runtime files are hashed defers before any connection.
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         identity_calls, real_identity = [], J._identity_connection
         real_manifest = J._worker_attestation_manifest
         holders = []

@@ -48,7 +48,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-import memvane_paths
+from memvane.kernel import memvane_paths
 import source_text
 import wiki_compile as wc
 

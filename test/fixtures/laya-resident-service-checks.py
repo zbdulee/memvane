@@ -23,7 +23,7 @@ CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
 
 from laya_store_primitives import IndexContractError
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 import laya_embed_resident as resident
 from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI, ReviewedLocalQmdProvider,
                                        recipe_fingerprint)

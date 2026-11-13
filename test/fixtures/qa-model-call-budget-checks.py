@@ -98,7 +98,7 @@ else:
 import sys
 sys.path.insert(0, 'core')
 import qa_model_budget
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 try:
     qa_model_budget.reserve_from_env()
 except ResourceDeferred as exc:

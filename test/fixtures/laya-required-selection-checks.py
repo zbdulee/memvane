@@ -302,7 +302,7 @@ class Checks(unittest.TestCase):
         return decision, wake, calls, seen, log
 
     def test_deferred_query_admission_serves_lexical_and_wakes_owner(self):
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         with ExitStack() as stack:
             decision, wake, calls, seen, log = self.vector_host(
                 stack, admit=ResourceDeferred('laya_query_resource_deferred'))

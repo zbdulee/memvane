@@ -96,7 +96,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import config as qmd_config
-import memvane_paths
+from memvane.kernel import memvane_paths
 import scan_state
 import source_text
 import wiki_compile as wc

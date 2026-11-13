@@ -49,7 +49,7 @@ def _prepare_state_root(path, install_id):
     root = Path(path)
     from memvane_execution_guard import require_cached_plugin_for_live_write
     require_cached_plugin_for_live_write(root)
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     if root.exists() or root.is_symlink():
         result = _private_parent(root)
         if result.parent == memvane_paths.installs_base():
@@ -253,7 +253,7 @@ def review_local_provider(*, plugin_root, state_root,
             str(state.resolve(strict=False)) != str(state)):
         _fail('provider_review_paths_invalid')
     # Only the v1 install namespace may be created by prepare.
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     try:
         socket_path = memvane_paths.install_socket(state)
     except ValueError as exc:
@@ -372,7 +372,7 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
         _fail('invalid_origin_preparation_request')
     state = _prepare_state_root(state_root, install_id)
     journal = state / 'journal.sqlite'
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     try:
         memvane_paths.install_socket(state, create=True)
     except ValueError as exc:

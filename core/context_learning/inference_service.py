@@ -70,7 +70,7 @@ def service_root(*, create=False, home=None):
         import pwd
         home = pwd.getpwuid(os.getuid()).pw_dir
     home = Path(home).resolve()
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     root = memvane_paths.state_base(home) / 'wake'
     _check_root(root, home)
     if create:
@@ -519,7 +519,7 @@ def _ensure(root, python, deadline, *, spawn=None):
     try:
         state = host.ensure_service(python=python, learning_root=root)
     except Exception as exc:
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         if isinstance(exc, ResourceDeferred) and str(exc) == 'laya_service_protocol_mismatch':
             raise ServiceFailure('version_mismatch',
                 timing={'host_reason': 'laya_service_protocol_mismatch'}) from exc

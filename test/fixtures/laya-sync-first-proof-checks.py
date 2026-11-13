@@ -755,7 +755,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_selected_compile_retrieval_refuses_busy_sync_owner_before_db_open(self):
         import wiki_compile_retrieval as retrieval
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected();calls=[]
             import laya_host_response as response
@@ -970,7 +970,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         """The resident service rechecks a binding through this proof: a held
         sync owner lock is ResourceDeferred('owner_busy'), not lost ownership."""
         import laya_resident_service as resident_service
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         with self.fixture.F.warm(),self.seed.authority(), \
                 mock.patch.object(self.J, '_executing_root', return_value=self.case.plugin):
             with self.sync.sync_owner(self.queue) as owner:

@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 import compile_paths as cp
 import project_dir
 import config as qmd_config

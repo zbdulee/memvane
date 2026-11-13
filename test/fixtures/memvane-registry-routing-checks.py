@@ -32,7 +32,7 @@ sys.path.insert(1, str(FIXTURES))
 import laya_external_edits as external  # noqa: E402
 import laya_index_host_route as routes  # noqa: E402
 import laya_install_journal as journal  # noqa: E402
-import memvane_paths  # noqa: E402
+from memvane.kernel import memvane_paths  # noqa: E402
 import runtime_work  # noqa: E402
 import out_of_project_installs as installs  # noqa: E402
 

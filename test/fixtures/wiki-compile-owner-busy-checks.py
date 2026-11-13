@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / 'core'))
 import runtime_wake_policy as policy
 import wiki_selected_laya
 import wiki_compile_worker
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 
 HOLDER = r'''

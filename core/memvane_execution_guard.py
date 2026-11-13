@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import pwd
 
-import memvane_paths
+from memvane.kernel import memvane_paths
 
 
 def require_cached_plugin_for_live_write(state=None):

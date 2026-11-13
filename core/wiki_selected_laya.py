@@ -13,7 +13,7 @@ import os
 import re
 import subprocess
 import sys
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 _compile_owner = ContextVar('selected_compile_owner', default=None)
 
@@ -40,7 +40,7 @@ def _compile_proof(decision, *, owner=None):
         return verify_selected_route_for_write(decision,'compile')
     import laya_install_journal as journal
     from sync_owner_lock import sync_owner
-    from resource_deferred import ResourceDeferred
+    from memvane.kernel.resource_deferred import ResourceDeferred
     with sync_owner(Path(decision['storePath'])) as acquired:
         if acquired is None:
             raise ResourceDeferred('owner_busy')

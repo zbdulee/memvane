@@ -30,7 +30,7 @@ import laya_product_sync_worker as worker
 import laya_source_catalog
 from laya_source_catalog import LayaSourceCatalog
 import laya_vector_capacity as vc
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 SCOPE = 'c' * 32
 INSTALL = '4' * 32

@@ -28,7 +28,7 @@ _HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 
 
 def _state_bases():
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     return (memvane_paths.installs_base(),)
 
 

@@ -218,7 +218,7 @@ class ResponseChecks(unittest.TestCase):
         import laya_local_embed_provider
         import laya_embed_resident
         import config
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         decision = {**DECISION,
                     "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
                     "projectRoot": "/synthetic/project",
@@ -1543,7 +1543,7 @@ class ResponseChecks(unittest.TestCase):
         import laya_embed_resident
         import runtime_work
         from laya_index_a import IndexContractError
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         decision = v2_decision()
         with tempfile.TemporaryDirectory(prefix='laya-host-owner-') as temp:
             sock = Path(temp) / 'laya-embed.sock'

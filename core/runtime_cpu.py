@@ -14,7 +14,7 @@ _TORCH_CONFIGURED=None
 
 
 def _defer(reason):
-    from resource_deferred import ResourceDeferred
+    from memvane.kernel.resource_deferred import ResourceDeferred
     return ResourceDeferred(reason)
 
 

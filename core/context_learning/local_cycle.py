@@ -21,7 +21,7 @@ from .cycle_policy import promotion_decision, selection_score
 from .dataset import read_private_json
 from .selection_queue import build_queue
 from .store import canonical, database
-from resource_deferred import ResourceDeferred  # re-exported for existing callers
+from memvane.kernel.resource_deferred import ResourceDeferred  # re-exported for existing callers
 # Re-exported: the same object and output budget as runtime_lease.
 from runtime_lease import MAX_FILE, atomic_json as _atomic_json
 

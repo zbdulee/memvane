@@ -58,7 +58,7 @@ class Coordinator:
 
     @contextmanager
     def activity(self, lane, policy, report):
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         self.lanes.append(lane)
         if self.refuse is not None:
             raise ResourceDeferred(self.refuse)
@@ -1120,7 +1120,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import tempfile
         rc = importlib.import_module('context_learning.resource_coordination')
         resident = importlib.import_module('laya_embed_resident')
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         root = Path(tempfile.mkdtemp(prefix='lanes-', dir=os.environ.get('HOME'))).resolve()
         policy = self.worker.EMBED_POLICY
         with mock.patch.object(rc.Coordinator, '_admit', return_value={'ready': True}):
@@ -1269,7 +1269,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import tempfile
         rc = importlib.import_module('context_learning.resource_coordination')
         resident = importlib.import_module('laya_embed_resident')
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         self.select_schema3()
         markers = self.cold_cards('adm', 10)
         self.run_vector_pass(Coordinator(refuse='cpu_pressure'))

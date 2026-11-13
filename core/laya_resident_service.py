@@ -98,7 +98,7 @@ def _fail(code):
 
 
 def _deferred(code):
-    from resource_deferred import ResourceDeferred
+    from memvane.kernel.resource_deferred import ResourceDeferred
     return ResourceDeferred(code)
 
 
@@ -110,7 +110,7 @@ def _account_home():
 
 def service_dir(*, create=False, home=None):
     """``<account home>/.local/state/memvane/v1/service``: private, same owner."""
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     if home is None and 'MEMVANE_TEST_RUNTIME_ROOT' in os.environ:
         from laya_journal_paths import journal_directory
         try:
@@ -422,7 +422,7 @@ def request_adopt(project, *, root=None, spawn=None):
 
     Never waits for model loading; the caller reports ``preparing``.
     """
-    from resource_deferred import ResourceDeferred
+    from memvane.kernel.resource_deferred import ResourceDeferred
     if root is None and (os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
                          or os.environ.get('QMD_SANDBOX')):
         raise _deferred('laya_service_fixture')
@@ -600,7 +600,7 @@ MOVED_DEFER_LIMIT = 3
 
 def _deferral(exc):
     """A busy queue owner, v5 window or resource gate, never bad evidence."""
-    from resource_deferred import ResourceDeferred
+    from memvane.kernel.resource_deferred import ResourceDeferred
     return isinstance(exc, ResourceDeferred)
 
 
@@ -1083,7 +1083,7 @@ class Service:
         if not dead and now < binding.recheck_at:
             return
         binding.recheck_at = now + self.owner_recheck_seconds
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         try:
             decision, proof, _mode = self.prove(project)
             from laya_embed_resident import _owner_identity

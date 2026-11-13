@@ -11,7 +11,7 @@ from pathlib import Path
 import stat
 import sys
 
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 
 HEADER = 'qmd-qa-provider-calls-v1:'

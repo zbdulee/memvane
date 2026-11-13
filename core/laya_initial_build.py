@@ -315,7 +315,7 @@ def create_or_verify(identity):
 
 def _pointer_dir(create):
     """Return the private initial-build pointer directory."""
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     cursor = Path.home()
     parts = memvane_paths.STATE_PARTS
     for name in (*parts, POINTERS):

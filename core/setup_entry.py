@@ -194,7 +194,7 @@ def main(argv=None):
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         else:result=select_learning(args)
     except Exception as exc:
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         if isinstance(exc, ResourceDeferred):
             result = {'status': 'deferred', 'reason': str(exc),
                       'changesApplied': 0}

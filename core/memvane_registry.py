@@ -161,7 +161,7 @@ def _fixture_live_home(home):
 
 
 def registry_path(home=None):
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     return memvane_paths.state_base(home) / PARENT / DIRECTORY / FILENAME
 
 
@@ -183,7 +183,7 @@ def _owned_dir(path, *, create, private):
 
 def _directory(home, create):
     """HOME/.local/state/memvane/registry, every component a real owned dir."""
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     root = Path(home) if home is not None else Path.home()
     if not root.is_absolute() or not root.is_dir():
         _fail('registry_unsafe')
@@ -320,7 +320,7 @@ def _public(row):
 
 
 def _bases(home):
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     return (('current', memvane_paths.state_base(home)),)
 
 

@@ -4,7 +4,7 @@ from pathlib import Path
 import pwd
 import stat
 
-import memvane_paths
+from memvane.kernel import memvane_paths
 
 
 def check_journal_namespace(state):

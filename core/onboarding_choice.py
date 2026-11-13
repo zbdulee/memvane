@@ -40,7 +40,7 @@ sys.dont_write_bytecode = True
 import time
 
 import config
-import memvane_paths
+from memvane.kernel import memvane_paths
 
 SCHEMA = 'memvane-onboarding-choice-v1'
 MAX_BYTES = 128 * 1024

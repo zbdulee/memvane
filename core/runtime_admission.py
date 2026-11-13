@@ -13,7 +13,7 @@ import time
 import uuid
 
 from context_learning.resource_coordination import Coordinator,_STARTUP_OWNER
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,'targetHeadroomFraction':.35}
 START_POLICY={**POLICY,'maxRssMib':2048}

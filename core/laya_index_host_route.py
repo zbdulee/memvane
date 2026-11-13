@@ -352,7 +352,7 @@ def _candidate_paths(cwd: Path):
 
 def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True) -> dict:
     """Classify a local single-store route without granting runtime authority."""
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     import sqlite3
     from contextlib import closing
     from memvane_version import same_major
@@ -863,7 +863,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
                         or not SHA256.fullmatch(marker_record['routeSha256'])):
                     raise ValueError('selection_marker_invalid')
                 if not records:
-                    import memvane_paths
+                    from memvane.kernel import memvane_paths
                     try:
                         memvane_paths.install_root(marker_record['installId']).lstat()
                     except FileNotFoundError:

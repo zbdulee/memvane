@@ -946,7 +946,7 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
         _failure_decision(proof['providerManifest'])
     except Exception as exc:
         from laya_store_primitives import IndexContractError
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         if type(exc) is IndexContractError and str(exc) == 'provider_start_failed':
             _fail('selected_provider_start_failed')
         if not isinstance(exc, ResourceDeferred):
@@ -1012,7 +1012,7 @@ def _restart_withdrawn_owner(decision: dict, proof: dict, state):
         return None
     from laya_embed_resident import ensure_running
     from laya_store_primitives import IndexContractError
-    from resource_deferred import ResourceDeferred
+    from memvane.kernel.resource_deferred import ResourceDeferred
     try:
         ensure_running(decision['projectRoot'], manifest)
     except ResourceDeferred as exc:
@@ -1611,7 +1611,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if verify_selected_route(decision) != proof:
             _fail('selected_proof_changed')
         import wiki_compile_enqueue
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         try:
             if 'journalPath' in decision:
                 from sync_owner_lock import sync_owner

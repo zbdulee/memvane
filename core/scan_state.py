@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 
-import memvane_paths
+from memvane.kernel import memvane_paths
 
 
 def state_dir(explicit=None):

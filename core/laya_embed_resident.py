@@ -21,7 +21,7 @@ import time
 
 from laya_store_primitives import IndexContractError
 from laya_local_embed_service import _private_parent
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 
 
 _IDENTITY = ('approvedProviderId', 'providerArtifactSha256',

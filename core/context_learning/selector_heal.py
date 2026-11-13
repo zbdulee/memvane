@@ -274,7 +274,7 @@ def _prepare_lease(home):
     renames, so every install's worker contends on the same lock.
     """
     import fcntl
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     base = memvane_paths.state_base(home)
     base.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(base / PREPARE_LOCK, os.O_RDWR | os.O_CREAT |
@@ -436,7 +436,7 @@ def warm(project, *, home=None, state=None):
 
 def selector_projects(home=None):
     """Projects of installs that have a prepared selector."""
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     import laya_initial_build as build
     found = []
     for base in (memvane_paths.installs_base(home),):

@@ -1614,7 +1614,7 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
                 'providerPath': str(root / 'laya_local_embed_provider.py'),
                 'workerPath': str(root / 'laya_local_embed_worker.mjs')}
     try:
-        import memvane_paths
+        from memvane.kernel import memvane_paths
         if (hashlib.sha256(_canon(record['dependencyClosure']).encode('utf-8')).hexdigest()
                 != manifest['dependencyClosureSha256']
                 or manifest['serviceSocketPath'] != str(memvane_paths.install_socket(

@@ -334,7 +334,7 @@ def reattest_active(root, adapter_path, *, prover=attest_runtime, probe=probe_ru
                     'attestedVersion':owner}
         if marker is not None and (marker.exists() or marker.is_symlink()):
             return {'status':'failed_previously','executable':pointer['executable']}
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         try:
             executable=_generation_executable(root,pointer['executable'])
             inspected=probe(executable,managed_root=root)

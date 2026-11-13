@@ -44,7 +44,7 @@ import time
 # exact installed plugin tree unchanged when they import runtime modules.
 sys.dont_write_bytecode = True
 
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 # Neutral lease primitives: importing this module never loads context_learning.
 from runtime_lease import atomic_json as _atomic_json,coordination_lock as _lock,private_state as _private_state
 import runtime_wake_policy as wake_policy

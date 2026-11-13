@@ -26,7 +26,7 @@ sys.path.insert(0, str(CORE))
 import laya_initial_build  # noqa: E402
 import laya_product_sync_worker as worker  # noqa: E402
 import runtime_work  # noqa: E402
-from resource_deferred import ResourceDeferred  # noqa: E402
+from memvane.kernel.resource_deferred import ResourceDeferred  # noqa: E402
 
 BIG = '/projects/big'
 NEW = '/projects/new'

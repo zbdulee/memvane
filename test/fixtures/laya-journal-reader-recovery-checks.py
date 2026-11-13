@@ -215,7 +215,7 @@ class RecoveryChecks(unittest.TestCase):
             self.assertEqual(selected.preferred_endpoint,target.endpoint_id)
 
     def test_conversion_waits_for_actual_released_capacity_worker_between_queue_leases(self):
-        from resource_deferred import ResourceDeferred
+        from memvane.kernel.resource_deferred import ResourceDeferred
         with fixture() as values:
             helper,case,reader,bridge,installer,readiness,_=values
             old=self.old_tree(case)

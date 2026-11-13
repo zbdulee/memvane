@@ -24,7 +24,7 @@ import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 import laya_index_host_route as host_route  # noqa: E402
 import laya_install_journal as journal  # noqa: E402
-import memvane_paths  # noqa: E402
+from memvane.kernel import memvane_paths  # noqa: E402
 import project_dir  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from laya_index_claim_queue import ClaimQueue  # noqa: E402

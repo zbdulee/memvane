@@ -9,7 +9,7 @@ import sys
 import time
 
 from context_learning.resource_coordination import Coordinator,_lock
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 import runtime_work
 
 INTERVAL=5.

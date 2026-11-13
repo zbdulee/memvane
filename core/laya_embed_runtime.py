@@ -99,7 +99,7 @@ def _canonical(value):
 
 
 def root(home=None):
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     return memvane_paths.state_base(home or Path.home()) / 'embed-runtime'
 
 
@@ -124,7 +124,7 @@ def _runtime_root(home=None, *, create=False):
         # Test and sandbox runs never read or write the account's real runtime.
         _fail('laya_embed_runtime_fixture_real_home')
     cursor = base
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     for name in (*memvane_paths.STATE_PARTS, 'embed-runtime'):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
@@ -1077,7 +1077,7 @@ def _remove_work(path):
 
 def _referenced_generations(home):
     """Generations a current install attestation still names."""
-    import memvane_paths
+    from memvane.kernel import memvane_paths
     generations = root(home) / 'generations'
     named = set()
     installs = []

@@ -17,7 +17,7 @@ import sqlite3
 import stat
 import time
 
-from resource_deferred import ResourceDeferred
+from memvane.kernel.resource_deferred import ResourceDeferred
 from context_learning.resource_coordination import Coordinator
 from context_learning.shared import resource_report
 from laya_store_primitives import IndexContractError
