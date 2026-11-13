@@ -233,24 +233,14 @@ def _resolve_endpoint(project, *, action, host_root):
           and host_root.is_absolute() and host_root.resolve(strict=True) == host_root,
           'reader_resolution_invalid')
     first = journal.select_route(str(project), action=action)
-    fenced = False
-    if first.get('state') == 'candidate':
-        _need(first.get('projectRoot') == str(project), 'reader_selection_unproved')
-        path = reader._journal(first['journalPath'])
-    else:
-        import laya_fresh_wiki_origin as fresh
-        hint = fresh._fence_record(project)
-        _need(first.get('state') == 'blocked' and hint is not None and
-              hint['projectRoot'] == str(project) and hint['phase'] == 'upgrading',
-              'reader_selection_unproved')
-        path = reader._journal(Path(hint['journalPath']))
-        fenced = True
+    _need(first.get('state') == 'candidate' and first.get('projectRoot') == str(project),
+          'reader_selection_unproved')
+    path = reader._journal(first['journalPath'])
     initial = _read_v5_bundle(path)
-    _need(((initial['state'] in ('active', 'restored_old') and initial['pending'] is None) or
-           (fenced and initial['state'] == 'pending' and initial['pending'] is not None))
+    _need(initial['state'] in ('active', 'restored_old') and initial['pending'] is None
           and isinstance(initial['selected'], dict), 'reader_selection_unproved')
     install_id = initial['selected']['installId']
-    _need(fenced or first.get('installId') == install_id, 'reader_install_changed')
+    _need(first.get('installId') == install_id, 'reader_install_changed')
     with reader_lifetime(install_id, exclusive=False):
         decision = journal.select_route(str(project), action=action)
         _need(decision == first and _read_v5_bundle(path) == initial,
@@ -265,10 +255,8 @@ def _resolve_endpoint(project, *, action, host_root):
                     with reader._readonly(path, path.parent) as db:
                         image = _image(db)
                         bundle_row, selected, stored, _transitions, endpoints, _records = image
-                        _need(((bundle_row['state'] in ('active', 'restored_old')
-                                and bundle_row['pending'] is None) or
-                               (fenced and bundle_row['state'] == 'pending'
-                                and bundle_row['pending'] is not None))
+                        _need(bundle_row['state'] in ('active', 'restored_old')
+                              and bundle_row['pending'] is None
                               and bundle_row['selected']['installId'] == install_id,
                               'reader_install_changed')
                         _need(stored['install_id'] == install_id and stored['project'] == str(project)
@@ -277,9 +265,7 @@ def _resolve_endpoint(project, *, action, host_root):
                             _forward_image(prior, image)
                         from laya_reader_windows import reader_proof_windows
                         with reader_proof_windows(install_id, deadline=time.monotonic()+2):
-                            issue = (reader._persisted_upgrade_endpoint if fenced else
-                                     reader._persisted_endpoint)
-                            token = issue(path.parent, project, host_root, selected.preferred_endpoint,
+                            token = reader._persisted_endpoint(path.parent, project, host_root, selected.preferred_endpoint,
                                           stored, endpoints[selected.preferred_endpoint][1])
                         _need(journal.select_route(str(project), action=action) == decision,
                               'reader_selection_changed')
