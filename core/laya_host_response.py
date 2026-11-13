@@ -1697,7 +1697,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             if 'journalPath' in decision:
                 from sync_owner_lock import sync_owner
                 from wiki_selected_laya import _owner_scope
-                with sync_owner(Path(decision['queuePath'])) as owner:
+                with sync_owner(Path(decision['storePath'])) as owner:
                     if owner is None:
                         raise ResourceDeferred('owner_busy')
                     with _owner_scope((decision, proof), owner):

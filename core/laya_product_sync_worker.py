@@ -560,7 +560,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     from laya_reader_windows import ReaderWindowBusy
     project = Path(decision['projectRoot'])
     try:
-        with sync_owner(Path(decision['queuePath']), wait=True) as owner:
+        with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}, proof
             # The owner re-seals the selected reader when only the project's
@@ -1823,7 +1823,7 @@ def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
     if result.get('state') not in ('indexed', 'unchanged'):
         return result
     try:
-        with sync_owner(Path(decision['queuePath']), wait=True) as owner:
+        with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:
                 return {**result, 'state': 'deferred', 'reason': 'owner_busy'}
 

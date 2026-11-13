@@ -41,7 +41,7 @@ def _compile_proof(decision, *, owner=None):
     import laya_install_journal as journal
     from sync_owner_lock import sync_owner
     from resource_deferred import ResourceDeferred
-    with sync_owner(Path(decision['queuePath'])) as acquired:
+    with sync_owner(Path(decision['storePath'])) as acquired:
         if acquired is None:
             raise ResourceDeferred('owner_busy')
         with journal.read_only_journals():

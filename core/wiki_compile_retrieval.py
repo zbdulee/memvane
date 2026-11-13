@@ -439,7 +439,7 @@ def _schema3_search(bound, text):
     decision, proof = bound
     project = Path(decision['projectRoot'])
     names = tuple(sorted(wiki_index_roots(decision['collections'])))
-    with sync_owner(Path(decision['queuePath'])) as owner:
+    with sync_owner(Path(decision['storePath'])) as owner:
         if owner is None:
             raise ResourceDeferred('owner_busy')
         if _owned_selected_proof(decision, owner) != proof:
