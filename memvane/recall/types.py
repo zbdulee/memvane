@@ -1,4 +1,10 @@
 """Recall result limits and fixed diagnostic errors."""
+from __future__ import annotations
+
+
+class VectorUnavailable(Exception):
+    """No query vector for this prompt; serve the published lexical lists."""
+    no_query_vector = True
 
 MAX_ROWS = 5
 HYBRID_LIST_LIMIT = 20

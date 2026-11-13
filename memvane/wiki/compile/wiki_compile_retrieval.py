@@ -390,7 +390,7 @@ def overlay_paths(db, text, deadline, exclusions, name):
 
 def query_provider(bound):
     """Only ask an already warm reviewed provider; no model is started here."""
-    from memvane.host.types import VectorUnavailable
+    from memvane.recall.types import VectorUnavailable
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.api import reviewed_provider_class
     ReviewedLocalQmdProvider = reviewed_provider_class()
@@ -476,7 +476,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     approved one, the warm provider does not answer, or the head moved from
     ``generation`` (the lexical rows' generation).
     """
-    from memvane.host.types import VectorUnavailable
+    from memvane.recall.types import VectorUnavailable
     from memvane.journal import journal_reader as reader
     from memvane.recall.api import approved_profile_matches
     from memvane.store.view.view_vectors import DEFERRED
