@@ -546,12 +546,21 @@ def _select_verified_cards(decision, settings, prompt, rows):
     if not pool:
         return [], 'no_candidates', None
     try:
-        prepared = selector_prepared(settings, project)
+        from laya_install_journal import inspect_journal
+        from memvane_version import plugin_version, version_key
+        selected = inspect_journal(decision['journalPath'])
+        running = version_key(plugin_version())
+        highest = version_key(selected['maxPluginVersion'])
+        if (selected['state'] != 'selected' or selected['installId'] != decision['installId']
+                or running is None or highest is None):
+            raise ValueError('selector_version_unavailable')
+        if running < highest:
+            prepared, result = True, {'reason': 'older_plugin_version', 'final_results': []}
+        else:
+            prepared, result = selector_prepared(settings, project), None
     except Exception:
         # Learning state unreachable (moving, sealed old root): hybrid rank.
         prepared, result = True, {'reason': 'selector_unavailable', 'final_results': []}
-    else:
-        result = None
     if prepared:
         if result is None:
             try:
