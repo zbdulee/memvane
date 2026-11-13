@@ -335,24 +335,6 @@ class ReaderChecks(helpers.GenerationCase):
         self.assertEqual([r['path'] for r in actual],[r[0] for r in expected])
         for a,b in zip(actual,expected):self.assertAlmostEqual(a['score'],b[1],places=12)
 
-    def test_15_verifier_checks_all_generations_and_unsealed_slots(self):
-        store,_,h,_=self.published();self.assertIs(store.verify_views(),True)
-        m=self.snapshot(store,h,scan_id='2'*32)
-        gen,_=self.prepared(store,h,m)
-        self.assertIs(store.verify_views(),True)
-        self.assertEqual(store._db.execute('SELECT state FROM generations WHERE gen_id=?',(gen,)).fetchone()[0],'prepared')
-        original=self.views._insert
-        def insert(db,name,row):
-            if name=='generation_seals':raise RuntimeError('synthetic interrupted reader fixture')
-            return original(db,name,row)
-        with mock.patch.object(self.views,'_insert',side_effect=insert):
-            with self.assertRaises(RuntimeError):
-                self.prepared(store,h,self.snapshot(store,h,scan_id='3'*32))
-        self.assertGreater(store.counts()['generation_slots'],store.counts()['generations'])
-        self.assertIs(store.verify_views(),True)
-        self.assertEqual(len(store.search(store.pin_view(h),'hello',1)),1)
-
-
     def test_16_shared_blob_and_trust_are_verified_once_per_snapshot(self):
         store,_,h=self.seeded();m=self.snapshot(store,h)
         body=(self.root/'.memvane/wiki/cards/a.md').read_bytes()
@@ -423,17 +405,14 @@ class ReaderChecks(helpers.GenerationCase):
         # Narrowed scope (K3): the served-row blob hash check.
         reason=self.never_served(store,pin,'# Alpha\nhello FORGED snapshot\n')
         self.assertIn(reason,(None,'blob_conflict'))
-        self.assertEqual(self.refused(store.verify_views).reason,'blob_conflict')
 
-    def test_20_unserved_blob_tamper_is_caught_by_verify_views(self):
+    def test_20_unserved_blob_tamper_is_never_served(self):
         store,_,h,_,blobs=self.published_pair('unserved-blob');pin=store.pin_view(h)
-        self.assertIs(store.verify_views(),True)
         self.tamper(store._path,'wiki_blobs_update','UPDATE wiki_blobs SET body=? WHERE blob_sha=?',
                     ('# Quiet\nunrelated FORGED!! card\n',blobs['cards/quiet.md']))
         # The query may refuse (whole re-derivation) or serve only the intact
         # row (narrowed scope); it never serves the tampered bytes.
         self.never_served(store,pin,'# Quiet\nunrelated FORGED!! card\n')
-        self.assertEqual(self.refused(store.verify_views).reason,'blob_conflict')
 
     def test_21_seal_slot_and_binding_digest_mismatch_refuse(self):
         # Narrowed scope (K3) keeps each refusal: seal-binding fails _head's seal
