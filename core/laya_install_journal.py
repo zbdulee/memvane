@@ -931,6 +931,30 @@ def _inspect_v1_row(db):
         _fail('journal_value_invalid')
     _strict_vector_profile(profile)
     row['vectorProfile'] = profile
+    readers = db.execute('SELECT record FROM reader').fetchall()
+    if len(readers) > 1 or (row['state'] == 'selected' and not readers):
+        _fail('journal_reader_missing')
+    reader = None
+    if readers:
+        try:
+            raw = readers[0][0]
+            if type(raw) is not str or len(raw.encode('utf-8')) > 65536:
+                _fail('journal_reader_invalid')
+            reader = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
+            from laya_journal_reader import _schema3_shape
+            if (not isinstance(reader, dict) or _canon(reader) != raw
+                    or not _schema3_shape(reader)
+                    or reader['install_id'] != row['installId']
+                    or reader['scope'] != row['scopeId']
+                    or reader['project'] != row['projectRoot']
+                    or reader['project_node'][1] != row['projectInode']
+                    or reader['db_path'] != row['storePath']
+                    or reader['db_node'][1] != row['storeInode']
+                    or reader['incarnation'] != row['storeIncarnation']):
+                _fail('journal_reader_invalid')
+        except (TypeError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+            raise JournalEvidenceError('journal_reader_invalid') from exc
+    row['reader'] = reader
     row['newWriteSeen'] = bool(row['newWriteSeen'])
     row.pop('id')
     return row
