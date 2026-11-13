@@ -60,8 +60,8 @@ import stat
 import time
 import uuid
 
-STATE_SCHEMA = 'laya-wiki-discovery-v2'
-GRANTS_SCHEMA = 'laya-wiki-discovery-grants-v3'
+STATE_SCHEMA = 'memvane-wiki-discovery-v1'
+GRANTS_SCHEMA = 'memvane-wiki-discovery-grants-v1'
 # Processing order: the sync grant accepts the wider existing trigger set.
 GRANT_KINDS = ('sync', 'session_start')
 MAX_FILE_BYTES = 1 << 20
@@ -80,9 +80,9 @@ _HEX32 = re.compile(r'[0-9a-f]{32}\Z')
 _HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 _GENERATION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
 _NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
-_STATE_KEYS = frozenset({'schema', 'scopeId', 'dbIncarnation', 'collectionRoots',
+_STATE_KEYS = frozenset({'schema', 'scopeId', 'storeIncarnation', 'collectionRoots',
                          'rawCollections', 'baseGen', 'rawSnapshot', 'pending', 'spentGrants'})
-_GRANT_KEYS = frozenset({'schema', 'scopeId', 'dbIncarnation', 'grants', 'provisional'})
+_GRANT_KEYS = frozenset({'schema', 'scopeId', 'storeIncarnation', 'grants', 'provisional'})
 SOURCE_ENGINES = frozenset(('claude', 'codex', 'hermes', 'gemini', 'unknown'))
 
 
@@ -99,7 +99,7 @@ class DiscoveryBusy(Exception):
 
 
 def _binding(decision):
-    scope, incarnation = decision.get('scopeId'), decision.get('dbIncarnation')
+    scope, incarnation = decision.get('scopeId'), decision.get('storeIncarnation')
     queue, project = decision.get('queuePath'), decision.get('projectRoot')
     collections, roots = decision.get('collections'), decision.get('collectionRoots')
     if (not isinstance(scope, str) or not _HEX32.fullmatch(scope)
@@ -274,7 +274,7 @@ def _read_grants(path, decision, *, heal=False):
         return empty
     phases = (value.get('grants'), value.get('provisional'))
     if (set(value) not in (_GRANT_KEYS, _GRANT_KEYS | {'engines'}) or value['schema'] != GRANTS_SCHEMA
-            or (value['scopeId'], value['dbIncarnation']) != (scope, incarnation)
+            or (value['scopeId'], value['storeIncarnation']) != (scope, incarnation)
             or any(not isinstance(ids, dict) or set(ids) != set(GRANT_KINDS)
                    or any(not _grant_ids(row, MAX_GRANT_COUNT) for row in ids.values())
                    for ids in phases)):
@@ -302,7 +302,7 @@ def _write_grants(path, decision, active, provisional, *, engines=None):
     ids = {grant for phase in (active, provisional) for grants in phase.values() for grant in grants}
     engines = {grant: engine for grant, engine in engines.items() if grant in ids}
     _write(path, {'schema': GRANTS_SCHEMA, 'scopeId': scope,
-                  'dbIncarnation': incarnation, 'grants': active,
+                  'storeIncarnation': incarnation, 'grants': active,
                   'provisional': provisional,
                   **({'engines': engines} if engines else {})})
 
@@ -442,7 +442,7 @@ def observe_grants(decision):
 
 def _state_doc(decision, base, raw_snapshot, pending, spent=()):
     scope, incarnation, _queue, roots, raw = _binding(decision)
-    return {'schema': STATE_SCHEMA, 'scopeId': scope, 'dbIncarnation': incarnation,
+    return {'schema': STATE_SCHEMA, 'scopeId': scope, 'storeIncarnation': incarnation,
             'collectionRoots': roots, 'rawCollections': raw,
             'baseGen': base, 'rawSnapshot': dict(sorted(raw_snapshot.items())),
             'pending': dict(sorted(pending.items())),
@@ -462,7 +462,7 @@ def _validate_state(value, decision):
     if (set(value) not in (_STATE_KEYS, _STATE_KEYS - {'spentGrants'})
             or value['schema'] != STATE_SCHEMA):
         raise DiscoveryBlocked('state_corrupt')
-    if (value['scopeId'], value['dbIncarnation']) != (scope, incarnation):
+    if (value['scopeId'], value['storeIncarnation']) != (scope, incarnation):
         raise DiscoveryBlocked('state_binding_mismatch')
     if value['collectionRoots'] != roots or value['rawCollections'] != raw:
         raise DiscoveryBlocked('state_roots_changed')

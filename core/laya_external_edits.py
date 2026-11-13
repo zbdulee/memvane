@@ -21,7 +21,7 @@ MAX_STATE_ENTRIES = 512
 MAX_FILE_BYTES = 4 * 1024 * 1024
 HOOK_SECONDS = 2.0
 OWNER_SECONDS = 3.0
-SCHEMA = 'memvane-external-edits-v1'
+SCHEMA = 'memvane-external-edits-v2'
 HOSTS = frozenset(('claude', 'codex', 'hermes'))
 _HEX32 = re.compile(r'[0-9a-f]{32}\Z')
 _HEX40 = re.compile(r'[0-9a-f]{40}\Z')
@@ -34,7 +34,7 @@ def _state_bases():
 
 def _inbox_path(decision):
     from laya_wiki_discovery import _paths
-    scope, incarnation = decision.get('scopeId'), decision.get('dbIncarnation')
+    scope, incarnation = decision.get('scopeId'), decision.get('storeIncarnation')
     if (not isinstance(scope, str) or not _HEX32.fullmatch(scope) or
             not isinstance(incarnation, str) or not _HEX32.fullmatch(incarnation)):
         raise ValueError('external_edit_binding_invalid')
@@ -44,7 +44,7 @@ def _inbox_path(decision):
 
 def _binding(decision):
     return {'schema': SCHEMA, 'projectRoot': decision['projectRoot'],
-            'scopeId': decision['scopeId'], 'dbIncarnation': decision['dbIncarnation']}
+            'scopeId': decision['scopeId'], 'storeIncarnation': decision['storeIncarnation']}
 
 
 def _valid_row(row):
