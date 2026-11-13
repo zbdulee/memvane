@@ -50,7 +50,7 @@ _laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" ||
 trap 'rm -f "$_laya_route_payload"' EXIT
 cat >"$_laya_route_payload" || { echo '[memvane] route payload unavailable' >&2; exit 3; }
 _laya_route_fallback="$PWD"
-_laya_route_state="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" classify-hook "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
+_laya_route_state="$(python3 "$_qmd_code_root/entry/run.py" hook-classify "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
 case "$_laya_route_state" in
   legacy)
     # No selected route: the project is not onboarded and gets no index,
@@ -58,9 +58,9 @@ case "$_laya_route_state" in
     if [ "$ACTION" = "update-queued" ]; then
       # A fresh installed SessionStart may acknowledge an owner-requested
       # history cutover. It never selects history or touches project content.
-      python3 "$_qmd_code_root/core/context_learning_host_ack.py" "$ENGINE" \
+      python3 "$_qmd_code_root/entry/run.py" host-ack "$ENGINE" \
         >/dev/null 2>&1 || true
-      _laya_notice="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" onboarding-notice \
+      _laya_notice="$(python3 "$_qmd_code_root/entry/run.py" onboarding-notice \
         "$_laya_route_payload" "$_laya_route_fallback" 2>/dev/null)" || _laya_notice=""
       if [ -n "$_laya_notice" ]; then
         if [ "$ENGINE" = codex ]; then
@@ -82,7 +82,7 @@ case "$_laya_route_state" in
     exec <"$_laya_route_payload"
     rm -f "$_laya_route_payload" || { echo '[memvane] route payload cleanup failed' >&2; exit 3; }
     trap - EXIT
-    exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
+    exec python3 "$_qmd_code_root/entry/run.py" hook-serve \
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
   blocked)
