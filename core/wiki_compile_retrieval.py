@@ -416,47 +416,6 @@ def query_provider(bound):
 
 
 @contextmanager
-def _selected_runtime(bound, roots, capacity):
-    """Hold the v5 sync owner and managed runtime throughout compile search."""
-    from laya_index_runtime import LayaIndexRuntime
-    decision,proof=bound
-    stores=({'catalog_path':capacity[0],'binding_store_path':capacity[1]} if capacity else {})
-    def legacy_runtime():
-        return LayaIndexRuntime(source_root=roots,scope=decision['scopeId'],
-            db_path=decision['dbPath'],queue_path=decision['queuePath'],
-            db_incarnation=decision['dbIncarnation'],wiki_only=True,**stores)
-    # Standalone synthetic adapters have no selected journal.
-    if 'journalPath' not in decision:
-        with legacy_runtime() as runtime:
-            yield runtime
-        return
-    import laya_install_journal as journal
-    from laya_index_sync import sync_owner
-    from resource_deferred import ResourceDeferred
-    with sync_owner(Path(decision['queuePath'])) as owner:
-        if owner is None:
-            raise ResourceDeferred('owner_busy')
-        with journal.read_only_journals():
-            version=journal.journal_version(decision['journalPath'])
-            if version!=5:
-                with journal.legacy_identity_reads():
-                    if journal.verify_selected_route_for_write(decision,'compile')!=proof:
-                        raise ValueError('selected_compile_proof_changed')
-        if version==5:
-            import project_dir
-            if project_dir.layout(decision['projectRoot'])=='split':
-                raise ValueError('project_dir_split')
-            from laya_product_sync_worker import _full_worker_runtime
-            from wiki_selected_laya import _owner_scope
-            with _owner_scope(bound,owner), \
-                    _full_worker_runtime(decision,owner,proof,roots,capacity=capacity) as (runtime,_writer):
-                yield runtime
-        else:
-            with legacy_runtime() as runtime:
-                yield runtime
-
-
-@contextmanager
 def _schema3_search(bound, text):
     """Lexical and vector candidates from the journal-selected schema3 view head.
 

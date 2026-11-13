@@ -216,73 +216,6 @@ def _owned_worker_attestation(decision, owner, expected):
         return manifest
 
 
-@contextmanager
-def _full_worker_runtime(decision, owner, proof, source_root, *, capacity=None):
-    """Keep the v5 writer and its pins until the runtime has closed."""
-    import laya_install_journal as journal
-    from contextlib import ExitStack
-    windows = readers = None
-    try:
-        with ExitStack() as stack:
-            writer = None
-            options = {}
-            roles = ('base', 'queue') if capacity is None else ('base', 'queue', 'catalog', 'binding')
-            if capacity is not None:
-                options.update(catalog_path=capacity[0], binding_store_path=capacity[1],
-                               wiki_only='collections' in decision)
-            with journal.read_only_journals():
-                if journal.journal_version(decision['journalPath']) == 5:
-                    import laya_reader_windows as windows
-                    import laya_writer_proof_reader as readers
-                    import laya_writer_open_plan as plans
-                    import laya_writer_scope as normal
-                    plan = plans.capture_writer_plan(Path(decision['projectRoot']),
-                                                      executing_root=_writer_executing_root())
-                    writer = stack.enter_context(normal.worker_writer_scope(
-                        plan, queue_owner=owner, operation_timeout=2))
-                    if normal.admission_proof(writer) != proof:
-                        raise IndexContractError('selected_proof_changed')
-                    options['connection_windows'] = {
-                        role: windows.component_for(writer, role) for role in roles}
-            runtime = stack.enter_context(LayaIndexRuntime(
-                source_root=source_root, scope=decision['scopeId'], db_path=decision['dbPath'],
-                queue_path=decision['queuePath'], db_incarnation=decision['dbIncarnation'], **options))
-            yield runtime, writer
-    finally:
-        if windows is not None:
-            try:
-                windows.drain_pending(deadline=time.monotonic()+2)
-            finally:
-                readers.drain_proof_readers(deadline=time.monotonic()+2)
-            if windows.local_pending_count() or readers.local_pending_proof_readers():
-                raise ResourceDeferred('writer_cleanup_unsettled')
-
-
-@contextmanager
-def _discovery_base_component(decision, owner, proof):
-    """Bind discovery's base opens to the selected worker owner and drain."""
-    import laya_install_journal as journal
-    import laya_reader_windows as windows
-    import laya_writer_proof_reader as readers
-    import laya_writer_open_plan as plans
-    import laya_writer_scope as normal
-    try:
-        with journal.read_only_journals():
-            plan=plans.capture_writer_plan(Path(decision['projectRoot']),
-                                           executing_root=_writer_executing_root())
-        with normal.worker_writer_scope(plan,queue_owner=owner,operation_timeout=2) as writer:
-            if normal.admission_proof(writer) != proof:
-                raise IndexContractError('selected_proof_changed')
-            yield windows.component_for(writer,'base')
-    finally:
-        try:
-            windows.drain_pending(deadline=time.monotonic()+2)
-        finally:
-            readers.drain_proof_readers(deadline=time.monotonic()+2)
-        if windows.local_pending_count() or readers.local_pending_proof_readers():
-            raise ResourceDeferred('writer_cleanup_unsettled')
-
-
 def _selected(project, *, owner_wait=False, companion_of=None):
     """(decision, proof) of the selected route under its v5 reader windows.
 
@@ -585,8 +518,7 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
     raw_scan = {}
     result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
                                  start_service=start_service, raw_scan=raw_scan)
-    result = _after_sync(decision, proof, grants, result, store_format='schema3',
-                         raw_snapshot=raw_scan.get('snapshot'))
+    result = _after_sync(decision, proof, grants, result, raw_snapshot=raw_scan.get('snapshot'))
     vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
     waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
                or [v for v in vectors if v['state'] in ('pending', 'deferred')])
@@ -2005,59 +1937,30 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             'providerMs': vectors.get('stats', {}).get('providerMs', 0)}
 
 
-def _after_sync(decision, proof, grants, result, *, store_format='v6', raw_snapshot=None):
-    """External-edit drain and wiki discovery after a completed sync, on every sync path.
-
-    After receipt and ACK, with the model service stopped. A raised error or
-    a retry keeps this wake; the published head is not touched. ``proof`` is
-    the one the sync ended with (the capacity path refreshes it at its
-    fence). A blocked run, a burst skipped over the pending cap, or a run
-    that started the cursor (earlier changes are not discovered) is reported
-    as ``wikiDiscovery``.
-
-    A schema3 selection opens no v6 component: discovery takes the view
-    head this pass published or found (``result['generation']``) as its
-    cursor generation instead of the v6 lineage read.
-    """
+def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
+    """Drain external edits and run wiki discovery after a completed sync."""
     if result.get('state') not in ('indexed', 'unchanged'):
         return result
-    schema3 = store_format == 'schema3'
-
-    import laya_install_journal as journal
-    from contextlib import nullcontext
-    with journal.read_only_journals():
-        v5 = journal.journal_version(decision['journalPath']) == 5
     try:
-        with (sync_owner(Path(decision['queuePath']), wait=True) if v5 else nullcontext(None)) as owner:
-            if v5 and owner is None:
+        with sync_owner(Path(decision['queuePath']), wait=True) as owner:
+            if owner is None:
                 return {**result, 'state': 'deferred', 'reason': 'owner_busy'}
 
             def recheck():
-                current = (_owned_selected_proof(decision, owner) if v5
-                           else verify_selected_route(decision))
-                if current != proof:
+                if _owned_selected_proof(decision, owner) != proof:
                     raise IndexContractError('selected_proof_changed')
             import laya_external_edits
-            if v5:
-                from wiki_selected_laya import _owner_scope
-            with (_owner_scope((decision,proof),owner) if v5 else nullcontext()):
-                external = (laya_external_edits.drain(decision, recheck=recheck, owner=owner)
-                            if v5 else laya_external_edits.drain(decision, recheck=recheck))
+            from wiki_selected_laya import _owner_scope
+            with _owner_scope((decision, proof), owner):
+                external = laya_external_edits.drain(decision, recheck=recheck, owner=owner)
                 if isinstance(external, dict) and external.get('remaining', 0):
                     return {**result, 'state': 'pending', 'reason': 'external_edits_pending'}
                 if grants is None:
                     return result
                 import laya_wiki_discovery
-                if schema3:
-                    outcome = laya_wiki_discovery.drain_after_sync(
-                        decision, grants, recheck=recheck, view_generation=result.get('generation'),
-                        raw_snapshot=raw_snapshot)
-                elif v5:
-                    with _discovery_base_component(decision,owner,proof) as component:
-                        outcome = laya_wiki_discovery.drain_after_sync(
-                            decision,grants,recheck=recheck,coordination=component)
-                else:
-                    outcome = laya_wiki_discovery.drain_after_sync(decision, grants, recheck=recheck)
+                outcome = laya_wiki_discovery.drain_after_sync(
+                    decision, grants, recheck=recheck, view_generation=result.get('generation'),
+                    raw_snapshot=raw_snapshot)
     except ResourceDeferred as exc:
         return {**result, **_deferred(exc)}
     if outcome['state'] == 'retry':
