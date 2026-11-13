@@ -3,7 +3,7 @@ from contextlib import contextmanager
 import json, os
 from pathlib import Path
 import sqlite3,tempfile,time,unittest
-from context_learning.learning_queue import LearningQueue, semantic_key
+from memvane.learning.context_learning.learning_queue import LearningQueue, semantic_key
 
 class Checks(unittest.TestCase):
  def setUp(self):

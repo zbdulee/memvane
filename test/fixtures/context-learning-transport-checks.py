@@ -12,11 +12,11 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, 'core')
-from context_learning.contracts import digest, request
-from context_learning.store import capture, database, canonical
-from context_learning.offline import save_provisional_batch, review_view, approve_review, delete_case, build_manifest
-from context_learning.jobs import JobLease, label_job, job_status, cancel_job
-from context_learning.transport import run_teacher, label_request, _SERIAL
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning.store import capture, database, canonical
+from memvane.learning.context_learning.offline import save_provisional_batch, review_view, approve_review, delete_case, build_manifest
+from memvane.learning.context_learning.jobs import JobLease, label_job, job_status, cancel_job
+from memvane.learning.context_learning.transport import run_teacher, label_request, _SERIAL
 
 SECRET = 'synthetic-secret-never-log'
 

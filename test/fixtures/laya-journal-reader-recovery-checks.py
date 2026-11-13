@@ -51,7 +51,7 @@ from laya_index_runtime import LayaIndexRuntime,capacity_store_paths
 from laya_index_host_route import wiki_index_roots
 from laya_index_vector import qmd_markdown_title
 from laya_index_sync import _owner_lock
-from context_learning.resource_coordination import Coordinator
+from memvane.learning.context_learning.resource_coordination import Coordinator
 decision,proof=p['decision'],p['proof'];profile=proof['vectorProfile']
 provider=SimpleNamespace(manifest={'recipeId':'qmd-regex-token-chunks-candidate-v1'},
     profile={'profile_id':profile['profileId'],'model_id':profile['modelId'],

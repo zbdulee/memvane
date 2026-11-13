@@ -90,7 +90,7 @@ class CpuThreads(unittest.TestCase):
 
     def test_provider_cpu_refusal_precedes_dispatch_intent(self):
         cpu=self.cpu();from memvane.runtime import runtime_admission as admission
-        from context_learning.resource_coordination import Coordinator
+        from memvane.learning.context_learning.resource_coordination import Coordinator
         c=Coordinator(self.root);before=Mock()
         report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
         with patch.object(cpu.os,'cpu_count',return_value=4),patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'','QMD_PROVIDER_COORD_FD':''}),patch.object(admission,'Coordinator',return_value=c),patch.object(admission,'sample',return_value=report),patch.object(admission.subprocess,'Popen',side_effect=AssertionError('must not send')):
@@ -100,7 +100,7 @@ class CpuThreads(unittest.TestCase):
 
     def test_provider_child_retains_share_after_popen_returns(self):
         cpu=self.cpu();from memvane.runtime import runtime_admission as admission
-        from context_learning.resource_coordination import Coordinator
+        from memvane.learning.context_learning.resource_coordination import Coordinator
         c=Coordinator(self.root);held=[]
         report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
 
@@ -120,14 +120,14 @@ class CpuThreads(unittest.TestCase):
         import runpy
         core=str(Path(__file__).resolve().parents[1]/'core')
         with patch.object(sys,'path',[p for p in sys.path if p!=core]):
-            module=runpy.run_path(str(Path(core)/'context_learning/laya_adapter.py'),run_name='synthetic_adapter')
+            module=runpy.run_path(str(Path(core)/'context_learning/adapter.py'),run_name='synthetic_adapter')
             self.assertIn(core,sys.path)
             with patch.dict(os.environ):
                 with self.assertRaisesRegex(ValueError,'invalid_adapter_mode'):
                     module['main'](['synthetic','invalid','unused','unused'])
 
     def test_shared_daemon_entry_owns_a_share_without_loading_a_model(self):
-        cpu=self.cpu();from context_learning import inference_service as service
+        cpu=self.cpu();from memvane.learning.context_learning import inference_service as service
         def serve(root):
             with self.assertRaises(ValueError):
                 with cpu.lease(root):self.fail('unreserved daemon')
@@ -137,7 +137,7 @@ class CpuThreads(unittest.TestCase):
 
 
     def test_adapter_configures_before_any_model_import_work(self):
-        cpu=self.cpu();from context_learning import laya_adapter as adapter
+        cpu=self.cpu();from memvane.learning.context_learning import laya_adapter as adapter
         fake=Mock();fake.get_num_threads.return_value=1;fake.get_num_interop_threads.return_value=1
         with patch.dict(sys.modules,{'torch':fake}),patch.dict(os.environ,{'OMP_NUM_THREADS':'99'}):
             self.assertIs(adapter._torch(),fake)
@@ -145,8 +145,8 @@ class CpuThreads(unittest.TestCase):
         fake.set_num_threads.assert_called_once_with(1)
 
     def test_local_trainer_passes_limits_and_live_share_to_mock_child(self):
-        cpu=self.cpu();from context_learning import local_cycle
-        from context_learning.resource_coordination import Coordinator
+        cpu=self.cpu();from memvane.learning.context_learning import local_cycle
+        from memvane.learning.context_learning.resource_coordination import Coordinator
         child=Mock(pid=999991,returncode=0);child.poll.return_value=0
         captured={}
         def spawn(argv,**options):
@@ -165,7 +165,7 @@ class CpuThreads(unittest.TestCase):
         self.assertTrue(captured['pass_fds'])
 
     def test_local_trainer_fixture_keeps_real_uid_state_closed(self):
-        self.cpu();from context_learning import local_cycle
+        self.cpu();from memvane.learning.context_learning import local_cycle
         child=Mock(pid=999991,returncode=0);child.poll.return_value=0
         def spawn(argv,**options):
             self.assertEqual(options['pass_fds'],())
@@ -176,7 +176,7 @@ class CpuThreads(unittest.TestCase):
         self.assertEqual(answer,{})
 
     def test_excess_observed_group_cpu_uses_cooperative_stop(self):
-        self.cpu();from context_learning.training_watch import Watch
+        self.cpu();from memvane.learning.context_learning.training_watch import Watch
         clock=[0.];watch=Watch(clock=lambda:clock[0])
         report={'ready':True,'observed_at_mono':0.,'total_mib':16000,'available_mib':12000,
                 'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},

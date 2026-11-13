@@ -5,7 +5,7 @@ from pathlib import Path
 from memvane.runtime.runtime_admission import prepared,preparation_checkpoint
 from .store import canonical
 from .dataset import read_private_json
-from .laya_adapter import EDIT_INPUT_VIEW,model_identity
+from .adapter import EDIT_INPUT_VIEW,model_identity
 from .inference_identity import code_identity,file_sha
 
 NAME='project-learning-authorization.json'
@@ -102,7 +102,7 @@ def _installations(project=None):
         paths=roots.get(host,[])
         if len(paths)!=1:raise ValueError('project_scope_installation_invalid')
         root=Path(paths[0]).resolve(strict=True)
-        adapter=root/'core/context_learning/laya_adapter.py'
+        adapter=root/'memvane/learning/context_learning/adapter.py'
         if project is None:
             # Preserve the historical account-wide official-marketplace proof.
             from . import adapter_binding
@@ -127,11 +127,11 @@ def _code_snapshot(root,home):
     """Fresh owned bytes once per tree; never reuse trust across operations."""
     from .adapter_binding import _local_code
     fingerprint=_local_code(root,home)
-    hashes=dict(fingerprint);files={};core=root/'core'
+    hashes=dict(fingerprint);files={};core=root/'memvane'
     for path in sorted(core.rglob('*.py')):
         preparation_checkpoint()
         relative=str(path.relative_to(core))
-        value=hashes.get('core/'+relative)
+        value=hashes.get('memvane/'+relative)
         # _local_code excludes cache directories, but the existing Python
         # identity includes any .py source there. Keep that coverage too.
         files[relative]=file_sha(_path(path)) if value is None else value
@@ -142,7 +142,7 @@ def _installed_binding(rows):
     """Host inventories establish provenance; every operation rechecks bytes."""
     if not isinstance(rows,list) or [r.get('host') for r in rows]!=['claude','codex']:
         raise ValueError('project_scope_installation_invalid')
-    source=Path(__file__).parents[2]
+    source=Path(__file__).parents[3]
     expected,current_fingerprint=_code_snapshot(source,source)
     result=[];versions=set();current=proposal_sha256(expected)
     for row in rows:
@@ -158,7 +158,7 @@ def _installed_binding(rows):
         if fingerprint!=current_fingerprint:raise ValueError('project_scope_code_changed')
         versions.add(metadata['version'])
         result.append({**row,'manifestSha256':file_sha(manifest),
-                       'adapterSha256':files['context_learning/laya_adapter.py'],
+                       'adapterSha256':files['learning/context_learning/adapter.py'],
                        'version':metadata['version'],'codeSha256':current,
                        'executableSha256':proposal_sha256(fingerprint)})
     if len(versions)!=1:raise ValueError('project_scope_installation_changed')
@@ -199,7 +199,7 @@ def _stat_identity(path):
 
 def _model_identity(root,model):
     """Full hash once per process/grant; changed metadata never renews trust."""
-    from .laya_adapter import MODEL_FILES
+    from .adapter import MODEL_FILES
     paths=[_path(model/name) for name in MODEL_FILES]
     signature=tuple(_stat_identity(path) for path in paths)
     grant=Path(root)/NAME
@@ -227,7 +227,7 @@ def _binding(project,root,policy,installs):
     expected={key:value for key,value in policy.items() if not key.startswith('_')}
     # Shared workers resolve the equivalent installed host adapter in memory.
     installed=_installed_binding(installs)
-    adapters={str(Path(r['root'])/'core/context_learning/laya_adapter.py') for r in installed}
+    adapters={str(Path(r['root'])/'memvane/learning/context_learning/adapter.py') for r in installed}
     if (not isinstance(expected.get('trainerArgv'),list) or len(expected['trainerArgv'])!=3
             or len(disk.get('trainerArgv',[]))!=3
             or expected['trainerArgv'][1] not in adapters or disk['trainerArgv'][1] not in adapters):
@@ -236,7 +236,7 @@ def _binding(project,root,policy,installs):
     if expected!=disk or disk.get('modelInputView')!=EDIT_INPUT_VIEW:
         raise ValueError('project_scope_policy_changed')
     python=_path(Path(disk['trainerArgv'][0]).resolve(strict=True));model=_path(disk['trainerArgv'][2],directory=True)
-    from .laya_adapter import MODEL_FILES
+    from .adapter import MODEL_FILES
     for name in MODEL_FILES:_path(model/name)
     return {'settingsScope':settings,'hostRegistry':_registry_binding(project),'policySha256':file_sha(root/'shared-policy.json'),
             'installations':installed,'codeSha256':code_identity(),

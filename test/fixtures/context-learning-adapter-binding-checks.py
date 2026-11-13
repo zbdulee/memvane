@@ -18,12 +18,12 @@ DRIVER = '''import json,sys,time
 from pathlib import Path
 sys.dont_write_bytecode=True
 root=Path(sys.argv[1]);state=Path(sys.argv[2]);sys.path.insert(0,str(root/'core'))
-from context_learning import live_select, inference_service
-from context_learning.local_cycle import VerifiedLayaTrainer
-from context_learning.contracts import digest
+from memvane.learning.context_learning import live_select, inference_service
+from memvane.learning.context_learning.local_cycle import VerifiedLayaTrainer
+from memvane.learning.context_learning.contracts import digest
 calls=[]
 def admission(self,*,cwd):
-    assert self.argv[1]==str(root/'core/context_learning/laya_adapter.py'),self.argv
+    assert self.argv[1]==str(root/'memvane/learning/context_learning/adapter.py'),self.argv
     assert self.argv[0]==sys.executable and self.argv[2]==sys.argv[3]
     assert self.identity and self.proof is None
     return {}
@@ -95,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     private(state/'active-checkpoint.json',{'schema_version':1,'artifact_path':str(artifact),
         'artifact_sha256':hashlib.sha256(artifact.read_bytes()).hexdigest()})
     policy={'schema':'qmd-live-selector-v1','trainerArgv':[sys.executable,
-        str(roots['codex',OLD]/'core/context_learning/laya_adapter.py'),str(model)],
+        str(roots['codex',OLD]/'memvane/learning/context_learning/adapter.py'),str(model)],
         'timeoutSeconds':5,'maxRssMib':512}
     private(state/'live-selector.json',policy)
     constructor_calls=0
@@ -119,11 +119,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     # Both previously approved host anchors may be reused by either current
     # host, but execution must enter the current host's actual trainer class.
     for old_host in ('codex','claude'):
-        policy['trainerArgv'][1]=str(roots[old_host,OLD]/'core/context_learning/laya_adapter.py')
+        policy['trainerArgv'][1]=str(roots[old_host,OLD]/'memvane/learning/context_learning/adapter.py')
         private(state/'live-selector.json',policy)
         for host in ('claude','codex'):invoke(host)
 
-    old_adapter=roots['codex',OLD]/'core/context_learning/laya_adapter.py'
+    old_adapter=roots['codex',OLD]/'memvane/learning/context_learning/adapter.py'
     policy['trainerArgv'][1]=str(old_adapter);private(state/'live-selector.json',policy)
     old_bytes=old_adapter.read_bytes()
     old_adapter.write_bytes(old_bytes+b'\n# different adapter\n')
@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     for host in ('claude','codex'):invoke(host,'unsupported_adapter')
     policy['trainerArgv'][1]=str(old_adapter);private(state/'live-selector.json',policy)
 
-    old_adapter.unlink();old_adapter.symlink_to(roots['codex',NEW]/'core/context_learning/laya_adapter.py')
+    old_adapter.unlink();old_adapter.symlink_to(roots['codex',NEW]/'memvane/learning/context_learning/adapter.py')
     for host in ('claude','codex'):invoke(host,'unsupported_adapter')
     old_adapter.unlink();old_adapter.write_bytes(old_bytes)
     old_adapter.chmod(0o666)
@@ -150,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     # replaces it only when its bytes are the attested adapter.
     for host in ('claude','codex'):invoke(host,'adapter_anchor_missing')
     attestation=state/'laya-synthetic-attestation.json'
-    current_sha=hashlib.sha256((roots['claude',NEW]/'core/context_learning/laya_adapter.py')
+    current_sha=hashlib.sha256((roots['claude',NEW]/'memvane/learning/context_learning/adapter.py')
                                .read_bytes()).hexdigest()
     private(attestation,{'attestation':{'adapter_sha256':'0'*64}})
     for host in ('claude','codex'):invoke(host,'adapter_anchor_missing')
@@ -172,7 +172,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     current_bytes=current_manifest.read_bytes()
     private(current_manifest,{'name':'another-plugin','version':NEW})
     invoke('claude','unsupported_adapter');current_manifest.write_bytes(current_bytes)
-    current_adapter=roots['codex',NEW]/'core/context_learning/laya_adapter.py'
+    current_adapter=roots['codex',NEW]/'memvane/learning/context_learning/adapter.py'
     current_bytes=current_adapter.read_bytes()
     current_adapter.write_bytes(current_bytes+b'\n# changed current adapter\n')
     invoke('codex','unsupported_adapter');current_adapter.write_bytes(current_bytes)
@@ -235,7 +235,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-adapter-binding-') as temporary:
     private(inventory_file,bad);invoke('codex','unsupported_adapter');private(inventory_file,codex_inventory)
 
     for host in ('claude','codex'):
-        policy['trainerArgv'][1]=str(roots[host,NEW]/'core/context_learning/laya_adapter.py')
+        policy['trainerArgv'][1]=str(roots[host,NEW]/'memvane/learning/context_learning/adapter.py')
         private(state/'live-selector.json',policy);invoke(host)
     assert constructor_calls==9
     print(json.dumps({'bothHosts':True,'versionPaths':True,'wrongAdapterDenied':True,

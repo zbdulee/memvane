@@ -7,10 +7,10 @@ import tempfile
 from unittest.mock import patch
 
 sys.path.insert(0, 'core')
-from context_learning import live_select, shared, inference_service
-from context_learning.resident import ResidentFailure
-from context_learning.contracts import digest
-from context_learning.laya_adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
+from memvane.learning.context_learning import live_select, shared, inference_service
+from memvane.learning.context_learning.resident import ResidentFailure
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
 
 with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
     state = Path(temporary).resolve()
@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-live-selector-') as temporary:
     private(state / 'active-checkpoint.json', {
         'schema_version': 1, 'artifact_path': str(artifact),
         'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()})
-    adapter = Path('core/context_learning/laya_adapter.py').resolve()
+    adapter = Path('memvane/learning/context_learning/adapter.py').resolve()
     candidate_sha = hashlib.sha256(adapter.read_bytes()).hexdigest()
     production_pin = shared.REVIEWED_ADAPTER_SHA256
     different_pin = '0' * 64

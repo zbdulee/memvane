@@ -87,7 +87,7 @@ def _capture_learning(slot: list, started: float) -> None:
     if not pending:
         return
     try:
-        from context_learning.laya_learning import capture_recall
+        from memvane.learning.context_learning.learning import capture_recall
         capture_recall(*pending[0], started=started)
     except Exception:
         pass
@@ -534,7 +534,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
     hybrid rank (``ranked``) so search never empties on selector
     infrastructure; ``fallback`` names why. An invalid pool serves nothing.
     """
-    from context_learning.selection_read import select_published, selector_prepared
+    from memvane.learning.context_learning.selection_read import select_published, selector_prepared
     from memvane.route.index_host_route import wiki_index_roots
     roots = wiki_index_roots(decision['collections'])
     names = tuple(sorted(roots))
@@ -584,7 +584,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
               file=sys.stderr)
     else:
         fallback = 'laya_selector_not_prepared'
-    from context_learning.selection_port import published_candidate_rows
+    from memvane.learning.context_learning.selection_port import published_candidate_rows
     try:
         # The same published-row contract the selector input must satisfy.
         published_candidate_rows(pool, names, decision['scopeId'])

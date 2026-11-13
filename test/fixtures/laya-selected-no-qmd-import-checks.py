@@ -66,7 +66,7 @@ class SelectedNoQmdImport(unittest.TestCase):
             import laya_bundle_upgrade, laya_resident_service, runtime_work
             import wiki_card, wiki_compile, wiki_verify_worker, wiki_dedup_resolve
             import wiki_lifecycle, wiki_source_missing, wiki_extract, wiki_dedup_scan
-            import context_learning.laya_learning
+            import context_learning.learning
             report(loaded=loaded())
         ''')
         self.assertEqual(out['loaded'], [])

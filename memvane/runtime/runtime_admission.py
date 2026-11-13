@@ -12,7 +12,7 @@ import sys
 import time
 import uuid
 
-from context_learning.resource_coordination import Coordinator,_STARTUP_OWNER
+from memvane.learning.context_learning.resource_coordination import Coordinator,_STARTUP_OWNER
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 POLICY={'maxRssMib':512,'minAvailableMib':768,'maxLoadPerCpu':1,'targetHeadroomFraction':.35}
@@ -27,7 +27,7 @@ class PreSendDeferred(ResourceDeferred):
 
 
 def sample(policy,*,deadline=None):
-    from context_learning.shared import resource_report
+    from memvane.learning.context_learning.shared import resource_report
     try:return resource_report(policy,detailed=True,admission=False,deadline=deadline)
     except (OSError,ValueError,TypeError,KeyError):return None
 
@@ -56,7 +56,7 @@ def provider():
             # Matching an inode alone is not a held-lease proof. A second open
             # must observe contention, while the inherited open description
             # itself must already own (or be able to reuse) that exact lock.
-            from context_learning.resource_coordination import _lock
+            from memvane.learning.context_learning.resource_coordination import _lock
             probe=_lock(controller.root/'provider.lock')
             try:
                 try:fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -153,7 +153,7 @@ def provider_popen(argv,*,before_launch=None,launch_failed=None,defer_launch=Non
 
 def provider_run(argv,**options):
     """Bounded owned group; preserve the caller's routing/environment exactly."""
-    from context_learning.transport import _stop_owned
+    from memvane.learning.context_learning.transport import _stop_owned
     with provider():
         timeout=options.pop('timeout',120)
         if type(timeout) not in (int,float) or not 0<timeout<=600:
@@ -202,7 +202,7 @@ class _StartupReservation:
         self.controller=controller;self.deadline=time.monotonic()+10
         self.nonce=uuid.uuid4().hex;self.safe=True;self.begun=False
     def begin(self):
-        from context_learning.local_cycle import _atomic_json
+        from memvane.learning.context_learning.local_cycle import _atomic_json
         with self.controller._gate('control.lock'):
             self.controller.startup_barrier()
             _atomic_json(self.controller.root/'startup-reservation.json',

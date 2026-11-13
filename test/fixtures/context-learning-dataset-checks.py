@@ -10,10 +10,10 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0,'core')
-from context_learning.contracts import CLASS_ORDER, digest, request
-from context_learning.store import canonical, capture, database
-from context_learning.offline import approve_review, build_manifest, delete_case, save_label
-from context_learning.dataset import export_dataset, inspect_export, evaluate_predictions, read_private_json
+from memvane.learning.context_learning.contracts import CLASS_ORDER, digest, request
+from memvane.learning.context_learning.store import canonical, capture, database
+from memvane.learning.context_learning.offline import approve_review, build_manifest, delete_case, save_label
+from memvane.learning.context_learning.dataset import export_dataset, inspect_export, evaluate_predictions, read_private_json
 
 class Checks(unittest.TestCase):
     def setUp(self):

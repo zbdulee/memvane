@@ -7,13 +7,13 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from context_learning.contracts import digest, request
-from context_learning.shared import (_db, _due_threshold, _holdout_diagnostic,
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning.shared import (_db, _due_threshold, _holdout_diagnostic,
                                      _evaluation_keys, _training_exposure_keys,
                                      _selection_exposure_keys, _screen_observation,
                                      _training_provenance,
                                      enqueue, observe_trial, status, train_due)
-from context_learning.store import canonical, capture
+from memvane.learning.context_learning.store import canonical, capture
 
 
 def scenario(base, *, focus_common):
@@ -39,7 +39,7 @@ def scenario(base, *, focus_common):
         "goldModel": "gpt-6.1-sol", "maxGoldCalls": 10,
         "batchMin": 5, "batchMax": 20, "targetExact": .95,
         "trainerArgv": [sys.executable,
-            str(Path("core/context_learning/laya_adapter.py").resolve()), str(base)],
+            str(Path("memvane/learning/context_learning/adapter.py").resolve()), str(base)],
         "baseArtifact": str(base_artifact), "maxRssMib": 4096,
         "minAvailableMib": 128, "maxLoadPerCpu": 4,
         "safetySeconds": 900, "experimental": True}

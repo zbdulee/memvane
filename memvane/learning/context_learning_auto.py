@@ -12,12 +12,12 @@ from pathlib import Path
 import sys
 
 from memvane.settings import config as qmd_config
-from context_learning.contracts import digest
-from context_learning.dataset import read_private_json
-from context_learning.local_cycle import LocalTrainer, VerifiedLayaTrainer, _atomic_json
-from context_learning.schedule import run_due_cycle
-from context_learning.seam import _private_state
-from context_learning.store import canonical
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.dataset import read_private_json
+from memvane.learning.context_learning.local_cycle import LocalTrainer, VerifiedLayaTrainer, _atomic_json
+from memvane.learning.context_learning.schedule import run_due_cycle
+from memvane.learning.context_learning.seam import _private_state
+from memvane.learning.context_learning.store import canonical
 
 POLICY = "auto-cycle.json"
 RESULT = "last-auto-cycle.json"
@@ -26,7 +26,7 @@ RESULT = "last-auto-cycle.json"
 def _policy(project: Path):
     found = qmd_config.find_project_config(str(project))
     cfg = found["config"]
-    from context_learning.learning_profile import SCHEMA,present
+    from memvane.learning.context_learning.learning_profile import SCHEMA,present
     shared=cfg.get('sharedLearning',{})
     if shared.get('profile')==SCHEMA or (isinstance(shared.get('root'),str) and present(shared['root'])):
         # Selected profiles have a separate bounded local-only worker.
@@ -59,7 +59,7 @@ def _policy(project: Path):
 
 
 def run(project: Path) -> dict:
-    from context_learning.laya_learning import ready
+    from memvane.learning.context_learning.learning import ready
     if not ready(project):
         return {'status': 'setup_required'}
     item = _policy(project)
@@ -69,7 +69,7 @@ def run(project: Path) -> dict:
     data_mode = policy.get("dataMode", "current")
     expected_corpus = None
     if data_mode == "current":
-        from context_learning.corpus import snapshot, current_evaluation_ready
+        from memvane.learning.context_learning.corpus import snapshot, current_evaluation_ready
         current = snapshot(project, qmd_config.find_project_config(str(project))["config"])
         if not current_evaluation_ready(state, policy["versionId"], current):
             summary = {"schema": "qmd-auto-cycle-result-v1", "status": "pending_review",
@@ -83,14 +83,14 @@ def run(project: Path) -> dict:
     anchor = previous.get("next_due") if isinstance(previous, dict) else "first"
     cycle_id = "auto-" + digest(canonical([policy["versionId"], anchor]))[:20]
     argv = read_private_json(policy["trainerArgvJson"])
-    adapter = Path(__file__).with_name("context_learning") / "laya_adapter.py"
+    adapter = Path(__file__).with_name("context_learning") / "adapter.py"
     trainer_type = (VerifiedLayaTrainer if isinstance(argv, list) and len(argv) == 3
                     and Path(argv[1]).resolve() == adapter.resolve() else LocalTrainer)
     trainer = trainer_type(argv, max_seconds=policy["maxSeconds"],
                            max_rss_mib=policy["maxRssMib"])
     def revisions():
         if expected_corpus is not None:
-            from context_learning.corpus import snapshot
+            from memvane.learning.context_learning.corpus import snapshot
             latest = snapshot(project, qmd_config.find_project_config(str(project))["config"])
             if latest is None or latest["fingerprint"] != expected_corpus:
                 raise ValueError("corpus_changed_during_cycle")

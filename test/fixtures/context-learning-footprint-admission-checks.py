@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from context_learning import inference_service, resident, selector_heal
+from memvane.learning.context_learning import inference_service, resident, selector_heal
 
 
 def probe(available):

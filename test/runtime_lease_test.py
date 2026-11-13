@@ -36,7 +36,7 @@ class ImportBoundary(unittest.TestCase):
 class Aliases(unittest.TestCase):
     def test_learning_modules_re_export_the_same_objects(self):
         from memvane.runtime import runtime_work
-        from context_learning import local_cycle,resident,resource_coordination
+        from memvane.learning.context_learning import local_cycle,resident,resource_coordination
         self.assertIs(resident._private_state,lease.private_state)
         self.assertIs(resident._private_lock,lease.private_lock)
         self.assertIs(resource_coordination._lock,lease.coordination_lock)
@@ -47,7 +47,7 @@ class Aliases(unittest.TestCase):
 
     def test_runtime_work_shims_reach_the_real_coordinator_and_root_on_call(self):
         from memvane.runtime import runtime_work
-        from context_learning import resource_coordination
+        from memvane.learning.context_learning import resource_coordination
         with tempfile.TemporaryDirectory() as raw:
             root=Path(os.path.realpath(raw));os.chmod(root,0o700)
             with patch.object(resource_coordination,'default_root',return_value=root):
@@ -91,7 +91,7 @@ class AtomicJson(unittest.TestCase):
         self.root=Path(os.path.realpath(self.temp.name));os.chmod(self.root,0o700)
 
     def test_writes_canonical_utf8_bytes_with_owner_only_mode(self):
-        from context_learning.store import canonical
+        from memvane.learning.context_learning.store import canonical
         path=self.root/'state.json';value={'b':[1,2.5,None],'a':'한글 é','c':{'z':True,'y':False}}
         lease.atomic_json(path,value)
         expected=(json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(',',':'))+'\n').encode('utf-8')

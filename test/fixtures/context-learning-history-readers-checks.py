@@ -13,15 +13,15 @@ import sqlite3
 import tempfile
 from unittest.mock import patch
 
-from context_learning.contracts import digest, request
-from context_learning import history_activation
-from context_learning.history_activation import (
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning import history_activation
+from memvane.learning.context_learning.history_activation import (
     _atomic_file, _write_state, selected_database, writer_access, PROTOCOL)
-from context_learning.history_migration import prepare
-from context_learning import shared as shared_module
-from context_learning.shared import _db
-from context_learning.storage_layout import register_project, root as learning_root
-from context_learning.store import canonical, database
+from memvane.learning.context_learning.history_migration import prepare
+from memvane.learning.context_learning import shared as shared_module
+from memvane.learning.context_learning.shared import _db
+from memvane.learning.context_learning.storage_layout import register_project, root as learning_root
+from memvane.learning.context_learning.store import canonical, database
 
 
 with tempfile.TemporaryDirectory(prefix='qmd-history-readers-') as name:

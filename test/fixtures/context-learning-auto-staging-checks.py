@@ -13,10 +13,10 @@ import time
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from context_learning import (automatic_cohort, automatic_staging, shared,
+from memvane.learning.context_learning import (automatic_cohort, automatic_staging, shared,
                               project_scope, resource_coordination)
-from context_learning.store import canonical
-from context_learning.contracts import digest
+from memvane.learning.context_learning.store import canonical
+from memvane.learning.context_learning.contracts import digest
 
 
 with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
@@ -156,10 +156,10 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             automatic_staging, 'require_operation', side_effect=operation), patch(
             'context_learning.runtime_authorization.require_operation',
             side_effect=operation), patch(
-            'context_learning.laya_adapter.model_identity',
+            'context_learning.adapter.model_identity',
             return_value='local-model-identity'):
-        from context_learning.local_cycle import ResourceDeferred
-        from context_learning import learning_profile
+        from memvane.learning.context_learning.local_cycle import ResourceDeferred
+        from memvane.learning.context_learning import learning_profile
         with patch.object(learning_profile,'present',return_value=True),patch.object(
                 learning_profile,'require',return_value={'localTrain':True,'minFreshTrainCases':100}):
             waiting=shared.train_due(root,policy,trainer_factory=lambda _:FakeTrainer())

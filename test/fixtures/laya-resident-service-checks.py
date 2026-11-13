@@ -301,7 +301,7 @@ class ServiceChecks(Fixture):
         class Controller:
             def check(self, policy, report):
                 calls.append(policy)
-                from context_learning.resource_coordination import decision
+                from memvane.learning.context_learning.resource_coordination import decision
                 return decision(policy, report)
 
             def activity(self, *_args):
@@ -1263,7 +1263,7 @@ class ClientChecks(Fixture):
 
 class LearningChecks(unittest.TestCase):
     def test_learning_inference_is_reached_through_the_resident_service(self):
-        from context_learning import inference_service as learning
+        from memvane.learning.context_learning import inference_service as learning
         with tempfile.TemporaryDirectory(prefix='lrl-', dir='/tmp') as temp:
             root = Path(temp).resolve()
             root.chmod(0o700)

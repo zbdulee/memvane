@@ -19,9 +19,9 @@ def private(path, value):
 
 def host_checks(root, state):
     sys.path.insert(0, str(root / 'core'))
-    from context_learning import live_select, local_cycle, runtime_setup, laya_adapter, inference_service
-    from context_learning.contracts import digest
-    adapter = root / 'core/context_learning/laya_adapter.py'
+    from memvane.learning.context_learning import live_select, local_cycle, runtime_setup, laya_adapter, inference_service
+    from memvane.learning.context_learning.contracts import digest
+    adapter = root / 'memvane/learning/context_learning/adapter.py'
     model = state / 'model'; model.mkdir()
     for name in laya_adapter.MODEL_FILES:
         path = model / name; path.parent.mkdir(parents=True, exist_ok=True)
@@ -29,7 +29,7 @@ def host_checks(root, state):
     artifact = state / 'base.artifact'; artifact.write_bytes(b'synthetic base'); artifact.chmod(0o600)
     private(state / 'active-checkpoint.json', {'schema_version': 1,
         'artifact_path': str(artifact), 'artifact_sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()})
-    anchor = Path.home() / '.codex/plugins/cache/memvane-marketplace/memvane/1.0.1/core/context_learning/laya_adapter.py'
+    anchor = Path.home() / '.codex/plugins/cache/memvane-marketplace/memvane/1.0.1/memvane/learning/context_learning/adapter.py'
     argv = [sys.executable, str(adapter), str(model)]
     private(state / 'live-selector.json', {'schema': 'qmd-live-selector-v1',
         'trainerArgv': [sys.executable, str(anchor), str(model)], 'timeoutSeconds': 5, 'maxRssMib': 512})
@@ -204,7 +204,7 @@ def host_checks(root, state):
             except ValueError as exc: assert str(exc) == 'trainer_inference_attestation_required'
             else: raise AssertionError('in-memory training proof never expires')
         assert len(smokes) == 1
-        from context_learning import inference_identity as identity
+        from memvane.learning.context_learning import inference_identity as identity
         library_root = state/'fixture-runtime'; library_root.mkdir()
         library = library_root/'library.py'; library.write_text('version=1')
         with patch.object(identity,'runtime_roots',return_value=[library_root]), \

@@ -12,8 +12,8 @@ REQUEST_FILE = 'selector-heal-request.json'
 
 def _missing_warm_receipt(project):
     """Only a prepared selector needs a same-version warm retry."""
-    from context_learning import selector_heal
-    from context_learning.dataset import read_private_json
+    from memvane.learning.context_learning import selector_heal
+    from memvane.learning.context_learning.dataset import read_private_json
     state = selector_heal.namespace(project)
     if not (state / selector_heal.POLICY).is_file() or not (state / 'active-checkpoint.json').is_file():
         return False
@@ -78,7 +78,7 @@ def request(decision, *, force=False, owner=None):
 def run(project, *, force=False):
     """Serialize selector repair and monotonic version publication off-hook."""
     from contextlib import closing
-    from context_learning import selector_heal
+    from memvane.learning.context_learning import selector_heal
     from memvane.route.index_host_route import select_route
     from memvane.journal.install_journal import (_open, _inspect_v1_row, inspect_journal,
                                       verify_selected_route_for_write)

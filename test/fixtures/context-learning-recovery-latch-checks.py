@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from context_learning import resource_coordination as rc
+from memvane.learning.context_learning import resource_coordination as rc
 
 
 class LatchTests(unittest.TestCase):

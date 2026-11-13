@@ -6,12 +6,12 @@ from pathlib import Path
 import sys
 import tempfile
 
-from context_learning.contracts import request, digest
-from context_learning.offline import build_manifest, review_digest, save_label
-from context_learning.selection_gold import save_selection
-from context_learning.store import capture, canonical
-from context_learning.local_cycle import LocalTrainer, run_cycle, rollback
-from context_learning.schedule import run_due_cycle
+from memvane.learning.context_learning.contracts import request, digest
+from memvane.learning.context_learning.offline import build_manifest, review_digest, save_label
+from memvane.learning.context_learning.selection_gold import save_selection
+from memvane.learning.context_learning.store import capture, canonical
+from memvane.learning.context_learning.local_cycle import LocalTrainer, run_cycle, rollback
+from memvane.learning.context_learning.schedule import run_due_cycle
 
 
 def reject(fn):

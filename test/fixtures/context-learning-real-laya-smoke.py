@@ -4,14 +4,14 @@ import os
 from pathlib import Path
 import tempfile
 
-from context_learning.local_cycle import VerifiedLayaTrainer
-from context_learning.runtime_setup import attest_runtime, choose_runtime
-from context_learning.laya_adapter import prepare_base_artifact
+from memvane.learning.context_learning.local_cycle import VerifiedLayaTrainer
+from memvane.learning.context_learning.runtime_setup import attest_runtime, choose_runtime
+from memvane.learning.context_learning.adapter import prepare_base_artifact
 
 
 python = os.environ['QMD_LAYA_PYTHON']
 model = os.environ['QMD_LAYA_MODEL']
-adapter = str(Path(__file__).resolve().parents[2]/'core/context_learning/laya_adapter.py')
+adapter = str(Path(__file__).resolve().parents[2]/'memvane/learning/context_learning/adapter.py')
 proof = attest_runtime(python, adapter, model)
 selected = choose_runtime(mode='reuse', reuse_executable=python,
     attestation=proof['attestation'],

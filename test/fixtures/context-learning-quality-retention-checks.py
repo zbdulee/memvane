@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 
-from context_learning.contracts import digest, request
-from context_learning.shared import _db, _selection_fence, train_due
-from context_learning.store import canonical
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning.shared import _db, _selection_fence, train_due
+from memvane.learning.context_learning.store import canonical
 
 
 def add_cases(root, start, *, project_split=False):
@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-quality-retention-', dir='/tmp') as
         base.chmod(0o600)
         policy = {'batchMin': 5, 'batchMax': 20, 'targetExact': .95,
                   'baseArtifact': str(base), 'trainerArgv': [sys.executable,
-                      str(Path(__file__).resolve().parents[2] / 'core/context_learning/laya_adapter.py'),
+                      str(Path(__file__).resolve().parents[2] / 'memvane/learning/context_learning/adapter.py'),
                       str(root)], 'safetySeconds': 900, 'maxRssMib': 4096}
         add_cases(root, 0, project_split=scenario == 'project')
         FakeTrainer.calls = []
@@ -129,7 +129,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-quality-retention-', dir='/tmp') as
                 # before the terminal DB commit. Resume must bypass the older
                 # retained fence and finish without retraining.
                 add_cases(root, 10)
-                from context_learning.local_cycle import _atomic_json as atomic
+                from memvane.learning.context_learning.local_cycle import _atomic_json as atomic
                 crashed = [False]
                 def interrupt_after_pointer(path, value):
                     atomic(path, value)

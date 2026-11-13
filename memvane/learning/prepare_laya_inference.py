@@ -7,8 +7,8 @@ import sys
 import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from context_learning.inference_service import _policy
-from context_learning.inference_identity import prepare
+from memvane.learning.context_learning.inference_service import _policy
+from memvane.learning.context_learning.inference_identity import prepare
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)

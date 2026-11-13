@@ -134,8 +134,8 @@ def derived_body(card_text: str) -> str | None:
     None when ``derive`` refuses the card (no frontmatter, empty or oversized
     body); such a card cannot be scored at all.
     """
-    from context_learning.compact_input import derive
-    from context_learning.contracts import digest
+    from memvane.learning.context_learning.compact_input import derive
+    from memvane.learning.context_learning.contracts import digest
     try:
         return derive(card_text, digest(card_text))['body_text']
     except ValueError:
@@ -144,20 +144,20 @@ def derived_body(card_text: str) -> str | None:
 
 def _selection_state(config: dict, project_root: Path):
     """The live selector state directory the recall path would consult, or None."""
-    from context_learning.seam import _private_state
+    from memvane.learning.context_learning.seam import _private_state
     shared = config.get('sharedLearning', {}) if isinstance(config, dict) else {}
     if isinstance(shared, dict) and shared.get('enabled') is True:
         if shared.get('profile') == 'qmd-local-learning-profile-v1':
-            from context_learning.learning_profile import selection_root
+            from memvane.learning.context_learning.learning_profile import selection_root
             return selection_root(config, project_root)
         if shared.get('trialSelection') is True:
-            from context_learning.shared import _safe_root
+            from memvane.learning.context_learning.shared import _safe_root
             return _safe_root(config, project_root)
     return _private_state(config, Path(project_root), create=False)
 
 
 def _policy_tokenizer(state) -> tuple[str, str] | None:
-    from context_learning.dataset import read_private_json
+    from memvane.learning.context_learning.dataset import read_private_json
     policy = read_private_json(Path(state) / 'live-selector.json')
     argv = policy.get('trainerArgv') if isinstance(policy, dict) else None
     if (policy.get('schema') != 'qmd-live-selector-v1' or not isinstance(argv, list)
@@ -200,7 +200,7 @@ def selector_tokenizers(config: dict, project_root) -> list[tuple[str, str]]:
     except Exception:  # noqa: BLE001 - the user's other selectors still count
         pass
     try:
-        from context_learning.runtime_setup import learning_state_base
+        from memvane.learning.context_learning.runtime_setup import learning_state_base
         parent = learning_state_base() / 'live-selection'
         if not parent.is_symlink() and parent.is_dir():
             for state in sorted(parent.iterdir())[:MAX_SELECTOR_STATES]:

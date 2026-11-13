@@ -2,10 +2,10 @@ import json
 from pathlib import Path
 import tempfile
 
-from context_learning.contracts import request, digest
-from context_learning.offline import save_label, delete_case
-from context_learning.store import capture
-from context_learning.teacher_budget import budgeted_label_request, budgeted_review_request, reserve_teacher
+from memvane.learning.context_learning.contracts import request, digest
+from memvane.learning.context_learning.offline import save_label, delete_case
+from memvane.learning.context_learning.store import capture
+from memvane.learning.context_learning.teacher_budget import budgeted_label_request, budgeted_review_request, reserve_teacher
 
 
 def reject(fn):

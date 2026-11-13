@@ -66,7 +66,7 @@ def runtime_roots():
     result = []
     for p in sorted(set(roots)):
         if not any(parent in p.parents for parent in result): result.append(p)
-    code = Path(__file__).parent.parent.resolve()
+    code = Path(__file__).resolve().parents[3]
     for entry in sys.path:
         p = Path(entry).resolve()
         if not (p == code or any(p == root or root in p.parents for root in result)
@@ -76,7 +76,7 @@ def runtime_roots():
 
 
 def _module_scope(roots):
-    code = Path(__file__).parent.parent.resolve()
+    code = Path(__file__).resolve().parents[3]
     for name, module in tuple(sys.modules.items()):
         origin = getattr(module, '__file__', None)
         if module is sys.modules.get('__main__') or not origin: continue
@@ -300,7 +300,7 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
     """
     from .local_cycle import VerifiedLayaTrainer
     from .inference_service import _load, _forward, _rss_mib, _policy, resident
-    from .laya_adapter import LEGACY_INPUT_VIEW
+    from .adapter import LEGACY_INPUT_VIEW
     state = Path(state)
     deadline = time.monotonic()+max_seconds
     _private_state(state)
@@ -341,7 +341,7 @@ def prepare(state, argv, *, max_seconds=30, max_rss_mib=4096):
     _module_scope(runtime_roots())
     _forward(loaded, job, limits=limits, timing={}, cancelled=lambda:time.monotonic() >= deadline)
     # The versioned prediction pairing, proven on this model's own budget.
-    from .laya_adapter import truncation_probe
+    from .adapter import truncation_probe
     probe = {**job, 'request': {**request, 'cases': [truncation_probe(loaded)]}}
     timing = {}
     _forward(loaded, probe, limits=limits, timing=timing, cancelled=lambda:time.monotonic() >= deadline)

@@ -247,7 +247,7 @@ def _version_key(value):
 
 def _installed_plugin_version():
     try:
-        return json.loads((Path(__file__).resolve().parents[2]/'package.json').read_text())['version']
+        return json.loads((Path(__file__).resolve().parents[3]/'package.json').read_text())['version']
     except (OSError,ValueError,KeyError,TypeError):
         return None
 

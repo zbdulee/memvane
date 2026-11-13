@@ -9,9 +9,9 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from context_learning import laya_adapter as adapter
-from context_learning.contracts import digest
-from context_learning.store import canonical
+from memvane.learning.context_learning import laya_adapter as adapter
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.store import canonical
 
 model, tok, cfg = adapter._load(os.environ['QMD_LAYA_MODEL'])
 prompt = 'ESP32 모터 드라이버 배선은 어떻게 해?'

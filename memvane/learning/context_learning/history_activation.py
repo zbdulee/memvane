@@ -36,9 +36,9 @@ HOSTS = ('claude', 'codex')
 # the schema digest taken under the fence transaction.
 SEALED_PHASES = ('sealing', 'activating', 'active', 'rollback_pending')
 SEALED_MODE = 0o400
-_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_PLUGIN_ROOT = Path(__file__).resolve().parents[3]
 HOST_FILES = tuple(sorted({str(path.relative_to(_PLUGIN_ROOT)) for pattern in
-                           ('core/*.py', 'core/*.sh', 'core/context_learning/*.py',
+                           ('memvane/**/*.py', 'memvane/**/*.mjs', 'entry/*.py',
                             'hooks/run-hook', 'hooks/*.json',
                             '.claude-plugin/*.json', '.codex-plugin/*.json')
                            for path in _PLUGIN_ROOT.glob(pattern) if path.is_file()}))
@@ -631,7 +631,7 @@ def _installed_hosts_compatible(host_roots=None, *, home=None):
         host_roots = discovered
     if not isinstance(host_roots, dict) or set(host_roots) != set(HOSTS):
         raise ValueError('history_host_inventory_incomplete')
-    base = Path(__file__).resolve().parents[2]
+    base = Path(__file__).resolve().parents[3]
     for host in HOSTS:
         roots = host_roots[host]
         if not isinstance(roots, (list, tuple)):

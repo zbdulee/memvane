@@ -23,7 +23,7 @@ def run(root, project, config=None):
         return {'status':'disabled'}
     if not setup_ready(root):return {'status':'setup_in_progress'}
     from . import project_scope,general_teacher
-    import project_learning_setup
+    from memvane.learning import project_learning_setup
     from .resource_coordination import _lock
     policy=shared._policy(root)
     fd=_lock(root/'project-worker.lock')

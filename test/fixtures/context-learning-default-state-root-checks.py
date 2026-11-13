@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, 'core')
 from memvane.settings import config
-from context_learning.contracts import digest
-from context_learning.seam import _private_state
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.seam import _private_state
 
 
 def default_parent(home):

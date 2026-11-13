@@ -47,7 +47,7 @@ class HealRefused(RuntimeError):
 
 
 def running_adapter():
-    return Path(__file__).with_name('laya_adapter.py').resolve()
+    return Path(__file__).with_name('adapter.py').resolve()
 
 
 def namespace(project, home=None):
@@ -153,7 +153,7 @@ def check_scope(state, policy, *, home=None):
     if not present(state):
         return None
     from .dataset import read_private_json
-    from .laya_adapter import model_identity
+    from .adapter import model_identity
     from .learning_profile import _hash
     try:
         envelope = read_private_json(Path(state) / NAME)
@@ -214,7 +214,7 @@ def rebind(state, *, home=None, deadline=None):
 
 def _view(state):
     from .dataset import read_private_json
-    from .laya_adapter import LEGACY_INPUT_VIEW
+    from .adapter import LEGACY_INPUT_VIEW
     active = read_private_json(state / 'active-checkpoint.json')
     return active.get('model_input_view', LEGACY_INPUT_VIEW)
 
@@ -239,11 +239,11 @@ def attest(state, policy):
 
 def prepare(state, policy):
     """``prepare_laya_inference.py`` in the policy interpreter (it must be ``sys.executable``)."""
-    script = Path(__file__).resolve().parent.parent / 'prepare_laya_inference.py'
+    script = Path(__file__).resolve().parents[3] / 'entry/run.py'
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
                                             'MEMVANE_TEST_RUNTIME_ROOT')
            if key in os.environ}
-    result = subprocess.run([policy['trainerArgv'][0], '-I', '-B', str(script), str(state),
+    result = subprocess.run([policy['trainerArgv'][0], '-I', '-B', str(script), 'prepare-inference', str(state),
                              '--max-seconds', str(PREPARE_SECONDS)],
                             stdin=subprocess.DEVNULL, capture_output=True, text=True,
                             timeout=PREPARE_SECONDS + 60, env=env, cwd=str(state),

@@ -339,10 +339,10 @@ class VerifiedLayaTrainer(LocalTrainer):
         super().__init__(argv, scratch_dir=isolated_temp_dir, **kwargs)
         self.deadline = deadline
         self.isolated_temp_dir = self.scratch_dir
-        expected=Path(__file__).with_name('laya_adapter.py').resolve()
+        expected=Path(__file__).with_name('adapter.py').resolve()
         if len(self.argv)!=3 or Path(self.argv[1]).resolve()!=expected or not Path(self.argv[2]).is_absolute():
             raise ValueError('invalid_verified_laya_command')
-        from .laya_adapter import model_identity
+        from .adapter import model_identity
         self.identity=digest(canonical([self.identity,_hash_bytes(expected),
             model_identity(self.argv[2])]))
         self.proof=None
@@ -382,7 +382,7 @@ class VerifiedLayaTrainer(LocalTrainer):
         # Admission precedes metadata/attestation subprocesses as well.
         limits = self._admission(cwd)
         prediction_proof = self._prediction_proof() if mode == 'predict' else None
-        from .laya_adapter import model_identity
+        from .adapter import model_identity
         from .runtime_setup import probe_runtime, verify_compatibility
         if self.deadline is not None:
             left = self.deadline - time.monotonic()

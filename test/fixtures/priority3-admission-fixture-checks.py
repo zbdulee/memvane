@@ -38,7 +38,7 @@ from memvane.resident import embed_resident as owner
 from memvane.host import host_response as response
 from memvane.journal import install_journal as journal
 from memvane.provider.adapters import local_embed_provider as provider
-from context_learning import shared
+from memvane.learning.context_learning import shared
 
 REAL_ADMIT = owner.admit_query
 REAL_SERVE = response.serve_selected

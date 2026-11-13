@@ -419,7 +419,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         result, _ingests, _calls = self.run_vector_pass()
         self.assertEqual(result['vector']['state'], 'published', result)
         scan = importlib.import_module('memvane.wiki.dedup.wiki_dedup_scan')
-        learning = importlib.import_module('context_learning.laya_learning')
+        learning = importlib.import_module('context_learning.learning')
         config = importlib.import_module('memvane.settings.config')
         queue = self.case.auto / 'compile' / 'dedup-needed.jsonl'
         with self.seed.authority(), \

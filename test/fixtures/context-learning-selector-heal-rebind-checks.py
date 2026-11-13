@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from context_learning import adapter_binding, selector_heal
+from memvane.learning.context_learning import adapter_binding, selector_heal
 
 
 class Fixture(unittest.TestCase):
@@ -20,8 +20,8 @@ class Fixture(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='qmd-heal-rebind-')
         root = Path(self.temp.name).resolve(); root.chmod(0o700)
         self.state = root / 'state'; self.state.mkdir(mode=0o700)
-        self.claude = root / 'claude/core/context_learning/laya_adapter.py'
-        self.codex = root / 'codex/core/context_learning/laya_adapter.py'
+        self.claude = root / 'claude/memvane/learning/context_learning/adapter.py'
+        self.codex = root / 'codex/memvane/learning/context_learning/adapter.py'
         for path in (self.claude, self.codex):
             path.parent.mkdir(parents=True); path.write_text('adapter = 1\n')
         self.policy = {'schema': 'qmd-live-selector-v1', 'timeoutSeconds': 30, 'maxRssMib': 4096,
@@ -75,7 +75,7 @@ class RebindTests(Fixture):
 
 class HealTests(Fixture):
     def test_kept_other_host_anchor_still_prepares_missing_evidence(self):
-        from context_learning import local_cycle
+        from memvane.learning.context_learning import local_cycle
         (self.state / 'active-checkpoint.json').write_text('{}')
         (self.state / 'active-checkpoint.json').chmod(0o600)
         before = (self.state / selector_heal.POLICY).read_bytes()

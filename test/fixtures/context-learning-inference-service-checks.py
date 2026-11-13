@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 assert importlib.util.find_spec('context_learning.inference_service'), 'shared_inference_service_missing'
-from context_learning import inference_service as service
+from memvane.learning.context_learning import inference_service as service
 
 
 def job(head='a', namespace='one', base='base'):
@@ -187,7 +187,7 @@ class WarmFirstLoadTests(unittest.TestCase):
             self.assertEqual(len(self.loads),1,'expired first load was discarded')
 
     def test_revalidation_out_of_time_keeps_the_first_load_warm(self):
-        from context_learning.adapter_binding import BindingTimeout
+        from memvane.learning.context_learning.adapter_binding import BindingTimeout
         request=job();calls=[]
         def late():
             calls.append(1);raise BindingTimeout('trainer_timeout')
@@ -246,7 +246,7 @@ class BundleSignatureTests(unittest.TestCase):
     def signature(self, core):
         return subprocess.run([sys.executable, '-I', '-B', '-c',
             'import sys;sys.path.insert(0,sys.argv[1]);'
-            'from context_learning import inference_service as s;print(s._signature())', str(core)],
+            'from memvane.learning.context_learning import inference_service as s;print(s._signature())', str(core)],
             capture_output=True, text=True, check=True, timeout=60).stdout.strip()
 
     def test_host_code_change_outside_the_package_changes_the_signature(self):
@@ -293,7 +293,7 @@ class BundleSignatureTests(unittest.TestCase):
 
 class ResponseTests(unittest.TestCase):
     def test_invalid_candidate_response_is_not_a_publishable_generation(self):
-        from context_learning import laya_adapter
+        from memvane.learning.context_learning import laya_adapter
         request={'request':{'cases':[{'request_id':'r','input_sha256':'a',
                                     'candidates':[{'id':'wiki'}]}]}}
         with patch.object(laya_adapter,'predict_loaded',return_value={
@@ -315,7 +315,7 @@ class MemoryObservationTests(unittest.TestCase):
 
 class ProbeDeadlineTests(unittest.TestCase):
     def test_metadata_subprocess_uses_remaining_deadline(self):
-        from context_learning import runtime_setup
+        from memvane.learning.context_learning import runtime_setup
         def child(*args,**kwargs):
             self.assertLessEqual(kwargs['timeout'],.2)
             raise subprocess.TimeoutExpired(args[0],kwargs['timeout'])
@@ -378,7 +378,7 @@ def fake_validate(env):
 
 class ServerTests(unittest.TestCase):
     def test_apply_commands_prepare_activate_recover_and_yield_to_inference(self):
-        from context_learning.resource_coordination import Coordinator
+        from memvane.learning.context_learning.resource_coordination import Coordinator
         with tempfile.TemporaryDirectory(prefix='qmd-a-',dir='/tmp') as temp:
             root=Path(temp).resolve();root.chmod(0o700)
             tokens=[]
@@ -461,7 +461,7 @@ class ServerTests(unittest.TestCase):
         # A wiki card longer than the selector's token budget is refused by
         # the adapter. The hosted worker and the client keep that fixed code.
         from contextlib import nullcontext
-        from context_learning import resource_coordination
+        from memvane.learning.context_learning import resource_coordination
         class NoCoordinator:
             def __init__(self,_root):pass
             def inference(self,*_args):return nullcontext()

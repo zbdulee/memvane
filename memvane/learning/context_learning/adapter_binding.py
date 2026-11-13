@@ -105,10 +105,10 @@ def _owner_json(path, home):
 
 def _official_cache(path, home):
     parts = path.relative_to(home).parts
-    if (len(parts) != 9 or parts[0] not in ('.claude', '.codex')
+    if (len(parts) != 10 or parts[0] not in ('.claude', '.codex')
             or parts[1:3] != ('plugins', 'cache') or tuple(parts[3:5]) not in CACHE_IDENTITIES
             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}', parts[5])
-            or parts[6:] != ('core', 'context_learning', 'laya_adapter.py')):
+            or parts[6:] != ('memvane', 'learning', 'context_learning', 'adapter.py')):
         raise ValueError('unsupported_adapter')
     host, version = parts[0][1:], parts[5]
     root = home.joinpath(*parts[:6])
@@ -209,7 +209,7 @@ def _local_code(root, home):
     rows = []
     total = 0
     pace = _Pacer()
-    for directory in ('core', 'hooks'):
+    for directory in ('memvane', 'entry', 'hooks'):
         base = root / directory
         info = base.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
@@ -231,7 +231,7 @@ def _local_code(root, home):
             if len(rows) > 4096 or total > 32 * 1024 * 1024:
                 raise ValueError('unsupported_adapter')
     pace.checkpoint()
-    if not any(name == 'core/context_learning/laya_adapter.py' for name, _ in rows):
+    if not any(name == 'memvane/learning/context_learning/adapter.py' for name, _ in rows):
         raise ValueError('unsupported_adapter')
     return tuple(rows)
 
@@ -246,13 +246,13 @@ def _local_binding(path, home, deadline, *, execution):
         host, version, root, adapter_hash = _official_cache(path, home)
     except ValueError:
         if (not path.is_absolute() or home not in path.parents
-                or path.parts[-3:] != ('core', 'context_learning', 'laya_adapter.py')):
+                or path.parts[-4:] != ('memvane', 'learning', 'context_learning', 'adapter.py')):
             raise ValueError('unsupported_adapter')
         host = 'claude'
-        root = path.parents[2]
+        root = path.parents[3]
         version = None
         adapter_hash = hashlib.sha256(_owned_bytes(path, home, 256 * 1024)).digest()
-        if path != root / 'core/context_learning/laya_adapter.py':
+        if path != root / 'memvane/learning/context_learning/adapter.py':
             raise ValueError('unsupported_adapter')
     if host == 'claude':
         base = home / '.claude/plugins'

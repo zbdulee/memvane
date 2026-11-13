@@ -12,11 +12,11 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from context_learning.contracts import digest, request
+from memvane.learning.context_learning.contracts import digest, request
 import context_learning.jobs as jobs_module
 import context_learning.store as store_module
-from context_learning.jobs import JobLease, cancel_job, job_status
-from context_learning.store import capture, database
+from memvane.learning.context_learning.jobs import JobLease, cancel_job, job_status
+from memvane.learning.context_learning.store import capture, database
 
 
 class LockHolder:

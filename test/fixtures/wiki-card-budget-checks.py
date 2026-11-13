@@ -21,8 +21,8 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
 sys.path.insert(0, str(REPO / 'core' / 'extractors'))
 from memvane.wiki.compile import wiki_card_budget as budget  # noqa: E402
-from context_learning.compact_input import derive  # noqa: E402
-from context_learning.contracts import digest  # noqa: E402
+from memvane.learning.context_learning.compact_input import derive  # noqa: E402
+from memvane.learning.context_learning.contracts import digest  # noqa: E402
 
 LONG_SUMMARY = ' '.join(f'Rule {i}: `compile.budget.cardsPerSource` caps cards per source.'
                         for i in range(120))
@@ -50,7 +50,7 @@ def install_selector(home: Path, name='a' * 64, broken=False) -> tuple[str, str]
 
     ``broken`` installs a runtime that exits non-zero, like a failed import.
     """
-    from context_learning.runtime_setup import learning_state_base
+    from memvane.learning.context_learning.runtime_setup import learning_state_base
     base = learning_state_base(home)
     model = home / 'model'
     (model / 'tokenizer').mkdir(parents=True, exist_ok=True)

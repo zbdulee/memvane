@@ -11,7 +11,7 @@ import sys
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path.cwd() / 'core'))
-import project_learning_setup as setup
+from memvane.learning import project_learning_setup as setup
 
 assert setup.SYNTHETIC_MAX_RSS_MIB == 3584
 evidence = {'schema': 'qmd-synthetic-forward-calibration-v1'}

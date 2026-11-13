@@ -3,8 +3,8 @@ import copy, hashlib, json, os
 from pathlib import Path
 import tempfile, time, unittest
 from unittest.mock import patch
-from context_learning import inference_identity as identity
-from context_learning.dataset import read_private_json
+from memvane.learning.context_learning import inference_identity as identity
+from memvane.learning.context_learning.dataset import read_private_json
 
 class IdentityChecks(unittest.TestCase):
     def setUp(self):
@@ -15,7 +15,7 @@ class IdentityChecks(unittest.TestCase):
         self.model=self.root/'model';self.model.mkdir();(self.model/'tokenizer.json').write_text('{}')
         (self.model/'config.json').write_text('{}')
         (self.model/'model.safetensors').write_bytes(b'synthetic weights')
-        self.adapter=Path(identity.__file__).with_name('laya_adapter.py')
+        self.adapter=Path(identity.__file__).with_name('adapter.py')
         self.argv=[os.sys.executable,str(self.adapter),str(self.model)]
         self.state=self.root/'state';self.state.mkdir(mode=0o700)
         self.artifact=self.state/'head';self.artifact.write_text('head');self.artifact.chmod(0o600)
@@ -112,13 +112,13 @@ class IdentityChecks(unittest.TestCase):
         with patch.object(identity,'code_identity',return_value='c'*64):self.validate()
         with self.assertRaises(ValueError):self.cache.verify(self.state,self.argv,'other-view')
     def probe(self):
-        from context_learning import laya_adapter
+        from memvane.learning.context_learning import laya_adapter
         case={'request_id':'probe','prompt':'synthetic request','input_sha256':'0'*64,
               'candidates':[{'id':'synthetic/overflow','revision_sha256':'1'*64,
                              'input_text':'# Synthetic overflow\nbody','input_kind':'full_compact_wiki_body'}]}
         return patch.object(laya_adapter,'truncation_probe',return_value=case)
     def test_explicit_prepare_never_calls_train_or_smoke_and_rechecks_expiry(self):
-        from context_learning import inference_service as service, local_cycle, runtime_setup
+        from memvane.learning.context_learning import inference_service as service, local_cycle, runtime_setup
         clock=[100.0];expired=[False];forwards=[]
         class Trainer:
             def __init__(inner,*args,**kw):pass
@@ -147,7 +147,7 @@ class IdentityChecks(unittest.TestCase):
         self.assertEqual(forwards,['synthetic/cobalt','synthetic/overflow'])
         self.assertEqual(before,(self.state/identity.RECEIPT).read_bytes())
     def test_prepare_requires_the_versioned_truncation_to_run(self):
-        from context_learning import inference_service as service, local_cycle
+        from memvane.learning.context_learning import inference_service as service, local_cycle
         class Trainer:
             def __init__(inner,*args,**kw):pass
             def validate_prediction(inner,**kw):return self.receipt['verified']
@@ -163,7 +163,7 @@ class IdentityChecks(unittest.TestCase):
                 identity.prepare(self.state,self.argv)
         self.assertEqual(before,(self.state/identity.RECEIPT).read_bytes())
     def test_prepare_load_deadline_and_rss_guard(self):
-        from context_learning import inference_service as service,local_cycle
+        from memvane.learning.context_learning import inference_service as service,local_cycle
         clock=[100.0]
         class Trainer:
             def __init__(inner,*a,**kw):pass
@@ -179,7 +179,7 @@ class IdentityChecks(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'inference_prepare_resource_deferred'):
                 identity.prepare(self.state,self.argv)
     def test_prepare_does_not_start_load_after_scan_deadline(self):
-        from context_learning import inference_service as service,local_cycle
+        from memvane.learning.context_learning import inference_service as service,local_cycle
         clock=[100.0];real_snapshot=identity.snapshot
         class Trainer:
             def __init__(inner,*a,**kw):pass
@@ -215,7 +215,7 @@ class IdentityChecks(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'inference_identity_changed'):self.validate()
             identity.IdentityCache().verify(self.state,self.argv,'checkpoint-config-v1')
     def test_prediction_never_trains_smokes_or_prepares(self):
-        from context_learning import runtime_setup,local_cycle
+        from memvane.learning.context_learning import runtime_setup,local_cycle
         with patch.object(runtime_setup,'attest_runtime',side_effect=AssertionError('smoke')), \
              patch.object(local_cycle.LocalTrainer,'call',side_effect=AssertionError('train')), \
              patch.object(identity,'prepare',side_effect=AssertionError('implicit prepare')):

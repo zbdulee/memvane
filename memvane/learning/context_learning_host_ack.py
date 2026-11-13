@@ -3,10 +3,10 @@
 from pathlib import Path
 import sys
 
-from context_learning.history_lifecycle import acknowledge_host
+from memvane.learning.context_learning.history_lifecycle import acknowledge_host
 
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         raise SystemExit(2)
-    acknowledge_host(sys.argv[1], Path(__file__).resolve().parent.parent)
+    acknowledge_host(sys.argv[1], Path(__file__).resolve().parents[2])

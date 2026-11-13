@@ -223,7 +223,7 @@ class WriterChecks(Base):
                          ('resident.adopt', 'full', 'install-1'))
 
     def test_learning_capture_status(self):
-        from context_learning import laya_learning
+        from memvane.learning.context_learning import laya_learning
         status = laya_learning.capture_recall('claude', self.decision, {}, {}, [], [])
         (row,) = self.events('learning.capture')
         self.assertEqual((row['outcome'], row['host']), (status, 'claude'))

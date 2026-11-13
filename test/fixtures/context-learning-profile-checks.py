@@ -2,8 +2,8 @@
 from pathlib import Path
 import json,tempfile,unittest,time
 from unittest.mock import patch
-from context_learning import runtime_authorization,laya_adapter
-try:from context_learning import learning_profile as P
+from memvane.learning.context_learning import runtime_authorization,laya_adapter
+try:from memvane.learning.context_learning import learning_profile as P
 except ImportError:P=None
 
 class Checks(unittest.TestCase):
@@ -105,8 +105,8 @@ class Checks(unittest.TestCase):
  def test_selected_profile_uses_only_local_worker_and_disables_legacy_autocycle(self):
   self.assertIsNotNone(P,'learning profile missing')
   from memvane.settings import config
-  import context_learning_auto as auto
-  from context_learning import shared
+  from memvane.learning import context_learning_auto as auto
+  from memvane.learning.context_learning import shared
   plan=self.plan();P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='new',expires_at_unix_ms=self.expiry)
   cfg=config.normalize_config(json.loads(self.settings.read_text()))
   old_policy={'schema':'qmd-auto-cycle-policy-v1','versionId':'legacy','revisionsJson':'/fake/revisions','trainerArgvJson':'/fake/argv','incumbentArtifact':'/fake/artifact','maxSeconds':60,'maxRssMib':512}
@@ -119,8 +119,8 @@ class Checks(unittest.TestCase):
    self.assertEqual(answer['status'],'waiting_fresh_batch');train.assert_called_once()
  def test_training_disabled_profile_can_resume_existing_quality_only_job(self):
   from memvane.settings import config
-  from context_learning import shared,automatic_staging
-  from context_learning.evaluation_queue import EvaluationQueue
+  from memvane.learning.context_learning import shared,automatic_staging
+  from memvane.learning.context_learning.evaluation_queue import EvaluationQueue
   self.write(self.settings,{**self.raw,'contextLearning':{'autoCycle':False}})
   plan=self.plan(mode='preserve');self.assertFalse(plan['localTrain'])
   P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='preserve',expires_at_unix_ms=self.expiry)
@@ -130,7 +130,7 @@ class Checks(unittest.TestCase):
    self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'staged_evaluated');evaluate.assert_called_once()
  def test_incomplete_apply_resumes_before_new_training_or_evaluation(self):
   from memvane.settings import config
-  from context_learning import shared,candidate_apply
+  from memvane.learning.context_learning import shared,candidate_apply
   plan=self.plan();P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='new',expires_at_unix_ms=self.expiry)
   cfg=config.normalize_config(json.loads(self.settings.read_text()))
   self.write(self.root/candidate_apply.JOURNAL,{'schema':candidate_apply.SCHEMA,'apply_id':'a'*32,'phase':'pointer_committed','cycle_id':'pending-cycle'})

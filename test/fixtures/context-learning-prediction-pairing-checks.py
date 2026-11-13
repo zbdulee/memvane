@@ -93,8 +93,8 @@ def _stub_laya():
 
 
 with patch.dict(sys.modules, _stub_laya()):
-    from context_learning import laya_adapter as adapter
-    from context_learning import compact_input
+    from memvane.learning.context_learning import laya_adapter as adapter
+    from memvane.learning.context_learning import compact_input
 
 TOK = CodepointTokenizer()
 CFG = {'max_len': 256, 'head_max_len': 128}
@@ -283,8 +283,8 @@ class SelectionBodyTests(unittest.TestCase):
                          compact_input.derive(small, hashlib.sha256(small.encode()).hexdigest()))
 
     def test_oversize_card_keeps_the_pool_selectable(self):
-        from context_learning import live_select, inference_service
-        from context_learning.contracts import digest
+        from memvane.learning.context_learning import live_select, inference_service
+        from memvane.learning.context_learning.contracts import digest
         with tempfile.TemporaryDirectory(prefix='qmd-pairing-') as temporary:
             state = Path(temporary).resolve(); state.chmod(0o700)
             artifact = state / 'head.artifact'; artifact.write_text('synthetic head'); artifact.chmod(0o600)
@@ -319,7 +319,7 @@ class SelectionBodyTests(unittest.TestCase):
 
 class ReceiptVersionTests(unittest.TestCase):
     def test_pairing_version_is_part_of_the_inference_receipt_checks(self):
-        from context_learning import inference_identity
+        from memvane.learning.context_learning import inference_identity
         self.assertEqual(inference_identity.CHECKS[-1],
                          'prediction_' + adapter.PREDICTION_PAIRING.replace('-', '_'))
 

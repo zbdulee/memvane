@@ -21,7 +21,7 @@ def snapshot(project_root, config):
     unverifiable selected route, returns None.
     """
     try:
-        from . import laya_learning
+        from . import learning as laya_learning
         bound = laya_learning.selected(project_root)
     except Exception:
         return None

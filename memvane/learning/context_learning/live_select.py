@@ -54,7 +54,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                 or type(policy['maxRssMib']) is not int
                 or not 128 <= policy['maxRssMib'] <= 8192):
             return None, 'invalid_policy', {}
-        adapter = Path(__file__).with_name('laya_adapter.py').resolve()
+        adapter = Path(__file__).with_name('adapter.py').resolve()
         from .adapter_binding import BindingTimeout, attested_adapter, inference_argv
         try:
             argv = inference_argv(policy['trainerArgv'], adapter, deadline=deadline,
@@ -77,7 +77,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
                 from .learning_profile import NAME,selection_enabled
                 profile=read_private_json(state/NAME)['proposal']
                 if not selection_enabled(state,Path(profile['projectRoot'])):return None,'profile_selection_disabled',{}
-        from .laya_adapter import EDIT_INPUT_VIEW
+        from .adapter import EDIT_INPUT_VIEW
         if (pointer_name == 'experimental-checkpoint.json'
                 and active.get('model_input_view') == EDIT_INPUT_VIEW):
             # The ordinary live selector still pins the preserved English
@@ -120,7 +120,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
         # Validate before creating a shared process or socket. No prediction
         # can mint training evidence, even when capture/autoCycle are disabled.
         from .inference_identity import admit
-        from .laya_adapter import LEGACY_INPUT_VIEW
+        from .adapter import LEGACY_INPUT_VIEW
         admission_started = time.perf_counter()
         inference_receipt = admit(state, policy['trainerArgv'],
                                   active.get('model_input_view', LEGACY_INPUT_VIEW))

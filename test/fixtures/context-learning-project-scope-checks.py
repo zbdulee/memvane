@@ -5,12 +5,12 @@ import hashlib,json,os,shutil,sqlite3,sys,tempfile,time
 from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
-from context_learning import project_scope as scope, runtime_authorization as runtime
-from context_learning import automatic_cohort,automatic_staging,learning_profile
-from context_learning.contracts import digest,request
-from context_learning.store import canonical
-from context_learning.laya_adapter import MODEL_FILES,EDIT_INPUT_VIEW
-from context_learning.shared import _db_at
+from memvane.learning.context_learning import project_scope as scope, runtime_authorization as runtime
+from memvane.learning.context_learning import automatic_cohort,automatic_staging,learning_profile
+from memvane.learning.context_learning.contracts import digest,request
+from memvane.learning.context_learning.store import canonical
+from memvane.learning.context_learning.adapter import MODEL_FILES,EDIT_INPUT_VIEW
+from memvane.learning.context_learning.shared import _db_at
 
 
 def save(path,value):
@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   shutil.copytree(Path(scope.__file__).parents[2]/'hooks',p/'hooks')
   save(p/('.'+host+'-plugin')/'plugin.json',{'name':'memvane','version':version})
   installs[host]=[p]
- adapter=installs['codex'][0]/'core/context_learning/laya_adapter.py'
+ adapter=installs['codex'][0]/'memvane/learning/context_learning/adapter.py'
  policy={'trainerArgv':[str(python),str(adapter),str(model)],'modelInputView':EDIT_INPUT_VIEW,'baseArtifact':str(artifact),'batchMin':5,'batchMax':100}
  save(root/'shared-policy.json',policy)
  settings={'indexing':True,'collectionPaths':{'docs':'docs'},'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':True}}
@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
    assert scope._installed_binding([{'host':host,'root':str(installs[host][0])} for host in ('claude','codex')])==row['binding']['installations']
   finally:observing[0]=False
   for path,count in reads.items():
-   limit=2 if path.startswith(str(code_root)+os.sep) or path.endswith('/context_learning/laya_adapter.py') else 1
+   limit=2 if path.startswith(str(code_root)+os.sep) or path.endswith('/context_learning/adapter.py') else 1
    assert count<=limit,('redundant authorization byte reads',path,count,limit)
   expect('acceptance',lambda:scope.activate(project,root,policy,accepted_sha256='0'*64,expires_at_unix_ms=expiry,not_before_unix_ms=cutoff))
   answer=scope.activate(project,root,policy,accepted_sha256=scope.proposal_sha256(row),expires_at_unix_ms=expiry,not_before_unix_ms=cutoff)
@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   save(project/'.auto-context/settings.json',settings)
   artifact.write_text('tampered');expect('changed',lambda:scope.require(root,policy,'local_train'));artifact.write_text('base')
   adapter.write_text('tampered');expect('changed',lambda:scope.require(root,policy,'local_train'))
-  shutil.copyfile(Path(scope.__file__).with_name('laya_adapter.py'),adapter)
+  shutil.copyfile(Path(scope.__file__).with_name('adapter.py'),adapter)
   hook=installs['claude'][0]/'hooks/run-hook';original_hook=hook.read_bytes()
   hook.write_bytes(original_hook+b'\n# altered hook\n')
   expect('changed',lambda:scope.require(root,policy,'local_train'));hook.write_bytes(original_hook)
@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
    preserved=learning_profile.proposal(project,root,choice='local-auto-apply',mode='preserve',expires_at_unix_ms=expiry)
    assert preserved['settings']['contextLearning']['capture'] is False
   # A process reuses only an unchanged fully hashed model generation.
-  from context_learning.laya_adapter import model_identity as full_identity
+  from memvane.learning.context_learning.adapter import model_identity as full_identity
   with patch.object(scope,'model_identity',wraps=full_identity) as hashed:
    scope.require(root,policy,'local_train');count=hashed.call_count
    scope.require(root,policy,'local_train');assert hashed.call_count==count
@@ -159,7 +159,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
    encoded=canonical(sample);gold={'input_sha256':digest(encoded),'selected_ids':[]}
    db.execute('INSERT INTO cases (project_key,project_root,request_id,input_sha256,sample,bodies,status,split,gold,captured_at,corpus_fingerprint,use_state,family_keys) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',('key',str(project),rid,digest(encoded),encoded,canonical({doc:body}),status,'train',canonical(gold),at or time.time(),'corpus','active','[]'))
   # Find cases across both deterministic roles, independent of request IDs.
-  from context_learning import general_cohort
+  from memvane.learning.context_learning import general_cohort
   examples={}
   for i in range(100):
    doc=f'docs/{i}.md';body=f'Unique body {i}';role,family=general_cohort.assignment([doc])
@@ -204,7 +204,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
 # Project-effective host roots: the official CLIs are asked from the project,
 # disabled historical installs never block, every enabled entry still counts.
 from types import SimpleNamespace
-from context_learning import history_activation as ha
+from memvane.learning.context_learning import history_activation as ha
 with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as folder:
  base=Path(folder).resolve();project=base/'project';project.mkdir(mode=0o700);home=base/'home'
  plugins=home/'.claude/plugins';VER='0.2-test';OFFICIAL='memvane@memvane-marketplace';STALE='memvane@stale-qa'

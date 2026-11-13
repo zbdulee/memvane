@@ -1,7 +1,7 @@
 from pathlib import Path
 from contextlib import contextmanager
 import sqlite3,tempfile,unittest
-try:from context_learning.evaluation_queue import EvaluationQueue
+try:from memvane.learning.context_learning.evaluation_queue import EvaluationQueue
 except ImportError:EvaluationQueue=None
 
 class Checks(unittest.TestCase):
@@ -71,8 +71,8 @@ class Checks(unittest.TestCase):
   with self.connect() as db:self.assertEqual(db.execute('SELECT * FROM learning_evaluations').fetchall(),[('old','deferred')])
  def test_bounded_waiter_drains_quality_job_without_training_data(self):
   from unittest.mock import patch
-  from context_learning.learning_queue import LearningQueue
-  from context_learning.learning_retry import wait_pending
+  from memvane.learning.context_learning.learning_queue import LearningQueue
+  from memvane.learning.context_learning.learning_retry import wait_pending
   q=self.queue();job=q.ensure('cycle','stage','validation');calls=[]
   def evaluate():calls.append('quality-only');q.finish(job['id'],'completed');return {'status':'staged_evaluated'}
   with patch('context_learning.learning_retry.LearningQueue',return_value=LearningQueue(self.root,connect=self.connect)):
@@ -102,8 +102,8 @@ class Checks(unittest.TestCase):
   reopened.finish(job['id'],'waiting_quality');reopened.defer(job['id'],'interrupted',now=200)
   self.assertEqual(reopened.get(job['id'])['status'],'waiting_quality')
  def test_queue_summary_is_read_only_scoped_and_exposes_retry_reason(self):
-  from context_learning.shared import _queue_summary
-  from context_learning.learning_queue import LearningQueue
+  from memvane.learning.context_learning.shared import _queue_summary
+  from memvane.learning.context_learning.learning_queue import LearningQueue
   own=self.queue();job=own.ensure('cycle','stage','validation');own.defer(job['id'],'memory_reserve',now=100)
   foreign=self.root/'foreign';foreign.mkdir(mode=0o700)
   other=EvaluationQueue(foreign,connect=self.connect)
@@ -118,7 +118,7 @@ class Checks(unittest.TestCase):
   finally:db.close()
  def test_read_only_apply_validation_reads_selected_history_not_legacy_copy(self):
   from unittest.mock import patch
-  from context_learning import shared,history_activation
+  from memvane.learning.context_learning import shared,history_activation
   legacy=self.root/shared.DATABASE_NAME;selected=self.root/'selected.sqlite3'
   for path,value in ((legacy,'legacy'),(selected,'selected')):
    conn=sqlite3.connect(path);conn.execute('CREATE TABLE marker(value TEXT)');conn.execute('INSERT INTO marker VALUES (?)',(value,));conn.commit();conn.close();path.chmod(0o600)
@@ -127,7 +127,7 @@ class Checks(unittest.TestCase):
   with patch.object(history_activation,'writer_access',routed),shared.read_only_validation(),shared._db(self.root) as conn:
    self.assertEqual(conn.execute('SELECT value FROM marker').fetchone()[0],'selected')
  def test_actual_shared_quality_reports_none_recall_and_irrelevant_regressions(self):
-  from context_learning import shared
+  from memvane.learning.context_learning import shared
   cases=[{'request_id':'a','input_sha256':'a','project_key':'p','selected_ids':['card'],'candidates':[{'id':'card'},{'id':'noise'}]},
          {'request_id':'b','input_sha256':'b','project_key':'p','selected_ids':[],'candidates':[{'id':'card'},{'id':'noise'}]}]
   answer={'predictions':[{'request_id':'a','input_sha256':'a','selected_ids':['card']},{'request_id':'b','input_sha256':'b','selected_ids':[]}]}
@@ -139,8 +139,8 @@ class Checks(unittest.TestCase):
   self.assertEqual(bad['none_exact_rate'],0);self.assertEqual(bad['necessary_recall'],0);self.assertEqual(bad['irrelevant_injection_rate'],1)
  def test_quality_epoch_forces_real_prediction_instead_of_retiming_cache(self):
   import inspect
-  from context_learning import shared
-  from context_learning.local_cycle import _atomic_json
+  from memvane.learning.context_learning import shared
+  from memvane.learning.context_learning.local_cycle import _atomic_json
   self.assertIn('cache_epoch',inspect.signature(shared._predict).parameters,'quality refresh reuses old prediction')
   artifact=self.root/'head.artifact';artifact.write_bytes(b'head');artifact.chmod(0o600);calls=[]
   cases=[{'request_id':'a','input_sha256':'sha','project_key':'p','selected_ids':[],'prompt':'synthetic','candidates':[{'id':'card'}]}]

@@ -12,9 +12,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from context_learning import inference_service, selector_heal
-from context_learning.contracts import digest
-from context_learning.store import canonical
+from memvane.learning.context_learning import inference_service, selector_heal
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.store import canonical
 
 
 def private(path, value):

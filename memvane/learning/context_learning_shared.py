@@ -2,8 +2,8 @@
 """Entry point for the opted-in, local-only shared learning worker."""
 import sys
 
-from context_learning.history_lifecycle import worker_lease
-from context_learning.shared import main
+from memvane.learning.context_learning.history_lifecycle import worker_lease
+from memvane.learning.context_learning.shared import main
 
 
 if __name__ == "__main__":

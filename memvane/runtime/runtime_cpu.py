@@ -48,7 +48,7 @@ def lease(root=None):
     """
     if os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1':
         yield Budget(());return
-    from context_learning.resource_coordination import Coordinator,_lock
+    from memvane.learning.context_learning.resource_coordination import Coordinator,_lock
     controller=Coordinator(root);policy=plan();held=None
     try:
         with controller._gate('cpu-control.lock'):

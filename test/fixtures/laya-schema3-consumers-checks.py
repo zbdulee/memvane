@@ -128,7 +128,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         self.card('concepts/egret-perch.md', 'egretprobe')
         self.run_pass()
         scan = importlib.import_module('memvane.wiki.dedup.wiki_dedup_scan')
-        learning = importlib.import_module('context_learning.laya_learning')
+        learning = importlib.import_module('context_learning.learning')
         config = importlib.import_module('memvane.settings.config')
         with self.seed.authority(), \
                 mock.patch.object(config, 'compile_active', return_value=True), \
@@ -173,7 +173,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         emit('schema3-backfill-off', v6=v6, schema3=outcome)
 
     def test_06_learning_corpus_reads_the_view_head_members(self):
-        learning = importlib.import_module('context_learning.laya_learning')
+        learning = importlib.import_module('context_learning.learning')
         config = importlib.import_module('memvane.settings.config')
         self.card('concepts/plover-perch.md', 'ploverprobe')
         self.select_schema3()

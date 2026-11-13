@@ -20,12 +20,12 @@ for name in ('QMD_SANDBOX', 'GEMINI_SANDBOX', 'CLAUDE_SANDBOX', 'CODEX_SANDBOX',
              'HERMES_SANDBOX', 'CLAUDE_HEADLESS', 'HERMES_HEADLESS'):
     os.environ.pop(name, None)
 
-from context_learning.history_activation import (
+from memvane.learning.context_learning.history_activation import (
     HOST_FILES, _claude_load_roots, _discover_host_roots, _installed_hosts_compatible)
 import context_learning.history_activation as activation_module
 import context_learning.history_lifecycle as lifecycle_module
-from context_learning.history_lifecycle import acknowledge_host, runtime_fingerprint
-from context_learning.storage_layout import root as learning_root
+from memvane.learning.context_learning.history_lifecycle import acknowledge_host, runtime_fingerprint
+from memvane.learning.context_learning.storage_layout import root as learning_root
 
 
 def rejects(action, reason):

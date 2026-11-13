@@ -4,12 +4,12 @@ assert importlib.util.find_spec('project_learning_setup') is not None, 'project 
 import json,os,shutil,sqlite3,tempfile,time,subprocess,sys
 from pathlib import Path
 from unittest.mock import patch
-import project_learning_setup as setup
-from context_learning import project_scope,learning_profile
-from context_learning.laya_adapter import MODEL_FILES
-from context_learning.store import canonical
-from context_learning.shared import _project_key
-from context_learning import adapter_binding
+from memvane.learning import project_learning_setup as setup
+from memvane.learning.context_learning import project_scope,learning_profile
+from memvane.learning.context_learning.adapter import MODEL_FILES
+from memvane.learning.context_learning.store import canonical
+from memvane.learning.context_learning.shared import _project_key
+from memvane.learning.context_learning import adapter_binding
 # Execute production imports from the copied installed Codex package, so guards
 # validate an actual approved installation rather than a patched source path.
 if 'QMD_SETUP_FIXTURE_PACKAGE' not in os.environ:
@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  settings={'indexing':True,'collections':['docs'],'collectionPaths':{'docs':'.'},'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':True}}
  save(project/'.auto-context/settings.json',settings)
  (project/'.auto-context').chmod(0o755)
- from context_learning.runtime_setup import learning_state_base
+ from memvane.learning.context_learning.runtime_setup import learning_state_base
  root=learning_state_base(home)/'live-selection'/_project_key(project);root.mkdir(mode=0o700,parents=True)
  model=base/'model';model.mkdir(mode=0o700)
  for name in MODEL_FILES:
@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
  save(home/'.claude/plugins/known_marketplaces.json',{'memvane-marketplace':{'source':{'source':'github','repo':'zbdulee/memvane'}}})
  save(home/'.claude/plugins/installed_plugins.json',{'plugins':{'memvane@memvane-marketplace':[{'version':'test','installPath':str(installs['claude'][0])}]}})
  codex={'name':'memvane','marketplaceName':'memvane-marketplace','version':'test','installed':True,'enabled':True,'source':{'source':'github','repo':'zbdulee/memvane'}}
- adapter=installs['codex'][0]/'core/context_learning/laya_adapter.py'
+ adapter=installs['codex'][0]/'memvane/learning/context_learning/adapter.py'
  save(root/'live-selector.json',{'schema':'qmd-live-selector-v1','trainerArgv':[str(python),str(adapter),str(model)],'timeoutSeconds':30,'maxRssMib':4096})
  artifact=base/'base.artifact';artifact.write_text('immutable base');artifact.chmod(0o600)
  save(root/'active-checkpoint.json',{'artifact_path':str(artifact),'artifact_sha256':setup.file_sha(artifact),'cycle_id':'base'})
@@ -169,7 +169,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
        'root':str(fixture),'fixtureId':'synthetic-qa','paths':{'project':str(qa_project)}})
   save(fixture/'.qa-fixture-owner',{'fixtureId':'synthetic-qa','uid':os.getuid()})
   save(qa_project/'.auto-context/settings.json',settings)
-  from context_learning import local_cycle,runtime_setup,laya_adapter
+  from memvane.learning.context_learning import local_cycle,runtime_setup,laya_adapter
   identity=setup.model_identity(model)
   # Runtime probes stay metadata-only stubs; the binding checks themselves are real.
   compatible={'status':'metadata_compatible','runtime_identity_sha256':'c'*64,'mps_available':True}
@@ -304,7 +304,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   profile=learning_profile.require(qa_root,qa_policy,'local_train')
   assert profile['localTrain'] and not profile['autoApply']
   expect('profile_scope_changed_or_revoked',lambda:learning_profile.require(qa_root,qa_policy,'apply'))
-  from context_learning import shared,project_worker,general_teacher
+  from memvane.learning.context_learning import shared,project_worker,general_teacher
   qa_cfg=json.loads((qa_project/'.auto-context/settings.json').read_text())
   with patch.object(shared,'_safe_root',return_value=qa_root),patch.object(shared,'_policy',return_value={**qa_policy,'_runtime_authorization_v2':True}),\
        patch.object(general_teacher,'process_pending',side_effect=AssertionError('teacher called')),\
@@ -319,7 +319,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   assert setup.start_synthetic_budget(qa_root,qa_project,qa_policy)['status']=='ready'
   assert setup.synthetic_budget_status(qa_root,qa_project,qa_policy)['status']=='ready'
   assert setup.start_synthetic_budget(qa_root,qa_project,qa_policy)['status']=='ready'
-  from context_learning import automatic_staging
+  from memvane.learning.context_learning import automatic_staging
   deadline=json.loads((qa_root/setup.BUDGET).read_text())['deadlineUnixMs']/1000
   with patch.object(setup,'synthetic_budget_status',return_value={'status':'ready'}),\
        patch.object(automatic_staging.time,'time',return_value=deadline-.5),\
@@ -338,7 +338,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   guard_patch.stop();probe_patch.stop()
   # A fresh synthetic root gets its runtime/model/base bindings only from the
   # reviewed initializer: exact fixture, installed adapter, prepared base.
-  from context_learning import laya_adapter
+  from memvane.learning.context_learning import laya_adapter
   init=base/'qa-init';init.mkdir(mode=0o700)
   init_project=init/'project';init_project.mkdir(mode=0o700)
   init_root=init/'learning-private';init_root.mkdir(mode=0o700)

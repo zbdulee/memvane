@@ -3,10 +3,10 @@ from contextlib import contextmanager
 from pathlib import Path
 import json,tempfile,time,unittest,sys,threading
 from unittest.mock import patch
-from context_learning import shared,automatic_staging,automatic_cohort,learning_profile,runtime_authorization,inference_identity,project_scope
-from context_learning.learning_queue import LearningQueue
-from context_learning.store import canonical
-try:from context_learning import candidate_apply as A
+from memvane.learning.context_learning import shared,automatic_staging,automatic_cohort,learning_profile,runtime_authorization,inference_identity,project_scope
+from memvane.learning.context_learning.learning_queue import LearningQueue
+from memvane.learning.context_learning.store import canonical
+try:from memvane.learning.context_learning import candidate_apply as A
 except ImportError:A=None
 
 class Checks(unittest.TestCase):
@@ -44,13 +44,13 @@ class Checks(unittest.TestCase):
  def row(self,i,kind):
   rid=f'{kind}-{i}';sample={'prompt':{'text':rid},'candidates':[{'candidate_id':rid,'revision_sha256':'a'*64}]}
   encoded=canonical(sample)
-  from context_learning.contracts import digest
+  from memvane.learning.context_learning.contracts import digest
   sha=digest(encoded)
   return ('p',rid,sha,encoded,canonical({rid:rid}),canonical({'selected_ids':[] if i<10 and kind=='val' else [rid],'input_sha256':sha}),'train' if kind=='train' else 'validation',str(self.project),'corpus','[]',None,0,f'{kind}/{i%5}/{i}.md')
  def write(self,p,data):p.write_bytes(data);p.chmod(0o600)
  def json(self,p,data):self.write(p,(canonical(data)+'\n').encode())
  def transport(self,command,record):
-  from context_learning.local_cycle import ResourceDeferred
+  from memvane.learning.context_learning.local_cycle import ResourceDeferred
   self.events.append(command)
   if self.low:raise ResourceDeferred('fixture memory')
   return {'status':'prepared' if command=='prepare' else 'activated','token':record['apply_id'],'generation':record['new_pointer']['artifact_sha256']}
@@ -95,7 +95,7 @@ class Checks(unittest.TestCase):
      with other.db(None) as conn:self.assertEqual(conn.execute('SELECT status FROM cycles WHERE cycle_id=?',(other.cycle,)).fetchone()[0],'applied')
     finally:other.doCleanups()
  def test_worker_rechecks_exact_committed_profile_candidate_and_generation(self):
-  from context_learning import inference_service as service
+  from memvane.learning.context_learning import inference_service as service
   def crash(phase):
    if phase=='pointer_committed':raise RuntimeError('fixture crash')
   with self.assertRaises(RuntimeError):self.run_apply(fault=crash)
@@ -110,7 +110,7 @@ class Checks(unittest.TestCase):
    self.assertEqual(job['apply_id'],row['apply_id']);self.assertEqual(job['generation'][-1],self.stage['artifactSha256'])
    with self.assertRaises(service.ServiceFailure):service._validate_apply({**envelope,'namespace':'foreign'})
  def test_ordinary_worker_final_revalidation_rejects_profile_revoked_during_forward(self):
-  from context_learning import inference_service as service
+  from memvane.learning.context_learning import inference_service as service
   self.run_apply()
   live={'schema':'qmd-live-selector-v1','trainerArgv':[sys.executable,'/fake/adapter','/fake/model'],'maxRssMib':4096,'timeoutSeconds':10}
   self.json(self.root/'live-selector.json',live);self.json(self.root/learning_profile.NAME,{'proposal':{'projectRoot':str(self.project)}})
@@ -125,7 +125,7 @@ class Checks(unittest.TestCase):
    engine=service.GenerationEngine(load=lambda _:None,forward=forward,admission=lambda *a,**kw:({},{}),rss=lambda:100)
    with self.assertRaises(ValueError):engine.run(job,cancelled=lambda:False,revalidate=lambda:service._validate_request(env))
  def test_stale_completed_quality_rechecks_without_a_training_call(self):
-  from context_learning.resource_coordination import Coordinator
+  from memvane.learning.context_learning.resource_coordination import Coordinator
   from types import SimpleNamespace
   self.stage['metrics']['evaluatedAt']=time.time()-7200
   with self.db(None) as conn:conn.execute('UPDATE cycles SET evidence=?',(canonical(self.stage),))
@@ -163,7 +163,7 @@ class Checks(unittest.TestCase):
   self.assertEqual(self.run_apply()['status'],'apply_blocked')
   self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
  def test_rejected_quality_does_not_starve_next_fresh_batch(self):
-  from context_learning.evaluation_queue import EvaluationQueue
+  from memvane.learning.context_learning.evaluation_queue import EvaluationQueue
   from memvane.settings import config
   self.profile['localTrain']=True
   evaluations=EvaluationQueue(self.root);job=evaluations.ensure(self.cycle,'pin','val');evaluations.finish(job['id'],'blocked')
@@ -172,7 +172,7 @@ class Checks(unittest.TestCase):
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(shared,'_policy',return_value=policy),patch.object(learning_profile,'present',return_value=True),patch.object(shared,'train_due',return_value={'status':'waiting_fresh_batch'}) as train,patch.object(automatic_staging,'evaluate_pending',side_effect=AssertionError('blocked candidate retried')):
    self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'waiting_fresh_batch');train.assert_called_once()
  def test_waiting_small_candidate_does_not_starve_new_quality_sized_batch(self):
-  from context_learning.evaluation_queue import EvaluationQueue
+  from memvane.learning.context_learning.evaluation_queue import EvaluationQueue
   from memvane.settings import config
   self.profile['localTrain']=True
   queue=EvaluationQueue(self.root);job=queue.ensure(self.cycle,'pin','val');queue.finish(job['id'],'waiting_quality')
@@ -204,7 +204,7 @@ class Checks(unittest.TestCase):
   self.assertEqual(list(outside.iterdir()),[])
  def test_transient_service_transport_uses_backoff_without_rejecting_candidate(self):
   import socket
-  from context_learning import inference_service as service
+  from memvane.learning.context_learning import inference_service as service
   self.policy['trainerArgv']=[sys.executable,'/fake/adapter',str(self.root/'model')]
   for where,error in (('_ensure',service.ServiceFailure('starting')),('_exchange',socket.timeout()),('_exchange',service.ServiceFailure('deadline_expired'))):
    with self.subTest(where=where,error=type(error).__name__):
@@ -216,7 +216,7 @@ class Checks(unittest.TestCase):
    answer=A.apply_candidate(self.root,self.policy,self.cycle)
   self.assertEqual(answer['status'],'apply_deferred');self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
  def test_service_identity_and_permission_errors_still_reject_candidate(self):
-  from context_learning import inference_service as service
+  from memvane.learning.context_learning import inference_service as service
   self.policy['trainerArgv']=[sys.executable,'/fake/adapter',str(self.root/'model')]
   for code in ('version_mismatch','permission_denied'):
    with self.subTest(code=code),patch.object(service,'service_root',return_value=self.root),patch.object(service,'_ensure',side_effect=service.ServiceFailure(code)):
@@ -228,7 +228,7 @@ class Checks(unittest.TestCase):
   self.assertEqual(answer['status'],'apply_blocked');self.assertEqual(self.events,[])
   self.assertEqual(json.loads((self.root/'active-checkpoint.json').read_text()),self.old)
  def test_real_private_ipc_publication_uses_prepared_object_and_same_generation(self):
-  from context_learning import inference_service as service
+  from memvane.learning.context_learning import inference_service as service
   with tempfile.TemporaryDirectory(prefix='qa-',dir='/tmp') as temp:
    controller=Path(temp).resolve();controller.chmod(0o700);ready=threading.Event()
    policy={**self.policy,'trainerArgv':[sys.executable,'/fake/adapter',str(self.root/'model')],'maxRssMib':4096,'timeoutSeconds':30}

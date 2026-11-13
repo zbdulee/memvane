@@ -3,10 +3,10 @@ import json,tempfile,threading
 from pathlib import Path
 from unittest.mock import patch
 from memvane.settings import settings_lock
-import project_learning_setup as setup
-from context_learning.local_cycle import _atomic_json
-from context_learning.runtime_setup import learning_state_base
-from context_learning.shared import _project_key
+from memvane.learning import project_learning_setup as setup
+from memvane.learning.context_learning.local_cycle import _atomic_json
+from memvane.learning.context_learning.runtime_setup import learning_state_base
+from memvane.learning.context_learning.shared import _project_key
 
 
 def save(path,value):

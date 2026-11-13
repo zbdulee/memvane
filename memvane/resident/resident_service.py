@@ -345,7 +345,7 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
 
 def _learning_root():
     try:
-        from context_learning.inference_service import service_root
+        from memvane.learning.context_learning.inference_service import service_root
         return service_root(create=True)
     except Exception:
         return None
@@ -728,8 +728,8 @@ def _quiet_stop(handle):
 
 
 def default_admit():
-    from context_learning.resource_coordination import Coordinator
-    from context_learning.shared import resource_report
+    from memvane.learning.context_learning.resource_coordination import Coordinator
+    from memvane.learning.context_learning.shared import resource_report
     from memvane.sync.product_sync_worker import EMBED_POLICY
     # Memory/pressure admission and learning demand, under control.lock only.
     # The service never holds the provider lane: one cold load per service.
@@ -992,7 +992,7 @@ class Service:
 
     def _learning_busy(self):
         try:
-            from context_learning import inference_service as learning
+            from memvane.learning.context_learning import inference_service as learning
             answer = learning._version(Path(self.learning_root), time.monotonic() + .5)
         except Exception:
             return False
@@ -1577,7 +1577,7 @@ class Service:
 def _learning_host(learning_root):
     """Host the learning inference service in this process until stopped."""
     def host(stopped):
-        from context_learning import inference_service as learning
+        from memvane.learning.context_learning import inference_service as learning
         root = Path(learning_root)
         from memvane.runtime.runtime_cpu import lease
         while not stopped.is_set():

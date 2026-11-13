@@ -7,7 +7,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
 class Calibration(unittest.TestCase):
     def setUp(self):
         self.assertIsNotNone(importlib.util.find_spec('context_learning.bounded_calibration'),'explicit calibration policy missing')
-        from context_learning import bounded_calibration as calibration
+        from memvane.learning.context_learning import bounded_calibration as calibration
         self.m=calibration;calibration.reset_test_state()
         permit=patch.object(calibration,'capability',return_value=None);permit.start();self.addCleanup(permit.stop)
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -79,8 +79,8 @@ class Calibration(unittest.TestCase):
             with self.assertRaises(ValueError):self.m.create(self.samples,{**self.policy,'adaptiveMemory':{**self.profile,**change}},self.request,command=[],files={},now=16.)
 
     def test_common_admission_and_watch_consume_the_same_scope(self):
-        from context_learning.resource_coordination import decision
-        from context_learning.training_watch import Watch
+        from memvane.learning.context_learning.resource_coordination import decision
+        from memvane.learning.context_learning.training_watch import Watch
         row=decision(self.scoped,self.row(17),now=17.)
         self.assertTrue(row['ready'],row)
         watch=Watch(clock=lambda:17.,min_available_mib=1024,policy=self.scoped)
@@ -116,8 +116,8 @@ class Calibration(unittest.TestCase):
                 with self.assertRaises(ValueError):self.m.load(p,command)
 
     def test_calibration_permission_is_not_an_installed_policy_field(self):
-        from context_learning import shared
-        from context_learning.local_cycle import _atomic_json
+        from memvane.learning.context_learning import shared
+        from memvane.learning.context_learning.local_cycle import _atomic_json
         keys=('goldModel','maxGoldCalls','batchMin','batchMax','targetExact','trainerArgv',
               'baseArtifact','maxRssMib','minAvailableMib','maxLoadPerCpu','safetySeconds','experimental')
         value={k:None for k in keys}
@@ -142,7 +142,7 @@ class Calibration(unittest.TestCase):
 
 class GuardCapability(unittest.TestCase):
     def setUp(self):
-        from context_learning import bounded_calibration as calibration
+        from memvane.learning.context_learning import bounded_calibration as calibration
         self.m=calibration
         # Use the policy test's builder without its capability mock.
         fixture=Calibration();fixture.setUp();self.addCleanup(fixture.doCleanups)

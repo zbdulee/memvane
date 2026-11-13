@@ -12,18 +12,18 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from context_learning.contracts import digest, request
-from context_learning.compact_input import derive
-from context_learning.history_activation import (
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning.compact_input import derive
+from memvane.learning.context_learning.history_activation import (
     HOST_FILES, activate, recover, rollback, selected_database, writer_access,
     read_database, record_case_mapping, _write_state, schema_digest)
-from context_learning import history_fence
+from memvane.learning.context_learning import history_fence
 import context_learning.history_activation as activation_module
-from context_learning.history_migration import prepare
-from context_learning.history_lifecycle import request as lifecycle_request
-from context_learning.shared import _db
-from context_learning.storage_layout import register_project
-from context_learning.store import canonical, database, capture
+from memvane.learning.context_learning.history_migration import prepare
+from memvane.learning.context_learning.history_lifecycle import request as lifecycle_request
+from memvane.learning.context_learning.shared import _db
+from memvane.learning.context_learning.storage_layout import register_project
+from memvane.learning.context_learning.store import canonical, database, capture
 
 
 def closing_ro(path):
@@ -178,11 +178,11 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
             'history_host_not_coordinated:claude')
     assert not pointer.exists()
     shutil.copy2(source / HOST_FILES[0], claude_protocol)
-    adapter = hosts['claude'] / 'core/context_learning/codex_adapter.py'
+    adapter = hosts['claude'] / 'memvane/learning/context_learning/codex_adapter.py'
     adapter.write_bytes(adapter.read_bytes() + b'\n# old adapter\n')
     rejects(lambda: activate(generation, host_roots=hosts, home=home),
             'history_host_not_coordinated:claude')
-    shutil.copy2(source / 'core/context_learning/codex_adapter.py', adapter)
+    shutil.copy2(source / 'memvane/learning/context_learning/codex_adapter.py', adapter)
     old_codex = home / '.codex/plugins/cache/old/memvane/v-old'
     old_codex.mkdir(parents=True)
     hosts['codex'] = [hosts['codex'], old_codex]
@@ -211,7 +211,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     with closing_rw(shared_db) as db, db:
         db.execute('UPDATE cases SET error=NULL')
 
-    child_script = ('from context_learning.history_activation import writer_access; '
+    child_script = ('from memvane.learning.context_learning.history_activation import writer_access; '
                     'import sys; '
                     'with_writer=writer_access(sys.argv[1],home=sys.argv[2]); '
                     'with_writer.__enter__(); print("held",flush=True); '
@@ -231,7 +231,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
         child.communicate('\n', timeout=5)
         assert child.returncode == 0
 
-    worker_script = ('from context_learning.history_lifecycle import worker_lease; '
+    worker_script = ('from memvane.learning.context_learning.history_lifecycle import worker_lease; '
                      'import sys; lease=worker_lease(home=sys.argv[1]); '
                      'lease.__enter__(); print("held",flush=True); '
                      'sys.stdin.readline(); lease.__exit__(None,None,None)')
@@ -280,7 +280,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
 
     crash_script = (
         'import os,sys; from unittest.mock import patch; '
-        'from context_learning.history_activation import activate; '
+        'from memvane.learning.context_learning.history_activation import activate; '
         'stop=lambda *args,**kwargs: os._exit(94); '
         'guard=patch("context_learning.history_activation._atomic_pointer", '
         'side_effect=stop); guard.start(); '
@@ -395,7 +395,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     # A crash mid-seal leaves read-only files and fences; recover() undoes both.
     seal_crash = (
         'import os,sys; from unittest.mock import patch; '
-        'from context_learning.history_activation import activate; '
+        'from memvane.learning.context_learning.history_activation import activate; '
         'stop=lambda *args,**kwargs: os._exit(96); '
         'guard=patch("context_learning.history_activation._legacy_writer_pids", '
         'side_effect=stop); guard.start(); '
@@ -488,7 +488,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-history-activation-', dir='/tmp') a
     activate(generation, host_roots=hosts, home=home)
     rollback_crash = (
         'import os,sys; from unittest.mock import patch; '
-        'from context_learning.history_activation import rollback; '
+        'from memvane.learning.context_learning.history_activation import rollback; '
         'stop=lambda *args,**kwargs: os._exit(95); '
         'guard=patch("context_learning.history_activation._remove_partial_fences", '
         'side_effect=stop); guard.start(); '

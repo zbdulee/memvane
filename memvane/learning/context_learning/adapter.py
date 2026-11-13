@@ -1,6 +1,6 @@
 """Offline Laya 0.3.20 head-only selection adapter for LocalTrainer.
 
-Executable protocol: python laya_adapter.py MODEL_DIR train|predict|smoke REQUEST RESULT.
+Executable protocol: python adapter.py MODEL_DIR train|predict|smoke REQUEST RESULT.
 MODEL_DIR is an already present local Laya checkpoint. Only the explicit
 artifact and response paths may be written; the base checkpoint is read-only.
 """
@@ -16,7 +16,7 @@ import tempfile
 import time
 
 # LocalTrainer executes this file directly, before any request guard runs.
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
 
 ADAPTER_VERSION = 'qmd-laya-selection-v1'
 EXPERIMENT_ADAPTER_VERSION = 'qmd-laya-selection-v2'
@@ -459,7 +459,7 @@ def _train_group(torch, F, model, tok, params, optimizer, current, microbatch,
 
 
 def _allocation(torch):
-    from context_learning.inference_service import _rss_mib
+    from memvane.learning.context_learning.inference_service import _rss_mib
     rss=_rss_mib()
     driver=(torch.mps.driver_allocated_memory()/(1024*1024)
             if str(_device(torch))=='mps' else 0)
@@ -469,13 +469,13 @@ def _allocation(torch):
 def _training_guard(request):
     control=request.get('learning_control')
     if control is None:return None
-    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-    from context_learning.resource_coordination import TrainingGuard
+    sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
+    from memvane.learning.context_learning.resource_coordination import TrainingGuard
     return TrainingGuard(control)
 
 
 def train(model_dir, request, *, max_updates=None, verification=False):
-    from context_learning.bounded_calibration import validate_request
+    from memvane.learning.context_learning.bounded_calibration import validate_request
     validate_request(request)
     guard = _training_guard(request)
     torch=_torch()
@@ -511,7 +511,7 @@ def train(model_dir, request, *, max_updates=None, verification=False):
                     if input_view == EDIT_INPUT_VIEW else
                     [items[start:start+2] for start in range(0, len(items), 2)])
     if guard is not None:
-        from context_learning.training_cursor import UpdateCursor, run_updates
+        from memvane.learning.context_learning.training_cursor import UpdateCursor, run_updates
         cursor=UpdateCursor(request,train_groups)
         if cursor.saved is not None:
             from safetensors.torch import load_file
@@ -557,7 +557,7 @@ def train(model_dir, request, *, max_updates=None, verification=False):
         probe = {'candidate_id':item['candidate_id'],
                  'logits':probe_logits[0].detach().cpu().tolist()}
     if guard is not None:
-        from context_learning.training_cursor import recover_completed
+        from memvane.learning.context_learning.training_cursor import recover_completed
         with guard.step():
             if not recover_completed(request):raise ValueError('learning_cursor_changed')
     else:_save_head(artifact, model, base_sha, input_view)

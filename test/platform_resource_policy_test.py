@@ -9,9 +9,9 @@ import unittest
 from unittest.mock import Mock,patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from context_learning import memory_policy
-from context_learning.local_cycle import ResourceDeferred
-from context_learning.resource_coordination import Coordinator,decision
+from memvane.learning.context_learning import memory_policy
+from memvane.learning.context_learning.local_cycle import ResourceDeferred
+from memvane.learning.context_learning.resource_coordination import Coordinator,decision
 
 
 class MemoryBudget(unittest.TestCase):
@@ -107,7 +107,7 @@ class MemoryBudget(unittest.TestCase):
         self.assertTrue(decision(cpu,{**self.report,'platform':{**supported,'memory_model':'unknown'}},now=10.)['ready'])
 
     def test_running_watch_invalid_reserve_is_unknown_and_psi_stays_distinct(self):
-        from context_learning.training_watch import Watch
+        from memvane.learning.context_learning.training_watch import Watch
         for reserve in (None,'unknown',float('nan')):
             report={**self.report,'memory_admission':{'reserve_mib':reserve}}
             self.assertEqual(Watch(clock=lambda:10.).observe(report)['action'],'kill')
@@ -153,7 +153,7 @@ class MemoryBudget(unittest.TestCase):
             clock[0]=16.;attempt(6436)
 
     def test_running_watch_does_not_force_yield_below_soft_ratio_target(self):
-        from context_learning.training_watch import Watch
+        from memvane.learning.context_learning.training_watch import Watch
         watch=Watch(clock=lambda:10.,min_available_mib=1024)
         self.assertEqual(watch.observe({**self.report,'total_mib':131072})['action'],'continue')
         self.assertEqual(watch.observe({**self.report,'available_mib':900})['action'],'yield')
@@ -230,7 +230,7 @@ class PlatformObservation(unittest.TestCase):
         self.assertIsNone(row['available_mib']);self.assertIsNone(row['gpu_usage_percent'])
 
     def test_common_wrapper_preserves_linux_psi_and_adaptive_cpu_policy(self):
-        from context_learning import shared
+        from memvane.learning.context_learning import shared
         module=self.module()
         files={'/proc/meminfo':'MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\n',
                '/proc/pressure/memory':'full avg10=0.00 avg60=0.00\n'}
@@ -250,7 +250,7 @@ class PlatformObservation(unittest.TestCase):
         self.assertNotIn('system_free_percent',row['memory_pressure'])
 
     def test_common_wrapper_does_not_admit_unsupported_windows_observations(self):
-        from context_learning import shared
+        from memvane.learning.context_learning import shared
         module=self.module()
         with patch.object(module,'adapter_for',return_value=module.adapter_for('win32',machine='AMD64',release='synthetic')), \
              patch.object(shared.subprocess,'run',side_effect=AssertionError('OS probe')), \

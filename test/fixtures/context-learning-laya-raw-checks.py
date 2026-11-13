@@ -9,13 +9,13 @@ from unittest.mock import patch
 
 sys.path.insert(0,'core')
 fixture=runpy.run_path('test/fixtures/context-learning-dataset-checks.py')
-from context_learning.contracts import CLASS_ORDER, digest, request
-from context_learning.store import canonical, capture, database
-from context_learning.offline import approve_review, build_manifest, delete_case, save_label
-from context_learning.dataset import export_dataset, evaluate_predictions
-from context_learning.laya_raw import (FORMAT, COMMIT, candidate_pin, tokenization_status,
+from memvane.learning.context_learning.contracts import CLASS_ORDER, digest, request
+from memvane.learning.context_learning.store import canonical, capture, database
+from memvane.learning.context_learning.offline import approve_review, build_manifest, delete_case, save_label
+from memvane.learning.context_learning.dataset import export_dataset, evaluate_predictions
+from memvane.learning.context_learning.raw import (FORMAT, COMMIT, candidate_pin, tokenization_status,
     export_laya_raw, check_laya_raw, evaluate_laya_predictions, map_laya_predictions, _raw_payloads)
-from context_learning import dataset
+from memvane.learning.context_learning import dataset
 
 class Checks(unittest.TestCase):
     setUp=fixture['Checks'].setUp

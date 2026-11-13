@@ -18,8 +18,8 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / 'core'))
-from context_learning import inference_service as learning
-from context_learning import resource_coordination as resources
+from memvane.learning.context_learning import inference_service as learning
+from memvane.learning.context_learning import resource_coordination as resources
 from memvane.resident import embed_resident as owner
 from memvane.resident import resident_service as host
 from laya_index_a import IndexContractError
@@ -243,7 +243,7 @@ class RuntimeGateChecks(unittest.TestCase):
                     self.assertEqual(len(drains), int(case == 'python-switch'))
 
     def test_host_protocol_mismatch_keeps_existing_wire_code_and_selector_fallback_reason(self):
-        from context_learning import live_select
+        from memvane.learning.context_learning import live_select
         with tempfile.TemporaryDirectory(prefix='rt-protocol-', dir='/tmp') as temp:
             base = Path(temp).resolve()
             root, service_root = base / 'learning', base / 'service'

@@ -31,13 +31,13 @@ from memvane.route import index_host_route as laya_index_host_route
 from memvane.journal import install_journal as laya_install_journal
 from laya_index_a import LayaIndexA, _digest as manifest_digest
 from laya_index_vector import LayaVectorIndex, profile_identity, qmd_markdown_title
-from context_learning import corpus, shared
+from memvane.learning.context_learning import corpus, shared
 try:  # Absent before this change; every check then fails on its own behavior.
-    from context_learning import laya_learning
+    from memvane.learning.context_learning import laya_learning
 except ImportError:
     laya_learning = None
-from context_learning.contracts import digest
-from context_learning.store import canonical
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.store import canonical
 
 SCOPE = '6' * 32
 INSTALL = 'a' * 32
@@ -118,7 +118,7 @@ class LayaProject:
             'schema': 'qmd-shared-learning-v1', 'enabled': True,
             'goldModel': 'gpt-6-luna', 'maxGoldCalls': 10, 'batchMin': 5,
             'batchMax': 20, 'targetExact': .95,
-            'trainerArgv': [sys.executable, str(CORE / 'context_learning/laya_adapter.py'),
+            'trainerArgv': [sys.executable, str(CORE / 'context_learning/adapter.py'),
                             str(base)],
             'baseArtifact': str(artifact), 'maxRssMib': 4096, 'minAvailableMib': 128,
             'maxLoadPerCpu': 4, 'safetySeconds': 900, 'experimental': True}))
@@ -320,7 +320,7 @@ class Checks(unittest.TestCase):
         with patch.object(response, 'select_hook_route', return_value=decision), \
              patch.object(response, 'select_route', return_value=decision), \
              patch.object(response, 'serve_selected', side_effect=serve), \
-             patch('context_learning.laya_learning.capture_recall', side_effect=capture), \
+             patch('context_learning.learning.capture_recall', side_effect=capture), \
              redirect_stdout(stdout):
             code = response.main(['serve-hook', 'recall', 'codex', str(payload),
                                   str(self.laya.project)])
@@ -334,7 +334,7 @@ class Checks(unittest.TestCase):
         with patch.object(response, 'select_hook_route', return_value=decision), \
              patch.object(response, 'select_route', return_value=decision), \
              patch.object(response, 'serve_selected', side_effect=serve), \
-             patch('context_learning.laya_learning.capture_recall', side_effect=capture), \
+             patch('context_learning.learning.capture_recall', side_effect=capture), \
              redirect_stdout(io.StringIO()):
             response.main(['serve-hook', 'posttool', 'codex', str(payload),
                            str(self.laya.project)])

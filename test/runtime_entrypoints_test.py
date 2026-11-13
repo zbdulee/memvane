@@ -12,8 +12,8 @@ import unittest
 from unittest.mock import Mock,patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from context_learning.resource_coordination import Coordinator
-from context_learning.local_cycle import ResourceDeferred
+from memvane.learning.context_learning.resource_coordination import Coordinator
+from memvane.learning.context_learning.local_cycle import ResourceDeferred
 
 
 class EntryPoints(unittest.TestCase):
@@ -69,7 +69,7 @@ class EntryPoints(unittest.TestCase):
 
     def test_general_teacher_deferral_precedes_scope_and_reservation(self):
         a=self.admission()
-        from context_learning import general_teacher as teacher
+        from memvane.learning.context_learning import general_teacher as teacher
         with patch.object(a,'sample',return_value=None),patch.object(teacher,'_policy') as policy:
             result=teacher.process_pending(self.root,self.root,{})
         self.assertEqual(result['status'],'deferred_resource');policy.assert_not_called()
@@ -111,13 +111,13 @@ class EntryPoints(unittest.TestCase):
         self.assertEqual(result['reason'],'warm_server_deadline_unavailable')
 
     def test_scope_inventory_defers_before_scanning_installations(self):
-        a=self.admission();from context_learning import project_scope as scope
+        a=self.admission();from memvane.learning.context_learning import project_scope as scope
         with patch.object(a,'sample',return_value=None),patch.object(scope,'_envelope') as read:
             with self.assertRaises(ResourceDeferred):scope.require(self.root,{},'local_train',fresh_inventory=True)
         read.assert_not_called()
 
     def test_automatic_training_defers_before_planning_or_hashing(self):
-        a=self.admission();from context_learning import automatic_staging as stage
+        a=self.admission();from memvane.learning.context_learning import automatic_staging as stage
         with patch.object(a,'sample',return_value=None),patch.object(stage,'training_and_validation') as rows:
             result=stage.train_due_staged(self.root,{},{} )
         self.assertEqual(result['status'],'deferred_resource');rows.assert_not_called()
@@ -125,14 +125,14 @@ class EntryPoints(unittest.TestCase):
         self.assertFalse(json.loads((self.root/'resource-defer.json').read_text())['completionAck'])
 
     def test_cohort_preparation_defers_before_reading_all_history(self):
-        a=self.admission();from context_learning import general_cohort as cohort
+        a=self.admission();from memvane.learning.context_learning import general_cohort as cohort
         db=Mock();db.execute.side_effect=AssertionError('history read before admission')
         with patch.object(a,'sample',return_value=None):
             with self.assertRaises(ResourceDeferred):cohort.admitted(db,self.root,{'projectRoot':str(self.root),'cohort':{'id':'fixture','notBeforeUnixMs':1}})
         db.execute.assert_not_called()
 
     def test_budgeted_manual_teacher_defers_without_a_reservation(self):
-        a=self.admission();from context_learning import teacher_budget as budget
+        a=self.admission();from memvane.learning.context_learning import teacher_budget as budget
         with patch.object(a,'sample',return_value=None),patch.object(budget,'reserve_review') as reserve:
             result=budget.budgeted_review_request(self.root,'case','attempt',{})
         self.assertEqual(result['status'],'deferred_resource');reserve.assert_not_called()
@@ -149,7 +149,7 @@ class EntryPoints(unittest.TestCase):
             self.assertEqual(os.fstat(fd).st_ino,(self.root/'provider.lock').stat().st_ino)
             with self.c.inference_compute(time.monotonic()+.05):pass
             return Child()
-        from context_learning import transport
+        from memvane.learning.context_learning import transport
         with patch.object(a.subprocess,'Popen',side_effect=spawn),patch.object(transport,'_stop_owned',return_value=True):
             result=a.provider_run(['/synthetic/provider'],env={'INDEX_PATH':'/synthetic/index'},timeout=1,capture_output=True,text=True)
         self.assertEqual(result.stdout,'answer')
@@ -215,7 +215,7 @@ class EntryPoints(unittest.TestCase):
                 with a.preparation(clock=lambda:clock[0],max_seconds=1):self.fail('late probe admitted')
 
     def test_mac_probes_share_the_remaining_observation_deadline(self):
-        self.admission();from context_learning import shared
+        self.admission();from memvane.learning.context_learning import shared
         clock=[100.];timeouts=[]
         def probe(argv,**options):
             timeouts.append(options['timeout']);clock[0]+=options['timeout']

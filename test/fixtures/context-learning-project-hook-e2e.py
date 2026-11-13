@@ -54,7 +54,7 @@ def audit(event, args):
         argv = args[1]
         if '-I' in argv:
             raise AssertionError('isolated service/model child forbidden in hook fixture')
-        if any(str(x).endswith(('laya_adapter.py', 'laya_inference_worker.py')) for x in argv):
+        if any(str(x).endswith(('adapter.py', 'laya_inference_worker.py')) for x in argv):
             raise AssertionError('model execution forbidden in synthetic hook fixture')
 
 
@@ -167,16 +167,16 @@ else:
         +RESOURCE_OBSERVER+'\nsys.path.pop(0)\n')
     from memvane.runtime import resource_platform
     resource_observer=resource_platform.adapter_for(sys.platform)
-    from context_learning import general_teacher, shared, project_scope
-    from context_learning.resource_coordination import Coordinator
+    from memvane.learning.context_learning import general_teacher, shared, project_scope
+    from memvane.learning.context_learning.resource_coordination import Coordinator
     from memvane.runtime.runtime_work import WakeQueue
     assert Coordinator().root.is_relative_to(home)
     assert WakeQueue().root.is_relative_to(home)
     scheduler_lock=open(Coordinator().root/'runtime-worker.lock','a')
     os.chmod(scheduler_lock.name,0o600);fcntl.flock(scheduler_lock,fcntl.LOCK_EX)
-    from context_learning.contracts import digest
-    from context_learning.laya_adapter import MODEL_FILES
-    import project_learning_setup as setup
+    from memvane.learning.context_learning.contracts import digest
+    from memvane.learning.context_learning.adapter import MODEL_FILES
+    from memvane.learning import project_learning_setup as setup
     import qmd_shared_store
     import runtime_update
     save(home/'.claude/plugins/known_marketplaces.json', {'qmd-auto-context-marketplace':{
@@ -201,7 +201,7 @@ else:
     settle_synthetic_inputs(model_files+copied_files)
     assert [file.read_bytes() for file in model_files]==initial
     artifact = base/'immutable-base.artifact'; artifact.write_text('synthetic artifact'); artifact.chmod(0o600)
-    from context_learning.runtime_setup import learning_state_base
+    from memvane.learning.context_learning.runtime_setup import learning_state_base
     namespace_parent = learning_state_base(home)/'live-selection'
     namespace_parent.mkdir(mode=0o700, parents=True)
     generation = qmd_shared_store.root()/'generations'/('g-'+'1'*32)
@@ -239,7 +239,7 @@ else:
         registry[collection] = {'scope':str(project),'path':str(wiki),'indexed':True}
         namespace = namespace_parent/shared._project_key(project); namespace.mkdir(mode=0o700)
         save(namespace/'live-selector.json', {'schema':'qmd-live-selector-v1',
-            'trainerArgv':[str(model_python),str(installs['codex']/'core/context_learning/laya_adapter.py'),str(model)],
+            'trainerArgv':[str(model_python),str(installs['codex']/'memvane/learning/context_learning/adapter.py'),str(model)],
             'timeoutSeconds':30,'maxRssMib':4096})
         save(namespace/'active-checkpoint.json', {'artifact_path':str(artifact),
             'artifact_sha256':setup.file_sha(artifact),'cycle_id':'synthetic-base'})
@@ -254,7 +254,7 @@ def audit(event,args):
  if event=='import' and args[0].split('.')[0] in ('torch','transformers','laya'):
   attempts.append(event)
   raise AssertionError('model import forbidden')
- if event=='subprocess.Popen' and any(str(x).endswith(('laya_adapter.py','laya_inference_worker.py')) for x in args[1]):
+ if event=='subprocess.Popen' and any(str(x).endswith(('adapter.py','laya_inference_worker.py')) for x in args[1]):
   attempts.append(event)
   raise AssertionError('model subprocess forbidden')
  if event=='subprocess.Popen' and '-I' in args[1]:
@@ -266,7 +266,7 @@ assert resource_platform.adapter_for(sys.platform).level=='normal'
 from pathlib import Path
 import os,pwd
 assert Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()==Path.home().resolve()
-from context_learning.resource_coordination import Coordinator
+from memvane.learning.context_learning.resource_coordination import Coordinator
 from runtime_work import WakeQueue
 assert Coordinator().root.is_relative_to(Path.home())
 assert WakeQueue().root.is_relative_to(Path.home())
@@ -371,7 +371,7 @@ assert not attempts,attempts
         policies={str(namespace):shared._policy(namespace) for _,namespace,_ in projects}
         resource_observer.level = 'warning'
         resource_observer.free = 5  # warning alone no longer defers; scarce memory does
-        from context_learning.resource_coordination import decision
+        from memvane.learning.context_learning.resource_coordination import decision
         from memvane.runtime import runtime_admission
         observed = runtime_admission.sample(runtime_admission.POLICY)
         assert observed['memory_pressure']['level']=='warning' and observed['ready'] is False

@@ -96,7 +96,7 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
         raise ValueError('profile_namespace_invalid')
     policy=_policy(root)
     from .runtime_authorization import require_operation,proposal_sha256
-    from .laya_adapter import model_identity
+    from .adapter import model_identity
     from .inference_identity import code_identity
     grant=require_operation(root,policy,'quality_evaluate')
     if train:require_operation(root,policy,'local_train')
@@ -117,7 +117,7 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
 
 def _check_scope(row,root,policy,operation,*,settings=True):
     from .runtime_authorization import require_operation,proposal_sha256
-    from .laya_adapter import model_identity
+    from .adapter import model_identity
     from .inference_identity import code_identity
     grant=require_operation(root,policy,'local_train' if operation=='local_train' else 'quality_evaluate')
     if (row['schema']!=SCHEMA or row['namespaceRoot']!=str(Path(root).resolve())

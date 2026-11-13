@@ -4,16 +4,16 @@ import argparse
 import json
 import sys
 
-from context_learning.contracts import digest
-from context_learning.jobs import cancel_job, job_status, label_job
-from context_learning.offline import approve_review, review_view, build_manifest, load_manifest
-from context_learning.dataset import read_private_json, export_dataset, inspect_export, evaluate_predictions
-from context_learning.store import canonical, database
-from context_learning.laya_raw import export_laya_raw, check_laya_raw, evaluate_laya_predictions
-from context_learning.selection_gold import save_selection, load_selection
-from context_learning.local_cycle import LocalTrainer, VerifiedLayaTrainer, run_cycle, rollback
-from context_learning.schedule import run_due_cycle
-from context_learning.teacher_budget import budgeted_label_request, budgeted_review_request
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.jobs import cancel_job, job_status, label_job
+from memvane.learning.context_learning.offline import approve_review, review_view, build_manifest, load_manifest
+from memvane.learning.context_learning.dataset import read_private_json, export_dataset, inspect_export, evaluate_predictions
+from memvane.learning.context_learning.store import canonical, database
+from memvane.learning.context_learning.raw import export_laya_raw, check_laya_raw, evaluate_laya_predictions
+from memvane.learning.context_learning.selection_gold import save_selection, load_selection
+from memvane.learning.context_learning.local_cycle import LocalTrainer, VerifiedLayaTrainer, run_cycle, rollback
+from memvane.learning.context_learning.schedule import run_due_cycle
+from memvane.learning.context_learning.teacher_budget import budgeted_label_request, budgeted_review_request
 
 
 def parser():
@@ -72,7 +72,7 @@ def execute(args):
     if args.command=='inspect-selection':return load_selection(root,args.request_id)
     if args.command=='rollback-local-checkpoint':return rollback(root)
     if args.command=='prepare-local-laya-base':
-        from context_learning.laya_adapter import model_identity, prepare_base_artifact
+        from memvane.learning.context_learning.adapter import model_identity, prepare_base_artifact
         from pathlib import Path
         identity=model_identity(args.model_dir)
         destination=Path(root)/('laya-base-'+identity+'.artifact')
@@ -87,7 +87,7 @@ def execute(args):
     if args.command in ('run-local-cycle','run-due-cycle'):
         argv=read_private_json(args.trainer_argv_json)
         from pathlib import Path
-        adapter=Path(__file__).with_name('context_learning')/'laya_adapter.py'
+        adapter=Path(__file__).with_name('context_learning')/'adapter.py'
         trainer_type=(VerifiedLayaTrainer if isinstance(argv,list) and len(argv)==3 and
             Path(argv[1]).resolve()==adapter.resolve() else LocalTrainer)
         trainer=trainer_type(argv,max_seconds=args.max_seconds,

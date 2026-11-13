@@ -44,12 +44,12 @@ def inference_argv(policy, operation):
     if operation not in ('segment', 'predict'):
         raise ValueError('invalid_shared_inference_operation')
     argv = policy.get('trainerArgv') if isinstance(policy, dict) else None
-    current = Path(__file__).with_name('laya_adapter.py')
+    current = Path(__file__).with_name('adapter.py')
     if (not isinstance(argv, list) or len(argv) != 3
             or any(not isinstance(value, str) or not Path(value).is_absolute()
                    for value in argv)):
         raise ValueError('invalid_shared_inference_command')
-    from .laya_adapter import EDIT_INPUT_VIEW, _read_json
+    from .adapter import EDIT_INPUT_VIEW, _read_json
     if policy.get('modelInputView') != EDIT_INPUT_VIEW:
         raise ValueError('historical_inference_view_unverified')
     try:
@@ -145,7 +145,7 @@ def _policy(root):
         # Zero is reserved for an exact teacher-free QA transaction. The
         # installing phase is needed while profile.activate calls _policy;
         # runtime use still requires the activated phase in synthetic_local_only.
-        import project_learning_setup
+        from memvane.learning import project_learning_setup
         path = root / project_learning_setup.NAME
         if path.is_symlink() or not path.is_file():
             raise ValueError("invalid_shared_budget")
@@ -164,7 +164,7 @@ def _policy(root):
     if type(value["maxLoadPerCpu"]) not in (int, float) or not .1 <= value["maxLoadPerCpu"] <= 4:
         raise ValueError("invalid_shared_load")
     argv = value["trainerArgv"]
-    adapter = Path(__file__).with_name("laya_adapter.py").resolve()
+    adapter = Path(__file__).with_name("adapter.py").resolve()
     general_grant=None
     from . import project_scope
     if project_scope.present(root):
@@ -179,7 +179,7 @@ def _policy(root):
         from .memory_policy import validate
         validate(value['adaptiveMemory'])
     if 'modelInputView' in value:
-        from .laya_adapter import EDIT_INPUT_VIEW, _read_json
+        from .adapter import EDIT_INPUT_VIEW, _read_json
         if value['modelInputView'] != EDIT_INPUT_VIEW:
             raise ValueError('invalid_shared_model_input_view')
         try:
@@ -392,7 +392,7 @@ def _family_keys(project_key, sample, bodies):
 
 
 def _rows_for_model_view(rows, input_view):
-    from .laya_adapter import EDIT_INPUT_VIEW
+    from .adapter import EDIT_INPUT_VIEW
     if input_view == EDIT_INPUT_VIEW:
         return [row for row in rows if json.loads(row[3]).get('schema_version') == 4]
     return rows
@@ -664,7 +664,7 @@ def trial_eligible(root, *, deadline=None, max_seconds=.2):
             return False
         pointer = read_private_json(path)
         sources = pointer.get("sourceCases")
-        from .laya_adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
+        from .adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
         if (pointer.get("schema_version") != 1 or not pointer.get("experimental")
                 or pointer.get("model_input_view") not in (None, EXPERIMENT_INPUT_VIEW,
                                                            EDIT_INPUT_VIEW)
@@ -1152,7 +1152,7 @@ def train_due(root, policy, *, trainer_factory=None):
     _reconcile_cases(root)
     pointer_path = root / "experimental-checkpoint.json"
     current = read_private_json(pointer_path) if pointer_path.exists() else None
-    from .laya_adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW, model_identity
+    from .adapter import EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW, model_identity
     input_view = current.get("model_input_view") if current else policy.get(
         'modelInputView', EXPERIMENT_INPUT_VIEW)
     if (policy.get('modelInputView') == EDIT_INPUT_VIEW and current is not None
@@ -1248,7 +1248,7 @@ def train_due(root, policy, *, trainer_factory=None):
     if current and _hash(incumbent) != current["artifact_sha256"]:
         raise ValueError("shared_incumbent_changed")
     if trainer_factory is None:
-        adapter = Path(__file__).with_name("laya_adapter.py")
+        adapter = Path(__file__).with_name("adapter.py")
         if Path(policy["trainerArgv"][1]).resolve() != adapter.resolve():
             raise ValueError("invalid_shared_trainer")
         trainer = VerifiedLayaTrainer(policy["trainerArgv"], max_seconds=policy["safetySeconds"],
@@ -1420,7 +1420,7 @@ def prepare_multilingual_trial(root, *, expected_old_pointer_sha256):
     New training remains gated on reviewed schema-v4 edit gold and pressure.
     """
     import fcntl
-    from .laya_adapter import EDIT_INPUT_VIEW, _head_path, model_identity
+    from .adapter import EDIT_INPUT_VIEW, _head_path, model_identity
     root = _validated_root(root)
     policy = _policy(root)
     if policy.get('modelInputView') != EDIT_INPUT_VIEW:
@@ -1539,7 +1539,7 @@ def observe_trial(root, policy, *, trainer_factory=None):
             return report
     cases = [_case(row[:6]) for row in clean]
     if trainer_factory is None:
-        adapter = Path(__file__).with_name("laya_adapter.py")
+        adapter = Path(__file__).with_name("adapter.py")
         klass = VerifiedLayaTrainer if Path(policy["trainerArgv"][1]).resolve() == adapter.resolve() else LocalTrainer
         trainer = klass(policy["trainerArgv"], max_seconds=policy["safetySeconds"],
                         max_rss_mib=policy["maxRssMib"],
@@ -1789,7 +1789,7 @@ def launch(config, project, *, parent_id=None, episode=None,
         if flags.get('capture') is not True or flags.get('autoCycle') is not True:
             return {'status':'disabled'}
         project_scope.require(root,_policy(root),'local_train')
-        import project_learning_setup
+        from memvane.learning import project_learning_setup
         if project_learning_setup.synthetic_local_only(root,project,_policy(root)):
             # Editing/capture must not start the expressly manual QA job.
             return {'status':'manual_synthetic_training_required'}
@@ -1926,9 +1926,9 @@ def _spawn_owned(root, project, command, lease_fd, spawn, *, job, job_id):
                                           "MEMVANE_TEST_RUNTIME_ROOT") if k in os.environ}
         env.update(PYTHONDONTWRITEBYTECODE="1", HF_HUB_OFFLINE="1",
                    TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1", **job)
-        entry = Path(__file__).resolve().parents[1] / "context_learning_shared.py"
+        entry = Path(__file__).resolve().parents[3] / "entry/run.py"
         try:
-            spawn([sys.executable, "-B", str(entry), command, str(project), str(lease_fd)],
+            spawn([sys.executable, "-B", str(entry), "learning-shared", command, str(project), str(lease_fd)],
                   stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env,
                   start_new_session=True, close_fds=True, pass_fds=(lease_fd,))
         except Exception:
@@ -2117,7 +2117,7 @@ def _run_owned_training(project, lease_fd):
     returns ``deferred_resource``; the durable wake then waits for runtime
     admission before a fresh child resumes from the committed cursor.
     """
-    from .laya_learning import ready
+    from .learning import ready
     project, _, root = _owned_root(project)
     if root is None:
         return {"status": "disabled"}
@@ -2175,7 +2175,7 @@ def run_training_pending(root,project):
     if _safe_root(cfg,project)!=root:return {'status':'disabled'}
     policy=_policy(root)
     if policy.get('_runtime_authorization_v2') is not True:return {'status':'disabled'}
-    import project_learning_setup
+    from memvane.learning import project_learning_setup
     if project_learning_setup.synthetic_local_only(root,project,policy):
         budget=project_learning_setup.synthetic_budget_status(root,project,policy)
         if budget['status']!='ready':return budget
@@ -2275,7 +2275,7 @@ def main(argv):
     try:
         if argv[0] == "start-synthetic-training":
             from memvane.settings import config
-            import project_learning_setup
+            from memvane.learning import project_learning_setup
             from memvane.runtime import runtime_work
             project=Path(argv[1]).resolve(strict=True)
             cfg=config.find_project_config(str(project))['config']

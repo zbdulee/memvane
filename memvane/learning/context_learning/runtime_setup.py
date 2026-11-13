@@ -215,7 +215,7 @@ def attest_runtime(executable, adapter_path, model_dir, *, max_seconds=120,
     This prepares no runtime and writes only disposable owner-only temp files.
     The adapter and full local model bundle are hashed before and after.
     """
-    from .laya_adapter import model_identity
+    from .adapter import model_identity
     from .local_cycle import LocalTrainer
 
     probe = (probe_runtime(executable, temp_dir=temp_dir) if temp_dir is not None
@@ -282,7 +282,7 @@ def choose_runtime(*, mode='managed', managed_root=None, reuse_executable=None,
     if not isinstance(path,str): return {'status':'invalid_managed_pointer'}
     probe=probe_runtime(path,managed_root=root,runner=runner)
     if attestation is None and 'attestation' in active:
-        from .laya_adapter import model_identity
+        from .adapter import model_identity
         adapter=Path(active['adapter_path']) if isinstance(active['adapter_path'],str) else None
         model=active['model_dir']
         if (adapter is None or not adapter.is_absolute() or not adapter.is_file() or

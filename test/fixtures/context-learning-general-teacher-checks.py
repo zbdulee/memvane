@@ -10,12 +10,12 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, 'core')
-from context_learning import general_teacher as teacher
-from context_learning import general_gold_ledger as ledger
-from context_learning.egress_guard import inspect_payload
-from context_learning.store import canonical
-from context_learning.contracts import digest, request
-from context_learning.shared import _db_at, _project_key
+from memvane.learning.context_learning import general_teacher as teacher
+from memvane.learning.context_learning import general_gold_ledger as ledger
+from memvane.learning.context_learning.egress_guard import inspect_payload
+from memvane.learning.context_learning.store import canonical
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning.shared import _db_at, _project_key
 
 
 class Checks(unittest.TestCase):

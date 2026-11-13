@@ -1,4 +1,4 @@
-"""Checks for core/context_learning/selection_port.py.
+"""Checks for memvane/learning/context_learning/selection_port.py.
 
 The port was extracted from recall's live-selection block. `legacy_*` below
 are verbatim copies of the pre-extraction inline logic so equivalence is
@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path.cwd() / 'core'))
-from context_learning import selection_port as P
-from context_learning.seam import _snapshot
+from memvane.learning.context_learning import selection_port as P
+from memvane.learning.context_learning.seam import _snapshot
 
 
 # ── verbatim pre-extraction logic (recall.py live selection) ────────────────
@@ -206,7 +206,7 @@ class SelectionPortTests(unittest.TestCase):
         self.assertEqual(self.pool, pool_before)
 
     def test_port_imports_nothing_that_writes(self):
-        source = Path('core/context_learning/selection_port.py').read_text(encoding='utf8')
+        source = Path('memvane/learning/context_learning/selection_port.py').read_text(encoding='utf8')
         tree = ast.parse(source)
         imported = set()
         for node in ast.walk(tree):

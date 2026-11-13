@@ -22,8 +22,8 @@ sys.path.insert(0, str(CORE))
 
 from memvane.runtime import runtime_wake_policy as policy  # noqa: E402
 from memvane.runtime import runtime_work as runtime  # noqa: E402
-from context_learning.local_cycle import ResourceDeferred  # noqa: E402
-from context_learning.resource_coordination import _lock  # noqa: E402
+from memvane.learning.context_learning.local_cycle import ResourceDeferred  # noqa: E402
+from memvane.learning.context_learning.resource_coordination import _lock  # noqa: E402
 
 HEX = '0123456789abcdef' * 2
 

@@ -4,15 +4,15 @@ from pathlib import Path
 import sqlite3
 import tempfile
 
-from context_learning.contracts import request, digest
-from context_learning.store import capture, canonical
-from context_learning.selection_gold import save_selection, load_selection
-from context_learning.offline import delete_case
-from context_learning.offline import save_label, build_manifest, review_digest, review_view
-from context_learning.selection_queue import build_queue
-from context_learning.compact_input import derive, MAX_COMPACT_BODY_BYTES
-from context_learning.seam import observe
-from context_learning.cycle_policy import selection_score, next_interval, promotion_decision
+from memvane.learning.context_learning.contracts import request, digest
+from memvane.learning.context_learning.store import capture, canonical
+from memvane.learning.context_learning.selection_gold import save_selection, load_selection
+from memvane.learning.context_learning.offline import delete_case
+from memvane.learning.context_learning.offline import save_label, build_manifest, review_digest, review_view
+from memvane.learning.context_learning.selection_queue import build_queue
+from memvane.learning.context_learning.compact_input import derive, MAX_COMPACT_BODY_BYTES
+from memvane.learning.context_learning.seam import observe
+from memvane.learning.context_learning.cycle_policy import selection_score, next_interval, promotion_decision
 
 
 def reject(fn):

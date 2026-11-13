@@ -8,9 +8,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, 'core')
-from context_learning.contracts import digest
-from context_learning.corpus import snapshot, reconcile, current_evaluation_ready
-from context_learning.seam import observe
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.corpus import snapshot, reconcile, current_evaluation_ready
+from memvane.learning.context_learning.seam import observe
 
 with tempfile.TemporaryDirectory(prefix='qmd-corpus-check-') as temporary:
     base = Path(temporary).resolve()

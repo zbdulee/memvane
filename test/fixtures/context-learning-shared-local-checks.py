@@ -10,14 +10,14 @@ import tempfile
 import time
 from unittest.mock import patch
 
-from context_learning.contracts import digest, request
-from context_learning.shared import _cadence, _db, _due_threshold, _policy, _reconcile_cases, _training_provenance, enqueue, observe_trial, rollback, run, status, sync_reviewed, train_due, trial_eligible
-from context_learning.store import canonical, capture
-from context_learning.seam import observe
-from context_learning.safe_source import snapshot_beneath
-from context_learning.offline import delete_case, save_label, review_digest
-from context_learning.selection_gold import save_selection
-from context_learning.laya_adapter import EXPERIMENT_INPUT_VIEW
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning.shared import _cadence, _db, _due_threshold, _policy, _reconcile_cases, _training_provenance, enqueue, observe_trial, rollback, run, status, sync_reviewed, train_due, trial_eligible
+from memvane.learning.context_learning.store import canonical, capture
+from memvane.learning.context_learning.seam import observe
+from memvane.learning.context_learning.safe_source import snapshot_beneath
+from memvane.learning.context_learning.offline import delete_case, save_label, review_digest
+from memvane.learning.context_learning.selection_gold import save_selection
+from memvane.learning.context_learning.adapter import EXPERIMENT_INPUT_VIEW
 from memvane.settings.config import normalize_config
 
 
@@ -72,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     policy = {"schema": "qmd-shared-learning-v1", "enabled": True,
               "goldModel": "gpt-6-luna", "maxGoldCalls": 10,
               "batchMin": 5, "batchMax": 20, "targetExact": .95,
-              "trainerArgv": [sys.executable, str(Path("core/context_learning/laya_adapter.py").resolve()), str(base)],
+              "trainerArgv": [sys.executable, str(Path("memvane/learning/context_learning/adapter.py").resolve()), str(base)],
               "baseArtifact": str(original), "maxRssMib": 4096,
               "minAvailableMib": 128, "maxLoadPerCpu": 4,
               "safetySeconds": 900, "experimental": True}
@@ -158,7 +158,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
         assert train_due(root, policy)["status"] == "deferred_resource"
     with patch("context_learning.shared.resource_report", return_value={
         "ready": True, "available_mib": 8192, "load_per_cpu": 0, "gpu": "mps-possible"}):
-        from context_learning.local_cycle import _atomic_json
+        from memvane.learning.context_learning.local_cycle import _atomic_json
         ready = {"ready": True, "available_mib": 8192,
                  "load_per_cpu": 0, "gpu": "mps-possible"}
         with patch("context_learning.shared.resource_report",
@@ -283,7 +283,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     assert not (root / "active-checkpoint.json").exists()
     selector_policy = {"schema": "qmd-live-selector-v1",
         "trainerArgv": [sys.executable,
-            str(Path("core/context_learning/laya_adapter.py").resolve()), str(base)],
+            str(Path("memvane/learning/context_learning/adapter.py").resolve()), str(base)],
         "timeoutSeconds": 10, "maxRssMib": 4096}
     (root / "live-selector.json").write_text(canonical(selector_policy))
     (root / "live-selector.json").chmod(0o600)
@@ -299,7 +299,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
         return ({"schema_version": 1, "predictions": [{
             "request_id": case["request_id"], "input_sha256": case["input_sha256"],
             "selected_ids": [cid]}]}, {"elapsed_seconds": .01})
-    from context_learning.live_select import choose
+    from memvane.learning.context_learning.live_select import choose
     with patch("context_learning.live_select.VerifiedLayaTrainer", FakeSelector), patch(
             "context_learning.inference_service.predict", side_effect=shared_prediction):
         selected, reason, _ = choose(root, "What bridge?", [
@@ -463,7 +463,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
     assert json.loads((root / "last-rollback.json").read_text())["cycle_id"] == completed["cycle_id"]
     assert rollback(root)["status"] == "no_experiment"
     # A removed owner grant or deleted project sample prevents later shared use.
-    from context_learning.local_cycle import _atomic_json
+    from memvane.learning.context_learning.local_cycle import _atomic_json
     _atomic_json(root / "experimental-checkpoint.json", pointer)
     (consents / (digest(str(a)) + ".json")).unlink()
     assert not trial_eligible(root)

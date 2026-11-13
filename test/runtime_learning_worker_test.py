@@ -19,7 +19,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from context_learning import shared
+from memvane.learning.context_learning import shared
 from memvane.runtime.runtime_lease import atomic_json
 
 REAL_POPEN=subprocess.Popen
@@ -92,10 +92,10 @@ class FullWorkerChecks(unittest.TestCase):
     @contextmanager
     def handler_env(self,train=no_inline_training):
         from memvane.settings import config
-        from context_learning import history_lifecycle
+        from memvane.learning.context_learning import history_lifecycle
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
-             patch('context_learning.laya_learning.ready',return_value=True), \
+             patch('context_learning.learning.ready',return_value=True), \
              patch.object(history_lifecycle,'worker_lease',no_lease), \
              patch.object(shared,'run_training_pending',side_effect=train), \
              patch.object(shared.subprocess,'Popen',side_effect=self.spawn):
@@ -260,7 +260,7 @@ class FullWorkerChecks(unittest.TestCase):
         from memvane.settings import config
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
-             patch('context_learning.laya_learning.ready',return_value=setup=='ready'), \
+             patch('context_learning.learning.ready',return_value=setup=='ready'), \
              patch.object(shared,'run',side_effect=AssertionError('teacher path entered')), \
              patch.object(shared,'run_training_pending',side_effect=result) as train, \
              patch('runtime_work.request',return_value={'status':'queued'}) as wake:

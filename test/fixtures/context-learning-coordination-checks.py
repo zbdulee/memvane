@@ -2,9 +2,9 @@
 from pathlib import Path
 from contextlib import contextmanager
 import json,os,subprocess,sys,tempfile,time,unittest
-from context_learning.resource_coordination import Coordinator,decision
-from context_learning.local_cycle import ResourceDeferred
-from context_learning.training_cursor import UpdateCursor,record_completion,completion,run_updates
+from memvane.learning.context_learning.resource_coordination import Coordinator,decision
+from memvane.learning.context_learning.local_cycle import ResourceDeferred
+from memvane.learning.context_learning.training_cursor import UpdateCursor,record_completion,completion,run_updates
 
 class Checks(unittest.TestCase):
  def setUp(self):
@@ -24,7 +24,7 @@ class Checks(unittest.TestCase):
   self.assertLessEqual(max(Counter(probes).values(),default=0),1)
  def test_last_slot_lease_is_observed_without_caching_absence(self):
   import fcntl
-  from context_learning.resource_coordination import SLOTS
+  from memvane.learning.context_learning.resource_coordination import SLOTS
   self.assertFalse(self.c.demand())
   fd=os.open(self.root/f'inference-{SLOTS-1}.lock',os.O_CREAT|os.O_RDWR,0o600)
   try:
@@ -129,8 +129,8 @@ class Checks(unittest.TestCase):
   import sqlite3
   from contextlib import contextmanager
   from unittest.mock import patch
-  from context_learning.learning_queue import LearningQueue
-  from context_learning.learning_retry import wait_pending
+  from memvane.learning.context_learning.learning_queue import LearningQueue
+  from memvane.learning.context_learning.learning_retry import wait_pending
   @contextmanager
   def connect():
    db=sqlite3.connect(self.root/'jobs.sqlite3')
@@ -149,7 +149,7 @@ class Checks(unittest.TestCase):
    self.assertEqual(result['status'],'drained');self.assertEqual(calls,['local-only']);self.assertGreaterEqual(clock[0],130)
    wait_pending(self.root,lambda:self.fail('unchanged data retrained'),clock=lambda:clock[0],wall=lambda:clock[0],sleep=sleep)
  def test_completed_output_recovers_without_trainer_call(self):
-  from context_learning.automatic_staging import _train_once
+  from memvane.learning.context_learning.automatic_staging import _train_once
   request={'schema_version':1,'artifact_path':str(self.root/'candidate.artifact')}
   Path(request['artifact_path']).write_bytes(b'final');Path(request['artifact_path']).chmod(0o600);record_completion(request)
   class Never:
@@ -159,7 +159,7 @@ class Checks(unittest.TestCase):
  def test_retry_glue_revalidates_scope_and_calls_only_local_train(self):
   from unittest.mock import patch
   from memvane.settings import config
-  from context_learning import shared,runtime_authorization
+  from memvane.learning.context_learning import shared,runtime_authorization
   cfg={'sharedLearning':{'enabled':True,'root':str(self.root)}}
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(shared,'_policy',return_value={'_runtime_authorization_v2':True}),patch.object(runtime_authorization,'require_operation',return_value={}) as grant,patch.object(shared,'train_due',return_value={'status':'staged'}) as train,patch.object(shared,'_run_impl',side_effect=AssertionError('teacher worker must not run')):
    self.assertEqual(shared.run_training_pending(self.root,self.root/'project')['status'],'staged')
@@ -171,7 +171,7 @@ class Checks(unittest.TestCase):
   with patch.object(config,'find_project_config',return_value={'config':{}}),patch.object(shared,'_policy',side_effect=AssertionError('disabled scope must stop')):
    self.assertEqual(shared.run_training_pending(self.root,self.root/'project')['status'],'disabled')
  def test_uncertain_or_dangling_final_artifact_is_not_retrained(self):
-  from context_learning.automatic_staging import _train_once
+  from memvane.learning.context_learning.automatic_staging import _train_once
   artifact=self.root/'candidate.artifact';outside=self.root/'outside';artifact.symlink_to(outside)
   class Never:
    def call(inner,*a,**kw):raise AssertionError('uncertain batch trained twice')
@@ -195,7 +195,7 @@ class Checks(unittest.TestCase):
  def test_adapter_reloads_committed_head_rng_and_only_remaining_optimizer_groups(self):
   import importlib.util,math,types
   from unittest.mock import patch
-  from context_learning import laya_adapter as adapter
+  from memvane.learning.context_learning import laya_adapter as adapter
   spec=importlib.util.spec_from_file_location('analytical_memory',Path(__file__).with_name('context-learning-adaptive-memory-checks.py'))
   helpers=importlib.util.module_from_spec(spec);spec.loader.exec_module(helpers)
   Scalar=helpers.Scalar;Scalar.clone=lambda inner:Scalar(inner.value)

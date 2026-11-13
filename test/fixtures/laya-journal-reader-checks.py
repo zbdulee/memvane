@@ -42,7 +42,7 @@ def emit(case, **evidence):
 
 class JournalReaderChecks(unittest.TestCase):
     def test_conversion_waits_for_existing_provider_writer_outside_queue_lock(self):
-        from context_learning.resource_coordination import Coordinator
+        from memvane.learning.context_learning.resource_coordination import Coordinator
         from memvane.kernel.resource_deferred import ResourceDeferred
         case=self.published_case()
         reader,bridge=self.reader_api(),self.bridge_api()
@@ -61,7 +61,7 @@ class JournalReaderChecks(unittest.TestCase):
         self.assertEqual(reader.read_selection(case.journal).preferred_endpoint,selected.preferred_endpoint)
 
     def test_initial_recovery_waits_for_existing_provider_writer(self):
-        from context_learning.resource_coordination import Coordinator
+        from memvane.learning.context_learning.resource_coordination import Coordinator
         from memvane.kernel.resource_deferred import ResourceDeferred
         case=self.published_case()
         reader,bridge=self.reader_api(),self.bridge_api()

@@ -33,7 +33,7 @@ def _project(root, grant):
 def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_fd=None):
     deadline=None
     if root is not None:
-        import project_learning_setup
+        from memvane.learning import project_learning_setup
         if project_learning_setup._synthetic_marker(root,policy):
             setup=project_learning_setup.read_private_json(
                 project_learning_setup._path(Path(root)/project_learning_setup.NAME,private=True))
@@ -51,7 +51,7 @@ def _trainer(policy, factory, *, root=None, control=None, fds=(), coordination_f
         trainer=factory(policy)
         trainer.learning_control=control;trainer.inherited_fds=fds;trainer.coordination_fd=coordination_fd
         return trainer
-    adapter = Path(__file__).with_name('laya_adapter.py').resolve()
+    adapter = Path(__file__).with_name('adapter.py').resolve()
     if Path(policy['trainerArgv'][1]).resolve() != adapter:
         raise ValueError('invalid_shared_trainer')
     from .shared import resource_report
@@ -111,10 +111,10 @@ def train_due_staged(root, policy, grant, *, trainer_factory=None, coordinator=N
 
 def _prepare_staged(root,policy,grant):
     from .shared import _db, _case_active
-    from .laya_adapter import EDIT_INPUT_VIEW, model_identity
+    from .adapter import EDIT_INPUT_VIEW, model_identity
     from .learning_queue import LearningQueue
     root = Path(root)
-    import project_learning_setup
+    from memvane.learning import project_learning_setup
     synthetic=project_learning_setup.synthetic_local_only(root,_project(root,grant),policy)
     if synthetic:
         budget=project_learning_setup.synthetic_budget_status(root,_project(root,grant),policy)
@@ -183,7 +183,7 @@ def _prepare_staged(root,policy,grant):
 
 def _train_pinned(root,policy,grant,job,queue,train,validation,cohort_train,*,trainer_factory=None,claim_fd=None,coordination=None):
     from .shared import _case, _case_active, _db, _predict
-    from .laya_adapter import EDIT_INPUT_VIEW
+    from .adapter import EDIT_INPUT_VIEW
     from .resource_coordination import admission_policy
     controller,(coord_fd,admission)=coordination
     control={'schema':1,'root':str(controller.root),'policy':admission_policy(policy),
@@ -318,7 +318,7 @@ def _evaluate_staged(root,policy,grant,job,stage,train,validation,cohort_train,*
     from .evaluation_queue import EvaluationQueue
     from .resource_coordination import admission_policy
     from .shared import _db,_predict,_case,_case_active
-    from .laya_adapter import EDIT_INPUT_VIEW
+    from .adapter import EDIT_INPUT_VIEW
     cycle_id=job['id'];project=_project(root, grant);grant_sha=proposal_sha256(grant)
     try:require_operation(root,policy,'quality_evaluate',approval_sha256=grant_sha)
     except ResourceDeferred as exc:return {'status':'staged_evaluation_deferred','cycle_id':cycle_id,'reason':str(exc)}
@@ -415,7 +415,7 @@ def _prepare_evaluation(root,policy,cycle_id):
 
 def _evaluate_impl(root,policy,grant,stage,train,validation,cohort_train,*,cycle_id,project,grant_sha,folder,incumbent,trainer_factory,control,fds,coord_fd,quality_epoch):
     from .shared import _db,_predict,_case,_case_active
-    from .laya_adapter import EDIT_INPUT_VIEW
+    from .adapter import EDIT_INPUT_VIEW
     artifact=Path(stage['artifactPath'])
     from .learning_profile import present,require
     active_anchor=None

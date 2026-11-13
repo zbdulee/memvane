@@ -9,7 +9,7 @@ import tempfile
 import time
 import uuid
 
-from context_learning.storage_layout import (
+from memvane.learning.context_learning.storage_layout import (
     project_view, register_project, registry, root,
 )
 
@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-layout-process-', dir='/tm
     barrier = home / 'go'
     program = (
         'import pathlib,sys,time\n'
-        'from context_learning.storage_layout import register_project\n'
+        'from memvane.learning.context_learning.storage_layout import register_project\n'
         'barrier=pathlib.Path(sys.argv[3])\n'
         'while not barrier.exists(): time.sleep(.001)\n'
         'print(register_project(sys.argv[1], display_name="Process project", home=sys.argv[2]))\n'

@@ -6,8 +6,8 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from context_learning import shared
-from context_learning.laya_adapter import EDIT_INPUT_VIEW
+from memvane.learning.context_learning import shared
+from memvane.learning.context_learning.adapter import EDIT_INPUT_VIEW
 
 
 def rejected(callback, code):
@@ -19,14 +19,14 @@ def rejected(callback, code):
         raise AssertionError('unverified inference reached execution')
 
 
-reviewed = Path(__file__).resolve().parents[2] / 'core/context_learning/laya_adapter.py'
+reviewed = Path(__file__).resolve().parents[2] / 'memvane/learning/context_learning/adapter.py'
 candidate_sha = hashlib.sha256(reviewed.read_bytes()).hexdigest()
 # Candidate approval is local to this disposable fixture, never the production pin.
 with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.parents[2]) as name:
     root = Path(name)
     installed = root / 'installed/context_learning'
     installed.mkdir(parents=True)
-    adapter = installed / 'laya_adapter.py'
+    adapter = installed / 'adapter.py'
     adapter.write_bytes(reviewed.read_bytes())
     model = root / 'multilingual-model'
     model.mkdir()
@@ -52,7 +52,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
             patch.object(shared, '__file__', str(installed / 'shared.py')), \
             patch('context_learning.local_cycle.LocalTrainer', SegmentTrainer), \
             patch('hook_budget.remaining', return_value=8):
-        old = root / 'retired' / 'laya_adapter.py'
+        old = root / 'retired' / 'adapter.py'
         policy = {'trainerArgv': [sys.executable, str(adapter), str(model)],
                   'modelInputView': EDIT_INPUT_VIEW, 'maxRssMib': 512}
         frozen = json.dumps(policy, sort_keys=True)

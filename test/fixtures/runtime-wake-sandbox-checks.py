@@ -72,7 +72,7 @@ class TestRuntimeRootGuard(Decoy):
             root = override / 'laya-inference'
             # Every participant resolves the same root: queue, coordinator
             # (worker lease, monitor) and the service root itself.
-            from context_learning import inference_service, resource_coordination
+            from memvane.learning.context_learning import inference_service, resource_coordination
             self.assertEqual(runtime_work.WakeQueue().root, root)
             self.assertEqual(resource_coordination.Coordinator().root, root)
             self.assertEqual(inference_service.service_root(), root)
@@ -123,7 +123,7 @@ class TestRuntimeRootGuard(Decoy):
         # service_root() is what Coordinator() and WakeQueue() resolve; the
         # child only reads it (create=False), so a wrong root is never written.
         code = ('import sys,json;sys.path.insert(0,sys.argv[1]);'
-                'from context_learning import inference_service as s;'
+                'from memvane.learning.context_learning import inference_service as s;'
                 'print(json.dumps([str(s.service_root()),str(s.service_root())]))')
         with mock.patch.dict(os.environ, {'MEMVANE_TEST_RUNTIME_ROOT': str(override)}), \
                 mock.patch.object(subprocess, 'Popen', REAL_POPEN):

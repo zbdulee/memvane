@@ -24,7 +24,7 @@ def active(root, policy, adapter, *, reviewed_adapter_sha256):
     if not project_scope.present(root):
         return None
     value = project_scope.require(root, policy, 'local_train')
-    approved = {Path(r['root']) / 'core/context_learning/laya_adapter.py'
+    approved = {Path(r['root']) / 'memvane/learning/context_learning/adapter.py'
                 for r in value['binding']['installations']}
     if Path(adapter).resolve(strict=True) not in approved:
         raise ValueError('runtime_authorization_adapter_invalid')

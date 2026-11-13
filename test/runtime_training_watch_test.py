@@ -13,8 +13,8 @@ import unittest
 from unittest.mock import Mock,patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from context_learning.local_cycle import ResourceDeferred
-from context_learning.resource_coordination import Coordinator
+from memvane.learning.context_learning.local_cycle import ResourceDeferred
+from memvane.learning.context_learning.resource_coordination import Coordinator
 
 
 class RunningTraining(unittest.TestCase):
@@ -30,7 +30,7 @@ class RunningTraining(unittest.TestCase):
 
     def watch(self):
         self.assertIsNotNone(importlib.util.find_spec('context_learning.training_watch'),'running watchdog missing')
-        from context_learning import training_watch
+        from memvane.learning.context_learning import training_watch
         return training_watch
 
     @staticmethod
@@ -169,7 +169,7 @@ class RunningTraining(unittest.TestCase):
             with c.training({},self.report):self.fail('unknown group admitted')
 
     def test_successful_leader_cannot_ack_when_descendant_cleanup_is_denied(self):
-        self.watch();from context_learning import local_cycle
+        self.watch();from memvane.learning.context_learning import local_cycle
         process=Mock(pid=999991,returncode=0);process.poll.return_value=0
         def spawn(argv,**options):
             output=Path(argv[-1]);output.write_text('{}');output.chmod(0o600)
@@ -183,7 +183,7 @@ class RunningTraining(unittest.TestCase):
         self.assertTrue((self.root/'result.pending').is_file())
 
     def test_controlled_running_child_is_observed_and_emergency_stopped(self):
-        self.watch();from context_learning import local_cycle
+        self.watch();from memvane.learning.context_learning import local_cycle
         process=Mock(pid=999991,returncode=None)
         process.poll.side_effect=lambda:process.returncode
         def wait(**options):process.returncode=-9;return -9
@@ -202,7 +202,7 @@ class RunningTraining(unittest.TestCase):
         self.assertFalse(json.loads((self.root/'resource-defer.json').read_text())['completionAck'])
 
     def test_foreground_stop_reaches_owned_parent_and_has_bounded_grace(self):
-        self.watch();from context_learning import local_cycle
+        self.watch();from memvane.learning.context_learning import local_cycle
         held=[];process=Mock(pid=999991,returncode=None)
         process.poll.side_effect=lambda:process.returncode
         def spawn(*args,**options):held.append(os.dup(options['pass_fds'][-1]));return process
@@ -223,7 +223,7 @@ class RunningTraining(unittest.TestCase):
             for fd in held:os.close(fd)
 
     def test_real_training_guard_reads_parent_stop_pipe(self):
-        self.watch();from context_learning import resource_coordination as coordination
+        self.watch();from memvane.learning.context_learning import resource_coordination as coordination
         read,write=os.pipe()
         try:
             c=Coordinator(self.root)
@@ -235,7 +235,7 @@ class RunningTraining(unittest.TestCase):
 
     def test_training_guard_yields_before_next_group_for_due_update(self):
         from memvane.runtime import runtime_work
-        from context_learning import resource_coordination as coordination
+        from memvane.learning.context_learning import resource_coordination as coordination
         controller=Coordinator(self.root)
         with controller._gate('trainer.lock') as fd,patch.object(coordination,'default_root',return_value=self.root),patch.dict(os.environ,{'QMD_TRAINER_COORD_FD':str(fd),'QMD_TRAINER_STOP_FD':''}):
             guard=coordination.TrainingGuard({'schema':1,'root':str(self.root),'policy':{},'namespace':'synthetic','job_id':'job'})
@@ -245,7 +245,7 @@ class RunningTraining(unittest.TestCase):
 
     def test_final_head_can_recover_from_completed_cursor_without_another_train(self):
         self.watch()
-        from context_learning import training_cursor as cursor
+        from memvane.learning.context_learning import training_cursor as cursor
         request={'artifact_path':str(self.root/'candidate.artifact')};groups=[[1]]
         state=cursor.UpdateCursor(request,groups)
         def save(path):path.write_bytes(b'normal-head');path.chmod(0o600)
@@ -255,7 +255,7 @@ class RunningTraining(unittest.TestCase):
         self.assertIsNotNone(cursor.completion(request))
 
     def test_unknown_final_artifact_is_preserved_instead_of_replaced(self):
-        self.watch();from context_learning import training_cursor as cursor
+        self.watch();from memvane.learning.context_learning import training_cursor as cursor
         request={'artifact_path':str(self.root/'candidate.artifact')};state=cursor.UpdateCursor(request,[[1]])
         def save(path):path.write_bytes(b'normal-head');path.chmod(0o600)
         state.commit(1,save,{'cpu':[1],'mps':None})
@@ -264,7 +264,7 @@ class RunningTraining(unittest.TestCase):
         self.assertEqual(path.read_bytes(),b'uncertain')
 
     def test_changed_cursor_count_cannot_finalize_an_incomplete_plan(self):
-        self.watch();from context_learning import training_cursor as cursor
+        self.watch();from memvane.learning.context_learning import training_cursor as cursor
         request={'artifact_path':str(self.root/'candidate.artifact')}
         state=cursor.UpdateCursor(request,[[1],[2]])
         def save(path):path.write_bytes(b'first-group');path.chmod(0o600)
@@ -275,7 +275,7 @@ class RunningTraining(unittest.TestCase):
         self.assertFalse(Path(request['artifact_path']).exists())
 
     def test_cursor_without_independent_plan_requires_actual_group_validation(self):
-        self.watch();from context_learning import training_cursor as cursor
+        self.watch();from memvane.learning.context_learning import training_cursor as cursor
         request={'artifact_path':str(self.root/'candidate.artifact')}
         state=cursor.UpdateCursor(request,[[1]])
         def save(path):path.write_bytes(b'head');path.chmod(0o600)
@@ -286,7 +286,7 @@ class RunningTraining(unittest.TestCase):
         self.assertTrue(cursor.recover_completed(request))
 
     def test_inactive_slot_interruption_keeps_last_normal_cursor(self):
-        self.watch();from context_learning import training_cursor as cursor
+        self.watch();from memvane.learning.context_learning import training_cursor as cursor
         request={'artifact_path':str(self.root/'candidate.artifact')};groups=[[1],[2]]
         state=cursor.UpdateCursor(request,groups)
         def save(path):path.write_bytes(b'normal-head');path.chmod(0o600)
@@ -374,7 +374,7 @@ class DaemonMonitor(unittest.TestCase):
         self.assertEqual(result['samples'],0);self.assertEqual(waits,[30.])
 
     def test_shared_daemon_attaches_ticks_and_closes_monitor_with_its_lifetime(self):
-        self.monitor();from context_learning import inference_service as service
+        self.monitor();from memvane.learning.context_learning import inference_service as service
         class StopServe(BaseException):pass
         class Socket:
             def __enter__(inner):return inner

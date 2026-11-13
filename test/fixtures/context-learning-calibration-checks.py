@@ -1,7 +1,7 @@
 import copy, sys, unittest, types
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'core'))
-from context_learning import calibration
+from memvane.learning.context_learning import calibration
 
 class GuardTests(unittest.TestCase):
     def setUp(self):

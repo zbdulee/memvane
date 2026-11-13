@@ -23,14 +23,14 @@ import tempfile
 import uuid
 import math
 
-from context_learning import project_scope, learning_profile
-from context_learning.dataset import read_private_json
-from context_learning.inference_identity import code_identity, file_sha
-from context_learning.laya_adapter import EDIT_INPUT_VIEW, model_identity
-from context_learning.local_cycle import _atomic_json
-from context_learning.shared import _project_key
-from context_learning.store import canonical
-from context_learning.training_cursor import _sync
+from memvane.learning.context_learning import project_scope, learning_profile
+from memvane.learning.context_learning.dataset import read_private_json
+from memvane.learning.context_learning.inference_identity import code_identity, file_sha
+from memvane.learning.context_learning.adapter import EDIT_INPUT_VIEW, model_identity
+from memvane.learning.context_learning.local_cycle import _atomic_json
+from memvane.learning.context_learning.shared import _project_key
+from memvane.learning.context_learning.store import canonical
+from memvane.learning.context_learning.training_cursor import _sync
 
 NAME='project-learning-setup.json'
 SCHEMA='qmd-project-learning-setup-v1'
@@ -101,7 +101,7 @@ def _namespace(project,root,*,mode='default'):
             raise ValueError('setup_synthetic_fixture_invalid')
         return project,root
     if mode!='default':raise ValueError('setup_mode_invalid')
-    from context_learning.runtime_setup import learning_state_base
+    from memvane.learning.context_learning.runtime_setup import learning_state_base
     expected=learning_state_base()/'live-selection'/_project_key(project)
     if root!=expected or root==project or project in root.parents:
         raise ValueError('setup_namespace_invalid')
@@ -141,7 +141,7 @@ def synthetic_local_only(root,project,policy):
     if not isinstance(plan,dict) or plan.get('mode')!=SYNTHETIC_STAGED:
         if marked:raise ValueError('setup_synthetic_scope_changed')
         return False
-    from context_learning.learning_profile import require as require_profile
+    from memvane.learning.context_learning.learning_profile import require as require_profile
     reviewed={k:v for k,v in policy.items() if not k.startswith('_')}
     if (row.get('schema')!=SCHEMA or row.get('phase')!='activated'
             or row.get('acceptedSha256')!=proposal_sha256(plan)
@@ -281,7 +281,7 @@ def _guard_calibration(evidence,*,root,project,model_identity_sha,runtime_sha,ad
     a same-UID forger is out of scope and nothing here is cryptographically
     authenticated.
     """
-    from context_learning.dataset import read_private_json
+    from memvane.learning.context_learning.dataset import read_private_json
     from pathlib import Path
     if not isinstance(evidence,dict) or evidence!=read_private_json(_path(root/CALIBRATION,private=True)):
         raise ValueError('setup_synthetic_calibration_required')
@@ -367,14 +367,14 @@ def calibrate_synthetic(project,root):
     if file_sha(artifact)!=pointer.get('artifact_sha256'):
         raise ValueError('setup_checkpoint_changed')
     installs=project_scope._installed_binding(project_scope._installations(project))
-    if str(adapter) not in {str(Path(row['root'])/'core/context_learning/laya_adapter.py') for row in installs}:
+    if str(adapter) not in {str(Path(row['root'])/'memvane/learning/context_learning/adapter.py') for row in installs}:
         raise ValueError('setup_adapter_invalid')
-    from context_learning.runtime_setup import probe_runtime
+    from memvane.learning.context_learning.runtime_setup import probe_runtime
     probe=probe_runtime(argv[0])
     if probe.get('status')!='metadata_compatible' or probe.get('mps_available') is not True:
         raise ValueError('setup_synthetic_mps_profile_required')
-    from context_learning.local_cycle import LocalTrainer
-    from context_learning.shared import resource_report
+    from memvane.learning.context_learning.local_cycle import LocalTrainer
+    from memvane.learning.context_learning.shared import resource_report
     calibration_policy={'maxRssMib':SYNTHETIC_MAX_RSS_MIB,'minAvailableMib':768,'maxLoadPerCpu':.75}
     trainer=LocalTrainer(argv,max_seconds=300,max_rss_mib=SYNTHETIC_MAX_RSS_MIB,require_monitor=True,
         pressure_probe=lambda **options:resource_report(calibration_policy,detailed=True,**options))
@@ -470,10 +470,10 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
         or info.st_nlink!=1 or info.st_mode&0o022):
         raise ValueError('setup_runtime_invalid')
     adapter=_path(argv[1]);model=_path(argv[2],directory=True)
-    from context_learning.laya_adapter import MODEL_FILES
+    from memvane.learning.context_learning.adapter import MODEL_FILES
     for name in MODEL_FILES:_path(model/name)
     installs=project_scope._installed_binding(project_scope._installations(project))
-    if str(adapter) not in {str(Path(row['root'])/'core/context_learning/laya_adapter.py') for row in installs}:
+    if str(adapter) not in {str(Path(row['root'])/'memvane/learning/context_learning/adapter.py') for row in installs}:
         raise ValueError('setup_adapter_invalid')
     pointer=read_private_json(_path(root/'active-checkpoint.json',private=True))
     artifact=_path(pointer['artifact_path'])
@@ -489,7 +489,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     consent={'schema':'qmd-shared-consent-v1','projectRoot':str(project),'sharedRoot':str(root),
              'capture':True,'localTraining':True,'externalTeacher':False}
     if mode==SYNTHETIC_STAGED:
-        from context_learning.memory_policy import validate as validate_memory
+        from memvane.learning.context_learning.memory_policy import validate as validate_memory
         identity=model_identity(model)
         try:profile=validate_memory(memory_profile)
         except (TypeError,ValueError,KeyError) as exc:
@@ -694,7 +694,7 @@ def _binding_inputs(project,root,*,runtime,adapter,model_dir,base_artifact):
     if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid() or info.st_nlink!=1
             or info.st_mode&0o022 or not os.access(resolved,os.X_OK)):
         raise ValueError('setup_runtime_invalid')
-    from context_learning.runtime_setup import probe_runtime
+    from memvane.learning.context_learning.runtime_setup import probe_runtime
     probe=probe_runtime(str(runtime_path))
     runtime_identity=probe.get('runtime_identity_sha256') if isinstance(probe,dict) else None
     if (not isinstance(probe,dict) or probe.get('status')!='metadata_compatible'
@@ -703,10 +703,10 @@ def _binding_inputs(project,root,*,runtime,adapter,model_dir,base_artifact):
         raise ValueError('setup_runtime_invalid')
     adapter=_path(adapter)
     installs=project_scope._installed_binding(project_scope._installations(project))
-    if str(adapter) not in {str(Path(row['root'])/'core/context_learning/laya_adapter.py') for row in installs}:
+    if str(adapter) not in {str(Path(row['root'])/'memvane/learning/context_learning/adapter.py') for row in installs}:
         raise ValueError('setup_adapter_invalid')
     model=_path(model_dir,directory=True)
-    from context_learning.laya_adapter import MODEL_FILES,ADAPTER_VERSION
+    from memvane.learning.context_learning.adapter import MODEL_FILES,ADAPTER_VERSION
     for name in MODEL_FILES:_path(model/name)
     identity=model_identity(model)
     artifact=_path(base_artifact,private=True)

@@ -247,7 +247,7 @@ def observe_published(payload, config, project_root, pool, selected, *, host, de
     if gate is not None:
         return gate
     try:
-        from .laya_learning import CAPTURE_POOL_LIMIT, corpus_snapshot, wiki_names
+        from .learning import CAPTURE_POOL_LIMIT, corpus_snapshot, wiki_names
         from .selection_port import published_candidate_rows
         root = Path(project_root).resolve(strict=True)
         if str(root) != decision['projectRoot']:

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.sync import product_sync_worker as worker
 from memvane.runtime import runtime_work
 from memvane.runtime import runtime_wake_policy
-from context_learning.local_cycle import ResourceDeferred
+from memvane.learning.context_learning.local_cycle import ResourceDeferred
 from memvane.host import host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue
@@ -597,7 +597,7 @@ class V2WorkerChecks(unittest.TestCase):
         from memvane.journal import install_journal as laya_install_journal
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import laya_bundle_upgrade
-        from context_learning import seam,live_select
+        from memvane.learning.context_learning import seam,live_select
         real_queue=runtime_work.WakeQueue
         payloads=tempfile.TemporaryDirectory(prefix='laya-hook-payload-')
         self.addCleanup(payloads.cleanup)

@@ -46,7 +46,7 @@ def laya_sync(row):
         # The Laya publish receipt replaces the QMD claim ACK as the
         # learning wake; it never changes this handler's own outcome.
         try:
-            from context_learning.shared import wake_after_index
+            from memvane.learning.context_learning.shared import wake_after_index
             wake_after_index(Path(row['target']))
         except Exception:
             pass
@@ -63,14 +63,14 @@ def laya_compile(row):
 
 def learning(row):
     from memvane.settings import config
-    from context_learning import shared
-    from context_learning.laya_learning import ready
+    from memvane.learning.context_learning import shared
+    from memvane.learning.context_learning.learning import ready
     project=Path(row['target'])
     if not project.is_dir():return True
     if not ready(project):return False
     cfg=config.find_project_config(str(project))['config'];root=shared._safe_root(cfg,project)
     if root is None:return True
-    from context_learning.history_lifecycle import worker_lease
+    from memvane.learning.context_learning.history_lifecycle import worker_lease
     with worker_lease():
         if not ready(project):return False
         # A hook-persisted full (teacher+trainer) request, else a training-only
@@ -82,7 +82,7 @@ def learning(row):
 
 
 def auto(row):
-    import context_learning_auto
+    from memvane.learning import context_learning_auto
     result=context_learning_auto.run(Path(row['target']))
     return wake_policy.handler_done(result['status'])
 

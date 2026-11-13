@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 sys.path.insert(0,str(Path.cwd()/'core'))
-from context_learning import adapter_binding as binding
+from memvane.learning.context_learning import adapter_binding as binding
 
 MARKET=binding.MARKETPLACE
 VERSION='1.0.2-reviewed'
@@ -27,7 +27,7 @@ class LocalBinding(unittest.TestCase):
         for host in ['claude','codex']:
             self.write(self.source/f'.{host}-plugin/plugin.json',{'name':'memvane','version':VERSION})
         self.write(self.source/'package.json',{'name':'memvane','version':VERSION})
-        for name,text in [('core/context_learning/laya_adapter.py','adapter = 1\n'),('core/context_learning/other.py','identity = 1\n'),('core/update.sh','true\n'),('hooks/hooks.json','{}\n')]:
+        for name,text in [('memvane/learning/context_learning/adapter.py','adapter = 1\n'),('memvane/learning/context_learning/other.py','identity = 1\n'),('core/update.sh','true\n'),('hooks/hooks.json','{}\n')]:
             p=self.source/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(text)
         self.write(self.market/'.claude-plugin/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':'./plugins/memvane','version':VERSION}]})
         self.write(self.market/'.agents/plugins/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':{'source':'local','path':'./plugins/memvane'},'version':VERSION}]})
@@ -52,7 +52,7 @@ class LocalBinding(unittest.TestCase):
     def persist(self):
         self.write(self.home/'.claude/plugins/known_marketplaces.json',self.known)
         self.write(self.home/'.claude/plugins/installed_plugins.json',self.registry)
-    def adapter(self,root):return root/'core/context_learning/laya_adapter.py'
+    def adapter(self,root):return root/'memvane/learning/context_learning/adapter.py'
     def choose(self,source,target):
         return binding.inference_argv(['/runtime/python',str(self.adapter(source)),'/model'],self.adapter(target),deadline=time.monotonic()+5)
     def denied(self,source=None,target=None):
@@ -69,13 +69,13 @@ class LocalBinding(unittest.TestCase):
         self.inventory['installed'][0]['marketplaceSource']['source']=str(self.home/'wrong')
         self.denied(self.source,self.cache['codex'])
     def test_other_module_tampering_denied(self):
-        (self.cache['codex']/'core/context_learning/other.py').write_text('identity=2\n');self.denied()
+        (self.cache['codex']/'memvane/learning/context_learning/other.py').write_text('identity=2\n');self.denied()
     def test_hook_tampering_denied(self):
         (self.cache['claude']/'hooks/hooks.json').write_text('{"tampered":true}\n');self.denied()
     def test_catalog_source_escape_denied(self):
         self.write(self.market/'.claude-plugin/marketplace.json',{'name':MARKET,'plugins':[{'name':'memvane','source':'../rogue','version':VERSION}]});self.denied()
     def test_source_symlink_denied(self):
-        p=self.source/'core/context_learning/other.py';p.unlink();p.symlink_to(self.cache['codex']/'core/context_learning/other.py');self.denied()
+        p=self.source/'memvane/learning/context_learning/other.py';p.unlink();p.symlink_to(self.cache['codex']/'memvane/learning/context_learning/other.py');self.denied()
     def test_duplicate_inventory_denied(self):
         self.inventory['installed'].append(copy.deepcopy(self.inventory['installed'][0]));self.denied(self.source,self.cache['codex'])
     def test_registry_version_mismatch_denied(self):
@@ -105,7 +105,7 @@ class LocalBinding(unittest.TestCase):
         self.cli.assert_not_called()
     def test_cross_host_code_difference_denied(self):
         for root in (self.source,self.cache['claude']):
-            (root/'core/context_learning/other.py').write_text('identity = 3\n')
+            (root/'memvane/learning/context_learning/other.py').write_text('identity = 3\n')
         self.denied(self.cache['codex'],self.source)
     def test_extra_cache_executable_denied(self):
         (self.cache['codex']/'core/unreviewed.py').write_text('extra = 1\n');self.denied()
@@ -134,7 +134,7 @@ class LocalBinding(unittest.TestCase):
         self.assertGreater(len(calls),files)
     def test_inventory_resource_stop_interrupts_reads(self):
         from memvane.runtime import runtime_admission
-        from context_learning.local_cycle import ResourceDeferred
+        from memvane.learning.context_learning.local_cycle import ResourceDeferred
         files=self.many_files();calls=[]
         def checkpoint():
             calls.append(1)

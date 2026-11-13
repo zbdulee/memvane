@@ -118,13 +118,13 @@ def _rss_mib():
 
 
 def _load(job):
-    from .laya_adapter import _head_path, _load as load
+    from .adapter import _head_path, _load as load
     head = _head_path(job['request']['artifact_path'], job['family'][1], job['family'][2])
     return load(job['model_dir'], head_artifact=head, input_view=job['family'][2])
 
 
 def _forward(loaded, job, *, limits, timing, cancelled):
-    from .laya_adapter import predict_loaded
+    from .adapter import predict_loaded
     result = predict_loaded(*loaded, job['request'], **limits,
                             timing=timing, cancelled=cancelled)
     case = job['request']['cases'][0]
@@ -321,15 +321,15 @@ def _signature():
     as all host code, so a newer client reaches the resident's normal version
     replacement policy. Two host caches of one release still agree.
     """
-    core = Path(__file__).resolve().parents[1]
+    core = Path(__file__).resolve().parents[3]
     digest = hashlib.sha256()
     try:
-        version = json.loads((core.parent / 'plugin.json').read_text('utf-8'))['version']
+        version = json.loads((core / 'plugin.json').read_text('utf-8'))['version']
     except (OSError, ValueError, KeyError, TypeError):
         version = '0'
     digest.update(str(version).encode('utf-8') + b'\0')
-    for path in sorted([*core.glob('*.py'), *core.glob('*.mjs'),
-                        *core.glob('context_learning/*.py')]):
+    for path in sorted([*core.glob('memvane/**/*.py'), *core.glob('memvane/**/*.mjs'),
+                        *core.glob('entry/*.py')]):
         digest.update(path.relative_to(core).as_posix().encode() + b'\0')
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -449,7 +449,7 @@ def _terminate_idle(root, deadline):
         raise ServiceFailure('starting')
     shown = _process_command(pid)
     if (shown is None or shown[0] != os.getuid()
-            or 'context_learning.inference_service' not in shown[1]
+            or 'memvane.learning.context_learning.inference_service' not in shown[1]
             or 'worker' not in shown[1] or str(root) not in shown[1]):
         raise ServiceFailure('starting')
     if _idle(_version(root, deadline)) is not True:
@@ -578,14 +578,14 @@ def _ensure_direct(root, python, deadline, *, spawn=subprocess.Popen):
             os.close(lease)
         env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TMPDIR', 'HOME',
                                                 'MEMVANE_TEST_RUNTIME_ROOT') if key in os.environ}
-        env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+        env.update(PYTHONPATH=str(Path(__file__).resolve().parents[3]),
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
         from memvane.runtime.runtime_cpu import environment
         env=environment(env)
-        bootstrap = ('import sys,runpy;sys.path.insert(0,' + repr(str(Path(__file__).resolve().parents[1]))
-                     + ');sys.argv=["context_learning.inference_service","worker",sys.argv[1]];'
-                     + 'runpy.run_module("context_learning.inference_service",run_name="__main__")')
+        bootstrap = ('import sys,runpy;sys.path.insert(0,' + repr(str(Path(__file__).resolve().parents[3]))
+                     + ');sys.argv=["memvane.learning.context_learning.inference_service","worker",sys.argv[1]];'
+                     + 'runpy.run_module("memvane.learning.context_learning.inference_service",run_name="__main__")')
         spawn([python, '-I', '-B', '-c', bootstrap, str(root)],
               env=env, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
               stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
@@ -624,13 +624,13 @@ def _policy(state, pointer_name, *, deadline):
             or type(policy['timeoutSeconds']) is not int or not 1 <= policy['timeoutSeconds'] <= 30
             or type(policy['maxRssMib']) is not int or not 128 <= policy['maxRssMib'] <= 8192):
         raise ServiceFailure('request_rejected')
-    adapter = Path(__file__).with_name('laya_adapter.py').resolve()
+    adapter = Path(__file__).with_name('adapter.py').resolve()
     normalized = {**policy, 'trainerArgv': inference_argv(
         policy['trainerArgv'], adapter, deadline=deadline,
         attested_adapter_sha256=attested_adapter(state))}
     if pointer_name == 'experimental-checkpoint.json':
         active = read_private_json(state / pointer_name)
-        from .laya_adapter import EDIT_INPUT_VIEW
+        from .adapter import EDIT_INPUT_VIEW
         if active.get('model_input_view') == EDIT_INPUT_VIEW:
             from .shared import _policy as shared_policy, inference_argv as shared_argv, trial_eligible
             shared = shared_policy(state)
@@ -662,7 +662,7 @@ def _make_envelope(state, request, artifact_sha, deadline, pointer_name):
 def _validate_request(envelope):
     from .dataset import read_private_json
     from .local_cycle import VerifiedLayaTrainer
-    from .laya_adapter import LEGACY_INPUT_VIEW, EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
+    from .adapter import LEGACY_INPUT_VIEW, EXPERIMENT_INPUT_VIEW, EDIT_INPUT_VIEW
     if (not isinstance(envelope, dict) or set(envelope) != {
             'schema', 'signature', 'state_dir', 'namespace', 'pointer_name',
             'artifact_sha256', 'policy_sha256', 'request', 'queued_at_epoch', 'deadline_epoch'}

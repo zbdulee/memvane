@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from context_learning.resource_coordination import Coordinator,_lock
+from memvane.learning.context_learning.resource_coordination import Coordinator,_lock
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.runtime import runtime_work
 
@@ -55,7 +55,7 @@ class Handle:
         if self.write is not None:os.close(self.write);self.write=None
         try:self.process.wait(timeout=2.5)
         except subprocess.TimeoutExpired:
-            from context_learning.training_watch import stop_owned
+            from memvane.learning.context_learning.training_watch import stop_owned
             stop_owned(self.process)
 
 

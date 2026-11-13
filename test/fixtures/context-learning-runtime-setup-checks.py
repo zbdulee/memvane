@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from context_learning.runtime_setup import (CHECKS, LAYA_PIN,
+from memvane.learning.context_learning.runtime_setup import (CHECKS, LAYA_PIN,
     MANAGED_DEPENDENCIES, PYTHON_PIN, choose_runtime,
     managed_install_plan, probe_runtime, verify_compatibility)
 

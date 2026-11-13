@@ -7,15 +7,15 @@ import tempfile
 from types import SimpleNamespace
 from unittest import mock
 
-from context_learning.runtime_installer import (_version_key, _write_pointer, activate_generation,
+from memvane.learning.context_learning.runtime_installer import (_version_key, _write_pointer, activate_generation,
     install_commands, reattest_active, rollback_generation, stage_generation)
-from context_learning.runtime_setup import (MANAGED_DEPENDENCIES, choose_runtime,
+from memvane.learning.context_learning.runtime_setup import (MANAGED_DEPENDENCIES, choose_runtime,
     probe_runtime)
 _offline_keys=('HF_HUB_OFFLINE','TRANSFORMERS_OFFLINE','HF_DATASETS_OFFLINE',
                'TOKENIZERS_PARALLELISM','USE_TF','USE_TORCH')
 _before={key:os.environ.get(key) for key in _offline_keys}
-from context_learning.laya_adapter import MODEL_FILES, model_identity
-from context_learning_cli import execute, parser
+from memvane.learning.context_learning.adapter import MODEL_FILES, model_identity
+from memvane.learning.context_learning_cli import execute, parser
 assert {key:os.environ.get(key) for key in _offline_keys}==_before
 
 

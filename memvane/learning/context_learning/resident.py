@@ -274,13 +274,13 @@ def _launch(state, python, model_dir, artifact, artifact_sha, input_view,
             fcntl.flock(lease_fd, fcntl.LOCK_UN)
             os.close(lease_fd)
         env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TMPDIR') if key in os.environ}
-        env.update(PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+        env.update(PYTHONPATH=str(Path(__file__).resolve().parents[3]),
                    PYTHONDONTWRITEBYTECODE='1', HF_HUB_OFFLINE='1',
                    TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1',
                    QMD_SANDBOX='1')
         from memvane.runtime.runtime_cpu import environment
         env=environment(env)
-        subprocess.Popen([python, '-m', 'context_learning.resident', 'worker',
+        subprocess.Popen([python, '-m', 'memvane.learning.context_learning.resident', 'worker',
                           str(state), model_dir, str(artifact), artifact_sha,
                           input_view], cwd=state, env=env, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -384,7 +384,7 @@ def stop(state):
 
 
 def _worker(state, model_dir, artifact, artifact_sha, input_view):
-    from .laya_adapter import _head_path, _load, model_identity, predict_loaded
+    from .adapter import _head_path, _load, model_identity, predict_loaded
     from .local_cycle import _hash as safe_hash
     state = _private_state(state)
     lease_fd = _private_lock(state / LEASE_NAME)

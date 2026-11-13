@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-from context_learning import shared, local_cycle, laya_adapter
+from memvane.learning.context_learning import shared, local_cycle, laya_adapter
 
 class Scalar:
     def __init__(self, value, backward=None): self.value=value; self.action=backward
@@ -245,7 +245,7 @@ class Memory(unittest.TestCase):
                 self.assertFalse(json.loads((Path(tmp)/'resource-defer.json').read_text())['completionAck'])
 
     def test_verified_mismatch_or_missing_proof_never_auto_attests(self):
-        from context_learning import runtime_setup
+        from memvane.learning.context_learning import runtime_setup
         report=self.report(adaptive=self.profile())
         for sha in ('b'*64,'a'*64):
             with tempfile.TemporaryDirectory(dir='/tmp') as tmp, patch.object(

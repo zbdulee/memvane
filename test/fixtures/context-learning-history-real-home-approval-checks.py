@@ -23,16 +23,16 @@ for name in DENIALS:
     os.environ.pop(name, None)
 assert Path.home().resolve() == real_parent
 
-from context_learning.contracts import digest, request
-from context_learning.history_activation import (
+from memvane.learning.context_learning.contracts import digest, request
+from memvane.learning.context_learning.history_activation import (
     HOST_FILES, REAL_HOME_APPROVAL_SCHEMA, activate, rollback, selected_database)
 import context_learning.history_activation as activation_module
 import context_learning.history_lifecycle as lifecycle_module
-from context_learning.history_lifecycle import acknowledge_host, request as lifecycle_request
-from context_learning.history_migration import prepare
-from context_learning.shared import _db
-from context_learning.storage_layout import register_project, root as learning_root
-from context_learning.store import canonical, database
+from memvane.learning.context_learning.history_lifecycle import acknowledge_host, request as lifecycle_request
+from memvane.learning.context_learning.history_migration import prepare
+from memvane.learning.context_learning.shared import _db
+from memvane.learning.context_learning.storage_layout import register_project, root as learning_root
+from memvane.learning.context_learning.store import canonical, database
 
 
 def rejects(action, reason, kind=ValueError):
