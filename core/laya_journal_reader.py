@@ -525,6 +525,67 @@ def _adopted_vector_spec(record, proof, *, deadline):
     return expected
 
 
+def resettle_selection(decision, owner):
+    """Re-seal the selected reader under the existing sync owner and lifetime."""
+    from contextlib import closing
+    from sync_owner_lock import validate_sync_owner
+    from laya_reader_windows import _Lifetime
+    from laya_view_vectors import provider_spec
+    import time
+    project = Path(decision['projectRoot'])
+    state = Path(decision['journalPath']).parent
+    validate_sync_owner(owner, Path(decision['storePath']))
+    lifetime = _Lifetime(decision['installId'])
+    try:
+        proof = journal.verify_selected_route_for_write(decision)
+        row = journal.inspect_journal(state / _JOURNAL)
+        saved = row['reader']
+        _need(row['state'] == 'selected' and isinstance(saved, dict)
+              and row['epoch'] == proof['selectionEpoch'], 'reader_selection_changed')
+        raw, current_proof = _v1_reader_evidence(state, project, saved, allow_settings_change=True)
+        _need(current_proof['selectionEpoch'] == row['epoch'], 'reader_selection_changed')
+        expected = provider_spec(proof['providerManifest'], proof['vectorProfile'])
+        replacement = dict(saved, settings=_sha(_raw(decision['recallSettings'])))
+        unbound = dict(saved, vector_profile=None, vector_recipe=None)
+        with _schema3_pin(unbound, deadline=time.monotonic() + 10) as (store, _handle, pin):
+            vector = store._pinned(pin)['vector']
+            if vector is not None and expected is not None and all(
+                    vector[key] == expected[key] for key in ('profile_id', 'recipe_id')):
+                replacement.update(vector_profile=expected['profile_id'], vector_recipe=expected['recipe_id'])
+            if _raw(replacement) == _raw(saved):
+                return 'unchanged', proof
+            _need(resettled_pair(saved, replacement), 'reader_resettle_invalid')
+            validate_sync_owner(owner, Path(decision['storePath']))
+            lifetime.check()
+            _need(journal.verify_selected_route_for_write(decision) == proof
+                  and _v1_reader_evidence(state, project, saved, allow_settings_change=True)[0] == raw,
+                  'reader_selection_changed')
+            path, db = journal._open(state / _JOURNAL, write=True)
+            with closing(db):
+                db.execute('BEGIN IMMEDIATE')
+                try:
+                    current = journal._inspect_v1_row(db)
+                    _need(current == {k: v for k, v in row.items() if k != 'journalPath'},
+                          'reader_selection_changed')
+                    _need(db.execute('UPDATE reader SET record=? WHERE id=1 AND record=?',
+                          (journal._canon(replacement), journal._canon(saved))).rowcount == 1,
+                          'reader_selection_changed')
+                    _need(db.execute("UPDATE selection SET epoch=epoch+1,vector_recipe=? "
+                          "WHERE id=1 AND state='selected' AND epoch=?",
+                          (replacement['vector_recipe'], row['epoch'])).rowcount == 1,
+                          'reader_selection_changed')
+                    validate_sync_owner(owner, Path(decision['storePath']))
+                    lifetime.check()
+                    journal._inspect_v1_row(db)
+                    db.commit()
+                except BaseException:
+                    db.rollback()
+                    raise
+        return 'resealed', journal.verify_selected_route_for_write(decision)
+    finally:
+        lifetime.close()
+
+
 def settings_resettle_pending(state, project, executing_root) -> bool:
     """Recognize only a proved v1 reader with changed recall settings."""
     try:

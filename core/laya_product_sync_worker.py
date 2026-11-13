@@ -486,7 +486,12 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
                                                    report=report, start_service=start_service)
                 vectors['rawScan'] = raw_scan
-                return _publish_schema3(decision, proof, writer, vectors)
+                result, proof = _publish_schema3(decision, proof, writer, vectors)
+            from laya_journal_reader import resettle_selection
+            status, proof = resettle_selection(decision, owner)
+            if status != 'unchanged':
+                result = {**result, 'readerResettle': status}
+            return result, proof
     except ResourceDeferred as exc:
         return _deferred(exc), proof
 
