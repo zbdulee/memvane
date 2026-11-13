@@ -314,7 +314,7 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
     if RUNTIME_FILES_FIELD in attestation:
         # The sealed runtime.json of the generation the provider runs from
         # (its name addresses every file); the worker start re-hashes them.
-        from memvane.provider.embed_runtime import RuntimeUnavailable, sealed_files_sha256
+        from memvane.provider.api import RuntimeUnavailable, sealed_files_sha256
         sealed = attestation[RUNTIME_FILES_FIELD]
         try:
             observed = sealed_files_sha256(provider['moduleEntryPath'])
@@ -322,8 +322,8 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
             raise BundleEvidenceError('production_runtime_files_mismatch') from exc
         if type(sealed) is not str or not SHA.fullmatch(sealed) or observed != sealed:
             _fail('production_runtime_files_mismatch')
-    from memvane.provider.adapters.local_embed_provider import recipe_fingerprint
-    from memvane.provider.domain.profile import profile_identity
+    from memvane.provider.api import recipe_fingerprint
+    from memvane.provider.api import profile_identity
     try:
         fingerprint = recipe_fingerprint(
             model_id=provider['modelId'], model_sha256=provider['modelSha256'],

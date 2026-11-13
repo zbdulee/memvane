@@ -47,6 +47,7 @@ its known runtime ids and binds the id into the embedding fingerprint. It
 names the node-llama-cpp 3.18.1 build that the bytes are.
 """
 from __future__ import annotations
+from memvane.provider.types import FILES_SHA, LLAMA_VERSION, RuntimeUnavailable
 
 from contextlib import contextmanager
 import fcntl
@@ -63,7 +64,6 @@ from memvane.kernel import safe_rmtree
 
 SCHEMA = 'laya-embed-runtime-v1'
 RUNTIME_ID = 'qmd-2.5.3-node-llama-cpp-3.18.1'
-LLAMA_VERSION = '3.18.1'
 MODULE = 'node-llama-cpp'
 NATIVE = '@node-llama-cpp/mac-arm64-metal'
 MODULE_ENTRY_TAIL = '/node-llama-cpp/dist/index.js'
@@ -75,7 +75,6 @@ MODEL = 'models/' + MODEL_NAME
 MODEL_SHA256 = 'f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc'
 NATIVE_SUFFIXES = ('.node', '.dylib', '.so')
 MANIFEST = 'runtime.json'
-FILES_SHA = 'runtimeFilesSha256'
 ACTIVE = 'active.json'
 PREVIOUS = 'previous.json'
 GENERATION = re.compile(r'g-[0-9a-f]{32}\Z')
@@ -85,8 +84,6 @@ MAX_PACKAGES = 2_000
 FLAGS = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
 
 
-class RuntimeUnavailable(RuntimeError):
-    pass
 
 
 def _fail(reason):

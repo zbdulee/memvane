@@ -28,8 +28,9 @@ from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.sync.source_scan import _collection_roots
 from memvane.sync.sync_owner_lock import sync_owner
 from memvane.journal.install_journal import JournalEvidenceError, cas_mark_new_write, inspect_journal
-from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
-from memvane.provider.adapters.local_embed_service import start_owned_embed_service
+from memvane.provider.api import reviewed_provider_class
+ReviewedLocalQmdProvider = reviewed_provider_class()
+from memvane.provider.api import start_owned_embed_service
 
 # A conservative cold-start proxy, not a measured GGUF/native peak. The
 # installed-candidate resource QA must measure and review this envelope.

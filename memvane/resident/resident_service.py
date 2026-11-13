@@ -738,8 +738,8 @@ def default_admit():
 
 
 def default_start_worker(manifest, admit):
-    from memvane.provider.adapters.local_embed_provider import _hash_file
-    from memvane.provider.adapters.local_embed_service import start_owned_embed_service
+    from memvane.provider.api import hash_file as _hash_file
+    from memvane.provider.api import start_owned_embed_service
     root = Path(__file__).resolve().parents[2] / 'memvane/provider/adapters'
     provider, worker = root / 'local_embed_provider.py', root / 'laya_local_embed_worker.mjs'
     if (_hash_file(str(provider)) != manifest['providerArtifactSha256']
@@ -814,7 +814,7 @@ class Service:
             _socket_ok(path)
             path.unlink()  # only the lease holder removes a stale socket
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        from memvane.provider.adapters.local_embed_service import bind_private
+        from memvane.provider.api import bind_private
         try:
             bind_private(server, path)
         except BaseException:
@@ -1177,8 +1177,7 @@ class Service:
 
     def _adopt(self, project):
         from memvane.resident.embed_resident import _owner_identity, _write_state
-        from memvane.provider.adapters.local_embed_service import (_private_parent, _remove_stale_socket,
-                                              bind_private)
+        from memvane.provider.api import private_parent as _private_parent, remove_stale_socket as _remove_stale_socket, bind_private
         try:
             decision, proof, mode = self.prove(project)
             identity = _owner_identity(decision, proof)

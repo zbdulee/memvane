@@ -75,7 +75,8 @@ def _persisted_schema3(endpoint):
 
 def _vector_proof(authority,snapshot,decision,provider,deadline):
     from memvane.journal import reader_lease as leases
-    from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
+    from memvane.provider.api import reviewed_provider_class
+    ReviewedLocalQmdProvider = reviewed_provider_class()
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline or not _persisted_schema3(authority)
             or type(provider) is not ReviewedLocalQmdProvider or snapshot is not None):

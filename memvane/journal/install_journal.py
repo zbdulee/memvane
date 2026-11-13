@@ -212,7 +212,8 @@ def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
     if profile_dependency_closure is not None:
         record[PROFILE_CLOSURE_FIELD] = profile_dependency_closure
     try:
-        from memvane.provider.embed_runtime import RuntimeUnavailable, sealed_files_sha256
+        from memvane.provider.api import sealed_files_sha256
+        from memvane.provider.types import RuntimeUnavailable
         files = sealed_files_sha256(provider_manifest.get('moduleEntryPath')
                                     if isinstance(provider_manifest, dict) else None)
     except (RuntimeUnavailable, OSError) as exc:
@@ -256,7 +257,8 @@ def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
 def stage_v1_attestation(journal_path, reviewed_provider):
     """Stage a reviewed provider under the install lock without bundle paths."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
-    from memvane.provider.embed_runtime import RuntimeUnavailable, sealed_files_sha256
+    from memvane.provider.api import sealed_files_sha256
+    from memvane.provider.types import RuntimeUnavailable
     journal = _private_parent(journal_path)
     require_cached_plugin_for_live_write(journal.parent)
     if (not isinstance(reviewed_provider, dict)
@@ -1539,7 +1541,8 @@ def _worker_attestation_manifest(selected):
 
 def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
     """Verify provider bytes and runtime identity using this plugin copy."""
-    from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider, _hash_file
+    from memvane.provider.api import reviewed_provider_class, hash_file as _hash_file
+    ReviewedLocalQmdProvider = reviewed_provider_class()
     if (not isinstance(record, dict)
             or set(record) != {'schema', 'journalPath', 'vectorProfile', 'providerManifest',
                                'dependencyClosure', RUNTIME_FILES_FIELD}
@@ -1578,7 +1581,7 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
             if allow_local_unavailable:
                 return manifest, False
             _fail('worker_attestation_invalid')
-        from memvane.provider import embed_runtime as laya_embed_runtime
+        from memvane.provider import api as laya_embed_runtime
         try:
             for path_key, hash_key in (('nodePath', 'nodeSha256'),
                                        ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
@@ -1602,7 +1605,8 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
 
 def _verify_runtime_files(record):
     """Re-hash every runtime file (node, JS dependencies, native, model)."""
-    from memvane.provider.embed_runtime import RuntimeUnavailable, verify_attested_files
+    from memvane.provider.api import verify_attested_files
+    from memvane.provider.types import RuntimeUnavailable
     try:
         verify_attested_files(record['providerManifest'], record.get(RUNTIME_FILES_FIELD))
     except (RuntimeUnavailable, OSError, KeyError, TypeError) as exc:

@@ -1038,7 +1038,8 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     from memvane.journal import journal_reader as reader
     from memvane.recall import api as dispatch
     from memvane.kernel.errors import IndexContractError
-    from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
+    from memvane.provider.api import reviewed_provider_class
+    ReviewedLocalQmdProvider = reviewed_provider_class()
     degraded = main_proof is None
     _recall_epoch(proof)
     _trace_fields(store_format='schema3', reader_endpoint=endpoint.endpoint_id)

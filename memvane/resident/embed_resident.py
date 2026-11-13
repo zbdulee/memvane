@@ -20,7 +20,7 @@ import tempfile
 import time
 
 from memvane.kernel.errors import IndexContractError
-from memvane.provider.adapters.local_embed_service import _private_parent
+from memvane.provider.api import private_parent as _private_parent
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 

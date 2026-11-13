@@ -694,6 +694,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/provider/api.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/provider/domain/__init__.py": {
       "context": "provider",
       "layer": "adapter",
@@ -712,6 +717,11 @@
     "memvane/provider/provider_reproof.py": {
       "context": "provider",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/types.py": {
+      "context": "provider",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/recall/__init__.py": {

@@ -115,7 +115,7 @@ def main(argv=None):
         elif args.action in ('index-runtime-status', 'provision-index-runtime',
                              'gc-index-runtime'):
             # The Laya embedding runtime the provider review reads.
-            from memvane.provider import embed_runtime as laya_embed_runtime
+            from memvane.provider import api as laya_embed_runtime
             if args.action == 'provision-index-runtime':
                 # npm registry and model download: owner approval only.
                 result = {'status': 'provisioned', **laya_embed_runtime.provision_new(

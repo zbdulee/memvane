@@ -240,10 +240,10 @@ def review_local_provider(*, plugin_root, state_root,
     caller must accept the returned digest, and prepare repeats every check.
     """
     import platform
-    from memvane.provider import embed_runtime as laya_embed_runtime
-    from memvane.provider.domain.profile import profile_identity
-    from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
-                                           _hash_file, recipe_fingerprint)
+    from memvane.provider import api as laya_embed_runtime
+    from memvane.provider.api import profile_identity
+    from memvane.provider.api import default_embed_model_uri, hash_file as _hash_file, recipe_fingerprint
+    DEFAULT_EMBED_MODEL_URI = default_embed_model_uri()
     from memvane.install.product_bundle import _read, MAX_FILE, _canonical
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         _fail('reviewed_native_platform_unsupported')
