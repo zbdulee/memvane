@@ -582,7 +582,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         emit('schema3-sync-ingest-cap', firstPass=first_calls, secondPass=second_calls)
 
     def test_ingest_pending_detail_requires_committed_progress(self):
-        import laya_runtime_dispatch as dispatch
+        from memvane.app import runtime_dispatch as dispatch
         self.select_schema3()
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
         with mock.patch.object(self.worker, 'SCHEMA3_MAX_INGEST', 2):

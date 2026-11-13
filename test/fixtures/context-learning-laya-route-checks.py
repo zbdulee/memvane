@@ -396,7 +396,7 @@ class Checks(unittest.TestCase):
 
     def test_laya_publish_wakes_learning_without_changing_sync_result(self):
         from memvane.runtime import runtime_handlers
-        import laya_runtime_dispatch
+        from memvane.app import runtime_dispatch as laya_runtime_dispatch
         woken = []
         row = {'target': str(self.laya.project), 'leaseFd': None}
         with patch.object(laya_runtime_dispatch, 'run', return_value={'state': 'indexed'}), \

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.diagnostics import diagnostic_trace as diag
 from memvane.diagnostics import event_log
 from memvane.route import index_host_route as routes
-import laya_runtime_dispatch as dispatch
+from memvane.app import runtime_dispatch as dispatch
 from memvane.wiki.compile import wiki_compile_worker as compile_worker
 from memvane.wiki.verify import wiki_verify_worker
 

@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
-import laya_runtime_dispatch as dispatch
-import laya_wake_entry as entry
+from memvane.app import runtime_dispatch as dispatch
+from memvane.app import wake_entry as entry
 from memvane.runtime.runtime_lease import coordination_lock
 from memvane.runtime.runtime_wake_policy import DispatchFailure, failure_reason
 from memvane.install.product_bundle import (PLUGIN_PREFIXES, PLUGIN_ROOT_FILES,

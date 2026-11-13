@@ -393,7 +393,7 @@ class SetupEntryActions(unittest.TestCase):
     def main(self, *argv):
         import contextlib
         import io
-        import setup_entry
+        from memvane.app import setup_entry
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = setup_entry.main(list(argv))

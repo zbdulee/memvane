@@ -29,7 +29,7 @@ def _request_owned(decision, owner, *, force):
     """Apply the existing ten-minute per-install request floor under sync owner."""
     from memvane.journal.install_journal import inspect_journal
     from memvane.install.ledger_common import _read_json, _write
-    from memvane_version import plugin_version, version_key
+    from memvane.kernel.memvane_version import plugin_version, version_key
     from memvane.sync.sync_owner_lock import validate_sync_owner
     validate_sync_owner(owner, Path(decision['storePath']))
     row = inspect_journal(decision['journalPath'])
@@ -56,7 +56,7 @@ def _request_owned(decision, owner, *, force):
                                             'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
            if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
-    subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()),
+    subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve().parents[2] / 'entry/run.py'), 'selector-maintenance',
                       decision['projectRoot'], 'force' if force or retry else 'newer'],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, close_fds=True,
@@ -82,7 +82,7 @@ def run(project, *, force=False):
     from memvane.route.index_host_route import select_route
     from memvane.journal.install_journal import (_open, _inspect_v1_row, inspect_journal,
                                       verify_selected_route_for_write)
-    from memvane_version import plugin_version, version_key
+    from memvane.kernel.memvane_version import plugin_version, version_key
     from memvane.sync.sync_owner_lock import sync_owner, validate_sync_owner
     project = str(Path(project).resolve(strict=True))
     decision = select_route(project, action='update')

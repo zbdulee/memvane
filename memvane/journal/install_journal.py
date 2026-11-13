@@ -29,7 +29,7 @@ from memvane.route.index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as
                                    written_schema)
 # Loaded for the executing-bundle proof (``_executing_from_candidate``),
 # which requires laya_package from the sealed core; no QMD inventory is read.
-import laya_package  # noqa: F401
+from memvane.kernel import package as laya_package  # noqa: F401
 from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
@@ -259,7 +259,7 @@ def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
 
 def stage_v1_attestation(journal_path, reviewed_provider):
     """Stage a reviewed provider under the install lock without bundle paths."""
-    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane.provider.embed_runtime import RuntimeUnavailable, sealed_files_sha256
     journal = _private_parent(journal_path)
     require_cached_plugin_for_live_write(journal.parent)
@@ -900,8 +900,8 @@ def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_r
 def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
     """Create an inactive journal under the installer's lock after review approval."""
     from memvane.settings import project_dir
-    from memvane_execution_guard import require_cached_plugin_for_live_write
-    from memvane_version import plugin_version, same_major
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_version import plugin_version, same_major
     from memvane.route.index_host_route import _classify_v4
     path = _private_parent(journal_path)
     require_cached_plugin_for_live_write(path.parent)
@@ -967,7 +967,7 @@ def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
 
 def _inspect_v1_row(db):
     """Read the v1 journal row without granting a reader or writer authority."""
-    from memvane_version import version_key
+    from memvane.kernel.memvane_version import version_key
     rows = db.execute('SELECT * FROM selection').fetchall()
     fields = ('id', 'schema', 'epoch', 'state', 'installId', 'scopeId',
               'projectRoot', 'projectInode', 'stateFormat', 'writerFloor',
@@ -1415,7 +1415,7 @@ def _verify_v1_selected(decision):
     from memvane.settings import project_dir
     from memvane.install.initial_build import read_v1
     from memvane.install.ledger_common import _private_file, _read_json
-    from memvane_version import same_major
+    from memvane.kernel.memvane_version import same_major
     if not isinstance(decision, dict) or decision.get('state') != 'candidate':
         _fail('unselected_host_route')
     path = _private_parent(decision.get('journalPath'))
@@ -1483,8 +1483,8 @@ def verify_selected_route_for_write(decision, action='update'):
     if decision.get('routeSchema') == 'memvane-route-v4':
         if not proof.get('providerAvailable'):
             _fail('provider_identity_changed')
-        from memvane_version import writer_floor_allows
-        from memvane_execution_guard import require_cached_plugin_for_live_write
+        from memvane.kernel.memvane_version import writer_floor_allows
+        from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
         if not writer_floor_allows(proof['writerFloor']):
             _fail('writer_floor')
         require_cached_plugin_for_live_write(Path(proof['journalPath']).parent)
@@ -1507,7 +1507,7 @@ def verify_notification_target(decision):
     from memvane.route.index_host_route import select_notification_route
     from memvane.install.initial_build import read_v1
     from memvane.install.ledger_common import _private_file, _read_json
-    from memvane_version import same_major, writer_floor_allows
+    from memvane.kernel.memvane_version import same_major, writer_floor_allows
     if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
         _fail('unselected_host_route')
     project = Path(decision['projectRoot'])

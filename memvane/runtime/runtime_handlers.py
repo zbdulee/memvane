@@ -40,7 +40,7 @@ def _missing_target(row):
 def laya_sync(row):
     missing=_missing_target(row)
     if missing is not None:return missing
-    from laya_runtime_dispatch import run
+    from memvane.app.runtime_dispatch import run
     result=run('laya-sync', row['target'], owner_fd=row.get('leaseFd'))
     if result['state']=='indexed':
         # The Laya publish receipt replaces the QMD claim ACK as the
@@ -56,7 +56,7 @@ def laya_sync(row):
 def laya_compile(row):
     missing=_missing_target(row)
     if missing is not None:return missing
-    from laya_runtime_dispatch import run
+    from memvane.app.runtime_dispatch import run
     result=run('laya-compile', row['target'], owner_fd=row.get('leaseFd'))
     return result['state']=='drained'
 

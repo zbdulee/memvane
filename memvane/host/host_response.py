@@ -547,7 +547,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
         return [], 'no_candidates', None
     try:
         from memvane.journal.install_journal import inspect_journal
-        from memvane_version import plugin_version, version_key
+        from memvane.kernel.memvane_version import plugin_version, version_key
         selected = inspect_journal(decision['journalPath'])
         running = version_key(plugin_version())
         highest = version_key(selected['maxPluginVersion'])
@@ -1719,7 +1719,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
             return {}
         if action in ('update', 'update-queued'):
             try:
-                from selector_maintenance import request as request_selector_maintenance
+                from memvane.learning.selector_maintenance import request as request_selector_maintenance
                 request_selector_maintenance(decision)
             except (OSError, ValueError, RuntimeError):
                 pass  # SessionStart remains independent of selector preparation.
@@ -1825,7 +1825,7 @@ def _request_worktree_sync(main: dict, proof: dict, recheck) -> None:
 
 
 def _writer_floor_allowed(proof):
-    from memvane_version import writer_floor_allows
+    from memvane.kernel.memvane_version import writer_floor_allows
     try:
         return writer_floor_allows(proof['writerFloor'])
     except (OSError, KeyError, TypeError, ValueError):
@@ -1833,7 +1833,7 @@ def _writer_floor_allowed(proof):
 
 
 def _major_allowed(proof):
-    from memvane_version import same_major
+    from memvane.kernel.memvane_version import same_major
     try:
         return same_major(proof['stateFormat'])
     except (OSError, KeyError, TypeError, ValueError):

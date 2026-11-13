@@ -355,7 +355,7 @@ def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True
     from memvane.kernel import memvane_paths
     import sqlite3
     from contextlib import closing
-    from memvane_version import same_major
+    from memvane.kernel.memvane_version import same_major
 
     if (set(record) != FIELDS_V4 or record['status'] != 'active'
             or type(record['installId']) is not str
@@ -687,7 +687,7 @@ def verify_preview_route(decision: dict) -> dict:
     if live != decision:
         raise ValueError('initial_preview_changed')
     if decision.get('routeSchema') == SCHEMA_V4:
-        import laya_runtime_dispatch as dispatch
+        from memvane.app import runtime_dispatch as dispatch
         from memvane.journal.install_journal import inspect_journal, _attestation, _v1_provider_manifest
         dispatch.resolve('laya-sync', decision['projectRoot'])
         journal = inspect_journal(decision['journalPath'])

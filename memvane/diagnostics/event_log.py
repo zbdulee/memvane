@@ -507,7 +507,7 @@ def emit(event: str, *, outcome=None, reason=None, ms=None, state_root=_UNRESOLV
                   'outcome': code(outcome), 'reason': code(reason),
                   'ms': (round(ms) if isinstance(ms, (int, float)) and not isinstance(ms, bool)
                          and ms == ms and ms >= 0 and ms != float('inf') else None)}
-        from memvane_version import plugin_version
+        from memvane.kernel.memvane_version import plugin_version
         try:
             record['pluginVersion'] = plugin_version()
         except (OSError, ValueError, KeyError, TypeError):

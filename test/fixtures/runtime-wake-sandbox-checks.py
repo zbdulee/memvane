@@ -118,7 +118,7 @@ class TestRuntimeRootGuard(Decoy):
     def test_a_real_dispatch_child_resolves_the_same_test_root(self):
         # The sealed-bundle child gets a sanitized environment; it must keep
         # the test runtime root, or its Coordinator() would use the user's.
-        import laya_runtime_dispatch
+        from memvane.app import runtime_dispatch as laya_runtime_dispatch
         override = self.home.parent / 'test-runtime'
         # service_root() is what Coordinator() and WakeQueue() resolve; the
         # child only reads it (create=False), so a wrong root is never written.

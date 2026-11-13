@@ -231,7 +231,7 @@ def read_v1(state_root):
 
 def create_v1(identity):
     """Register a proved v1 build; the caller holds the existing build owner."""
-    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane.journal.install_journal import _route, inspect_journal
     if not isinstance(identity, dict) or set(identity) != V1_BUILD_IDENTITY:
         _fail('initial_build_identity_invalid')
@@ -488,7 +488,7 @@ def lookup(project_root):
 @contextmanager
 def owner(state_root):
     """One build owner at a time; yields False (never waits) when held."""
-    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     require_cached_plugin_for_live_write(state_root)
     state = _private_dir(state_root)
     fd = os.open(state / LOCK, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)

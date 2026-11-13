@@ -69,7 +69,7 @@ class Checks(unittest.TestCase):
   self.assertTrue(P.require(self.root,self.policy,'apply')['autoApply'])
  def test_setup_entry_explicit_plan_activate_and_normalized_marker(self):
   self.assertIsNotNone(P,'learning profile missing')
-  import setup_entry
+  from memvane.app import setup_entry
   from memvane.settings import config
   import io
   from contextlib import redirect_stdout

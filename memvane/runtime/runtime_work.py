@@ -328,7 +328,7 @@ def _record_drop(root,row,step,error,now):
         limit=DROP_DETAIL_MAX_ROWS)
     if row['kind'] in ('laya-sync','laya-compile'):
         try:
-            from laya_runtime_dispatch import drop_event
+            from memvane.app.runtime_dispatch import drop_event
             drop_event(row['kind'],row['target'],reason=reason,attempts=row['attempts']+step['count'])
         except Exception:
             pass
@@ -367,7 +367,7 @@ def _record_stall(root,row,waiting,step,now):
                  'reported':True},limit=MAX_WAKES)
     if row['kind'] in ('laya-sync','laya-compile'):
         try:
-            from laya_runtime_dispatch import stall_event
+            from memvane.app.runtime_dispatch import stall_event
             stall_event(row['kind'],row['target'],since=first,observations=seen,
                         retry_in=round(step['due']-now))
         except Exception:

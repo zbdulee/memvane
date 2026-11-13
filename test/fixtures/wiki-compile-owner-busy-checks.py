@@ -48,7 +48,7 @@ with patch.object(laya_product_bundle, 'inspect_full_plugin_candidate', return_v
 
 class CompileOwnerBusyChecks(unittest.TestCase):
     def test_wake_entry_real_anchor_contention_returns_deferred(self):
-        from laya_package import sync_owner_directory
+        from memvane.kernel.package import sync_owner_directory
         with tempfile.TemporaryDirectory(dir=os.environ['HOME']) as temp:
             project = Path(temp).resolve()
             queue = project / 'claims.sqlite'
@@ -92,7 +92,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
              mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
             result = wiki_selected_laya.run(project)
         self.assertEqual(result, {'state': 'deferred', 'reason': 'owner_busy'})
-        import laya_runtime_dispatch
+        from memvane.app import runtime_dispatch as laya_runtime_dispatch
         self.assertEqual(laya_runtime_dispatch._deferred_detail(result),
                          'deferred:deferred:owner_busy')
 

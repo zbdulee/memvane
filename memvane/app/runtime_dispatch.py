@@ -49,7 +49,7 @@ def _project(value):
 
 def _bootstrap():
     """The executing plugin's one-wake bootstrap."""
-    return Path(__file__).resolve().with_name('laya_wake_entry.py')
+    return Path(__file__).resolve().parents[2] / 'entry/run.py'
 
 
 def resolve(kind, value):
@@ -134,7 +134,7 @@ def resolve(kind, value):
                     if isinstance(record.get('sealed'), dict) else None}
     else:
         raise DispatchFailure('target_unavailable')
-    from memvane_version import same_major, writer_floor_allows
+    from memvane.kernel.memvane_version import same_major, writer_floor_allows
     try:
         matching_major = same_major(proof.get('stateFormat'))
     except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -149,9 +149,9 @@ def resolve(kind, value):
         raise DispatchFailure('writer_floor')
     if any(not isinstance(value, str) or not value for value in stable.values()):
         raise DispatchFailure('target_identity_invalid')
-    root = Path(__file__).resolve().parent.parent
-    worker = root / 'core' / ('laya_product_sync_worker.py' if kind == 'laya-sync'
-                            else 'wiki_selected_laya.py')
+    root = Path(__file__).resolve().parents[2]
+    worker = root / ('memvane/sync/product_sync_worker.py' if kind == 'laya-sync'
+                     else 'memvane/wiki/workspace/wiki_selected_laya.py')
     for entry in (_bootstrap(), worker):
         try:
             info = entry.lstat()
@@ -465,7 +465,7 @@ def run(kind, value, *, owner_fd=None):
 
 
 def _run_target(kind, value, target, owner_fd):
-    argv = [sys.executable, '-B', str(_bootstrap()), kind, target['project']]
+    argv = [sys.executable, '-B', str(_bootstrap()), 'wake', kind, target['project']]
     try:
         options = {'owner_fd': owner_fd} if owner_fd is not None else {}
         child = _run_child(argv, target['project'],

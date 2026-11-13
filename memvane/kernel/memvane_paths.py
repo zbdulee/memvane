@@ -89,7 +89,7 @@ def install_socket(state_root, *, create=False):
 
 def ensure_state_layout(home=None):
     """Create or validate the private v1 format marker without replacing it."""
-    from memvane_version import same_major
+    from memvane.kernel.memvane_version import same_major
     if not same_major(STATE_FORMAT):
         raise ValueError('state_format_mismatch')
     base = state_base(home)

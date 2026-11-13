@@ -133,7 +133,7 @@ class _BuildWriterContext:
 
     def __enter__(self):
         from memvane.install import initial_build as build
-        import laya_runtime_dispatch as dispatch
+        from memvane.app import runtime_dispatch as dispatch
         from memvane.journal.install_journal import _attestation, _v1_provider_manifest, inspect_journal
         from memvane.store.view_store import ViewStore
         from memvane.kernel.errors import _query_only_uri
@@ -219,7 +219,7 @@ def validate_normal_writer(writer, *, deadline=None):
         return
     if type(writer) is BuildWriter:
         from memvane.install import initial_build as build
-        import laya_runtime_dispatch as dispatch
+        from memvane.app import runtime_dispatch as dispatch
         context = _build_record(writer)
         if deadline is not None:
             W._deadline(deadline)

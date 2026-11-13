@@ -98,7 +98,7 @@ def main(argv=None):
                                     'index-origin-status', 'index-build-status', 'onboarding-status')
                      or (args.action == 'gc-index-runtime' and not args.approve_index_runtime_gc))
         if not read_only:
-            from memvane_execution_guard import require_cached_plugin_for_live_write
+            from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
             require_cached_plugin_for_live_write()
         if args.action.startswith('onboarding-'):
             # The user's answer to the SessionStart onboarding notice. It
@@ -135,7 +135,7 @@ def main(argv=None):
                            'activate-index-origin','recover-index-origin',
                            'restore-index-origin'):
             from memvane.install import product_install as product
-            installed = Path(__file__).resolve(strict=True).parent.parent
+            installed = Path(__file__).resolve(strict=True).parents[2]
             if args.action != 'plan-fresh-wiki-origin' and not args.state_root:
                 raise ValueError('state_root_required')
             if args.action == 'plan-fresh-wiki-origin':

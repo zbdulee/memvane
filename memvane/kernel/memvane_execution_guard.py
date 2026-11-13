@@ -14,7 +14,7 @@ def require_cached_plugin_for_live_write(state=None):
         return
     if os.environ.get('MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT') == '1':
         return
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     for host in ('.claude', '.codex'):
         cache = account / host / 'plugins' / 'cache'
         try:

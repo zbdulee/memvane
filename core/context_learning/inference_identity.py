@@ -173,7 +173,7 @@ def _write(path, row):
 
 def _record(state, argv, *, view, verified, manifest=None, before_publish=None):
     """Internal publication after explicit synthetic verification, never predict."""
-    from memvane_version import plugin_version
+    from memvane.kernel.memvane_version import plugin_version
     state = Path(state)
     roots = [*runtime_roots(), Path(argv[2]).resolve()]
     manifest = snapshot(roots, content=True) if manifest is None else manifest
@@ -202,7 +202,7 @@ def has_evidence(state):
 
 def admit(state, argv, view):
     """Cheap client gate. No model hashing, imports or subprocesses."""
-    from memvane_version import plugin_version
+    from memvane.kernel.memvane_version import plugin_version
     state = Path(state)
     if not has_evidence(state): return None
     try:

@@ -153,7 +153,7 @@ def bundle_identity():
     """The running plugin version used for resident replacement."""
     global _BUNDLE
     if _BUNDLE is None:
-        from memvane_version import plugin_version
+        from memvane.kernel.memvane_version import plugin_version
         try:
             version = plugin_version()
         except (OSError, ValueError, KeyError, TypeError):
@@ -164,7 +164,7 @@ def bundle_identity():
 
 def _version_key(version):
     """Semver-like order; a prerelease sorts before its release."""
-    from memvane_version import version_key
+    from memvane.kernel.memvane_version import version_key
     return version_key(version)
 
 

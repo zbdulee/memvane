@@ -114,7 +114,7 @@ def _check_held_sync_file(path, fd, node, *, held=True):
 
 
 def _check_sync_anchor(anchor):
-    from laya_package import sync_owner_directory
+    from memvane.kernel.package import sync_owner_directory
     parent, parent_node, fd, node = anchor
     if (sync_owner_directory(create=False) != parent
             or _directory_node(parent) != parent_node):
@@ -138,7 +138,7 @@ def _sync_anchor():
     queue-adjacent legacy lock. Arbitrary same-UID modification of this private
     coordination namespace is not an issued-API security boundary.
     """
-    from laya_package import sync_owner_directory
+    from memvane.kernel.package import sync_owner_directory
     fd = None
     try:
         try:

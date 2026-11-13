@@ -47,7 +47,7 @@ def _private_parent(path):
 def _prepare_state_root(path, install_id):
     """Create only a fresh per-install directory under the local state base."""
     root = Path(path)
-    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     require_cached_plugin_for_live_write(root)
     from memvane.kernel import memvane_paths
     if root.exists() or root.is_symlink():
@@ -409,7 +409,7 @@ def _request_build_wake(project_root):
 
 def _create_v1_store(project_root, state_root, scope_id):
     """Create one new format-4 store under the installer's lock."""
-    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane.store import checkout_view as checkout
     from memvane.store.view_store import ViewStore
     state = _private_parent(state_root)
@@ -455,8 +455,8 @@ def _create_v1_store(project_root, state_root, scope_id):
 
 def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     """Stage a route bound to a validated local store and project settings."""
-    from memvane_execution_guard import require_cached_plugin_for_live_write
-    from memvane_version import same_major
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane.kernel.memvane_version import same_major
     from memvane.route.index_host_route import SCHEMA_V4, _classify_v4
     from memvane.journal.install_journal import _route
     state = _private_parent(state_root)
@@ -561,7 +561,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.install import initial_build as build
     from memvane.journal import install_journal as journal
     from memvane.journal import journal_reader as reader
-    import laya_runtime_dispatch as dispatch
+    from memvane.app import runtime_dispatch as dispatch
     from memvane.sync import product_sync_worker as sync
     from memvane.store import blob_values as values
     from memvane.store import view_values as view_values
@@ -814,7 +814,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                     _write(ledger_path, ledger, replace=True)
                 proof = journal_module.verify_selected_route(decision)
                 try:
-                    from selector_maintenance import request as request_selector_maintenance
+                    from memvane.learning.selector_maintenance import request as request_selector_maintenance
                     request_selector_maintenance(decision, force=True, owner=owner)
                 except (OSError, ValueError, RuntimeError):
                     pass  # Selection is complete; a later SessionStart can retry.
@@ -977,7 +977,7 @@ def main(argv=None):
     restore.add_argument('--approve-restore', action='store_true')
     args = parser.parse_args(argv)
     if args.action not in ('plan-fresh-wiki', 'review-provider', 'status', 'build-status'):
-        from memvane_execution_guard import require_cached_plugin_for_live_write
+        from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
         require_cached_plugin_for_live_write()
     root = _installed_root()
     state_root = (_private_parent(args.state_root)

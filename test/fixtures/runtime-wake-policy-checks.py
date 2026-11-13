@@ -550,7 +550,7 @@ runtime._handoff_worker(queue,fd)
         self.queue.put('laya-compile', str(gone), now=0)
         self.queue.put('laya-sync', str(alive), now=0)
         ran = []
-        import laya_runtime_dispatch
+        from memvane.app import runtime_dispatch as laya_runtime_dispatch
         with patch.object(laya_runtime_dispatch, 'run',
                           side_effect=lambda kind, target, **kw: ran.append(target)
                           or {'state': 'unchanged'}):
@@ -569,7 +569,7 @@ runtime._handoff_worker(queue,fd)
         target = self.root / 'mounted' / 'project'
         self.queue.put('laya-compile', str(target), now=0)
         from memvane.runtime import runtime_lease
-        import laya_runtime_dispatch
+        from memvane.app import runtime_dispatch as laya_runtime_dispatch
 
         def run(wall, **patches):
             return runtime.drain(self.queue, execute=runtime.dispatch, ready=lambda: True,
@@ -688,7 +688,7 @@ runtime._handoff_worker(queue,fd)
 
     def test_preparing_streak_is_tracked_reported_once_and_cleared(self):
         self.queue.put('laya-sync', '/synthetic/a', now=0)
-        import laya_runtime_dispatch
+        from memvane.app import runtime_dispatch as laya_runtime_dispatch
         reports = []
 
         def streak():

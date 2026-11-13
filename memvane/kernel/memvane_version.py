@@ -5,7 +5,7 @@ import re
 
 
 def plugin_version():
-    path = Path(__file__).resolve().parent.parent / 'plugin.json'
+    path = Path(__file__).resolve().parents[2] / 'plugin.json'
     value = json.loads(path.read_text('utf-8'))['version']
     if not isinstance(value, str) or version_key(value) is None:
         raise ValueError('invalid_plugin_version')

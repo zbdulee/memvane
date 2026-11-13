@@ -36,7 +36,7 @@ from memvane.route import index_host_route as routes  # noqa: E402
 from memvane.journal import install_journal as journal  # noqa: E402
 from memvane.kernel import memvane_paths  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
-import setup_entry  # noqa: E402
+from memvane.app import setup_entry  # noqa: E402
 import out_of_project_installs as installs  # noqa: E402
 
 try:

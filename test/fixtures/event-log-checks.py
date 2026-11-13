@@ -176,7 +176,7 @@ class WriterChecks(Base):
         self.assertNotIn('body text', (self.state / event_log.NAME).read_text())
 
     def test_wake_and_index_publish(self):
-        import laya_runtime_dispatch as dispatch
+        from memvane.app import runtime_dispatch as dispatch
         from memvane.runtime.runtime_wake_policy import DispatchFailure
         target = {'terminal': False, 'journalPath': self.decision['journalPath'],
                   'installId': 'install-1', 'generation': 'g1', 'selectionEpoch': 4,

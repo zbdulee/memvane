@@ -263,7 +263,7 @@ class SyncLeaseChecks(unittest.TestCase):
         self.assertEqual(Path(observed['module']).parent,core)
 
     def test_anchor_fixture_namespace_rejects_non_temp_alias_and_non_private_root_before_create(self):
-        from laya_package import sync_owner_directory
+        from memvane.kernel.package import sync_owner_directory
         runtime=self.home/'private-runtime';runtime.mkdir(mode=0o700)
         spoof=self.home/'unused-home'
         with mock.patch.dict(os.environ,dict(MEMVANE_TEST_RUNTIME_ROOT=str(runtime),HOME=str(spoof))):
