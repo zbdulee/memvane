@@ -587,52 +587,6 @@ def _select_verified_cards(decision, settings, prompt, rows):
     return pool, 'ranked', fallback
 
 
-def _selection_view_unchanged(decision, chosen, expected_head=None):
-    """Recheck index and completed-card membership after potentially slow scoring.
-
-    Read only the already selected rows. No raw file, source scan or work queue
-    is consulted by the query-time selector.
-    """
-    from contextlib import closing
-    from laya_incremental_docs_query import _readonly
-    from laya_incremental_docs import FILE
-    completed_gen = ('preview-' + decision['installId']
-                     if isinstance(decision.get('installId'), str) else None)
-    with closing(_readonly(Path(decision['dbPath']))) as index:
-        if expected_head is not None:
-            head = index.execute('SELECT gen FROM head WHERE scope=?',
-                                 (decision['scopeId'],)).fetchone()
-            if head != (expected_head,):
-                return False
-        exclusions = set(index.execute(
-            'SELECT kind,value FROM exclusions WHERE scope=?',
-            (decision['scopeId'],)).fetchall())
-        if any(('path', row['path']) in exclusions or ('hash', row['hash']) in exclusions
-               for row in chosen):
-            return False
-        for row in chosen:
-            if row['generation'] == completed_gen:
-                continue
-            if expected_head is None or row['generation'] != expected_head:
-                return False
-            current = index.execute(
-                'SELECT hash FROM membership WHERE gen=? AND scope=? AND path=? AND eligible=1',
-                (expected_head, decision['scopeId'], row['path'])).fetchone()
-            if current != (row['hash'],):
-                return False
-    completed = [row for row in chosen if row['generation'] == completed_gen]
-    if completed:
-        state = Path(decision.get('previewStateRoot') or
-                     Path(decision['journalPath']).parent)
-        with closing(_readonly(state / FILE)) as side:
-            for row in completed:
-                current = side.execute('SELECT hash,body FROM docs WHERE path=?',
-                                       (row['path'],)).fetchone()
-                if current != (row['hash'], row['body']):
-                    return False
-    return True
-
-
 def _fts_atom(term: str) -> str:
     if not term or len(term) > 256:
         _fail("invalid_lexical_term")
@@ -1187,17 +1141,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
 
 
 def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
-    """Read completed wiki documents from a proved inactive initial build.
-
-    Traced like a selected recall: one ``recall`` event with ``degraded``
-    ``preview`` in the install's event log.
-    """
-    with _event_scope(action, host, decision, payload):
-        _trace_fields(degraded='preview')
-        return _serve_preview(action, host, decision, payload)
-
-
-def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
+    """Leave recall empty while the initial build has no selected head."""
     if action != 'recall' or host not in ('claude', 'codex', 'hermes'):
         _fail('initial_preview_action_unsupported')
     if not isinstance(payload, dict):
@@ -1205,55 +1149,7 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
     prompt = payload.get('prompt')
     if not isinstance(prompt, str) or not prompt.strip():
         _fail('invalid_query_prompt')
-    from laya_index_host_route import verify_preview_route
-    proof = verify_preview_route(decision)
-    manifest = proof.get('providerManifest')
-    if not isinstance(manifest, dict) or proof['vectorProfile'] != decision['vectorProfile']:
-        _fail('initial_preview_provider_unavailable')
-    from laya_local_embed_provider import ReviewedLocalQmdProvider
-    from laya_embed_resident import admit_query
-    from laya_incremental_docs_query import QueryVectorUnavailable, query_incremental
-    provider = ReviewedLocalQmdProvider(manifest)
-
-    def admitted_provider(text, profile):
-        try:
-            admit_query()
-        except Exception as exc:
-            # Pressure, or the learning-side lane unreachable (a state move):
-            # the preview serves its lexical lists.
-            raise QueryVectorUnavailable('initial_preview_provider_resource_deferred') from exc
-        return provider(text, profile)
-
-    rows, title_only, locations, _shadow, _base = query_incremental(
-        prompt, decision, proof, admitted_provider)
-    refreshed = verify_preview_route(decision)
-    if ({key: value for key, value in refreshed.items() if key != 'buildPhase'} !=
-            {key: value for key, value in proof.items() if key != 'buildPhase'}):
-        _fail('initial_preview_proof_changed')
-    import config
-    settings = config.load_project_config(decision['projectRoot'])
-    chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
-    from laya_host_rules import limit_selected, selection_action
-    chosen, answer_limit = limit_selected(chosen, decision['recallSettings']['topN'])
-    result_action = selection_action(reason, chosen)
-    if result_action != 'serve':
-        if result_action == 'selected_zero':
-            _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
-        elif result_action == 'no_candidates':
-            # The reason of a recall with no candidate rows; vector fallbacks stay notes.
-            _trace_final('no_candidates')
-        return host_payload(host, '')
-    if verify_preview_route(decision) != refreshed or not _selection_view_unchanged(decision, chosen):
-        _fail('initial_preview_proof_changed')
-    chosen_paths = {row['path'] for row in chosen}
-    context = render_context({**decision, 'buildPhase': refreshed['buildPhase']},
-                             chosen, limit=answer_limit,
-                             ranking='laya_selection' if reason == 'selected' else 'hybrid_rrf',
-                             title_only_paths=title_only.intersection(chosen_paths),
-                             source_locations={path: spans for path, spans in
-                                               locations.items() if path in chosen_paths})
-    _log_selection(decision, chosen, fallback)
-    return host_payload(host, context)
+    return host_payload(host, '')
 
 
 # A schema3 recall whose sealed reader differs from the install only in the
@@ -2025,7 +1921,7 @@ def _proof_still_current(refreshed: dict, proof: dict) -> bool:
 
     A sync owner marks its first publish of a wake with one epoch advance
     (cas_mark_new_write). The served rows stay bound to their pinned head,
-    which ``_selection_view_unchanged`` checks separately. An epoch below the
+    which the selected reader checks separately. An epoch below the
     highest one this recall has seen raises ``selected_proof_rolled_back``.
     """
     _recall_epoch(refreshed)
