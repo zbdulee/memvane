@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""The schema3 sync pass publishes row-format (4) view stores like generation-format (3) ones.
-
-Every U12c check of ``laya-schema3-sync-publish-checks.py`` runs again with
-the seed's view store created in the row format: the same actual
-``laya_product_sync_worker.run`` pass, persisted schema3 recall and journal
-images. Only the checks' direct store reads change to the row relations.
-No model or provider starts.
-"""
+"""The sync pass publishes and reads format 4 view stores."""
 from contextlib import closing
 import importlib
 import importlib.util

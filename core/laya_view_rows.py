@@ -1124,11 +1124,9 @@ class RowsMixin:
         return pin
 
     def _rows_search(self, pin, fts_query, limit, *, path_prefixes, excluded_paths, deadline_seconds,
-                     legacy_origin, observed):
+                     observed):
         import sqlite3
         from laya_view_reader import _query, _remaining
-        if legacy_origin is not None:
-            v.fail('migration_lexical_origin_invalid')
         if type(observed) is not bool:
             v.fail('fts_query_invalid')
         deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)
@@ -1436,11 +1434,6 @@ class RowsMixin:
         shaped = dict(state='published', ordinal=generation['ordinal'], gen_id=generation['gen_id'],
                       view_id=generation['view_id'])
         return shaped, _pin_seal_value(generation), capture, stage
-
-    def _pin_fts_table(self, pin, *, sidecar=False):
-        """The FTS table a pinned view head searches."""
-        record = self._pinned(pin)
-        return fts.head_table(pin.view_id, sidecar=sidecar)
 
     def _generation_rows_at(self, db, gen_id):
         row = db.execute('SELECT view_id,ordinal FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()

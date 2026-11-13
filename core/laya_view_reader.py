@@ -214,16 +214,15 @@ class ReaderMixin:
         return 'stale_snapshot' if code == 0 else 'lineage_changed'
 
     def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
-               deadline_seconds=2, _legacy_origin=None, _observed=False):
+               deadline_seconds=2, _observed=False):
         return self._rows_search(pin, fts_query, limit, path_prefixes=path_prefixes,
                                  excluded_paths=excluded_paths, deadline_seconds=deadline_seconds,
-                                 legacy_origin=_legacy_origin, observed=_observed)
+                                 observed=_observed)
 
     def card_locations(self, pin, paths, *, deadline_seconds=2):
         """Source line locators of pinned members, from stored card provenance only.
 
-        Any generation (legacy import or ordinary) answers from its own
-        ``card_sources`` rows; no source file is opened. Only line spans
+        Each generation answers from its own ``card_sources`` rows; no source file is opened. Only line spans
         (``legacy-lines-v1`` and the compiled chain's ``lines-v1``) are shown,
         in one locator format; any other kind, byte spans included, refuses
         the read. A path without spans is absent from the result.
