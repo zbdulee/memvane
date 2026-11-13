@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'test' / 'helpers'))
@@ -159,6 +160,10 @@ def inspect(config, baseline=None):
     trees = {p: ast.parse((ROOT / p).read_text(encoding='utf8'), filename=p)
              for p in files if (ROOT / p).is_file()}
     issues = {f'G{i}': [] for i in range(1, 9)}
+    stdlib_dir = Path(sysconfig.get_path('stdlib'))
+    stdlib = set(sys.builtin_module_names) | {p.stem for p in stdlib_dir.iterdir()
+              if p.name not in ('site-packages', 'dist-packages') and
+              (p.suffix == '.py' or (p.is_dir() and (p / '__init__.py').is_file()))}
     issues['G1'].extend(errors)
     names = {_module_name(path): path for path in trees}
     for src, tree in trees.items():
@@ -191,6 +196,9 @@ def inspect(config, baseline=None):
                         issues['G3'].append(f'{path}:{node.lineno}:domain_import:{item.name}')
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and re.search(r'\bCREATE\s+TABLE\b', node.value, re.I):
                 issues['G3'].append(f'{path}:{node.lineno}:sqlite_ddl')
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and re.fullmatch(r'(?:memvane|laya|qmd)-[a-z0-9-]+-v[0-9]+', node.value)):
+                issues['G3'].append(f'{path}:{node.lineno}:schema_id')
     domain_lines = Counter()
     for path, lines in snapshot['file_sizes'].items():
         if path.startswith('memvane/') and path in files:
@@ -222,12 +230,29 @@ def inspect(config, baseline=None):
         for node in trees[path].body:
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ''
-                if module.startswith('memvane.') and module != own and not module.startswith('memvane.kernel'):
+                if node.level:
+                    package = _module_name(path).split('.')[:-1]
+                    package = package[:len(package) - node.level + 1]
+                    module = '.'.join(package + ([module] if module else []))
+                if (module not in ('__future__', own) and not module.startswith('memvane.kernel')
+                        and module.split('.')[0] not in stdlib):
                     issues['G5'].append(f'{path}:{node.lineno}:top_import:{module}')
             elif isinstance(node, ast.Import):
                 for item in node.names:
-                    if item.name.startswith('memvane.') and not item.name.startswith('memvane.kernel'):
+                    if (not item.name.startswith('memvane.kernel')
+                            and item.name.split('.')[0] not in stdlib):
                         issues['G5'].append(f'{path}:{node.lineno}:top_import:{item.name}')
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(t, ast.Name) and t.id == '__all__' for t in targets):
+                    try:
+                        exported = ast.literal_eval(node.value)
+                    except (ValueError, TypeError):
+                        issues['G5'].append(f'{path}:{node.lineno}:dynamic_exports')
+                    else:
+                        if not isinstance(exported, (tuple, list)) or any(
+                                not isinstance(x, str) or x.startswith('_') for x in exported):
+                            issues['G5'].append(f'{path}:{node.lineno}:private_exports')
     closures = _hook_closures(snapshot, trees)
     for action, closure in closures.items():
         if not closure:
@@ -237,6 +262,11 @@ def inspect(config, baseline=None):
     for path, findings in io.items():
         if path.endswith('/types.py') or '/domain/' in path:
             issues['G7'].extend(path + ':' + finding for finding in findings)
+            for node in ast.walk(trees[path]):
+                if isinstance(node, ast.Call) and (
+                        isinstance(node.func, ast.Name) and node.func.id == '__import__'
+                        or isinstance(node.func, ast.Attribute) and node.func.attr == 'import_module'):
+                    issues['G7'].append(f'{path}:{node.lineno}:dynamic_import')
     for path, tree in trees.items():
         if '/adapters/' not in path:
             continue
@@ -266,7 +296,7 @@ def main():
         snapshot, closures, issues, unknown = inspect(config, baseline)
     print(json.dumps({'counts': {k: len(v) for k, v in issues.items()},
                       'issues': issues, 'unknown_patch_targets': unknown,
-                      'limitations': ['G1 and G2 cover resolved import statements in classified source modules; test imports and nonliteral dynamic imports are not yet classified', 'G5 does not yet check every non-stdlib top-level import or private export', 'G6 closure follows static top-level imports and requires hook target verification', 'G7 dynamic import and adapter checks are incomplete', 'G8 examines statically identifiable Python patch calls; JavaScript embedded Python and dynamic targets require further analysis'],
+                      'limitations': ['G1 and G2 cover resolved import statements in classified source modules; test imports and nonliteral dynamic imports are not yet classified', 'G6 closure follows static top-level imports and requires hook target verification', 'G7 adapter relative imports and indirect I/O require further analysis', 'G8 examines statically identifiable Python patch calls; JavaScript embedded Python and dynamic targets require further analysis'],
                       'metrics': snapshot['metrics']}, ensure_ascii=False, sort_keys=True))
     return 1 if any(issues.values()) else 0
 
