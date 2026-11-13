@@ -24,10 +24,8 @@ import laya_view_fts as view_fts
 
 NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
-# Legacy frontmatter trust: the v6 reader's card rule, carried as an unbound
-# attestation. Migration import and the normal writer ingest share it, so the
-# same bytes, worktree, branch and scan give the same trust digest. The rule
-# reads only card bytes; no current HEAD or raw file is claimed as its proof.
+# Existing-card frontmatter trust is carried as an unbound attestation.
+# The rule reads only card bytes; no current HEAD or raw file is claimed.
 LEGACY_ENGINE_IDENTITY = 'memvane:v6-reader'
 LEGACY_RESULT_SCHEMA = 'memvane-legacy-card-evidence-v1'
 
@@ -222,7 +220,7 @@ SETTINGS_LIMIT = 1024 * 1024
 def _settings_identity(root):
     """The settings identity a worktree binding commits to, read once.
 
-    It is the v6 route's settings identity (``settings_identity_digest``:
+    It is the route's settings identity (``settings_identity_digest``:
     ``{name, role, sourceRoot}`` per derived collection, plus the project
     root): the absolute rows are the binding's ``collections``, and the store
     policy digests the same rows checkout-relative (folder spelling
@@ -306,7 +304,7 @@ def _observation(project_root, repository, worktree, *, deadline=None):
         v.fail('wiki_binding_invalid')
 
 
-# Binding evidence: the v6 settings identity (project root, collections and
+# Binding evidence: the settings identity (project root, collections and
 # the policy over them), the wiki root node and the checkout record.
 BINDING_SCHEMA = 'memvane-blob-worktree-v2'
 BINDING_COLUMNS = ('policy_digest', 'wiki_root', 'wiki_dev', 'wiki_ino')
