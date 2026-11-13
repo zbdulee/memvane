@@ -1534,11 +1534,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/provider/product_bundle.py": {
-      "context": "install",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/app/api.py": {
       "context": "app",
       "layer": "adapter",
@@ -1566,6 +1561,11 @@
     },
     "memvane/wiki/compile/wiki_verify_worker.py": {
       "context": "wiki/compile",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/app/setup_activation.py": {
+      "context": "app",
       "layer": "application",
       "pinned": false
     }

@@ -223,9 +223,6 @@ def review_local_provider(*, plugin_root, state_root,
     from memvane.provider.api import profile_identity
     from memvane.provider.api import default_embed_model_uri, hash_file as _hash_file, recipe_fingerprint
     DEFAULT_EMBED_MODEL_URI = default_embed_model_uri()
-    from memvane.provider.api import _bundle as product_bundle
-    _read, MAX_FILE, _canonical = (product_bundle._read, product_bundle.MAX_FILE,
-                                   product_bundle._canonical)
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         _fail('reviewed_native_platform_unsupported')
     root, state = map(Path, (plugin_root, state_root))
@@ -247,8 +244,7 @@ def review_local_provider(*, plugin_root, state_root,
                       'memvane/provider/adapters/laya_local_embed_worker.mjs')
     artifacts = {}
     for name in provider_files:
-        installed, _ = _read(root / name, MAX_FILE)
-        artifacts[name] = hashlib.sha256(installed).hexdigest()
+        artifacts[name] = _hash_file(str(root / name))
     try:
         runtime = (laya_embed_runtime.select() if runtime_generation is None else
                    laya_embed_runtime.select_generation(runtime_generation))
@@ -279,7 +275,9 @@ def review_local_provider(*, plugin_root, state_root,
     if (model_sha, node_sha, module_sha) != (runtime['modelSha256'], runtime['nodeSha256'],
                                              runtime['moduleEntrySha256']):
         _fail('provider_review_laya_embed_runtime_corrupt')
-    closure_sha = hashlib.sha256(_canonical(closure)).hexdigest()
+    closure_sha = hashlib.sha256(json.dumps(
+        closure, sort_keys=True, ensure_ascii=False, separators=(',', ':')
+    ).encode('utf-8')).hexdigest()
     provider_sha = artifacts['memvane/provider/adapters/local_embed_provider.py']
     worker_sha = artifacts['memvane/provider/adapters/laya_local_embed_worker.mjs']
     model_id = DEFAULT_EMBED_MODEL_URI
@@ -322,7 +320,9 @@ def review_local_provider(*, plugin_root, state_root,
                                      'providerManifest': manifest,
                                      'dependencyClosure': closure}}
     return {'status': 'review_required',
-            'proposalSha256': hashlib.sha256(_canonical(proposal)).hexdigest(),
+            'proposalSha256': hashlib.sha256(json.dumps(
+                proposal, sort_keys=True, ensure_ascii=False, separators=(',', ':')
+            ).encode('utf-8')).hexdigest(),
             **proposal}
 
 
@@ -537,152 +537,9 @@ def request_initial_build_rescan(state_root):
             'wake': _request_build_wake(record['identity']['projectRoot'])}
 
 
-def finalize_initial_build(*, project_root, state_root):
-    """Seal the ready single-store head in the prepared journal and ledger."""
-    from memvane.install.api import _initial_build as build
-    from memvane.journal.api import _install_journal as journal
-    from memvane.journal.api import _reader as reader
-    from memvane.app.api import _runtime_dispatch as dispatch
-    from memvane.sync import api as sync
-    from memvane.store import api as values
-    from memvane.store import api as view_values, types as store_types
-    from memvane.wiki.workspace.api import file_coordination as workspace_files
-    from contextlib import closing
-    from memvane.store.api import regular as _regular
-    _read_json, _write = _ledger._read_json, _ledger._write
-    from memvane.store.api import view_store_class, skip_patterns as _skip_patterns
-    ViewStore = view_store_class()
-    from memvane.store.api import provider_spec
-    from memvane.runtime.api import sync_owner
-    state = _private_parent(state_root)
-    project = _checked_project(project_root)
-    with _install_lock(state), build.owner(state) as owned:
-        if not owned:
-            _fail('initial_build_busy')
-        record = build.read_v1(state)
-        if record is None or record['identity']['projectRoot'] != str(project):
-            _fail('initial_build_project_mismatch')
-        if record['phase'] != 'ready':
-            return {'status': 'initial_build_pending', 'phase': record['phase']}
-        identity = record['identity']
-        with sync_owner(Path(identity['storePath']), wait=False) as owner:
-            if owner is None:
-                _fail('owner_busy')
-            with workspace_files.mutation_lock.lock(project):
-                dispatch.resolve('laya-sync', str(project))
-                row = journal.inspect_journal(identity['journalPath'])
-                attestation, digest = journal._attestation(Path(identity['journalPath']))
-                if digest != identity['attestationSha256'] or row['state'] != 'prepared':
-                    _fail('initial_build_journal_changed')
-                manifest = journal._v1_provider_manifest(attestation, row['vectorProfile'])
-                spec = provider_spec(manifest, row['vectorProfile'])
-                if spec is None:
-                    _fail('initial_build_vector_spec_unavailable')
-                decision = journal.select_route(str(project), action='recall')
-                if decision.get('state') != 'preview':
-                    _fail('initial_build_route_changed')
-                from memvane.kernel.errors import _query_only_uri
-                with closing(sqlite3.connect(_query_only_uri(Path(identity['storePath'])), uri=True)) as db:
-                    db.execute('PRAGMA query_only=ON')
-                    meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
-                    trees = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
-                                       (str(project),)).fetchall()
-                if meta is None or len(trees) != 1:
-                    _fail('initial_build_store_changed')
-                repository = json.loads(meta[0], object_pairs_hook=_unique)
-                worktree_id = trees[0][0]
-                store = ViewStore.open_reader(identity['storePath'], repository=repository,
-                                              scope_id=identity['scopeId'])
-                try:
-                    if store._incarnation != identity['storeIncarnation']:
-                        _fail('initial_build_store_changed')
-                    handle = store.capture_view(worktree_id)
-                    pin = store.pin_view(handle)
-                    try:
-                        head = store.head(handle)
-                        vector = store._pinned(pin)['vector']
-                        if (head['gen_id'] is None or vector is None
-                                or vector['recipe_id'] != spec['recipe_id']
-                                or vector['profile_id'] != spec['profile_id']):
-                            _fail('initial_build_vectors_pending')
-                        with store._session() as db:
-                            tree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?',
-                                              (worktree_id,)).fetchone()
-                            baseline = sync.schema3_rows_baseline(store, db, handle, head)
-                            head_row = db.execute('SELECT ordinal FROM s_heads WHERE view_id=?',
-                                                  (handle.view_id,)).fetchone()
-                        if tree is None or head_row is None:
-                            _fail('initial_build_store_changed')
-                        found, _skipped = sync.schema3_wiki_cards(tree['wiki_root'])
-                        skips = _skip_patterns(dict(tree))
-                        paths = [p for p in found if not view_values.skipped(p, skips)]
-                        current = {}
-                        for path in paths:
-                            raw, _node, _root = _regular(tree['wiki_root'], path, store_types.MAX_BODY)
-                            current[path] = values.hash_bytes(raw)
-                        if current != {p: member['blob_sha'] for p, member in baseline['old'].items()}:
-                            _fail('initial_build_out_of_date')
-                        scan = {}
-                        observed = sync.schema3_sources(decision, handle, time.monotonic() + 45,
-                                                         raw_scan=scan)
-                        if 'snapshot' not in scan or not sync.schema3_head_same(
-                                store, head, baseline, observed, handle):
-                            _fail('initial_build_out_of_date')
-                        if store.head(handle) != head:
-                            _fail('initial_build_head_changed')
-                        store_evidence = reader._schema3_store(state, project,
-                            {'scopeId': identity['scopeId']}, decision,
-                            identity['storePath'], worktree_id)
-                        sealed = dict(install_id=identity['installId'], project=str(project),
-                            project_node=reader._node(project), state=str(state),
-                            state_node=reader._node(state), scope=identity['scopeId'],
-                            attestation_sha256=digest, profile=row['vectorProfile']['profileId'],
-                            settings=reader._sha(reader._raw(decision['recallSettings'])),
-                            roots=decision['collections'], store_format='schema3',
-                            capability=reader.SCHEMA3_CAPABILITY, checkout_policy=reader.SCHEMA3_POLICY,
-                            vector_profile=spec['profile_id'], vector_recipe=spec['recipe_id'],
-                            head_floor={'view_id': head['view_id'], 'epoch': head['epoch'],
-                                        'ordinal': head_row[0]},
-                            creation_epoch=(row['reader']['creation_epoch'] if row['reader'] else row['epoch'] + 1),
-                            **store_evidence)
-                        if not reader._schema3_shape(sealed):
-                            _fail('initial_build_reader_invalid')
-                    finally:
-                        store.release(pin)
-                finally:
-                    store.close()
-                path, db = journal._open(identity['journalPath'], write=True)
-                with closing(db):
-                    db.execute('BEGIN IMMEDIATE')
-                    try:
-                        current_row = journal._inspect_v1_row(db)
-                        if current_row != {k: v for k, v in row.items() if k != 'journalPath'}:
-                            _fail('initial_build_journal_changed')
-                        if current_row['reader'] is None:
-                            db.execute('INSERT INTO reader(id,record) VALUES(1,?)', (journal._canon(sealed),))
-                            changed = db.execute("UPDATE selection SET epoch=epoch+1,vector_recipe=? "
-                                "WHERE id=1 AND epoch=? AND state='prepared'",
-                                (spec['recipe_id'], row['epoch'])).rowcount
-                            if changed != 1:
-                                _fail('initial_build_journal_changed')
-                        elif current_row['reader'] != sealed:
-                            _fail('initial_build_reader_changed')
-                        journal._inspect_v1_row(db)
-                        db.commit()
-                    except BaseException:
-                        db.rollback()
-                        raise
-                ledger_path = state / 'ledger.json'
-                ledger = {'schema': 'memvane-install-ledger-v1', 'epoch': 1,
-                          'phase': 'prepared', 'identity': identity}
-                if ledger_path.exists() or ledger_path.is_symlink():
-                    if _read_json(ledger_path) != ledger:
-                        _fail('initial_build_ledger_changed')
-                else:
-                    _write(ledger_path, ledger, replace=False)
-                return {'status': 'initial_build_finalized', 'phase': 'prepared',
-                        'journalPath': str(path), 'routeFile': str(state / 'route.json'),
-                        'generation': head['gen_id']}
+def finalize_initial_build(*args, **kwargs):
+    from memvane.app.setup_activation import finalize_initial_build as implementation
+    return implementation(*args, **kwargs)
 
 
 def _checked_project(project_root):
@@ -693,222 +550,19 @@ def _checked_project(project_root):
     return project
 
 
-def activate_origin_selection(project_root, journal_path, route_bytes):
-    """Publish or recover the proved v1 selection under the install lock."""
-    from memvane.install.api import _initial_build as build
-    from memvane.journal.api import _install_journal as journal_module
-    from memvane.journal.api import _reader as reader
-    from memvane.sync import api as sync
-    from memvane.wiki.intake import api as discovery
-    from memvane.settings import api as project_dir
-    from memvane.wiki.workspace.api import file_coordination as workspace_files
-    from contextlib import closing
-    from memvane.route.api import classify_v4 as _classify_v4
-    from memvane.route.types import SELECTION_SCHEMA_V1
-    _read_json, _write = _ledger._read_json, _ledger._write
-    from memvane.journal.api import _api_reader_lifetime as reader_lifetime
-    from memvane.runtime.api import sync_owner
-    project = _checked_project(project_root)
-    journal = Path(journal_path)
-    state = _private_parent(journal.parent)
-    if journal != state / 'journal.sqlite':
-        _fail('initial_build_journal_changed')
-    route, digest = journal_module._route(route_bytes, journal)
-    with build.owner(state) as owned:
-        if not owned:
-            _fail('initial_build_busy')
-        record = build.read_v1(state)
-        if record is None or record['phase'] != 'ready':
-            _fail('initial_build_not_ready')
-        identity = record['identity']
-        if (identity['projectRoot'] != str(project) or identity['journalPath'] != str(journal)
-                or identity['routeSha256'] != digest
-                or _read_private(state / 'route.json', 8192) != route_bytes):
-            _fail('initial_build_route_changed')
-        with sync_owner(Path(identity['storePath']), wait=False) as owner:
-            if owner is None:
-                _fail('owner_busy')
-            with workspace_files.mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=False):
-                row = journal_module.inspect_journal(journal)
-                ledger_path = state / 'ledger.json'
-                ledger = _read_json(ledger_path)
-                if (not isinstance(ledger, dict) or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
-                        or ledger['schema'] != 'memvane-install-ledger-v1'
-                        or ledger['identity'] != identity
-                        or type(ledger['epoch']) is not int or ledger['epoch'] < 1
-                        or ledger['phase'] not in ('prepared', 'selected')
-                        or row['state'] not in ('prepared', 'selected')
-                        or (ledger['phase'] == 'selected' and row['state'] != 'selected')
-                        or row['reader'] is None or row['routeSha256'] != digest
-                        or row['attestationSha256'] != identity['attestationSha256']
-                        or row['projectInode'] != project.stat().st_ino
-                        or row['storeInode'] != identity['storeNode'][1]
-                        or any(row[key] != identity[key] for key in
-                               ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))):
-                    _fail('initial_build_ledger_changed')
-                attestation, att_sha = journal_module._attestation(journal)
-                if att_sha != identity['attestationSha256']:
-                    _fail('worker_attestation_changed')
-                journal_module._v1_provider_manifest(attestation, row['vectorProfile'])
-                decision = _classify_v4(project, project_dir.settings_path(project), route)
-                if decision.get('state') != 'candidate':
-                    _fail('initial_build_route_changed')
-                saved = row['reader']
-                with reader._schema3_pin(saved, deadline=time.monotonic() + 45, pin_view=False) as (store, handle, head):
-                    floor = saved['head_floor']
-                    if (floor is None or head['view_id'] != floor['view_id']
-                            or head['epoch'] != floor['epoch']):
-                        _fail('initial_build_head_changed')
-                    with store._session() as db:
-                        baseline = sync.schema3_rows_baseline(store, db, handle, head)
-                    scan = {}
-                    observed = sync.schema3_sources(decision, handle, time.monotonic() + 45,
-                                                     raw_scan=scan)
-                    if 'snapshot' not in scan or not sync.schema3_head_same(
-                            store, head, baseline, observed, handle):
-                        _fail('initial_build_out_of_date')
-                    discovery.seed_source_snapshot(decision, scan['snapshot'], generation=head['gen_id'])
-                    if store.head(handle) != head:
-                        _fail('initial_build_head_changed')
-                marker = {'schema': SELECTION_SCHEMA_V1, 'projectRoot': str(project),
-                          'installId': identity['installId'], 'routeSha256': digest}
-                marker_raw = json.dumps(marker, sort_keys=True, ensure_ascii=False,
-                                        separators=(',', ':')).encode('utf-8')
-                _write_or_verify_private(project_dir.runtime_file(project, 'selection.json'), marker_raw)
-                _write_or_verify_private(project_dir.runtime_file(project, 'route.json'), route_bytes)
-                path, db = journal_module._open(journal, write=True)
-                with closing(db):
-                    db.execute('BEGIN IMMEDIATE')
-                    try:
-                        current = journal_module._inspect_v1_row(db)
-                        if current != {k: v for k, v in row.items() if k != 'journalPath'}:
-                            _fail('initial_build_journal_changed')
-                        if current['state'] == 'prepared':
-                            if db.execute("UPDATE selection SET state='selected',epoch=epoch+1 "
-                                          "WHERE id=1 AND epoch=? AND state='prepared'", (row['epoch'],)).rowcount != 1:
-                                _fail('initial_build_journal_changed')
-                        journal_module._inspect_v1_row(db)
-                        db.commit()
-                    except BaseException:
-                        db.rollback()
-                        raise
-                if ledger['phase'] == 'prepared':
-                    ledger = {**ledger, 'phase': 'selected', 'epoch': ledger['epoch'] + 1}
-                    _write(ledger_path, ledger, replace=True)
-                proof = journal_module.verify_selected_route(decision)
-                try:
-                    from memvane.learning.api import request_selector_maintenance
-                    request_selector_maintenance(decision, force=True, owner=owner)
-                except (OSError, ValueError, RuntimeError):
-                    pass  # Selection is complete; a later SessionStart can retry.
-                return {'status': 'selected', 'phase': 'selected', 'journalPath': str(path),
-                        'selectionEpoch': proof['selectionEpoch'],
-                        'syncWake': _request_build_wake(str(project)),
-                        'gitignoreEntries': ['.memvane/route.json', '.memvane/selection.json']}
+def activate_origin_selection(*args, **kwargs):
+    from memvane.app.setup_activation import activate_origin_selection as implementation
+    return implementation(*args, **kwargs)
 
 
-def recover_origin_selection(project_root, journal_path, route_bytes):
-    """Finish the same partially published or withdrawn v1 selection."""
-    _read_json = _ledger._read_json
-    state = Path(journal_path).parent
-    ledger = _read_json(state / 'ledger.json')
-    if ledger.get('phase') in ('restoring', 'restored'):
-        return _restore_v1_locked(_checked_project(project_root), state)
-    return activate_origin_selection(project_root, journal_path, route_bytes)
+def recover_origin_selection(*args, **kwargs):
+    from memvane.app.setup_activation import recover_origin_selection as implementation
+    return implementation(*args, **kwargs)
 
 
-def restore_origin_selection(*, project_root, state_root):
-    """Withdraw the selected route only before its first selected write."""
-    project = _checked_project(project_root)
-    state = _private_parent(state_root)
-    with _install_lock(state):
-        return _restore_v1_locked(project, state)
-def _restore_v1_locked(project, state):
-    from memvane.install.api import _initial_build as build
-    from memvane.journal.api import _install_journal as journal
-    from contextlib import closing
-    from memvane.route.types import SELECTION_SCHEMA_V1
-    _read_json, _write, _fsync_dir = _ledger._read_json, _ledger._write, _ledger._fsync_dir
-    from memvane.journal.api import _api_reader_lifetime as reader_lifetime
-    from memvane.runtime.api import sync_owner
-    from memvane.wiki.workspace.api import file_coordination as workspace_files
-    with build.owner(state) as owned:
-        if not owned:
-            _fail('initial_build_busy')
-        record = build.read_v1(state)
-        if record is None or record['identity']['projectRoot'] != str(project):
-            _fail('initial_build_project_mismatch')
-        identity = record['identity']
-        ledger_path = state / 'ledger.json'
-        ledger = _read_json(ledger_path)
-        if (not isinstance(ledger, dict) or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
-                or ledger['schema'] != 'memvane-install-ledger-v1' or ledger['identity'] != identity
-                or type(ledger['epoch']) is not int or ledger['epoch'] < 1
-                or ledger['phase'] not in ('prepared', 'selected', 'restoring', 'restored')):
-            _fail('initial_build_ledger_changed')
-        path = state / 'journal.sqlite'
-        route_raw = _read_private(state / 'route.json', 8192)
-        if hashlib.sha256(route_raw).hexdigest() != identity['routeSha256']:
-            _fail('initial_build_route_changed')
-        with sync_owner(Path(identity['storePath']), wait=False) as owner:
-            if owner is None:
-                _fail('owner_busy')
-            with workspace_files.mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=True):
-                row = journal.inspect_journal(path)
-                if (row['routeSha256'] != identity['routeSha256']
-                        or row['attestationSha256'] != identity['attestationSha256']
-                        or any(row[k] != identity[k] for k in
-                               ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))):
-                    _fail('initial_build_journal_changed')
-                if row['newWriteSeen']:
-                    _fail('rollback_forward_only')
-                project_paths = [project_dir.runtime_file(project, name)
-                                 for name in ('route.json', 'selection.json')]
-                present = any(item.exists() or item.is_symlink() for item in project_paths)
-                if ledger['phase'] == 'prepared' and row['state'] == 'prepared' and not present:
-                    return {'status': 'not_selected', 'changesApplied': 0}
-                if ((ledger['phase'] == 'selected' and row['state'] != 'selected')
-                        or (ledger['phase'] == 'restored' and row['state'] != 'restored')
-                        or (ledger['phase'] == 'restoring' and row['state'] not in ('prepared', 'selected', 'restored'))):
-                    _fail('restore_state_invalid')
-                if ledger['phase'] in ('prepared', 'selected'):
-                    ledger = {**ledger, 'phase': 'restoring', 'epoch': ledger['epoch'] + 1}
-                    _write(ledger_path, ledger, replace=True)
-                if row['state'] in ('prepared', 'selected'):
-                    _, db = journal._open(path, write=True)
-                    with closing(db):
-                        db.execute('BEGIN IMMEDIATE')
-                        try:
-                            current = journal._inspect_v1_row(db)
-                            if current != {k: v for k, v in row.items() if k != 'journalPath'}:
-                                _fail('initial_build_journal_changed')
-                            if db.execute("UPDATE selection SET state='restored',epoch=epoch+1 "
-                                          "WHERE id=1 AND state=? AND new_write_seen=0 AND epoch=?",
-                                          (row['state'], row['epoch'])).rowcount != 1:
-                                _fail('restore_state_invalid')
-                            journal._inspect_v1_row(db)
-                            db.commit()
-                        except BaseException:
-                            db.rollback()
-                            raise
-                marker = {'schema': SELECTION_SCHEMA_V1, 'projectRoot': str(project),
-                          'installId': identity['installId'], 'routeSha256': identity['routeSha256']}
-                marker_raw = json.dumps(marker, sort_keys=True, ensure_ascii=False,
-                                        separators=(',', ':')).encode('utf-8')
-                for name, expected in (('route.json', route_raw), ('selection.json', marker_raw)):
-                    target = project_dir.runtime_file(project, name)
-                    if not target.exists() and not target.is_symlink():
-                        continue
-                    before = target.lstat()
-                    if _read_private(target, 8192) != expected or not os.path.samestat(before, target.lstat()):
-                        _fail('restore_project_pointer_changed')
-                    target.unlink()
-                    _fsync_dir(target.parent)
-                build.retire_project_pointer(identity)
-                if ledger['phase'] != 'restored':
-                    ledger = {**ledger, 'phase': 'restored', 'epoch': ledger['epoch'] + 1}
-                    _write(ledger_path, ledger, replace=True)
-    return {'status': 'restored', 'changesApplied': 1}
+def restore_origin_selection(*args, **kwargs):
+    from memvane.app.setup_activation import restore_origin_selection as implementation
+    return implementation(*args, **kwargs)
 
 
 def _installed_root():

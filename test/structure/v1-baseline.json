@@ -58,7 +58,6 @@
   "size_exceptions": {
     "file_sizes": {
       "memvane/host/host_response.py": 1844,
-      "memvane/install/product_bundle.py": 930,
       "memvane/install/product_install.py": 1035,
       "memvane/journal/install_journal.py": 1737,
       "memvane/learning/context_learning/adapter.py": 872,

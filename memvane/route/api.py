@@ -45,9 +45,6 @@ def source_for_collection(*args, **kwargs):
 
 
 
-def written_schema(*args, **kwargs):
-    from memvane.route.index_host_route import written_schema as implementation
-    return implementation(*args, **kwargs)
 
 
 

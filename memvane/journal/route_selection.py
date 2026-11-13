@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import stat
 
 from memvane.settings.api import _config as config
 from memvane.settings import api as project_dir, types as project_types
@@ -17,171 +16,32 @@ from memvane.route.api import (canonical_absolute as _canonical_absolute,
     read_regular as _read_regular, selected_settings_supported as _selected_settings_supported,
     source_for_collection as _source_for_collection, vector_profile as _vector_profile,
     selected_collection_roots, settings_identity_digest)
-from memvane.route.types import (COLLECTION_FIELDS, COLLECTION_NAME, FIELDS, FIELDS_V2, FIELDS_V3, INCARNATION,
-    MAX_RECORD_BYTES, MAX_SETTINGS_BYTES, PACKAGE_GENERATION, QMD_SELECTION_MARKER,
-    RECORD, ROUTED_ACTIONS, SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4,
+from memvane.route.types import (INCARNATION, MAX_RECORD_BYTES, MAX_SETTINGS_BYTES,
+    QMD_SELECTION_MARKER, RECORD, ROUTED_ACTIONS, SCHEMA_V4,
     SELECTION_SCHEMA_V1, SHA256)
 
 
 def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
-    """Apply the settings and route checks to the visible route record."""
+    """Validate the one supported 1.0 route record."""
     try:
         if auto.is_symlink() or path.is_symlink() or not auto.is_dir():
-            raise ValueError("unsafe_route_path")
+            raise ValueError('unsafe_route_path')
         found = config.find_project_config(str(current))
         settings = project_dir.settings_path(root)
-        if (found.get("configFormat") != "auto-context-dir"
-                or found.get("projectRoot") != str(root) or settings is None
-                or found.get("configPath") != str(settings)):
-            raise ValueError("route_settings_not_selected")
+        if (found.get('configFormat') != 'auto-context-dir'
+                or found.get('projectRoot') != str(root) or settings is None
+                or found.get('configPath') != str(settings)):
+            raise ValueError('route_settings_not_selected')
         if settings.is_symlink():
-            raise ValueError("unsafe_route_settings")
+            raise ValueError('unsafe_route_settings')
         raw = _read_regular(path, MAX_RECORD_BYTES)
-        record = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
-        if isinstance(record, dict) and record.get('schema') == SCHEMA_V4:
-            return _classify_v4(root, settings, record)
-        if (not isinstance(record, dict) or
-                (record.get('schema'), set(record)) not in
-                ((SCHEMA, FIELDS), (SCHEMA_V2, FIELDS_V2), (SCHEMA_V3, FIELDS_V3))):
-            raise ValueError("invalid_route_fields")
-        if record["status"] != "active":
-            raise ValueError("route_not_active")
-        if record["projectRoot"] != str(root) or not root.is_absolute():
-            raise ValueError("route_project_mismatch")
-        if not isinstance(record["settingsSha256"], str) or not SHA256.fullmatch(record["settingsSha256"]):
-            raise ValueError("invalid_settings_digest")
-        if not isinstance(record["bundleManifestSha256"], str) or not SHA256.fullmatch(record["bundleManifestSha256"]):
-            raise ValueError("invalid_bundle_manifest_digest")
-        if not isinstance(record["ownershipManifestSha256"], str) or not SHA256.fullmatch(record["ownershipManifestSha256"]):
-            raise ValueError("invalid_ownership_manifest_digest")
-        if not isinstance(record["installId"], str) or not INCARNATION.fullmatch(record["installId"]):
-            raise ValueError("invalid_install_id")
-        if not isinstance(record["generation"], str) or not PACKAGE_GENERATION.fullmatch(record["generation"]):
-            raise ValueError("invalid_package_generation")
-        if not isinstance(record["dbIncarnation"], str) or not INCARNATION.fullmatch(record["dbIncarnation"]):
-            raise ValueError("invalid_db_incarnation")
-        plugin_root = record["pluginRoot"]
-        if not _canonical_absolute(plugin_root):
-            raise ValueError("invalid_plugin_root")
-        journal_path = record["journalPath"]
-        if not _canonical_absolute(journal_path):
-            raise ValueError("invalid_journal_path")
-        if record['schema'] == SCHEMA:
-            if journal_path != str(Path(plugin_root).parent / "journal.sqlite"):
-                raise ValueError("invalid_journal_path")
-        else:
-            private = Path(journal_path).parent
-            info = private.lstat()
-            if (Path(journal_path).name != 'journal.sqlite' or
-                    private.is_symlink() or not private.is_dir() or
-                    info.st_uid != os.getuid() or
-                    stat.S_IMODE(info.st_mode) & 0o077):
-                raise ValueError('unsafe_private_journal_root')
-        db_path = record["dbPath"]
-        queue_path = record["queuePath"]
-        if not _canonical_absolute(db_path) or Path(db_path) == root:
-            raise ValueError("invalid_db_path")
-        if not _canonical_absolute(queue_path) or queue_path == db_path:
-            raise ValueError("invalid_queue_path")
-        settings_bytes = _read_regular(settings, MAX_SETTINGS_BYTES)
-        try:
-            derived = _derived_collections(record, root, settings_bytes)
-        except (ValueError, TypeError, KeyError, UnicodeError):
-            derived = None
-        # Settings that no longer resolve to the bound identity are a
-        # settings change, whatever would have failed first.
-        if (derived is None or record["settingsSha256"] !=
-                settings_identity_digest(root, derived)):
-            raise ValueError("route_settings_changed")
-        raw_settings = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
-        if not isinstance(raw_settings, dict):
-            raise ValueError("invalid_route_settings")
-        # A minimal {name, skipPaths} file is checked as its derived legacy
-        # shape; any other file is checked exactly as written.
-        folder = project_dir.active_name(root)
-        raw_settings = config.expand_minimal_settings(raw_settings, folder)
-        cfg = config.normalize_config(raw_settings, folder)
-        if cfg.get("indexing") is not True:
-            raise ValueError("route_indexing_not_selected")
-        raw_compile = raw_settings.get("compile", {})
-        if record['schema'] == SCHEMA and (not isinstance(raw_compile, dict)
-                or raw_compile.get("mode", "off") != "off"
-                or raw_compile.get("enabled") is True
-                or raw_compile.get("autoWrite") is True
-                or config.compile_active(cfg.get("compile"))):
-            raise ValueError("selected_compile_unsupported")
-        names = cfg.get("collections")
-        if (not isinstance(names, list) or not names or
-                any(not isinstance(name, str) or not COLLECTION_NAME.fullmatch(name)
-                    for name in names) or len(set(names)) != len(names)):
-            raise ValueError("unsupported_collection_names")
-        mappings = cfg.get("collectionPaths")
-        if not isinstance(mappings, dict) or set(mappings) != set(names):
-            raise ValueError("explicit_collection_path_required")
-        selected_collections = []
-        if record['schema'] == SCHEMA:
-            if len(names) != 1:
-                raise ValueError("single_collection_required")
-            name = names[0]
-            if not _selected_settings_supported(raw_settings, cfg, name):
-                raise ValueError("selected_recall_settings_unsupported")
-            if (record["collectionName"] != name or
-                    not config.is_indexed_collection(config.role_map(cfg), name)):
-                raise ValueError("route_collection_mismatch")
-            canonical_source = _source_for_collection(root, mappings[name])
-            if record["sourceRoot"] != canonical_source:
-                raise ValueError("route_source_root_mismatch")
-            selected_collections = [{'name': name, 'role': 'raw',
-                                     'sourceRoot': canonical_source}]
-        else:
-            ordered = tuple(sorted(names))
-            if (len(ordered) != 2 or
-                    not _multi_settings_supported(raw_settings, cfg, ordered)):
-                raise ValueError('selected_recall_settings_unsupported')
-            declared = record['collections']
-            if (not isinstance(declared, list) or len(declared) != 2 or
-                    any(not isinstance(item, dict) or set(item) != COLLECTION_FIELDS
-                        for item in declared)):
-                raise ValueError('route_collections_invalid')
-            roles = config.role_map(cfg)
-            for name, item in zip(ordered, declared):
-                source = _source_for_collection(root, mappings[name])
-                if (item != {'name': name, 'role': roles.get(name),
-                             'sourceRoot': source} or
-                        item['role'] not in ('raw', 'wiki')):
-                    raise ValueError('route_collection_mismatch')
-                selected_collections.append(item)
-            selected_collection_roots(root, selected_collections)
-            wiki_root = next(item['sourceRoot'] for item in selected_collections
-                             if item['role'] == 'wiki')
-            if not _multi_compile_supported(raw_settings, cfg, root, wiki_root):
-                raise ValueError('selected_compile_unsupported')
-        if not isinstance(record["scopeId"], str) or not INCARNATION.fullmatch(record["scopeId"]):
-            raise ValueError("invalid_scope_id")
-        vector_profile = _vector_profile(record["vectorProfile"])
-        details = dict(projectRoot=str(root),
-                         dbPath=db_path, queuePath=queue_path,
-                         dbIncarnation=record["dbIncarnation"],
-                         scopeId=record["scopeId"],
-                         pluginRoot=plugin_root, journalPath=journal_path,
-                         installId=record["installId"],
-                         generation=record["generation"],
-                         bundleManifestSha256=record["bundleManifestSha256"],
-                         ownershipManifestSha256=record["ownershipManifestSha256"],
-                         vectorProfile=vector_profile)
-        if record['schema'] == SCHEMA:
-            details.update(collectionName=name, sourceRoot=canonical_source)
-        else:
-            details.update(
-                collections=selected_collections,
-                collectionRoots={item['name']: item['sourceRoot']
-                                 for item in selected_collections},
-                recallSettings={key: cfg[key] for key in
-                                ('recallStrategy', 'minScore', 'rawFallbackMinScore',
-                                 'topN', 'skipPaths', 'lexicalPatterns')})
-        return _decision("candidate", "route_record_valid", **details)
+        record = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
+        if not isinstance(record, dict) or record.get('schema') != SCHEMA_V4:
+            raise ValueError('unsupported_route_format')
+        return _classify_v4(root, settings, record)
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError) as exc:
-        return _decision("blocked", str(exc) or "invalid_route_record")
+        return _decision('blocked', str(exc) or 'invalid_route_record')
+
 
 
 def _preview_route(current: Path, requested: Path, action: str) -> dict | None:

@@ -41,11 +41,7 @@ def _compile_proof(decision, *, owner=None):
         if acquired is None:
             raise ResourceDeferred('owner_busy')
         with journal.read_only_journals():
-            if journal.journal_version(decision['journalPath'])==5:
-                from memvane.journal.api import owned_selected_proof as _owned_selected_proof
-                return _owned_selected_proof(decision,acquired)
-            with journal.legacy_identity_reads():
-                return verify_selected_route_for_write(decision,'compile')
+            return verify_selected_route_for_write(decision,'compile')
 
 
 def selected(root: Path):
@@ -94,7 +90,7 @@ def schema3_checkout(bound):
     from memvane.journal import api as journal
     from memvane.journal.api import _reader as reader
     path = decision.get('journalPath')
-    if not isinstance(path, str) or journal.journal_version(path) != 5:
+    if not isinstance(path, str) or journal.journal_version(path) != 1:
         return None
     with journal.read_only_journals():
         journal_path = reader._journal(path)

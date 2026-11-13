@@ -31,7 +31,7 @@ from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
 from memvane.journal.api import build as build_record
-from memvane.journal.api import cas_mark_new_write, inspect_journal, selected_project_proof as _selected
+from memvane.journal.api import inspect_journal, selected_project_proof as _selected
 from memvane.provider.api import reviewed_provider_class
 ReviewedLocalQmdProvider = reviewed_provider_class()
 from memvane.provider.api import start_owned_embed_service

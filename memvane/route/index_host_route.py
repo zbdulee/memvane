@@ -24,20 +24,15 @@ import unicodedata
 
 from memvane.settings import api as config
 from memvane.settings import api as project_dir, types as project_types
-from memvane.route.types import (FIELDS, FIELDS_V2, FIELDS_V3, FIELDS_V4,
+from memvane.route.types import (FIELDS_V4,
                                  MAX_RECORD_BYTES, MAX_SETTINGS_BYTES,
                                  QMD_SELECTION_MARKER, RECORD, SCHEMA, SCHEMA_V2,
-                                 SCHEMA_V3, SCHEMA_V4, SELECTION_SCHEMA_V1,
+                                 SCHEMA_V4, SELECTION_SCHEMA_V1,
                                  SETTINGS_IDENTITY_SCHEMA, SHA256, INCARNATION, COLLECTION_FIELDS, COLLECTION_NAME)
 VECTOR_PROFILE_FIELDS = frozenset({"profileId", "modelId", "embeddingFingerprint",
                                    "dimension", "metric", "approvedProviderId",
                                    "providerArtifactSha256", "providerRelativePath"})
 PROVIDER_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\Z")
-
-
-def written_schema(schema: str) -> str:
-    """The schema a rewritten route carries: v2 and v3 become v3, v1 stays."""
-    return SCHEMA_V3 if schema in (SCHEMA_V2, SCHEMA_V3) else schema
 
 
 def settings_identity_digest(project_root, collections) -> str:

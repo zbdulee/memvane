@@ -1,15 +1,5 @@
 """Public provider operations."""
 from __future__ import annotations
-from importlib import import_module as _import_module
-
-
-class _BundleOperations:
-    def __getattr__(self, name):
-        return getattr(_import_module('memvane.provider.product_bundle'), name)
-
-
-_bundle = _BundleOperations()
-
 from memvane.provider.types import FILES_SHA, LLAMA_VERSION, RuntimeUnavailable
 
 

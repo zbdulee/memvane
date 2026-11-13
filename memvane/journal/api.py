@@ -1,13 +1,16 @@
 """Public journal selection and worker proof operations."""
 from __future__ import annotations
-from importlib import import_module as _import_module
+
+def _load(module):
+    from importlib import import_module
+    return import_module(module)
 
 class _JournalOperations:
     """Read and journal operations kept behind the journal domain API."""
 
     def __getattr__(self, name):
         for module in ('journal_reader', 'reader_lease', 'journal_paths'):
-            target = _import_module('memvane.journal.' + module)
+            target = _load('memvane.journal.' + module)
             if hasattr(target, name):
                 return getattr(target, name)
         raise AttributeError(name)
@@ -16,13 +19,13 @@ class _InstallJournalOperations:
     """Install journal operations kept behind the journal domain API."""
 
     def __getattr__(self, name):
-        return getattr(_import_module('memvane.journal.install_journal'), name)
+        return getattr(_load('memvane.journal.install_journal'), name)
 
 _reader = _JournalOperations()
 _install_journal = _InstallJournalOperations()
 
 def _call(module, name, *args, **kwargs):
-    return getattr(_import_module('memvane.journal.' + module), name)(*args, **kwargs)
+    return getattr(_load('memvane.journal.' + module), name)(*args, **kwargs)
 
 def _api_attestation(*a, **k): return _call('install_journal', '_attestation', *a, **k)
 def _api_route(*a, **k): return _call('install_journal', '_route', *a, **k)
@@ -44,10 +47,6 @@ def __getattr__(name):
 
 def inspect_journal(*args, **kwargs):
     from memvane.journal.install_journal import inspect_journal as implementation
-    return implementation(*args, **kwargs)
-
-def cas_mark_new_write(*args, **kwargs):
-    from memvane.journal.install_journal import cas_mark_new_write as implementation
     return implementation(*args, **kwargs)
 
 def verify_selected_route(*args, **kwargs):
@@ -90,9 +89,6 @@ def journal_version(*args, **kwargs):
     from memvane.journal.install_journal import journal_version as implementation
     return implementation(*args, **kwargs)
 
-def legacy_identity_reads(*args, **kwargs):
-    from memvane.journal.install_journal import legacy_identity_reads as implementation
-    return implementation(*args, **kwargs)
 
 def recheck_reader(*args, **kwargs):
     from memvane.journal.journal_reader import _recheck as implementation

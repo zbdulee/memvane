@@ -19,26 +19,13 @@ import stat
 import subprocess
 import threading
 import time
+import unicodedata
 
 from memvane.kernel.errors import IndexContractError
 from memvane.journal.types import JournalEvidenceError
-from memvane.route.types import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIELDS_V2,
-                                   RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
-                                   SCHEMA_V2 as ROUTE_SCHEMA_V2,
-                                   SCHEMA_V3 as ROUTE_SCHEMA_V3)
 from memvane.journal.api import select_route
-from memvane.route.api import written_schema
-from memvane.provider.types import BundleEvidenceError
-from memvane.provider.api import _bundle as product_bundle
-COMMIT = product_bundle.COMMIT
-inspect_full_plugin_candidate = product_bundle.inspect_full_plugin_candidate
-RUNTIME_FILES_FIELD = product_bundle.RUNTIME_FILES_FIELD
-validate_production_provider_attestation = product_bundle.validate_production_provider_attestation
-validate_vector_profile = product_bundle.validate_vector_profile
 
 
-SCHEMA_V3 = 'laya-installer-journal-v3'
-SCHEMA = 'laya-installer-journal-v4'
 V1_SCHEMA = 'memvane-install-journal-v1'
 V1_APP_ID = 0x4d564a31
 V1_SELECTION_DDL = '''CREATE TABLE selection(
@@ -54,80 +41,10 @@ V1_SELECTION_DDL = '''CREATE TABLE selection(
   vector_recipe TEXT, new_write_seen INTEGER NOT NULL)'''
 V1_READER_DDL = '''CREATE TABLE reader(
   id INTEGER PRIMARY KEY CHECK(id=1), record TEXT NOT NULL)'''
-DEVELOPMENT_APPROVAL_SCHEMA = 'laya-development-vector-approval-v1'
-APP_ID = 0x4c594a31
-VERSION = 4
-# Every journal format this code reads and CAS-writes. A v3 journal still
-# carries the retired global-QMD inventory column; it is never re-checked.
-READ_VERSIONS = (3, 4, 5)
 ID = re.compile(r'[0-9a-f]{32}\Z')
-GEN = re.compile(r'g-[0-9a-f]{32}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 PRODUCTION_ATTESTATION = 'provider-attestation.json'
-_CREATE_V3 = '''CREATE TABLE selection(
-  id INTEGER PRIMARY KEY CHECK(id=1), schema TEXT NOT NULL,
-  epoch INTEGER NOT NULL, state TEXT NOT NULL,
-  selected TEXT, selected_route_sha TEXT, previous TEXT, previous_route_sha TEXT,
-  pending TEXT, pending_route_sha TEXT,
-  scope_id TEXT NOT NULL, project_root TEXT NOT NULL,
-  project_dev INTEGER NOT NULL, project_ino INTEGER NOT NULL,
-  user_qmd_inventory TEXT NOT NULL, new_write_seen INTEGER NOT NULL,
-  provider_attestation_sha TEXT, previous_provider_attestation_sha TEXT,
-  provider_file_identity TEXT, previous_provider_file_identity TEXT)'''
-_CREATE = '''CREATE TABLE selection(
-  id INTEGER PRIMARY KEY CHECK(id=1), schema TEXT NOT NULL,
-  epoch INTEGER NOT NULL, state TEXT NOT NULL,
-  selected TEXT, selected_route_sha TEXT, previous TEXT, previous_route_sha TEXT,
-  pending TEXT, pending_route_sha TEXT,
-  scope_id TEXT NOT NULL, project_root TEXT NOT NULL,
-  project_dev INTEGER NOT NULL, project_ino INTEGER NOT NULL,
-  new_write_seen INTEGER NOT NULL,
-  provider_attestation_sha TEXT, previous_provider_attestation_sha TEXT,
-  provider_file_identity TEXT, previous_provider_file_identity TEXT)'''
-SCHEMA_V5 = 'laya-installer-journal-v5'
-_FORMATS = {3: (SCHEMA_V3, _CREATE_V3), 4: (SCHEMA, _CREATE), 5: (SCHEMA_V5, _CREATE)}
-# Kept here so sealed engine subbundles can still identify and read a journal
-# without importing full-plugin installer or host-observer modules.
-_READER_DDL = {
-    'read_endpoints': 'CREATE TABLE read_endpoints(endpoint_id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL, attestation BLOB NOT NULL)',
-    'reader_selection': 'CREATE TABLE reader_selection(id INTEGER PRIMARY KEY CHECK(id=1), epoch INTEGER NOT NULL CHECK(epoch>=1), preferred_endpoint TEXT NOT NULL, previous_endpoint TEXT, transition_id TEXT NOT NULL)',
-    'reader_transitions': 'CREATE TABLE reader_transitions(transition_id TEXT PRIMARY KEY NOT NULL, epoch INTEGER UNIQUE NOT NULL, preferred_endpoint TEXT NOT NULL, previous_endpoint TEXT)',
-}
-for _table, _key in (('read_endpoints', 'endpoint_id'), ('reader_transitions', 'transition_id')):
-    for _op in ('UPDATE', 'DELETE', 'INSERT'):
-        _name = _table + '_' + _op.lower()
-        _when = (f' WHEN EXISTS(SELECT 1 FROM {_table} WHERE {_key}=NEW.{_key})'
-                 if _op == 'INSERT' else '')
-        _READER_DDL[_name] = (f'CREATE TRIGGER {_name} BEFORE {_op} ON {_table}{_when} '
-                              "BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END")
-_MOVE_READER_DDL = {
-    'move_read_seals': 'CREATE TABLE move_read_seals(move_id TEXT PRIMARY KEY NOT NULL, record TEXT NOT NULL)',
-    'move_read_seals_update': "CREATE TRIGGER move_read_seals_update BEFORE UPDATE ON move_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-    'move_read_seals_delete': "CREATE TRIGGER move_read_seals_delete BEFORE DELETE ON move_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-    'move_read_seals_insert': "CREATE TRIGGER move_read_seals_insert BEFORE INSERT ON move_read_seals WHEN EXISTS(SELECT 1 FROM move_read_seals WHERE move_id=NEW.move_id) BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-}
-_UPGRADE_READER_DDL = {
-    'upgrade_read_seals': 'CREATE TABLE upgrade_read_seals(intent_sha256 TEXT PRIMARY KEY NOT NULL, endpoint_id TEXT NOT NULL, record TEXT NOT NULL)',
-    'upgrade_read_seals_update': "CREATE TRIGGER upgrade_read_seals_update BEFORE UPDATE ON upgrade_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-    'upgrade_read_seals_delete': "CREATE TRIGGER upgrade_read_seals_delete BEFORE DELETE ON upgrade_read_seals BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-    'upgrade_read_seals_insert': "CREATE TRIGGER upgrade_read_seals_insert BEFORE INSERT ON upgrade_read_seals WHEN EXISTS(SELECT 1 FROM upgrade_read_seals WHERE intent_sha256=NEW.intent_sha256) BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-}
-_UPGRADE_SUCCESSOR_DDL = {
-    'upgrade_read_successors': 'CREATE TABLE upgrade_read_successors(epoch INTEGER PRIMARY KEY NOT NULL, intent_sha256 TEXT UNIQUE NOT NULL, endpoint_id TEXT NOT NULL, record TEXT NOT NULL)',
-    'upgrade_read_successors_update': "CREATE TRIGGER upgrade_read_successors_update BEFORE UPDATE ON upgrade_read_successors BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-    'upgrade_read_successors_delete': "CREATE TRIGGER upgrade_read_successors_delete BEFORE DELETE ON upgrade_read_successors BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-    'upgrade_read_successors_insert': "CREATE TRIGGER upgrade_read_successors_insert BEFORE INSERT ON upgrade_read_successors WHEN EXISTS(SELECT 1 FROM upgrade_read_successors WHERE epoch=NEW.epoch OR intent_sha256=NEW.intent_sha256) BEGIN SELECT RAISE(ABORT,'reader_record_immutable'); END",
-}
-# The withdrawn-selection state. A v3 file stores its old name; readers see
-# only ``restored_origin``.
-RESTORED = 'restored_origin'
-_V3_RESTORED = 'restored_qmd'
-_FIELDS_V4 = ('id', 'schema', 'epoch', 'state', 'selected', 'selected_route_sha',
-              'previous', 'previous_route_sha', 'pending', 'pending_route_sha',
-              'scope_id', 'project_root', 'project_dev', 'project_ino',
-              'new_write_seen', 'provider_attestation_sha',
-              'previous_provider_attestation_sha', 'provider_file_identity',
-              'previous_provider_file_identity')
+RUNTIME_FILES_FIELD = 'runtimeFilesSha256'
 
 
 def _fail(reason):
@@ -244,39 +161,33 @@ def stage_v1_attestation(journal_path, reviewed_provider):
     return {'attestationPath': str(target), 'attestationSha256': digest}
 
 
-def _provider_file_identity(attestation):
-    """Cheap immutable-file identity after one full validated hash pass."""
-    manifest = attestation['providerManifest']
-    paths = {manifest[key] for key in
-             ('providerPath', 'nodePath', 'moduleEntryPath', 'workerPath', 'modelPath')}
-    paths.update(item['path'] for item in attestation['dependencyClosure'])
-    rows = []
-    try:
-        for raw in sorted(paths):
-            path = Path(raw)
-            if not path.is_absolute() or path.resolve(strict=True) != path:
-                _fail('production_provider_file_changed')
-            info = path.lstat()
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                _fail('production_provider_file_changed')
-            rows.append([raw, info.st_dev, info.st_ino, info.st_size,
-                         info.st_mtime_ns, info.st_ctime_ns])
-    except (OSError, RuntimeError, TypeError, KeyError) as exc:
-        raise JournalEvidenceError('production_provider_file_unavailable') from exc
-    return rows
 
 
 def _strict_vector_profile(value):
-    if not isinstance(value, dict):
+    fields = {'profileId', 'modelId', 'embeddingFingerprint', 'dimension', 'metric',
+              'approvedProviderId', 'providerArtifactSha256', 'providerRelativePath'}
+    if not isinstance(value, dict) or set(value) != fields:
         _fail('invalid_vector_profile')
-    relative = value.get('providerRelativePath')
-    digest = value.get('providerArtifactSha256')
-    if type(relative) is not str or type(digest) is not str:
+    model, fingerprint, dimension, metric = (value['modelId'], value['embeddingFingerprint'],
+                                             value['dimension'], value['metric'])
+    relative = value['providerRelativePath']
+    if (type(model) is not str or not 1 <= len(model) <= 512
+            or any(unicodedata.category(char) in ('Cc', 'Cf', 'Cs', 'Zl', 'Zp')
+                   for char in model)
+            or type(fingerprint) is not str or not SHA.fullmatch(fingerprint)
+            or type(dimension) is not int or not 1 <= dimension <= 2048 or metric != 'cosine'
+            or type(value['approvedProviderId']) is not str
+            or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,127}', value['approvedProviderId'])
+            or type(value['providerArtifactSha256']) is not str
+            or not SHA.fullmatch(value['providerArtifactSha256'])
+            or type(relative) is not str or not relative.startswith('memvane/provider/adapters/')
+            or not relative.endswith('.py') or Path(relative).is_absolute() or '\\' in relative
+            or any(part in ('', '.', '..') for part in relative.split('/'))):
         _fail('invalid_vector_profile')
-    try:
-        return validate_vector_profile(value, {relative: {'sha256': digest}})
-    except BundleEvidenceError as exc:
-        raise JournalEvidenceError('invalid_vector_profile') from exc
+    expected = hashlib.sha256(_canon([model, fingerprint, dimension, metric]).encode('utf-8')).hexdigest()
+    if value['profileId'] != expected:
+        _fail('invalid_vector_profile')
+    return dict(value)
 
 
 def _route(raw, journal_path):
@@ -287,47 +198,38 @@ def _route(raw, journal_path):
                            parse_constant=_nonfinite)
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise JournalEvidenceError('invalid_route_bytes') from exc
-    schema = route.get('schema') if isinstance(route, dict) else None
     from memvane.route.types import FIELDS_V4, SCHEMA_V4
-    if schema == SCHEMA_V4:
-        state = Path(journal_path).parent
-        if (set(route) != FIELDS_V4 or route.get('status') != 'active'
-                or route.get('stateRoot') != str(state)
-                or route.get('storePath') != str(state / 'store.sqlite')
-                or type(route.get('stateFormat')) is not int or route['stateFormat'] < 1
-                or any(type(route.get(key)) is not str or not ID.fullmatch(route[key])
-                       for key in ('installId', 'scopeId', 'storeIncarnation'))
-                or type(route.get('settingsSha256')) is not str
-                or not SHA.fullmatch(route['settingsSha256'])
-                or not isinstance(route.get('projectRoot'), str)
-                or not Path(route['projectRoot']).is_absolute()
-                or not isinstance(route.get('collections'), list)
-                or any(not isinstance(route.get(key), list) or len(route[key]) != 2
-                       or any(type(n) is not int or n < 0 for n in route[key])
-                       for key in ('stateNode', 'storeNode'))):
-            _fail('route_contract_mismatch')
-        try:
-            from memvane.route.api import settings_identity_digest, wiki_index_roots
-            wiki_index_roots(route['collections'])
-            if (len({item['name'] for item in route['collections']}) != 2
-                    or next(item['sourceRoot'] for item in route['collections']
-                            if item['role'] == 'raw') != route['projectRoot']
-                    or settings_identity_digest(route['projectRoot'], route['collections'])
-                    != route['settingsSha256']):
-                _fail('route_contract_mismatch')
-        except (KeyError, TypeError, ValueError, StopIteration) as exc:
-            raise JournalEvidenceError('route_contract_mismatch') from exc
-        _strict_vector_profile(route.get('vectorProfile'))
-        return route, hashlib.sha256(raw).hexdigest()
-    expected_fields = (ROUTE_FIELDS if schema == ROUTE_SCHEMA else
-                       ROUTE_FIELDS_V2 if schema in (ROUTE_SCHEMA_V2, ROUTE_SCHEMA_V3)
-                       else None)
-    if (not isinstance(route, dict) or expected_fields is None or
-            set(route) != expected_fields or route.get('status') != 'active' or
-            route.get('journalPath') != str(journal_path)):
+    state = Path(journal_path).parent
+    if (not isinstance(route, dict) or route.get('schema') != SCHEMA_V4
+            or set(route) != FIELDS_V4 or route.get('status') != 'active'
+            or route.get('stateRoot') != str(state)
+            or route.get('storePath') != str(state / 'store.sqlite')
+            or type(route.get('stateFormat')) is not int or route['stateFormat'] < 1
+            or any(type(route.get(key)) is not str or not ID.fullmatch(route[key])
+                   for key in ('installId', 'scopeId', 'storeIncarnation'))
+            or type(route.get('settingsSha256')) is not str
+            or not SHA.fullmatch(route['settingsSha256'])
+            or not isinstance(route.get('projectRoot'), str)
+            or not Path(route['projectRoot']).is_absolute()
+            or not isinstance(route.get('collections'), list)
+            or any(not isinstance(route.get(key), list) or len(route[key]) != 2
+                   or any(type(n) is not int or n < 0 for n in route[key])
+                   for key in ('stateNode', 'storeNode'))):
         _fail('route_contract_mismatch')
+    try:
+        from memvane.route.api import settings_identity_digest, wiki_index_roots
+        wiki_index_roots(route['collections'])
+        if (len({item['name'] for item in route['collections']}) != 2
+                or next(item['sourceRoot'] for item in route['collections']
+                        if item['role'] == 'raw') != route['projectRoot']
+                or settings_identity_digest(route['projectRoot'], route['collections'])
+                != route['settingsSha256']):
+            _fail('route_contract_mismatch')
+    except (KeyError, TypeError, ValueError, StopIteration) as exc:
+        raise JournalEvidenceError('route_contract_mismatch') from exc
     _strict_vector_profile(route.get('vectorProfile'))
     return route, hashlib.sha256(raw).hexdigest()
+
 
 
 def _private_parent(path):
@@ -347,58 +249,6 @@ def _private_parent(path):
         raise JournalEvidenceError('journal_path_unavailable') from exc
 
 
-def _identity(proof, route, journal_path):
-    if (not isinstance(proof, dict) or
-            proof.get('status') != 'exact_commit_full_plugin_candidate_consistent'):
-        _fail('unverified_bundle')
-    live = inspect_full_plugin_candidate(proof.get('pluginRoot'))
-    if live != proof:
-        _fail('bundle_proof_changed')
-    root = live['pluginRoot']
-    if ((route['schema'] == ROUTE_SCHEMA and
-         Path(root).parent != journal_path.parent) or
-            route.get('pluginRoot') != root or
-            type(route.get('installId')) is not str or not ID.fullmatch(route['installId']) or
-            type(route.get('generation')) is not str or not GEN.fullmatch(route['generation']) or
-            route.get('bundleManifestSha256') != live['bundleManifestSha256'] or
-            route.get('ownershipManifestSha256') != live['ownershipManifestSha256'] or
-            route.get('vectorProfile') != live.get('vectorProfile')):
-        _fail('route_bundle_mismatch')
-    return {'pluginRoot': root, 'installId': route['installId'],
-            'generation': route['generation'],
-            'bundleManifestSha256': live['bundleManifestSha256'],
-            'ownershipManifestSha256': live['ownershipManifestSha256'],
-            'sourceCommit': live['sourceCommit'],
-            'vectorProfile': live.get('vectorProfile'),
-            'bundleKind': 'full_plugin'}
-
-
-def _inspect_identity(identity):
-    if not isinstance(identity, dict):
-        _fail('invalid_bundle_identity')
-    if identity.get('bundleKind') != 'full_plugin':
-        _fail('invalid_bundle_identity')
-    proof = inspect_full_plugin_candidate(identity.get('pluginRoot'))
-    if (proof['bundleManifestSha256'] != identity.get('bundleManifestSha256') or
-            proof['ownershipManifestSha256'] != identity.get('ownershipManifestSha256') or
-            proof['sourceCommit'] != identity.get('sourceCommit') or
-            proof.get('vectorProfile') != identity.get('vectorProfile')):
-        _fail('installed_bundle_changed')
-    return proof
-
-
-def _bind_attestation(journal_path, identity, proof):
-    if identity.get('bundleKind') != 'full_plugin':
-        return None, None
-    record, digest = _attestation(journal_path)
-    if record is None:
-        return None, None
-    try:
-        validate_production_provider_attestation(proof.get('vectorProfile'),
-                                                 proof, record)
-    except BundleEvidenceError as exc:
-        raise JournalEvidenceError('production_attestation_invalid') from exc
-    return digest, _provider_file_identity(record)
 
 
 
@@ -407,58 +257,16 @@ def _bind_attestation(journal_path, identity, proof):
 
 
 
-def _project_matches(route, row):
-    from memvane.kernel.persistent_identity import persistent_identity_equal
-    return persistent_identity_equal(
-        (row['project_root'], row['project_dev'], row['project_ino']),
-        _project(route), device_index=1)
 
 
-def _provider_identity_equal(stored, live):
-    from memvane.kernel.persistent_identity import persistent_provider_equal
-    return persistent_provider_equal(stored, live)
 
 
-def _project(route):
-    try:
-        path = Path(route.get('projectRoot'))
-        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
-            _fail('invalid_project_root')
-        path = path.resolve(strict=True)
-        info = path.stat()
-        if (str(path) != route['projectRoot'] or type(route.get('scopeId')) is not str or
-                not ID.fullmatch(route['scopeId'])):
-            _fail('invalid_project_root')
-        return str(path), info.st_dev, info.st_ino
-    except (OSError, TypeError, RuntimeError) as exc:
-        raise JournalEvidenceError('project_root_unavailable') from exc
 
 
-def _observed_route(row, supplied_raw):
-    from memvane.settings import api as project_dir
-    route_path = project_dir.runtime_file(row['project_root'], ROUTE_FILE)
-    try:
-        if route_path.is_symlink() or not route_path.is_file():
-            _fail('route_unavailable')
-        before = route_path.stat()
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
-                before.st_mode & stat.S_IWOTH or before.st_size > 8192):
-            _fail('unsafe_route_file')
-        fd = os.open(route_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-        try:
-            raw = os.read(fd, 8193)
-            after = os.fstat(fd)
-        finally:
-            os.close(fd)
-        now = route_path.stat()
-        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-        if len(raw) > 8192 or identity(before) != identity(after) or identity(before) != identity(now):
-            _fail('route_file_changed')
-        if supplied_raw is not None and raw != supplied_raw:
-            _fail('observed_route_mismatch')
-        return raw
-    except OSError as exc:
-        raise JournalEvidenceError('route_unavailable') from exc
+
+
+
+
 
 
 def _schema_version(db):
@@ -482,34 +290,13 @@ def _schema_version(db):
 
 def _schema_version_read(db):
     app_id = db.execute('PRAGMA application_id').fetchone()[0]
-    if app_id == V1_APP_ID:
-        if db.execute('PRAGMA user_version').fetchone()[0] != 1:
-            return None
-        objects = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
-        return 1 if objects == {'selection': V1_SELECTION_DDL, 'reader': V1_READER_DDL} else None
-    if app_id != APP_ID:
+    if app_id != V1_APP_ID or db.execute('PRAGMA user_version').fetchone()[0] != 1:
         return None
-    version = db.execute('PRAGMA user_version').fetchone()[0]
-    expected = _FORMATS.get(version)
-    if (expected is None or
-            db.execute("SELECT sql FROM sqlite_master WHERE name='selection'").fetchone()
-            != (expected[1],)):
-        return None
-    if version == 5:
-        objects = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
-        base = {'selection': _CREATE, **_READER_DDL}
-        if objects not in (base, {**base, **_MOVE_READER_DDL},
-                           {**base, **_UPGRADE_READER_DDL},
-                           {**base, **_MOVE_READER_DDL, **_UPGRADE_READER_DDL},
-                           {**base, **_UPGRADE_READER_DDL, **_UPGRADE_SUCCESSOR_DDL},
-                           {**base, **_MOVE_READER_DDL, **_UPGRADE_READER_DDL,
-                            **_UPGRADE_SUCCESSOR_DDL}):
-            return None
-    return version
+    objects = dict(db.execute("SELECT name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
+    return 1 if objects == {'selection': V1_SELECTION_DDL, 'reader': V1_READER_DDL} else None
 
 
 _reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
-_legacy_identity_reads = ContextVar('journal_legacy_identity_reads', default=False)
 _reader_deadline = ContextVar('journal_reader_deadline', default=None)
 
 
@@ -540,7 +327,7 @@ def _reader_timeout():
 
 @contextmanager
 def read_only_journals():
-    """Keep bridge classification and proof reads out of legacy recovery."""
+    """Prevent writes while a caller performs read-only journal checks."""
     token = _reader_no_recovery.set(True)
     try:
         yield
@@ -548,14 +335,6 @@ def read_only_journals():
         _reader_no_recovery.reset(token)
 
 
-@contextmanager
-def legacy_identity_reads():
-    """Require pre-v5 evidence in the actual fullproof journal snapshot."""
-    token = _legacy_identity_reads.set(True)
-    try:
-        yield
-    finally:
-        _legacy_identity_reads.reset(token)
 
 
 def _check_rollback_file(path):
@@ -593,8 +372,8 @@ def _check_rollback_file(path):
                 _fail('journal_changed')
             return
         except FileNotFoundError:
-            # A successful legacy COMMIT removes its journal. Recheck the
-            # name once; sustained churn remains a typed proof failure.
+            # SQLite may remove its rollback journal between open and inspection.
+            # Recheck the name once; sustained churn is a typed proof failure.
             if attempt:
                 _fail('journal_changed')
         except OSError as exc:
@@ -647,131 +426,8 @@ def journal_version(journal_path):
     return version
 
 
-def _row(db):
-    # Re-read inside the caller's transaction: a v3->v4 conversion may have
-    # committed between ``_open`` and this read.
-    version = _schema_version(db)
-    if version is None:
-        _fail('journal_schema_unknown')
-    record = db.execute('SELECT * FROM selection WHERE id=1').fetchone()
-    if record is None or db.execute('SELECT count(*) FROM selection').fetchone()[0] != 1:
-        _fail('journal_selection_missing')
-    fields = (_FIELDS_V4 if version >= 4 else
-              _FIELDS_V4[:14] + ('user_qmd_inventory',) + _FIELDS_V4[14:])
-    if len(record) != len(fields):
-        _fail('journal_schema_unknown')
-    row = dict(zip(fields, record))
-    stored_restored = RESTORED if version >= 4 else _V3_RESTORED
-    if (row['schema'] != _FORMATS[version][0] or type(row['epoch']) is not int or
-            row['epoch'] < 1 or
-            row['state'] not in ('candidate_ready', 'pending', 'active', 'restored_old',
-                                 stored_restored) or
-            type(row['new_write_seen']) is not int or row['new_write_seen'] not in (0, 1)):
-        _fail('journal_state_invalid')
-    if row['state'] == stored_restored:
-        row['state'] = RESTORED
-    # The v3 global-QMD inventory is retired evidence: carried, never bound.
-    row.pop('user_qmd_inventory', None)
-    row['_version'] = version
-    try:
-        for key in ('selected', 'previous', 'pending',
-                    'provider_file_identity', 'previous_provider_file_identity'):
-            row[key] = json.loads(row[key], object_pairs_hook=_pairs,
-                                  parse_constant=_nonfinite) if row[key] is not None else None
-    except (TypeError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
-        raise JournalEvidenceError('journal_value_invalid') from exc
-    for key in ('provider_file_identity', 'previous_provider_file_identity'):
-        value = row[key]
-        if value is not None and (not isinstance(value, list) or
-                not value or any(not isinstance(item, list) or len(item) != 6 or
-                    type(item[0]) is not str or
-                    any(type(n) is not int or n < 0 for n in item[1:])
-                    for item in value) or
-                [item[0] for item in value] != sorted(set(item[0] for item in value))):
-            _fail('journal_provider_identity_invalid')
-    if (type(row['scope_id']) is not str or not ID.fullmatch(row['scope_id']) or
-            type(row['project_root']) is not str or not Path(row['project_root']).is_absolute() or
-            type(row['project_dev']) is not int or type(row['project_ino']) is not int or
-            any(value is not None and (type(value) is not str or not SHA.fullmatch(value))
-                for value in (row['selected_route_sha'], row['previous_route_sha'],
-                              row['pending_route_sha'],
-                              row['provider_attestation_sha'],
-                              row['previous_provider_attestation_sha']))):
-        _fail('journal_value_invalid')
-    for key in ('selected', 'previous', 'pending'):
-        value = row[key]
-        if value is None:
-            continue
-        if (not isinstance(value, dict) or
-                set(value) != {'pluginRoot', 'installId', 'generation',
-                               'bundleManifestSha256', 'ownershipManifestSha256',
-                               'sourceCommit', 'bundleKind', 'vectorProfile'} or
-                type(value['pluginRoot']) is not str or
-                not Path(value['pluginRoot']).is_absolute() or
-                type(value['installId']) is not str or not ID.fullmatch(value['installId']) or
-                type(value['generation']) is not str or not GEN.fullmatch(value['generation']) or
-                any(type(value[k]) is not str or not SHA.fullmatch(value[k]) for k in
-                    ('bundleManifestSha256', 'ownershipManifestSha256')) or
-                type(value['sourceCommit']) is not str or
-                not COMMIT.fullmatch(value['sourceCommit']) or
-                value['bundleKind'] != 'full_plugin'):
-            _fail('journal_value_invalid')
-        if value['vectorProfile'] is not None:
-            _strict_vector_profile(value['vectorProfile'])
-    if ((row['state'] in ('active', 'restored_old') and
-         (row['selected'] is None or row['selected_route_sha'] is None)) or
-            (row['state'] in ('candidate_ready', 'pending') and
-             (row['pending'] is None or row['pending_route_sha'] is None)) or
-            (row['state'] == RESTORED and
-             (row['selected'] is not None or row['selected_route_sha'] is not None
-              or row['pending'] is not None or row['pending_route_sha'] is not None
-              or row['new_write_seen'] or row['provider_attestation_sha'] or
-              row['provider_file_identity']))):
-        _fail('journal_state_invalid')
-    return row
 
 
-def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_roots=None):
-    """No-clobber synthetic v4 journal; route publication remains external.
-
-    ``user_qmd_roots`` is accepted for older callers and ignored: a journal
-    binds only Laya-owned evidence, never the global QMD directories.
-    """
-    del user_qmd_roots
-    path = _private_parent(journal_path)
-    if path.exists() or path.is_symlink():
-        _fail('journal_already_exists')
-    route, digest = _route(proposed_route_raw, path)
-    identity = _identity(bundle_proof, route, path)
-    project, dev, ino = _project(route)
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
-    os.close(fd)
-    try:
-        with closing(sqlite3.connect(path, timeout=2, isolation_level=None)) as db:
-            db.execute('PRAGMA journal_mode=DELETE')
-            db.execute('PRAGMA synchronous=FULL')
-            db.execute(f'PRAGMA application_id={APP_ID}')
-            db.execute(f'PRAGMA user_version={VERSION}')
-            db.execute('BEGIN IMMEDIATE')
-            db.execute(_CREATE)
-            db.execute('INSERT INTO selection VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                       (SCHEMA, 1, 'candidate_ready', None, None, None, None,
-                        _canon(identity), digest, route['scopeId'], project, dev, ino,
-                        0, None, None, None, None))
-            db.commit()
-        file_fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-        try:
-            os.fsync(file_fd)
-        finally:
-            os.close(file_fd)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except (OSError, sqlite3.Error) as exc:
-        raise JournalEvidenceError('journal_creation_incomplete') from exc
-    return inspect_journal(path)
 
 
 def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
@@ -914,11 +570,7 @@ def inspect_journal(journal_path):
     with closing(db):
         db.execute('BEGIN')
         try:
-            if _schema_version(db) == 1:
-                row = _inspect_v1_row(db)
-                db.commit()
-                return {'journalPath': str(path), **row}
-            row = _row(db)
+            row = _inspect_v1_row(db)
             db.commit()
         except (OSError, RuntimeError, sqlite3.Error) as exc:
             db.rollback()
@@ -926,361 +578,38 @@ def inspect_journal(journal_path):
         except BaseException:
             db.rollback()
             raise
-    return {'journalPath': str(path), 'epoch': row['epoch'], 'state': row['state'],
-            'selected': row['selected'], 'previous': row['previous'],
-            'pending': row['pending'], 'scopeId': row['scope_id'],
-            'projectRoot': row['project_root'], 'newWriteSeen': bool(row['new_write_seen']),
-            'selectedRouteSha256': row['selected_route_sha'],
-            'previousRouteSha256': row['previous_route_sha'],
-            'pendingRouteSha256': row['pending_route_sha'],
-            'providerAttestationSha256': row['provider_attestation_sha'],
-            'previousProviderAttestationSha256': row['previous_provider_attestation_sha'],
-            'providerFileIdentitySha256': (hashlib.sha256(_canon(row['provider_file_identity']).encode('utf-8')).hexdigest()
-                                           if row['provider_file_identity'] is not None else None)}
+    return {'journalPath': str(path), **row}
 
 
-def _mutate_row(db, path, row, expected_epoch, mutate, *, after=None):
-    if type(expected_epoch) is not int or row['epoch'] != expected_epoch:
-        _fail('stale_journal_cas')
-    values = mutate(path, row)
-    if values is None:
-        return False
-    if values.get('state') == RESTORED and row['_version'] == 3:
-        values = {**values, 'state': _V3_RESTORED}
-    fields = ','.join(f'{key}=?' for key in values)
-    args = (*values.values(), expected_epoch + 1, expected_epoch)
-    if db.execute(f'UPDATE selection SET {fields},epoch=? WHERE id=1 AND epoch=?', args).rowcount != 1:
-        _fail('stale_journal_cas')
-    if after is not None:
-        after(db, path, row, values)
-    return True
 
 
-def _cas(path, expected_epoch, mutate):
-    path = _private_parent(path)
 
-    def v5():
-        from memvane.journal.journal_reader import mutate_image
-        mutate_image(path, lambda image: _mutate_row(
-            image, path, _row(image), expected_epoch, mutate))
-        return inspect_journal(path)
-
-    if journal_version(path) == 5:
-        return v5()
-    path, db = _open(path, write=True)
-    try:
-        db.execute('PRAGMA synchronous=FULL')
-        db.execute('BEGIN IMMEDIATE')
-        row = _row(db)
-        if row['_version'] == 5:
-            # Conversion committed after the first observation. Release the
-            # old writer transaction before acquiring the image writer lock.
-            db.rollback()
-        else:
-            _mutate_row(db, path, row, expected_epoch, mutate)
-            db.commit()
-    except BaseException:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-    if row['_version'] == 5:
-        return v5()
-    return inspect_journal(path)
 
 
 # Test seam: called with each conversion step name inside the transaction.
 _conversion_step = None
 
 
-def _step(name):
-    if _conversion_step is not None:
-        _conversion_step(name)
 
 
-def convert_to_v4(journal_path):
-    """Rewrite a v3 journal as v4 in one SQLite transaction; idempotent.
-
-    The logical row is unchanged: the retired global-QMD inventory column
-    is dropped and ``restored_qmd`` is stored as ``restored_origin``. The
-    epoch stays the same, so a reader's proof taken before the commit still
-    equals one taken after it. A crash before COMMIT leaves the v3 file
-    (SQLite rolls the hot journal back); after COMMIT the file is v4.
-    The caller holds the install lock; this function takes no other lock.
-    """
-    path, db = _open(journal_path, write=True)
-    try:
-        db.execute('PRAGMA synchronous=FULL')
-        db.execute('BEGIN IMMEDIATE')
-        before = _row(db)
-        old_version = before.pop('_version')
-        if old_version == 5:
-            db.rollback()
-            return {'status': 'journal_v5_current', 'journalPath': str(path), 'epoch': before['epoch']}
-        if old_version == 4:
-            db.commit()
-            return {'status': 'journal_v4_current', 'journalPath': str(path),
-                    'epoch': before['epoch']}
-        _step('locked')
-        stored = db.execute('SELECT ' + ','.join(_FIELDS_V4) +
-                            ' FROM selection WHERE id=1').fetchone()
-        values = dict(zip(_FIELDS_V4, stored))
-        values['schema'] = SCHEMA
-        if values['state'] == _V3_RESTORED:
-            values['state'] = RESTORED
-        db.execute('DROP TABLE selection')
-        _step('dropped')
-        # Never ALTER ... RENAME: SQLite would rewrite the stored CREATE text
-        # and the exact-schema check would refuse the converted file.
-        db.execute(_CREATE)
-        _step('created')
-        db.execute('INSERT INTO selection(' + ','.join(_FIELDS_V4) + ') VALUES(' +
-                   ','.join('?' * len(_FIELDS_V4)) + ')',
-                   tuple(values[key] for key in _FIELDS_V4))
-        _step('inserted')
-        db.execute(f'PRAGMA user_version={VERSION}')
-        _step('versioned')
-        after = _row(db)
-        if (after.pop('_version') != 4 or after.pop('schema') != SCHEMA or
-                before.pop('schema') != SCHEMA_V3 or after != before):
-            _fail('journal_conversion_mismatch')
-        db.commit()
-    except BaseException:
-        if db.in_transaction:
-            db.rollback()
-        raise
-    finally:
-        db.close()
-    _step('committed')
-    try:
-        file_fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-        try:
-            os.fsync(file_fd)
-        finally:
-            os.close(file_fd)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except OSError as exc:
-        raise JournalEvidenceError('journal_conversion_unsynced') from exc
-    return {'status': 'journal_v4_converted', 'journalPath': str(path),
-            'epoch': after['epoch']}
 
 
-def cas_stage_update(journal_path, expected_epoch, next_bundle_proof, proposed_route_raw):
-    def stage(path, row):
-        if row['state'] not in ('active', 'restored_old'):
-            _fail('journal_not_active')
-        route, digest = _route(proposed_route_raw, path)
-        identity = _identity(next_bundle_proof, route, path)
-        if (not _project_matches(route, row) or
-                route['scopeId'] != row['scope_id'] or identity == row['selected']):
-            _fail('update_identity_mismatch')
-        return {'state': 'pending', 'previous': _canon(row['selected']),
-                'previous_route_sha': row['selected_route_sha'],
-                'previous_provider_attestation_sha': row['provider_attestation_sha'],
-                'previous_provider_file_identity': (_canon(row['provider_file_identity'])
-                                                    if row['provider_file_identity'] is not None else None),
-                'pending': _canon(identity), 'pending_route_sha': digest,
-                'new_write_seen': 0}
-    return _cas(journal_path, expected_epoch, stage)
 
 
-def cas_retarget_pending(journal_path, expected_epoch, current_route_raw,
-                         expected_pending, expected_pending_route_sha,
-                         next_bundle_proof, next_route_raw):
-    """Replace only an interrupted update's pending target with a fresh proof.
-
-    The selected and previous evidence stays untouched, including provider
-    evidence and write history. Their caches need not exist. This does not
-    activate a bundle, publish metadata, or approve provider equivalence;
-    the installer owns those checks and keeps its selection fence in place.
-    """
-    def retarget(path, row):
-        if (row['state'] != 'pending' or row['new_write_seen'] or
-                row['selected'] is None or row['previous'] is None or
-                row['pending'] is None or row['selected'] != row['previous'] or
-                row['selected_route_sha'] != row['previous_route_sha'] or
-                row['selected_route_sha'] is None or
-                row['provider_attestation_sha'] !=
-                row['previous_provider_attestation_sha'] or
-                row['provider_file_identity'] != row['previous_provider_file_identity'] or
-                row['pending'] == row['selected'] or
-                row['pending_route_sha'] == row['selected_route_sha']):
-            _fail('pending_update_not_replaceable')
-        if (type(expected_pending) is not dict or
-                row['pending'] != expected_pending or
-                row['pending_route_sha'] != expected_pending_route_sha):
-            _fail('pending_update_predecessor_changed')
-        # Supplying the exact before bytes is mandatory, even though the
-        # observed-route helper also supports unpinned reads for other APIs.
-        before, before_sha = _route(current_route_raw, path)
-        _observed_route(row, current_route_raw)
-        if before_sha == row['selected_route_sha']:
-            observed_identity = row['selected']
-        elif before_sha == row['pending_route_sha']:
-            observed_identity = row['pending']
-        else:
-            _fail('pending_update_observed_route_changed')
-        identity_fields = ('pluginRoot', 'installId', 'generation',
-                           'bundleManifestSha256', 'ownershipManifestSha256',
-                           'vectorProfile')
-        if any(before[key] != observed_identity[key] for key in identity_fields):
-            _fail('pending_update_observed_identity_changed')
-        after, after_sha = _route(next_route_raw, path)
-        replaceable = {'schema', 'pluginRoot', 'bundleManifestSha256',
-                       'ownershipManifestSha256'}
-        fixed_identity = ('installId', 'generation', 'vectorProfile')
-        if (set(before) != set(after) or
-                after['schema'] != written_schema(before['schema']) or
-                any(before[key] != after[key] for key in set(before) - replaceable) or
-                not _project_matches(before, row) or not _project_matches(after, row) or
-                before['scopeId'] != row['scope_id'] or after['scopeId'] != row['scope_id'] or
-                any(row['selected'][key] != row['pending'][key] or
-                    after[key] != row['selected'][key] for key in fixed_identity)):
-            _fail('pending_update_identity_mismatch')
-        if (not isinstance(next_bundle_proof, dict) or
-                next_bundle_proof.get('status') !=
-                'exact_commit_full_plugin_candidate_consistent'):
-            _fail('pending_update_full_plugin_required')
-        next_identity = _identity(next_bundle_proof, after, path)
-        if (next_identity['bundleKind'] != 'full_plugin' or
-                next_identity in (row['selected'], row['pending']) or
-                after_sha in (row['selected_route_sha'], row['pending_route_sha'])):
-            _fail('pending_update_target_unchanged')
-        return {'pending': _canon(next_identity), 'pending_route_sha': after_sha}
-    return _cas(journal_path, expected_epoch, retarget)
 
 
-def cas_replace_inactive_candidate(journal_path, expected_epoch,
-                                   current_route_raw, next_bundle_proof,
-                                   next_route_raw):
-    """CAS a still-unselected initial build to an exact replacement bundle.
-
-    Only installer-owned, private candidate metadata changes. The vector
-    profile, project, scope, install ID, generation and every store path stay
-    fixed. This function also supports a guarded rollback to the old bundle.
-    """
-    def replace(path, row):
-        if (row['state'] != 'candidate_ready' or row['pending'] is None or
-                row['selected'] is not None or row['previous'] is not None or
-                row['new_write_seen']):
-            _fail('inactive_candidate_not_replaceable')
-        before, before_sha = _route(current_route_raw, path)
-        after, after_sha = _route(next_route_raw, path)
-        if before_sha != row['pending_route_sha']:
-            _fail('inactive_candidate_route_changed')
-        next_identity = _identity(next_bundle_proof, after, path)
-        replaceable = {'schema', 'pluginRoot', 'bundleManifestSha256',
-                       'ownershipManifestSha256'}
-        # A switch writes the written schema (v2 -> v3) and its restore puts
-        # the original back (v3 -> v2); any other schema change is not a
-        # bundle replacement.
-        schemas = {before.get('schema'), after.get('schema')}
-        if (set(before) != set(after) or
-                (len(schemas) != 1 and schemas != {ROUTE_SCHEMA_V2, ROUTE_SCHEMA_V3}) or
-                any(before[key] != after[key] for key in before.keys() - replaceable)
-                or any(before[key] != row['pending'].get(key) for key in
-                       ('pluginRoot', 'installId', 'generation',
-                        'bundleManifestSha256', 'ownershipManifestSha256',
-                        'vectorProfile'))
-                or any(row['pending'][key] != next_identity[key] for key in
-                       ('installId', 'generation', 'vectorProfile'))
-                or not _project_matches(after, row)
-                or after['scopeId'] != row['scope_id']):
-            _fail('inactive_candidate_identity_mismatch')
-        return {'pending': _canon(next_identity), 'pending_route_sha': after_sha}
-    return _cas(journal_path, expected_epoch, replace)
 
 
-def cas_recover(journal_path, expected_epoch, observed_route_raw):
-    """Finish pending switch if new route is visible, else retain exact old route."""
-    def recover(path, row):
-        if row['state'] not in ('candidate_ready', 'pending') or row['pending'] is None:
-            _fail('journal_not_pending')
-        route, digest = _route(_observed_route(row, observed_route_raw), path)
-        if (not _project_matches(route, row) or
-                route['scopeId'] != row['scope_id']):
-            _fail('recovery_project_mismatch')
-        if digest == row['pending_route_sha']:
-            if any(route.get(k) != row['pending'].get(k) for k in
-                   ('pluginRoot', 'installId', 'generation', 'bundleManifestSha256',
-                    'ownershipManifestSha256', 'vectorProfile')):
-                _fail('recovery_identity_mismatch')
-            proof = _inspect_identity(row['pending'])
-            att_sha, file_identity = _bind_attestation(path, row['pending'], proof)
-            return {'state': 'active', 'selected': _canon(row['pending']),
-                    'selected_route_sha': digest, 'pending': None,
-                    'pending_route_sha': None,
-                    'provider_attestation_sha': att_sha,
-                    'provider_file_identity': (_canon(file_identity) if file_identity is not None else None)}
-        if row['previous'] is not None and digest == row['previous_route_sha']:
-            _inspect_identity(row['previous'])
-            return {'state': 'restored_old', 'selected': _canon(row['previous']),
-                    'selected_route_sha': digest, 'pending': None,
-                    'pending_route_sha': None,
-                    'provider_attestation_sha': row['previous_provider_attestation_sha'],
-                    'provider_file_identity': (_canon(row['previous_provider_file_identity'])
-                                               if row['previous_provider_file_identity'] is not None else None)}
-        _fail('uncertain_route_recovery')
-    return _cas(journal_path, expected_epoch, recover)
 
 
-def cas_activate(journal_path, expected_epoch, observed_route_raw):
-    """Commit only the proposed route branch; another observation blocks."""
-    def activate(path, row):
-        if row['state'] not in ('candidate_ready', 'pending') or row['pending'] is None:
-            _fail('journal_not_pending')
-        route, digest = _route(_observed_route(row, observed_route_raw), path)
-        if digest != row['pending_route_sha']:
-            _fail('activation_not_selected')
-        if (not _project_matches(route, row) or
-                route['scopeId'] != row['scope_id'] or
-                any(route.get(k) != row['pending'].get(k) for k in
-                    ('pluginRoot', 'installId', 'generation', 'bundleManifestSha256',
-                     'ownershipManifestSha256', 'vectorProfile'))):
-            _fail('activation_identity_mismatch')
-        proof = _inspect_identity(row['pending'])
-        att_sha, file_identity = _bind_attestation(path, row['pending'], proof)
-        return {'state': 'active', 'selected': _canon(row['pending']),
-                'selected_route_sha': digest, 'pending': None,
-                'pending_route_sha': None,
-                'provider_attestation_sha': att_sha,
-                'provider_file_identity': (_canon(file_identity) if file_identity is not None else None)}
-    return _cas(journal_path, expected_epoch, activate)
 
 
 RELOCATED_ROUTE_FIELDS = frozenset(('journalPath', 'dbPath', 'queuePath'))
 RELOCATED_ATTESTATION_PATHS = (('journalPath',), ('providerManifest', 'serviceSocketPath'))
 
 
-def cas_mark_new_write(journal_path, expected_epoch):
-    def mark(_path, row):
-        if row['state'] != 'active' or row['selected'] is None:
-            _fail('journal_not_active')
-        return {'new_write_seen': 1}
-    return _cas(journal_path, expected_epoch, mark)
 
 
-def cas_restore(journal_path, expected_epoch, observed_old_route_raw):
-    def restore(path, row):
-        if row['state'] != 'active' or row['previous'] is None or row['new_write_seen']:
-            _fail('rollback_not_authorized')
-        route, digest = _route(_observed_route(row, observed_old_route_raw), path)
-        if digest != row['previous_route_sha'] or any(route.get(k) != row['previous'].get(k)
-                for k in ('pluginRoot', 'installId', 'generation',
-                          'bundleManifestSha256', 'ownershipManifestSha256',
-                          'vectorProfile')):
-            _fail('rollback_route_mismatch')
-        _inspect_identity(row['previous'])
-        return {'state': 'restored_old', 'selected': _canon(row['previous']),
-                'selected_route_sha': digest, 'new_write_seen': 0,
-                'provider_attestation_sha': row['previous_provider_attestation_sha'],
-                'provider_file_identity': (_canon(row['previous_provider_file_identity'])
-                                           if row['previous_provider_file_identity'] is not None else None)}
-    return _cas(journal_path, expected_epoch, restore)
 
 
 def _executing_root():
@@ -1348,7 +677,7 @@ def _verify_v1_selected(decision):
 
 
 def verify_selected_route(decision):
-    """Full selected-route proof, including the currently executing bundle."""
+    """Verify the selected 1.0 route, journal, store and provider identity."""
     if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
         _fail('unselected_host_route')
     return _verify_v1_selected(decision)
@@ -1430,47 +759,28 @@ def verify_worker_attestation(decision):
 
 
 def _worker_attestation_manifest(selected):
-    """Check closure against a proof; caller must reprove before accepting it."""
     if selected.get('productRouteAllowed') is not True:
         _fail('worker_provider_unapproved')
     path, db = _open(selected['journalPath'], write=False)
     with closing(db):
         db.execute('BEGIN')
         try:
-            if _schema_version(db) == 1:
-                row = _inspect_v1_row(db)
-                if (row['epoch'] != selected['selectionEpoch'] or row['state'] != 'selected'
-                        or any(row[key] != selected.get(key) for key in
-                               ('installId', 'scopeId', 'projectRoot', 'storePath',
-                                'storeIncarnation', 'stateFormat', 'vectorProfile'))):
-                    _fail('worker_selection_changed')
-                db.commit()
-                record, digest = _attestation(path)
-                if digest != row['attestationSha256']:
-                    _fail('worker_attestation_changed')
-                return _v1_provider_manifest(record, row['vectorProfile'])
-            row = _row(db)
-            if (row['epoch'] != selected['selectionEpoch'] or
-                    row['provider_attestation_sha'] is None or
-                    row['selected'] is None):
+            row = _inspect_v1_row(db)
+            if (row['epoch'] != selected['selectionEpoch'] or row['state'] != 'selected'
+                    or any(row[key] != selected.get(key) for key in
+                           ('installId', 'scopeId', 'projectRoot', 'storePath',
+                            'storeIncarnation', 'stateFormat', 'vectorProfile'))):
                 _fail('worker_selection_changed')
-            identity = row['selected']
-            expected_sha = row['provider_attestation_sha']
             db.commit()
         except BaseException:
             db.rollback()
             raise
-    proof = _inspect_identity(identity)
     record, digest = _attestation(path)
-    if digest != expected_sha:
+    if digest != row['attestationSha256']:
         _fail('worker_attestation_changed')
-    try:
-        manifest = validate_production_provider_attestation(
-            proof.get('vectorProfile'), proof, record)
-    except BundleEvidenceError as exc:
-        raise JournalEvidenceError('worker_attestation_invalid') from exc
-    _verify_runtime_files(record)
+    manifest = _v1_provider_manifest(record, row['vectorProfile'])
     return manifest
+
 
 
 def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
@@ -1548,69 +858,12 @@ def _verify_runtime_files(record):
 
 
 def verify_preview_worker_attestation(journal_path, provider_manifest):
-    """Before a pending build's worker starts: its sealed record's runtime files.
-
-    The preview proof already validated the record against the journal's
-    reviewed digest; this re-hashes every runtime file it executes.
-    """
     path = _private_parent(journal_path)
     record, digest = _attestation(path)
-    if isinstance(record, dict) and record.get('schema') == 'memvane-provider-attestation-v1':
-        row = inspect_journal(path)
-        if row['state'] != 'prepared' or row['attestationSha256'] != digest:
-            _fail('worker_attestation_changed')
-        manifest = _v1_provider_manifest(record, row['vectorProfile'])
-        if manifest != provider_manifest or inspect_journal(path) != row:
-            _fail('worker_attestation_changed')
-        return manifest
-    if (not isinstance(record, dict) or not isinstance(provider_manifest, dict) or
-            record.get('providerManifest') != provider_manifest):
+    row = inspect_journal(path)
+    if row['state'] != 'prepared' or row['attestationSha256'] != digest:
         _fail('worker_attestation_changed')
-    _verify_runtime_files(record)
-    return provider_manifest
-
-
-def verify_development_vector_approval(decision, approval_manifest_path):
-    """Explicit, read-only L0 proof; never authorizes the product hook."""
-    proof = verify_selected_route(decision)
-    if proof['productRouteAllowed'] or proof['vectorProfile'] is None:
-        _fail('development_approval_not_applicable')
-    try:
-        path = Path(approval_manifest_path)
-    except (TypeError, ValueError) as exc:
-        raise JournalEvidenceError('invalid_development_approval_path') from exc
-    if (not path.is_absolute() or path.is_symlink() or
-            path != Path(proof['journalPath']).parent / 'development-vector-approval.json'):
-        _fail('invalid_development_approval_path')
-    try:
-        info = path.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
-                info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077 or
-                info.st_size > 8192):
-            _fail('unsafe_development_approval')
-        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-        try:
-            opened = os.fstat(fd)
-            raw = os.read(fd, 8193)
-            after = os.fstat(fd)
-        finally:
-            os.close(fd)
-        now = path.lstat()
-        identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns,
-                              s.st_ctime_ns)
-        if (len(raw) > 8192 or identity(info) != identity(opened) or
-                identity(info) != identity(after) or identity(info) != identity(now)):
-            _fail('development_approval_changed')
-        approval = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs,
-                              parse_constant=_nonfinite)
-    except (OSError, TypeError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
-        raise JournalEvidenceError('development_approval_unavailable') from exc
-    expected = {'schema': DEVELOPMENT_APPROVAL_SCHEMA, 'testOwned': True,
-                'pluginRoot': proof['pluginRoot'], 'sourceCommit': proof['sourceCommit'],
-                'bundleManifestSha256': proof['bundleManifestSha256'],
-                'ownershipManifestSha256': proof['ownershipManifestSha256'],
-                'vectorProfile': proof['vectorProfile']}
-    if type(approval) is not dict or approval != expected:
-        _fail('development_approval_mismatch')
-    return {**proof, 'status': 'development_only_vector_provider_verified',
-            'productRouteAllowed': False, 'developmentOnlyRouteAllowed': True}
+    manifest = _v1_provider_manifest(record, row['vectorProfile'])
+    if manifest != provider_manifest or inspect_journal(path) != row:
+        _fail('worker_attestation_changed')
+    return manifest

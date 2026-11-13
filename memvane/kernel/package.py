@@ -10,11 +10,10 @@ import sys
 
 
 def sync_owner_directory(*, create=False):
-    """Stable UID sync exclusion for both fixed engines and full plugins.
+    """Stable UID sync exclusion for fixed installs.
 
     Production uses the account home, never HOME. Fixture roots must be
     canonical private descendants of fixed platform temp roots, never TMPDIR.
-    No full-plugin-only module is needed by the engine's owner path.
     """
     raw = os.environ.get('MEMVANE_TEST_RUNTIME_ROOT')
     if raw is None:
