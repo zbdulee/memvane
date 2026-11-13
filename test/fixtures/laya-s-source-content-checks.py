@@ -269,7 +269,7 @@ class ContentIdentityTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT cursor_path FROM s_stage_jobs').fetchone()[0], 'cards/b.md')
             db.close()
 
-    def test_head_fts_manifest_matches_head_and_declared_sidecar(self):
+    def test_head_fts_manifest_matches_head(self):
         temporary = tempfile.TemporaryDirectory(prefix='s-head-schema-', dir=os.environ['HOME'])
         self.addCleanup(temporary.cleanup)
         path = str(pathlib.Path(temporary.name) / 'fts.sqlite')
@@ -282,12 +282,11 @@ class ContentIdentityTests(unittest.TestCase):
         db.execute('BEGIN')
         with guard.view_head(view):
             db.execute(view_fts.head_ddl(view))
-            db.execute(view_fts.head_ddl(view, sidecar=True))
-            db.execute('INSERT INTO s_generations VALUES (?,?,?)', (view, 1, 1))
+            db.execute('INSERT INTO s_generations VALUES (?,?,?)', (view, 1, 0))
             db.execute('INSERT INTO s_heads VALUES (?,?)', (view, 1))
             db.commit()
         self.assertTrue(view_fts.head_schema_rows(db))
-        db.execute('UPDATE s_generations SET sidecar_present=0')
+        db.execute('UPDATE s_generations SET sidecar_present=1')
         with self.assertRaises(v.BlobStoreError):
             view_fts.head_schema_rows(db)
         db.rollback()
@@ -384,57 +383,6 @@ class ContentIdentityTests(unittest.TestCase):
         self.assertEqual(len(scans), 1, trace)
         self.assertFalse(any('where path_key=' in sql.lower() for sql in trace), trace)
         self.assertEqual(db.execute(f'SELECT COUNT(*) FROM {name} WHERE body=?', ('new',)).fetchone()[0], 2)
-
-    def test_head_fts_sidecar_delta_does_not_touch_base(self):
-        db = sqlite3.connect(':memory:', cached_statements=0)
-        self.addCleanup(db.close)
-        guard = view_fts.ConnectionGuard(db)
-        view = 'a' * 64
-        base, side = view_fts.head_table(view), view_fts.head_table(view, sidecar=True)
-        old = dict(filepath='a.md', title='A', body='side-old', path_key='a.md')
-        new = dict(old, body='side-new')
-        db.execute('BEGIN')
-        with guard.view_head(view):
-            db.execute(view_fts.head_ddl(view))
-            db.execute(view_fts.head_ddl(view, sidecar=True))
-            db.execute(f'INSERT INTO {base}(filepath,title,body,path_key) VALUES (?,?,?,?)',
-                       ('a.md', 'A', 'base', 'a.md'))
-            db.execute(f'INSERT INTO {side}(filepath,title,body,path_key) VALUES (?,?,?,?)', tuple(old.values()))
-            db.execute(f'INSERT INTO {side}(filepath,title,body,path_key) VALUES (?,?,?,?)',
-                       ('b.md', 'B', 'side-second', 'b.md'))
-            db.commit()
-        db.execute('BEGIN')
-        with guard.view_head(view):
-            view_fts.apply_head_changes(db, view, [dict(old=old, new=new)], sidecar=True)
-            db.execute('SAVEPOINT fts_flush')
-            db.execute('RELEASE fts_flush')
-            before_commit = view_fts.head_storage_digest(db, view, sidecar=True)
-            db.commit()
-        self.assertEqual(view_fts.head_storage_digest(db, view, sidecar=True), before_commit)
-        self.assertEqual(db.execute(f'SELECT body FROM {base}').fetchone()[0], 'base')
-        self.assertEqual(db.execute(f'SELECT body FROM {side} ORDER BY rowid').fetchall(),
-                         [('side-new',), ('side-second',)])
-        occupied = db.execute(f'SELECT rowid FROM {side} WHERE path_key=?', ('b.md',)).fetchone()[0]
-        extra = dict(filepath='c.md', title='C', body='third', path_key='c.md')
-        db.execute('BEGIN')
-        with guard.view_head(view):
-            with self.assertRaises((sqlite3.IntegrityError, v.BlobStoreError)):
-                view_fts.apply_head_changes(db, view,
-                    [dict(old=None, new=extra, restore_rowid=occupied)], sidecar=True)
-            db.commit()
-        self.assertEqual(db.execute(f'SELECT body FROM {side} ORDER BY rowid').fetchall(),
-                         [('side-new',), ('side-second',)])
-        db.execute('BEGIN')
-        with guard.view_head(view):
-            deleted = view_fts.apply_head_changes(db, view, [dict(old=new, new=None)], sidecar=True)
-            db.commit()
-        db.execute('BEGIN')
-        with guard.view_head(view):
-            view_fts.apply_head_changes(db, view,
-                [dict(old=None, new=new, restore_rowid=deleted[0]['old_rowid'])], sidecar=True)
-            db.commit()
-        self.assertEqual(db.execute(f'SELECT body FROM {side} ORDER BY rowid').fetchall(),
-                         [('side-new',), ('side-second',)])
 
     def test_view_head_fts_capability_is_scoped_and_commits_with_metadata(self):
         db = sqlite3.connect(':memory:', cached_statements=0)

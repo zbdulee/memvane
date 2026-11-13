@@ -84,9 +84,7 @@ class ConnectionGuard:
         if not isinstance(self._active,tuple):
             return sqlite3.SQLITE_DENY
         base=head_table(self._active[1])
-        side=head_table(self._active[1],sidecar=True)
-        return (sqlite3.SQLITE_OK if all(x==base or x.startswith(base+'_') or
-                                          x==side or x.startswith(side+'_') for x in targets)
+        return (sqlite3.SQLITE_OK if all(x==base or x.startswith(base+'_') for x in targets)
                 else sqlite3.SQLITE_DENY)
 
 
@@ -341,11 +339,10 @@ def head_schema_rows(db):
     expected=[];seen=set()
     for view_id,sidecar in heads:
         v.identifier(view_id)
-        if view_id in seen or type(sidecar) is not int or sidecar not in (0,1):
+        if view_id in seen or type(sidecar) is not int or sidecar != 0:
             v.fail('fts_generation_ownership_invalid')
         seen.add(view_id)
         expected.extend(_expected_head_schema(view_id))
-        if sidecar:expected.extend(_expected_head_schema(view_id,True))
     if sorted(actual)!=sorted(expected):v.fail('fts_schema_mismatch')
     return actual
 
