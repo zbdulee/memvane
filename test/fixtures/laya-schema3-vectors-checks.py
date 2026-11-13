@@ -752,7 +752,9 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         lexical, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
         self.assertEqual(len(lexical.get('worktrees', ())), 1, lexical)
         reserve = self.worker.SCHEMA3_PUBLISH_RESERVE
+        # The unchanged pass's vector window is closed here: the A1 path under test.
         with mock.patch.object(self.worker, 'SCHEMA3_PASS_SECONDS', reserve + 0.001), \
+                mock.patch.object(self.worker, 'SCHEMA3_VECTOR_SECONDS', reserve + 0.001), \
                 self.offers() as seen:
             result, _ingests, calls = self.run_vector_pass()
         self.assertEqual(result['vector']['state'], 'pending', result)
