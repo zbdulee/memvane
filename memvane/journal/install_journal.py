@@ -26,7 +26,8 @@ from memvane.route.types import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIEL
                                    RECORD as ROUTE_FILE, SCHEMA as ROUTE_SCHEMA,
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
                                    SCHEMA_V3 as ROUTE_SCHEMA_V3)
-from memvane.route.api import select_route, written_schema
+from memvane.journal.api import select_route
+from memvane.route.api import written_schema
 from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
                                  RUNTIME_FILES_FIELD,

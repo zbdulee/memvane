@@ -597,7 +597,7 @@ def finalize_initial_build(*, project_root, state_root):
                 spec = provider_spec(manifest, row['vectorProfile'])
                 if spec is None:
                     _fail('initial_build_vector_spec_unavailable')
-                decision = sync.select_route(str(project), action='recall')
+                decision = journal.select_route(str(project), action='recall')
                 if decision.get('state') != 'preview':
                     _fail('initial_build_route_changed')
                 from memvane.kernel.errors import _query_only_uri

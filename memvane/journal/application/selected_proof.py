@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from memvane.kernel.errors import IndexContractError
-from memvane.route.api import select_route
+from memvane.journal.api import select_route
 
 
 def selected_project_proof(project, *, owner_wait=False):

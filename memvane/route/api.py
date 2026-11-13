@@ -50,14 +50,8 @@ def written_schema(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def select_route(*args, **kwargs):
-    from memvane.route.index_host_route import select_route as implementation
-    return implementation(*args, **kwargs)
 
 
-def select_local_route(*args, **kwargs):
-    from memvane.route.index_host_route import _select_route as implementation
-    return implementation(*args, **kwargs)
 
 
 
@@ -76,4 +70,29 @@ def wiki_index_roots(*args, **kwargs):
 
 def selected_collection_roots(*args, **kwargs):
     from memvane.route.index_host_route import selected_collection_roots as implementation
+    return implementation(*args, **kwargs)
+
+
+def candidate_paths(*args, **kwargs):
+    from memvane.route.index_host_route import _candidate_paths as implementation
+    return implementation(*args, **kwargs)
+
+
+def canonical_absolute(*args, **kwargs):
+    from memvane.route.index_host_route import _canonical_absolute as implementation
+    return implementation(*args, **kwargs)
+
+
+def selected_settings_supported(*args, **kwargs):
+    from memvane.route.index_host_route import _selected_settings_supported as implementation
+    return implementation(*args, **kwargs)
+
+
+def vector_profile(*args, **kwargs):
+    from memvane.route.index_host_route import _vector_profile as implementation
+    return implementation(*args, **kwargs)
+
+
+def decision(*args, **kwargs):
+    from memvane.route.index_host_route import _decision as implementation
     return implementation(*args, **kwargs)

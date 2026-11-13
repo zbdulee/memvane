@@ -5,7 +5,8 @@ import json
 from pathlib import Path
 import sys
 
-from memvane.route.api import pairs as _pairs, read_regular as _read_regular, select_route
+from memvane.route.api import pairs as _pairs, read_regular as _read_regular
+from memvane.journal.api import select_route
 from memvane.route.types import MAX_HOOK_BYTES
 
 

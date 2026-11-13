@@ -274,6 +274,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/journal/route_selection.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/journal/types.py": {
       "context": "journal",
       "layer": "domain",

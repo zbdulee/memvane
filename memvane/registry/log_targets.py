@@ -90,7 +90,7 @@ def route_for(root: Path):
     """
     try:
         from memvane.diagnostics import api as event_log
-        from memvane.route import api as laya_index_host_route
+        from memvane.journal import api as laya_index_host_route
         decision = laya_index_host_route.select_route(str(root), action='recall')
     except Exception:
         return None

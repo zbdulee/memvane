@@ -21,7 +21,7 @@ _POLICY_KEYS = ('collections', 'collectionPaths', 'collectionRoles', 'recallStra
 
 def selected(project_root, *, action='recall'):
     """``(decision, proof)`` for a verified selected v2 route, ``None`` if legacy."""
-    from memvane.route.api import select_route
+    from memvane.journal.api import select_route
     root = Path(project_root).resolve(strict=True)
     decision = select_route(str(root), action=action)
     state = decision.get('state') if isinstance(decision, dict) else None

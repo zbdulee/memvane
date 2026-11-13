@@ -367,7 +367,6 @@ def notify(paths, *, cwd, host, origin):
 def drain(decision, *, recheck, owner=None):
     """Full-proof owner consumes current hints using existing compile policy."""
     from memvane.settings import config
-    from memvane.route import api as routes
     from memvane.journal import api as journal
     from memvane.wiki.intake import wiki_compile_enqueue as enqueue
     from memvane.wiki.workspace import api as wiki_selected_laya
@@ -422,7 +421,7 @@ def drain(decision, *, recheck, owner=None):
             if spent >= enqueue.compile_max_files() or time.monotonic() >= deadline:
                 break
             path = _safe_path(row['path'], project)
-            current = routes.select_route(str(project), action='compile')
+            current = journal.select_route(str(project), action='compile')
             checked()
             revision = None
             if path is not None and _eligible(path, current):

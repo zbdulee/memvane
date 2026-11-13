@@ -49,7 +49,7 @@ def _compile_proof(decision, *, owner=None):
 
 
 def selected(root: Path):
-    from memvane.route.api import select_route
+    from memvane.journal.api import select_route
 
     root = Path(root).resolve()
     decision = select_route(str(root), action='compile')
@@ -149,7 +149,7 @@ class _Schema3Checkout:
     def _selection_current(self):
         from memvane.journal import api as journal
         from memvane.journal import journal_reader as reader
-        from memvane.route.api import select_route
+        from memvane.journal.api import select_route
         if select_route(self.decision['projectRoot'], action='compile') != self.decision:
             return False
         with journal.read_only_journals():

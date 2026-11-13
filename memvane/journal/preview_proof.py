@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from memvane.route.api import select_route
+from memvane.journal.api import select_route
 from memvane.route.types import SCHEMA_V4
 
 

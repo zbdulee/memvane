@@ -1,6 +1,8 @@
 """Value types for route records."""
 from __future__ import annotations
 
+import re
+
 SCHEMA = "laya-index-route-v1"
 SCHEMA_V2 = "laya-index-route-v2"
 SCHEMA_V3 = "memvane-route-v3"
@@ -23,3 +25,17 @@ FIELDS_V4 = frozenset({"schema", "status", "projectRoot", "settingsSha256",
                        "stateRoot", "stateNode", "storePath", "storeNode",
                        "storeIncarnation", "installId", "scopeId", "stateFormat",
                        "collections", "vectorProfile"})
+
+
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+INCARNATION = re.compile(r"[0-9a-f]{32}\Z")
+
+PACKAGE_GENERATION = re.compile(r"g-[0-9a-f]{32}\Z")
+
+ROUTED_ACTIONS = frozenset({"recall", "update", "update-queued", "gate", "posttool",
+                            "index", "compile", "file-change-event"})
+
+
+COLLECTION_FIELDS = frozenset({"name", "role", "sourceRoot"})
+COLLECTION_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")

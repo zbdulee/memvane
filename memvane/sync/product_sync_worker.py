@@ -25,7 +25,7 @@ from memvane.kernel.atomic_rename import canonical_json_bytes
 from memvane.learning.context_learning.resource_coordination import Coordinator
 from memvane.learning.api import resource_report
 from memvane.kernel.errors import IndexContractError
-from memvane.route.api import select_route
+from memvane.journal.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.runtime.api import sync_owner

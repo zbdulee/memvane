@@ -58,7 +58,7 @@ def resolve(kind, value):
     if kind not in KINDS:
         raise DispatchFailure('kind_invalid')
     project = _project(value)
-    from memvane.route.api import select_route
+    from memvane.journal.api import select_route
     route = select_route(str(project), action='update')
     if route.get('state') == 'candidate':
         from memvane.journal.api import verify_dispatch_target
@@ -301,7 +301,7 @@ def _diagnostic_route(target):
     """
     try:
         from memvane.diagnostics import api as event_log
-        from memvane.route import api as laya_index_host_route
+        from memvane.journal import api as laya_index_host_route
         route = laya_index_host_route.select_route(target['project'], action='update')
         main = (route.get('mainRoute') if isinstance(route, dict)
                 and route.get('state') == 'worktree' else route)
@@ -399,7 +399,7 @@ def drop_event(kind, value, *, reason, attempts=None):
         if not Path(value).is_dir():
             return False
         from memvane.diagnostics import api as event_log
-        from memvane.route.api import select_route
+        from memvane.journal.api import select_route
         decision = select_route(str(value), action='update')
         return event_log.emit('wake.drop', outcome='dropped', reason=reason,
                               decision=decision, host='worker', session=None,
@@ -418,7 +418,7 @@ def stall_event(kind, value, *, since, observations, retry_in):
         if not Path(value).is_dir():
             return False
         from memvane.diagnostics import api as event_log
-        from memvane.route.api import select_route
+        from memvane.journal.api import select_route
         decision = select_route(str(value), action='update')
         return event_log.emit('wake.' + kind.removeprefix('laya-'), outcome='failed',
                               reason='target_preparing_stalled', decision=decision,

@@ -222,7 +222,7 @@ def recall_context(
             selected_route = True
             # The installed core rechecks the route and the installer-owned
             # journal before opening the selected DB. Never start QMD here.
-            from memvane.route.api import select_route
+            from memvane.journal.api import select_route
             from memvane.host.api import serve_selected, serve_preview
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
@@ -254,7 +254,7 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
         route_state = _laya_route_state("update", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            from memvane.route.api import select_route
+            from memvane.journal.api import select_route
             from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             answer = serve_selected("update-queued", "hermes",
@@ -289,7 +289,7 @@ def pre_edit_gate(
         route_state = _laya_route_state("gate", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            from memvane.route.api import select_route
+            from memvane.journal.api import select_route
             from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
@@ -333,7 +333,7 @@ def post_edit_sync(
         route_state = _laya_route_state("posttool", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            from memvane.route.api import select_route
+            from memvane.journal.api import select_route
             from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped

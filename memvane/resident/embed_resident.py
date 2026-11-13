@@ -357,7 +357,7 @@ def _owned_route(project):
     except IndexContractError as exc:
         if str(exc) != 'selected_route_unavailable':
             raise
-    from memvane.route.api import select_route
+    from memvane.journal.api import select_route
     from memvane.journal.api import verify_preview_route
     decision = select_route(str(project), action='recall')
     if (decision.get('state') != 'preview'

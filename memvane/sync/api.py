@@ -7,9 +7,6 @@ def run(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def select_route(*args, **kwargs):
-    from memvane.sync.product_sync_worker import select_route as implementation
-    return implementation(*args, **kwargs)
 
 
 def schema3_head_same(*args, **kwargs):

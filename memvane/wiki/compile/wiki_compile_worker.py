@@ -1381,7 +1381,7 @@ def _verify_diagnostic(root: Path, exc: BaseException) -> str | None:
         from memvane.diagnostics import api as diagnostic_trace
         from memvane.settings.api import diagnostic_enabled
         from memvane.diagnostics import api as event_log
-        from memvane.route import api as laya_index_host_route
+        from memvane.journal import api as laya_index_host_route
         bound = event_log.bound()
         if not isinstance(bound, dict) or bound.get('stateRoot') is None:
             return None

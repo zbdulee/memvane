@@ -614,7 +614,7 @@ def _proof_code(exc):
 def _route_hint(project):
     """The route decision naming an install's event log; never a proof."""
     from memvane.journal import api as journal
-    from memvane.route.api import select_route
+    from memvane.journal.api import select_route
     # Classification must never repair a hot journal image on this path.
     with journal.read_only_journals():
         return select_route(str(project), action='update')

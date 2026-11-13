@@ -379,8 +379,8 @@ def _prove_main(project, state=None):
     (``_select_route``): the linked-worktree fallback of ``select_route``
     runs git and never classifies a selected main checkout.
     """
-    from memvane.route import api as routes
-    decision = routes.select_local_route(str(project), action='index')
+    from memvane.journal import api as routes
+    decision = routes.select_route(str(project), action='index', linked=False)
     if decision.get('state') != 'candidate':
         raise _Unproved('route_' + str(decision.get('state')))
     journal_path = decision.get('journalPath')
@@ -402,9 +402,9 @@ def _prove_main(project, state=None):
 
 def _released(project, state):
     """A proved release: no route of this install, and its journal is not selected."""
-    from memvane.route import api as routes
+    from memvane.journal import api as routes
     try:
-        decision = routes.select_local_route(str(project), action='index')
+        decision = routes.select_route(str(project), action='index', linked=False)
         route_state = decision.get('state')
         if route_state == 'candidate':
             if decision.get('journalPath') == str(Path(state) / 'journal.sqlite'):
@@ -424,7 +424,7 @@ def _linked(project, deadline, clock=time.monotonic):
     nothing is registered or released.
     """
     from memvane.kernel import paths as git
-    from memvane.route import api as routes
+    from memvane.journal import api as routes
     try:
         facts = git.repo_facts(project, deadline=deadline)
         if facts is None:

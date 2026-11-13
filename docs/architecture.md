@@ -88,7 +88,7 @@ flowchart TD
     User[Agent host session]
     Claude[Claude/Codex command hooks]
     Hermes[Hermes Python plugin]
-    Route[memvane/route/index_host_route.py]
+    Route[memvane/journal/route_selection.py]
     Resp[memvane/host/host_response.py]
     Wakes[runtime wake queue memvane/runtime/runtime_work.py]
     Sync[memvane/sync/product_sync_worker.py]
@@ -159,7 +159,7 @@ Hermes does not read Claude/Codex hook JSON. It uses:
 - `hermes_adapter/plugin.py`
 - `hermes_adapter/core_bridge.py`
 
-Hermes mapping (each call goes through `index_host_route.select_route`
+Hermes mapping (each call goes through `journal.api.select_route`
 and, on a selected route, `host_response.serve_selected`):
 
 | Hermes callback | Bridge function | Selected-route action |

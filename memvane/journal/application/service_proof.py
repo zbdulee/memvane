@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from memvane.kernel.errors import IndexContractError
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.route.api import select_route
+from memvane.journal.api import select_route
 from memvane.journal.install_journal import (verify_selected_route_for_write as verify_selected_route,
                                              verify_worker_attestation)
 
