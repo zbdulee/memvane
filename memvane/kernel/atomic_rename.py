@@ -7,6 +7,10 @@ import os
 import sys
 
 
+class AtomicRenameUnavailable(ValueError):
+    """The OS has no atomic no-replace rename primitive."""
+
+
 def _native_renamer():
     library = ctypes.CDLL(None, use_errno=True)
     # macOS SDK sys/stdio.h: RENAME_EXCL = 0x00000004.
@@ -19,8 +23,7 @@ def _native_renamer():
         raise ValueError('reader_atomic_create_unavailable')
     function = getattr(library, name, None)
     if function is None:
-        from memvane.journal.install_journal import JournalEvidenceError
-        raise JournalEvidenceError('reader_atomic_create_unavailable')
+        raise AtomicRenameUnavailable('reader_atomic_create_unavailable')
     function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
                          ctypes.c_char_p, ctypes.c_uint)
     function.restype = ctypes.c_int

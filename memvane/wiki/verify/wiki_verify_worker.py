@@ -852,8 +852,12 @@ def _supersede_compile_intent(path):
                     or (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino)
                     or not os.path.samestat(parent, path.parent.lstat())):
                 raise ValueError('provenance_intent_changed')
-            from memvane.kernel.atomic_rename import rename_noreplace
-            rename_noreplace(parent_fd, path.name, path.stem + '.superseded.json')
+            from memvane.kernel.atomic_rename import AtomicRenameUnavailable, rename_noreplace
+            try:
+                rename_noreplace(parent_fd, path.name, path.stem + '.superseded.json')
+            except AtomicRenameUnavailable as exc:
+                from memvane.journal.install_journal import JournalEvidenceError
+                raise JournalEvidenceError(str(exc)) from exc
             os.fsync(parent_fd)
         finally:
             os.close(fd)
