@@ -8,10 +8,8 @@ from pathlib import Path
 import subprocess
 
 from memvane.kernel import cooldown as qmd_cooldown
-from memvane.kernel.atomic_rename import write_text_atomic
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.settings import config as qmd_config
-from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path
 
 BUILTIN_EXTRACTOR_ENGINES = {"claude", "codex", "hermes"}
 MAX_ENGINE_COOLDOWN_SECS = qmd_cooldown.MAX_COOLDOWN_SECS
@@ -106,7 +104,7 @@ def cooling_engines(path: Path) -> set:
     return {key for key, expiry in load_engine_cooldowns(path).items()
             if qmd_cooldown.expiry_active(expiry, now)}
 
-def set_engine_cooldown(path: Path, key: str, seconds: int) -> bool:
+def set_engine_cooldown(path: Path, key: str, seconds: int, *, _queue_lock_path, write_text_atomic) -> bool:
     """이 후보를 seconds 동안 후보에서 제외한다. 반환값은 "기록이 남았는가"다.
 
     **호출자는 False를 반드시 표면화해야 한다** — 기록이 없으면 다음 run이 같은 엔진을 다시

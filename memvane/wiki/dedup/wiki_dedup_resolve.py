@@ -271,7 +271,7 @@ def main() -> int:
     config = found["config"]
     wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
     wiki_root = wc.safe_managed_dir(root, wiki_rel)
-    compile_dir = cp.compile_dir(root, create=True)
+    compile_dir = project_dir.compile_dir(root, create=True)
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1

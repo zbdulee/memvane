@@ -15,7 +15,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.kernel.atomic_rename import write_text_atomic
+from memvane.wiki.workspace.api import write_text_atomic
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import api as cp, types as ct
@@ -608,9 +608,6 @@ def trim_jsonl(path: Path, max_bytes: int = LOG_MAX_BYTES) -> None:
         write_text_atomic(path, "".join(lines[len(lines) // 2:]))
     except OSError:
         pass
-
-
-@wiki_mutation_lock.guard_path
 
 
 def write_jsonl_atomic(path: Path, rows: list[dict]) -> None:

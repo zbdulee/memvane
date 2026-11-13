@@ -232,7 +232,8 @@ def set_engine_cooldown(root: Path, key: str, seconds: int) -> bool:
     메커니즘이다 — 기록이 없으면 다음 run이 같은 엔진을 다시 부르고 degrade가 일어나지 않아
     정지가 그대로 돌아온다. 조용히 실패하면 그 사실을 알 방법이 없다.
     """
-    return engines.set_engine_cooldown(engine_cooldown_path(root), key, seconds)
+    return engines.set_engine_cooldown(engine_cooldown_path(root), key, seconds,
+        _queue_lock_path=cp.queue_lock_path, write_text_atomic=cp.write_text_atomic)
 
 
 def log_verdict(log_path: Path, payload: dict) -> None:

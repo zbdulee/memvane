@@ -21,7 +21,6 @@ import stat
 import sys
 import time
 
-from memvane.wiki.workspace import api as cp
 from memvane.settings import api as source_text
 from memvane.wiki.card import api as wiki_card
 from memvane.wiki.card.api import card_sources_allowed
@@ -228,7 +227,7 @@ def overlay(root: Path, bound):
     """Private SQLite transaction; failed refreshes never publish partial FTS."""
     from memvane.wiki.workspace import api as wiki_selected_laya
     wiki_selected_laya.recheck(bound)
-    base = cp.compile_dir(root, create=True)
+    base = source_text.compile_dir(root, create=True)
     if base is None:
         raise ValueError('selected_wiki_overlay_unsafe')
     private = base / 'wiki-retrieval'

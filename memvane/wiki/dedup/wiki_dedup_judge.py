@@ -501,7 +501,8 @@ def _back_off(root: Path, jcfg: dict, key: str, has_more: bool) -> dict:
     from memvane.wiki.engines import api as wcw
 
     seconds = _int(jcfg.get("cooldownSeconds"), DEFAULT_COOLDOWN_SECONDS)
-    if has_more and wcw.set_engine_cooldown(engine_cooldown_path(root), key, seconds):
+    if has_more and wcw.set_engine_cooldown(engine_cooldown_path(root), key, seconds,
+            _queue_lock_path=cp.queue_lock_path, write_text_atomic=cp.write_text_atomic):
         return {"engineCooldown": key}
     return {} if set_cooldown(root, seconds) else {"cooldownWriteFailed": True}
 

@@ -27,7 +27,7 @@ from pathlib import Path
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_argv, extractor_engine_pool,
-    plan_engine_order, load_engine_cooldowns, cooling_engines, set_engine_cooldown,
+    plan_engine_order, load_engine_cooldowns, cooling_engines,
     resolve_extractor_argv, run_extractor)
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config

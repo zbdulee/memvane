@@ -7,8 +7,8 @@ def card_write_lock(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def compile_dir(*args, **kwargs):
-    from memvane.settings.api import compile_dir as implementation
+def write_text_atomic(*args, **kwargs):
+    from memvane.wiki.workspace.atomic_io import write_text_atomic as implementation
     return implementation(*args, **kwargs)
 
 

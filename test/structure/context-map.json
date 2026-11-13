@@ -1449,6 +1449,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/workspace/atomic_io.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/workspace/compile_paths.py": {
       "context": "wiki/workspace",
       "layer": "adapter",

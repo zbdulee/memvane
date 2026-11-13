@@ -283,7 +283,7 @@ def run(cwd: str) -> dict:
     if wiki_root is None or str(wiki_root.resolve()) != selected_wiki:
         log("ABORT: wiki root differs from the selected route")
         return result
-    compile_dir = cp.compile_dir(root, create=True)
+    compile_dir = project_dir.compile_dir(root, create=True)
     queue_path = cp.ledger(root, ct.DEDUP_NEEDED)
     skipped_path = cp.ledger(root, ct.DEDUP_SKIPPED)
     if compile_dir is None or queue_path is None:
