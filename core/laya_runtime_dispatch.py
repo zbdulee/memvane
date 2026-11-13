@@ -30,9 +30,8 @@ SYNC_SECONDS = 86400
 QA_BARRIER_SECONDS = 600
 COMPILE_SECONDS = 86400
 STOP_GRACE_SECONDS = 2
-STABLE_TARGET_FIELDS = ('project',
-                        'installId', 'scopeId', 'dbIncarnation',
-                        'dbPath', 'queuePath', 'journalPath')
+STABLE_TARGET_FIELDS = ('project', 'installId', 'scopeId', 'storeIncarnation',
+                        'storePath', 'journalPath')
 
 
 def _project(value):
@@ -67,10 +66,10 @@ def resolve(kind, value):
         except (OSError, RuntimeError, ValueError) as exc:
             raise DispatchFailure('target_journal_changed') from exc
         stable = {key: proof[key] for key in ('installId', 'scopeId',
-                                             'dbIncarnation', 'journalPath')}
-        stable.update(dbPath=route['dbPath'], queuePath=route['queuePath'])
+                                             'storeIncarnation', 'journalPath')}
+        stable.update(storePath=route['storePath'])
         progress = {'selectionEpoch': proof['selectionEpoch'],
-                    'generation': proof['generation']}
+                    'generation': proof.get('headGeneration')}
     elif kind == 'laya-sync' and route.get('state') == 'legacy':
         from laya_initial_build import lookup
         try:
@@ -99,9 +98,8 @@ def resolve(kind, value):
                 proof['attestationSha256'] != identity['attestationSha256']):
             raise DispatchFailure('target_journal_changed')
         stable = {'installId': identity['installId'], 'scopeId': identity['scopeId'],
-                  'dbIncarnation': identity['dbIncarnation'],
-                  'dbPath': identity['candidateDb'], 'queuePath': identity['queueDb'],
-                  'journalPath': identity['journalPath']}
+                  'storeIncarnation': identity['storeIncarnation'],
+                  'storePath': identity['storePath'], 'journalPath': identity['journalPath']}
         progress = {'selectionEpoch': journal['epoch'],
                     'generation': record.get('sealed', {}).get('generation')
                     if isinstance(record.get('sealed'), dict) else None}
@@ -141,9 +139,7 @@ def _child_env():
     keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'QMD_QA_CALL_LEDGER',
             'QMD_QA_CALL_LIMIT', 'QMD_DEVELOPMENT_GUARD_RUN',
             'QMD_DEVELOPMENT_GUARD_NONCE', 'LAYA_QA_SYNC_BARRIER',
-            'MEMVANE_TEST_RUNTIME_ROOT', 'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT',
-            # The shadow migration kill switch (laya_product_sync_worker).
-            'MEMVANE_SHADOW_MIGRATION')
+            'MEMVANE_TEST_RUNTIME_ROOT', 'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
     env = {key: os.environ[key] for key in keys if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['QMD_RUNTIME_DISPATCH'] = '1'
