@@ -1,11 +1,8 @@
 from __future__ import annotations
 import sys
 import unittest
-import io
-import json
 from unittest.mock import patch
 from pathlib import Path
-from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_host_rules as rules
 
@@ -43,12 +40,7 @@ class RecallRulesChecks(unittest.TestCase):
         self.assertEqual(rules.selection_final([]), 'no_results_after_filter')
         self.assertEqual(rules.selection_final([{}]), 'selected')
 
-    def test_upgrade_transition_codes_and_fence(self):
-        for code in ('selected_route_changed', 'selected_route_unavailable', 'selected_proof_changed',
-                     'incremental_base_changed', 'host_route_unverified', 'host_decision_changed'):
-            self.assertTrue(rules.is_upgrade_transition(code))
-        for code in ('reader_endpoint_changed', 'selected_proof_rolled_back', ''):
-            self.assertFalse(rules.is_upgrade_transition(code))
+    def test_fence_reason(self):
         self.assertEqual(rules.fence_reason(True), 'bundle_upgrade_stalled')
         self.assertEqual(rules.fence_reason(False), 'bundle_upgrade_in_progress')
 
@@ -58,41 +50,15 @@ class RecallRulesChecks(unittest.TestCase):
                                         ('selected_route_changed', True, False)]:
             self.assertEqual(rules.reader_reseal_candidate(code, present), expected)
 
-    def test_upgrade_notice_keeps_fence_and_window_observation_order(self):
+    def test_upgrade_notice_for_fenced_route(self):
         import laya_fresh_wiki_origin as fresh
         import laya_host_response as host
         with patch.object(fresh, 'upgrade_fenced', return_value=True) as fenced, \
-             patch.object(fresh, 'upgrade_stalled', return_value=True) as stalled, \
-             patch.object(fresh, 'upgrade_window') as window:
+             patch.object(fresh, 'upgrade_stalled', return_value=True) as stalled:
             self.assertEqual(host._upgrade_recall_notice({'cwd': '/p'}, '/fallback', 'other'),
                              host._UPGRADE_NOTICES['bundle_upgrade_stalled'])
             fenced.assert_called_once_with('/p')
             stalled.assert_called_once_with('/p')
-            window.assert_not_called()
-        with patch.object(fresh, 'upgrade_fenced', return_value=False), \
-             patch.object(fresh, 'upgrade_window', return_value=True) as window:
-            self.assertIsNone(host._upgrade_recall_notice({'cwd': '/p'}, '/fallback', 'other'))
-            window.assert_not_called()
-            self.assertEqual(host._upgrade_recall_notice({'cwd': '/p'}, '/fallback', 'selected_route_changed'),
-                             host._UPGRADE_NOTICES['bundle_upgrade_in_progress'])
-            window.assert_called_once_with('/p')
-
-    def test_main_returns_zero_only_for_upgrade_transition(self):
-        import hook_budget
-        import laya_fresh_wiki_origin as fresh
-        import laya_host_response as host
-        payload = json.dumps({'cwd': '/p', 'prompt': 'q'}).encode()
-        for code, expected in [('selected_route_changed', 0), ('selected_proof_rolled_back', 3)]:
-            with self.subTest(code=code), \
-                 patch.object(hook_budget, 'arm'), \
-                 patch.object(host, 'select_hook_payload', return_value={'state': 'candidate'}), \
-                 patch.object(host, '_reselect', side_effect=host.HostResponseError(code)), \
-                 patch.object(fresh, 'upgrade_fenced', return_value=False), \
-                 patch.object(fresh, 'upgrade_window', return_value=True) as window, \
-                 patch('sys.stdin', SimpleNamespace(buffer=io.BytesIO(payload))), \
-                 patch('sys.stderr', new_callable=io.StringIO):
-                self.assertEqual(host.main(['serve-stdin', 'recall', 'claude', '/p']), expected)
-                self.assertEqual(window.call_count, 1 if expected == 0 else 0)
 
 class ActionRulesChecks(unittest.TestCase):
     def test_bundle_drift_actions(self):

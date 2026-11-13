@@ -56,10 +56,6 @@ UPGRADE_IN_PROGRESS = 'bundle_upgrade_in_progress'
 # counts as stopped, so it never extends the bound.
 UPGRADE_STALE_SECONDS = 600
 UPGRADE_STALLED = 'bundle_upgrade_stalled'
-# A recall whose route changed under it this soon after the upgrade worker
-# last wrote its status raced the upgrade's own route switch.
-UPGRADE_RECENT_SECONDS = 30
-
 class FreshWikiBlocked(RuntimeError):
     pass
 
@@ -118,30 +114,6 @@ def upgrade_fenced(cwd) -> bool:
     """Any bundle upgrade fence over ``cwd``, in progress or stopped."""
     record = _fence_record(cwd)
     return record is not None and record['phase'] == 'upgrading'
-
-
-def upgrade_window(cwd, *, now_ns=None) -> bool:
-    """An upgrade worker that is switching or switched a bundle just now.
-
-    A recall whose route or proof changed inside this window raced the
-    upgrade's route switch; it answers without context instead of an error.
-    """
-    record = _fence_record(cwd)
-    if record is None:
-        return False
-    try:
-        import laya_bundle_upgrade
-        status = laya_bundle_upgrade.read_status(Path(record['stateRoot']))
-        now = time.time_ns() if now_ns is None else now_ns
-        # Only a worker that is switching or just switched a bundle; a run
-        # that found nothing to do (``current``) is not an upgrade.
-        return (isinstance(status, dict) and status.get('status') in ('running', 'complete')
-                and type(status.get('updatedNs')) is int and
-                0 <= (now - status['updatedNs']) / 1e9 <= UPGRADE_RECENT_SECONDS)
-    except Exception:
-        return False
-
-
 
 
 def settle_decision(cwd, action, decision, select, *, clock=time.monotonic,

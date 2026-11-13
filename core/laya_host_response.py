@@ -2163,19 +2163,15 @@ _UPGRADE_NOTICES = {
 def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
     """The notice for a recall a bundle upgrade interrupted, or None.
 
-    A fenced route (in progress or stopped) answers any failure without
-    context. Right after a worker switched the bundle, only a route or proof
-    transition does; any other refusal stays an error.
+    A fenced route (in progress or stopped) answers without context.
     """
     cwd = payload.get('cwd') if isinstance(payload, dict) else None
     cwd = cwd if isinstance(cwd, str) else fallback_cwd
     try:
         import laya_fresh_wiki_origin as fresh
-        from laya_host_rules import fence_reason, is_upgrade_transition
+        from laya_host_rules import fence_reason
         if fresh.upgrade_fenced(cwd):
             return _UPGRADE_NOTICES[fence_reason(fresh.upgrade_stalled(cwd))]
-        if is_upgrade_transition(code) and fresh.upgrade_window(cwd):
-            return _UPGRADE_NOTICES['bundle_upgrade_in_progress']
     except Exception:
         return None
     return None

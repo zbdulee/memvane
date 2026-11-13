@@ -1,11 +1,6 @@
 """Pure host response selection and action decisions."""
 from __future__ import annotations
 
-_UPGRADE_TRANSITIONS = frozenset((
-    'selected_route_changed', 'selected_route_unavailable', 'selected_proof_changed',
-    'incremental_base_changed', 'host_route_unverified', 'host_decision_changed'))
-
-
 def verified_pool(rows):
     return rows[:15]
 
@@ -50,10 +45,6 @@ def trace_result(action, count, outcome, reason, final, notes):
 
 def reader_reseal_candidate(code, has_route):
     return code == 'reader_endpoint_changed' and has_route
-
-
-def is_upgrade_transition(code):
-    return code in _UPGRADE_TRANSITIONS
 
 
 def fence_reason(stalled):
