@@ -1,8 +1,7 @@
 """Public project settings operations."""
 from __future__ import annotations
 
-from memvane.settings.types import (CURRENT, NAMES, SETTINGS, WIKI, SOURCE_TEXT_EXTENSIONS,
-                                     DENIED_SOURCE_SEGMENTS)
+from memvane.settings.types import CURRENT, NAMES, SETTINGS, WIKI
 
 
 def diagnostic_enabled(*args, **kwargs):
@@ -135,4 +134,14 @@ def decision_resolver(*args, **kwargs):
 
 def ledger(*args, **kwargs):
     from memvane.settings.project_dir import ledger as implementation
+    return implementation(*args, **kwargs)
+
+
+def load_project_config(*args, **kwargs):
+    from memvane.settings.config import load_project_config as implementation
+    return implementation(*args, **kwargs)
+
+
+def normalize_config(*args, **kwargs):
+    from memvane.settings.config import normalize_config as implementation
     return implementation(*args, **kwargs)

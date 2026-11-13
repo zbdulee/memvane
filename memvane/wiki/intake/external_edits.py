@@ -116,7 +116,8 @@ def _safe_path(path, cwd):
 
 def _eligible(path, decision):
     from memvane.settings.api import excluded_source
-    from memvane.settings.api import DENIED_SOURCE_SEGMENTS, is_source_text
+    from memvane.settings.api import is_source_text
+    from memvane.settings.types import DENIED_SOURCE_SEGMENTS
     try:
         rel = path.relative_to(decision['projectRoot'])
     except ValueError:

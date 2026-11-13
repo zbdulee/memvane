@@ -26,7 +26,7 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
     read answers with no context and ``checkout_changed``. Neither falls
     back to another view.
     """
-    from memvane.settings import config
+    from memvane.settings import api as config
     from memvane.journal import api as reader
     from memvane.recall import api as dispatch
     from memvane.kernel.errors import IndexContractError

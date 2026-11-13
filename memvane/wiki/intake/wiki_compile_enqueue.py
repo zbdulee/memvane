@@ -22,6 +22,7 @@ from memvane.wiki.card import api as wiki_freshness
 from memvane.wiki.intake import wiki_source_intent as intent
 from memvane.settings.api import select_collections
 from memvane.settings import api as source_text
+from memvane.settings.types import DENIED_SOURCE_SEGMENTS
 
 
 DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE
@@ -34,7 +35,6 @@ POST_TOOL_TRIGGER = intent.POST_TOOL_TRIGGER
 # walk와 같은 집합을 쓴다. `.memvane`(읽기 fallback `.auto-context`)은 이 플러그인의 관리
 # 영역(wiki 카드·큐·로그)이라
 # 소스로 승격하면 카드가 자기 자신을 재컴파일해 증식한다. 나머지는 VCS·의존성·빌드 산출물이다.
-DENIED_SOURCE_SEGMENTS = source_text.DENIED_SOURCE_SEGMENTS
 
 
 # sync 경유 compile enqueue의 trigger 라벨. 편집 훅이 아니라 스냅샷 diff가 출처이므로

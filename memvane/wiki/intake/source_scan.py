@@ -13,7 +13,8 @@ from types import MappingProxyType
 from typing import Any, Mapping, NoReturn
 
 from memvane.kernel.errors import IndexContractError, _digest
-from memvane.settings.api import DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS, is_source_text
+from memvane.settings.api import is_source_text
+from memvane.settings.types import DENIED_SOURCE_SEGMENTS, SOURCE_TEXT_EXTENSIONS
 from memvane.settings.types import WIKI_TEXT_EXTENSIONS
 
 STALE = "index_stale"

@@ -89,7 +89,7 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
         preferences.setdefault('sharedLearning',{})['enabled']=True
     cfg,train,apply=_preferences(preferences,root,choice)
     from .shared import _policy,_safe_root
-    from memvane.settings import config
+    from memvane.settings import api as config
     # A namespace cannot be a source collection or another project's store.
     from memvane.settings import api as project_dir
     if cfg['sharedLearning']['enabled'] and _safe_root(config.normalize_config(cfg,project_dir.active_name(project)),project)!=root:
