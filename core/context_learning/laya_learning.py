@@ -15,7 +15,6 @@ that cannot be verified (``ValueError``); the latter never falls back to QMD.
 """
 from __future__ import annotations
 
-from contextlib import closing
 from pathlib import Path
 import sys
 import time
@@ -65,30 +64,6 @@ def wiki_names(decision):
     return tuple(sorted(wiki_index_roots(decision['collections'])))
 
 
-def _open(decision):
-    from laya_incremental_docs_query import _readonly
-    db = _readonly(Path(decision['dbPath']))
-    incarnation = db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()
-    if incarnation != (decision['dbIncarnation'],):
-        db.close()
-        raise ValueError('laya_learning_incarnation_changed')
-    return db
-
-
-def _sealed_head(db, scope):
-    head = db.execute('SELECT gen FROM head WHERE scope=?', (scope,)).fetchone()
-    if head is None:
-        raise ValueError('laya_learning_head_missing')
-    generation = db.execute('SELECT state FROM generations WHERE gen=? AND scope=?',
-                            (head[0], scope)).fetchone()
-    # Same rule as LayaIndexA.view_seal: never read an unsealed prototype view.
-    sealed = db.execute('SELECT 1 FROM candidate_seals WHERE gen=? AND scope=?',
-                        (head[0], scope)).fetchone()
-    if generation != ('published',) or sealed is None:
-        raise ValueError('laya_learning_head_unsealed')
-    return head[0]
-
-
 # One read of a schema3 view head's members (store open, Git capture, pin).
 SCHEMA3_READ_SECONDS = 5
 
@@ -128,7 +103,6 @@ def corpus_snapshot(project_root, config, *, decision=None):
     fingerprint; the generation id is reported beside it, not inside it.
     Returns ``None`` (never a guessed hash) when evidence is unavailable.
     """
-    from laya_index_a import _NOT_EXCLUDED
     from .contracts import digest
     from .store import canonical
     try:
@@ -142,20 +116,7 @@ def corpus_snapshot(project_root, config, *, decision=None):
             decision = bound[0]
         names = set(wiki_names(decision))
         scope = decision['scopeId']
-        schema3 = False
-        # A synthetic route without an installer journal has no reader selection.
-        if isinstance(decision.get('journalPath'), str) and Path(decision['journalPath']).is_file():
-            from laya_product_sync_worker import _selected_store_format
-            schema3 = _selected_store_format(decision) == 'schema3'
-        if schema3:
-            generation, docs = _schema3_members(root, decision)
-        else:
-            with closing(_open(decision)) as db:
-                generation = _sealed_head(db, scope)
-                docs = db.execute(
-                    'SELECT m.path,m.hash FROM membership m WHERE m.gen=? AND m.scope=? '
-                    'AND m.eligible=1 AND ' + _NOT_EXCLUDED + ' ORDER BY m.path COLLATE BINARY',
-                    (generation, scope)).fetchmany(MAX_DOCUMENTS + 1)
+        generation, docs = _schema3_members(root, decision)
         if len(docs) > MAX_DOCUMENTS:
             return None
         active = []

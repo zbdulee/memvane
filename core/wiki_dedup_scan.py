@@ -37,7 +37,6 @@ to the dedup log.
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -162,69 +161,6 @@ def _centroid(vectors: list[tuple[float, ...]]) -> list[float] | None:
     return [value / norm for value in total]
 
 
-def indexed_cards(decision: dict, deadline: float) -> tuple[str, dict[str, _Card]]:
-    """``(generation, {wiki-relative path: card})`` from the sealed head.
-
-    Reads one read-only snapshot of the route's database: eligible,
-    non-excluded wiki members of the published, sealed head generation and
-    their chunk vectors for the route's vector profile.
-    """
-    from context_learning.laya_learning import _open, _sealed_head, wiki_names
-    from laya_index_a import IndexContractError, _NOT_EXCLUDED
-    from laya_vector_primitives import _unpack
-    import wiki_source_retire
-
-    names = wiki_names(decision)
-    if len(names) != 1:
-        raise ValueError("selected_dedup_wiki_collection_invalid")
-    prefix = names[0] + "/"
-    scope = decision["scopeId"]
-    profile_id = decision["vectorProfile"]["profileId"]
-    with closing(_open(decision)) as db:
-        generation = _sealed_head(db, scope)
-        seal = db.execute("SELECT profile_id FROM gen_vector_seals WHERE gen=? AND scope=?",
-                          (generation, scope)).fetchone()
-        if seal != (profile_id,):
-            raise ValueError("selected_dedup_vector_profile_changed")
-        profile = db.execute("SELECT dimension FROM vector_profiles WHERE profile_id=?",
-                             (profile_id,)).fetchone()
-        if profile is None or type(profile[0]) is not int or profile[0] < 1:
-            raise ValueError("selected_dedup_vector_profile_invalid")
-        dimension = profile[0]
-        rows = db.execute(
-            "SELECT m.path,m.hash,v.embedding FROM gen_vector_rows r "
-            "JOIN membership m ON m.gen=r.gen AND m.scope=r.scope AND m.path=r.path "
-            "AND m.hash=r.hash "
-            "JOIN vector_chunks v ON v.hash=r.hash AND v.title=r.title "
-            "AND v.profile_id=r.profile_id AND v.seq=r.seq "
-            "WHERE r.gen=? AND r.scope=? AND r.profile_id=? AND m.eligible=1 "
-            "AND substr(m.path,1,?)=? AND " + _NOT_EXCLUDED +
-            " ORDER BY m.path COLLATE BINARY,r.seq",
-            (generation, scope, profile_id, len(prefix), prefix)).fetchmany(MAX_VECTOR_ROWS + 1)
-    if len(rows) > MAX_VECTOR_ROWS:
-        raise ValueError("selected_dedup_vector_capacity")
-    grouped: dict[str, tuple[str, list[tuple[float, ...]]]] = {}
-    for path, indexed_hash, blob in rows:
-        if time.monotonic() >= deadline:
-            raise TimeoutError("selected_dedup_deadline")
-        rel = path[len(prefix):]
-        entry = grouped.setdefault(rel, (indexed_hash, []))
-        if entry[0] != indexed_hash:
-            raise ValueError("selected_dedup_membership_conflict")
-        try:
-            entry[1].append(_unpack(blob, dimension))
-        except IndexContractError as exc:
-            raise ValueError("selected_dedup_vector_invalid") from exc
-    if len(grouped) > wiki_source_retire.MAX_CARDS:
-        raise ValueError("selected_dedup_card_capacity")
-    cards = {}
-    for rel, (indexed_hash, vectors) in grouped.items():
-        centroid = _centroid(vectors)
-        if centroid is not None:
-            cards[rel] = _Card(rel, indexed_hash, centroid)
-    return generation, cards
-
-
 # One read of a schema3 view head (endpoint recheck, Git capture, pin).
 SCHEMA3_READ_SECONDS = 5.0
 
@@ -282,7 +218,7 @@ def _current_text(wiki_root: Path, card: _Card) -> str | None:
     """The card's text only while its bytes still hash to the indexed hash.
 
     The hash is the same raw-byte sha256 the source port compares
-    (``laya_index_source_port``). A card in scope must be a regular file under
+    (``source_scan``). A card in scope must be a regular file under
     ``wiki_root``, not a meta page and not ``superseded``/``discarded``.
     """
     parts = Path(card.rel).parts
@@ -358,19 +294,9 @@ def run(cwd: str) -> dict:
         log("ABORT: unsafe_compile_path")
         return result
 
-    from laya_product_sync_worker import _selected_store_format
-    try:
-        store_format = (_selected_store_format(decision) if "journalPath" in decision
-                        else "v6")
-    except Exception as exc:  # the journal moved or is busy: next run retries
-        log(f"DEFER: selected store format unreadable ({type(exc).__name__})")
-        result["state"] = "deferred"
-        return result
     deadline = time.monotonic() + DEADLINE_SECONDS
     try:
-        # The frozen v6 head is not a schema3 install's index any more.
-        generation, cards = (indexed_cards_schema3(decision, deadline) if store_format == "schema3"
-                             else indexed_cards(decision, deadline))
+        generation, cards = indexed_cards_schema3(decision, deadline)
     except (OSError, ValueError, TimeoutError) as exc:
         log(f"DEFER: memvane-db read failed ({exc})")
         result["state"] = "deferred"
