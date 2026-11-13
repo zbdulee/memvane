@@ -170,18 +170,15 @@ def settle_decision(cwd, action, decision, select, *, clock=time.monotonic,
     ``UPGRADE_WAIT_SECONDS`` for the upgrade to publish its route; still
     fenced, it comes back ``blocked`` with ``bundle_upgrade_in_progress``.
     An older fence comes back at once with ``bundle_upgrade_stalled``. The
-    hook answers both with no context and exit 0, and both ask the upgrade
-    worker to finish.
+    hook answers both with no context and exit 0.
     """
     if (not isinstance(decision, dict) or decision.get('state') != 'blocked' or
             action != 'recall'):
         return decision
     if upgrade_stalled(cwd):
-        request_recovery(cwd)
         return {**decision, 'reason': UPGRADE_STALLED}
     if not upgrade_in_progress(cwd):
         return decision
-    request_recovery(cwd)
     deadline = clock() + UPGRADE_WAIT_SECONDS
     while clock() < deadline:
         sleep(UPGRADE_POLL_SECONDS)

@@ -2704,7 +2704,6 @@ def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
         import laya_fresh_wiki_origin as fresh
         from laya_host_rules import fence_reason, is_upgrade_transition
         if fresh.upgrade_fenced(cwd):
-            fresh.request_recovery(cwd)
             return _UPGRADE_NOTICES[fence_reason(fresh.upgrade_stalled(cwd))]
         if is_upgrade_transition(code) and fresh.upgrade_window(cwd):
             return _UPGRADE_NOTICES['bundle_upgrade_in_progress']

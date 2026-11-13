@@ -775,13 +775,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
 
 
 def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
-    """``select_route``, waiting briefly while the install's state moves.
-
-    Recall and SessionStart only: a route that is blocked while its project
-    names a fresh state move is re-read for up to ``laya_state_move.
-    WAIT_SECONDS`` (the window between the rename and the route write). Other
-    actions, and a blocked route without a move, return at once.
-    """
+    """Resolve the route and settle a recall's upgrade fence."""
     decision = select_route(cwd, action=action)
     if decision.get("state") != "blocked":
         return decision
@@ -807,17 +801,14 @@ def select_route_settled(cwd: str, *, action: str = "recall") -> dict:
 
 
 def _settle_moves(cwd: str, action: str, decision: dict) -> dict:
-    """Wait out a state-root move, a project folder move (``.memvane/``) or,
-    for a recall, a bundle upgrade's fence."""
-    for name in ("laya_state_move", "laya_project_dir_move", "laya_fresh_wiki_origin"):
-        if decision.get("state") != "blocked":
-            return decision
-        try:
-            module = __import__(name)
-            decision = module.settle_decision(cwd, action, decision, select_route)
-        except Exception:
-            pass
-    return decision
+    """Settle a bundle upgrade fence."""
+    if decision.get('state') != 'blocked':
+        return decision
+    try:
+        import laya_fresh_wiki_origin as fresh
+        return fresh.settle_decision(cwd, action, decision, select_route)
+    except Exception:
+        return decision
 
 
 def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
@@ -894,13 +885,6 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     except Exception:
         building = False
     if building:
-        # A host plugin update (or an in-place re-extraction of the bound
-        # bundle) moves the inactive or bound build in a detached worker.
-        try:
-            import laya_bundle_upgrade
-            laya_bundle_upgrade.request_for_project(root)
-        except Exception:
-            pass
         # A build the user started is progress, not a question.
         return BUILD_NOTICE.format(root=root)
     try:
@@ -964,31 +948,12 @@ def project_dir_notice_for(cwd: str) -> str | None:
     try:
         import laya_fresh_wiki_origin as fresh
         if fresh.upgrade_in_progress(cwd) or fresh.upgrade_stalled(cwd):
-            # A fenced upgrade (live or stopped) asks the worker to finish it.
-            fresh.request_recovery(cwd)
+            # A fenced upgrade (live or stopped) has a session notice.
             return (UPGRADE_STALLED_NOTICE if fresh.upgrade_stalled(cwd)
                     else UPGRADE_NOTICE)
     except Exception:
         pass
-    try:
-        import laya_project_dir_move as dir_move
-        found = config.find_project_config(cwd)
-        root = Path(found.get("projectRoot") or cwd)
-        line = dir_move.layout_notice(root)
-        if line is not None:
-            return line
-        # Only a move blocks the route here; any other block stays a refusal.
-        if (project_dir.layout(root) != "adopt" and
-                dir_move.read_pointer(root) is None):
-            return None
-        record = project_dir.runtime_file(root, RECORD)
-        if not record.is_file():
-            return None
-        route = json.loads(_read_regular(record, MAX_RECORD_BYTES).decode("utf-8"))
-        import laya_bundle_upgrade
-        return laya_bundle_upgrade.project_dir_notice(str(root), route["journalPath"])
-    except Exception:
-        return None
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:
