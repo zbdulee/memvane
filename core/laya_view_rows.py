@@ -1092,11 +1092,10 @@ class RowsMixin:
             record['verified'] = dict(stamp=stamp, ordinal=head.ordinal, generation=generation, capture=capture)
         return generation, capture
 
-    def _rows_pin(self, handle, deadline, observed):
+    def _rows_pin(self, handle, deadline):
         from laya_view_reader import MAX_PINS, ViewPin, _remaining
         issued = self._check(handle)
-        if not observed:
-            self._observe(issued, deadline=deadline)
+        self._observe(issued, deadline=deadline)
         _remaining(deadline)
         if len(self._pins) >= MAX_PINS:
             v.fail('view_pin_limit')
@@ -1106,8 +1105,7 @@ class RowsMixin:
                 v.fail('view_preparing')
             record = {}
             generation, _ = self._rows_verified(db, head, handle, deadline, record)
-        if not observed:
-            self._observe(issued, deadline=deadline)
+        self._observe(issued, deadline=deadline)
         _remaining(deadline)
         pin = ViewPin(handle.view_id, head.gen_id, head.epoch, self._incarnation, uuid.uuid4().hex)
         copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
@@ -1121,17 +1119,14 @@ class RowsMixin:
         return pin
 
     def _rows_search(self, pin, fts_query, limit, *, path_prefixes, excluded_paths, deadline_seconds,
-                     observed):
+                     ):
         import sqlite3
         from laya_view_reader import _query, _remaining
-        if type(observed) is not bool:
-            v.fail('fts_query_invalid')
         deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)
         record = self._pinned(pin)
         _remaining(deadline)
         entry = record['entry']
-        if not observed:
-            self._observe(entry, deadline=deadline)
+        self._observe(entry, deadline=deadline)
         _remaining(deadline)
         with self._reading(deadline) as db:
             head = self._rows_head_row(db, pin.view_id)
@@ -1171,8 +1166,7 @@ class RowsMixin:
                            gen_id=pin.gen_id, evidence='commitment-only', owner_verified=False,
                            snapshot_state=state) for r in rows]
             _remaining(deadline)
-        if not observed:
-            self._observe(entry, deadline=deadline)
+        self._observe(entry, deadline=deadline)
         _remaining(deadline)
         return answer
 
@@ -1477,14 +1471,3 @@ class RowsMixin:
                              'AND (gen_to IS NULL OR gen_to>?) AND path>? ORDER BY path COLLATE BINARY LIMIT 1',
                              (view_id, ordinal, ordinal, after)).fetchone()
             return None if row is None else tuple(row)
-
-
-    def _rows_preverify(self, handle, deadline):
-        self._check(handle)
-        with self._reading(deadline) as db:
-            head = self._rows_head_row(db, handle.view_id)
-            if head.gen_id is None:
-                return None
-            self._rows_verify(db, head, handle, deadline)
-        return head.gen_id
-

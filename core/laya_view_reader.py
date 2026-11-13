@@ -154,26 +154,9 @@ class ReaderMixin:
         """
         return self._rows_read_pinned(db, pin, deadline)
 
-    def _preverify_view(self, handle, *, deadline):
-        """Verify the view's head generation ahead of a pin (shadow pre-step).
-
-        Lock-free and outside any step budget, like the published-head
-        preproof. ``pin_view`` reuses the result only while no commit at all
-        reached the store since (the same commit stamp as ``_read_pinned``),
-        for the same generation and seal rows and the same view, worktree and
-        branch; anything else verifies again. Returns the head generation id,
-        or None when the view has no head.
-        """
-        return self._rows_preverify(handle, deadline)
-
-
-    def pin_view(self, handle, *, deadline=None, _observed=False):
-        # ``_observed``: the caller observed this checkout just before and
-        # proves it again after its last read (shadow parity pages only).
+    def pin_view(self, handle, *, deadline=None):
         if self._closed:
             v.fail('view_store_closed')
-        if type(_observed) is not bool:
-            v.fail('fts_query_invalid')
         now=time.monotonic()
         if deadline is None:
             deadline=now+30
@@ -182,7 +165,7 @@ class ReaderMixin:
         else:
             deadline=min(deadline,now+30)
         _remaining(deadline)
-        return self._rows_pin(handle, deadline, _observed)
+        return self._rows_pin(handle, deadline)
 
     def _pinned(self, pin):
         if self._closed:
@@ -214,10 +197,9 @@ class ReaderMixin:
         return 'stale_snapshot' if code == 0 else 'lineage_changed'
 
     def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
-               deadline_seconds=2, _observed=False):
+               deadline_seconds=2):
         return self._rows_search(pin, fts_query, limit, path_prefixes=path_prefixes,
-                                 excluded_paths=excluded_paths, deadline_seconds=deadline_seconds,
-                                 observed=_observed)
+                                 excluded_paths=excluded_paths, deadline_seconds=deadline_seconds)
 
     def card_locations(self, pin, paths, *, deadline_seconds=2):
         """Source line locators of pinned members, from stored card provenance only.
