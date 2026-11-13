@@ -206,6 +206,30 @@ def _unique(pairs):
     return result
 
 
+_PROVIDER_FILE_MAX = 4 * 1024 * 1024
+
+
+def _provider_file_sha(path):
+    """sha256 of one reviewed provider file: a regular, singly linked, bounded inode read once."""
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > _PROVIDER_FILE_MAX:
+        raise ValueError('unsafe_bundle_file')
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0))
+    try:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError('bundle_file_changed')
+        raw = os.read(fd, _PROVIDER_FILE_MAX + 1)
+        ident = lambda s: (s.st_dev, s.st_ino, s.st_nlink, s.st_mode, s.st_size,
+                           s.st_mtime_ns, s.st_ctime_ns)
+        if (len(raw) > _PROVIDER_FILE_MAX or ident(before) != ident(os.fstat(fd))
+                or ident(before) != ident(path.lstat())):
+            raise ValueError('bundle_file_changed')
+    finally:
+        os.close(fd)
+    return hashlib.sha256(raw).hexdigest()
+
+
 def review_local_provider(*, plugin_root, state_root,
                           model_path=None, dimension=None, runtime_generation=None):
     """Read-only exact local artifact proposal for human/release review.
@@ -244,7 +268,7 @@ def review_local_provider(*, plugin_root, state_root,
                       'memvane/provider/adapters/laya_local_embed_worker.mjs')
     artifacts = {}
     for name in provider_files:
-        artifacts[name] = _hash_file(str(root / name))
+        artifacts[name] = _provider_file_sha(root / name)
     try:
         runtime = (laya_embed_runtime.select() if runtime_generation is None else
                    laya_embed_runtime.select_generation(runtime_generation))

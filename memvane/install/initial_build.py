@@ -37,5 +37,9 @@ def registered_pointer_path(*args, **kwargs):
     return _build.registered_pointer_path(*args, **kwargs)
 
 
+def retire_project_pointer(*args, **kwargs):
+    return _build.retire_project_pointer(*args, **kwargs)
+
+
 V1_BUILD_FILE = _build.V1_BUILD_FILE
 V1_BUILD_SCHEMA = _build.V1_BUILD_SCHEMA

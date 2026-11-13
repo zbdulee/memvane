@@ -123,7 +123,7 @@ def _project(value):
 def _check_entries(build):
     from memvane.kernel.bundle_paths import entry_path, plugin_root
     worker = plugin_root() / ('memvane/sync/product_sync_worker.py' if build
-                              else 'memvane/wiki/workspace/wiki_selected_laya.py')
+                              else 'memvane/wiki/compile/selected_execution.py')
     for entry in (entry_path(), worker):
         try:
             info = entry.lstat()

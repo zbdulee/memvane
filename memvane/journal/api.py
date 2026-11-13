@@ -155,6 +155,10 @@ class _BuildOperations:
         from memvane.journal.initial_build import registered_pointer_path as implementation
         return implementation(*args, **kwargs)
 
+    def retire_project_pointer(self, *args, **kwargs):
+        from memvane.journal.initial_build import retire_project_pointer as implementation
+        return implementation(*args, **kwargs)
+
     @property
     def V1_BUILD_FILE(self):
         from memvane.journal.types import V1_BUILD_FILE
