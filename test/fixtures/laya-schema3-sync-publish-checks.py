@@ -264,10 +264,9 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
 
     def test_15_observation_over_its_bounds_keeps_both_revisions(self):
         """Regression guard: no current observation picks no winner."""
-        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         self.select_schema3()
         self.dual_card('concepts/dual-unbounded.md', 'dualunboundedprobe', current=b'Third bytes.\n')
-        with mock.patch.object(laya_wiki_discovery, 'RAW_SCAN_MAX_FILES', 1):
+        with mock.patch('memvane.wiki.intake.types.RAW_SCAN_MAX_FILES', 1):
             result, _calls = self.run_pass()
         self.assertEqual(result['state'], 'indexed', result)
         self.assertEqual(len(self.attested_revisions(result['generation'], 'concepts/dual-unbounded.md')), 2)
@@ -276,10 +275,9 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
 
     def test_16_published_dual_revision_card_is_judged_only_when_its_bytes_change(self):
         """Regression guard: unchanged card bytes keep their trust; the lifecycle regenerates."""
-        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         self.select_schema3()
         path, _compiled = self.dual_card('concepts/dual-kept.md', 'dualkeptprobe', current=b'Third bytes.\n')
-        with mock.patch.object(laya_wiki_discovery, 'RAW_SCAN_MAX_FILES', 1):
+        with mock.patch('memvane.wiki.intake.types.RAW_SCAN_MAX_FILES', 1):
             first, _calls = self.run_pass()
         trust = self.member_trust(first['generation'], 'concepts/dual-kept.md')
         (self.case.project / path).write_bytes(b'Fourth bytes.\n')
