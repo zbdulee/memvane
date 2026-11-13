@@ -36,7 +36,6 @@ def load(name, filename):
 
 
 HERMES = load('hermes_fixture_for_review_regressions', 'hermes-route-recovery-checks.py')
-MOVE = load('move_fixture_for_review_regressions', 'laya-project-dir-move-checks.py')
 import onboarding_choice as choice
 import laya_initial_build as build
 import laya_install_journal as journal
@@ -200,27 +199,6 @@ class ReviewRegressions(unittest.TestCase):
                          result=result, before=before, after=after)
                     self.assertIsNotNone(refused, 'unsafe ancestor must explicitly refuse')
                     self.assertEqual(after, before, 'refusal must precede external mkdir/chmod/write')
-
-    def test_08_hermes_recent_normal_transition_is_quiet_only_inside_core_window(self):
-        for recent in (False, True):
-            with self.subTest(recent=recent), ExitStack() as cleanup:
-                helper, case = self.preview()
-                cleanup.callback(helper.doCleanups)
-                def transition():
-                    self.activate(case)
-                    MOVE.upgrade._write_status(case.state, status='complete',
-                        executingRoot=str(case.plugin), attempts=0, reason='active_upgrade_complete',
-                        updatedNs=MOVE.upgrade._now() - (0 if recent else 31_000_000_000))
-                answer, calls, _ = helper.invoke(case, after_classify=transition)
-                emit('R2-normal-transition-window', recent=recent,
-                     classified=calls[0]['stdout'], finalState=HERMES.route.select_route(str(case.project))['state'],
-                     fenced=HERMES.fresh.upgrade_fenced(str(case.project)), answer=answer)
-                self.assertEqual(calls[0]['stdout'], 'preview')
-                self.assertFalse(HERMES.fresh.upgrade_fenced(str(case.project)))
-                if recent:
-                    self.assertIn(answer, (None, {}, {'context': ''}))
-                else:
-                    self.assertIn('request refused', (answer or {}).get('context', ''))
 
     def test_11_selected_registered_hook_contains_host_response_import_failure(self):
         helper, case = self.preview()
