@@ -66,8 +66,12 @@ and `rejected` counts by fixed reason: `provenance_parity_mismatch` (the card's
 `sourceRevisions`/`sourceSpans` differ from the intent),
 `provenance_conflict` (the index already holds different evidence under the
 same identity) and `provenance_value_invalid` (a corrupt, misnamed or invalid
-intent). The field appears only when an intent was consumed, superseded or
-rejected in a pass that finished publishing. Recorded evidence does not change
+intent), and `unsafe` counts intent files (or the intent directory) that are
+not settled private files (symlink, foreign mode, unreadable, still being
+linked): they are skipped, never renamed. A full disk, an I/O error or a store
+binding change ends the pass with the intent pending instead of rejecting it.
+The field appears only when an intent was consumed, superseded or rejected, or
+an unsafe file was skipped, in a pass that finished publishing. Recorded evidence does not change
 which cards recall serves or their trust. The verify side's provenance reasons
 (`provenance_checkout_unavailable`, `provenance_checkout_changed`,
 `provenance_value_invalid`, `provenance_intent_write_failed`) are in the

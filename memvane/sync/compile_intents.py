@@ -27,7 +27,24 @@ INTENT_SCAN_LIMIT = 512
 SWEEP_LIMIT = 255
 # Consumed witnesses tried in a pass to find one that is this view's.
 WITNESS_TRIES = 16
+# Cursor views kept; a dropped view only restarts its rotation.
+CURSOR_VIEWS = 256
 CONFLICT_REASONS = frozenset(('card_attestation_conflict', 'source_fingerprint_conflict'))
+# Store reasons that judge the intent's own values. Any other store failure
+# (full disk, I/O error, binding or file change, busy) ends the pass and
+# leaves the intent pending for a later pass.
+VALUE_REASONS = frozenset((
+    'invalid_fields', 'invalid_compile_result', 'invalid_text', 'invalid_identifier',
+    'invalid_integer', 'invalid_relative_path', 'invalid_canonical_value',
+    'invalid_canonical_json', 'noncanonical_json', 'invalid_repository_binding',
+    'source_spans_invalid', 'source_branch_invalid', 'source_state_invalid',
+    'source_head_invalid', 'duplicate_source_fingerprint', 'attestation_sources_invalid',
+    'verification_kind_invalid', 'receipt_invalid', 'receipt_prior_invalid', 'invalid_verdict'))
+# Keys every compile intent carries (1.x contract). A later 1.x producer may
+# add keys; they are ignored and never enter the digest or the store.
+REQUIRED_KEYS = ('kind', 'viewId', 'targetPath', 'cardSha', 'expectedTargetHash',
+                 'sourceFingerprints', 'sourceSpans', 'verifiedMode', 'verifyEngine',
+                 'producingEngine', 'verdict_digest', 'result_digest')
 _PENDING = re.compile(r'compile-[0-9a-f]{64}\.json')
 _CONSUMED = re.compile(r'compile-[0-9a-f]{64}\.consumed\.json')
 
@@ -65,6 +82,18 @@ def _read(fd):
     return value, info
 
 
+def _required(intent):
+    """The intent's 1.x keys (KeyError when one is missing); extra keys are dropped."""
+    return {key: intent[key] for key in REQUIRED_KEYS}
+
+
+def _fingerprints(intent):
+    rows = intent['sourceFingerprints']['fingerprints']
+    if not isinstance(rows, list) or not rows or not all(isinstance(row, dict) for row in rows):
+        raise ValueError('provenance_value_invalid')
+    return rows
+
+
 def _named(name, intent, suffix):
     from memvane.wiki.verify import api as wiki_verify
     return name == 'compile-' + wiki_verify.compile_intent_id(intent) + suffix
@@ -73,6 +102,7 @@ def _named(name, intent, suffix):
 def _stored(store, handle, intent):
     """A consumed file is a witness only if its exact evidence is stored for this view."""
     from memvane.store import api as values
+    intent = _required(intent)
     result = {key: value for key, value in intent.items()
               if key not in ('kind', 'verdict_digest', 'result_digest')}
     if (intent.get('kind') != 'compile' or intent['viewId'] != handle.view_id
@@ -111,7 +141,8 @@ def _ack(path, fd, initial, outcome):
     except IndexContractError as exc:
         if str(exc) != 'provenance_intent_changed':
             raise
-    except FileExistsError:
+    except (FileExistsError, FileNotFoundError):
+        # Settled by another writer (a verify supersede renamed it away).
         pass
     return False
 
@@ -125,16 +156,18 @@ def _witness(store, handle, directory, name):
             os.close(fd)
         if _named(name, intent, '.consumed.json') and _stored(store, handle, intent):
             return intent
-    except (OSError, ValueError, TypeError, KeyError, store_types.BlobStoreError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
         pass
     return None
 
 
-def _sweep(store, handle, directory, names, entry, result):
-    """Supersede waiting intents older than one consumed intent for the same view path.
+def _sweep(store, handle, directory, names, entry, result, members):
+    """Supersede waiting intents not newer than one consumed intent for the same view path.
 
     Returns the files opened. ``entry`` keeps this view's witness and the
     last waiting name compared with it, so a large queue is swept over passes.
+    An intent for the card bytes this pass publishes is never superseded: it
+    is consumable now, whatever the wall clock said when each was observed.
     """
     witnesses = sorted(item.name for item in os.scandir(directory) if _CONSUMED.fullmatch(item.name))
     if not witnesses:
@@ -163,18 +196,20 @@ def _sweep(store, handle, directory, names, entry, result):
             fd = _open(path)
             try:
                 waiting, initial = _read(fd)
+                member = members.get(waiting.get('targetPath'))
                 if (not _named(candidate, waiting, '.json')
                         or waiting.get('viewId') != witness['viewId']
                         or waiting.get('targetPath') != witness['targetPath']
                         or waiting.get('cardSha') == witness['cardSha']
+                        or (member is not None and member['blob_sha'] == waiting.get('cardSha'))
                         or waiting['sourceFingerprints']['observedNs']
-                        >= witness['sourceFingerprints']['observedNs']):
+                        > witness['sourceFingerprints']['observedNs']):
                     continue
                 if _ack(path, fd, initial, 'superseded'):
                     result['superseded'] += 1
             finally:
                 os.close(fd)
-        except (OSError, ValueError, TypeError, KeyError):
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
             continue
     after = candidates[-1] if candidates else after
     entry.update(witness=name, after=after, done=not any(item > after for item in names))
@@ -198,21 +233,23 @@ def _parity(intent, image):
             and spans == sorted(intent['sourceSpans'], key=lambda s: (s['path'], s['startLine'], s['endLine'])))
 
 
-def consume(store, decision, handle, members, current, *, mark, validate, passthrough, ingest_limit):
-    """Consume this view's compile intents; return ``{consumed, rejected, waiting, superseded}``.
+def consume(store, decision, handle, members, current, *, mark, validate, ingest_limit):
+    """Consume this view's compile intents; return ``{consumed, rejected, waiting, superseded, unsafe}``.
 
     ``members`` and ``current`` are the pass's member rows and card bytes by
     path. ``mark`` is the pass's journal fence (called before the first store
-    write), ``validate`` rechecks the writer after each write and
-    ``passthrough`` names store reasons that end the pass instead of
-    rejecting an intent (binding changes, transient conflicts). At most
-    ``ingest_limit`` intents try a store write; waiting ones do not count.
+    write) and ``validate`` rechecks the writer after each write; their
+    failures and every store failure that does not judge the intent's values
+    end the pass with the intent pending. At most ``ingest_limit`` intents try
+    a store write; waiting ones do not count. ``unsafe`` counts files (or the
+    directory) that are not settled private intents: they are never opened
+    again in the pass and never renamed.
     """
     from memvane.journal import api as ledger
     from memvane.journal.api import _reader as reader
     from memvane.store import api as values
 
-    result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
+    result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0, 'unsafe': 0}
     state = reader._state(Path(decision['journalPath']).parent)
     directory = state / 'provenance-intents'
     try:
@@ -221,7 +258,9 @@ def consume(store, decision, handle, members, current, *, mark, validate, passth
         return result
     if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
             or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
-        raise IndexContractError('provenance_intent_directory_unsafe')
+        # An unsafe intent directory is never read; card publication goes on.
+        result['unsafe'] += 1
+        return result
     names = sorted(item.name for item in os.scandir(directory) if _PENDING.fullmatch(item.name))
     if not names:
         return result
@@ -234,7 +273,7 @@ def consume(store, decision, handle, members, current, *, mark, validate, passth
     views = cursor.get('views') if isinstance(cursor, dict) and isinstance(cursor.get('views'), dict) else {}
     saved = views.get(handle.view_id)
     entry = dict(saved) if isinstance(saved, dict) else {}
-    budget = INTENT_SCAN_LIMIT - _sweep(store, handle, directory, names, entry, result)
+    budget = INTENT_SCAN_LIMIT - _sweep(store, handle, directory, names, entry, result, members)
     last = entry.get('last') if isinstance(entry.get('last'), str) else ''
     ordered = [name for name in names if name > last] + [name for name in names if name <= last]
     attempted, last_scanned = 0, None
@@ -247,20 +286,25 @@ def consume(store, decision, handle, members, current, *, mark, validate, passth
             fd = _open(path)
         except FileNotFoundError:
             continue
+        except OSError:
+            result['unsafe'] += 1  # a symlink or unreadable file under an intent name
+            continue
         try:
             try:
                 initial = _private(fd)
             except ValueError:
+                result['unsafe'] += 1  # not settled or not private: a later pass looks again
                 continue
+            outcome = reason = None
+            # Only the intent's own content is judged here; a failure rejects it.
             try:
                 intent, initial = _read(fd)
                 if not _named(name, intent, '.json'):
                     raise ValueError('provenance_intent_name_mismatch')
                 if intent.get('viewId') != handle.view_id:
                     continue
-                fingerprints = intent['sourceFingerprints']['fingerprints']
-                if (not fingerprints or any((fp.get('worktree_id'), fp.get('branch_key'))
-                                            != (handle.worktree_id, handle.branch_key) for fp in fingerprints)):
+                if any((fp.get('worktree_id'), fp.get('branch_key'))
+                       != (handle.worktree_id, handle.branch_key) for fp in _fingerprints(intent)):
                     continue
                 target = intent['targetPath']
                 values.relative(target)
@@ -271,23 +315,27 @@ def consume(store, decision, handle, members, current, *, mark, validate, passth
                     continue
                 if not _parity(intent, image[1]):
                     raise ValueError('provenance_parity_mismatch')
-                attempted += 1
-                mark()
-                store.put_compiled_attestation(handle.worktree_id, intent, policy_digest=handle.policy_digest)
-                validate()
-                outcome = 'consumed'
-            except (JournalEvidenceError, IndexContractError):
-                # Fence or writer proof: the pass ends, the intent stays pending.
-                raise
-            except store_types.BlobStoreError as exc:
-                if exc.reason in passthrough:
-                    raise
-                outcome, reason = 'rejected', ('provenance_conflict' if exc.reason in CONFLICT_REASONS
-                                               else 'provenance_value_invalid')
-            except (KeyError, TypeError, ValueError, UnicodeError) as exc:
+                required = _required(intent)
+            except (AttributeError, KeyError, TypeError, ValueError, UnicodeError) as exc:
                 outcome, reason = 'rejected', ('provenance_parity_mismatch'
                                                if str(exc) == 'provenance_parity_mismatch'
                                                else 'provenance_value_invalid')
+            if outcome is None:
+                attempted += 1
+                mark()  # fence failure ends the pass; the intent stays pending
+                try:
+                    store.put_compiled_attestation(handle.worktree_id, required,
+                                                   policy_digest=handle.policy_digest)
+                except store_types.BlobStoreError as exc:
+                    if exc.reason in CONFLICT_REASONS:
+                        outcome, reason = 'rejected', 'provenance_conflict'
+                    elif exc.reason in VALUE_REASONS:
+                        outcome, reason = 'rejected', 'provenance_value_invalid'
+                    else:
+                        raise
+                else:
+                    validate()
+                    outcome = 'consumed'
             if not _ack(path, fd, initial, outcome):
                 continue
             if outcome == 'consumed':
@@ -299,6 +347,10 @@ def consume(store, decision, handle, members, current, *, mark, validate, passth
     if last_scanned is not None:
         entry['last'] = last_scanned
     if entry != saved:
-        # Rotation position only: a failed write repeats this window next pass.
-        ledger.ledger_write(cursor_path, {'views': {**views, handle.view_id: entry}}, replace=True)
+        kept = {key: value for key, value in views.items() if key != handle.view_id}
+        kept = dict(sorted(kept.items())[:CURSOR_VIEWS - 1])
+        try:
+            ledger.ledger_write(cursor_path, {'views': {**kept, handle.view_id: entry}}, replace=True)
+        except (OSError, ValueError, CutoverBlocked):
+            pass  # rotation position only: a failed write repeats this window next pass
     return result

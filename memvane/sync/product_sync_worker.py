@@ -634,7 +634,6 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
         store, decision, handle, members, current,
         mark=lambda: 'proof' in marks or _mark_schema3_write(writer, proof, marks),
         validate=lambda: normal.validate_normal_writer(writer),
-        passthrough=SCHEMA3_BINDING_REASONS | SCHEMA3_TRANSIENT_REASONS,
         ingest_limit=SCHEMA3_MAX_INGEST)
 
 

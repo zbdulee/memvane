@@ -50,7 +50,7 @@ REVIEW_SHA = '9' * 64
 CARD_REL = 'concepts/heron-dawn.md'
 ANCHOR_REL = 'concepts/anchor.md'
 PROMPT = 'emerald heron'
-NO_PROVENANCE = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
+NO_PROVENANCE = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0, 'unsafe': 0}
 # Initial build and settle passes are bounded; each is a full sync pass.
 BUILD_PASSES = 8
 SETTLE_PASSES = 6
@@ -433,7 +433,7 @@ class WikiDbProvenance(unittest.TestCase):
 
         result = self.sync()
         self.assertEqual(result.get('provenance'), {'consumed': 1, 'rejected': {}, 'waiting': 0,
-                                                    'superseded': 0}, result)
+                                                    'superseded': 0, 'unsafe': 0}, result)
         after = self.observe()
         self.assertEqual(after['epoch'], before['epoch'] + 1)  # one journal fence for the store write
         self.assertEqual(after['head'], before['head'])
@@ -494,7 +494,7 @@ class WikiDbProvenance(unittest.TestCase):
 
         result = self.sync()
         self.assertEqual(result.get('provenance'), {'consumed': 0, 'rejected': {}, 'waiting': 1,
-                                                    'superseded': 0}, result)
+                                                    'superseded': 0, 'unsafe': 0}, result)
         after = self.observe()
         self.assertEqual(after, before)  # no fence, no evidence row, no generation
         self.assertEqual(after['compiled'], 0)
@@ -515,7 +515,7 @@ class WikiDbProvenance(unittest.TestCase):
 
         replay = self.sync()
         self.assertEqual(replay.get('provenance'), {'consumed': 1, 'rejected': {}, 'waiting': 0,
-                                                    'superseded': 0}, replay)
+                                                    'superseded': 0, 'unsafe': 0}, replay)
         after = self.observe()
         self.assertEqual(after['compiled'], 1)
         self.assertEqual(after['counts'], committed['counts'])  # the store write is idempotent
@@ -560,7 +560,7 @@ class WikiDbProvenance(unittest.TestCase):
         result = self.run_worker()
         self.assertIn(result.get('state'), ('indexed', 'unchanged', 'pending'), result)
         self.assertEqual(result.get('provenance'), {
-            'consumed': 1, 'waiting': 0, 'superseded': 0,
+            'consumed': 1, 'waiting': 0, 'superseded': 0, 'unsafe': 0,
             'rejected': {'provenance_value_invalid': 3, 'provenance_parity_mismatch': 1}}, result)
         for rejected in (corrupt, noncanonical, misnamed, tampered):
             self.assertFalse(rejected.exists(), rejected.name)

@@ -10,7 +10,7 @@
 - sync owner·`sync.lock`·wiki mutation lock 및 socket의 이름과 위치. 설치별 socket은 `<state base v1>/run/<설치 id의 SHA-256 앞 16 hex>.sock`이다.
 - wake kind 집합과 target 모양, `recipe_id`·`profile_id` 입력.
 - 카드 frontmatter 필드와 `.memvane/compile/*.jsonl` 행 모양.
-- compile intent(`<install state root>/provenance-intents/`)의 키 집합, 이름의 id 입력, 결과 접미사(`.consumed`·`.rejected`·`.superseded`). 한 호스트의 verify worker가 쓴 intent를 다른 1.x 호스트의 sync가 소비한다.
+- compile intent(`<install state root>/provenance-intents/`)의 필수 키 집합(`kind`·`viewId`·`targetPath`·`cardSha`·`expectedTargetHash`·`sourceFingerprints`·`sourceSpans`·`verifiedMode`·`verifyEngine`·`producingEngine`·`verdict_digest`·`result_digest`), 이름의 id 입력, 결과 접미사(`.consumed`·`.rejected`·`.superseded`). 추가 키는 허용한다: consumer는 필수 키만 읽고 나머지는 무시하며, `result_digest`는 필수 키로만 계산한다. 한 호스트의 verify worker가 쓴 intent를 다른 1.x 호스트의 sync가 소비한다.
 
 보호된 provider·worker 파일이나 `locks/`를 변경하는 1.x 릴리스는 모든 프로젝트의 재빌드가 필요하다.
 

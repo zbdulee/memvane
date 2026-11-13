@@ -259,19 +259,19 @@ def _diagnostic_fields(target, kind, exc):
 
 def _provenance(result):
     """Compile intents settled by a sync pass, summed over its views; None when nothing settled."""
-    total = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
+    total = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0, 'unsafe': 0}
     views = [result] + [item for item in result.get('worktrees') or () if isinstance(item, dict)]
     for view in views:
         counts = view.get('provenance')
         if not isinstance(counts, dict):
             continue
-        for key in ('consumed', 'waiting', 'superseded'):
+        for key in ('consumed', 'waiting', 'superseded', 'unsafe'):
             if isinstance(counts.get(key), int):
                 total[key] += counts[key]
         for reason, count in (counts.get('rejected') or {}).items():
             if isinstance(count, int):
                 total['rejected'][reason] = total['rejected'].get(reason, 0) + count
-    if not (total['consumed'] or total['rejected'] or total['superseded']):
+    if not (total['consumed'] or total['rejected'] or total['superseded'] or total['unsafe']):
         return None
     return total
 
