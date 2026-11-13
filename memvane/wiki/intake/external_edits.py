@@ -200,7 +200,7 @@ def _targets(origin, deadline):
     each candidate passes the same journal and route proof; a registry row
     grants nothing.
     """
-    from memvane.route import index_host_route as routes
+    from memvane.route import api as routes
     from memvane.journal import install_journal as journal
     from memvane.registry import api as memvane_registry
     view = memvane_registry.routing_rows()
@@ -367,7 +367,7 @@ def notify(paths, *, cwd, host, origin):
 def drain(decision, *, recheck, owner=None):
     """Full-proof owner consumes current hints using existing compile policy."""
     from memvane.settings import config
-    from memvane.route import index_host_route as routes
+    from memvane.route import api as routes
     from memvane.journal import install_journal as journal
     from memvane.wiki.intake import wiki_compile_enqueue as enqueue
     from memvane.wiki.workspace import wiki_selected_laya

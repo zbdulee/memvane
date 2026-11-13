@@ -7,6 +7,16 @@ def select_route(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def select_local_route(*args, **kwargs):
+    from memvane.route.index_host_route import _select_route as implementation
+    return implementation(*args, **kwargs)
+
+
+def select_notification_route(*args, **kwargs):
+    from memvane.route.index_host_route import select_notification_route as implementation
+    return implementation(*args, **kwargs)
+
+
 def settings_identity_digest(*args, **kwargs):
     from memvane.route.index_host_route import settings_identity_digest as implementation
     return implementation(*args, **kwargs)

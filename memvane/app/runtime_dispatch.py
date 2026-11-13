@@ -300,7 +300,7 @@ def _diagnostic_route(target):
     """
     try:
         from memvane.diagnostics import api as event_log
-        from memvane.route import index_host_route as laya_index_host_route
+        from memvane.route import api as laya_index_host_route
         route = laya_index_host_route.select_route(target['project'], action='update')
         main = (route.get('mainRoute') if isinstance(route, dict)
                 and route.get('state') == 'worktree' else route)
