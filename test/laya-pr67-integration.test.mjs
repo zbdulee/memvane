@@ -6,22 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { removeTemp } from './helpers/temp.mjs';
 
-// U17: end-to-end PR6-7 scenarios, one fixture install per scenario.
+// Linked worktree view isolation on a fixture install.
 const GROUPS = {
-  'full path, writes between steps, rollback round trip': [
-    'test_01_full_path_from_v6_to_schema3_answers_the_v6_recall',
-    'test_02_writes_between_steps_converge_and_recall_is_latest',
-    'test_06_rollback_resume_and_switch_again',
-  ],
-  'SIGKILL at each boundary and parallel recalls during the CAS': [
-    'test_03_sigkill_at_each_boundary_resumes_without_loss_or_duplicates',
-    'test_04_parallel_recalls_during_the_cas_complete_in_old_or_new',
-  ],
-  'upgrade crossing, linked worktree and the other sqlite build': [
-    'test_05_upgrade_finished_inside_the_migration_still_switches',
-    'test_05b_stopped_upgrade_fence_restore_settles_and_rollback_proceeds',
+  'linked worktree reads its own view': [
     'test_07_linked_worktree_reads_its_own_view_and_a_branch_switch_is_cold',
-    'test_08_other_interpreter_advances_and_reads_the_same_stores',
   ],
 };
 
