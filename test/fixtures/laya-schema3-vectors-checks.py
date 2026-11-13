@@ -1442,6 +1442,70 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertEqual(self.embedded(gen, 'window/ccc-later.md')[1], False)
         emit('schema3-vector-window-ends', slow=seen.count('bbbslowprobe'), calls=len(seen))
 
+    # -- linked views whose project folder name differs from main's -------------
+    def linked_other_folder(self):
+        """A linked worktree whose branch keeps the other project folder name
+        (``.memvane`` vs ``.auto-context``) than the main checkout."""
+        import os
+        project_dir = importlib.import_module('project_dir')
+        linked = self.linked_worktree()
+        main_name = project_dir.settings_path(self.case.project).parent.name
+        other = [name for name in project_dir.NAMES if name != main_name][0]
+        os.rename(linked / main_name, linked / other)
+        self.assertEqual(project_dir.active_name(linked), other)
+        return linked, main_name, other
+
+    def unnormalized_linked_decision(self, decision, project):
+        """The main decision's roots moved onto ``project`` path by path, with
+        no project folder translation (a linked decision its row refuses)."""
+        main = Path(decision['projectRoot'])
+
+        def rebased(root):
+            return str(project / Path(root).relative_to(main))
+        return {**decision, 'projectRoot': str(project),
+                'collections': [{**item, 'sourceRoot': rebased(item['sourceRoot'])}
+                                for item in decision['collections']],
+                'collectionRoots': {name: rebased(root)
+                                    for name, root in decision.get('collectionRoots', {}).items()}}
+
+    def test_32_refused_linked_ingest_holds_that_view_and_the_pass_reaches_reseal(self):
+        """A linked view whose attested ingest the store refuses
+        (``attestation_decision_mismatch``) is held; the pass does not raise,
+        the main view publishes its vector generation and the reader reseal
+        runs. A refused-provider pass also completes with that view held."""
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        self.linked_other_folder()
+        with mock.patch.object(self.worker, '_linked_decision', new=self.unnormalized_linked_decision), \
+                self.offers():
+            refused, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+            self.assertEqual([(w['state'], w.get('reason')) for w in refused['worktrees']],
+                             [('held', 'attestation_decision_mismatch')], refused)
+            result, _ingests, _calls = self.run_vector_pass()
+        self.assertEqual((result['vector']['state'], result.get('readerResettle')),
+                         ('published', 'resealed'), result)
+        self.assertEqual([(w['state'], w.get('reason')) for w in result['worktrees']],
+                         [('held', 'attestation_decision_mismatch')], result)
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        emit('schema3-linked-ingest-held', state=result['state'], resettle=result.get('readerResettle'))
+
+    def test_33_linked_view_with_the_other_project_folder_name_is_ingested(self):
+        """The linked decision's roots name the linked worktree's own project
+        folder: a branch that keeps ``.auto-context`` (or ``.memvane``) while
+        main uses the other is ingested and published, not refused."""
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        linked, _main_name, other = self.linked_other_folder()
+        with self.offers():
+            result, _ingests, _calls = self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
+        (view,) = result['worktrees']
+        self.assertEqual(view['state'], 'indexed', result)
+        self.assertGreater(view.get('ingested', 0), 0, result)
+        decision = self.worker._linked_decision(self.decision, linked)
+        wiki = [item['sourceRoot'] for item in decision['collections'] if item['role'] == 'wiki']
+        self.assertEqual([Path(root).relative_to(linked).parts[0] for root in wiki], [other])
+        emit('schema3-linked-other-folder', state=view['state'], folder=other)
+
 # Only this unit's checks run here; the seeds' own checks run in their files.
 for _name in dir(seed_module.Schema3ConsumerChecks):
     if _name.startswith('test') and _name not in vars(Schema3VectorChecks):

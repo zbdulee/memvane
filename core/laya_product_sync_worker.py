@@ -1152,10 +1152,13 @@ def _schema3_wiki_cards(root):
 # view (``git worktree list`` order). Later ones wait for the next wake.
 SCHEMA3_MAX_LINKED = 16
 # Refusals that hold one linked worktree's view (its row, settings or wiki
-# root no longer match, or registration is refused) without failing the pass.
+# root no longer match, registration is refused, or the store refuses the
+# linked decision for its row) without failing the pass. Only the linked
+# loop reads this set; the main view's refusals fail the pass as before.
 SCHEMA3_LINKED_HELD = SCHEMA3_BINDING_REASONS | frozenset(('worktree_binding_conflict',
                                                            'worktree_missing', 'wiki_binding_invalid',
-                                                           'candidate_io_failed'))
+                                                           'candidate_io_failed',
+                                                           'attestation_decision_mismatch'))
 
 
 def _publish_schema3(decision, proof, writer, vectors=None):
@@ -1309,12 +1312,20 @@ def _linked_decision(decision, project):
 
     Same derived settings identity (proved by the selector); only
     ``projectRoot`` and the roots move, as the store's attested-ingest rule
-    binds the decision to that worktree row's project and wiki root.
+    binds the decision to that worktree row's project and wiki root. A root
+    under the project folder names the linked worktree's own active folder
+    (a branch may keep ``.auto-context`` while main uses ``.memvane``, or the
+    reverse): the selector's settings identity treats the two names alike.
     """
+    import project_dir
     main = Path(decision['projectRoot'])
+    folder = project_dir.active_name(project)
 
     def rebased(root):
-        return str(project / Path(root).relative_to(main))
+        parts = Path(root).relative_to(main).parts
+        if parts and parts[0] in project_dir.NAMES:
+            parts = (folder, *parts[1:])
+        return str(project.joinpath(*parts))
     return {**decision, 'projectRoot': str(project),
             'collections': [{**item, 'sourceRoot': rebased(item['sourceRoot'])}
                             for item in decision['collections']],
