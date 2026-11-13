@@ -19,14 +19,14 @@ checkout, 파일 편집을 마친 뒤 다음 hook 이벤트가 `laya-sync` wake�
   어디로도 라우팅하지 않으며, 그 프로젝트 자신의 full-scan sync가 맞춘다.
 - Claude의 성공한 Bash(`file-change-event`)
 
-hook은 wake만 기록한다. off-hook owner(`core/laya_product_sync_worker.py`)가
+hook은 wake만 기록한다. off-hook owner(`memvane/sync/product_sync_worker.py`)가
 자원 승인을 받은 뒤 bound 원문 범위 전체를 스캔하고, 생성·수정·삭제·이름 변경을
 반영한 full-membership generation을 게시한다. 실패하거나 유예된 시도는 wake를
 남기고 dispatcher가 다시 시도한다. 따라서 hook 호출 자체가 즉시 검색 가능성을
 보장하지는 않는다.
 
 sync가 성공하면(`indexed` 또는 `unchanged`) 같은 worker가 bounded raw 범위를
-스캔해 path/hash 쌍을 비공개 cursor와 비교한다(`core/laya_wiki_discovery.py`).
+스캔해 path/hash 쌍을 비공개 cursor와 비교한다(`memvane/wiki/intake/wiki_discovery.py`).
 schema3 reader가 선택된 설치에서는 sync pass가 같은 상한으로 이미 관측한 raw 범위를 재사용한다.
 raw 본문은 Laya membership·FTS·vector에 들어가지 않는다. 바뀐 revision은
 `wiki_compile_enqueue.enqueue_changed_sources`의 trigger 정책으로 넘기고, 삭제된

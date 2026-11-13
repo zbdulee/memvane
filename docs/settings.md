@@ -19,7 +19,7 @@
 settings 파일의 키가 `name`(필수)과 `skipPaths`(선택), 그리고 선택적 진단 동의
 [`diagnostics`](#diagnostics--상세-진단-동의-opt-in)뿐이면 **minimal settings**입니다.
 나머지 effective 설정은 플러그인이 `name`에서 결정적으로 유도합니다
-(`core/config.py`의 `expand_minimal_settings`).
+(`memvane/settings/config.py`의 `expand_minimal_settings`).
 
 ```json
 {
@@ -125,7 +125,7 @@ owner가 reader 기록을 다시 봉인할 때까지 recall은 컨텍스트 없�
 
 이전 raw 이름을 `sourceRevisions`에 적은 카드는 선택된 recall과 compile 쪽(이미 compile된
 revision 판정, 원문 삭제 시 카드 정리, wiki lifecycle)이 같은 규칙으로 다룹니다.
-settings에 없는 이름은 경로를 담은 현재 raw collection으로 해석하고(`core/source_label.py`),
+settings에 없는 이름은 경로를 담은 현재 raw collection으로 해석하고(`memvane/settings/source_label.py`),
 wiki 이름이나 모든 raw 루트 밖 경로는 같은 이름끼리만 맞춥니다.
 
 ### 임베딩 런타임 (유지보수 명령)
@@ -136,9 +136,9 @@ MemVane 색인의 임베딩 provider는 `~/.local/state/memvane/embed-runtime`�
 `--project`가 필요 없습니다.
 
 ```bash
-python3 -B "$ROOT/core/setup_entry.py" index-runtime-status
-python3 -B "$ROOT/core/setup_entry.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]
-python3 -B "$ROOT/core/setup_entry.py" gc-index-runtime [--approve-index-runtime-gc]
+python3 -B "$ROOT/entry/setup.py" index-runtime-status
+python3 -B "$ROOT/entry/setup.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]
+python3 -B "$ROOT/entry/setup.py" gc-index-runtime [--approve-index-runtime-gc]
 ```
 
 - **`provision-index-runtime`** — 이전 설치가 없는 머신에서 런타임을 만듭니다. Node는 `PATH`를
@@ -335,7 +335,7 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 
 - **산출물 경로 9종** — `candidates.jsonl`·`source-queue.jsonl`·`tombstones.jsonl`·
   `generated-manifest.jsonl`·`merge-needed.jsonl`·`verify-{queue,log,skipped,deleted}.jsonl`은
-  프로젝트 폴더의 `compile/` 아래 고정 상수입니다(`core/compile_paths.py`). sidecar
+  프로젝트 폴더의 `compile/` 아래 고정 상수입니다(`memvane/wiki/workspace/compile_paths.py`). sidecar
   (`*.lock`·`*.compact-stamp`)는 원본 파일명에서 파생됩니다. 경로가 상수라 경로 오타로
   억제 마커가 다른 곳에 쓰여 과금 루프가 생기는 일이 없습니다.
 - **dedup score 레버 4종** — `threshold`·`autoMergeThreshold`·`topK`·`similarPageMaxChars`는
@@ -351,7 +351,7 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
   열지 않습니다.
 
 제거된 키가 파일에 남아 있으면 그 값은 무시됩니다. 옮겨간 키의 행선지는
-`core/config.py`의 `deprecated_keys`가 정합니다. 그 키를 지우거나 새 위치에 다시 적으십시오.
+`memvane/settings/config.py`의 `deprecated_keys`가 정합니다. 그 키를 지우거나 새 위치에 다시 적으십시오.
 
 **예외 하나 — `compile.maxCardsPerSource`는 값이 잠정 반영됩니다.** 새 키
 `compile.budget.cardsPerSource`를 **적지 않은 경우에만** 옛 값이 그 자리를 대신하고
@@ -380,10 +380,10 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 
 `UserPromptSubmit` recall은 **blocking hook**입니다 — 이 훅이 끝날 때까지 사용자 프롬프트가
 모델로 가지 않습니다. 설정 키는 **`queryTimeout` 하나이고 그것은 per-query 값**입니다.
-기본값은 `5`초입니다(`core/config.py`의 `DEFAULT_CONFIG["queryTimeout"]`). 설정을 생략하면
+기본값은 `5`초입니다(`memvane/settings/config.py`의 `DEFAULT_CONFIG["queryTimeout"]`). 설정을 생략하면
 이 5초가 적용됩니다.
 
-선택된 Laya 경로의 검색 단계는 `core/laya_host_response.py` 안의 고정 deadline으로도 묶입니다.
+선택된 Laya 경로의 검색 단계는 `memvane/host/host_response.py` 안의 고정 deadline으로도 묶입니다.
 lex·vector 질의 배치는 각각 2초, DF 좁히기 프로브는 **패스 전체**가 1초입니다(term 당 질의는
 최대 6개) → [lex term 선택](#lex-term-선택--코퍼스에-있는-단어만-and-에-넣습니다).
 
@@ -574,7 +574,7 @@ fence·HTML 블록을 담을 수 있는데, CommonMark의 모든 블록 개시(f
 > `  - {kind: "file", path: "docs/a.md"}`. 인용 키·single quote·후행 주석은 그대로 읽힙니다.
 > dedup consolidation에서도 같은 writer 형태를 유지해야 합니다.
 
-값 표기 규칙은 `core/yaml_scalars.py`가 SSOT이며 표준 YAML을 따릅니다: 인용부호는 **스칼라
+값 표기 규칙은 `memvane/wiki/card/yaml_scalars.py`가 SSOT이며 표준 YAML을 따릅니다: 인용부호는 **스칼라
 선두에서만** 인용을 시작하고(값 중간의 `"`·`'`는 값의 일부입니다), single-quoted 안의 `''`는
 리터럴 `'`이고, plain scalar는 `:`를 담을 수 있습니다(구분자는 `: `처럼 공백·`,`·`}`가
 뒤따르는 `:`뿐입니다). 중복 키는 **first-wins**입니다(PyYAML은 last-wins) — frontmatter
@@ -698,7 +698,7 @@ lex 질의는 한 문자열 안의 term 을 **AND** 로 결합합니다. 그래�
 ## minScore는 유사도가 아니라 순위입니다
 
 **중요.** 선택된 Laya recall은 QMD 2.5.3의 RRF 순서와 skip-rerank score 규칙을 고정해
-씁니다(`core/laya_host_response.py`). 그래서 `score`는 의미 유사도가 아니라
+씁니다(`memvane/host/host_response.py`). 그래서 `score`는 의미 유사도가 아니라
 **RRF(reciprocal rank fusion) 순위의 역수**입니다.
 즉 `score = 1 / rank`이므로 값은 결과의 내용과 무관하게 순위만으로 결정됩니다.
 
@@ -1034,7 +1034,7 @@ worker가 발견하면 지웁니다.
 fail-closed만으로는 "판정(유료) → 기록 실패 → 잡 보존 → 재판정(유료)" 루프가 남으므로,
 `onInconclusive`가 `delete`인 프로젝트에서는 **유료 호출 전에** 이 파일의 쓰기 가능성을
 확인하고 불가하면 그 run의 검수를 아예 시작하지 않습니다(host CLI 호출 0회). 이 원장
-경로들은 설정이 아니라 상수라(`core/compile_paths.py`) 경로 오타로 마커가 유실될 경로 자체가
+경로들은 설정이 아니라 상수라(`memvane/wiki/workspace/compile_paths.py`) 경로 오타로 마커가 유실될 경로 자체가
 없습니다.
 `dedup-skipped.jsonl`(semantic dedup의 `distinct` 판정 억제)도 같은 preflight를 받습니다:
 쓸 수 없으면 LLM judge를 호출하지 않고 무료 score 게이트로 degrade합니다.
@@ -1058,7 +1058,7 @@ cooldown 경로를 그대로 타므로, verifier CLI가 없는 머신에서 카�
 
 ### wiki 수명 주기 (원문 소실·변경)
 
-`core/wiki_lifecycle.py`가 생성 카드마다 기록된 원문 경로와 해시(`sourceRevisions`)로
+`memvane/wiki/lifecycle/wiki_lifecycle.py`가 생성 카드마다 기록된 원문 경로와 해시(`sourceRevisions`)로
 카드를 판정합니다. embed·LLM에 의존하지 않습니다.
 
 | 원문 상태 | 처리 |
@@ -1149,7 +1149,7 @@ judge는 **절대 merge/delete하지 않습니다.** 비용 상한은 write-time
 
 #### Retroactive scan
 
-이미 디스크에 있는 카드끼리의 중복은 retroactive scan(`core/wiki_dedup_scan.py`)이 찾습니다.
+이미 디스크에 있는 카드끼리의 중복은 retroactive scan(`memvane/wiki/dedup/wiki_dedup_scan.py`)이 찾습니다.
 선택된 프로젝트에서 SessionStart·원문 편집 뒤 도는 wiki 수명 주기 자식이 수명 주기 run 다음에
 scan을 실행합니다. scan은 선택된 route의 memvane-db sealed head에 저장된 위키 카드 chunk 벡터의
 중심점끼리 cosine을 비교하고, 0.9(`autoMergeThreshold` 상수) 이상인 쌍을
@@ -1202,7 +1202,7 @@ resolver agent로 처리합니다(잠금 `~/.local/state/memvane/auto-context/de
 ## cooldown·lock의 "영구 정지" 방어
 
 시간 게이트(cooldown·TTL·stale lock)는 **한 번 잘못 닫히면 영구히 닫혀 있어서는 안 됩니다.**
-그 실패는 아무 로그도 남기지 않고 해당 파이프라인을 통째로 멈추기 때문입니다. 판정 규칙은 `core/cooldown.py`
+그 실패는 아무 로그도 남기지 않고 해당 파이프라인을 통째로 멈추기 때문입니다. 판정 규칙은 `memvane/kernel/cooldown.py`
 한 벌이고 두 가지입니다.
 
 **① 만료 시각을 파일에 적는 cooldown은 24시간으로 클램프됩니다.** 대상은 compile

@@ -20,7 +20,7 @@ development execution guard is separate; see
   Zero-RSS process-group rows are not live memory samples. An exited child
   keeps its original exit result; a live child without usable RSS cannot
   satisfy a required resource monitor. Missing observations remain unknown.
-- Selected Laya route wakes: `core/laya_host_response.py` queues `laya-sync` and
+- Selected Laya route wakes: `memvane/host/host_response.py` queues `laya-sync` and
   `laya-compile` through `runtime_work.request`. Both are kinds in
   `runtime_wake_policy.KINDS`; `needs_compute_admission` is false for them
   because their handlers own admission. `runtime_handlers.laya_sync` and
@@ -629,7 +629,7 @@ from injected analytical tests; the shared OS reporter always attaches it.
 - Embedding runtime: the embedding worker runs the Laya embedding runtime under
   `~/.local/state/memvane/embed-runtime` (`active.json`, `previous.json`,
   content-addressed `generations/g-<id>/`). On a new machine the owner
-  runs `core/setup_entry.py provision-index-runtime
+  runs `memvane/app/setup_entry.py provision-index-runtime
   --approve-index-runtime-download [--provider-model-file <local gguf>]`
   (network: npm registry and model host); `index-runtime-status` re-hashes the
   active generation, and `gc-index-runtime [--approve-index-runtime-gc]`

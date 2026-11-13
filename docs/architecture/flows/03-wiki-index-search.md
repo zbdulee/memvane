@@ -21,4 +21,4 @@ flowchart LR
 
 색인 갱신은 runtime wake queue와 sync owner가 처리합니다. raw source는 위키 생성과 freshness 판정에 쓰며 raw 본문은 검색 색인에 넣지 않습니다. wake offer의 `dropped`는 큐에 작업이 남지 않았음을 뜻합니다.
 
-구현은 `core/laya_host_response.py`, `core/laya_journal_reader.py`, `core/laya_reader_dispatch.py`, `core/laya_view_reader.py`, `core/laya_product_sync_worker.py`와 `core/runtime_work.py`에 있습니다. 저장 계약은 [view store 계약](../../development-view-candidate.md)을 참고합니다.
+구현은 `memvane/host/host_response.py`, `memvane/journal/journal_reader.py`, `memvane/recall/reader_dispatch.py`, `memvane/store/view_reader.py`, `memvane/sync/product_sync_worker.py`와 `memvane/runtime/runtime_work.py`에 있습니다. 저장 계약은 [view store 계약](../../development-view-candidate.md)을 참고합니다.

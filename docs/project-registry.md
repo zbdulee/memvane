@@ -1,6 +1,6 @@
 # 선택 프로젝트 레지스트리
 
-`core/memvane_registry.py`는 사용자 단위 조회 색인이다. HOME state base 아래
+`memvane/registry/memvane_registry.py`는 사용자 단위 조회 색인이다. HOME state base 아래
 소유자 전용 SQLite 파일 `~/.local/state/memvane/auto-context/registry/projects.sqlite` 하나에
 선택된 main checkout과 그 연결 git worktree의 경로를 기록한다. 레지스트리 행은
 조회 후보일 뿐 권한이 아니다. 소비자는 사용 직전에 기존 선택 route 증명(route
@@ -123,5 +123,5 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 
 ## 진단
 
-`python3 -B core/memvane_registry.py status`는 reconcile 없이 `snapshot`을 JSON으로
+`python3 -B entry/run.py registry status`는 reconcile 없이 `snapshot`을 JSON으로
 출력한다.

@@ -39,7 +39,7 @@ The main architectural rule is:
   there is no fallback to another search path. Empty recall results stay a
   valid no-result state.
 - **One core, many hosts.** Claude/Codex command hooks and Hermes Python hooks call
-  the same `core/` route classifier and `core/laya_host_response.py`.
+  the same `core/` route classifier and `memvane/host/host_response.py`.
 - **User-facing control is agent-mediated.** Public docs should guide users to
   ask the host agent in natural language or through exposed skills. Direct
   `core/` and `skills/` shell commands are maintainer/debugging interfaces
@@ -88,11 +88,11 @@ flowchart TD
     User[Agent host session]
     Claude[Claude/Codex command hooks]
     Hermes[Hermes Python plugin]
-    Route[core/laya_index_host_route.py]
-    Resp[core/laya_host_response.py]
-    Wakes[runtime wake queue core/runtime_work.py]
-    Sync[core/laya_product_sync_worker.py]
-    Resident[core/laya_resident_service.py]
+    Route[memvane/route/index_host_route.py]
+    Resp[memvane/host/host_response.py]
+    Wakes[runtime wake queue memvane/runtime/runtime_work.py]
+    Sync[memvane/sync/product_sync_worker.py]
+    Resident[memvane/resident/resident_service.py]
     Embed[~/.local/state/memvane/embed-runtime]
     Index[(memvane-db, published generations)]
     CompileQ[.memvane/compile/source-queue.jsonl]
@@ -135,11 +135,11 @@ Actions: `recall`, `update`, `update-queued`, `gate`, `posttool`, `index`,
 
 The dispatcher resolves the plugin root from its own location, applies
 sandbox/headless no-op guards, and classifies the event cwd with
-`core/laya_index_host_route.py classify-hook`:
+`memvane/route/index_host_route.py classify-hook`:
 
 | Route state | Behavior |
 |---|---|
-| `candidate`, `preview`, `worktree` | `exec core/laya_host_response.py serve-stdin` |
+| `candidate`, `preview`, `worktree` | `exec memvane/host/host_response.py serve-stdin` |
 | `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
 | `blocked` or lookup failure | exit 3, no fallback |
 | `upgrading` (recall only) | A fenced recall exits 0 without context; route or proof transition errors in the 30-second transition window do the same. Other proof errors remain exit 3. |
@@ -191,15 +191,15 @@ A project uses `.memvane/settings.json`
 (see [Project folder](#project-folder)).
 
 Onboarding accepts only the minimal shape `{name, skipPaths}`; any other shape
-refuses as `minimal_settings_required`. `core/config.py` expands it: the project
+refuses as `minimal_settings_required`. `memvane/settings/config.py` expands it: the project
 root is the raw collection `<slug>` (wiki generation input), `.memvane/wiki`
 is the wiki collection `<slug>-wiki`, recall is wiki-only, compile runs the
 host builtin extractor in `auto-wiki` mode, and context learning is on. A
 selected route binds the resolved settings identity: editing `skipPaths` keeps
 it selected, while changing `name` blocks the route as `route_settings_changed`.
 
-Path safety for collection roots is checked by `core/resolve_paths.py`.
-Post-edit collection selection is handled by `core/collection_match.py`, using a
+Path safety for collection roots is checked by `memvane/settings/resolve_paths.py`.
+Post-edit collection selection is handled by `memvane/settings/collection_match.py`, using a
 longest-prefix rule so nested collection paths behave predictably. Field-level
 details live in [settings](settings.md).
 
@@ -209,20 +209,20 @@ details live in [settings](settings.md).
 
 ```text
 hooks/run-hook update-queued <engine>
-  -> core/laya_index_host_route.py classify-hook
-  -> core/laya_host_response.py serve-stdin
+  -> memvane/route/index_host_route.py classify-hook
+  -> memvane/host/host_response.py serve-stdin
        -> record a laya-sync wake (runtime_work) and a session_start compile grant
        -> return one "update queued" notice
 ```
 
 The hook records only a durable wake. The owner worker
-(`core/laya_product_sync_worker.py`) performs resource admission, document
+(`memvane/sync/product_sync_worker.py`) performs resource admission, document
 embedding through the resident service and the journal-fenced full-scan sync,
 then discovers changed raw sources for wiki compile
-(`core/laya_wiki_discovery.py`).
+(`memvane/wiki/intake/wiki_discovery.py`).
 ### State roots
 
-User-owned paths are resolved by `core/memvane_paths.py`. Installation identity,
+User-owned paths are resolved by `memvane/kernel/memvane_paths.py`. Installation identity,
 route proof and the selected store are bound to the installation state.
 
 ### Project folder
@@ -243,7 +243,7 @@ and the gate stay synchronous; maintenance hooks record a durable job and
 return.
 
 Python hook entrypoints share one absolute monotonic deadline from
-`core/hook_budget.py` (SSOT). The default is 18 seconds;
+`memvane/kernel/hook_budget.py` (SSOT). The default is 18 seconds;
 `QMD_HOOK_TOTAL_SECONDS` accepts 2–20 seconds and falls back to the default
 outside that range. The deadline is exported as `QMD_HOOK_DEADLINE_MONO`, so a
 child process inherits it and never resets an exhausted parent budget.
@@ -255,8 +255,8 @@ timeout kills the work itself rather than a waiting shell.
 
 ```text
 hooks/run-hook recall <engine>
-  -> core/laya_index_host_route.py classify-hook
-  -> core/laya_host_response.py serve-stdin (recall)
+  -> memvane/route/index_host_route.py classify-hook
+  -> memvane/host/host_response.py serve-stdin (recall)
 ```
 
 Hermes reaches the same response through `recall_context`.
@@ -282,7 +282,7 @@ it publishes lexical data first and vector data after fill completes.
 
 ```text
 hooks/run-hook gate <engine>
-  -> core/laya_host_response.py serve-stdin (gate)
+  -> memvane/host/host_response.py serve-stdin (gate)
 ```
 
 On a selected route the gate verifies the edit payload and the route proof and
@@ -309,13 +309,13 @@ without storing raw transcript content in the hook path.
 
 ```text
 hooks/run-hook compile <engine>
-  -> core/laya_host_response.py serve-stdin (compile)
-  -> core/wiki_compile_enqueue.py
-  -> core/wiki_selected_laya.py request_compile
-  -> core/wiki_compile_worker.py
+  -> memvane/host/host_response.py serve-stdin (compile)
+  -> memvane/wiki/intake/wiki_compile_enqueue.py
+  -> memvane/wiki/workspace/wiki_selected_laya.py request_compile
+  -> memvane/wiki/compile/wiki_compile_worker.py
 ```
 
-`core/wiki_compile_enqueue.py` records metadata only:
+`memvane/wiki/intake/wiki_compile_enqueue.py` records metadata only:
 
 - project root;
 - source relative path;
@@ -327,18 +327,18 @@ It only accepts Markdown files in `raw`, `session` or `source` role collections.
 with a hidden segment such as `.agents`, `.claude`, `.codex`, `.github`, or
 `.memvane` is excluded.
 
-`core/wiki_compile_worker.py` later reads the source file, gathers wiki
+`memvane/wiki/compile/wiki_compile_worker.py` later reads the source file, gathers wiki
 orientation context, optionally asks the selected memvane-db index for similar wiki pages, runs the
-configured host extractor, and passes candidate JSON to `core/wiki_compile.py`.
+configured host extractor, and passes candidate JSON to `memvane/wiki/compile/wiki_compile.py`.
 
 The project wiki holds only cards. Orientation context is the bundled card-writing
-rules (`core/wiki_card_rules/default.md`, or `novel.md` when the project root has a
+rules (`memvane/wiki/card/rules/default.md`, or `novel.md` when the project root has a
 numbered manuscript directory such as `04_Manuscript/`; a novel-preset wiki directory such
 as `characters/` or a legacy `-manuscript`/`-plot` collection also selects it) plus recent
 card writes (`wiki.logTail`, rendered as `- <ts> <action> <path> - <title>` from `wiki` events
 only). The card catalog is the selected memvane-db index. Card creation, update, deletion and
 retirement append one `wiki` event (outcome = action, `reason`, `path`, `title`) to the install
-event log `<state root>/events.jsonl` (`core/wiki_activity_log.py` → `core/event_log.py`; see
+event log `<state root>/events.jsonl` (`memvane/wiki/workspace/wiki_activity_log.py` → `memvane/diagnostics/event_log.py`; see
 [Event Log](#event-log)); a project without a selected route logs nothing. The plugin does
 not create or read wiki-root `SCHEMA.md`, `index.md` or `log.md`; such files left by
 earlier releases stay on disk, are never treated as cards or card targets, are never served
@@ -358,7 +358,7 @@ adapters use no-tools/read-only style flags; Hermes uses its safest one-shot
 mode, but may still leave host-local persistence if the host CLI has no
 equivalent persistence-off flag.
 
-`core/wiki_compile.py` is the deterministic writer. It:
+`memvane/wiki/compile/wiki_compile.py` is the deterministic writer. It:
 
 - rejects unsafe paths and transcript-like content;
 - resolves targets by explicit `targetPath`, then `canonicalKey`, `aliases`,
@@ -367,7 +367,7 @@ equivalent persistence-off flag.
 - writes generated wiki files under `.memvane/wiki`;
 - writes new or auto-updated cards as `status: generated` by default;
 - refuses a card whose body does not fit the local selector budget
-  (`core/wiki_card_budget.py`, below) and reports `split-required`;
+  (`memvane/wiki/compile/wiki_card_budget.py`, below) and reports `split-required`;
 - enqueues successful generated writes to the auto-verify queue;
 - logs merge-needed or rejected candidates under `.memvane/compile`.
 
@@ -410,7 +410,7 @@ repository-config claim from `prod.env` and no runtime-current claim.
 Verify and dedup workers are maintenance paths around this generated wiki state.
 They are intentionally fail-open so wiki maintenance does not break normal agent
 turns. After each wiki lifecycle run, the same child runs the retroactive dedup
-scan (`core/wiki_dedup_scan.py`): it compares the stored memvane-db chunk-vector
+scan (`memvane/wiki/dedup/wiki_dedup_scan.py`): it compares the stored memvane-db chunk-vector
 centroids of the sealed head's wiki cards and queues pairs at cosine 0.9 or
 above to `.memvane/compile/dedup-needed.jsonl` for the `wiki-dedup`
 resolver. It makes no model or paid call.
@@ -422,7 +422,7 @@ legacy input view, `max_len` 1024 tokens. It reads a card through
 `context_learning.compact_input`: everything after the frontmatter (banner,
 auto-block markers, summary, hand-written sections). The title and other
 frontmatter never enter the pair. A longer pair does not fit the model whole.
-`core/wiki_card_budget.py` measures the complete, untruncated body that `derive`
+`memvane/wiki/compile/wiki_card_budget.py` measures the complete, untruncated body that `derive`
 returns, so a card the compiler writes is scored whole:
 
 | Part | Tokens |
@@ -456,7 +456,7 @@ existing `partialCompile` retry).
 A card still over the budget is written and the selector scores it by its leading
 part (truncated at scoring).
 
-`core/wiki_compile.py` measures the complete file it would write, after lint and
+`memvane/wiki/compile/wiki_compile.py` measures the complete file it would write, after lint and
 mode checks and before the paid duplicate judge for a new card, and the composed
 card (with hand-written sections) for an update. An over-budget card is held back
 once: nothing is written, and the candidate ledger row and stdout carry
@@ -506,28 +506,28 @@ on real cards, except when the writer itself fails on I/O or its lock, which
 keeps the existing `partialCompile` retry (and re-extracts on the next run, as
 for any card write).
 
-`core/wiki_dedup_resolve.py` refuses a `merge` whose keeper is over the budget:
+`memvane/wiki/dedup/wiki_dedup_resolve.py` refuses a `merge` whose keeper is over the budget:
 the loser stays, the pair is recorded as skipped and the CLI returns
 `kept_separate`. The resolver agent measures with
-`python3 core/wiki_card_budget.py --cwd <project> <keeper> <loser>` before folding.
+`python3 entry/run.py wiki-card-budget --cwd <project> <keeper> <loser>` before folding.
 
 ## Laya Runtime and Embedding
 
-`core/laya_resident_service.py` is one per-user process that owns the local
+`memvane/resident/resident_service.py` is one per-user process that owns the local
 embedding worker for each vector profile and serves every adopted
 install through its sealed socket under `<state base v1>/run/`.
 Hooks never load a model.
 
 The embedding runtime lives in `~/.local/state/memvane/embed-runtime`
-(`core/laya_embed_runtime.py`): `active.json`, `previous.json` and immutable
+(`memvane/provider/embed_runtime.py`): `active.json`, `previous.json` and immutable
 generations holding Node, node-llama-cpp, the native build and the GGUF model.
 A generation comes from an explicit provisioning action. Maintainer
 commands (`ROOT` is the installed plugin root):
 
 ```bash
-python3 -B "$ROOT/core/setup_entry.py" index-runtime-status
-python3 -B "$ROOT/core/setup_entry.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]
-python3 -B "$ROOT/core/setup_entry.py" gc-index-runtime [--approve-index-runtime-gc]
+python3 -B "$ROOT/entry/setup.py" index-runtime-status
+python3 -B "$ROOT/entry/setup.py" provision-index-runtime --approve-index-runtime-download [--provider-model-file <gguf>]
+python3 -B "$ROOT/entry/setup.py" gc-index-runtime [--approve-index-runtime-gc]
 ```
 
 Provisioning takes Node from `PATH` first, then mise, fnm, nvm, volta, asdf,
@@ -571,9 +571,9 @@ protocol itself requires different handling.
 
 | Surface | Owner | Purpose |
 |---|---|---|
-| runtime worker lease | `core/runtime_work.py` (`runtime-worker.lock`) | One UID-global wake dispatcher; it holds only its dispatch lease while waiting. |
-| card write lock | `CARD_WRITE_LOCK` (`core/compile_paths.py`) | Serializes compiler writes, verifier stamp/delete, source retirement, dedup merge and the project-folder move per project. |
-| installer operation lock | `laya-qmd-cutover-operation.lock` (`core/laya_ledger_common.py`) | Serializes installer ledger operations; older installed bundles lock the same file. |
+| runtime worker lease | `memvane/runtime/runtime_work.py` (`runtime-worker.lock`) | One UID-global wake dispatcher; it holds only its dispatch lease while waiting. |
+| card write lock | `CARD_WRITE_LOCK` (`memvane/wiki/workspace/compile_paths.py`) | Serializes compiler writes, verifier stamp/delete, source retirement, dedup merge and the project-folder move per project. |
+| installer operation lock | `laya-qmd-cutover-operation.lock` (`memvane/install/ledger_common.py`) | Serializes installer ledger operations; older installed bundles lock the same file. |
 
 A failed or deferred sync attempt leaves its wake for the dispatcher to retry
 rather than dropping it.
@@ -610,11 +610,11 @@ version; it does not pin the exact version. Before release, run `npm test`.
 
 | Skill | Path |
 |---|---|
-| `setup` | `core/setup_entry.py` (onboarding, embedding runtime, learning profile, owner legacy cleanup) |
+| `setup` | `memvane/app/setup_entry.py` (onboarding, embedding runtime, learning profile, owner legacy cleanup) |
 | `query` | `skills/query/scripts/query.sh` → selected-route recall |
 | `update` | `skills/update/scripts/update.sh` → full-scan laya-sync wake |
-| `wiki-compile` | `core/wiki_extract.py` and `core/wiki_compile.py` (selected route only) |
-| `wiki-dedup` | `core/wiki_dedup_resolve.py` via resolver workflow |
+| `wiki-compile` | `memvane/wiki/compile/wiki_extract.py` and `memvane/wiki/compile/wiki_compile.py` (selected route only) |
+| `wiki-dedup` | `memvane/wiki/dedup/wiki_dedup_resolve.py` via resolver workflow |
 | `logs` | `skills/logs/scripts/logs.py` (read-only views of the install event log) |
 
 `query` and `update` act only on a selected route; a project that is not
@@ -644,7 +644,7 @@ python3 -B skills/logs/scripts/logs.py --cwd "$PWD" recalls --limit 10
 
 ### Event Log
 
-`core/event_log.py` appends one JSON line per event to `<state root>/events.jsonl`,
+`memvane/diagnostics/event_log.py` appends one JSON line per event to `<state root>/events.jsonl`,
 where the state root is the directory of the selected route's install journal
 (`journalPath`'s parent; a worktree uses its main route). A project without a
 selected route writes nothing, and nothing is written under the project or a
@@ -691,7 +691,7 @@ ms, ...}`, with `host` one of `claude`, `codex`, `hermes`, `worker`.
 
 ### Detailed diagnostics
 
-`core/diagnostic_trace.py` records optional raw failure detail into the same
+`memvane/diagnostics/diagnostic_trace.py` records optional raw failure detail into the same
 `events.jsonl`. It is off unless the proved route's project settings carry
 `diagnostics.enabled: true` (JSON boolean only; see
 [settings](settings.md#diagnostics--상세-진단-동의-opt-in)). Consent is re-read on
@@ -752,15 +752,15 @@ Reading (`skills/logs/scripts/logs.py`):
 
 | Event | Written by | Outcome / fields |
 |---|---|---|
-| `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`core/laya_host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` |
-| `hook.error` | `core/hook_main.py` | exception class and `file:line`, never the message |
+| `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`memvane/host/host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` |
+| `hook.error` | `memvane/host/hook_main.py` | exception class and `file:line`, never the message |
 | `learning.capture` | context learning capture | capture status |
 | `wiki` | compile, verify, dedup, pending publish, lifecycle, source retirement | `created` / `updated` / `deleted` / `retired`; `reason` (`compile`, `pending_publish`, `verify_retire`, `dedup`, `lifecycle:<code>`, `source_deleted`), `path`, `title` |
-| `wake.sync`, `wake.compile` | off-hook dispatcher (`core/laya_runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
+| `wake.sync`, `wake.compile` | off-hook dispatcher (`memvane/app/runtime_dispatch.py`) | dispatcher outcome, `generation`, `previousGeneration` |
 | `index.publish` | off-hook dispatcher | `generation`, `previousGeneration`, `epoch` |
-| `resident.adopt`, `resident.drain`, `resident.forced_exit` | `core/laya_resident_service.py` | `adopted`; drain `started` / `stopped`; `exited` (`cold_load_hung`) |
-| `wiki.card` | `core/wiki_compile.py`, `core/wiki_compile_worker.py`, `core/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
-| `compile.extractor`, `compile.verify_pass` | `core/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
+| `resident.adopt`, `resident.drain`, `resident.forced_exit` | `memvane/resident/resident_service.py` | `adopted`; drain `started` / `stopped`; `exited` (`cold_load_hung`) |
+| `wiki.card` | `memvane/wiki/compile/wiki_compile.py`, `memvane/wiki/compile/wiki_compile_worker.py`, `memvane/wiki/dedup/wiki_dedup_resolve.py` | `over_budget` (held back for the split; `reason`, `path`, `title`, `size`, `budget`, `method`); `over_budget_written` (written after the split attempt; `reason`, `overflow`, same fields); `unmeasured` (no selector tokenizer, written); `measure_failed` (every selector runtime failed, written; `runtimes`); `split` / `split_unavailable` (source `path`, `reason`, `requested`, `parts`, `written`); `merge_kept_separate` (keeper `path`, `kept`, `size`, `budget`, `method`) |
+| `compile.extractor`, `compile.verify_pass` | `memvane/wiki/compile/wiki_compile_worker.py` | extractor stderr as `{sha256, chars}`; verify-pass exception class and frame |
 
 A `recall` event's `reason` is the final outcome (`selected`,
 `no_results_after_filter`, `no_candidates`, or a refusal code) and `notes` lists

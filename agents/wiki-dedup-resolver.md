@@ -43,7 +43,7 @@ short summary at the end (step 5).
    b. Pick ONE final keeper for the pages being consolidated (normally the most complete page).
       Never pick a per-pair keeper that a later pair in the same cluster would itself delete.
    c. Before folding, measure the cluster against the local selector card budget:
-      `python3 "$ROOT/core/wiki_card_budget.py" --cwd <cwd> <keeper> <page to delete>...`. When
+      `python3 "$ROOT/entry/run.py" wiki-card-budget --cwd <cwd> <keeper> <page to delete>...`. When
       the keeper or `combined` is over `budget`, the merged keeper would not fit: keep those pages
       separate (`--action skip`). After folding, run it on the keeper alone; if it no longer fits,
       restore the keeper's previous text and skip. The CLI refuses a merge into an over-budget
@@ -54,7 +54,7 @@ short summary at the end (step 5).
       every listed fact is now present. Only after the keeper holds everything do you start
       deleting. PLACEMENT IS LOAD-BEARING: folded facts go in their own `## …` section BELOW the
       keeper's `<!-- qmd:auto:end -->` marker — never inside the `qmd:auto:start`/`qmd:auto:end`
-      block, and never by rewriting the sentences already inside it. `core/wiki_compile.py`
+      block, and never by rewriting the sentences already inside it. `memvane/wiki/compile/wiki_compile.py`
       substitutes that block wholesale every time the source file changes, and `status: verified`
       is no protection (`is_auto_writable_page` deliberately excludes `verified` so stale cards get
       re-verified) — anything folded inside the block is silently lost on the next source edit.
@@ -67,7 +67,7 @@ short summary at the end (step 5).
       wiki). Fold the facts in anyway — that is what keeps the wiki correct — but do not treat the
       keeper as the only copy of anything you cannot regenerate from its sources. WRITE TRANSPLANTED
       `sources` ENTRIES IN THE EMITTED FORM — one flow mapping per list item,
-      `  - {kind: "file", path: "docs/a.md"}`. `core/recall.py` injects `sources[].path` as the
+      `  - {kind: "file", path: "docs/a.md"}`. `memvane/host/host_response.py` injects `sources[].path` as the
       link back to the original document and reads only that form (plus quoted keys, single
       quotes, trailing comments). A block mapping (`- kind: file` with `path:` on the next line)
       or an inline sequence (`sources: [{…}]`) parses to nothing, so that page loses every source
@@ -75,7 +75,7 @@ short summary at the end (step 5).
       in `source_drop_reasons` (`docs/settings.md`). Keep identifiers
       (numbers, percentages, field names, queries) verbatim — they are the lexical search surface —
       and close the section with an HTML comment naming the page you merged from. Folded text
-      follows the bundled card-writing rules (`$ROOT/core/wiki_card_rules/default.md`, or
+      follows the bundled card-writing rules (`$ROOT/memvane/wiki/card/rules/default.md`, or
       `novel.md` for a novel project, e.g. one with `04_Manuscript/` at its root); the project
       wiki holds no rules file of its own.
    d. Then resolve the cluster's entries through step 4's normal per-entry loop: an entry pairing

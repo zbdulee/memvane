@@ -710,7 +710,7 @@ same fixture).
 
 The sync owner serializes selected writers. Publication rechecks the view capture and head before committing, and recall pins the selected view.
 
-QA-only barrier (`core/laya_product_sync_worker.py`):
+QA-only barrier (`memvane/sync/product_sync_worker.py`):
 
 - **Default.** Without `LAYA_QA_SYNC_BARRIER`, no file is read and nothing
   waits.
@@ -812,7 +812,7 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
   - no second paid call.
 - **Known gap:** revision idempotency is partial. The compile queue drops a
   duplicate row only for the same `(collection, path, revision, trigger)`
-  (`core/wiki_source_intent.py` `revision_key`), and on the selected Laya route
+  (`memvane/wiki/intake/wiki_source_intent.py` `revision_key`), and on the selected Laya route
   the worker skips a revision that already has a compiled card
   (`already_compiled_revision`). The same revision arriving through a different
   trigger is still queued. Until this scenario passes, it blocks a formal
@@ -1053,13 +1053,13 @@ Scenarios respect domain ownership. Two rules apply:
 
 | Changed paths | Rerun in addition to core smoke |
 |---|---|
-| `core/laya_host_response.py`, `core/laya_view_reader.py`, `core/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
-| `core/sync_owner_lock.py`, `core/laya_product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
+| `memvane/host/host_response.py`, `memvane/store/view_reader.py`, `memvane/wiki/card/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
+| `memvane/sync/sync_owner_lock.py`, `memvane/sync/product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
 | `core/wiki_*`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `core/context_learning/**` | RES-01, RES-02 |
-| `core/setup_entry.py`, `core/laya_product_install.py`, `core/laya_embed_runtime.py`, `core/legacy_cleanup.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
-| `core/runtime_work.py`, `core/runtime_wake_policy.py`, resource coordination modules | RES-01, RES-02, RACE-01 |
-| `core/config.py`, `core/laya_index_host_route.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
+| `memvane/app/setup_entry.py`, `memvane/install/product_install.py`, `memvane/provider/embed_runtime.py`, `core/legacy_cleanup.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
+| `memvane/runtime/runtime_work.py`, `memvane/runtime/runtime_wake_policy.py`, resource coordination modules | RES-01, RES-02, RACE-01 |
+| `memvane/settings/config.py`, `memvane/route/index_host_route.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
 | Version strings only | INST-01, INST-02 |
 | Documentation only (`docs/**`, `README.md`; not `skills/**` or `agents/**`) | Core smoke only |
 | Any path not listed | **All** scenarios |

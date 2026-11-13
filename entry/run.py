@@ -27,6 +27,8 @@ TARGETS = {
     'extractor-claude': ('memvane.wiki.engines.extractors.claude_adapter', None),
     'extractor-codex': ('memvane.wiki.engines.extractors.codex_adapter', None),
     'extractor-hermes': ('memvane.wiki.engines.extractors.hermes_adapter', None),
+    'registry': ('memvane.registry.memvane_registry', None),
+    'wiki-card-budget': ('memvane.wiki.compile.wiki_card_budget', None),
     'wiki-compile': ('memvane.wiki.compile.wiki_compile', None),
     'wiki-compile-worker': ('memvane.wiki.compile.wiki_compile_worker', None),
     'wiki-extract': ('memvane.wiki.compile.wiki_extract', None),

@@ -4,8 +4,8 @@
 
 ## 코드
 
-- **`core/laya_initial_build.py`의 `retired` 단계 설명이 코드와 다르다.** docstring은 `retired`를 아무 작업도 하지 않은(`registered`) 빌드의 abandon으로만 설명하고 `abandon_unused_initial_build`만 가리킨다. `abandon_inactive_initial_build`는 일부 빌드된 미선택 후보도 retire한다. docstring을 두 경로에 맞춘다.
-- **`core/laya_host_response.py` `_render_context`의 raw 분기.** 위키 전용 색인에서 비위키 행은 계약 위반인데, else 분기가 이를 `Path(path).stem` 제목으로 렌더링해 위반을 숨긴다. 도달 가능성을 확인하고, 도달하면 `_fail('raw_row_in_selected_index')`로 바꾼다. 같은 파일의 header 문구 "verified source documents"를 "wiki cards"로 고친다.
+- **`memvane/install/initial_build.py`의 `retired` 단계 설명이 코드와 다르다.** docstring은 `retired`를 아무 작업도 하지 않은(`registered`) 빌드의 abandon으로만 설명하고 `abandon_unused_initial_build`만 가리킨다. `abandon_inactive_initial_build`는 일부 빌드된 미선택 후보도 retire한다. docstring을 두 경로에 맞춘다.
+- **`memvane/host/host_response.py` `_render_context`의 raw 분기.** 위키 전용 색인에서 비위키 행은 계약 위반인데, else 분기가 이를 `Path(path).stem` 제목으로 렌더링해 위반을 숨긴다. 도달 가능성을 확인하고, 도달하면 `_fail('raw_row_in_selected_index')`로 바꾼다. 같은 파일의 header 문구 "verified source documents"를 "wiki cards"로 고친다.
 
 ## recall 품질
 
@@ -64,7 +64,7 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
 
 - **현재 동작.**
   - 세션 프로젝트는 hook payload `cwd`에서 위로 올라가며 `.memvane/settings.json`을 찾아 정한다(`config._project_search_dirs`).
-  - 선택 프로젝트 레지스트리 v1(`core/memvane_registry.py`, `docs/project-registry.md`)이 선택된 main checkout과 연결 worktree 경로를 조회 색인으로 가진다. 활성화 성공 뒤 등록, restore·retire·abandon 성공 뒤 해제 반영, 선택 route SessionStart·대시보드 조회의 유계 reconcile까지다.
+  - 선택 프로젝트 레지스트리 v1(`memvane/registry/memvane_registry.py`, `docs/project-registry.md`)이 선택된 main checkout과 연결 worktree 경로를 조회 색인으로 가진다. 활성화 성공 뒤 등록, restore·retire·abandon 성공 뒤 해제 반영, 선택 route SessionStart·대시보드 조회의 유계 reconcile까지다.
   - 프로젝트 밖 원문 편집 라우팅(`laya_external_edits`)은 backfill이 완료된 레지스트리의 `active` main 행만 후보로 증명하고 state base를 훑지 않는다. 레지스트리가 없거나 읽을 수 없으면 라우팅하지 않는다.
   - 세션 프로젝트 해석은 레지스트리를 쓰지 않는다. 활성 선택 해제(첫 선택 쓰기 뒤 uninstall), 프로젝트 root 이전, schema3 worktree view ID·준비 상태 기록은 남아 있다.
   - resident service는 레지스트리를 reconcile하지 않는다. resident 연결은 resident 변경 승인 시 `memvane_registry.reconcile()` 1줄 호출로 붙인다.
@@ -115,7 +115,7 @@ S v1은 view 행·FTS·stage/delta·세대만 GC한다. 여러 view가 공유하
 
 PR10까지는 하지 않는다. 그 뒤 설계 문서를 먼저 쓰고 리뷰를 받은 다음 구현한다.
 
-- **현재 동작.** 연결 worktree에서는 recall만 동작한다. compile·수명 주기(퇴역·재생성)·dedup scan은 main checkout에서만 돈다(`core/wiki_lifecycle.py`의 `facts["linked"]` skip). schema3 linked route는 sync wake를 남기지만 compile pass를 실행하는 경로는 없다. 그래서 worktree에서 고친 원문은 브랜치가 main에 merge되고 main checkout에서 수명 주기가 돌아야 카드에 반영된다.
+- **현재 동작.** 연결 worktree에서는 recall만 동작한다. compile·수명 주기(퇴역·재생성)·dedup scan은 main checkout에서만 돈다(`memvane/wiki/lifecycle/wiki_lifecycle.py`의 `facts["linked"]` skip). schema3 linked route는 sync wake를 남기지만 compile pass를 실행하는 경로는 없다. 그래서 worktree에서 고친 원문은 브랜치가 main에 merge되고 main checkout에서 수명 주기가 돌아야 카드에 반영된다.
 - **목표.** worktree에서 작업하는 동안 그 브랜치 기준으로 카드 compile과 수명 주기가 돌게 한다.
 - **먼저 정할 계약.**
   - route·binding 증명: worktree writer가 어떤 증명으로 쓰기 권한을 얻는가. main install journal과 자기 view의 관계.
