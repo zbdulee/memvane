@@ -22,8 +22,7 @@ _PREPARATION=ContextVar('qmd_preparation',default=None)
 _STARTUP=ContextVar('qmd_startup',default=None)
 
 
-class PreSendDeferred(ResourceDeferred):
-    """This launch did not call Popen; never used to reclassify a sent request."""
+from memvane.runtime.types import PreSendDeferred
 
 
 def sample(policy,*,deadline=None):

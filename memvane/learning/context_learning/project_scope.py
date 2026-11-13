@@ -2,7 +2,7 @@
 from __future__ import annotations
 import hashlib,json,os,re,stat,time
 from pathlib import Path
-from memvane.runtime.runtime_admission import prepared,preparation_checkpoint
+from memvane.runtime.api import prepared,preparation_checkpoint
 from .store import canonical
 from .dataset import read_private_json
 from .adapter import EDIT_INPUT_VIEW,model_identity

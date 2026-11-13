@@ -5,7 +5,7 @@ its first exposure assignment. Deleting capture rows cannot free an identity.
 A new case connecting training and holdout components is blocked permanently.
 """
 from __future__ import annotations
-from memvane.runtime.runtime_admission import prepared,preparation_checkpoint
+from memvane.runtime.api import prepared,preparation_checkpoint
 
 import json
 from pathlib import Path

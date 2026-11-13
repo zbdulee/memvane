@@ -30,7 +30,7 @@ CHECKS = ['read_only_load', 'synthetic_forward', 'fixed_selection_mapping',
 
 
 def file_sha(path):
-    from memvane.runtime.runtime_admission import hash_file
+    from memvane.runtime.api import hash_file
     return hash_file(path)
 
 

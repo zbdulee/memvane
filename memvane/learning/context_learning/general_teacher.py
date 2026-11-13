@@ -5,7 +5,7 @@ answers must agree exactly. This does not grant model promotion, and uncertain
 dispatches require human review rather than an automatic paid retry.
 """
 from contextlib import contextmanager
-from memvane.runtime.runtime_admission import provider_job,provider_call,provider_popen,provider_checkpoint,PreSendDeferred
+from memvane.runtime.api import provider_job,provider_call,provider_popen,provider_checkpoint,PreSendDeferred
 
 import fcntl
 import json

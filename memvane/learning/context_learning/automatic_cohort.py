@@ -6,7 +6,7 @@ case never shares a question, document, revision or body with training.
 """
 from __future__ import annotations
 
-from memvane.runtime.runtime_admission import prepared
+from memvane.runtime.api import prepared
 
 import json
 

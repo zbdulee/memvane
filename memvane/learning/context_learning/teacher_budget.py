@@ -4,7 +4,7 @@ Reservations happen before transport. Unknown provider billing is never claimed
 as exact: configured per-call USD is a conservative reservation, not a bill.
 Each external retry needs a new explicit attempt ID and consumes another slot.
 """
-from memvane.runtime.runtime_admission import provider_job
+from memvane.runtime.api import provider_job
 
 import json
 import re

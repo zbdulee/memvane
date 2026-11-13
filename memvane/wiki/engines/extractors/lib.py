@@ -389,7 +389,7 @@ def resolve_bin(name: str, env_override: str) -> str | None:
 
 def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int, str]:
     # The adapter may be launched directly, without wiki_compile_worker.
-    from memvane.runtime.runtime_admission import provider
+    from memvane.runtime.api import provider
     from memvane.kernel.resource_deferred import ResourceDeferred
     try:
         with provider():return _run_isolated_admitted(cmd,timeout)
@@ -397,7 +397,7 @@ def run_isolated_detailed(cmd: list[str], timeout: int) -> tuple[str | None, int
 
 
 def _run_isolated_admitted(cmd: list[str], timeout: int) -> tuple[str | None, int, str]:
-    from memvane.runtime.runtime_admission import provider_popen
+    from memvane.runtime.api import provider_popen
     workdir = tempfile.mkdtemp(prefix="qmd-extract-")
     # QMD_SANDBOX=1 neuters any qmd hook the nested CLI might fire (the dispatcher
     # and core scripts honor it with an immediate silent exit), so the headless
