@@ -27,8 +27,8 @@ sys.path.insert(0, str(FIXTURES))
 sys.path.insert(0, str(CORE))
 from laya_selected_project import SelectedProject  # noqa: E402
 import laya_bundle_upgrade as auto  # noqa: E402
-import laya_install_journal as J  # noqa: E402
-import laya_product_bundle as bundle  # noqa: E402
+from memvane.journal import install_journal as J  # noqa: E402
+from memvane.install import product_bundle as bundle  # noqa: E402
 
 V3_CREATE = J.__dict__.get('_CREATE_V3', J._CREATE)
 V3_FIELDS = ('id', 'schema', 'epoch', 'state', 'selected', 'selected_route_sha',
@@ -360,7 +360,7 @@ class HostGate(V3Selected):
 
     def test_busy_install_lock_defers_without_converting(self):
         import laya_journal_v4
-        from laya_product_install import _install_lock
+        from memvane.install.product_install import _install_lock
         self.copy_version(self.codex, 4)
         with _install_lock(self.state):
             with self.assertRaisesRegex(RuntimeError, 'journal_v4_install_busy'):
@@ -703,7 +703,7 @@ class ProviderReproof(ReproofBase):
 class WorkerReproof(ReproofBase):
     def run_worker(self, review, attestation=None):
         import laya_active_upgrade
-        import laya_product_install as product
+        from memvane.install import product_install as product
         state = self.base / 'worker-state'
         state.mkdir(mode=0o700)
         project = self.base / 'project'

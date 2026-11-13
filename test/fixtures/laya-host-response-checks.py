@@ -95,7 +95,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
     from contextlib import ExitStack, nullcontext
     from memvane.settings import config
     from memvane.recall import keywords
-    import laya_install_journal
+    from memvane.journal import install_journal as laya_install_journal
     import laya_index_runtime
     from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
     import laya_index_source_port as source_port
@@ -196,7 +196,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(str(caught.exception), "selected_action_unsupported")
 
     def test_companion_root_requires_verifier_proof(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         local = str(Path(response.__file__).resolve().parents[1])
         decision = {**DECISION, 'pluginRoot': '/synthetic/owner'}
         accepted = {'productRouteAllowed': True, 'executingPluginRoot': local}
@@ -213,7 +213,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_selected_recall_uses_journal_provider_and_warm_query(self):
         from contextlib import nullcontext
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import laya_embed_resident
@@ -253,7 +253,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(payload["hookSpecificOutput"]["additionalContext"], "")
 
     def test_selected_update_only_enqueues_and_accepts_worker_epoch_advance(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.runtime import runtime_work
         decision = {**DECISION,
                     "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
@@ -270,7 +270,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertIn("update queued", payload["hookSpecificOutput"]["additionalContext"])
 
     def test_selected_successful_bash_wakes_full_scan_owner_only(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.runtime import runtime_work
         decision = {**DECISION,
                     "pluginRoot": str(Path(response.__file__).resolve().parents[1]),
@@ -295,7 +295,7 @@ class ResponseChecks(unittest.TestCase):
                                  [(kind, decision["projectRoot"]) for kind in expected])
 
     def test_selected_compile_passes_proved_edit_to_durable_enqueue(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.wiki.intake import wiki_compile_enqueue
         with tempfile.TemporaryDirectory(prefix='laya-host-compile-') as temp:
             root = str(Path(temp).resolve())
@@ -315,7 +315,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_selected_session_start_wakes_pending_compile_queue(self):
         from memvane.wiki.workspace import compile_paths
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.runtime import runtime_work
         from memvane.wiki.card import wiki_freshness
         with tempfile.TemporaryDirectory(prefix='laya-host-wake-') as temp:
@@ -1442,7 +1442,7 @@ class ResponseChecks(unittest.TestCase):
                 self.assertEqual(journal.call_count, 1)
                 self.assertTrue(used.released)
         # A legacy v1 candidate cannot bypass the required published-wiki selector.
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from memvane.settings import config
@@ -1497,7 +1497,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(wakes[0]['revision'], 5)
 
     def test_cold_provider_wakes_owner_without_qmd_fallback(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         import laya_embed_resident
         from memvane.runtime import runtime_work
         decision = v2_decision()
@@ -1511,7 +1511,7 @@ class ResponseChecks(unittest.TestCase):
         wake.assert_called_once_with('laya-sync', decision['projectRoot'], pull_due=True)
 
     def test_provider_failure_and_identity_transition_have_distinct_codes(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         import laya_embed_resident
         from memvane.runtime import runtime_work
         decision = v2_decision()
@@ -1539,7 +1539,7 @@ class ResponseChecks(unittest.TestCase):
         # (resource_deferred) the owner has no socket. The query path starts
         # it directly instead of waiting for a backed-off sync wake.
         import time as clock
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         import laya_embed_resident
         from memvane.runtime import runtime_work
         from laya_index_a import IndexContractError
@@ -1672,7 +1672,7 @@ class BundleDriftChecks(unittest.TestCase):
                           'providerManifest': {'approvedProviderId': 'synthetic-provider'}}
 
     def drifted(self, stack, code='executing_code_outside_bundle'):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.journal import journal_reader as laya_journal_reader
         from memvane.runtime import runtime_work
         from contextlib import nullcontext
@@ -1792,7 +1792,7 @@ class BundleDriftChecks(unittest.TestCase):
                 wake.assert_not_called()
 
     def test_non_drift_or_unprovable_read_only_keeps_the_real_refusal(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from contextlib import ExitStack
         with ExitStack() as stack:
             self.drifted(stack, code='journal_unavailable')
@@ -1814,7 +1814,7 @@ class BundleDriftChecks(unittest.TestCase):
     def test_main_reports_journal_evidence_code_instead_of_generic_failure(self):
         import contextlib
         import io
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         selection = {'state': 'candidate'}
         with tempfile.TemporaryDirectory(prefix='laya-host-main-') as temp:
             payload = Path(temp) / 'payload.json'
@@ -1983,7 +1983,7 @@ class ProofRetryChecks(unittest.TestCase):
         from memvane.settings import config
         import laya_embed_resident
         import laya_incremental_docs_query
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from memvane.runtime import runtime_work
@@ -2110,7 +2110,7 @@ class ProofRetryChecks(unittest.TestCase):
     def test_upgrade_activation_during_recall_serves_the_new_route(self):
         # The upgrade rewrote the route mid-recall: re-selection yields the
         # same install with a new bundle, proved in full before serving.
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         upgraded = {**self.decision, 'generation': 'g-new', 'pluginRoot': self.LOCAL}
         state = {'calls': 0}
 
@@ -2128,7 +2128,7 @@ class ProofRetryChecks(unittest.TestCase):
         self.assertEqual(selected.call_count, 1)
 
     def test_drifted_bundle_on_retry_serves_the_read_only_published_view(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         state = {'calls': 0}
 
         def verify(_decision):
@@ -2153,7 +2153,7 @@ class ProofRetryChecks(unittest.TestCase):
         self.assertEqual(selected.call_count, 1)
 
     def test_identity_change_or_repeated_change_still_refuses(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         for name, changes in (('install', {'installId': 'f' * 32}),
                               ('project', {'projectRoot': '/synthetic/other'}),
                               ('store', {'dbIncarnation': 'b' * 32}),

@@ -60,7 +60,7 @@ def resolve(kind, value):
     from memvane.route.index_host_route import select_route
     route = select_route(str(project), action='update')
     if route.get('state') == 'candidate':
-        from laya_install_journal import verify_dispatch_target
+        from memvane.journal.install_journal import verify_dispatch_target
         try:
             proof = verify_dispatch_target(route)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -71,7 +71,7 @@ def resolve(kind, value):
         progress = {'selectionEpoch': proof['selectionEpoch'],
                     'generation': proof.get('headGeneration')}
     elif kind == 'laya-sync' and route.get('state') == 'legacy':
-        from laya_initial_build import lookup
+        from memvane.install.initial_build import lookup
         try:
             record = lookup(project)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -81,13 +81,13 @@ def resolve(kind, value):
         identity = record['identity']
         if record['phase'] in ('bound', 'retired'):
             return {'terminal': True, 'project': str(project)}
-        from laya_install_journal import inspect_journal, preflight_product_candidate
+        from memvane.journal.install_journal import inspect_journal, preflight_product_candidate
         try:
             journal = inspect_journal(identity['journalPath'])
         except (OSError, RuntimeError, ValueError) as exc:
             raise DispatchFailure('target_journal_changed') from exc
         if record.get('schema') == 'memvane-initial-build-v1':
-            from laya_install_journal import _attestation, _route, _v1_provider_manifest
+            from memvane.journal.install_journal import _attestation, _route, _v1_provider_manifest
             from memvane.route.index_host_route import _classify_v4, _read_regular, MAX_RECORD_BYTES
             import hashlib
             from memvane.settings import project_dir

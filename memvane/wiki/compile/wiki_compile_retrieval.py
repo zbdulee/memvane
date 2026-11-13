@@ -434,7 +434,7 @@ def _schema3_search(bound, text):
     from memvane.settings import project_dir
     from memvane.route.index_host_route import wiki_index_roots
     from memvane.sync.sync_owner_lock import sync_owner
-    from laya_product_sync_worker import _owned_selected_proof, _writer_executing_root
+    from memvane.sync.product_sync_worker import _owned_selected_proof, _writer_executing_root
     from memvane.kernel.resource_deferred import ResourceDeferred
     decision, proof = bound
     project = Path(decision['projectRoot'])

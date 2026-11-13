@@ -437,7 +437,7 @@ def warm(project, *, home=None, state=None):
 def selector_projects(home=None):
     """Projects of installs that have a prepared selector."""
     from memvane.kernel import memvane_paths
-    import laya_initial_build as build
+    from memvane.install import initial_build as build
     found = []
     for base in (memvane_paths.installs_base(home),):
         try:

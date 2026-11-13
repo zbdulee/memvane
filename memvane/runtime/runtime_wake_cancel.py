@@ -91,7 +91,7 @@ def ownership_proof(project_raw):
     """Read-only proof that the wake target is an owned, inactive QA build."""
     project = _project(project_raw)
     fixture_id = fixture_proof(project)
-    import laya_initial_build as initial_build
+    from memvane.install import initial_build as initial_build
     try:
         record = initial_build.lookup(project)
     except (OSError, ValueError) as exc:
@@ -110,7 +110,7 @@ def ownership_proof(project_raw):
     if (identity.get('projectRoot') != str(project) or journal_path.parent != state
             or record.get('phase') in ('bound', 'retired')):
         _refuse('initial_build_not_inactive')
-    from laya_install_journal import inspect_journal
+    from memvane.journal.install_journal import inspect_journal
     try:
         journal = inspect_journal(journal_path)
     except (OSError, ValueError) as exc:
@@ -197,8 +197,8 @@ def status(project_raw, *, queue=None):
 def _state_locks(state_root):
     """Repository order: install lock, then build owner; both non-blocking."""
     from contextlib import ExitStack
-    import laya_initial_build as initial_build
-    from laya_product_install import InstallBlocked, _install_lock
+    from memvane.install import initial_build as initial_build
+    from memvane.install.product_install import InstallBlocked, _install_lock
     stack = ExitStack()
     try:
         stack.enter_context(_install_lock(Path(state_root)))

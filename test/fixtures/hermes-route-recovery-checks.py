@@ -23,8 +23,8 @@ E2E = runpy.run_path(str(HERE / 'laya-fresh-onboarding-e2e-checks.py'))
 import laya_fresh_wiki_origin as fresh
 from memvane.host import host_response as response
 from memvane.route import index_host_route as route
-import laya_install_journal as journal
-import laya_product_install as product
+from memvane.journal import install_journal as journal
+from memvane.install import product_install as product
 from hermes_adapter import core_bridge as bridge, plugin
 
 REAL_RUN = subprocess.run

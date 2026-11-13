@@ -15,8 +15,8 @@ import re
 from types import MappingProxyType, SimpleNamespace
 import weakref
 
-import laya_install_journal as journal
-from laya_product_install import _install_lock, _read_private
+from memvane.journal import install_journal as journal
+from memvane.install.product_install import _install_lock, _read_private
 from memvane.kernel.persistent_identity import persistent_node_equal
 
 _JOURNAL = 'journal.sqlite'
@@ -457,7 +457,7 @@ def _journal(path):
 
 
 def read_selection(journal: Path) -> ReaderSelection:
-    from laya_install_journal import JournalEvidenceError
+    from memvane.journal.install_journal import JournalEvidenceError
     for attempt in range(3):
         path = _journal(journal)
         try:

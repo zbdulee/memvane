@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO / 'core'))
 sys.path.insert(1, str(FIXTURES))
 from memvane.host import host_response as response  # noqa: E402
 from memvane.route import index_host_route as routes  # noqa: E402
-import laya_install_journal as journal  # noqa: E402
+from memvane.journal import install_journal as journal  # noqa: E402
 from memvane.kernel import memvane_paths  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
 import setup_entry  # noqa: E402
@@ -363,7 +363,7 @@ class Lifecycle(Base):
         self.assertEqual(self.row(self.a)['status'], 'active')
 
     def test_recovery_required_and_rejected_keep_the_row_active(self):
-        import laya_product_install as product
+        from memvane.install import product_install as product
         self.register(self.a)
         for status in ('recovery_required', 'blocked'):
             with self.subTest(status=status), patch.object(
@@ -378,7 +378,7 @@ class Lifecycle(Base):
         self.assertEqual(self.row(self.a)['status'], 'active')
 
     def test_a_success_status_without_a_released_selection_detaches_nothing(self):
-        import laya_product_install as product
+        from memvane.install import product_install as product
         self.register(self.a)
         with patch.object(product, 'restore_origin_selection',
                           return_value={'status': 'legacy_restored', 'changesApplied': 1}):
@@ -388,7 +388,7 @@ class Lifecycle(Base):
         self.assertEqual(self.row(self.a)['status'], 'active')
 
     def test_retire_and_abandon_success_detach_existing_rows_and_insert_none(self):
-        import laya_product_install as product
+        from memvane.install import product_install as product
         pending = installs.make_install(self.home, self.work / 'gamma', 'gamma',
                                         '8' * 32, '9' * 32, activate=False)
         self.bundles.add(pending)
@@ -421,7 +421,7 @@ class Lifecycle(Base):
                          ('detached', 'released'))
 
     def test_activation_success_registers_after_reproving_the_route(self):
-        import laya_product_install as product
+        from memvane.install import product_install as product
         with patch.object(product, 'activate_origin_selection',
                           return_value={'phase': 'active', 'syncWake': {'status': 'queued'}}):
             code, result = self.setup(*self.args('activate-index-origin', self.a,
@@ -437,7 +437,7 @@ class Lifecycle(Base):
         self.assertIsNone(self.row(pending))
 
     def test_registry_failure_never_changes_the_setup_result(self):
-        import laya_product_install as product
+        from memvane.install import product_install as product
         with patch.object(product, 'activate_origin_selection', return_value={'phase': 'active'}), \
                 patch.object(registry(), 'register', side_effect=RuntimeError('boom')):
             code, result = self.setup(*self.args('activate-index-origin', self.a,

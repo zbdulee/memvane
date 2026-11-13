@@ -445,7 +445,7 @@ _TRACE: contextvars.ContextVar = contextvars.ContextVar('memvane_event_trace', d
 def _refusal_code(exc: BaseException) -> str:
     """Fixed refusal code of a hook failure; never a path, body or secret."""
     from memvane.kernel.errors import IndexContractError
-    from laya_install_journal import JournalEvidenceError
+    from memvane.journal.install_journal import JournalEvidenceError
     bounded_reader = (type(exc) is IndexContractError and str(exc) in (
         'vector_deadline_exceeded', 'vector_budget_exceeded',
         'reader_snapshot_deadline', 'reader_snapshot_unpinned',
@@ -546,7 +546,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
     if not pool:
         return [], 'no_candidates', None
     try:
-        from laya_install_journal import inspect_journal
+        from memvane.journal.install_journal import inspect_journal
         from memvane_version import plugin_version, version_key
         selected = inspect_journal(decision['journalPath'])
         running = version_key(plugin_version())
@@ -900,7 +900,7 @@ def _request_stale_sync(decision: dict, proof: dict):
     The wake key coalesces repeated recalls. The hook never waits for the
     owner and never serves the stale generation's rows.
     """
-    from laya_install_journal import verify_selected_route
+    from memvane.journal.install_journal import verify_selected_route
     current = verify_selected_route(decision)
     _recall_epoch(current)
     if current != proof:
@@ -935,7 +935,7 @@ def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
     """
     if not _writer_floor_allowed(proof):
         return 'writer_floor'
-    from laya_install_journal import verify_selected_route
+    from memvane.journal.install_journal import verify_selected_route
     from laya_embed_resident import (_TRANSIENT_FAILURES, _failure_decision,
                                      read_owner_state)
     current = verify_selected_route(decision)
@@ -1036,7 +1036,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     caller then starts it on every exit path.
     """
     from memvane.runtime import runtime_work
-    from laya_install_journal import verify_selected_route
+    from memvane.journal.install_journal import verify_selected_route
     _request_wiki_lifecycle(action, decision)
     # Pass start only when deferring, so the default path keeps the
     # preexisting request(kind, root) call shape.
@@ -1403,7 +1403,7 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
     if (isinstance(version_route, dict) and version_route.get('routeSchema') == 'memvane-route-v4'
             and not _major_allowed(version_route)):
         return _major_mismatch_response(action, host)
-    from laya_install_journal import JournalEvidenceError
+    from memvane.journal.install_journal import JournalEvidenceError
     with _event_scope(action, host, decision, payload):
         try:
             if action != 'recall':
@@ -1548,7 +1548,7 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     rows never come from the first attempt's proof or pin. A changed
     install, project, scope, journal or store identity keeps the refusal.
     """
-    from laya_install_journal import JournalEvidenceError
+    from memvane.journal.install_journal import JournalEvidenceError
     if not ((type(exc) is HostResponseError and str(exc) in _RETRYABLE_RECALL_CODES) or
             (type(exc) is JournalEvidenceError and str(exc) in _RETRYABLE_JOURNAL_CODES) or
             (type(exc) in (JournalEvidenceError, ValueError) and
@@ -1582,7 +1582,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         return _serve_worktree(action, host, decision, payload)
     if decision.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(decision):
         return _major_mismatch_response(action, host)
-    from laya_install_journal import verify_selected_route
+    from memvane.journal.install_journal import verify_selected_route
     proof = verify_selected_route(decision)
     if proof.get('providerAvailable') is False:
         return _provider_mismatch_response(action, host)
@@ -1882,7 +1882,7 @@ def _writer_floor_response(action, host):
 
 def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> dict:
     """Serve the linked worktree's own view and offer main-owner sync wakes."""
-    from laya_install_journal import verify_selected_route as recheck
+    from memvane.journal.install_journal import verify_selected_route as recheck
     main = decision.get('mainRoute')
     if not isinstance(main, dict) or main.get('state') != 'candidate':
         _fail('worktree_route_invalid')

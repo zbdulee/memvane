@@ -17,7 +17,7 @@ import time
 
 from memvane.settings import project_dir
 
-from laya_install_journal import inspect_journal
+from memvane.journal.install_journal import inspect_journal
 
 
 class InstallBlocked(RuntimeError):
@@ -244,7 +244,7 @@ def review_local_provider(*, plugin_root, state_root,
     from memvane.provider.domain.profile import profile_identity
     from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                            _hash_file, recipe_fingerprint)
-    from laya_product_bundle import _read, MAX_FILE, _canonical
+    from memvane.install.product_bundle import _read, MAX_FILE, _canonical
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         _fail('reviewed_native_platform_unsupported')
     root, state = map(Path, (plugin_root, state_root))
@@ -458,7 +458,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     from memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane_version import same_major
     from memvane.route.index_host_route import SCHEMA_V4, _classify_v4
-    from laya_install_journal import _route
+    from memvane.journal.install_journal import _route
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
     if not same_major(1):
@@ -486,8 +486,8 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
 
 def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id):
     """Register the reviewed single-store build under the existing install lock."""
-    import laya_initial_build as initial_build
-    from laya_install_journal import stage_v1_attestation, create_v1_journal
+    from memvane.install import initial_build as initial_build
+    from memvane.journal.install_journal import stage_v1_attestation, create_v1_journal
     existing = initial_build.lookup(plan['projectRoot'])
     if existing is not None and (existing['identity']['stateRoot'] != str(state)
                                  or existing['identity']['installId'] != install_id):
@@ -532,7 +532,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
 
 def initial_build_status(state_root):
     """Read the single-store build's durable phase."""
-    import laya_initial_build as initial_build
+    from memvane.install import initial_build as initial_build
     state = _private_parent(state_root)
     record = initial_build.read_v1(state)
     if record is None:
@@ -543,7 +543,7 @@ def initial_build_status(state_root):
 
 def request_initial_build_rescan(state_root):
     """Request another bounded build pass through the existing sync wake."""
-    import laya_initial_build as initial_build
+    from memvane.install import initial_build as initial_build
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
         if not owned:
@@ -558,11 +558,11 @@ def request_initial_build_rescan(state_root):
 
 def finalize_initial_build(*, project_root, state_root):
     """Seal the ready single-store head in the prepared journal and ledger."""
-    import laya_initial_build as build
-    import laya_install_journal as journal
+    from memvane.install import initial_build as build
+    from memvane.journal import install_journal as journal
     from memvane.journal import journal_reader as reader
     import laya_runtime_dispatch as dispatch
-    import laya_product_sync_worker as sync
+    from memvane.sync import product_sync_worker as sync
     from memvane.store import blob_values as values
     from memvane.store import view_values as view_values
     from memvane.wiki.workspace import wiki_mutation_lock
@@ -713,10 +713,10 @@ def _checked_project(project_root):
 
 def activate_origin_selection(project_root, journal_path, route_bytes):
     """Publish or recover the proved v1 selection under the install lock."""
-    import laya_initial_build as build
-    import laya_install_journal as journal_module
+    from memvane.install import initial_build as build
+    from memvane.journal import install_journal as journal_module
     from memvane.journal import journal_reader as reader
-    import laya_product_sync_worker as sync
+    from memvane.sync import product_sync_worker as sync
     from memvane.wiki.intake import wiki_discovery as discovery
     from memvane.settings import project_dir
     from memvane.wiki.workspace import wiki_mutation_lock
@@ -843,8 +843,8 @@ def restore_origin_selection(*, project_root, state_root):
 
 
 def _restore_v1_locked(project, state):
-    import laya_initial_build as build
-    import laya_install_journal as journal
+    from memvane.install import initial_build as build
+    from memvane.journal import install_journal as journal
     from contextlib import closing
     from memvane.route.index_host_route import SELECTION_SCHEMA_V1
     from memvane.install.ledger_common import _read_json, _write, _fsync_dir
@@ -931,7 +931,7 @@ def _restore_v1_locked(project, state):
 
 
 def _installed_root():
-    return Path(__file__).resolve(strict=True).parent.parent
+    return Path(__file__).resolve(strict=True).parents[2]
 
 
 def main(argv=None):

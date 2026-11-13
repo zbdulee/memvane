@@ -612,7 +612,7 @@ def _proof_code(exc):
 
 def _route_hint(project):
     """The route decision naming an install's event log; never a proof."""
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     from memvane.route.index_host_route import select_route
     # Classification must never repair a hot journal image on this path.
     with journal.read_only_journals():
@@ -628,11 +628,11 @@ def default_attest(decision, proof, mode):
     Preview: the preview proof validated the record; re-hash its runtime files.
     """
     if mode == 'selected':
-        from laya_product_sync_worker import service_worker_attestation
+        from memvane.sync.product_sync_worker import service_worker_attestation
         if service_worker_attestation(decision, proof) != proof['providerManifest']:
             _fail('provider_attestation_invalid')
     elif mode == 'preview':
-        from laya_install_journal import verify_preview_worker_attestation
+        from memvane.journal.install_journal import verify_preview_worker_attestation
         if verify_preview_worker_attestation(decision['journalPath'],
                                              proof['providerManifest']) \
                 != proof['providerManifest']:
@@ -730,7 +730,7 @@ def _quiet_stop(handle):
 def default_admit():
     from context_learning.resource_coordination import Coordinator
     from context_learning.shared import resource_report
-    from laya_product_sync_worker import EMBED_POLICY
+    from memvane.sync.product_sync_worker import EMBED_POLICY
     # Memory/pressure admission and learning demand, under control.lock only.
     # The service never holds the provider lane: one cold load per service.
     return Coordinator().check(EMBED_POLICY, resource_report(EMBED_POLICY, detailed=True))['ready']

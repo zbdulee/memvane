@@ -16,7 +16,7 @@ def _native_renamer():
         raise ValueError('reader_atomic_create_unavailable')
     function = getattr(library, name, None)
     if function is None:
-        from laya_install_journal import JournalEvidenceError
+        from memvane.journal.install_journal import JournalEvidenceError
         raise JournalEvidenceError('reader_atomic_create_unavailable')
     function.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
                          ctypes.c_char_p, ctypes.c_uint)

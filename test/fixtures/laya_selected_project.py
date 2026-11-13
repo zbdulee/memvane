@@ -24,11 +24,11 @@ sys.path.insert(0, str(CORE))
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
 from memvane.route import index_host_route as host_route  # noqa: E402
-import laya_install_journal as journal_mod  # noqa: E402
+from memvane.journal import install_journal as journal_mod  # noqa: E402
 from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from laya_index_claim_queue import ClaimQueue  # noqa: E402
-from laya_product_bundle import PRODUCTION_ATTESTATION_SCHEMA  # noqa: E402
+from memvane.install.product_bundle import PRODUCTION_ATTESTATION_SCHEMA  # noqa: E402
 
 
 def canon(value):

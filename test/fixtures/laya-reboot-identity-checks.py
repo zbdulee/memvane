@@ -16,7 +16,7 @@ sys.path.insert(0, str(HERE.parents[1] / 'core'))
 spec = importlib.util.spec_from_file_location('reboot_seed', HERE / 'laya-journal-reader-checks.py')
 seed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seed)
-import laya_install_journal as J
+from memvane.journal import install_journal as J
 from memvane.host import host_response as response
 
 
@@ -181,7 +181,7 @@ class RebootChecks(unittest.TestCase):
             # test_real_bundle_provider_and_newer_bundle_takeover.
 
     def test_real_bundle_provider_and_newer_bundle_takeover(self):
-        import laya_product_bundle as bundle
+        from memvane.install import product_bundle as bundle
         import laya_active_upgrade as upgrade
         case = self.case_from('laya-product-bundle-checks.py', 'ProductBundleChecks')
         root, first, raw = case.selected_on_host_root()

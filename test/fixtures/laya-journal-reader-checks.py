@@ -25,8 +25,8 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / 'core'))
 from laya_selected_project import SelectedProject
-import laya_install_journal as J
-import laya_product_bundle as bundle
+from memvane.journal import install_journal as J
+from memvane.install import product_bundle as bundle
 
 spec = importlib.util.spec_from_file_location('reader_v4_fixture', HERE / 'laya-journal-v4-checks.py')
 legacy = importlib.util.module_from_spec(spec)

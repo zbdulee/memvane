@@ -6,7 +6,7 @@ from pathlib import Path
 import threading
 import time
 
-import laya_install_journal as J
+from memvane.journal import install_journal as J
 from memvane.journal import journal_reader as R
 from memvane.journal import reader_windows as W
 from memvane.sync.sync_owner_lock import validate_sync_owner
@@ -132,9 +132,9 @@ class _BuildWriterContext:
         self.stack = ExitStack()
 
     def __enter__(self):
-        import laya_initial_build as build
+        from memvane.install import initial_build as build
         import laya_runtime_dispatch as dispatch
-        from laya_install_journal import _attestation, _v1_provider_manifest, inspect_journal
+        from memvane.journal.install_journal import _attestation, _v1_provider_manifest, inspect_journal
         from memvane.store.view_store import ViewStore
         from memvane.kernel.errors import _query_only_uri
         import sqlite3
@@ -218,7 +218,7 @@ def validate_normal_writer(writer, *, deadline=None):
         validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
         return
     if type(writer) is BuildWriter:
-        import laya_initial_build as build
+        from memvane.install import initial_build as build
         import laya_runtime_dispatch as dispatch
         context = _build_record(writer)
         if deadline is not None:

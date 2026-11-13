@@ -20,9 +20,9 @@ sys.path.insert(0, str(REPO / 'core'))
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue, UnknownDatabase
 from memvane.route import index_host_route as host
-import laya_install_journal as journal
-import laya_product_install as product_install
-import laya_product_bundle as bundle
+from memvane.journal import install_journal as journal
+from memvane.install import product_install as product_install
+from memvane.install import product_bundle as bundle
 import laya_active_upgrade as active_upgrade
 prepare_v4_bridge = active_upgrade._prepare_v4_bridge
 import laya_fresh_wiki_origin as fresh_wiki

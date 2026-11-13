@@ -44,7 +44,7 @@ def main(argv):
             return 3
         threading.Thread(target=_watch_owner_pipe, daemon=True).start()
     if kind == 'laya-sync':
-        from laya_product_sync_worker import run
+        from memvane.sync.product_sync_worker import run
         result = run(Path(project))
     else:
         from wiki_selected_laya import run

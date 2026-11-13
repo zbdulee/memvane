@@ -47,7 +47,7 @@ class CompanionResidentChecks(unittest.TestCase):
         self.case = self.seed.case
         self.companion = (self.case.home / 'codex-cache-copy').resolve()
         self.companion.mkdir(mode=0o700, exist_ok=True)
-        self.W = importlib.import_module('laya_product_sync_worker')
+        self.W = importlib.import_module('memvane.sync.product_sync_worker')
         self.E = importlib.import_module('laya_embed_resident')
         self.S = importlib.import_module('laya_resident_service')
         self.assertEqual(J.journal_version(self.case.journal), 5)
@@ -302,10 +302,10 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
         self.b = self.seed('b' * 32)
         self.runtime_roots = {'a' * 32: root_a, 'b' * 32: os.environ['MEMVANE_TEST_RUNTIME_ROOT']}
         self.assertNotEqual(self.a.case.plugin, self.b.case.plugin)
-        self.W = importlib.import_module('laya_product_sync_worker')
+        self.W = importlib.import_module('memvane.sync.product_sync_worker')
         self.E = importlib.import_module('laya_embed_resident')
         self.S = importlib.import_module('laya_resident_service')
-        self.bundle = importlib.import_module('laya_product_bundle')
+        self.bundle = importlib.import_module('memvane.install.product_bundle')
         temp = tempfile.TemporaryDirectory(prefix='h8s-', dir='/tmp')
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name).resolve()

@@ -175,7 +175,7 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
     import struct
     from memvane.journal import journal_reader as reader
     from memvane.journal import reader_lease as lease
-    from laya_product_sync_worker import _writer_executing_root
+    from memvane.sync.product_sync_worker import _writer_executing_root
     from memvane.wiki.lifecycle import wiki_source_retire
     root = Path(decision["projectRoot"])
     deadline = min(deadline, time.monotonic() + SCHEMA3_READ_SECONDS)

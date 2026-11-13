@@ -12,13 +12,13 @@ ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'core'))
 spec=importlib.util.spec_from_file_location('worker_owner_seed',ROOT/'test/fixtures/laya-product-sync-worker-checks.py')
 seed=importlib.util.module_from_spec(spec);spec.loader.exec_module(seed)
-import laya_product_sync_worker as worker
+from memvane.sync import product_sync_worker as worker
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import sync_owner
 from memvane.wiki.intake import wiki_discovery as discovery
 import laya_embed_resident as resident
 import laya_resident_service as resident_service
-import laya_install_journal as journal
+from memvane.journal import install_journal as journal
 
 PROBE=r'''
 import json,signal,sys

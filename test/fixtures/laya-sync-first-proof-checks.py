@@ -69,7 +69,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         with mock.patch.object(reader,'convert_reader_v5',side_effect=observed):self.fixture.setUp()
         for name in ('case','seed','W','P','J','sync','queue'):
             setattr(self,name,getattr(self.fixture,name))
-        self.worker=importlib.import_module('laya_product_sync_worker')
+        self.worker=importlib.import_module('memvane.sync.product_sync_worker')
         # Synthetic executing-bundle authority, consistent with the seed's
         # actual fullproof. Product default derives its own module root.
         root=mock.patch.object(self.worker,'_writer_executing_root',create=True,return_value=self.case.plugin)

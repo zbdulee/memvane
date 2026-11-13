@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.host import host_response as response
-import laya_install_journal as journal
+from memvane.journal import install_journal as journal
 
 
 class GateResponseChecks(unittest.TestCase):

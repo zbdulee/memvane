@@ -352,7 +352,7 @@ class ServiceChecks(Fixture):
 
     def test_query_hook_maps_protocol_mismatch_to_lexical_code(self):
         from memvane.host import host_response as host
-        import laya_install_journal as journal
+        from memvane.journal import install_journal as journal
         from memvane.runtime import runtime_work
         project, manifest = self.project('alpha')
         decision = {**self.routes[project][0], 'pluginRoot': str(CORE.parent)}
@@ -1200,8 +1200,8 @@ class DeferredStartChecks(unittest.TestCase):
 class ProofChecks(unittest.TestCase):
 
     def test_full_attestation_applies_to_selected_routes_only(self):
-        import laya_install_journal as journal
-        import laya_product_sync_worker as worker
+        from memvane.journal import install_journal as journal
+        from memvane.sync import product_sync_worker as worker
         manifest = manifest_for('/tmp/x/runtime/laya-embed.sock')
         proof = {'providerManifest': manifest}
         decision = {'journalPath': '/tmp/x/install-journal.sqlite'}

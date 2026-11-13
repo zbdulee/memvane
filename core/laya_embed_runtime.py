@@ -704,7 +704,7 @@ def _check_expected(described, expect):
         if expect.get(key) is not None and described[field] != expect[key]:
             _fail('laya_embed_runtime_source_changed')
     if expect.get('closure') is not None:
-        from laya_product_bundle import closure_layout
+        from memvane.install.product_bundle import closure_layout
         if closure_layout(expect['closure']) != closure_layout(described['dependencyClosure']):
             _fail('laya_embed_runtime_source_changed')
     if expect.get('files') is not None and described[FILES_SHA] != expect['files']:
@@ -725,7 +725,7 @@ def matches(runtime, manifest, closure, files=None):
         return False
     if files is not None and runtime.get(FILES_SHA) != files:
         return False
-    from laya_product_bundle import closure_layout
+    from memvane.install.product_bundle import closure_layout
     try:
         return closure_layout(closure) == closure_layout(runtime['dependencyClosure'])
     except Exception:

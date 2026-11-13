@@ -23,8 +23,8 @@ from unittest import mock
 
 CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
-import laya_initial_build  # noqa: E402
-import laya_product_sync_worker as worker  # noqa: E402
+from memvane.install import initial_build as laya_initial_build  # noqa: E402
+from memvane.sync import product_sync_worker as worker  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
 from memvane.kernel.resource_deferred import ResourceDeferred  # noqa: E402
 

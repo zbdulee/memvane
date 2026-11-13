@@ -30,7 +30,7 @@ def selected(project_root, *, action='recall'):
     if (state != 'candidate' or decision.get('projectRoot') != str(root)
             or 'collections' not in decision):
         raise ValueError('laya_learning_route_unavailable')
-    from laya_install_journal import verify_selected_route
+    from memvane.journal.install_journal import verify_selected_route
     proof = verify_selected_route(decision)
     if not isinstance(proof, dict) or proof.get('productRouteAllowed') is not True:
         raise ValueError('laya_learning_route_unverified')
@@ -62,7 +62,7 @@ def _schema3_members(root, decision):
     """
     from memvane.journal import journal_reader as reader
     from memvane.journal import reader_lease as lease
-    from laya_product_sync_worker import _writer_executing_root
+    from memvane.sync.product_sync_worker import _writer_executing_root
     deadline = time.monotonic() + SCHEMA3_READ_SECONDS
     with lease.resolve_endpoint(root, action='recall', host_root=_writer_executing_root()) as endpoint:
         record, _raw, _proof = reader._recheck(endpoint)

@@ -21,12 +21,12 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import laya_initial_build as initial_build
+from memvane.install import initial_build as initial_build
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_capacity import generation_digest
 from laya_index_vector import profile_identity
-import laya_product_install as product
-import laya_product_sync_worker as worker
+from memvane.install import product_install as product
+from memvane.sync import product_sync_worker as worker
 import laya_source_catalog
 from laya_source_catalog import LayaSourceCatalog
 import laya_vector_capacity as vc

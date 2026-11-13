@@ -22,7 +22,7 @@ def emit(label, **values): print(json.dumps(dict(case=label, **values), sort_key
 class NormalWriterConnectionChecks(unittest.TestCase):
     def test_catalog_and_sidecar_visible_admission_accepts_brief_wait(self):
         import laya_incremental_docs as incremental
-        import laya_initial_build as build
+        from memvane.install import initial_build as build
         from laya_source_catalog import LayaSourceCatalog
         roots = {self.case.WIKI: str(self.case.auto/'wiki')}
         with self.F.warm(), self.seed.authority(), ExitStack() as stack:

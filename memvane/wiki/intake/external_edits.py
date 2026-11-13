@@ -201,7 +201,7 @@ def _targets(origin, deadline):
     grants nothing.
     """
     from memvane.route import index_host_route as routes
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     from memvane.registry import memvane_registry
     view = memvane_registry.routing_rows()
     if view['complete']:
@@ -293,7 +293,7 @@ def _nested_project(path, project, deadline):
 
 def notify(paths, *, cwd, host, origin):
     """Offer inert revision hints and normal sync wakes, never owner store work."""
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     from memvane.runtime import runtime_work
     from memvane.wiki.intake.wiki_discovery import _locked, _write
     deadline = time.monotonic() + HOOK_SECONDS
@@ -368,7 +368,7 @@ def drain(decision, *, recheck, owner=None):
     """Full-proof owner consumes current hints using existing compile policy."""
     from memvane.settings import config
     from memvane.route import index_host_route as routes
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     from memvane.wiki.intake import wiki_compile_enqueue as enqueue
     import wiki_selected_laya
     from memvane.wiki.intake.wiki_discovery import _locked, _write
@@ -380,7 +380,7 @@ def drain(decision, *, recheck, owner=None):
     def verify():
         if owner is None:
             return journal.verify_selected_route_for_write(decision, 'compile')
-        from laya_product_sync_worker import _owned_selected_proof
+        from memvane.sync.product_sync_worker import _owned_selected_proof
         return _owned_selected_proof(decision, owner)
 
     proof = verify()

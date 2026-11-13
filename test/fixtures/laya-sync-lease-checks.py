@@ -249,7 +249,7 @@ class SyncLeaseChecks(unittest.TestCase):
 
     def test_fixed_engine_artifacts_acquire_legacy_owner_without_full_plugin_dependencies(self):
         self.api()
-        from laya_product_bundle import ARTIFACTS
+        from memvane.install.product_bundle import ARTIFACTS
         core=self.home/'isolated-engine-core';core.mkdir(mode=0o700)
         for name in ARTIFACTS:shutil.copyfile(ROOT/'core'/name,core/name)
         self.assertFalse((core/'laya_journal_paths.py').exists())

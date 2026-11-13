@@ -628,7 +628,7 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
                 or (current != root and root not in current.parents)
                 or found.get('configPath') != str(project_dir.settings_path(root))):
             return _decision('blocked', 'initial_preview_project_mismatch')
-        import laya_initial_build
+        from memvane.install import initial_build as laya_initial_build
         build = laya_initial_build.lookup(str(root))
         if build is None:
             return None
@@ -688,7 +688,7 @@ def verify_preview_route(decision: dict) -> dict:
         raise ValueError('initial_preview_changed')
     if decision.get('routeSchema') == SCHEMA_V4:
         import laya_runtime_dispatch as dispatch
-        from laya_install_journal import inspect_journal, _attestation, _v1_provider_manifest
+        from memvane.journal.install_journal import inspect_journal, _attestation, _v1_provider_manifest
         dispatch.resolve('laya-sync', decision['projectRoot'])
         journal = inspect_journal(decision['journalPath'])
         attestation, digest = _attestation(Path(decision['journalPath']))
@@ -699,12 +699,12 @@ def verify_preview_route(decision: dict) -> dict:
             raise ValueError('initial_preview_changed')
         return {'journalEpoch': journal['epoch'], 'vectorProfile': journal['vectorProfile'],
                 'providerManifest': manifest}
-    import laya_initial_build
+    from memvane.install import initial_build as laya_initial_build
     build = laya_initial_build.lookup(decision['projectRoot'])
     if (build is None or build['identity']['stateRoot'] != decision['previewStateRoot']
             or build['phase'] not in ('registered', 'building', 'sealed')):
         raise ValueError('initial_preview_build_changed')
-    from laya_install_journal import inspect_journal, preflight_product_candidate
+    from memvane.journal.install_journal import inspect_journal, preflight_product_candidate
     journal = inspect_journal(decision['journalPath'])
     proof = preflight_product_candidate(decision['journalPath'],
                                         require_executing=True)
@@ -967,7 +967,7 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
         return None
     root = found.get("projectRoot") or cwd
     try:
-        from laya_initial_build import lookup
+        from memvane.install.initial_build import lookup
         building = lookup(Path(root)) is not None
     except Exception:
         building = False

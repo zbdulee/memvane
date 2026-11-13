@@ -29,16 +29,16 @@ def _owner_scope(bound, owner):
 
 def _compile_proof(decision, *, owner=None):
     from memvane.settings import project_dir
-    from laya_install_journal import verify_selected_route_for_write
+    from memvane.journal.install_journal import verify_selected_route_for_write
     active=_compile_owner.get()
     if owner is None and active is not None and active[0][0]==decision:
         owner=active[1]
     if owner is not None:
-        from laya_product_sync_worker import _owned_selected_proof
+        from memvane.sync.product_sync_worker import _owned_selected_proof
         return _owned_selected_proof(decision,owner)
     if 'journalPath' not in decision:
         return verify_selected_route_for_write(decision,'compile')
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     from memvane.sync.sync_owner_lock import sync_owner
     from memvane.kernel.resource_deferred import ResourceDeferred
     with sync_owner(Path(decision['storePath'])) as acquired:
@@ -46,7 +46,7 @@ def _compile_proof(decision, *, owner=None):
             raise ResourceDeferred('owner_busy')
         with journal.read_only_journals():
             if journal.journal_version(decision['journalPath'])==5:
-                from laya_product_sync_worker import _owned_selected_proof
+                from memvane.sync.product_sync_worker import _owned_selected_proof
                 return _owned_selected_proof(decision,acquired)
             with journal.legacy_identity_reads():
                 return verify_selected_route_for_write(decision,'compile')
@@ -95,7 +95,7 @@ def schema3_checkout(bound):
     if bound is None:
         return None
     decision = bound[0]
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     from memvane.journal import journal_reader as reader
     path = decision.get('journalPath')
     if not isinstance(path, str) or journal.journal_version(path) != 5:
@@ -150,7 +150,7 @@ class _Schema3Checkout:
         self.worktree = worktree
 
     def _selection_current(self):
-        import laya_install_journal as journal
+        from memvane.journal import install_journal as journal
         from memvane.journal import journal_reader as reader
         from memvane.route.index_host_route import select_route
         if select_route(self.decision['projectRoot'], action='compile') != self.decision:

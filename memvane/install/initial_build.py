@@ -232,7 +232,7 @@ def read_v1(state_root):
 def create_v1(identity):
     """Register a proved v1 build; the caller holds the existing build owner."""
     from memvane_execution_guard import require_cached_plugin_for_live_write
-    from laya_install_journal import _route, inspect_journal
+    from memvane.journal.install_journal import _route, inspect_journal
     if not isinstance(identity, dict) or set(identity) != V1_BUILD_IDENTITY:
         _fail('initial_build_identity_invalid')
     state = _private_dir(identity['stateRoot'])

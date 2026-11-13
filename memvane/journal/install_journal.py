@@ -30,7 +30,7 @@ from memvane.route.index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as
 # Loaded for the executing-bundle proof (``_executing_from_candidate``),
 # which requires laya_package from the sealed core; no QMD inventory is read.
 import laya_package  # noqa: F401
-from laya_product_bundle import (BundleEvidenceError, COMMIT,
+from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
                                  RUNTIME_FILES_FIELD, production_provider_approved,
@@ -515,7 +515,7 @@ def _executing_from_candidate(plugin_root):
 
 def _verified_executing_root(selected, owner_proof):
     """Prove this host's sealed copy against the journal-bound owner copy."""
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[2]
     if str(root) != selected['pluginRoot']:
         try:
             local = inspect_full_plugin_candidate(root)
@@ -1407,13 +1407,13 @@ def cas_restore(journal_path, expected_epoch, observed_old_route_raw):
 
 
 def _executing_root():
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def _verify_v1_selected(decision):
     """Reprove the selected v1 journal, route, ledger and provider."""
     from memvane.settings import project_dir
-    from laya_initial_build import read_v1
+    from memvane.install.initial_build import read_v1
     from memvane.install.ledger_common import _private_file, _read_json
     from memvane_version import same_major
     if not isinstance(decision, dict) or decision.get('state') != 'candidate':
@@ -1505,7 +1505,7 @@ def verify_notification_target(decision):
     """Prove an external-edit hint using only local metadata and the journal."""
     from memvane.settings import project_dir
     from memvane.route.index_host_route import select_notification_route
-    from laya_initial_build import read_v1
+    from memvane.install.initial_build import read_v1
     from memvane.install.ledger_common import _private_file, _read_json
     from memvane_version import same_major, writer_floor_allows
     if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
@@ -1609,7 +1609,7 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
             or type(record.get(RUNTIME_FILES_FIELD)) is not str
             or not SHA.fullmatch(record[RUNTIME_FILES_FIELD])):
         _fail('worker_attestation_invalid')
-    root = Path(__file__).resolve().parent.parent / 'memvane/provider/adapters'
+    root = Path(__file__).resolve().parents[2] / 'memvane/provider/adapters'
     manifest = {**record['providerManifest'],
                 'providerPath': str(root / 'local_embed_provider.py'),
                 'workerPath': str(root / 'laya_local_embed_worker.mjs')}

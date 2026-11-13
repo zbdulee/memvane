@@ -34,7 +34,7 @@ def emit(label, **values):
 class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
     def setUp(self):
         super().setUp()
-        self.worker = importlib.import_module('laya_product_sync_worker')
+        self.worker = importlib.import_module('memvane.sync.product_sync_worker')
         self.views = importlib.import_module('memvane.store.view_store')
         self.lease = importlib.import_module('memvane.journal.reader_lease')
         self.dispatch = importlib.import_module('laya_reader_dispatch')

@@ -12,7 +12,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
-import laya_product_bundle as bundle
+from memvane.install import product_bundle as bundle
 
 
 class InstalledBytecodeChecks(unittest.TestCase):

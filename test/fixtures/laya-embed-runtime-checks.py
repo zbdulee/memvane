@@ -32,8 +32,8 @@ sys.path.insert(0, str(FIXTURES))
 sys.path.insert(0, str(CORE))
 import laya_bundle_upgrade as auto  # noqa: E402
 import laya_embed_runtime as R  # noqa: E402
-import laya_product_bundle as bundle  # noqa: E402
-import laya_product_install as product  # noqa: E402
+from memvane.install import product_bundle as bundle  # noqa: E402
+from memvane.install import product_install as product  # noqa: E402
 from memvane.kernel.errors import IndexContractError  # noqa: E402
 from memvane.provider.domain.profile import profile_identity  # noqa: E402
 from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,  # noqa: E402
@@ -602,7 +602,7 @@ class RuntimeFiles(Base):
             self.validate({**record, self.FIELD: second[self.FIELD]})
 
     def test_worker_start_rehashes_every_runtime_file(self):
-        import laya_install_journal as J
+        from memvane.journal import install_journal as J
         first, _source, _commit, record, legacy = self.reattested()
         manifest = record['providerManifest']
         self.assertEqual(R.verify_attested_files(manifest, record[self.FIELD]),

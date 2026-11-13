@@ -16,7 +16,7 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import laya_product_sync_worker as worker
+from memvane.sync import product_sync_worker as worker
 from memvane.runtime import runtime_work
 from memvane.runtime import runtime_wake_policy
 from context_learning.local_cycle import ResourceDeferred
@@ -148,7 +148,7 @@ class WorkerChecks(unittest.TestCase):
 
     def test_selected_wake_prewarms_before_a_no_change_scan(self):
         import laya_embed_resident
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         self.decision['projectRoot'] = str(self.project)
         controller, service, _calls, _start, patches = self.wiring()
         with self._patches(patches), \
@@ -594,7 +594,7 @@ class V2WorkerChecks(unittest.TestCase):
 
     @contextmanager
     def hook_world(self):
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import laya_bundle_upgrade
         from context_learning import seam,live_select

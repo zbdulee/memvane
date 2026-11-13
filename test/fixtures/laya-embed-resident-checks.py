@@ -168,7 +168,7 @@ class ResidentChecks(unittest.TestCase):
         adopt.assert_not_called()
 
     def test_pending_and_selected_route_share_one_owner_identity(self):
-        import laya_product_sync_worker as sync
+        from memvane.sync import product_sync_worker as sync
         from memvane.route import index_host_route as route
         from laya_embed_resident import _owned_route, _owner_identity
         with tempfile.TemporaryDirectory(prefix='lr-', dir='/tmp') as root:

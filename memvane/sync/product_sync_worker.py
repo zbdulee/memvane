@@ -25,7 +25,7 @@ from memvane.route.index_host_route import (select_route, selected_collection_ro
                                    wiki_index_roots)
 from memvane.sync.source_scan import _collection_roots
 from memvane.sync.sync_owner_lock import sync_owner
-from laya_install_journal import (JournalEvidenceError, cas_mark_new_write, inspect_journal,
+from memvane.journal.install_journal import (JournalEvidenceError, cas_mark_new_write, inspect_journal,
                                   preflight_product_candidate,
                                   verify_selected_route_for_write as verify_selected_route,
                                   verify_worker_attestation)
@@ -121,7 +121,7 @@ def _initial_build_waiting(controller, project):
     whichever row is due next. Selected syncs only, between rounds: initial
     builds never yield to each other.
     """
-    import laya_initial_build as initial_build
+    from memvane.install import initial_build as initial_build
     from memvane.runtime.runtime_work import WakeQueue
     try:
         queue = WakeQueue(controller.root)
@@ -154,13 +154,13 @@ def _initial_build_waiting(controller, project):
 
 
 def _writer_executing_root():
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parents[2]
 
 
 def _owned_selected_proof(decision, owner):
     """Reprove the selected route while the sync owner is held."""
     from memvane.sync.sync_owner_lock import validate_sync_owner
-    from laya_install_journal import verify_selected_route_for_write
+    from memvane.journal.install_journal import verify_selected_route_for_write
     validate_sync_owner(owner, Path(decision['storePath']))
     proof = verify_selected_route_for_write(decision)
     validate_sync_owner(owner, Path(decision['storePath']))
@@ -169,7 +169,7 @@ def _owned_selected_proof(decision, owner):
 
 def _selected(project, *, owner_wait=False):
     """Prove the selected v1 route before acquiring the writer owner."""
-    from laya_install_journal import verify_selected_route_for_write
+    from memvane.journal.install_journal import verify_selected_route_for_write
     project = Path(project)
     if not project.is_absolute() or project.is_symlink() or not project.is_dir():
         raise IndexContractError('selected_project_unavailable')
@@ -211,7 +211,7 @@ _JOURNAL_EPOCH_FIELDS = ('epoch', 'newWriteSeen')
 
 def _journal_view(decision):
     """The journal row as a selection, epoch aside; None if unreadable."""
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     try:
         with journal.read_only_journals():
             info = journal.inspect_journal(decision['journalPath'])
@@ -229,7 +229,7 @@ def _selection_moved(decision, view):
     equal ``view``. A read that fails is not evidence of a move: the failure
     stays what it was.
     """
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     try:
         with journal.read_only_journals():
             current = select_route(str(decision['projectRoot']), action='update')
@@ -243,7 +243,7 @@ def _selection_moved(decision, view):
 
 def _selection_moves_defer(call, argument):
     """``worker_selection_changed`` from the journal is a moved selection: defer."""
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     try:
         return call(argument)
     except (journal.JournalEvidenceError, IndexContractError) as exc:
@@ -318,7 +318,7 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     """Run one selected sync; call only from the durable runtime wake worker.
 
     """
-    import laya_initial_build as build
+    from memvane.install import initial_build as build
     record = build.lookup(str(project))
     if record is not None and record.get('schema') == build.V1_BUILD_SCHEMA:
         decision = select_route(str(project), action='recall')
@@ -334,7 +334,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                     start_service=start_owned_embed_service):
     """Publish the registered main view under the existing build and sync owners."""
     from contextlib import ExitStack
-    import laya_initial_build as build
+    from memvane.install import initial_build as build
     from memvane.journal import writer_scope as normal
     from memvane.store.view_store import ViewStore
     state = Path(decision['stateRoot'])
@@ -1424,7 +1424,7 @@ def _schema3_vector_spec(proof):
 
 def _schema3_worker_manifest(decision, proof):
     """The worker attestation's provider manifest for the current proof (closure rehash)."""
-    import laya_install_journal as journal
+    from memvane.journal import install_journal as journal
     with journal.read_only_journals():
         if proof.get('buildPending'):
             import laya_runtime_dispatch as dispatch

@@ -524,7 +524,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
     def test_09_provider_defect_ends_the_wake_blocked_lexical_kept(self):
         self.select_schema3()
         self.card('concepts/finch-perch.md', 'finchprobe')
-        journal = importlib.import_module('laya_install_journal')
+        journal = importlib.import_module('memvane.journal.install_journal')
         start = self.head()
 
         def invalid(_decision, _proof):
@@ -1143,7 +1143,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import os
         import tempfile
         work = importlib.import_module('memvane.runtime.runtime_work')
-        build = importlib.import_module('laya_initial_build')
+        build = importlib.import_module('memvane.install.initial_build')
         self.select_schema3()
         for name in ('delta', 'echo', 'foxtrot'):
             self.card(f'build/{name}.md', name + 'buildprobe')
@@ -1307,7 +1307,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         import os
         import tempfile
         work = importlib.import_module('memvane.runtime.runtime_work')
-        build = importlib.import_module('laya_initial_build')
+        build = importlib.import_module('memvane.install.initial_build')
         self.select_schema3()
         markers = self.cold_cards('yld', 10)
         self.run_vector_pass(Coordinator(refuse='cpu_pressure'))

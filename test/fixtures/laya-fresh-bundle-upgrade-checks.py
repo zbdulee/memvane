@@ -28,15 +28,15 @@ from memvane.settings import config  # noqa: E402
 import laya_active_upgrade as active  # noqa: E402
 import laya_bound_upgrade as bound_upgrade  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
-import laya_initial_build as initial_build  # noqa: E402
-import laya_product_install as product  # noqa: E402
-import laya_product_sync_worker as worker  # noqa: E402
+from memvane.install import initial_build as initial_build  # noqa: E402
+from memvane.install import product_install as product  # noqa: E402
+from memvane.sync import product_sync_worker as worker  # noqa: E402
 from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from memvane.route.index_host_route import (SCHEMA_V2 as ROUTE_V2,  # noqa: E402
                                    settings_identity_digest)
-from laya_install_journal import PRODUCTION_ATTESTATION, _canon  # noqa: E402
-from laya_product_bundle import BundleEvidenceError  # noqa: E402
+from memvane.journal.install_journal import PRODUCTION_ATTESTATION, _canon  # noqa: E402
+from memvane.install.product_bundle import BundleEvidenceError  # noqa: E402
 
 PROFILE_ID = BUILD['PROFILE_ID']
 SCOPE = BUILD['SCOPE']
@@ -319,7 +319,7 @@ class UpgradeCase(FreshBoundCase):
         self.addCleanup(REEXTRACTED.clear)
         # The upgrade backup snapshots the journal file; its CAS is synthetic.
         import sqlite3
-        import laya_install_journal as journal
+        from memvane.journal import install_journal as journal
         with sqlite3.connect(self.journal_path) as db:
             db.execute('PRAGMA application_id=%d' % journal.APP_ID)
             db.execute('PRAGMA user_version=4')
@@ -775,7 +775,7 @@ class ActiveUpgradeTests(UpgradeCase):
         # ``upgrading``: the journal already binds the new bundle. The real
         # worker entry finishes the switch instead of reporting ``current``.
         import laya_bundle_upgrade as auto
-        import laya_product_bundle
+        from memvane.install import product_bundle as laya_product_bundle
         self.bound()
         self.activate()
         original = active._Ledger.change
@@ -917,7 +917,7 @@ class ActiveUpgradeTests(UpgradeCase):
         self.assertEqual(settled, host.select_route(project, action='recall'))
 
     def test_same_root_reextracted_in_place_readopts_and_proves_again(self):
-        import laya_install_journal as install_journal
+        from memvane.journal import install_journal as install_journal
         self.bound()
         self.activate()
         self.assertEqual(self.run_upgrade(active)['status'], 'active_upgrade_complete')

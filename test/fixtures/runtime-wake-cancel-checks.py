@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path.cwd() / 'core'))
 from memvane.runtime import runtime_work
 from memvane.runtime import runtime_wake_cancel as cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
-import laya_initial_build as initial_build
-import laya_install_journal
+from memvane.install import initial_build as initial_build
+from memvane.journal import install_journal as laya_install_journal
 from memvane.route import index_host_route as laya_index_host_route
 
 
@@ -153,7 +153,7 @@ with tempfile.TemporaryDirectory(prefix='wake-cancel-') as name, \
         # The CAS DELETE inside that transaction was rolled back: row and audit unchanged.
         assert row_now() == after_retry and audits() == []
     # The established writer locks (install, then build owner) held elsewhere: refuse, never wait.
-    from laya_product_install import _install_lock
+    from memvane.install.product_install import _install_lock
     with _install_lock(state):
         assert run(rev) == {'status': 'refused', 'reason': 'state_busy'}
     with initial_build.owner(str(state)) as owned:

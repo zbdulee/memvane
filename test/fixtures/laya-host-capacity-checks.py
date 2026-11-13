@@ -291,7 +291,7 @@ class ServeRuntimeTests(unittest.TestCase):
             return context
         from memvane.settings import config
         import laya_index_runtime
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         # Runtime argument checks use a synthetic provider, not OS admission.
         with mock.patch.object(laya_install_journal, 'verify_selected_route',
@@ -321,7 +321,7 @@ class ServeRuntimeTests(unittest.TestCase):
     def test_returned_mismatch_wakes_sync_but_read_budget_reports_unavailable(self):
         from memvane.settings import config
         import laya_index_runtime
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         from memvane.runtime import runtime_work
         with tempfile.TemporaryDirectory(prefix='laya-host-refusal-') as raw:

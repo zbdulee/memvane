@@ -132,7 +132,7 @@ class RecoveryChecks(unittest.TestCase):
 
     def test_recall_preserves_lexical_during_cooldown_and_wakes_after_it(self):
         from memvane.host import host_response as host
-        import laya_install_journal as journal
+        from memvane.journal import install_journal as journal
         self.stamp('startup_failed')
         proof = {'providerManifest': self.manifest, 'selectionEpoch': 1}
         decision = {'projectRoot': '/synthetic/project',

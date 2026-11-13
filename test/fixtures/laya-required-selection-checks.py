@@ -88,7 +88,7 @@ class Checks(unittest.TestCase):
 
     def host(self, stack, *, settings=None, rows=None):
         """Patch a selected v2 route; returns (decision, proof, rows)."""
-        import laya_install_journal
+        from memvane.journal import install_journal as laya_install_journal
         import laya_index_runtime
         from memvane.provider.adapters import local_embed_provider as laya_local_embed_provider
         import laya_embed_resident
@@ -167,7 +167,7 @@ class Checks(unittest.TestCase):
                     response.serve_selected('recall', 'codex', decision,
                                             {'prompt': 'find card'})
             read_only = Mock(return_value=proof)
-            import laya_install_journal
+            from memvane.journal import install_journal as laya_install_journal
             with patch('context_learning.live_select.choose', return_value=(
                     [rows[14]['path']], 'selected', {})), \
                  patch.object(laya_install_journal, 'verify_selected_route',

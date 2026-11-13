@@ -235,7 +235,7 @@ class Schema3WriterPlanChecks(unittest.TestCase):
         return result
 
     def test_v6_consumers_refuse_schema3_selection(self):
-        worker = importlib.import_module('laya_product_sync_worker')
+        worker = importlib.import_module('memvane.sync.product_sync_worker')
         decision = self.J.select_route(str(self.case.project), action='index')
         self.select_schema3()
         epoch = self.J.inspect_journal(self.case.journal)['epoch']

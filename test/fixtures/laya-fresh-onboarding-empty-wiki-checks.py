@@ -22,12 +22,12 @@ from memvane.settings import config  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
 from memvane.route import index_host_route as host_route  # noqa: E402
-import laya_install_journal as journal_mod  # noqa: E402
+from memvane.journal import install_journal as journal_mod  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 import laya_incremental_docs as incremental  # noqa: E402
 from laya_index_runtime import LayaIndexRuntime  # noqa: E402
-import laya_product_install as product  # noqa: E402
-import laya_product_sync_worker as worker  # noqa: E402
+from memvane.install import product_install as product  # noqa: E402
+from memvane.sync import product_sync_worker as worker  # noqa: E402
 
 BUILD = E2E['BUILD']
 

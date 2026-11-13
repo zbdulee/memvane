@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import hashlib
 
-from laya_product_bundle import (PROFILE_CLOSURE_FIELD, RUNTIME_FILES_FIELD,
+from memvane.install.product_bundle import (PROFILE_CLOSURE_FIELD, RUNTIME_FILES_FIELD,
                                  _canonical, closure_layout)
 
 # Manifest values that define the embedding content. Paths are excluded.

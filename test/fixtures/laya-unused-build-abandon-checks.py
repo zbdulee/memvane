@@ -21,11 +21,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.route import index_host_route as laya_index_host_route
-import laya_initial_build as initial_build
-import laya_install_journal
+from memvane.install import initial_build as initial_build
+from memvane.journal import install_journal as laya_install_journal
 from laya_index_a import IndexContractError, LayaIndexA
-import laya_product_install as product
-import laya_product_sync_worker as worker
+from memvane.install import product_install as product
+from memvane.sync import product_sync_worker as worker
 from memvane.runtime import runtime_wake_cancel as wake_cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
 from memvane.runtime import runtime_work

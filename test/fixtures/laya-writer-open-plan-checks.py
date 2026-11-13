@@ -36,7 +36,7 @@ class WriterOpenPlanChecks(unittest.TestCase):
             self.seed.setUp()
         self.case = self.seed.case
         self.W = importlib.import_module('memvane.journal.reader_windows')
-        self.J = importlib.import_module('laya_install_journal')
+        self.J = importlib.import_module('memvane.journal.install_journal')
         self.route = importlib.import_module('memvane.route.index_host_route')
         self.content = {
             Path(p) for p in (self.case.db, self.case.catalog, self.case.store,

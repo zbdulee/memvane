@@ -30,8 +30,8 @@ import laya_bundle_upgrade as upgrade  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.host import host_response as response  # noqa: E402
 from memvane.route import index_host_route as host_route  # noqa: E402
-import laya_initial_build as build  # noqa: E402
-import laya_install_journal as journal_mod  # noqa: E402
+from memvane.install import initial_build as build  # noqa: E402
+from memvane.journal import install_journal as journal_mod  # noqa: E402
 import laya_project_dir_move as dir_move  # noqa: E402
 import laya_state_move  # noqa: E402
 import laya_vector_capacity as vc  # noqa: E402
@@ -559,7 +559,7 @@ class GitBranchTests(MoveCase):
         self.assertTrue(rows)
 
     def test_writers_recheck_with_their_own_action_and_stop_mid_run(self):
-        import laya_product_sync_worker as sync_worker
+        from memvane.sync import product_sync_worker as sync_worker
         import wiki_selected_laya
         # The fixture has no sealed plugin bundle: prove routes read-only.
         stack = ExitStack()
