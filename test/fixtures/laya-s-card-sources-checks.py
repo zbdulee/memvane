@@ -147,14 +147,18 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         self.assertEqual([s['startLine'] for s in store._rows_card_source_spans(rows[0])], [1, 2])
 
 
-    def two_revision_card(self):
-        """A verified writer card whose ``sourceRevisions`` cite ``notes/src.md`` at two shas."""
+    OLDER = b'# Source\nolder source body\n'
+
+    def two_revision_card(self, *, current_first=False):
+        """A verified writer card whose ``sourceRevisions`` cite ``notes/src.md`` at two shas
+        (an older one and the file's current bytes, listed older first unless ``current_first``)."""
         import yaml_scalars
         raw = (self.root / 'notes/src.md').read_bytes()
-        older = b'# Source\nolder source body\n'
+        older = self.OLDER
+        listed = (raw, older) if current_first else (older, raw)
         lines = yaml_scalars.dump_source_revisions([
             dict(kind='file', path='notes/src.md', collection='fixture', sha256=hashlib.sha256(data).hexdigest(),
-                 size=len(data), mtimeNs=1) for data in (older, raw)])
+                 size=len(data), mtimeNs=1) for data in listed])
         spans = yaml_scalars.dump_source_spans([
             dict(path='notes/src.md', sourceSha256=hashlib.sha256(data).hexdigest(), startLine=start, endLine=end,
                  spanSha256=hashlib.sha256(data).hexdigest()) for data, start, end in ((older, 3, 4), (raw, 1, 2))])
@@ -163,22 +167,51 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
                 + ''.join('  - ' + line + '\n' for line in spans) + '---\n# Two revisions\ntworevprobe body\n')
         (self.wiki() / 'cards' / 'a.md').write_text(text, encoding='utf8')
 
-    def publish_two_revision_card(self, store, handle):
-        """Ingest the card through ``ingest_attested_card`` and publish it as the only member."""
+    def ingest_card(self, store, handle, path='cards/a.md', **kwargs):
+        """``ingest_attested_card`` of one writer card; ``kwargs`` pass through."""
         decision = {'projectRoot': str(self.root), 'scopeId': self.scope,
                     'collections': [{'name': 'fixture', 'role': 'raw', 'sourceRoot': str(self.root)},
                                     {'name': 'fixture-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki())}],
                     'collectionRoots': {'fixture': str(self.root), 'fixture-wiki': str(self.wiki())},
                     'recallSettings': {'skipPaths': []}}
-        admitted = store.ingest_attested_card(handle.worktree_id, 'cards/a.md', decision=decision,
-                                              provenance_scan={'id': '3' * 32, 'observed_ns': 5})
+        return store.ingest_attested_card(handle.worktree_id, path, decision=decision,
+                                          provenance_scan={'id': '3' * 32, 'observed_ns': 5}, **kwargs)
+
+    def attested(self, store, admitted):
+        """``[(path, source_sha, byte_length)]`` of an admitted card's attestation sources."""
         spec = store.attestation(admitted['trust_digest'])
-        self.assertEqual([store.fingerprint(s['fingerprint_id'])['path'] for s in spec['sources']],
-                         ['notes/src.md', 'notes/src.md'])
+        return [tuple(store.fingerprint(s['fingerprint_id'])[k] for k in ('path', 'source_sha', 'byte_length'))
+                for s in spec['sources']]
+
+    def publish_admitted(self, store, handle, admitted):
         manifest = self.snapshot(store, handle, trust=False)
         manifest['members'] = [dict(path='cards/a.md', blob_sha=admitted['blob_sha'], display_title='Two',
                                     trust_digest=admitted['trust_digest'])]
         return self.publish_manifest(store, handle, manifest)
+
+    def publish_two_revision_card(self, store, handle):
+        """Ingest the card without a current observation and publish it as the only member."""
+        admitted = self.ingest_card(store, handle)
+        self.assertEqual([row[0] for row in self.attested(store, admitted)], ['notes/src.md', 'notes/src.md'])
+        return self.publish_admitted(store, handle, admitted)
+
+    def two_stores(self):
+        """A generation-format and a row-format store over one worktree registration."""
+        # Fingerprints carry the worktree id, so equal attestations need the same worktree.
+        repository, worktree = self.bind()
+        stores = []
+        for path, rows in ((self.state / 'generation-format.db', False), (self.db, True)):
+            store = self.track(self.Store.create(str(path), project_root=str(self.root), repository=repository,
+                                                 worktree=worktree, scope_id=self.scope, row_generations=rows))
+            stores.append((store, store.capture_view(worktree['worktreeId'])))
+        return stores
+
+    def source_rows(self, store, handle):
+        """Card source rows of the head: ``card_sources`` ordinals or ``s_card_sources`` rows."""
+        if store._rows:
+            return len(self.card_source_rows(store, handle))
+        return store._db.execute('SELECT COUNT(*) FROM card_sources WHERE gen_id=?',
+                                 (store.head(handle)['gen_id'],)).fetchone()[0]
 
     def recall_output(self, store, handle):
         """What recall consumes: searched rows, their card locations and the cards' trust."""
@@ -211,16 +244,7 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         """
         self.two_revision_card()
         results = {}
-        # One registration for both stores: fingerprints carry the worktree id, so
-        # equal attestations (and trust digests) need the same worktree.
-        repository, worktree = self.bind()
-        stores = {}
-        for name, path, rows in (('generation', self.state / 'generation-format.db', False),
-                                 ('row', self.db, True)):
-            store = self.track(self.Store.create(str(path), project_root=str(self.root), repository=repository,
-                                                 worktree=worktree, scope_id=self.scope, row_generations=rows))
-            stores[name] = (store, store.capture_view(worktree['worktreeId']))
-        (generation_store, generation_handle), (row_store, row_handle) = stores['generation'], stores['row']
+        (generation_store, generation_handle), (row_store, row_handle) = self.two_stores()
         for name, store, handle in (('generation', generation_store, generation_handle),
                                     ('row', row_store, row_handle)):
             self.publish_two_revision_card(store, handle)
@@ -249,6 +273,88 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
         self.assertEqual(json.dumps(self.recall_output(again, moved), sort_keys=True).encode('utf8'),
                          json.dumps(before, sort_keys=True).encode('utf8'))
         self.assertEqual(len(self.card_source_rows(again, moved)), 1)
+
+
+    # Writer ingest judges one path cited at two revisions by the current source (user decision 11/13 08:45).
+
+    def current(self, data=None):
+        data = (self.root / 'notes/src.md').read_bytes() if data is None else data
+        return {'notes/src.md': (hashlib.sha256(data).hexdigest(), len(data))}
+
+    def test_09_two_revisions_keep_only_the_one_matching_the_current_source(self):
+        self.two_revision_card()
+        raw = (self.root / 'notes/src.md').read_bytes()
+        outputs = []
+        for store, handle in self.two_stores():
+            admitted = self.ingest_card(store, handle, current_sources=self.current())
+            self.assertEqual(self.attested(store, admitted),
+                             [('notes/src.md', hashlib.sha256(raw).hexdigest(), len(raw))])
+            self.assertEqual(sum(len(s['spans']) for s in store.attestation(admitted['trust_digest'])['sources']), 1)
+            self.publish_admitted(store, handle, admitted)
+            output = self.recall_output(store, handle)
+            self.assertEqual(output['locations'], {'cards/a.md': ['notes/src.md#L1-L2']})
+            self.assertEqual(output['trust'][0][2], 1)
+            self.assertEqual(self.source_rows(store, handle), 1)
+            outputs.append(json.dumps(output, sort_keys=True).encode('utf8'))
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_10_the_listing_order_does_not_pick_the_revision(self):
+        raw = (self.root / 'notes/src.md').read_bytes()
+        for store, handle in self.two_stores():
+            kept = []
+            for current_first in (False, True):
+                self.two_revision_card(current_first=current_first)
+                admitted = self.ingest_card(store, handle, current_sources=self.current())
+                kept.append(self.attested(store, admitted))
+            self.assertEqual(kept, [[('notes/src.md', hashlib.sha256(raw).hexdigest(), len(raw))]] * 2)
+
+    def test_11_no_revision_matching_the_current_source_admits_the_card_untrusted(self):
+        self.two_revision_card()
+        third = b'# Source\nthird source body\n'
+        (self.root / 'notes/src.md').write_bytes(third)
+        for store, handle in self.two_stores():
+            before = store.counts()['card_attestations']
+            admitted = self.ingest_card(store, handle, current_sources=self.current(third))
+            self.assertIsNone(admitted['trust_digest'])
+            self.assertEqual(store.counts()['card_attestations'], before)
+            self.publish_admitted(store, handle, admitted)
+            output = self.recall_output(store, handle)
+            self.assertEqual((output['rows'], output['locations']), ([], {}))
+            self.assertEqual(output['trust'], [('cards/a.md', None, 0)])
+            self.assertEqual(self.source_rows(store, handle), 0)
+
+    def test_12_without_a_current_observation_both_revisions_stay(self):
+        """Regression guard: no observation (a scan over its bounds) picks no winner."""
+        self.two_revision_card()
+        for store, handle in self.two_stores():
+            self.publish_two_revision_card(store, handle)
+            output = self.recall_output(store, handle)
+            self.assertEqual(output['locations'], {'cards/a.md': ['notes/src.md#L1-L2', 'notes/src.md#L3-L4']})
+            self.assertEqual(output['trust'][0][2], 1)
+
+    def test_13_a_path_outside_the_observation_is_not_judged(self):
+        self.two_revision_card()
+        unobserved = {'notes/other.md': ('0' * 64, 1)}
+        for store, handle in self.two_stores():
+            judged = self.ingest_card(store, handle, current_sources=unobserved)
+            plain = self.ingest_card(store, handle)
+            self.assertEqual(judged, plain)
+            self.assertEqual([row[0] for row in self.attested(store, judged)], ['notes/src.md', 'notes/src.md'])
+
+    def test_14_a_card_citing_its_path_once_is_unchanged_even_when_stale(self):
+        import yaml_scalars
+        raw = (self.root / 'notes/src.md').read_bytes()
+        line = yaml_scalars.dump_source_revisions([dict(
+            kind='file', path='notes/src.md', collection='fixture', sha256=hashlib.sha256(self.OLDER).hexdigest(),
+            size=len(self.OLDER), mtimeNs=1)])[0]
+        (self.wiki() / 'cards' / 'one.md').write_text(
+            '---\ntitle: "One revision"\nstatus: verified\ncreatedBy: memvane\nsourceRevisions:\n  - ' + line
+            + '\n---\n# One revision\nonerevprobe body\n', encoding='utf8')
+        for store, handle in self.two_stores():
+            for current in (self.current(raw), self.current(self.OLDER)):
+                judged = self.ingest_card(store, handle, 'cards/one.md', current_sources=current)
+                self.assertIsNotNone(judged['trust_digest'])
+                self.assertEqual(judged, self.ingest_card(store, handle, 'cards/one.md'))
 
 
 def load_tests(loader, tests, pattern):

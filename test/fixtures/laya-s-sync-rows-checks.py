@@ -95,6 +95,12 @@ class RowStoreReads:
         finally:
             store.close()
 
+    def member_trust(self, gen_id, card):
+        with self.ro() as db:
+            view_id, ordinal = self.at(db, gen_id)
+            return db.execute('SELECT trust_digest,eligible FROM s_cards WHERE view_id=? AND path=? AND gen_from<=? '
+                              'AND (gen_to IS NULL OR gen_to>?)', (view_id, card, ordinal, ordinal)).fetchone()
+
 
 class RowSyncPublishChecks(RowStoreReads, publish.Schema3SyncPublishChecks):
     pass
