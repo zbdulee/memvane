@@ -10,3 +10,6 @@ REQUEST_VERSION = 1
 REQUEST_SUFFIX = "-wiki-lifecycle-request.json"
 SERVED_SUFFIX = "-wiki-lifecycle-served.json"
 TRIGGERS = frozenset(("session_start", "source_edit"))
+
+DEFERRED_REASONS = frozenset(('owner_busy', 'writer_proof_deadline',
+                              'reader_lifetime_busy', 'writer_proof_physical_busy'))

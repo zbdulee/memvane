@@ -132,9 +132,10 @@ def gather_similar_pages(
     if not collection or not wc.shared_collection_owned(root, config, collection):
         return None
     from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.compile import selected_execution as compile_execution
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
-        rows = wiki_selected_laya.wiki_matches(root, wiki_root, content,
+        rows = compile_execution.wiki_matches(root, wiki_root, content,
                                                top_k, cap_chars, bound=selected)
         return compact_similar_pages(root, rows, cap_chars) or None
     # Only a selected memvane-db index answers similarity.

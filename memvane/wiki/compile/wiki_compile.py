@@ -1309,10 +1309,11 @@ def query_wiki_candidates(
     if not text:
         return []
     from memvane.wiki.workspace import wiki_selected_laya
+    from memvane.wiki.compile import selected_execution as compile_execution
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
         return [(path, score) for path, score, _ in
-                wiki_selected_laya.wiki_matches(root, wiki_root, text,
+                compile_execution.wiki_matches(root, wiki_root, text,
                     qmd_config.DEDUP_TOP_K,
                     qmd_config.DEDUP_SIMILAR_PAGE_MAX_CHARS, bound=selected)
                 if score >= min_score]

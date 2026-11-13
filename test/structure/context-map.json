@@ -1149,6 +1149,21 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/compile/api.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/selected_execution.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/types.py": {
+      "context": "wiki/compile",
+      "layer": "domain",
+      "pinned": false
+    },
     "memvane/wiki/compile/wiki_card_budget.py": {
       "context": "wiki/compile",
       "layer": "adapter",

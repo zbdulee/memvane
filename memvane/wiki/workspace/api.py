@@ -55,3 +55,23 @@ def request_lifecycle(*args, **kwargs):
 def claim_lifecycle(*args, **kwargs):
     from memvane.wiki.workspace.lifecycle_requests import claim as implementation
     return implementation(*args, **kwargs)
+
+
+def selected(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import selected as implementation
+    return implementation(*args, **kwargs)
+
+
+def recheck(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import recheck as implementation
+    return implementation(*args, **kwargs)
+
+
+def queue_busy(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import _queue_busy as implementation
+    return implementation(*args, **kwargs)
+
+
+def deferred_result(*args, **kwargs):
+    from memvane.wiki.workspace.wiki_selected_laya import deferred_result as implementation
+    return implementation(*args, **kwargs)
