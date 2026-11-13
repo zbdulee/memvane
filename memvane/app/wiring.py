@@ -84,7 +84,9 @@ def learning(row):
 
 
 def auto(row):
-    from memvane.learning.api import run_automatic_learning
+    from memvane.learning.api import bind_service_starter, run_automatic_learning
+    from memvane.resident.api import ensure_service
+    bind_service_starter(ensure_service)
     from memvane.runtime.api import handler_done
     result=run_automatic_learning(Path(row['target']))
     return handler_done(result['status'])

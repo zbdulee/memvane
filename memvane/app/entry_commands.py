@@ -49,8 +49,10 @@ def selector_maintenance():
 
 
 def learning_shared():
-    from memvane.learning.api import worker_lease
+    from memvane.learning.api import bind_service_starter, worker_lease
     from memvane.learning.api import learning_main as main
+    from memvane.resident.api import ensure_service
+    bind_service_starter(ensure_service)
     with worker_lease():
         return main(sys.argv[1:])
 

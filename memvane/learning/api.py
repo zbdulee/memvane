@@ -68,6 +68,11 @@ def acknowledge_host(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def bind_service_starter(*args, **kwargs):
+    from memvane.learning.context_learning.inference_service import bind_service_starter as implementation
+    return implementation(*args, **kwargs)
+
+
 def learning_main(*args, **kwargs):
     from memvane.learning.context_learning.shared import main as implementation
     return implementation(*args, **kwargs)

@@ -442,6 +442,19 @@ def _hosted_ready(root, python, deadline, *, reject_mismatch=False):
             and answer.get('python', python) == python)
 
 
+_SERVICE_STARTER = None
+
+
+def bind_service_starter(starter):
+    """Name the resident host's start operation for this process.
+
+    Learning cannot import the resident domain; the process entry that runs
+    learning work binds it so an unstarted host is started as before.
+    """
+    global _SERVICE_STARTER
+    _SERVICE_STARTER = starter
+
+
 def _ensure(root, python, deadline, *, spawn=None, ensure_service=None):
     """Reach the current bundle's service under ``python``; never steal a lease.
 
@@ -451,11 +464,12 @@ def _ensure(root, python, deadline, *, spawn=None, ensure_service=None):
     """
     if spawn is not None:
         return _ensure_direct(root, python, deadline, spawn=spawn)
-    if ensure_service is None:
-        raise ServiceFailure('starting')
     root = resident._private_state(root)
     if _hosted_ready(root, python, deadline):
         return
+    ensure_service = ensure_service or _SERVICE_STARTER
+    if ensure_service is None:
+        raise ServiceFailure('starting')
     try:
         state = ensure_service(python=python, learning_root=root)
     except Exception as exc:

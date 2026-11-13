@@ -29,7 +29,7 @@ TARGETS = {
     'extractor-codex': ('memvane.wiki.engines.extractors.codex_adapter:main', (), False),
     'extractor-hermes': ('memvane.wiki.engines.extractors.hermes_adapter:main', (), False),
     'registry': ('memvane.app.entry_commands:registry', (), False),
-    'wiki-card-budget': ('memvane.wiki.compile.wiki_card_budget:main', (), False),
+    'wiki-card-budget': ('memvane.learning.wiki_card_budget:main', (), False),
     'wiki-compile': ('memvane.wiki.compile.wiki_compile:main', (), False),
     'wiki-compile-worker': ('memvane.wiki.compile.wiki_compile_worker:main', (), False),
     'wiki-extract': ('memvane.wiki.compile.wiki_extract:main', (), False),

@@ -84,8 +84,8 @@ def Coordinator(*args,**kwargs):
 
 
 def default_root():
-    from memvane.runtime.api import resource
-    return resource.service_root()
+    from memvane.runtime.resource_coordination import default_root as root
+    return root()
 
 
 def yield_requested(root,*,now=None):
