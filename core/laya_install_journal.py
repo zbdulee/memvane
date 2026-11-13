@@ -257,6 +257,61 @@ def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
     return {'attestationPath': str(target), 'attestationSha256': digest}
 
 
+def stage_v1_attestation(journal_path, reviewed_provider):
+    """Stage a reviewed provider under the install lock without bundle paths."""
+    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from laya_embed_runtime import RuntimeUnavailable, sealed_files_sha256
+    journal = _private_parent(journal_path)
+    require_cached_plugin_for_live_write(journal.parent)
+    if (not isinstance(reviewed_provider, dict)
+            or set(reviewed_provider) != {'vectorProfile', 'providerManifest', 'dependencyClosure'}
+            or not isinstance(reviewed_provider['providerManifest'], dict)):
+        _fail('production_attestation_invalid')
+    profile = reviewed_provider['vectorProfile']
+    _strict_vector_profile(profile)
+    manifest = dict(reviewed_provider['providerManifest'])
+    manifest.pop('providerPath', None)
+    manifest.pop('workerPath', None)
+    try:
+        runtime_sha = sealed_files_sha256(manifest.get('moduleEntryPath'))
+    except (RuntimeUnavailable, OSError) as exc:
+        raise JournalEvidenceError('production_attestation_invalid') from exc
+    if type(runtime_sha) is not str or not SHA.fullmatch(runtime_sha):
+        _fail('production_attestation_invalid')
+    record = {'schema': 'memvane-provider-attestation-v1', 'journalPath': str(journal),
+              'vectorProfile': profile, 'providerManifest': manifest,
+              'dependencyClosure': reviewed_provider['dependencyClosure'],
+              RUNTIME_FILES_FIELD: runtime_sha}
+    _v1_provider_manifest(record, profile)
+    raw = _canon(record).encode('utf-8')
+    if len(raw) > 1024 * 1024:
+        _fail('production_attestation_too_large')
+    target = journal.parent / PRODUCTION_ATTESTATION
+    if target.exists() or target.is_symlink():
+        existing, digest = _attestation(journal)
+        if existing != record:
+            _fail('production_attestation_already_owned')
+        return {'attestationPath': str(target), 'attestationSha256': digest}
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(fd, 'wb') as out:
+            out.write(raw)
+            out.flush()
+            os.fsync(out.fileno())
+        directory = os.open(target.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError as exc:
+        raise JournalEvidenceError('production_attestation_stage_incomplete') from exc
+    existing, digest = _attestation(journal)
+    if existing != record:
+        _fail('production_attestation_changed')
+    return {'attestationPath': str(target), 'attestationSha256': digest}
+
+
 def _provider_file_identity(attestation):
     """Cheap immutable-file identity after one full validated hash pass."""
     manifest = attestation['providerManifest']
@@ -1760,7 +1815,11 @@ def _worker_attestation_manifest(selected):
 def _v1_provider_manifest(record, profile):
     """Verify provider bytes and runtime identity using this plugin copy."""
     from laya_local_embed_provider import ReviewedLocalQmdProvider, _hash_file
-    if (not isinstance(record, dict) or record.get('vectorProfile') != profile
+    if (not isinstance(record, dict)
+            or set(record) != {'schema', 'journalPath', 'vectorProfile', 'providerManifest',
+                               'dependencyClosure', RUNTIME_FILES_FIELD}
+            or record.get('schema') != 'memvane-provider-attestation-v1'
+            or record.get('vectorProfile') != profile
             or not isinstance(record.get('providerManifest'), dict)
             or not isinstance(record.get('dependencyClosure'), list)
             or type(record.get(RUNTIME_FILES_FIELD)) is not str
