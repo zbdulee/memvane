@@ -308,7 +308,7 @@ def pressure(policy, state=None):
     return None if limits is not None else 'learning_prepare_memory_pressure'
 
 
-def heal(project, *, home=None, deadline=None, state=None):
+def heal(project, *, home=None, deadline=None, state=None, _lease_fd=None):
     """Make a prepared selector admit predictions again; a status row.
 
     Order: approved-scope check (nothing executes before it), anchor rebind,
@@ -329,7 +329,7 @@ def heal(project, *, home=None, deadline=None, state=None):
     argv = policy['trainerArgv']
     run = (policy if argv[1] == str(running_adapter())
            else {**policy, 'trainerArgv': [argv[0], str(running_adapter()), argv[2]]})
-    lease = _prepare_lease(home)
+    lease = _prepare_lease(home) if _lease_fd is None else _lease_fd
     try:
         reason = pressure(run, state)
         if reason is not None:
@@ -337,7 +337,8 @@ def heal(project, *, home=None, deadline=None, state=None):
         attest(state, run)
         prepare(state, run)
     finally:
-        os.close(lease)
+        if _lease_fd is None:
+            os.close(lease)
     if not admitted(state, policy['trainerArgv']):
         raise HealRefused('inference_prepare_unverified')
     return {'status': 'selector_prepared', 'rebound': rebound}

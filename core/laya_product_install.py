@@ -808,6 +808,11 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                     ledger = {**ledger, 'phase': 'selected', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)
                 proof = journal_module.verify_selected_route(decision)
+                try:
+                    from selector_maintenance import request as request_selector_maintenance
+                    request_selector_maintenance(decision, force=True)
+                except (OSError, ValueError, RuntimeError):
+                    pass  # Selection is complete; a later SessionStart can retry.
                 return {'status': 'selected', 'phase': 'selected', 'journalPath': str(path),
                         'selectionEpoch': proof['selectionEpoch'],
                         'syncWake': _request_build_wake(str(project)),

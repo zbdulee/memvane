@@ -1709,6 +1709,12 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         _trace_fields(grant=grant_kind if grant is not None else None)
         if action in ("index", "file-change-event"):
             return {}
+        if action in ('update', 'update-queued'):
+            try:
+                from selector_maintenance import request as request_selector_maintenance
+                request_selector_maintenance(decision)
+            except (OSError, ValueError, RuntimeError):
+                pass  # SessionStart remains independent of selector preparation.
         if action == "update-queued":
             _reconcile_registry(decision)
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
