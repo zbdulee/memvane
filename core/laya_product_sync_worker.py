@@ -1946,7 +1946,10 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                 # A run of cache hits ahead of the first missing target: one call.
                 files = MAX_FILES
             calls += 1
-            mark = _schema3_embedded(store, targets, recipe_id, profile_id) if window else None
+            # The targets this call can reach: the window compares their sets
+            # before and after a call stopped by its own deadline.
+            reach = targets[status['cursor']:status['cursor'] + files]
+            mark = _schema3_embedded(store, reach, recipe_id, profile_id) if window else None
             try:
                 step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
                                        embedder=embedder, write_fence=fence,
@@ -1957,7 +1960,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                     raise
                 # Content sets committed before the deadline stay (cache hits
                 # next pass); the lexical publish of this pass goes on.
-                if window and _schema3_embedded(store, targets, recipe_id, profile_id) > mark:
+                if window and _schema3_embedded(store, reach, recipe_id, profile_id) > mark:
                     # Inside the vector window, a call that added sets before its
                     # own deadline does not end the window: the next call passes
                     # those as cache hits. A call that added none ends it.
