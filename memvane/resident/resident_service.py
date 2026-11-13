@@ -629,7 +629,7 @@ def default_attest(decision, proof, mode):
     Preview: the preview proof validated the record; re-hash its runtime files.
     """
     if mode == 'selected':
-        from memvane.sync.product_sync_worker import service_worker_attestation
+        from memvane.journal.api import service_worker_attestation
         if service_worker_attestation(decision, proof) != proof['providerManifest']:
             _fail('provider_attestation_invalid')
     elif mode == 'preview':

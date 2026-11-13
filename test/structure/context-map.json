@@ -179,6 +179,21 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/journal/api.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/application/__init__.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/service_proof.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/journal/install_journal.py": {
       "context": "journal",
       "layer": "adapter",
@@ -202,6 +217,11 @@
     "memvane/journal/reader_windows.py": {
       "context": "journal",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/types.py": {
+      "context": "journal",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/journal/writer_scope.py": {

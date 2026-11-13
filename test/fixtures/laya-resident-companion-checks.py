@@ -184,18 +184,19 @@ class CompanionResidentChecks(unittest.TestCase):
     def test_07c_an_unreadable_route_or_journal_is_not_a_moved_selection(self):
         with self.executing(self.companion):
             decision, _proof, _mode = self.S.default_prove(str(self.case.project))
-            view = self.W._journal_view(decision)
+            from memvane.journal.application import service_proof
+            view = service_proof._journal_view(decision)
             self.assertIsNotNone(view)
-            self.assertFalse(self.W._selection_moved(decision, view))
-            with mock.patch.object(self.W, 'select_route', side_effect=OSError('unreadable')):
-                self.assertFalse(self.W._selection_moved(decision, view))
+            self.assertFalse(service_proof._selection_moved(decision, view))
+            with mock.patch.object(service_proof, 'select_route', side_effect=OSError('unreadable')):
+                self.assertFalse(service_proof._selection_moved(decision, view))
             with mock.patch.object(J, 'inspect_journal',
                                    side_effect=J.JournalEvidenceError('journal_unavailable')):
-                self.assertFalse(self.W._selection_moved(decision, view))
+                self.assertFalse(service_proof._selection_moved(decision, view))
             # An epoch alone is not a move; another route root is.
             self.bump_epoch()
-            self.assertFalse(self.W._selection_moved(decision, view))
-            self.assertTrue(self.W._selection_moved({**decision, 'pluginRoot': '/elsewhere'}, view))
+            self.assertFalse(service_proof._selection_moved(decision, view))
+            self.assertTrue(service_proof._selection_moved({**decision, 'pluginRoot': '/elsewhere'}, view))
 
     def test_08_windows_are_taken_again_after_the_runtime_hash(self):
         # The re-proof after the hash takes the windows again: a lock taken
