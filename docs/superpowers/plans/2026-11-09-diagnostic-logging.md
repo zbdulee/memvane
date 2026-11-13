@@ -65,7 +65,7 @@
 - [ ] RED: sync/compile 자식 비정상 종료에서 기존 tail 4096 bytes의 범위를 명시하고 전체 traceback이라고 주장하지 않는다. exception이 없는 vector/selector fallback은 origin stack, `target_preparing`은 warning, 정상 `no_candidates`·migration gate 대기는 오류가 아니다.
 - [ ] RED: verify·bundle·Hermes 경계에서 실패 예외와 진단 기록 실패를 주입해 원래 처리 결과가 같고 각 예외 체인이 보존됨을 단정한다. resident·shadow의 이미 삼킨 예외는 없음으로 표시한다.
 - [ ] 기존 host/adapter/worker REG를 base에서 기록하고 지정 경계에 최소 연결한다. protected 파일·resident·shadow 구현은 바꾸지 않는다.
-- [ ] `npm run test:focused -- test/event-log.test.mjs test/laya-host-response.test.mjs test/laya-bundle-auto-upgrade.test.mjs test/hermes-plugin-adapter.test.mjs test/diagnostic-trace.test.mjs`를 실제 파일 존재 여부를 확인한 뒤 양 Python에서 실행하고 commit한다.
+- [ ] `npm run test:focused -- test/event-log.test.mjs test/laya-host-response.test.mjs test/hermes-plugin-adapter.test.mjs test/diagnostic-trace.test.mjs`를 실제 파일 존재 여부를 확인한 뒤 양 Python에서 실행하고 commit한다.
 
 ## Task 4: 소유자 registry
 

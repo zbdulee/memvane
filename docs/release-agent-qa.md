@@ -708,27 +708,7 @@ memvane-db owns search and indexing in this release. Part B therefore runs on
 a fixture whose route was selected through setup onboarding (LI-MIG in the
 same fixture).
 
-How the selected engine enforces the invariant:
-
-- One runtime dispatcher per OS UID runs `laya-sync` wakes
-  (`core/runtime_work.py` `drain`, `runtime-worker.lock`). A wake re-put while
-  a sync runs bumps its revision and survives the revision-scoped ACK. A held
-  old attempt therefore **delays** the newer revision. The newer revision
-  cannot publish first; a second selected writer would be deferred
-  (`owner_busy`) by the queue owner lock (`core/laya_index_sync.py`
-  `_owner_lock`).
-- When the old attempt resumes, `sync_full` rescans the source. A vector
-  batch for another manifest is refused before any queue/index write
-  (`vector_batch_stale`).
-- A retained old claim is replanned against the current source.
-  `publish` checks the sealed manifest, base head and revocation epoch in one
-  transaction (`index_stale`/`stale`).
-- Every recall rescans the source against the pinned seal, so a stale head
-  fails closed rather than being injected.
-- The source test is in `test/fixtures/laya-index-sync-checks.py`
-  (`test_late_feature_attempt_after_switch_back_never_publishes`,
-  `test_dead_feature_worker_claim_and_generation_cannot_follow_newer_publish`).
-  It is L0 only.
+The sync owner serializes selected writers. Publication rechecks the view capture and head before committing, and recall pins the selected view.
 
 QA-only barrier (`core/laya_product_sync_worker.py`):
 
@@ -1073,8 +1053,8 @@ Scenarios respect domain ownership. Two rules apply:
 
 | Changed paths | Rerun in addition to core smoke |
 |---|---|
-| `core/laya_host_response.py`, `core/laya_incremental_docs_query.py`, `core/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
-| `core/laya_index_sync.py`, `core/laya_product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
+| `core/laya_host_response.py`, `core/laya_view_reader.py`, `core/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
+| `core/sync_owner_lock.py`, `core/laya_product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
 | `core/wiki_*`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `core/context_learning/**` | RES-01, RES-02 |
 | `core/setup_entry.py`, `core/laya_product_install.py`, `core/laya_embed_runtime.py`, `core/legacy_cleanup.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
