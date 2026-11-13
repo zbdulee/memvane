@@ -42,3 +42,29 @@ class Dropped:
 
 class PreSendDeferred(ResourceDeferred):
     """A provider launch was deferred before a child was sent."""
+
+
+RETRY = {'busy', 'deferred_resource', 'deferred_quota', 'staged_evaluation_deferred', 'apply_deferred',
+         'setup_required', 'setup_in_progress'}
+
+DISPATCH_REASONS = frozenset((
+    'kind_invalid', 'target_invalid', 'target_unavailable',
+    'target_journal_changed', 'target_identity_invalid',
+    'target_entry_unavailable', 'target_entry_invalid',
+    'target_launch_failed', 'target_child_failed', 'target_result_invalid',
+    'target_deferred', 'target_preparing', 'writer_floor', 'state_format_mismatch'))
+
+
+class DispatchFailure(ValueError):
+    """A bounded, non-sensitive Laya wake failure for the durable ACK ledger."""
+
+    def __init__(self, code, *, detail=None):
+        if code not in DISPATCH_REASONS:
+            raise ValueError('invalid_dispatch_reason')
+        if detail is not None and not isinstance(detail, str):
+            raise ValueError('invalid_dispatch_detail')
+        self.code = code
+        # Bounded local diagnostics (child stderr tail); never in the ledger
+        # reason, which stays a fixed non-sensitive shape.
+        self.detail = detail
+        super().__init__(code)

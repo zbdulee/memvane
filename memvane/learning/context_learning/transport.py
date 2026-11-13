@@ -74,7 +74,7 @@ def _run_teacher_admitted(sample, *, enabled=False, host=None, timeout=DEFAULT_T
     Codex retains builtin context; its exec stream is not an empty-catalog proof.
     Caller must not log the returned labels when they contain private excerpts.
     """
-    from memvane.runtime.api import PreSendDeferred
+    from memvane.runtime.types import PreSendDeferred
     report = {'status': 'disabled', 'cli_invocations': 0,
               'resolved_model': 'unreported', 'resolved_effort': 'unreported'}
     if enabled is not True:

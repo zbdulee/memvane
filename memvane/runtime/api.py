@@ -31,9 +31,6 @@ def validate_sync_owner(*args, **kwargs):
     from memvane.runtime.sync_owner_lock import validate_sync_owner as implementation
     return implementation(*args, **kwargs)
 
-from memvane.runtime.types import PreSendDeferred
-
-
 def qa_budget_initialize(*args, **kwargs):
     from memvane.runtime.qa_model_budget import initialize
     return initialize(*args, **kwargs)
@@ -156,4 +153,9 @@ def in_platform_temp(*args, **kwargs):
 
 def platform_temp_roots(*args, **kwargs):
     from memvane.runtime.runtime_lease import platform_temp_roots as implementation
+    return implementation(*args, **kwargs)
+
+
+def wake_key(*args, **kwargs):
+    from memvane.runtime.runtime_wake_policy import wake_key as implementation
     return implementation(*args, **kwargs)

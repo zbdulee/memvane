@@ -2056,10 +2056,10 @@ def _check_owned_lease(root, fd):
 
 def _settle_owned(root, name, state, result, project, *, handoff=False):
     """Record one child outcome under the lease; retries keep a durable wake."""
-    from memvane.runtime import runtime_wake_policy
+    from memvane.runtime.types import RETRY
     status = result.get("status") if isinstance(result, dict) else None
     status = status[:80] if isinstance(status, str) and status else "failed"
-    retry = status in runtime_wake_policy.RETRY
+    retry = status in RETRY
     # Only a retryable result hands off; a finished cycle settles normally.
     handoff = handoff and retry
     if retry and not handoff:

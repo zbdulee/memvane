@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 
-from memvane.runtime.runtime_wake_policy import DispatchFailure
+from memvane.runtime.types import DispatchFailure
 
 
 KINDS = frozenset(('laya-sync', 'laya-compile'))

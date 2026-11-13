@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import PurePath
-from memvane.runtime.types import DROP_REASONS, Dropped, TargetMissing
+from memvane.runtime.types import (DROP_REASONS, Dropped, TargetMissing,
+                                   RETRY, DISPATCH_REASONS, DispatchFailure)
 
 # Lower value runs first. learning and auto share a class on purpose: both are
 # best-effort background work that must never starve index/update/cleanup.
@@ -19,8 +20,6 @@ KINDS = {'index': 0, 'update': 1, 'cleanup': 2, 'laya-sync': 2,
          'laya-compile': 2,
          'learning': 3, 'auto': 3}
 # Handler statuses meaning "not done yet, keep the wake and back off".
-RETRY = {'busy', 'deferred_resource', 'deferred_quota', 'staged_evaluation_deferred', 'apply_deferred',
-         'setup_required', 'setup_in_progress'}
 MAX_WAKES = 256
 # Capacity-deferred wakes kept for promotion when a slot frees; coalesced by
 # wake_key like the queue itself. Only beyond this is a wake dropped.
@@ -46,12 +45,6 @@ MISSING_DROP_MIN_OBSERVATIONS = 3
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
 CLEANUP_DEFERRED_REASON = 'resource_deferred'
-DISPATCH_REASONS = frozenset((
-    'kind_invalid', 'target_invalid', 'target_unavailable',
-    'target_journal_changed', 'target_identity_invalid',
-    'target_entry_unavailable', 'target_entry_invalid',
-    'target_launch_failed', 'target_child_failed', 'target_result_invalid',
-    'target_deferred', 'target_preparing', 'writer_floor', 'state_format_mismatch'))
 # A target that has just started (or is still loading) its detached owner is
 # waiting on that owner, not failing. Its wake returns after a fixed delay and
 # does not grow the failure backoff. The query path starts the owner itself,
@@ -62,21 +55,6 @@ PREPARING_RETRY_SECS = 15
 # refuses to adopt the install. The wake keeps waiting without counting, but at the capped backoff,
 # and the streak is reported once (``runtime_work`` keeps its first sighting).
 PREPARING_STALL_SECS = 300
-
-
-class DispatchFailure(ValueError):
-    """A bounded, non-sensitive Laya wake failure for the durable ACK ledger."""
-
-    def __init__(self, code, *, detail=None):
-        if code not in DISPATCH_REASONS:
-            raise ValueError('invalid_dispatch_reason')
-        if detail is not None and not isinstance(detail, str):
-            raise ValueError('invalid_dispatch_detail')
-        self.code = code
-        # Bounded local diagnostics (child stderr tail); never in the ledger
-        # reason, which stays a fixed non-sensitive shape.
-        self.detail = detail
-        super().__init__(code)
 
 
 def validate_wake(kind, target):
