@@ -4,7 +4,6 @@ from __future__ import annotations
 from contextlib import closing, contextmanager, ExitStack
 from contextvars import ContextVar
 from dataclasses import dataclass
-import fcntl
 import hashlib
 import json
 import os
@@ -19,7 +18,6 @@ from memvane.journal import install_journal as journal
 from memvane.kernel.persistent_identity import persistent_node_equal
 
 _JOURNAL = 'journal.sqlite'
-_MAX_IMAGE = 16 * 1024 * 1024
 _issued = weakref.WeakKeyDictionary()
 _read_only = weakref.WeakSet()
 _v1_readers = weakref.WeakSet()
@@ -390,26 +388,6 @@ def _lock_dir(install_id, *, create):
     return journal_directory('reader-locks', install_id, create=create)
 
 
-@contextmanager
-def _transition(install_id, *, create=False):
-    path = _lock_dir(install_id, create=create) / 'journal-transition.lock'
-    fd = os.open(path, os.O_RDWR | os.O_NONBLOCK | os.O_NOFOLLOW | (os.O_CREAT if create else 0), 0o600)
-    try:
-        st = os.fstat(fd)
-        _need(stat.S_ISREG(st.st_mode) and st.st_uid == os.getuid() and st.st_nlink == 1
-              and stat.S_IMODE(st.st_mode) == 0o600, 'reader_lock_unsafe')
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ValueError('reader_transition_busy') from exc
-        _need(os.path.samestat(st, path.lstat()), 'reader_lock_changed')
-        if create:
-            _sync(path.parent, True)
-        yield fd
-    finally:
-        os.close(fd)
-
-
 def _stored_endpoint(db, endpoint_id):
     _need(type(endpoint_id) is str and journal.SHA.fullmatch(endpoint_id), 'reader_endpoint_invalid')
     row = db.execute('SELECT record,attestation FROM read_endpoints WHERE endpoint_id=?',
@@ -596,81 +574,3 @@ def settings_resettle_pending(state, project, executing_root) -> bool:
         return False
 
 
-def _discard_staging(lockfd, path):
-    """Only unlink a previous writer's private staging inode under this same lock."""
-    note = os.pread(lockfd, 4097, 0)
-    if not note:
-        return
-    _need(len(note) <= 4096, 'reader_image_unsafe')
-    saved = json.loads(note)
-    _need(isinstance(saved, list) and len(saved) == 3 and saved[0] == str(path),
-          'reader_image_unsafe')
-    if os.path.lexists(path):
-        _need(_file(path, path.parent) == saved[1:], 'reader_image_changed')
-        for suffix in ('-journal', '-wal', '-shm'):
-            side = Path(str(path) + suffix)
-            if os.path.lexists(side):
-                _need(suffix == '-journal', 'reader_image_unsafe')
-                _file(side, path.parent)
-                side.unlink()
-        path.unlink()
-    _sync(path.parent, True)
-    os.ftruncate(lockfd, 0)
-    os.fsync(lockfd)
-
-
-def mutate_image(journal_path, operation, *, before_replace=None):
-    """Mutate an owned sibling; the named v5 journal is never opened for write."""
-    _need(before_replace is None or callable(before_replace), 'reader_publication_check_invalid')
-    path = _journal(journal_path)
-    with _readonly(path, path.parent) as before:
-        _, record = _selection(before)
-    with _transition(record['install_id']) as lockfd:
-        image = path.with_name('.reader-next.sqlite')
-        _discard_staging(lockfd, image)
-        for suffix in ('', '-journal', '-wal', '-shm'):
-            _need(not os.path.lexists(str(image) + suffix), 'reader_image_unsafe')
-        current_node = _file(path, path.parent)
-        _need(path.stat().st_size <= _MAX_IMAGE, 'reader_image_too_large')
-        fd = os.open(image, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try:
-            info = os.fstat(fd)
-            note = _raw([str(image), info.st_dev, info.st_ino])
-            _need(os.pwrite(lockfd, note, 0) == len(note), 'reader_image_unowned')
-            os.fsync(lockfd)
-        finally:
-            os.close(fd)
-        try:
-            with closing(sqlite3.connect(image.as_uri() + '?mode=rw', uri=True,
-                                         isolation_level=None, timeout=2)) as db:
-                with _readonly(path, path.parent) as source:
-                    _, current = _selection(source)
-                    _need(current['install_id'] == record['install_id'], 'reader_install_changed')
-                    source.backup(db)
-                journal._step('v5-image-copied')
-                db.execute('PRAGMA synchronous=FULL')
-                db.execute('BEGIN IMMEDIATE')
-                try:
-                    changed = operation(db)
-                    if not changed:
-                        db.rollback()
-                        return
-                    _selection(db)
-                    db.commit()
-                except BaseException:
-                    db.rollback()
-                    raise
-                journal._step('v5-image-committed')
-            _need(image.stat().st_size <= _MAX_IMAGE and
-                  _file(image, path.parent) == [info.st_dev, info.st_ino], 'reader_image_changed')
-            _sync(image)
-            journal._step('v5-image-fsynced')
-            if before_replace is not None:
-                before_replace()
-            _need(_file(path, path.parent) == current_node, 'reader_journal_changed')
-            os.replace(image, path)
-            journal._step('v5-image-replaced')
-            _sync(path.parent, True)
-            journal._step('v5-directory-fsynced')
-        finally:
-            _discard_staging(lockfd, image)
