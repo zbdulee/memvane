@@ -441,7 +441,8 @@ def drain(decision, *, recheck, owner=None):
                     now_blob, revision = readable_revision(path)
                     if now_blob == row['blob']:
                         record['contentRevision'] = revision
-                        queue = enqueue._safe_queue_path(str(project))
+                        from memvane.wiki.workspace.api import safe_queue_path
+                        queue = safe_queue_path(str(project))
                         if queue is None:
                             raise ValueError('external_edit_compile_queue_unsafe')
                         checked()

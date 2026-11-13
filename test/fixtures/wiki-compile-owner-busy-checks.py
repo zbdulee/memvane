@@ -87,7 +87,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
         child = subprocess.CompletedProcess([], 0, json.dumps({'state': 'deferred', 'reason': 'owner_busy'}), '')
         with mock.patch.object(wiki_selected_laya, 'selected', return_value=bound), \
              mock.patch.object(wiki_selected_laya, 'recheck'), \
-             mock.patch('wiki_compile_enqueue._safe_queue_path', return_value=project / 'queue'), \
+             mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
              mock.patch('wiki_lifecycle_request.claim', return_value=None), \
              mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
             result = wiki_selected_laya.run(project)
@@ -105,7 +105,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
             with self.subTest(reason=reason), \
                  mock.patch.object(wiki_selected_laya, 'selected', return_value=bound), \
                  mock.patch.object(wiki_selected_laya, 'recheck'), \
-                 mock.patch('wiki_compile_enqueue._safe_queue_path', return_value=project / 'queue'), \
+                 mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
                  mock.patch('wiki_lifecycle_request.claim', return_value=None), \
                  mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
                 self.assertEqual(wiki_selected_laya.run(project),
@@ -176,7 +176,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
             with self.subTest(stderr=stderr), \
                  mock.patch.object(wiki_selected_laya, 'selected', return_value=bound), \
                  mock.patch.object(wiki_selected_laya, 'recheck'), \
-                 mock.patch('wiki_compile_enqueue._safe_queue_path', return_value=project / 'queue'), \
+                 mock.patch('memvane.wiki.compile.wiki_compile_worker._safe_queue_path', return_value=project / 'queue'), \
                  mock.patch('wiki_lifecycle_request.claim', return_value=None), \
                  mock.patch.object(wiki_selected_laya.subprocess, 'run', return_value=child):
                 result = wiki_selected_laya.run(project)

@@ -14,6 +14,7 @@ import stat
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
@@ -210,44 +211,8 @@ def _engine(payload):
     return value if value in ('claude', 'codex', 'hermes', 'gemini') else qmd_config.UNKNOWN_ENGINE
 
 
-def _safe_queue_path(project_root, configured_path=None):
-    """`<활성 폴더>/compile/<name>` 아래 큐 파일. 밖을 가리키면 None.
-
-    `.memvane/compile/...`·`.auto-context/compile/...` 어느 쪽으로 받아도 프로젝트의
-    활성 폴더(`project_dir.active_name`)로 옮겨 연다 — 쓰는 폴더는 하나뿐이다.
-
-    `configured_path`는 이제 **설정이 아니라 상수 이름**이다(`compile_paths.rel(...)`) —
-    호출부가 verify 큐/ source 큐를 구분해 넘긴다. 검증은 그대로 유지한다: 파일 자체가
-    compile 디렉터리 밖을 가리키는 symlink일 수 있다.
-    """
-    if not isinstance(configured_path, str) or not configured_path:
-        configured_path = cp.rel(cp.SOURCE_QUEUE)
-    rel = Path(configured_path)
-    if rel.is_absolute() or ".." in rel.parts:
-        return None
-    if (len(rel.parts) < 3 or not project_dir.is_folder_name(rel.parts[0])
-            or rel.parts[1] != "compile"):
-        return None
-    root = Path(project_root).resolve()
-    target = root / rel
-    current = root
-    for part in rel.parts[:-1]:
-        current = current / part
-        if current.exists() and current.is_symlink():
-            return None
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        resolved_parent = target.parent.resolve()
-        resolved_parent.relative_to(root)
-    except (OSError, ValueError):
-        return None
-    if target.exists() and target.is_symlink():
-        return None
-    return target
 
 
-def _queue_lock_path(path):
-    return path.with_name(f"{path.name}.lock")
 
 
 def _write_jsonl(path, records):

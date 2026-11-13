@@ -1259,7 +1259,17 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/workspace/api.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/workspace/compile_paths.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/queue_paths.py": {
       "context": "wiki/workspace",
       "layer": "adapter",
       "pinned": false
@@ -1267,6 +1277,11 @@
     "memvane/wiki/workspace/scan_state.py": {
       "context": "wiki/workspace",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/types.py": {
+      "context": "wiki/workspace",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/wiki/workspace/wiki_activity_log.py": {

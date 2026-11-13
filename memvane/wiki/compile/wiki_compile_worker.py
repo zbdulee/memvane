@@ -32,7 +32,8 @@ from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import source_text
 from memvane.settings.collection_match import select_collections
 from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as append_source_jobs
-from memvane.wiki.intake.wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
+from memvane.wiki.intake.wiki_compile_enqueue import _source_record
+from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_card_budget
 from memvane.wiki.card import wiki_freshness
@@ -1157,7 +1158,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             if not records:
                 return False, True, []
             wait = {**job, 'sharedEnqueued': True, 'ts': enqueue._utc_now()}
-            queue = enqueue._safe_queue_path(str(root), cp.rel(cp.SOURCE_QUEUE))
+            queue = _safe_queue_path(str(root), cp.rel(cp.SOURCE_QUEUE))
             if queue is None:
                 return False, True, []
             # A crash after the append but before acknowledging this claimed
