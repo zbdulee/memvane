@@ -79,7 +79,7 @@ def run(project, *, force=False):
     """Serialize selector repair and monotonic version publication off-hook."""
     from contextlib import closing
     from memvane.learning.context_learning import selector_heal
-    from memvane.route.index_host_route import select_route
+    from memvane.route.api import select_route
     from memvane.journal.install_journal import (_open, _inspect_v1_row, inspect_journal,
                                       verify_selected_route_for_write)
     from memvane.kernel.memvane_version import plugin_version, version_key

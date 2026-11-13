@@ -23,7 +23,7 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.learning.context_learning.resource_coordination import Coordinator
 from memvane.learning.context_learning.shared import resource_report
 from memvane.kernel.errors import IndexContractError
-from memvane.route.index_host_route import select_route
+from memvane.route.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.sync.source_scan import _collection_roots
 from memvane.sync.sync_owner_lock import sync_owner

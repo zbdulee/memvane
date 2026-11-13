@@ -119,7 +119,7 @@ def ownership_proof(project_raw):
     if (journal.get('state') != 'candidate_ready' or journal.get('selected') is not None
             or pending.get('installId') != identity.get('installId')):
         _refuse('journal_not_pending_candidate')
-    from memvane.route.index_host_route import select_route
+    from memvane.route.api import select_route
     decision = select_route(str(project), action='update')
     if (decision.get('state'), decision.get('reason')) != ('legacy', 'no_route_record'):
         _refuse('project_route_not_original_qmd')

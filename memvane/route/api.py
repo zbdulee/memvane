@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 
+def select_route(*args, **kwargs):
+    from memvane.route.index_host_route import select_route as implementation
+    return implementation(*args, **kwargs)
+
 
 def settings_identity_digest(*args, **kwargs):
     from memvane.route.index_host_route import settings_identity_digest as implementation
