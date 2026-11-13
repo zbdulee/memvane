@@ -100,7 +100,7 @@ class DiscoveryBusy(Exception):
 
 def _binding(decision):
     scope, incarnation = decision.get('scopeId'), decision.get('storeIncarnation')
-    queue, project = decision.get('queuePath'), decision.get('projectRoot')
+    queue, project = decision.get('storePath'), decision.get('projectRoot')
     collections, roots = decision.get('collections'), decision.get('collectionRoots')
     if (not isinstance(scope, str) or not _HEX32.fullmatch(scope)
             or not isinstance(incarnation, str) or not _HEX32.fullmatch(incarnation)

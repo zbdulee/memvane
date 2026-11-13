@@ -1274,37 +1274,116 @@ def _require_fresh_bound_generation(row, state):
 
 
 def activate_origin_selection(project_root, journal_path, route_bytes):
-    """Explicitly activate a prepared selection, then wake the selected sync.
-
-    The caller holds the install lock. The bound generation must be the one
-    sealed after the freshness request (``_require_fresh_bound_generation``);
-    ``laya_fresh_wiki_origin.activate`` then publishes the route. Once active,
-    one ``laya-sync`` wake is queued so the selected worker catches up any
-    source edit made after the sealed snapshot; its outcome is reported,
-    never retried here.
-    """
-    import laya_fresh_wiki_origin as fresh
+    """Publish or recover the proved v1 selection under the install lock."""
+    import laya_initial_build as build
+    import laya_install_journal as journal_module
+    import laya_journal_reader as reader
+    import laya_product_sync_worker as sync
+    import laya_wiki_discovery as discovery
+    import project_dir
+    import wiki_mutation_lock
+    from contextlib import closing
+    from laya_index_host_route import _classify_v4, SELECTION_SCHEMA_V1
+    from laya_ledger_common import _read_json, _write
+    from laya_reader_lease import reader_lifetime
+    from sync_owner_lock import sync_owner
     project = _checked_project(project_root)
     journal = Path(journal_path)
-    if not (journal.parent / fresh.LEDGER).exists():
-        _fail('cutover_ledger_missing')
-    row = fresh._load(journal.parent / fresh.LEDGER)
-    _require_fresh_bound_generation(row, journal.parent)
-    row = fresh.activate(project, journal, route_bytes)
-    return {**row, 'syncWake': _request_build_wake(str(project))}
+    state = _private_parent(journal.parent)
+    if journal != state / 'journal.sqlite':
+        _fail('initial_build_journal_changed')
+    route, digest = journal_module._route(route_bytes, journal)
+    with build.owner(state) as owned:
+        if not owned:
+            _fail('initial_build_busy')
+        record = build.read_v1(state)
+        if record is None or record['phase'] != 'ready':
+            _fail('initial_build_not_ready')
+        identity = record['identity']
+        if (identity['projectRoot'] != str(project) or identity['journalPath'] != str(journal)
+                or identity['routeSha256'] != digest
+                or _read_private(state / 'route.json', 8192) != route_bytes):
+            _fail('initial_build_route_changed')
+        with sync_owner(Path(identity['storePath']), wait=False) as owner:
+            if owner is None:
+                _fail('owner_busy')
+            with wiki_mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=False):
+                row = journal_module.inspect_journal(journal)
+                ledger_path = state / 'ledger.json'
+                ledger = _read_json(ledger_path)
+                if (not isinstance(ledger, dict) or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
+                        or ledger['schema'] != 'memvane-install-ledger-v1'
+                        or ledger['identity'] != identity
+                        or type(ledger['epoch']) is not int or ledger['epoch'] < 1
+                        or ledger['phase'] not in ('prepared', 'selected')
+                        or row['state'] not in ('prepared', 'selected')
+                        or (ledger['phase'] == 'selected' and row['state'] != 'selected')
+                        or row['reader'] is None or row['routeSha256'] != digest
+                        or row['attestationSha256'] != identity['attestationSha256']
+                        or row['projectInode'] != project.stat().st_ino
+                        or row['storeInode'] != identity['storeNode'][1]
+                        or any(row[key] != identity[key] for key in
+                               ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))):
+                    _fail('initial_build_ledger_changed')
+                attestation, att_sha = journal_module._attestation(journal)
+                if att_sha != identity['attestationSha256']:
+                    _fail('worker_attestation_changed')
+                journal_module._v1_provider_manifest(attestation, row['vectorProfile'])
+                decision = _classify_v4(project, project_dir.settings_path(project), route)
+                if decision.get('state') != 'candidate':
+                    _fail('initial_build_route_changed')
+                saved = row['reader']
+                with reader._schema3_pin(saved, deadline=time.monotonic() + 45, pin_view=False) as (store, handle, head):
+                    floor = saved['head_floor']
+                    if (floor is None or head['view_id'] != floor['view_id']
+                            or head['epoch'] != floor['epoch']):
+                        _fail('initial_build_head_changed')
+                    with store._session() as db:
+                        baseline = sync._schema3_rows_baseline(store, db, handle, head)
+                    scan = {}
+                    observed = sync._schema3_sources(decision, handle, time.monotonic() + 45,
+                                                     raw_scan=scan)
+                    if 'snapshot' not in scan or not sync._schema3_head_same(
+                            store, head, baseline, observed, handle):
+                        _fail('initial_build_out_of_date')
+                    discovery.seed_source_snapshot(decision, scan['snapshot'], generation=head['gen_id'])
+                    if store.head(handle) != head:
+                        _fail('initial_build_head_changed')
+                marker = {'schema': SELECTION_SCHEMA_V1, 'projectRoot': str(project),
+                          'installId': identity['installId'], 'routeSha256': digest}
+                marker_raw = json.dumps(marker, sort_keys=True, ensure_ascii=False,
+                                        separators=(',', ':')).encode('utf-8')
+                _write_or_verify_private(project_dir.runtime_file(project, 'selection.json'), marker_raw)
+                _write_or_verify_private(project_dir.runtime_file(project, 'route.json'), route_bytes)
+                path, db = journal_module._open(journal, write=True)
+                with closing(db):
+                    db.execute('BEGIN IMMEDIATE')
+                    try:
+                        current = journal_module._inspect_v1_row(db)
+                        if current != {k: v for k, v in row.items() if k != 'journalPath'}:
+                            _fail('initial_build_journal_changed')
+                        if current['state'] == 'prepared':
+                            if db.execute("UPDATE selection SET state='selected',epoch=epoch+1 "
+                                          "WHERE id=1 AND epoch=? AND state='prepared'", (row['epoch'],)).rowcount != 1:
+                                _fail('initial_build_journal_changed')
+                        journal_module._inspect_v1_row(db)
+                        db.commit()
+                    except BaseException:
+                        db.rollback()
+                        raise
+                if ledger['phase'] == 'prepared':
+                    ledger = {**ledger, 'phase': 'selected', 'epoch': ledger['epoch'] + 1}
+                    _write(ledger_path, ledger, replace=True)
+                proof = journal_module.verify_selected_route(decision)
+                return {'status': 'selected', 'journalPath': str(path),
+                        'selectionEpoch': proof['selectionEpoch'],
+                        'syncWake': _request_build_wake(str(project)),
+                        'gitignoreEntries': ['.memvane/route.json', '.memvane/selection.json']}
 
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
-    """Settle an interrupted selection; an ``active`` result wakes the selected sync."""
-    import laya_fresh_wiki_origin as fresh
-    project = _checked_project(project_root)
-    journal = Path(journal_path)
-    if not (journal.parent / fresh.LEDGER).exists():
-        _fail('cutover_ledger_missing')
-    row = fresh.recover(project, journal, route_bytes)
-    if row['phase'] == 'active':
-        return {**row, 'syncWake': _request_build_wake(str(project))}
-    return row
+    """Finish the same prepared or partially published v1 selection."""
+    return activate_origin_selection(project_root, journal_path, route_bytes)
 
 
 def restore_origin_selection(*, project_root, state_root):
