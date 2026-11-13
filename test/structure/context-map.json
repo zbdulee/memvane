@@ -79,17 +79,17 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/app/runtime_handlers.py": {
-      "context": "app",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/app/setup_entry.py": {
       "context": "app",
       "layer": "adapter",
       "pinned": false
     },
     "memvane/app/wake_entry.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/wiring.py": {
       "context": "app",
       "layer": "adapter",
       "pinned": false

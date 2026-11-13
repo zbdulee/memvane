@@ -90,12 +90,12 @@ def auto(row):
     return handler_done(result['status'])
 
 
-HANDLERS={'index':retired,'update':retired,'cleanup':retired,
-          'laya-sync':laya_sync,'laya-compile':laya_compile,'learning':learning,'auto':auto}
+HANDLERS={'index':'retired','update':'retired','cleanup':'retired',
+          'laya-sync':'laya_sync','laya-compile':'laya_compile','learning':'learning','auto':'auto'}
 
 
 def dispatch(row):
     """Fixed handlers revalidate setup/ownership/authorization themselves."""
-    handler=HANDLERS.get(row['kind'])
+    handler=globals().get(HANDLERS.get(row['kind']))
     if handler is None:raise ValueError('invalid_runtime_handler')
     return handler(row)

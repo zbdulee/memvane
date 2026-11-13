@@ -18,7 +18,7 @@ def runtime_work_main(argv):
         from memvane.install import runtime_wake_cancel
         print(json.dumps(runtime_wake_cancel.status(argv[2]),sort_keys=True,default=str));return 0
     from memvane.runtime.api import runtime_main as main
-    from memvane.app.runtime_handlers import dispatch
+    from memvane.app.wiring import dispatch
     return main(argv, execute=dispatch)
 
 
