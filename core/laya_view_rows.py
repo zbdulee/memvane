@@ -1773,9 +1773,7 @@ class RowsMixin:
     def _pin_fts_table(self, pin, *, sidecar=False):
         """The FTS table a pinned head searches: per-generation (format 3) or the view head (format 4)."""
         record = self._pinned(pin)
-        if self._rows:
-            return fts.head_table(pin.view_id, sidecar=sidecar)
-        return fts.table(record['verified']['generation']['ordinal'], sidecar=sidecar)
+        return fts.head_table(pin.view_id, sidecar=sidecar)
 
     def _generation_rows_at(self, db, gen_id):
         row = db.execute('SELECT view_id,ordinal FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()

@@ -121,77 +121,14 @@ class FillMixin:
         A row-format store fills the current head's eligible cards; ``manifest``
         is not read there.
         """
-        if self._rows:
-            return self._rows_fill_status(handle, recipe_id, profile_id)
-        _, _, job, _, stored = self._fill_plan(handle, manifest, recipe_id, profile_id)
-        return _status(job, stored)
+        return self._rows_fill_status(handle, recipe_id, profile_id)
 
     def fill_view(self, handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence,
                   expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30):
-        if self._rows:
-            return self._rows_fill_view(handle, recipe_id, profile_id, chunker=chunker, embedder=embedder,
-                                        write_fence=write_fence, expected_cursor=expected_cursor,
-                                        max_files=max_files, max_bytes=max_bytes,
-                                        deadline_seconds=deadline_seconds)
-        self._require_write()
-        deadline = _deadline(deadline_seconds)
-        _bounded(expected_cursor, 0, fill_schema.MAX_TARGETS, 'fill_cursor_invalid')
-        _bounded(max_files, 1, MAX_FILES, 'fill_limit_invalid')
-        _bounded(max_bytes, 1, MAX_BYTES, 'fill_limit_invalid')
-        if not all(callable(fn) for fn in (chunker, embedder, write_fence)):
-            v.fail('fill_callback_invalid')
-        self._fill_idle()
-        entry, saved, job, targets, stored = self._fill_plan(handle, manifest, recipe_id, profile_id)
-        cursor = 0 if stored is None else stored
-        if expected_cursor != cursor:
-            v.fail('fill_cursor_conflict')
-        _remaining(deadline)
-        if stored is not None and cursor == job['target_count']:
-            return dict(_status(job, stored), status='complete', filled=0, cache_hits=0, deferred=False)
-        fenced = []
-
-        def fence():
-            # One latch per call covers content sets, job metadata and the cursor.
-            if not fenced:
-                self._fill_idle()
-                write_fence()
-                fenced.append(True)
-
-        filler = ContentFiller(self)
-        steps = used = filled = hits = 0
-        deferred = False
-        for target in targets[cursor:]:
-            if steps >= max_files:
-                break
-            if used + target['byte_length'] > max_bytes:
-                deferred = steps == 0  # oversized for this call: caller may enlarge explicitly
-                break
-            try:
-                result = filler.ensure_content(target['blob_sha'], recipe_id, profile_id, chunker=chunker,
-                                               embedder=embedder, write_fence=fence,
-                                               deadline_seconds=_remaining(deadline))
-            except BlobStoreError as exc:
-                if exc.reason != BUSY:
-                    raise
-                deferred = True  # competing content lease: explicit defer, no retry loop
-                break
-            if result['status'] == 'filled':
-                filled += 1
-                self._observe(entry)  # callbacks may have changed checkout or settings
-            else:
-                hits += 1
-            _remaining(deadline)
-            steps += 1
-            used += target['byte_length']
-        if steps == 0 and not (stored is None and not targets):
-            return dict(_status(job, stored), status='deferred', filled=filled, cache_hits=hits,
-                        deferred=deferred)
-        new = cursor + steps
-        self._fill_commit(entry, saved, job, targets, stored, new, fence, deadline)
-        complete = new == job['target_count']
-        return dict(job_id=job['job_id'], cursor=new, complete=complete,
-                    status='complete' if complete else 'progress', filled=filled, cache_hits=hits,
-                    deferred=deferred)
+        return self._rows_fill_view(handle, recipe_id, profile_id, chunker=chunker, embedder=embedder,
+                                    write_fence=write_fence, expected_cursor=expected_cursor,
+                                    max_files=max_files, max_bytes=max_bytes,
+                                    deadline_seconds=deadline_seconds)
 
     def _fill_commit(self, entry, saved, job, targets, stored, new, fence, deadline):
         """Separate cursor transaction after the covered content sets committed."""

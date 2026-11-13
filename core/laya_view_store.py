@@ -426,24 +426,7 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return handle
 
     def _head(self, db, handle):
-        if self._rows:
-            return self._rows_head(db, handle)
-        row = db.execute('SELECT gen_id,epoch FROM view_heads WHERE view_id=?', (handle.view_id,)).fetchone()
-        if row is None:
-            return dict(view_id=handle.view_id, gen_id=None, epoch=0, incarnation=self._incarnation)
-        # Head CAS is linear and slot ordinals grow at prepare time, so a valid
-        # head is the view's highest published ordinal. This refuses a head
-        # moved back past the view_head_update trigger. A same-UID forger who
-        # also drops later generations' published state is not detected here.
-        sealed = db.execute(
-            "SELECT g.ordinal=(SELECT max(t.ordinal) FROM generations t WHERE t.view_id=g.view_id "
-            "AND t.state='published') FROM generations g JOIN generation_seals s ON s.gen_id=g.gen_id "
-            "AND s.binding_digest=g.binding_digest WHERE g.gen_id=? AND g.view_id=? AND g.state='published'",
-            (row['gen_id'], handle.view_id)).fetchone()
-        if sealed is None or sealed[0] != 1 or type(row['epoch']) is not int or row['epoch'] < 1:
-            v.fail('view_head_invalid')
-        return dict(view_id=handle.view_id, gen_id=row['gen_id'], epoch=row['epoch'],
-                    incarnation=self._incarnation)
+        return self._rows_head(db, handle)
 
     def rollback_generation(self, handle, *, expected_head, deadline=None):
         """Row format only: reverse the head's last publication as a new generation."""
@@ -597,125 +580,8 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
 
     def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None,
                            deadline=None):
-        if self._rows:
-            return self._rows_prepare(handle, manifest, expected_head=expected_head, vector_spec=vector_spec,
-                                      deadline=deadline)
-        if deadline is not None:
-            if (type(deadline) not in (int, float) or not math.isfinite(deadline)
-                    or time.monotonic() >= deadline):
-                v.fail('fts_deadline_exceeded')
-        self._require_write()
-        entry = self._check(handle)
-        base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
-        manifest = vals.manifest(manifest, handle.policy_digest)
-        spec = vectors.spec(vector_spec)
-        saved = self._observe(entry, deadline=deadline)
-        skips = _skip_patterns(saved)
-        legacy = None
-        with self._session() as db:
-            if self._head(db, handle) != base:
-                v.fail('view_head_conflict')
-            plan = self._derive(handle, manifest, skips, deadline=deadline)
-            # Zero or complete: every eligible member's set is fully validated
-            # before any write; a hole, mixed profile or tamper refuses here.
-            coverage = self._vector_coverage(db, plan, spec, full=True, deadline=deadline)
-            rows = (vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}, deadline=deadline)
-                    if legacy is None else self._legacy_fts_rows(legacy, verified_bodies=plan['verified_bodies'], deadline=deadline))
-            side_rows = (self._legacy_fts_rows(legacy, verified_bodies=plan['verified_bodies'], sidecar=True, deadline=deadline)
-                         if legacy is not None and 'sidecar_corpus' in legacy else None)
-        files = _wiki_files(saved, plan['members']) if legacy is None else {}
-        build_id = uuid.uuid4().hex
-        v.identifier(build_id, v.UUID)
-        stage = vals.stage(build_id, self._incarnation, handle, saved, base, manifest, skips, files, spec, legacy)
-        stage_json = v.canonical(stage)
-        # Stage1: metadata-only slot plus generation-owned FTS; the FTS guard
-        # owns commit/rollback through FTS sync. No generation row exists yet.
-        self._observe(entry, deadline=deadline)
-        view_fts._deadline(deadline)
-        with self._session(write=True) as db:
-            if self._head(db, handle) != base:
-                v.fail('view_head_conflict')
-            _live(db, saved, files)
-            view = db.execute('SELECT worktree_id,branch_key FROM views WHERE view_id=?', (handle.view_id,)).fetchone()
-            if view is None:
-                _insert(db, 'views', dict(view_id=handle.view_id, worktree_id=handle.worktree_id,
-                                          branch_key=handle.branch_key))
-            elif tuple(view) != (handle.worktree_id, handle.branch_key):
-                v.fail('view_binding_conflict')
-            slot = db.execute('SELECT * FROM generation_slots WHERE build_id=?', (build_id,)).fetchone()
-            if slot is None:
-                _insert(db, 'generation_slots', dict(build_id=build_id, view_id=handle.view_id,
-                        manifest_digest=stage['manifest_digest'], stage_json=stage_json, created_ns=time.time_ns()))
-                ordinal = db.execute('SELECT ordinal FROM generation_slots WHERE build_id=?', (build_id,)).fetchone()[0]
-                with self._fts_guard.building(ordinal):
-                    view_fts.create(db, ordinal)
-                    view_fts.populate(db, ordinal, rows)
-                    if side_rows is not None:
-                        view_fts.create(db, ordinal, sidecar=True)
-                        view_fts.populate(db, ordinal, side_rows, sidecar=True)
-                    _current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
-                    view_fts._deadline(deadline)
-                    _live(db, saved, files)
-                    view_fts._deadline(deadline)
-            else:
-                if (slot['view_id'] != handle.view_id
-                        or slot['manifest_digest'] != stage['manifest_digest'] or slot['stage_json'] != stage_json):
-                    v.fail('generation_slot_invalid')
-                ordinal = slot['ordinal']
-                prior = db.execute('SELECT * FROM generations WHERE ordinal=?', (ordinal,)).fetchone()
-                if prior is not None:
-                    if (prior['state'] != 'prepared' or
-                            self._verify_generation(db, handle, entry, saved, prior,
-                                                    deadline=deadline, full_vectors=True) != stage):
-                        v.fail('generation_slot_invalid')
-                    view_fts._deadline(deadline)
-                    return prior['gen_id']
-        # Stage2: stable post-commit FTS proof and all roots before identity.
-        self._observe(entry, deadline=deadline)
-        view_fts._deadline(deadline)
-        with self._session(write=True) as db:
-            with self._fts_guard.building(ordinal):
-                view_fts.verify_index(db, ordinal)
-                if side_rows is not None:
-                    view_fts.verify_index(db, ordinal, sidecar=True)
-                if self._head(db, handle) != base:
-                    v.fail('view_head_conflict')
-                _live(db, saved, files)
-                slot = db.execute('SELECT * FROM generation_slots WHERE ordinal=?', (ordinal,)).fetchone()
-                if (slot is None or slot['build_id'] != build_id or slot['view_id'] != handle.view_id
-                        or slot['stage_json'] != stage_json
-                        or db.execute('SELECT 1 FROM generations WHERE ordinal=?', (ordinal,)).fetchone()):
-                    v.fail('generation_slot_invalid')
-                roots = self._roots(db, ordinal, plan, rows, spec, coverage, deadline=deadline, sidecar_rows=side_rows)
-                binding = vals.binding(stage, ordinal, entry['capture'], roots)
-                fields = vals.generation_fields(stage, ordinal, binding, entry['capture'])
-                gen_id, now = fields['gen_id'], time.time_ns()
-                _insert(db, 'generations', dict(fields, state='building', created_ns=now))
-                for member in plan['members']:
-                    view_fts._deadline(deadline)
-                    _insert(db, 'wiki_members', dict(member, gen_id=gen_id))
-                for source in plan['sources']:
-                    view_fts._deadline(deadline)
-                    _insert(db, 'source_members', dict(source, gen_id=gen_id))
-                for card in plan['cards']:
-                    view_fts._deadline(deadline)
-                    _insert(db, 'card_sources', dict(gen_id=gen_id, wiki_path=card['wiki_path'], ordinal=card['ordinal'],
-                            fingerprint_id=card['fingerprint_id'], spans_json=v.canonical(card['spans'])))
-                for ref in coverage:
-                    view_fts._deadline(deadline)
-                    _insert(db, 'member_vectors', dict(ref, gen_id=gen_id))
-                # The sealed root must describe the actual stored references.
-                if self._verified_vectors(db, stage, plan, gen_id, full=True, deadline=deadline) != coverage:
-                    v.fail('vector_rows_mismatch')
-                _insert(db, 'generation_seals', dict(roots, gen_id=gen_id, binding_digest=binding, sealed_ns=now))
-                if db.execute("UPDATE generations SET state='prepared' WHERE gen_id=? AND state='building'",
-                              (gen_id,)).rowcount != 1:
-                    v.fail('generation_slot_invalid')
-                _current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
-                view_fts._deadline(deadline)
-                _live(db, saved, files)
-                view_fts._deadline(deadline)
-        return gen_id
+        return self._rows_prepare(handle, manifest, expected_head=expected_head, vector_spec=vector_spec,
+                                  deadline=deadline)
 
     def _stored(self, db, gen_id):
         members = [dict(r) for r in db.execute(
@@ -765,28 +631,8 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
         return stage
 
     def publish_generation(self, handle, gen_id, *, expected_head, deadline=None):
-        if self._rows:
-            return self._rows_publish(handle, gen_id, expected_head=expected_head,
-                                      deadline=deadline)
-        if deadline is not None and (type(deadline) not in (int, float)
-                or not math.isfinite(deadline) or time.monotonic() >= deadline):
-            v.fail('fts_deadline_exceeded')
-        self._require_write()
-        entry = self._check(handle)
-        base = vals.expected_head(expected_head, handle.view_id, self._incarnation)
-        if not isinstance(gen_id, str) or not vals.GEN_ID.fullmatch(gen_id):
-            v.fail('generation_id_invalid')
-        saved = self._observe(entry, deadline=deadline)
-        with self._session() as db:
-            row = db.execute('SELECT g.view_id,s.stage_json FROM generations g '
-                             'JOIN generation_slots s ON s.ordinal=g.ordinal WHERE g.gen_id=?',
-                             (gen_id,)).fetchone()
-            if row is None or row['view_id'] != handle.view_id:
-                v.fail('generation_missing')
-            staged = vals.check_stage(v.parse_canonical(row['stage_json']), handle, self._incarnation)
-        if 'legacy' in staged:
-            v.fail('migration_publish_proof_invalid')
-        return self._publish_generation_checked(handle, gen_id, entry, base, saved, deadline=deadline)
+        return self._rows_publish(handle, gen_id, expected_head=expected_head,
+                                  deadline=deadline)
 
     def _publish_generation_checked(self, handle, gen_id, entry, base, saved, *,
                                     expected_stage=None, deadline=None, publication_cut=None):

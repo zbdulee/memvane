@@ -362,66 +362,9 @@ class VectorMixin:
 
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None):
-        if self._rows:
-            return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
-                                           max_float_work=max_float_work, deadline_seconds=deadline_seconds,
-                                           path_prefixes=path_prefixes, excluded_paths=excluded_paths)
-        deadline = time.monotonic() + options(limit, max_float_work, deadline_seconds,
-                                              path_prefixes, excluded_paths)
-        v.identifier(profile_id)
-        query = query_values(query_vector)
-        record = self._pinned(pin)
-        entry = record['entry']
-        _left(deadline)
-        self._observe(entry,deadline=deadline,timeout_reason=DEADLINE_EXCEEDED)
-        _left(deadline)
-        with self._reading(deadline) as db:
-            generation, seal, original, stage = self._read_pinned(db, pin, deadline)
-            if generation['state'] != 'published' or v.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
-                v.fail('view_pin_changed')
-            sealed = stage['vector_spec']
-            if sealed is None:
-                v.fail('vector_coverage_absent')
-            if profile_id != sealed['profile_id']:
-                v.fail('vector_profile_mismatch')
-            dimension = self._profile(profile_id)['dimension']
-            if len(query) != dimension:
-                v.fail('vector_query_invalid')
-            # View, eligibility and path filters precede work counting and scoring.
-            extra, args = _filters(path_prefixes, excluded_paths)
-            refs = [dict(r) for r in db.execute(
-                'SELECT ' + ','.join('x.' + k for k in REF_FIELDS) + ''',m.display_title
-                FROM member_vectors x JOIN wiki_members m
-                  ON m.gen_id=x.gen_id AND m.path=x.path AND m.blob_sha=x.blob_sha
-                JOIN generations g ON g.gen_id=x.gen_id
-                WHERE x.gen_id=? AND g.view_id=? AND m.eligible=1''' + extra +
-                ' ORDER BY x.path COLLATE BINARY', [pin.gen_id, pin.view_id, *args])]
-            # Conservative: every filtered path counts, even when content repeats.
-            if sum(ref['chunk_count'] for ref in refs) * dimension > max_float_work:
-                v.fail(WORK_EXCEEDED)
-            groups = {}
-            for ref in refs:
-                groups.setdefault(ref['blob_sha'], []).append(ref)
-            top = []
-            for blob, members in groups.items():
-                _left(deadline)
-                rows = self._vectors(blob, sealed['recipe_id'], profile_id)
-                if any(ref['recipe_id'] != sealed['recipe_id'] or ref['profile_id'] != profile_id
-                       or ref['chunk_count'] != len(rows) for ref in members):
-                    v.fail('vector_rows_mismatch')
-                score = _set_score(query, rows, dimension, deadline)
-                rows = None  # one complete set in memory at a time
-                for ref in members:
-                    _keep(top, score, ref, limit)
-            state = self._snapshot_state(entry['capture'], original, deadline)
-            answer = [dict(path=ref['path'], blob_sha=ref['blob_sha'], body=self._blob(ref['blob_sha']),
-                           display_title=ref['display_title'], score=-negative, view_id=pin.view_id,
-                           gen_id=pin.gen_id, evidence='commitment-only', owner_verified=False,
-                           snapshot_state=state) for negative, _, _, ref in top]
-            _left(deadline)
-        self._observe(entry,deadline=deadline,timeout_reason=DEADLINE_EXCEEDED)
-        _left(deadline)
-        return answer
+        return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
+                                       max_float_work=max_float_work, deadline_seconds=deadline_seconds,
+                                       path_prefixes=path_prefixes, excluded_paths=excluded_paths)
 
     def search_hybrid(self, pin, fts_query, query_vector, limit, *, profile_id=None,
                       max_float_work=DEFAULT_WORK, deadline_seconds=2, path_prefixes=None,

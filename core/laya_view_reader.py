@@ -165,22 +165,7 @@ class ReaderMixin:
         generation and seal rows. Any commit, including an out-of-band one,
         re-runs the full verification and refreshes the reuse.
         """
-        if self._rows:
-            return self._rows_read_pinned(db, pin, deadline)
-        record = self._pinned(pin)
-        _remaining(deadline)
-        stamp = self._commit_stamp(db)
-        cached = record.get('verified')
-        if cached is not None and cached['stamp'] == stamp:
-            generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (pin.gen_id,)).fetchone()
-            seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (pin.gen_id,)).fetchone()
-            if (generation is not None and seal is not None and dict(generation) == cached['generation']
-                    and dict(seal) == cached['seal']):
-                return dict(generation), dict(seal), cached['capture'], cached['stage']
-        record['verified'] = None
-        generation, seal, capture, stage = self._read_generation(db, pin.gen_id, record['entry']['handle'], deadline)
-        record['verified'] = dict(stamp=stamp, generation=generation, seal=seal, capture=capture, stage=stage)
-        return dict(generation), dict(seal), capture, stage
+        return self._rows_read_pinned(db, pin, deadline)
 
     def _preverify_view(self, handle, *, deadline):
         """Verify the view's head generation ahead of a pin (shadow pre-step).
@@ -192,20 +177,7 @@ class ReaderMixin:
         branch; anything else verifies again. Returns the head generation id,
         or None when the view has no head.
         """
-        if self._rows:
-            return self._rows_preverify(handle, deadline)
-        self._check(handle)
-        self._preverified = None
-        with self._reading(deadline) as db:
-            stamp = self._commit_stamp(db)
-            head = self._head(db, handle)
-            if head['gen_id'] is None:
-                return None
-            generation, seal, capture, stage = self._read_generation(db, head['gen_id'], handle, deadline)
-            self._preverified = dict(stamp=stamp, gen_id=head['gen_id'], generation=generation, seal=seal,
-                                     capture=capture, stage=stage,
-                                     view=(handle.view_id, handle.worktree_id, handle.branch_key))
-        return head['gen_id']
+        return self._rows_preverify(handle, deadline)
 
     def _generation_for_pin(self, db, gen_id, handle, deadline):
         """``_read_generation`` for ``pin_view``, reusing a matching pre-verification."""
@@ -236,39 +208,7 @@ class ReaderMixin:
         else:
             deadline=min(deadline,now+30)
         _remaining(deadline)
-        if self._rows:
-            return self._rows_pin(handle, deadline, _observed)
-        issued = self._check(handle)
-        if not _observed:
-            self._observe(issued,deadline=deadline)
-        _remaining(deadline)
-        if len(self._pins) >= MAX_PINS:
-            v.fail('view_pin_limit')
-        with self._reading(deadline) as db:
-            head = self._head(db, handle)
-            if head['gen_id'] is None:
-                v.fail('view_preparing')
-            generation, seal, capture, stage = self._generation_for_pin(db, head['gen_id'], handle, deadline)
-            if generation['state'] != 'published':
-                v.fail('view_head_invalid')
-            verified = dict(stamp=self._commit_stamp(db), generation=dict(generation), seal=dict(seal),
-                            capture=capture, stage=stage)
-            sealed = stage['vector_spec']
-            # The verified sealed spec, never the mutable shared cache; every
-            # later read checks this seal and re-verifies the generation
-            # after any commit to the store (_read_pinned).
-            vector = None if sealed is None else dict(
-                sealed, dimension=self._profile(sealed['profile_id'])['dimension'])
-        if not _observed:
-            self._observe(issued,deadline=deadline)
-        _remaining(deadline)
-        pin = ViewPin(handle.view_id, head['gen_id'], head['epoch'], self._incarnation, uuid.uuid4().hex)
-        # Retain an internal copy rather than a mutable caller-held handle object.
-        copied = self._handle_type(**{k: getattr(handle, k) for k in handle.__dataclass_fields__})
-        entry = dict(handle=copied, capture=json.loads(v.canonical(issued['capture'])), binding=issued['binding'])
-        self._pins[pin.token] = dict(pin=pin, fields=(pin.view_id, pin.gen_id, pin.epoch, pin.incarnation, pin.token),
-            entry=entry, seal=v.digest('memvane-read-pin-seal-v1', seal), vector=vector, verified=verified)
-        return pin
+        return self._rows_pin(handle, deadline, _observed)
 
     def _pinned(self, pin):
         if self._closed:
@@ -301,109 +241,9 @@ class ReaderMixin:
 
     def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
                deadline_seconds=2, _legacy_origin=None, _observed=False):
-        if self._rows:
-            return self._rows_search(pin, fts_query, limit, path_prefixes=path_prefixes,
-                                     excluded_paths=excluded_paths, deadline_seconds=deadline_seconds,
-                                     legacy_origin=_legacy_origin, observed=_observed)
-        if _legacy_origin is not None and _legacy_origin not in ('base', 'sidecar'):
-            v.fail('migration_lexical_origin_invalid')
-        if type(_observed) is not bool:
-            v.fail('fts_query_invalid')
-        deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)
-        record = self._pinned(pin)
-        _remaining(deadline)
-        entry = record['entry']
-        if not _observed:
-            self._observe(entry,deadline=deadline)
-        _remaining(deadline)
-        with self._reading(deadline) as db:
-            generation, seal, original, stage = self._read_pinned(db, pin, deadline)
-            if generation['state'] != 'published' or v.digest('memvane-read-pin-seal-v1', seal) != record['seal']:
-                v.fail('view_pin_changed')
-            paired = 'sidecar_corpus' in stage.get('legacy', {})
-            if paired and _legacy_origin is None:
-                v.fail('migration_lexical_sidecar_unproved')
-            if not paired and _legacy_origin is not None:
-                v.fail('migration_lexical_origin_invalid')
-            name = fts.table(generation['ordinal'],sidecar=_legacy_origin == 'sidecar')
-            mapping = None
-            if 'legacy' in stage:
-                origin = _legacy_origin if paired else 'base'
-                mapping = {path: full for path, full in stage['legacy']['fts_paths'].items()
-                           if not paired or stage['legacy']['fts_sources'][path] == origin}
-                args = [fts_query, v.canonical(stage['legacy']['active_fts'][origin])]
-                path_expr = f"substr({name}.path_key,instr({name}.path_key,'/')+1)"
-            else:
-                join = f'JOIN wiki_members m ON m.gen_id=? AND m.path={name}.path_key'
-                args = [pin.gen_id, fts_query, pin.view_id]
-                order_path = 'm.path'
-                path_expr = 'm.path'
-            conditions = []
-            if path_prefixes is not None:
-                if not path_prefixes:
-                    conditions.append('0')
-                else:
-                    conditions.append('('+' OR '.join(f'({path_expr}=? OR substr({path_expr},1,?)=?)'
-                                                      for _ in path_prefixes)+')')
-                    for path in path_prefixes:
-                        args.extend((path, len(path)+1, path+'/'))
-            if excluded_paths:
-                conditions.append(path_expr+' NOT IN ('+','.join('?' for _ in excluded_paths)+')')
-                args.extend(excluded_paths)
-            extra = ''.join(' AND '+clause for clause in conditions)
-            args.append(limit)
-            try:
-                if 'legacy' in stage:
-                    # Active-path filter and path mapping stay out of joins: a
-                    # json_each join is quadratic in the generation size, on
-                    # the inner filter (SQLite 3.51) or the outer mapping (3.54).
-                    ranked = db.execute(f'''SELECT {name}.path_key AS full_path,
-                        bm25({name},1.5,4.0,1.0,0.0) AS score FROM {name}
-                        WHERE {name} MATCH ? AND {name}.path_key IN (SELECT key FROM json_each(?)) {extra}
-                        ORDER BY score ASC,{name}.path_key COLLATE BINARY ASC LIMIT ?''', args).fetchall()
-                    # Only the ranked window (at most ``limit`` rows) is mapped back;
-                    # unmapped or ineligible rows drop out without refilling.
-                    relative = {}
-                    for path, full in mapping.items():
-                        relative.setdefault(full, []).append(path)
-                    window = [(path, row['score']) for row in ranked for path in sorted(
-                        relative.get(row['full_path'], ()), key=lambda p: p.encode('utf8'))]
-                    wanted = [path for path, _ in window]
-                    members = {}
-                    if wanted:
-                        members = {m['path']: m for m in db.execute(
-                            '''SELECT m.path,m.blob_sha,m.display_title FROM wiki_members m
-                            JOIN generations g ON g.gen_id=m.gen_id
-                            WHERE m.gen_id=? AND g.view_id=? AND m.eligible=1
-                            AND m.path IN (SELECT value FROM json_each(?))''',
-                            (pin.gen_id, pin.view_id, v.canonical(wanted)))}
-                    rows = [dict(path=path, blob_sha=members[path]['blob_sha'],
-                                 display_title=members[path]['display_title'], score=score)
-                            for path, score in window if path in members]
-                else:
-                    rows = db.execute(f'''SELECT m.path,m.blob_sha,m.display_title,bm25({name},1.5,4.0,1.0,0.0) AS score
-                        FROM {name} {join}
-                        JOIN generations g ON g.gen_id=m.gen_id
-                        WHERE {name} MATCH ? AND g.view_id=? AND m.eligible=1 {extra}
-                        ORDER BY score ASC,{order_path} COLLATE BINARY ASC LIMIT ?''', args).fetchall()
-            except sqlite3.Error:
-                _remaining(deadline)
-                v.fail('fts_query_invalid')
-            state = self._snapshot_state(entry['capture'], original, deadline)
-            locations = {}
-            if 'legacy' in stage and rows:
-                locations = _card_locations(db, pin.gen_id, [row['path'] for row in rows])
-            answer = [dict(path=r['path'], blob_sha=r['blob_sha'], body=self._blob(r['blob_sha']),
-                display_title=r['display_title'], score=r['score'], view_id=pin.view_id, gen_id=pin.gen_id,
-                evidence='commitment-only', owner_verified=False, snapshot_state=state) for r in rows]
-            if 'legacy' in stage:
-                for row in answer:
-                    row['source_locations'] = locations.get(row['path'], [])
-            _remaining(deadline)
-        if not _observed:
-            self._observe(entry,deadline=deadline)
-        _remaining(deadline)
-        return answer
+        return self._rows_search(pin, fts_query, limit, path_prefixes=path_prefixes,
+                                 excluded_paths=excluded_paths, deadline_seconds=deadline_seconds,
+                                 legacy_origin=_legacy_origin, observed=_observed)
 
     def card_locations(self, pin, paths, *, deadline_seconds=2):
         """Source line locators of pinned members, from stored card provenance only.
@@ -414,58 +254,7 @@ class ReaderMixin:
         in one locator format; any other kind, byte spans included, refuses
         the read. A path without spans is absent from the result.
         """
-        if self._rows:
-            return self._rows_card_locations(pin, paths, deadline_seconds)
-        if (not isinstance(paths, (list, tuple)) or len(paths) > 100
-                or any(type(path) is not str or not path for path in paths)):
-            v.fail('card_locations_invalid')
-        deadline = time.monotonic() + deadline_seconds
-        self._pinned(pin)
-        if not paths:
-            return {}
-        with self._reading(deadline) as db:
-            generation = db.execute('SELECT state,view_id FROM generations WHERE gen_id=?',
-                                    (pin.gen_id,)).fetchone()
-            if generation is None or tuple(generation) != ('published', pin.view_id):
-                v.fail('view_pin_changed')
-            return _card_locations(db, pin.gen_id, list(dict.fromkeys(paths)))
+        return self._rows_card_locations(pin, paths, deadline_seconds)
 
     def verify_views(self):
-        if self._rows:
-            v.fail('row_format_unsupported')
-        deadline = time.monotonic() + 30
-        with self._reading(deadline) as db:
-            for generation in db.execute('SELECT * FROM generations ORDER BY ordinal').fetchall():
-                self._read_generation(db, generation['gen_id'], None, deadline, full_vectors=True)
-            for row in db.execute('SELECT * FROM view_heads').fetchall():
-                generation = db.execute('SELECT state,view_id FROM generations WHERE gen_id=?', (row['gen_id'],)).fetchone()
-                if generation is None or tuple(generation) != ('published', row['view_id']) or row['epoch'] < 1:
-                    v.fail('view_head_invalid')
-            # Unsealed slots are retained staging, never a reader head.
-            orphans = db.execute('SELECT s.* FROM generation_slots s LEFT JOIN generations g ON g.ordinal=s.ordinal WHERE g.gen_id IS NULL').fetchall()
-            for slot in orphans:
-                stage = v.parse_canonical(slot['stage_json'])
-                v.exact(stage, vals.STAGE_FIELDS if 'legacy' not in stage else (*vals.STAGE_FIELDS, 'legacy'))
-                fields = stage['view']
-                v.exact(fields, vals.VIEW_FIELDS)
-                handle = self._handle_type(**fields, incarnation=self._incarnation, token='unsealed')
-                vals.check_stage(stage, handle, self._incarnation)
-                saved = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (handle.worktree_id,)).fetchone()
-                if (saved is None or slot['view_id'] != handle.view_id or slot['build_id'] != stage['build_id']
-                        or slot['manifest_digest'] != stage['manifest_digest']
-                        or stage['worktree_binding'] != saved['binding_digest']):
-                    v.fail('generation_slot_invalid')
-                _worktree_record(saved, self._repository, self._policy)
-                if stage['vector_spec'] is not None:
-                    self._recipe(stage['vector_spec']['recipe_id']); self._profile(stage['vector_spec']['profile_id'])
-                plan = self._derive(handle, stage['manifest'], stage['skip_paths'],
-                                    legacy_paths=stage.get('legacy', {}).get('paths', ()), deadline=deadline)
-                rows = (self._legacy_fts_rows(stage['legacy'], verified_bodies=plan['verified_bodies'], deadline=deadline) if 'legacy' in stage else
-                        vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}, deadline=deadline))
-                if 'sidecar_corpus' in stage.get('legacy', {}):
-                    side_rows = self._legacy_fts_rows(stage['legacy'], verified_bodies=plan['verified_bodies'],
-                                                      deadline=deadline, sidecar=True)
-                    fts.proof_pair(db, slot['ordinal'], rows, side_rows, deadline)
-                else:
-                    fts.proof(db, slot['ordinal'], rows, deadline)
-        return True
+        v.fail('row_format_unsupported')
