@@ -180,8 +180,10 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
         except Exception:
             reason = "unexpected_exception"
         try:
+            from memvane.settings.api import diagnostic_enabled
             diagnostic_id = diagnostic_trace.capture(
-                decision, event="recall.selected", reason=reason, exc=exc)
+                decision, event="recall.selected", reason=reason, exc=exc,
+                consent=diagnostic_enabled)
         except Exception:
             diagnostic_id = None
         fields = {"diagnostic_id": diagnostic_id} if diagnostic_id else {}
