@@ -1759,7 +1759,7 @@ def _reconcile_registry(decision: dict) -> None:
         return
     from memvane.kernel import hook_budget
     try:
-        from memvane.registry import memvane_registry
+        from memvane.registry import api as memvane_registry
         # Keep a second of the hook's own deadline for the rest of this response.
         seconds = min(memvane_registry.HOOK_SECONDS, hook_budget.remaining() - 1.0)
         if seconds <= 0:

@@ -55,7 +55,7 @@ def learning_shared():
 
 
 def registry():
-    from memvane.registry.memvane_registry import snapshot
+    from memvane.registry.api import snapshot
     if sys.argv[1:] != ['status']:
         print('usage: memvane_registry.py status', file=sys.stderr)
         return 2

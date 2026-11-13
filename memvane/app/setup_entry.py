@@ -206,7 +206,7 @@ def main(argv=None):
     try:
         # The selected project registry is a lookup index: it reflects a
         # finished activation or release and never changes this result.
-        from memvane.registry import memvane_registry
+        from memvane.registry import api as memvane_registry
         memvane_registry.after_setup(args.action, args.project, args.state_root, result)
     except Exception:
         pass

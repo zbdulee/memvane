@@ -689,6 +689,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/registry/api.py": {
+      "context": "registry",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/registry/log_targets.py": {
       "context": "registry",
       "layer": "adapter",
