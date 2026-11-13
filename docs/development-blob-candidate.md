@@ -164,7 +164,7 @@ hash·완전성·참조 의미를 검증한다. 내부 connection과 직접 SQL 
 **trust digest와 candidate 검증 성공은 compiler 실행 사실·원문 일치·운영 권한의 증명이 아니다.**
 candidate의 generation seal도 같은 구조적 commitment다. 운영 owner의 증명·policy·
 publication 권한은 journal endpoint record와 sync owner의 writer scope
-(`laya_writer_scope`·`laya_writer_open_plan`)가 확인한다.
+(`laya_writer_scope`)가 확인한다.
 
 ## 유한 입력
 
