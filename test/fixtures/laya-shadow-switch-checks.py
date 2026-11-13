@@ -195,6 +195,54 @@ class ShadowSwitchChecks(unittest.TestCase):
     def schema3_generation(self):
         return self.intent()['published']['generation']
 
+    def test_10_switch_proof_budget_is_thirty_seconds(self):
+        self.assertEqual(self.M._SWITCH_SECONDS, 30.0)
+
+    def test_11_rehearsal_reports_gates_without_any_persistent_write(self):
+        import sqlite3
+        with self.driver():
+            self.drive_to('shadow_verified')
+            self.loaded()
+        self.assertTrue(callable(getattr(self.M, 'switch_rehearsal', None)),
+                        'read-only switch rehearsal is not implemented')
+
+        def snapshot(root):
+            result = {}
+            for path in [root] + sorted(root.rglob('*')):
+                info = path.lstat()
+                value = path.read_bytes() if path.is_file() else None
+                result[str(path.relative_to(root))] = (info.st_ino, info.st_mtime_ns, value)
+            return result
+
+        def pins():
+            with sqlite3.connect('file:%s?mode=ro' % self.case.db, uri=True) as db:
+                return db.execute('SELECT count(*) FROM pins').fetchone()[0]
+
+        self.assertEqual(pins(), 0)
+        before = (snapshot(self.case.state), snapshot(Path(self.case.db).parent))
+        with self.driver(), mock.patch.object(self.reader, 'seal_current_reader',
+                                               side_effect=AssertionError('recovery path used')):
+            result = self.M.switch_rehearsal(self.case.project)
+        self.assertEqual((snapshot(self.case.state), snapshot(Path(self.case.db).parent)), before)
+        self.assertEqual(pins(), 0)
+        checks = result['checks']
+        for name in ('record_comparison', 'parity_receipt', 'claude_receipt',
+                     'codex_receipt', 'bundle_match'):
+            self.assertIn(name, checks)
+            self.assertIn(checks[name]['status'], ('pass', 'fail', 'unavailable'))
+        self.assertNotEqual(checks['record_comparison']['status'], 'unavailable')
+        with self.driver(), \
+             mock.patch.object(self.reader, 'records_agree', return_value=False), \
+             mock.patch.object(self.reader, 'rollback_pair', return_value=False), \
+             mock.patch.object(self.reader, 'upgraded_pair', return_value=False), \
+             mock.patch.object(self.reader, 'seal_current_reader',
+                               side_effect=AssertionError('recovery path used')):
+            mismatch = self.M.switch_rehearsal(self.case.project)
+        self.assertEqual(mismatch['checks']['record_comparison']['reason'], 'reader_install_changed')
+        self.assertEqual((snapshot(self.case.state), snapshot(Path(self.case.db).parent)), before)
+        self.assertEqual(pins(), 0)
+
+
     # ---- completion: passes alone reach switched ---------------------------
     def test_01_sync_passes_reach_switched_and_main_recall_reads_schema3(self):
         case = self.case

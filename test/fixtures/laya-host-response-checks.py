@@ -138,6 +138,37 @@ class ResponseChecks(unittest.TestCase):
         admission.start()
         self.addCleanup(admission.stop)
 
+    def test_codex_seal_is_announced_once_in_claude_session_start(self):
+        import event_log
+        import laya_install_journal
+        with tempfile.TemporaryDirectory(prefix='seal-notice-') as temp:
+            root = Path(temp).resolve()
+            state = root / 'state'
+            state.mkdir(mode=0o700)
+            decision = {**DECISION, 'pluginRoot': str(Path(response.__file__).resolve().parents[1]),
+                        'projectRoot': str(root), 'journalPath': str(state / 'install-journal.sqlite'),
+                        'collections': []}
+            self.assertTrue(event_log.emit('bundle.upgrade', outcome='companion_sealed',
+                                           state_root=state, codexSealWritten=True))
+            proof = {'productRouteAllowed': True, 'selectionEpoch': 1}
+            payload = {'hook_event_name': 'SessionStart'}
+            with patch.object(laya_install_journal, 'verify_selected_route', return_value=proof), \
+                 patch.object(response, '_request_journal_v4'), \
+                 patch.object(response, '_move_notices', return_value=None), \
+                 patch.object(response, '_request_selected_sync'), \
+                 patch.object(response, '_vector_block_notice', return_value=None):
+                codex = response.serve_selected('update-queued', 'codex', decision, payload)
+                first = response.serve_selected('update-queued', 'claude', decision, payload)
+                second = response.serve_selected('update-queued', 'claude', decision, payload)
+            def context(value):
+                return value['hookSpecificOutput']['additionalContext'].lower()
+            self.assertNotIn('codex hook', context(codex))
+            self.assertIn('codex hook', context(first))
+            self.assertNotIn('codex hook', context(second))
+            notices = [r for r in event_log.read(state) if r['event'] == 'bundle.upgrade'
+                       and r.get('codexSealWritten') is not True]
+            self.assertEqual(len(notices), 1)
+
     def assert_rejected(self, code, rows, decision=DECISION):
         with self.assertRaises(response.HostResponseError) as caught:
             response.render_context(decision, rows)

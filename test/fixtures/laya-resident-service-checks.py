@@ -169,6 +169,36 @@ def embed(manifest, text='hello', kind='query'):
 
 
 class ServiceChecks(Fixture):
+    def test_drift_reproof_yields_to_loading_full_proof(self):
+        drift = [self.project('drift-%d' % n)[0] for n in range(9)]
+        full, manifest = self.project('full')
+        for project in drift:
+            self.modes[project] = 'read_only'
+        service = self.service(start=False)
+        observed, starts = [], []
+        real_prove = service.prove
+        def prove(project):
+            observed.append(project)
+            return real_prove(project)
+        def loading(project, decision, proof, mode, value, key, seal):
+            starts.append(project)
+            worker = svc.Worker(key, str(self.base / 'synthetic-worker.sock'))
+            worker.loading = True
+            service.workers[key] = worker
+        with patch.object(service, 'registered', return_value=drift + [full]), \
+             patch.object(service, 'prove', side_effect=prove), \
+             patch.object(service, '_load', side_effect=loading), \
+             patch.object(svc.time, 'monotonic', return_value=100):
+            service.tick()
+        self.assertEqual(starts, [full])
+        self.assertEqual(len(observed), 10)
+        with patch.object(service, 'registered', return_value=drift + [full]), \
+             patch.object(service, 'prove', side_effect=prove), \
+             patch.object(service, '_load', side_effect=loading), \
+             patch.object(svc.time, 'monotonic', return_value=106):
+            service.tick()
+        self.assertEqual(sum(project in drift for project in observed), 9)
+
     def test_public_sockets_never_appear_with_a_loose_mode(self):
         # Clients refuse a socket with group/other bits; one seen between
         # bind() and chmod() would fail a request instead of waiting.
