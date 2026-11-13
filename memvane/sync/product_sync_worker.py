@@ -786,7 +786,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     from memvane.journal import writer_scope as normal
     from memvane.wiki.card import source_spans
     from memvane.wiki.card import wiki_card
-    from memvane.wiki.verify import wiki_verify_worker
+    from memvane.wiki.verify import api as wiki_verify_worker
 
     result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
     state = reader._state(Path(decision['journalPath']).parent)
@@ -833,7 +833,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
                 witness, _ = _read_compile_intent(witness_fd)
             finally:
                 os.close(witness_fd)
-            if (witness_name != 'compile-' + wiki_verify_worker._compile_intent_id(witness) + '.consumed.json'
+            if (witness_name != 'compile-' + wiki_verify_worker.compile_intent_id(witness) + '.consumed.json'
                     or not _compiled_intent_is_stored(store, handle, witness)):
                 witness = None
         except (OSError, ValueError, TypeError, KeyError, values.BlobStoreError):
@@ -847,7 +847,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
                 candidate_fd = os.open(candidate_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
                 try:
                     waiting, initial = _read_compile_intent(candidate_fd)
-                    if (candidate != 'compile-' + wiki_verify_worker._compile_intent_id(waiting) + '.json'
+                    if (candidate != 'compile-' + wiki_verify_worker.compile_intent_id(waiting) + '.json'
                             or waiting.get('viewId') != witness['viewId']
                             or waiting.get('targetPath') != witness['targetPath']
                             or waiting.get('cardSha') == witness['cardSha']
@@ -886,7 +886,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
                 if (not fingerprints or any((fp.get('worktree_id'), fp.get('branch_key')) !=
                                             (handle.worktree_id, handle.branch_key) for fp in fingerprints)):
                     continue
-                if name != 'compile-' + wiki_verify_worker._compile_intent_id(intent) + '.json':
+                if name != 'compile-' + wiki_verify_worker.compile_intent_id(intent) + '.json':
                     continue
                 target = intent['targetPath']
                 values.relative(target)

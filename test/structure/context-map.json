@@ -1254,9 +1254,19 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/verify/api.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/verify/intent_ack.py": {
       "context": "wiki/verify",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/types.py": {
+      "context": "wiki/verify",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/wiki/verify/wiki_verify_worker.py": {

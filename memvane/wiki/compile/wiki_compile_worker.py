@@ -220,7 +220,7 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
     if not vcfg.get("enabled", True):
         return None
     try:
-        from memvane.wiki.verify import wiki_verify_worker
+        from memvane.wiki.verify import api as wiki_verify_worker
         path = wiki_verify_worker.verify_skipped_path(root, vcfg)
         return wiki_verify_worker.load_verify_suppressions(path).get(rel)
     except Exception:
@@ -1537,7 +1537,7 @@ def _run_verify_pass(
     run's own cards stayed `generated` and invisible to recall.
     """
     try:
-        from memvane.wiki.verify import wiki_verify_worker
+        from memvane.wiki.verify import api as wiki_verify_worker
         wiki_verify_worker.run(root, config, compile_cfg, produced_targets=produced_targets or [])
     except Exception as exc:
         # Exception class and failing frame only; the message may name paths.
