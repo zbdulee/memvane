@@ -173,7 +173,7 @@
     "core/laya_package.py": 509,
     "core/laya_product_bundle.py": 1121,
     "core/laya_product_install.py": 1845,
-    "core/laya_product_sync_worker.py": 3402,
+    "core/laya_product_sync_worker.py": 3413,
     "core/laya_project_dir_move.py": 995,
     "core/laya_provider_reproof.py": 164,
     "core/laya_publication_revision.py": 295,
@@ -2672,8 +2672,8 @@
     "core/laya_product_sync_worker.py:_initial_build_waiting#1": 38,
     "core/laya_product_sync_worker.py:_journal_view#1": 9,
     "core/laya_product_sync_worker.py:_large_initial_document#1": 3,
-    "core/laya_product_sync_worker.py:_linked_decision#1": 16,
-    "core/laya_product_sync_worker.py:_linked_decision.rebased#1": 2,
+    "core/laya_product_sync_worker.py:_linked_decision#1": 24,
+    "core/laya_product_sync_worker.py:_linked_decision.rebased#1": 5,
     "core/laya_product_sync_worker.py:_mark_detail#1": 13,
     "core/laya_product_sync_worker.py:_mark_schema3_write#1": 12,
     "core/laya_product_sync_worker.py:_member_diagnosis#1": 30,
@@ -7933,7 +7933,7 @@
       [
         "core/laya_product_sync_worker.py",
         "core/project_dir.py",
-        2
+        3
       ],
       [
         "core/laya_product_sync_worker.py",
@@ -20085,8 +20085,8 @@
     "functions_over_150": 33,
     "largest_scc": 137,
     "largest_top_scc": 1,
-    "lazy_imports": 2148,
-    "lines": 107650,
+    "lazy_imports": 2149,
+    "lines": 107661,
     "modules": 226,
     "project_edges": 1408,
     "top_imports": 1936,
@@ -21305,7 +21305,7 @@
     },
     "size_enforce_from": "2026-11-27"
   },
-  "source_commit": "188db071",
+  "source_commit": "3a386b672d77db078f0c9982520d0fbcb89569be",
   "violations": {
     "core/config.py -> core/project_dir.py [top]": 1,
     "core/diagnostic_trace.py -> core/project_dir.py [top]": 1,
