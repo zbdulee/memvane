@@ -36,6 +36,7 @@ SCHEMA_V2 = "laya-index-route-v2"
 # the MemVane rename reads only v1/v2, so it classifies a v3 route as blocked
 # and can neither serve nor move (downgrade) an install this release owns.
 SCHEMA_V3 = "memvane-route-v3"
+SCHEMA_V4 = "memvane-route-v4"
 RECORD = "route.json"
 QMD_SELECTION_MARKER = "selection.json"
 MAX_RECORD_BYTES = 8192
@@ -47,6 +48,10 @@ FIELDS = frozenset({"schema", "status", "projectRoot", "settingsSha256",
                     "ownershipManifestSha256", "vectorProfile"})
 FIELDS_V2 = (FIELDS - {"collectionName", "sourceRoot"}) | {"collections"}
 FIELDS_V3 = FIELDS_V2
+FIELDS_V4 = frozenset({"schema", "status", "projectRoot", "settingsSha256",
+                       "stateRoot", "stateNode", "storePath", "storeNode",
+                       "storeIncarnation", "installId", "scopeId", "stateFormat",
+                       "collections", "vectorProfile"})
 COLLECTION_FIELDS = frozenset({"name", "role", "sourceRoot"})
 VECTOR_PROFILE_FIELDS = frozenset({"profileId", "modelId", "embeddingFingerprint",
                                    "dimension", "metric", "approvedProviderId",
@@ -344,6 +349,81 @@ def _candidate_paths(cwd: Path):
         yield directory, path.parent, path
 
 
+def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
+    """Classify a local single-store route without granting runtime authority."""
+    import memvane_paths
+    import sqlite3
+    from contextlib import closing
+
+    if (set(record) != FIELDS_V4 or record['status'] != 'active'
+            or type(record['installId']) is not str
+            or not INCARNATION.fullmatch(record['installId'])
+            or type(record['scopeId']) is not str
+            or not INCARNATION.fullmatch(record['scopeId'])
+            or type(record['storeIncarnation']) is not str
+            or not INCARNATION.fullmatch(record['storeIncarnation'])
+            or type(record['stateFormat']) is not int or record['stateFormat'] < 1):
+        raise ValueError('invalid_route_fields')
+    state = memvane_paths.install_root(record['installId'])
+    store = state / 'store.sqlite'
+    if record['stateRoot'] != str(state) or record['storePath'] != str(store):
+        return _decision('legacy', 'foreign_install')
+    observed = {}
+    for path, field, directory in ((state, 'stateNode', True), (store, 'storeNode', False)):
+        node = record[field]
+        if (not isinstance(node, list) or len(node) != 2
+                or any(type(n) is not int or n < 0 for n in node)):
+            raise ValueError('invalid_route_node')
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return _decision('legacy', 'foreign_install')
+        if (stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077
+                or not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode))
+                or (not directory and info.st_nlink != 1)):
+            raise ValueError('unsafe_route_store')
+        if node[1] != info.st_ino:
+            return _decision('legacy', 'foreign_install')
+        if path.resolve(strict=True) != path:
+            raise ValueError('unsafe_route_store')
+        observed[field] = (info.st_dev, info.st_ino)
+    try:
+        with closing(sqlite3.connect(store.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
+            db.execute('PRAGMA query_only=ON')
+            identity = db.execute('SELECT incarnation,scope_id FROM store_meta WHERE singleton=1').fetchone()
+    except sqlite3.Error as exc:
+        raise ValueError('route_store_unavailable') from exc
+    for path, field in ((state, 'stateNode'), (store, 'storeNode')):
+        info = path.lstat()
+        if (info.st_dev, info.st_ino) != observed[field]:
+            raise ValueError('route_store_changed')
+    if identity != (record['storeIncarnation'], record['scopeId']):
+        return _decision('legacy', 'foreign_install')
+    if record['projectRoot'] != str(root):
+        raise ValueError('route_project_mismatch')
+    settings_bytes = _read_regular(settings, MAX_SETTINGS_BYTES)
+    derived = _derived_collections(record, root, settings_bytes)
+    if (record['collections'] != derived or record['settingsSha256'] !=
+            settings_identity_digest(root, derived)):
+        raise ValueError('route_settings_changed')
+    selected_collection_roots(root, derived)
+    raw = json.loads(settings_bytes.decode('utf-8'), object_pairs_hook=_pairs)
+    folder = project_dir.active_name(root)
+    cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
+    vector_profile = _vector_profile(record['vectorProfile'])
+    return _decision('candidate', 'route_record_valid', projectRoot=str(root),
+                     stateRoot=str(state), storePath=str(store),
+                     storeIncarnation=record['storeIncarnation'],
+                     stateFormat=record['stateFormat'], scopeId=record['scopeId'],
+                     installId=record['installId'], journalPath=str(state / 'journal.sqlite'),
+                     collections=derived, vectorProfile=vector_profile,
+                     collectionRoots={item['name']: item['sourceRoot'] for item in derived},
+                     recallSettings={key: cfg[key] for key in
+                                     ('recallStrategy', 'minScore', 'rawFallbackMinScore',
+                                      'topN', 'skipPaths', 'lexicalPatterns')})
+
+
 def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
     """Apply the settings and route checks to the visible route record."""
     try:
@@ -359,6 +439,8 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
             raise ValueError("unsafe_route_settings")
         raw = _read_regular(path, MAX_RECORD_BYTES)
         record = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
+        if isinstance(record, dict) and record.get('schema') == SCHEMA_V4:
+            return _classify_v4(root, settings, record)
         if (not isinstance(record, dict) or
                 (record.get('schema'), set(record)) not in
                 ((SCHEMA, FIELDS), (SCHEMA_V2, FIELDS_V2), (SCHEMA_V3, FIELDS_V3))):
