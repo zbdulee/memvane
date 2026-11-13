@@ -219,6 +219,11 @@
       "layer": "application",
       "pinned": false
     },
+    "memvane/journal/build_record.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/journal/install_journal.py": {
       "context": "journal",
       "layer": "adapter",

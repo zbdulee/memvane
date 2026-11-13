@@ -1353,7 +1353,7 @@ def _executing_root():
 def _verify_v1_selected(decision):
     """Reprove the selected v1 journal, route, ledger and provider."""
     from memvane.settings import api as project_dir
-    from memvane.install.initial_build import read_v1
+    from memvane.journal.build_record import read_v1
     from memvane.install.ledger_common import _private_file, _read_json
     from memvane.kernel.memvane_version import same_major
     if not isinstance(decision, dict) or decision.get('state') != 'candidate':
@@ -1445,7 +1445,7 @@ def verify_notification_target(decision):
     """Prove an external-edit hint using only local metadata and the journal."""
     from memvane.settings import api as project_dir
     from memvane.route.api import select_notification_route
-    from memvane.install.initial_build import read_v1
+    from memvane.journal.build_record import read_v1
     from memvane.install.ledger_common import _private_file, _read_json
     from memvane.kernel.memvane_version import same_major, writer_floor_allows
     if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':

@@ -40,3 +40,23 @@ def verify_preview_worker_attestation(*args, **kwargs):
 def service_worker_attestation(*args, **kwargs):
     from memvane.journal.application.service_proof import service_worker_attestation as implementation
     return implementation(*args, **kwargs)
+
+
+def build_canonical(*args, **kwargs):
+    from memvane.journal.build_record import _canon as implementation
+    return implementation(*args, **kwargs)
+
+
+def build_private_dir(*args, **kwargs):
+    from memvane.journal.build_record import _private_dir as implementation
+    return implementation(*args, **kwargs)
+
+
+def read_build_json(*args, **kwargs):
+    from memvane.journal.build_record import _read_json as implementation
+    return implementation(*args, **kwargs)
+
+
+def read_v1_build(*args, **kwargs):
+    from memvane.journal.build_record import read_v1 as implementation
+    return implementation(*args, **kwargs)
