@@ -268,20 +268,9 @@ def _selected(project, *, owner_wait=False):
 def service_worker_attestation(decision, expected):
     """The per-user service's worker attestation for one selected install.
 
-    A v5 journal is re-proved before and after the runtime-file hashing, each
-    time under the queue owner and the v5 lifetime and physical windows of
-    the journal-bound plugin root; the hashing itself holds neither, as in
-    ``_owned_worker_attestation``. Other journal versions keep
-    ``verify_worker_attestation``. Returns the attested provider manifest.
-
-    A selection that moved is a deferral (``ResourceDeferred``), never bad
-    evidence. An epoch alone is not a move: a sync's first write bumps it
-    and the fresh proof is used (before the hash) or accepted (after it). A
-    move is the route or the bundle journal row, epoch aside, no longer
-    being what the last accepted step saw: a bundle upgrade to another
-    plugin root, its fence, a restore or another attestation. Each step
-    compares with the latest accepted state, so a failure (a damaged
-    runtime file) on a selection that only gained epochs stays an error.
+    Re-prove the selected installation before and after runtime-file hashing.
+    The plan uses this executing plugin's root. A changed selection defers;
+    an epoch advance by itself is not a changed selection.
     """
     import laya_install_journal as journal
     from laya_worker_journal import worker_journal_access
@@ -301,7 +290,7 @@ def service_worker_attestation(decision, expected):
     if version != 5:
         with journal.read_only_journals(), journal.legacy_identity_reads():
             return guarded(_selection_moves_defer, verify_worker_attestation, decision)
-    project, plan_root = Path(decision['projectRoot']), Path(decision['pluginRoot'])
+    project, plan_root = Path(decision['projectRoot']), _writer_executing_root()
 
     def reprove():
         with worker_journal_access(project, wait=True) as access, journal.read_only_journals():
