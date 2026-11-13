@@ -71,9 +71,12 @@ def _state_bases():
 def _prepare_state_root(path, install_id):
     """Create only a fresh per-install directory under the local state base."""
     root = Path(path)
-    if root.exists() or root.is_symlink():
-        return _private_parent(root)
     import memvane_paths
+    if root.exists() or root.is_symlink():
+        result = _private_parent(root)
+        if result.parent == memvane_paths.installs_base():
+            memvane_paths.ensure_state_layout()
+        return result
     base = memvane_paths.installs_base()
     if (not root.is_absolute() or root.parent != base or
             type(install_id) is not str or not re.fullmatch(r'[0-9a-f]{32}', install_id) or
@@ -88,6 +91,7 @@ def _prepare_state_root(path, install_id):
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
                 stat.S_IMODE(info.st_mode) & 0o022):
             _fail('unsafe_state_root_ancestor')
+    memvane_paths.ensure_state_layout()
     return _private_parent(root)
 
 

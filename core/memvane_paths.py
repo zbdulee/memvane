@@ -13,7 +13,10 @@ helper takes an optional ``home`` so tests run against a temporary HOME::
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import stat
 import sys
+import tempfile
 
 NAME = 'memvane'
 DISPLAY_NAME = 'MemVane'
@@ -52,6 +55,45 @@ def install_root(install_id, home=None):
 
 def installs_base(home=None):
     return state_base(home) / 'installs'
+
+
+def ensure_state_layout(home=None):
+    """Create or validate the private v1 format marker without replacing it."""
+    base = state_base(home)
+    info = base.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077 or base.resolve(strict=True) != base):
+        raise ValueError('state_layout_root_invalid')
+    target = base / 'layout.json'
+    expected = b'{"stateFormat":1}\n'
+    if not os.path.lexists(target):
+        fd, temporary = tempfile.mkstemp(prefix='.layout-', dir=base)
+        try:
+            with os.fdopen(fd, 'wb') as output:
+                output.write(expected)
+                output.flush()
+                os.fsync(output.fileno())
+            try:
+                os.link(temporary, target, follow_symlinks=False)
+            except FileExistsError:
+                pass
+            else:
+                directory = os.open(base, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+        finally:
+            os.unlink(temporary)
+    fd = os.open(target, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077 or info.st_nlink != 1
+                or os.read(fd, len(expected) + 1) != expected):
+            raise ValueError('state_layout_invalid')
+    finally:
+        os.close(fd)
 
 
 
