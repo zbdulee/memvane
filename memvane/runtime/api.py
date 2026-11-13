@@ -1,6 +1,11 @@
 """Public resource admission operations."""
 from __future__ import annotations
 
+
+def handler_done(*args, **kwargs):
+    from memvane.runtime.runtime_wake_policy import handler_done as implementation
+    return implementation(*args, **kwargs)
+
 from memvane.runtime.types import PreSendDeferred
 
 

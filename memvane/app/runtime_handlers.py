@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from memvane.runtime import runtime_wake_policy as wake_policy
+from memvane.runtime.types import Dropped, TargetMissing
 
 
 def retired(row):
@@ -34,9 +34,9 @@ def _missing_target(row):
         if Path(row['target']).is_dir():return None
     except (OSError, TypeError, ValueError):
         return None
-    from memvane.runtime.runtime_lease import in_platform_temp
-    if in_platform_temp(row['target']):return wake_policy.Dropped('target_missing')
-    raise wake_policy.TargetMissing()
+    from memvane.runtime.api import in_platform_temp
+    if in_platform_temp(row['target']):return Dropped('target_missing')
+    raise TargetMissing()
 
 
 def laya_sync(row):
@@ -85,8 +85,9 @@ def learning(row):
 
 def auto(row):
     from memvane.learning import context_learning_auto
+    from memvane.runtime.api import handler_done
     result=context_learning_auto.run(Path(row['target']))
-    return wake_policy.handler_done(result['status'])
+    return handler_done(result['status'])
 
 
 HANDLERS={'index':retired,'update':retired,'cleanup':retired,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import PurePath
+from memvane.runtime.types import DROP_REASONS, Dropped, TargetMissing
 
 # Lower value runs first. learning and auto share a class on purpose: both are
 # best-effort background work that must never starve index/update/cleanup.
@@ -42,7 +43,6 @@ RETRY_CAPPED_KINDS = frozenset(('laya-sync', 'laya-compile'))
 # failures; any other outcome restarts the count.
 MISSING_DROP_SECS = 86400
 MISSING_DROP_MIN_OBSERVATIONS = 3
-DROP_REASONS = frozenset(('target_missing', 'retry_cap'))
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
 CLEANUP_DEFERRED_REASON = 'resource_deferred'
@@ -77,40 +77,6 @@ class DispatchFailure(ValueError):
         # reason, which stays a fixed non-sensitive shape.
         self.detail = detail
         super().__init__(code)
-
-
-class TargetMissing(ValueError):
-    """A Laya wake's project directory does not exist (yet): back off."""
-
-    def __init__(self):
-        super().__init__('target_missing')
-
-
-class Dropped:
-    """Truthy handler answer: the wake is ACKed as void and recorded as a drop.
-
-    A handler returns it when its target no longer exists, so the row is
-    removed once instead of retrying a vanished directory forever.
-    """
-
-    __slots__ = ('reason',)
-
-    def __init__(self, reason):
-        if reason not in DROP_REASONS:
-            raise ValueError('invalid_drop_reason')
-        self.reason = reason
-
-    def __bool__(self):
-        return True
-
-    def __eq__(self, other):
-        return isinstance(other, Dropped) and other.reason == self.reason
-
-    def __hash__(self):
-        return hash(('Dropped', self.reason))
-
-    def __repr__(self):
-        return 'Dropped(%r)' % self.reason
 
 
 def validate_wake(kind, target):
