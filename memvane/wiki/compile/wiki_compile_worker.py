@@ -353,7 +353,7 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     rather than consuming every other card's summary allowance.
     """
     from memvane.wiki.card import wiki_card
-    from memvane.wiki.engines.extractors.lib import render_existing_context_section
+    from memvane.wiki.engines.api import render_existing_context_section
     cards = []
     for path, score, raw in rows[:qmd_config.DEDUP_TOP_K]:
         text = wiki_card.normalize_newlines(raw)

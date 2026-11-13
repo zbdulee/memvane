@@ -1139,6 +1139,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/engines/api.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/engines/extractors/__init__.py": {
       "context": "wiki/engines",
       "layer": "adapter",
@@ -1167,6 +1172,11 @@
     "memvane/wiki/engines/qa_model_budget.py": {
       "context": "wiki/engines",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/types.py": {
+      "context": "wiki/engines",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/wiki/intake/__init__.py": {
