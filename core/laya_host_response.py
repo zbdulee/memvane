@@ -391,7 +391,8 @@ def _log_selection(decision: dict, chosen: list, fallback: str | None = None,
     extra = {key: value for key, value in (('selection_fallback', fallback),
                                            ('vector_fallback', vector)) if value}
     trace['fields'].update(extra, cards=cards, count=len(cards))
-    trace['final'] = "selected" if cards else "no_results_after_filter"
+    from laya_host_rules import selection_final
+    trace['final'] = selection_final(cards)
 
 
 def _write_selection_log(project_root, reason: str, entries: list, **fields) -> None:
@@ -523,12 +524,9 @@ def _emit_trace(action, host, decision, payload, trace, started) -> None:
             prompt = payload.get('prompt') if isinstance(payload, dict) else None
             fields['prompt'] = event_log.prompt_fields(prompt)
             fields.setdefault('count', 0)
-            if outcome is None:
-                outcome = 'served' if fields.get('count') else 'empty'
-                reason = trace['final'] or (notes[-1] if notes else 'no_context')
-        elif outcome is None:
-            outcome = 'ok'
-            reason = trace['final']
+        from laya_host_rules import trace_result
+        outcome, reason = trace_result(action, fields.get('count'), outcome, reason,
+                                       trace['final'], notes)
         event_log.emit(action, outcome=outcome, reason=reason,
                        ms=event_log.elapsed_ms(started), decision=decision,
                        host=host, session=event_log.session_id(payload),
@@ -562,7 +560,8 @@ def _select_verified_cards(decision, settings, prompt, rows):
     if not names:
         _fail('selected_wiki_required')
     project = decision['projectRoot']
-    pool = rows[:15]
+    from laya_host_rules import selector_action, verified_pool
+    pool = verified_pool(rows)
     if not pool:
         return [], 'no_candidates', None
     try:
@@ -581,9 +580,10 @@ def _select_verified_cards(decision, settings, prompt, rows):
             except Exception:
                 result = {'reason': 'selector_unavailable', 'final_results': []}
         reason = result['reason']
-        if reason in ('selected', 'no_candidates'):
+        selection = selector_action(reason)
+        if selection == 'accept':
             return result['final_results'], reason, None
-        if reason == 'candidate_invalid':
+        if selection == 'invalid':
             _write_selection_log(project, 'laya_selector_candidate_invalid', [])
             print('[memvane] published candidates invalid; no context injected',
                   file=sys.stderr)
@@ -1748,12 +1748,13 @@ def _serve_preview(action: str, host: str, decision: dict, payload: dict) -> dic
     import config
     settings = config.load_project_config(decision['projectRoot'])
     chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
-    answer_limit = min(decision['recallSettings']['topN'], 3)
-    chosen = chosen[:answer_limit]
-    if reason not in ('selected', 'ranked') or not chosen:
-        if reason == 'selected':
+    from laya_host_rules import limit_selected, selection_action
+    chosen, answer_limit = limit_selected(chosen, decision['recallSettings']['topN'])
+    result_action = selection_action(reason, chosen)
+    if result_action != 'serve':
+        if result_action == 'selected_zero':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
-        elif reason == 'no_candidates':
+        elif result_action == 'no_candidates':
             # The reason of a recall with no candidate rows; vector fallbacks stay notes.
             _trace_final('no_candidates')
         return host_payload(host, '')
@@ -1859,7 +1860,8 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
                 endpoint = stack.enter_context(lease.resolve_endpoint(project,action='recall',host_root=root))
                 break
             except ValueError as exc:
-                if (str(exc) == 'reader_endpoint_changed' and drift_decision is not None and
+                from laya_host_rules import reader_reseal_candidate
+                if (reader_reseal_candidate(str(exc), drift_decision is not None) and
                         _settings_resettle_pending(drift_decision, project, root)):
                     # Only the project's recall settings moved (skipPaths and
                     # the like): the sync owner re-seals the schema3 reader.
@@ -3087,15 +3089,16 @@ def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top
     """
     chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
     _trace_fields(selection=reason, candidates=len(rows), generation=generation)
-    answer_limit = min(top_n, 3)
-    chosen = chosen[:answer_limit]
+    from laya_host_rules import limit_selected, selection_action
+    chosen, answer_limit = limit_selected(chosen, top_n)
     # Capture sees the verified pool and what was served: the selector's
     # choice, or the ranked rows when no prepared selector answered.
     _set_learning_capture((host, decision, payload, settings, rows[:15], chosen))
-    if reason not in ('selected', 'ranked') or not chosen:
-        if reason == 'selected':
+    result_action = selection_action(reason, chosen)
+    if result_action != 'serve':
+        if result_action == 'selected_zero':
             _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
-        elif reason == 'no_candidates':
+        elif result_action == 'no_candidates':
             # The reason of a recall with no candidate rows; vector fallbacks stay notes.
             _trace_final('no_candidates')
         return host_payload(host, '')
@@ -3145,12 +3148,6 @@ _UPGRADE_NOTICES = {
     'bundle_upgrade_stalled':
         '[memvane] bundle upgrade stopped mid-way and is being finished; '
         'no context for this prompt'}
-# Refusals a recall meets when an upgrade switches the route under it.
-_UPGRADE_TRANSITION_CODES = frozenset((
-    'selected_route_changed', 'selected_route_unavailable', 'selected_proof_changed',
-    'incremental_base_changed', 'host_route_unverified', 'host_decision_changed'))
-
-
 def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
     """The notice for a recall a bundle upgrade interrupted, or None.
 
@@ -3162,11 +3159,11 @@ def _upgrade_recall_notice(payload, fallback_cwd, code) -> str | None:
     cwd = cwd if isinstance(cwd, str) else fallback_cwd
     try:
         import laya_fresh_wiki_origin as fresh
+        from laya_host_rules import fence_reason, is_upgrade_transition
         if fresh.upgrade_fenced(cwd):
             fresh.request_recovery(cwd)
-            return _UPGRADE_NOTICES['bundle_upgrade_stalled' if fresh.upgrade_stalled(cwd)
-                                    else 'bundle_upgrade_in_progress']
-        if code in _UPGRADE_TRANSITION_CODES and fresh.upgrade_window(cwd):
+            return _UPGRADE_NOTICES[fence_reason(fresh.upgrade_stalled(cwd))]
+        if is_upgrade_transition(code) and fresh.upgrade_window(cwd):
             return _UPGRADE_NOTICES['bundle_upgrade_in_progress']
     except Exception:
         return None

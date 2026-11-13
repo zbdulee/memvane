@@ -541,6 +541,11 @@
       "layer": "application",
       "pinned": true
     },
+    "core/laya_host_rules.py": {
+      "context": "host",
+      "layer": "domain",
+      "pinned": false
+    },
     "core/laya_inactive_upgrade.py": {
       "context": "upgrade",
       "layer": "application",
