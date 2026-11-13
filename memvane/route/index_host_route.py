@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Read-only host boundary for a reviewed memvane-db route candidate.
+"""Validate route record fields, settings identity, and collection roots.
 
-Absence of the route record preserves the existing QMD path. Presence is
-sticky: malformed, stale, or unverifiable records block the hook instead of
-falling back to QMD. This module validates only the route record and settings
-binding. The product runtime must independently verify the database incarnation
-and package identity before serving or writing anything.
+The journal classifies and selects routes. The product runtime independently
+verifies the selected database and provider identity before serving or writing.
 
 The route's ``settingsSha256`` binds the resolved settings identity
 (``settings_identity_digest``: project root plus each collection's name, role
