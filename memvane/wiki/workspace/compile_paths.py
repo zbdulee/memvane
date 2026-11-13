@@ -30,36 +30,12 @@ from pathlib import Path
 
 from memvane.settings import api as project_dir
 from memvane.settings.api import compile_rel, compile_dir, ledger
-
-# 프로젝트 활성 폴더(`project_dir.active_name`) 아래 `compile/`. 상수는 새 프로젝트
-# 기준값이고, 프로젝트가 있으면 `compile_rel(root)`가 활성 폴더를 따른다
-# (아직 옮기지 않은 프로젝트는 `.auto-context/compile`).
-COMPILE_DIR = project_dir.CURRENT + "/compile"
-
-# --- 원장/큐 (JSONL) --------------------------------------------------------
-CANDIDATES = "candidates.jsonl"
-SOURCE_QUEUE = "source-queue.jsonl"
+from memvane.wiki.workspace.types import (COMPILE_DIR, CANDIDATES, SOURCE_QUEUE,
+    TOMBSTONES, MANIFEST, MERGE_NEEDED, VERIFY_QUEUE, VERIFY_LOG, VERIFY_SKIPPED,
+    VERIFY_DELETED, DEDUP_NEEDED, DEDUP_SKIPPED, DEDUP_DELETED, DISCARD_LEDGER,
+    COMPILE_COOLDOWN, LEGACY_VERIFY_COOLDOWN, VERIFY_ENGINE_COOLDOWN,
+    DEDUP_JUDGE_COOLDOWN, DEDUP_JUDGE_ENGINE_COOLDOWN, CARD_WRITE_LOCK, COMPILE_RUN_LOCK)
 from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
-TOMBSTONES = "tombstones.jsonl"
-MANIFEST = "generated-manifest.jsonl"
-MERGE_NEEDED = "merge-needed.jsonl"
-VERIFY_QUEUE = "verify-queue.jsonl"
-VERIFY_LOG = "verify-log.jsonl"
-VERIFY_SKIPPED = "verify-skipped.jsonl"
-VERIFY_DELETED = "verify-deleted.jsonl"
-DEDUP_NEEDED = "dedup-needed.jsonl"
-DEDUP_SKIPPED = "dedup-skipped.jsonl"
-DEDUP_DELETED = "dedup-deleted.jsonl"
-DISCARD_LEDGER = "discard-ledger.jsonl"
-
-# --- 커서·식힘·로그 ---------------------------------------------------------
-COMPILE_COOLDOWN = "cooldown"
-LEGACY_VERIFY_COOLDOWN = "verify-cooldown"  # 0.x 고아 파일 (읽지 않고 지우기만 한다)
-VERIFY_ENGINE_COOLDOWN = "verify-engine-cooldown.json"
-DEDUP_JUDGE_COOLDOWN = "dedup-judge-cooldown"
-DEDUP_JUDGE_ENGINE_COOLDOWN = "dedup-judge-engine-cooldown.json"
-CARD_WRITE_LOCK = ".card-write.lock"
-COMPILE_RUN_LOCK = ".compile-run.lock"
 
 
 

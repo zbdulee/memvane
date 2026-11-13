@@ -17,6 +17,36 @@ def owner_scope(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def rel(*args, **kwargs):
+    from memvane.wiki.workspace.compile_paths import rel as implementation
+    return implementation(*args, **kwargs)
+
+
+def under(*args, **kwargs):
+    from memvane.wiki.workspace.compile_paths import under as implementation
+    return implementation(*args, **kwargs)
+
+
+def ledger(*args, **kwargs):
+    from memvane.settings.api import ledger as implementation
+    return implementation(*args, **kwargs)
+
+
+def compile_rel(*args, **kwargs):
+    from memvane.settings.api import compile_rel as implementation
+    return implementation(*args, **kwargs)
+
+
+def try_compile_run_lock(*args, **kwargs):
+    from memvane.wiki.workspace.compile_paths import try_compile_run_lock as implementation
+    return implementation(*args, **kwargs)
+
+
+def validate_compile_run_lock(*args, **kwargs):
+    from memvane.wiki.workspace.compile_paths import validate_compile_run_lock as implementation
+    return implementation(*args, **kwargs)
+
+
 def safe_queue_path(*args, **kwargs):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
     return _safe_queue_path(*args, **kwargs)

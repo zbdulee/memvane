@@ -26,7 +26,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
 
@@ -154,7 +154,7 @@ def diagnostics(info: dict) -> dict:
 def cooldown_path(root: Path) -> Path:
     # Separate from the compile and verify cooldowns: an extractor outage must not
     # silence dedup judging, and vice versa.
-    return cp.under(root, cp.DEDUP_JUDGE_COOLDOWN)
+    return cp.under(root, ct.DEDUP_JUDGE_COOLDOWN)
 
 
 def engine_cooldown_path(root: Path) -> Path:
@@ -164,7 +164,7 @@ def engine_cooldown_path(root: Path) -> Path:
     있으면 만료마다 같은 후보를 다시 불러 **판정이 영구 정지**한다 — verify가 0.x 전역 식힘에서
     겪은 것과 같은 클래스라 같은 처방(엔진 단위 기록)을 쓴다. 파일은 verify와 분리한다.
     """
-    return cp.under(root, cp.DEDUP_JUDGE_ENGINE_COOLDOWN)
+    return cp.under(root, ct.DEDUP_JUDGE_ENGINE_COOLDOWN)
 
 
 def cooldown_active(root: Path) -> bool:

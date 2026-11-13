@@ -247,7 +247,7 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 def run(cwd: str) -> dict:
     """One bounded scan for the project at ``cwd``; returns a summary."""
-    from memvane.wiki.workspace import compile_paths as cp
+    from memvane.wiki.workspace import api as cp, types as ct
     from memvane.settings import api as project_dir
     from memvane.settings import config as qmd_config
     from memvane.wiki.workspace import scan_state
@@ -284,8 +284,8 @@ def run(cwd: str) -> dict:
         log("ABORT: wiki root differs from the selected route")
         return result
     compile_dir = cp.compile_dir(root, create=True)
-    queue_path = cp.ledger(root, cp.DEDUP_NEEDED)
-    skipped_path = cp.ledger(root, cp.DEDUP_SKIPPED)
+    queue_path = cp.ledger(root, ct.DEDUP_NEEDED)
+    skipped_path = cp.ledger(root, ct.DEDUP_SKIPPED)
     if compile_dir is None or queue_path is None:
         log("ABORT: unsafe_compile_path")
         return result

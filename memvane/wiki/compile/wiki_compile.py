@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import wiki_activity_log
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.settings import api as source_text
@@ -1583,10 +1583,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     summary, redactions = redact(str(candidate.get("summary") or "").strip())
     h = source_hash({**candidate, "summary": summary})
 
-    candidate_path = cp.ledger(root, cp.CANDIDATES)
-    tombstone_path = cp.ledger(root, cp.TOMBSTONES)
-    manifest_path = cp.ledger(root, cp.MANIFEST)
-    merge_needed_path = cp.ledger(root, cp.MERGE_NEEDED)
+    candidate_path = cp.ledger(root, ct.CANDIDATES)
+    tombstone_path = cp.ledger(root, ct.TOMBSTONES)
+    manifest_path = cp.ledger(root, ct.MANIFEST)
+    merge_needed_path = cp.ledger(root, ct.MERGE_NEEDED)
     if candidate_path is None or tombstone_path is None or manifest_path is None or merge_needed_path is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
@@ -1840,7 +1840,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                 {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
                  'body': old}, selected[0], current_source=False):
             if (not verify_cfg.get("enabled", True)
-                    or cp.ledger(root, cp.VERIFY_QUEUE) is None):
+                    or cp.ledger(root, ct.VERIFY_QUEUE) is None):
                 record['action'] = 'merge-needed'
                 record['lint'] = {'verdict': 'needs_review',
                                   'findings': ['verified_replacement_requires_review']}
@@ -1893,7 +1893,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
     verify_queued = False
     if verify_cfg.get("enabled", True) and status == "generated":
-        verify_queue_path = cp.ledger(root, cp.VERIFY_QUEUE)
+        verify_queue_path = cp.ledger(root, ct.VERIFY_QUEUE)
         if verify_queue_path is not None:
             verify_queued = True
             # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게

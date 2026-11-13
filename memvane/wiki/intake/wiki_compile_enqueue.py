@@ -15,7 +15,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.wiki.intake import posttool
@@ -152,7 +152,7 @@ def enqueue_changed_sources(project_root, config, changed_files,
     compile_cfg = compile_gate(config, accepted)
     if compile_cfg is None:
         return intent.enqueue_result("compile_disabled")
-    queue_path = _safe_queue_path(project_root, cp.rel(cp.SOURCE_QUEUE))
+    queue_path = _safe_queue_path(project_root, cp.rel(ct.SOURCE_QUEUE))
     if queue_path is None:
         return intent.enqueue_result("queue_path_rejected")
     candidates = compile_candidates(project_root, config, compile_cfg, changed_files,
@@ -393,7 +393,7 @@ def enqueue_payload(payload):
     if compile_cfg is None:
         return {"queued": 0, "reason": "compile_disabled"}
 
-    queue_path = _safe_queue_path(project_root, cp.rel(cp.SOURCE_QUEUE))
+    queue_path = _safe_queue_path(project_root, cp.rel(ct.SOURCE_QUEUE))
     if queue_path is None:
         return {"queued": 0, "reason": "queue_path_rejected"}
 

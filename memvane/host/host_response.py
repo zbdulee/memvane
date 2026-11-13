@@ -809,14 +809,14 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     result = runtime_work.request("laya-sync", decision["projectRoot"], **defer)
     from memvane.host.host_rules import check_compile_queue
     if check_compile_queue('collections' in decision, action):
-        from memvane.wiki.workspace import compile_paths
+        from memvane.wiki.workspace import api as compile_paths, types as compile_types
         from memvane.wiki.card import wiki_freshness
         root = Path(decision['projectRoot'])
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
         if pending is None:
             _fail('wiki_pending_refresh_unknown')
-        queues = (compile_paths.ledger(root, compile_paths.SOURCE_QUEUE),
-                  compile_paths.ledger(root, compile_paths.VERIFY_QUEUE))
+        queues = (compile_paths.ledger(root, compile_types.SOURCE_QUEUE),
+                  compile_paths.ledger(root, compile_types.VERIFY_QUEUE))
         if any(path is None for path in queues):
             _fail('selected_compile_queue_unsafe')
         if pending or any(path.exists() and path.stat().st_size > 0 for path in queues):

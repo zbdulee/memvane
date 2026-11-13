@@ -18,7 +18,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import api as qmd_config
 from memvane.wiki.workspace import wiki_activity_log
@@ -89,7 +89,7 @@ def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> 
             texts[rel] = target.read_text(encoding="utf-8")
         except OSError:
             return False
-    skipped_path = cp.ledger(root, cp.DEDUP_SKIPPED)
+    skipped_path = cp.ledger(root, ct.DEDUP_SKIPPED)
     if skipped_path is None:
         return False
     first, second = sorted((page_a, page_b))  # order-independent pair key
@@ -230,7 +230,7 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         content = target.read_text(encoding="utf-8")
         if laya_bound is not None:
             record_recovery(compile_dir, delete_rel, paired_with, content)
-        deleted_path = cp.ledger(root, cp.DEDUP_DELETED)
+        deleted_path = cp.ledger(root, ct.DEDUP_DELETED)
         if deleted_path is not None:
             wc.append_jsonl(deleted_path, {
                 "deletedPath": delete_rel,
@@ -275,7 +275,7 @@ def main() -> int:
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1
-    queue_path = cp.ledger(root, cp.DEDUP_NEEDED)
+    queue_path = cp.ledger(root, ct.DEDUP_NEEDED)
     if queue_path is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1

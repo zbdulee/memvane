@@ -25,7 +25,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.kernel import cooldown as qmd_cooldown
@@ -41,7 +41,7 @@ from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import api as yaml_scalars
 
 
-DEFAULT_SOURCE_QUEUE = cp.rel(cp.SOURCE_QUEUE)
+DEFAULT_SOURCE_QUEUE = cp.rel(ct.SOURCE_QUEUE)
 BUILTIN_EXTRACTOR_ENGINES = {"claude", "codex", "hermes"}
 # 후보 식힘 만료의 상한(24h). 손상·주입된 만료값이 후보를 영구히 배제하지 못하게 한다.
 # 정의는 `cooldown.MAX_COOLDOWN_SECS`가 SSOT다(전역 compile/dedup cooldown과 같은 상한 —
@@ -89,11 +89,11 @@ def candidate_path(root: Path, compile_cfg: dict) -> Path:
     # `cp.ledger`가 None을 내는 것은 파일 자체가 compile 디렉터리 밖을 가리키는
     # symlink일 때뿐이다. 그때도 원장이 **한 줄도 남지 않는** 상태는 만들지 않는다
     # (그것이 과금 루프의 입구였다) — 기본 위치로 떨어뜨려 흔적을 남긴다.
-    return cp.ledger(root, cp.CANDIDATES) or cp.under(root, cp.CANDIDATES)
+    return cp.ledger(root, ct.CANDIDATES) or cp.under(root, ct.CANDIDATES)
 
 
 def cooldown_path(root: Path) -> Path:
-    return cp.under(root, cp.COMPILE_COOLDOWN)
+    return cp.under(root, ct.COMPILE_COOLDOWN)
 
 
 def cooldown_active(root: Path) -> bool:
@@ -955,7 +955,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             if not records:
                 return False, True, []
             wait = {**job, 'sharedEnqueued': True, 'ts': enqueue.utc_now()}
-            queue = _safe_queue_path(str(root), cp.rel(cp.SOURCE_QUEUE))
+            queue = _safe_queue_path(str(root), cp.rel(ct.SOURCE_QUEUE))
             if queue is None:
                 return False, True, []
             # A crash after the append but before acknowledging this claimed
@@ -1576,7 +1576,7 @@ def _verify_diagnostic(root: Path, exc: BaseException) -> str | None:
         return None
 
 
-COMPILE_RUN_LOCK = cp.COMPILE_RUN_LOCK
+COMPILE_RUN_LOCK = ct.COMPILE_RUN_LOCK
 RUN_LOCK_BUSY_RETRY_SECS = 30
 
 
@@ -1650,7 +1650,7 @@ def _main():
         return 0  # unsafe lock path: keep the queue, never run unguarded
     if run_lock is None:
         if args.json:
-            queue = cp.ledger(root, cp.SOURCE_QUEUE)
+            queue = cp.ledger(root, ct.SOURCE_QUEUE)
             if queue is not None:
                 print(json.dumps(_busy_report(root, queue), ensure_ascii=False))
         return 0

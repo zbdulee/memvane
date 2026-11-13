@@ -57,7 +57,7 @@ from memvane.wiki.verify.intent_ack import _supersede_compile_intent
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.card import wiki_markers
 from memvane.wiki.workspace import wiki_mutation_lock
-from memvane.wiki.workspace import compile_paths as cp
+from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
 from memvane.wiki.compile import wiki_compile as wc
@@ -71,7 +71,7 @@ from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe
 
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
 # `skippedPath`/`deletedPath` 오타가 유료 과금 루프의 입구였던 실패 클래스가 함께 사라진다).
-VERIFY_QUEUE_DEFAULT = cp.rel(cp.VERIFY_QUEUE)
+VERIFY_QUEUE_DEFAULT = cp.rel(ct.VERIFY_QUEUE)
 VERDICT_VALUES = {"pass", "fail", "inconclusive"}
 MAX_SOURCES = 3
 # "호출은 됐지만 출력이 판정으로 쓸 수 없다" — 같은 입력에서 재현되는 설정 오류이므로
@@ -210,7 +210,7 @@ def engine_cooldown_path(root: Path) -> Path:
     # 모든 카드 검수를 막았고, 선호 엔진이 계속 같은 실패를 반복하는 상태(인증 안 된 CLI 등)에서
     # 다음 후보로 degrade하지 못해 **검수가 영구 정지**했다 — `recallVerifiedOnly` 기본값
     # 아래에서 그것은 wiki가 recall에서 사라지는 것과 같다.
-    return cp.under(root, cp.VERIFY_ENGINE_COOLDOWN)
+    return cp.under(root, ct.VERIFY_ENGINE_COOLDOWN)
 
 
 # 엔진 단위 식힘 저장소의 구현은 `wcw`가 SSOT다(dedup judge가 자기 파일로 같은 헬퍼를
@@ -249,7 +249,7 @@ def verify_skipped_path(root: Path, vcfg: dict) -> Path:
     제거됐지만, 파일 자체가 밖을 가리키는 symlink면 `cp.ledger`가 여전히 None을 낸다.
     그때도 기본 경로로 떨어져 흔적을 남긴다(마커 없는 삭제보다 나은 실패다).
     """
-    return cp.ledger(root, cp.VERIFY_SKIPPED) or cp.under(root, cp.VERIFY_SKIPPED)
+    return cp.ledger(root, ct.VERIFY_SKIPPED) or cp.under(root, ct.VERIFY_SKIPPED)
 
 
 def verify_deleted_path(root: Path, vcfg: dict) -> Path:
@@ -261,7 +261,7 @@ def verify_deleted_path(root: Path, vcfg: dict) -> Path:
     됐다(실측 3 run 연속). 설정 키(`compile.verify.deletedPath`)는 제거됐지만 symlink escape는
     남으므로 폴백도 남는다.
     """
-    return cp.ledger(root, cp.VERIFY_DELETED) or cp.under(root, cp.VERIFY_DELETED)
+    return cp.ledger(root, ct.VERIFY_DELETED) or cp.under(root, ct.VERIFY_DELETED)
 
 
 # 유료 호출 전 원장 쓰기 가능성 판정. 정의는 `wiki_compile`이 SSOT다 — dedup scan도 같은
@@ -320,7 +320,7 @@ def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: 
     delete is preferable to contested (fix the source, get a fresh card). Fail-open:
     an unwritable manifest degrades to today's tombstone behaviour, never to a crash.
     """
-    path = cp.ledger(root, cp.MANIFEST)
+    path = cp.ledger(root, ct.MANIFEST)
     if path is None:
         return
     # targetPath만 담아 same_generated_identity가 이 카드에만 매칭되게 한다
@@ -443,7 +443,7 @@ def wake_pending_retirement(root: Path) -> None:
     selected = wiki_selected_laya.selected(root)
     if selected is None:
         return
-    queue = _safe_queue_path(root, cp.rel(cp.SOURCE_QUEUE))
+    queue = _safe_queue_path(root, cp.rel(ct.SOURCE_QUEUE))
     if queue is None:
         return
     try:
@@ -1564,7 +1564,7 @@ def run(
     queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
     if queue is None or not queue.exists():
         return result
-    log_path = cp.ledger(root, cp.VERIFY_LOG) or cp.under(root, cp.VERIFY_LOG)
+    log_path = cp.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)
 
     # **유료 호출 전 preflight: fail-closed 원장에 쓸 수 없으면 검수하지 않는다.**
     # fail-closed 삭제(원장 없이는 지우지 않는다)는 유지하지만 그 실패에 종점이 없으면
@@ -1579,7 +1579,7 @@ def run(
 
     # 0.x 전역 cooldown 파일의 고아 정리 — 이제 읽지도 쓰지도 않으므로 남아 있으면 "검수가
     # 식힘 중"이라는 잘못된 인상만 준다. 후보 단위 파일로 대체됐다(engine_cooldown_path).
-    cp.under(root, cp.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
+    cp.under(root, ct.LEGACY_VERIFY_COOLDOWN).unlink(missing_ok=True)
 
     claimed = claim_queue(queue)
     if claimed is None:
