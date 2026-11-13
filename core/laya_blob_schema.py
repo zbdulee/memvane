@@ -8,12 +8,8 @@ import laya_view_schema
 import laya_view_fts
 
 APP_ID = 0x4D564231
-SCHEMA_VERSION = 3
-FORMAT = 'memvane-git-blob-candidate-v3'
-# Row-generation format: per-view interval rows and one head FTS per view.
-ROW_SCHEMA_VERSION = 4
-ROW_FORMAT = 'memvane-git-blob-candidate-v4'
-FORMATS = {SCHEMA_VERSION: FORMAT, ROW_SCHEMA_VERSION: ROW_FORMAT}
+SCHEMA_VERSION = 4
+FORMAT = 'memvane-git-blob-candidate-v4'
 
 
 def _text(name):
@@ -127,24 +123,19 @@ _BASE_TABLES, _BASE_KEYS = TABLES, KEYS
 
 
 def _layout(version):
-    if version not in FORMATS:
+    if version != SCHEMA_VERSION:
         raise ValueError('schema_version')
     tables = {name: (ddl.replace('__VERSION__', str(version)) if name == 'store_meta' else ddl)
               for name, ddl in _BASE_TABLES.items()}
     keys = dict(_BASE_KEYS)
-    if version == SCHEMA_VERSION:
-        tables.update(laya_view_schema.tables(_text, _sha, _uuid, _integer))
-        keys.update(laya_view_schema.immutable_keys())
-    else:
-        tables.update(laya_view_schema.row_tables(_text, _sha, _uuid, _integer))
-        keys.update(laya_view_schema.row_immutable_keys())
+    tables.update(laya_view_schema.row_tables(_text, _sha, _uuid, _integer))
+    keys.update(laya_view_schema.row_immutable_keys())
     tables.update(laya_fill_schema.tables(_text, _sha, _uuid, _integer))
     keys.update(laya_fill_schema.immutable_keys())
     return tables, keys
 
 
 TABLES, KEYS = _layout(SCHEMA_VERSION)
-ROW_TABLES, ROW_KEYS = _layout(ROW_SCHEMA_VERSION)
 
 
 def statements(version=SCHEMA_VERSION):
@@ -168,8 +159,7 @@ def statements(version=SCHEMA_VERSION):
         'CREATE INDEX source_by_sha ON source_fingerprints(source_sha)',
         'CREATE INDEX attestation_by_blob ON card_attestations(blob_sha)',
         'CREATE INDEX attestation_by_source ON attestation_sources(fingerprint_id,trust_digest)'))
-    result.extend(laya_view_schema.statements() if version == SCHEMA_VERSION
-                  else laya_view_schema.row_statements())
+    result.extend(laya_view_schema.row_statements())
     result.extend(laya_fill_schema.statements())
     return result
 
@@ -177,8 +167,7 @@ def statements(version=SCHEMA_VERSION):
 def manifest(db, version=SCHEMA_VERSION):
     rows = sorted(tuple(row) for row in db.execute(
         "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'"))
-    dynamic = set(laya_view_fts.schema_rows(db) if version == SCHEMA_VERSION
-                  else laya_view_fts.head_schema_rows(db))
+    dynamic = set(laya_view_fts.head_schema_rows(db))
     return hash_bytes(canonical([row for row in rows if row not in dynamic]).encode('utf8'))
 
 

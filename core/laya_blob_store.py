@@ -348,12 +348,12 @@ def _insert(db, table, row):
 def _header(db, repository, scope):
     version = db.execute('PRAGMA user_version').fetchone()[0]
     if (db.execute('PRAGMA application_id').fetchone()[0] != schema.APP_ID
-            or type(version) is not int or version not in schema.FORMATS):
+            or type(version) is not int or version != schema.SCHEMA_VERSION):
         v.fail('candidate_format_mismatch')
     if schema.manifest(db, version) != schema.expected_manifest(version):
         v.fail('candidate_schema_mismatch')
     row = db.execute('SELECT * FROM store_meta WHERE singleton=1').fetchone()
-    if (row is None or row['format'] != schema.FORMATS[version]
+    if (row is None or row['format'] != schema.FORMAT
             or row['schema_version'] != version
             or row['repository_json'] != v.canonical(repository)
             or row['scope_id'] != scope or row['schema_digest'] != schema.expected_manifest(version)):
@@ -417,11 +417,9 @@ class _VectorPage:
 
 class BlobStore:
     @classmethod
-    def create(cls, path, *, project_root, repository, worktree, scope_id, row_generations=False):
+    def create(cls, path, *, project_root, repository, worktree, scope_id):
         repository = v.repository(repository); v.identifier(scope_id, v.UUID)
-        if type(row_generations) is not bool:
-            v.fail('candidate_format_invalid')
-        version = schema.ROW_SCHEMA_VERSION if row_generations else schema.SCHEMA_VERSION
+        version = schema.SCHEMA_VERSION
         path = _database_path(path)
         temp = path.parent / ('.' + path.name + '.create-' + uuid.uuid4().hex)
         fd = None
@@ -446,7 +444,7 @@ class BlobStore:
                 db.execute('BEGIN IMMEDIATE')
                 schema.create(db, version)
                 common = repository['commonGitDir'] or {}
-                _insert(db, 'store_meta', dict(singleton=1, format=schema.FORMATS[version], schema_version=version,
+                _insert(db, 'store_meta', dict(singleton=1, format=schema.FORMAT, schema_version=version,
                     repo_id=repository['repoId'], scope_id=scope_id, incarnation=uuid.uuid4().hex,
                     common_git_dir=common.get('path'), common_dev=common.get('dev'), common_ino=common.get('ino'),
                     project_rel=repository['projectRelative'], git_object_format=repository['gitObjectFormat'],
@@ -537,7 +535,7 @@ class BlobStore:
             obj._reader_only = reader_only
             obj._fts_guard = fts_guard
             obj._incarnation, obj._policy = initial_meta['incarnation'], initial_meta['settings_policy_digest']
-            obj._rows = initial_meta['schema_version'] == schema.ROW_SCHEMA_VERSION
+            obj._rows = True
             return obj
         except BlobStoreError:
             if db is not None: db.close()
@@ -1206,7 +1204,7 @@ class BlobStore:
     def counts(self):
         with self._session() as db:
             return {name: db.execute(f'SELECT count(*) FROM {name}').fetchone()[0]
-                    for name in (schema.ROW_TABLES if self._rows else schema.TABLES)}
+                    for name in schema.TABLES}
 
     def close(self):
         self._db.close()

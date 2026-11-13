@@ -1971,13 +1971,12 @@ def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
     return result
 
 
-def _create_initial_view_store(candidate, project, decision, *, row_generations):
+def _create_initial_view_store(candidate, project, decision):
     import laya_checkout_view as checkout
     from laya_view_store import ViewStore
     repository = checkout.register_repository(str(project))
     worktree = checkout.register_worktree(str(project), repository)
     ViewStore.create(candidate, project_root=str(project), repository=repository,
-                     worktree=worktree, scope_id=decision['scopeId'],
-                     row_generations=row_generations).close()
+                     worktree=worktree, scope_id=decision['scopeId']).close()
 
 
