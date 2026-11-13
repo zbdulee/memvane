@@ -149,7 +149,7 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     evidence. A pathological identity that cannot fit one fair share is omitted
     rather than consuming every other card's summary allowance.
     """
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
     from memvane.wiki.engines.api import render_existing_context_section
     cards = []
     for path, score, raw in rows[:qmd_config.DEDUP_TOP_K]:
@@ -305,7 +305,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
         return None
     try:
         from memvane.wiki.card import api as card_api
-        from memvane.wiki.card import wiki_card
+        from memvane.wiki.card import api as wiki_card
         decision = bound[0]
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)
         if pending is None:

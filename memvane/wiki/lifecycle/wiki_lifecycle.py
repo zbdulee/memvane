@@ -197,7 +197,7 @@ def count_recall_ineligible(pages: list[Path]) -> int:
     This is the user-facing total behind the `wiki-ineligible` notice, so a
     partial count would report a wrong number. The judgement is recall's own.
     """
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
 
     ineligible = 0
     for page in pages:
@@ -271,7 +271,7 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
     belong to another checkout (undecidable). ``label`` (``source_label.resolver``)
     maps a renamed raw collection's old label, by path, to the current one.
     """
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
 
     records, parsed = wsm.declared_source_records(block)
     if parsed == wsm.SOURCES_INVALID:
@@ -333,7 +333,7 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
     is the existence SSOT); `present` maps the rest to their resolved path.
     A card with no `sourceRevisions` block goes to `inspect_legacy`.
     """
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
 
     text = read_card(page)
     if text is None:
@@ -403,7 +403,7 @@ def backfill_revisions(info: dict) -> list[dict] | None:
 
 def legacy_still_missing(info: dict, root: Path, allow_roots: list[Path]) -> bool:
     """Recheck right before retirement: every judged-missing legacy source is still gone."""
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
 
     return all(wiki_card.resolve_existing_source(source["path"], root, allow_roots)[1] == "missing"
                for source in info["missing"])

@@ -8,7 +8,7 @@ from pathlib import Path
 from memvane.wiki.card.api import archive_card
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import api as project_dir
-from memvane.wiki.card import wiki_card
+from memvane.wiki.card import api as wiki_card
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import wiki_activity_log

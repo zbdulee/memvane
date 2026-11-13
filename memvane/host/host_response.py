@@ -295,7 +295,7 @@ def _render_context(decision, rows, limit, ranking, title_only_paths,
                  "hybrid rank score")
         lines.append(f'- "{path}" sha256:{digest[:12]} {label} {number:.4g}')
         if path.split('/', 1)[0] in wiki_names:
-            from memvane.wiki.card import wiki_card
+            from memvane.wiki.card import api as wiki_card
             normalized = body.replace('\r\n', '\n').replace('\r', '\n')
             end = normalized.find('\n---\n', 4)
             if not normalized.startswith('---\n') or end < 0:

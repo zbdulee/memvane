@@ -637,7 +637,7 @@ def snapshot_revision_evidence(
     if not isinstance(raw_revisions, list) or not raw_revisions:
         return [], {"state": wiki_freshness.UNKNOWN, "reason": "missing_source_revisions"}, {}
 
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
 
     allow_roots = wsm.allow_roots_of(config)
     loaded = []

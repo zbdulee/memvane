@@ -706,7 +706,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     from memvane.journal import journal_reader as reader
     from memvane.journal import writer_scope as normal
     from memvane.wiki.card import source_spans
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
     from memvane.wiki.verify import api as wiki_verify_worker
 
     result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}

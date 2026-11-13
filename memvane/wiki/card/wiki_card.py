@@ -36,7 +36,7 @@ DEFAULT_INJECT_SUMMARY_MAX_CHARS = 600
 # 읽기 창도 같이 커져 상한이 예산을 조용히 잘라먹지 않는다.
 WIKI_CARD_READ_BASE_CHARS = 8192
 # 절단 표시. 모델이 "여기서 잘렸다 → 필요하면 카드를 열어라"를 알 수 있어야 한다.
-SUMMARY_TRUNCATION_MARK = "… (이하 생략)"
+from memvane.wiki.card.types import SUMMARY_TRUNCATION_MARK, SOURCE_KIND_FILE
 # 주입 title 상한. frontmatter title은 자동 생성이라 길이 보장이 없다.
 MAX_TITLE_CHARS = 160
 # 카드당 주입할 원문 경로(`sources[].path`) 개수 상한 기본값. 0이면 원문 경로를 끈다.
@@ -526,7 +526,6 @@ def pending_refresh_cutoffs(project_root: Path) -> dict[str, int] | None:
 # 같은 판정(`src.get("kind") != "file"`)을 쓴다 — **두 곳이 갈리면 안 된다**: 한쪽은 원문을
 # 검증에 쓰고 다른 한쪽은 그 경로를 모델에게 제시하므로, 서로 다른 집합을 보면 "검증되지
 # 않은 종류의 소스"가 주입된다.
-SOURCE_KIND_FILE = "file"
 # "파일 소스가 아니다"(= 소실 판정에서 무시) 사유. `wiki_source_missing`이 이 집합을
 # 그대로 쓴다 — 소실 판정이 두 벌이 되지 않게 한다.
 NON_FILE_SOURCE_REASONS = ("kind_not_file", "no_path")

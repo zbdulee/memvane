@@ -1,7 +1,8 @@
 """Public wiki card admission operations."""
 from __future__ import annotations
 
-from memvane.wiki.card.types import SAFE_KEY_RE, SOURCE_SPANS_KEY, MAX_SOURCE_SPANS, FRONTMATTER_RE
+from memvane.wiki.card.types import (SAFE_KEY_RE, SOURCE_SPANS_KEY, MAX_SOURCE_SPANS, FRONTMATTER_RE,
+                                     SOURCE_KIND_FILE, SUMMARY_TRUNCATION_MARK)
 
 
 def verified_wiki_row(*args, **kwargs):
@@ -97,4 +98,39 @@ def normalize_source_revision(*args, **kwargs):
 
 def normalize_source_span(*args, **kwargs):
     from memvane.wiki.card.yaml_scalars import normalize_source_span as implementation
+    return implementation(*args, **kwargs)
+
+
+def extract_card_body(*args, **kwargs):
+    from memvane.wiki.card.wiki_card import extract_card_body as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def frontmatter_source_revisions(*args, **kwargs):
+    from memvane.wiki.card.wiki_card import frontmatter_source_revisions as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def is_auto_trusted_card(*args, **kwargs):
+    from memvane.wiki.card.wiki_card import is_auto_trusted_card as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def normalize_newlines(*args, **kwargs):
+    from memvane.wiki.card.wiki_card import normalize_newlines as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def parse_frontmatter_scalars(*args, **kwargs):
+    from memvane.wiki.card.wiki_card import parse_frontmatter_scalars as implementation
+    return implementation(*args, **kwargs)
+
+
+
+def resolve_existing_source(*args, **kwargs):
+    from memvane.wiki.card.wiki_card import resolve_existing_source as implementation
     return implementation(*args, **kwargs)

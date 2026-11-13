@@ -34,7 +34,7 @@ def legacy_card_evidence(row, decision):
     """Describe the existing reader's trust evidence, without granting authority."""
     from memvane.wiki.card import api as card_api
     from memvane.wiki.card import source_spans
-    from memvane.wiki.card import wiki_card
+    from memvane.wiki.card import api as wiki_card
 
     locators = card_api.verified_wiki_locations(
         row, decision, frozenset(), tuple(decision['recallSettings']['skipPaths']),
