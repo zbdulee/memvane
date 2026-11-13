@@ -19,11 +19,7 @@ import time
 import laya_blob_values as v
 from laya_blob_values import BlobStoreError
 
-LEXICAL = 'lexical-only'
-EXACT = 'exact-complete'
-DOMAIN = 'memvane-generation-vectors-v1'
 SPEC_FIELDS = ('recipe_id', 'profile_id')
-REF_FIELDS = ('path', 'blob_sha', 'recipe_id', 'profile_id', 'chunk_count', 'chunk_digest', 'embedding_digest')
 DEFAULT_WORK = 4000000
 MAX_DEADLINE = 30
 MAX_LIMIT = 100
@@ -43,23 +39,10 @@ def spec(value):
     return {k: v.identifier(value[k]) for k in SPEC_FIELDS}
 
 
-def mode(spec_value):
-    return LEXICAL if spec_value is None else EXACT
 
 
-def check_stage(mode_value, spec_value):
-    if spec(spec_value) != spec_value or mode_value != mode(spec_value):
-        v.fail('generation_binding_mismatch')
 
 
-def coverage_digest(spec_value, rows):
-    """Ordered actual references incl. path/blob/spec; lexical keeps the v1 constant."""
-    if spec_value is None:
-        if rows:
-            v.fail('vector_rows_mismatch')
-        return v.digest(DOMAIN, {'mode': LEXICAL, 'members': []})
-    return v.digest(DOMAIN, {'mode': EXACT, 'spec': spec_value,
-                             'members': [[row[k] for k in REF_FIELDS] for row in rows]})
 
 
 # The installed provider's view vector identity (decision K5). The recipe and
@@ -323,30 +306,6 @@ class VectorMixin:
         return dict(chunk_count=chunk['chunk_count'], chunk_digest=chunk['set_digest'],
                     embedding_digest=embedded['set_digest'])
 
-    def _vector_coverage(self, db, plan, spec_value, *, full, deadline=None):
-        """Expected references for EVERY eligible member; any hole refuses.
-
-        ``full`` re-validates each distinct referenced set (digests, inputs and
-        per-row provenance) one complete set at a time.
-        """
-        if spec_value is None:
-            return []
-        recipe_id, profile_id = spec_value['recipe_id'], spec_value['profile_id']
-        self._recipe(recipe_id); self._profile(profile_id)
-        rows, heads = [], {}
-        for member in plan['members']:
-            if not member['eligible']:
-                continue
-            _left(deadline)
-            blob = member['blob_sha']
-            if blob not in heads:
-                head = self._vector_heads(db, blob, recipe_id, profile_id)
-                if full and len(self._vectors(blob, recipe_id, profile_id)) != head['chunk_count']:
-                    v.fail('embedding_set_invalid')
-                heads[blob] = head
-            rows.append(dict(path=member['path'], blob_sha=blob, recipe_id=recipe_id,
-                             profile_id=profile_id, **heads[blob]))
-        return rows
 
 
 
