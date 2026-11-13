@@ -2,6 +2,21 @@
 from __future__ import annotations
 
 
+def adapter_for(*args, **kwargs):
+    from memvane.runtime.resource_platform import adapter_for as implementation
+    return implementation(*args, **kwargs)
+
+
+def normal_pressure(*args, **kwargs):
+    from memvane.runtime.resource_platform import normal_pressure as implementation
+    return implementation(*args, **kwargs)
+
+
+def number(*args, **kwargs):
+    from memvane.runtime.resource_platform import number as implementation
+    return implementation(*args, **kwargs)
+
+
 def handler_done(*args, **kwargs):
     from memvane.runtime.runtime_wake_policy import handler_done as implementation
     return implementation(*args, **kwargs)

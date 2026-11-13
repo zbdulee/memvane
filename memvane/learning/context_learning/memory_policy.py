@@ -1,7 +1,7 @@
 """Optional additive memory admission. Estimates are never measured facts."""
 import math
 import re
-from memvane.runtime.resource_platform import normal_pressure,number
+from memvane.runtime.api import normal_pressure,number
 from .bounded_calibration import pressure_ready
 
 

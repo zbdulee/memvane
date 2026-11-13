@@ -804,7 +804,7 @@ def enqueue(config, project, sample, compact_sources):
 
 def resource_report(policy, *, detailed=False, admission=True,deadline=None):
     """OS adapter observations plus explicit configured memory policy."""
-    from memvane.runtime.resource_platform import adapter_for,normal_pressure,number
+    from memvane.runtime.api import adapter_for,normal_pressure,number
     from .bounded_calibration import pressure_ready,verdict
     from .memory_policy import assess
     from .resource_coordination import observation_fresh
