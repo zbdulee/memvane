@@ -1159,6 +1159,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/sync/compile_intents.py": {
+      "context": "sync",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/sync/intent_ack.py": {
       "context": "sync",
       "layer": "adapter",

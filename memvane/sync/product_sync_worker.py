@@ -19,9 +19,7 @@ import sqlite3
 import stat
 import time
 
-from memvane.sync.intent_ack import _ack_compile_intent
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.kernel.atomic_rename import canonical_json_bytes
 from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
 from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
 from memvane.kernel.errors import IndexContractError
@@ -628,209 +626,16 @@ def _mark_schema3_write(writer, proof, marks):
     marks['proof'] = fresh
 
 
-def _read_compile_intent(fd):
-    """Read one canonical private intent from the descriptor that will be acknowledged."""
-    from memvane.journal import api as ledger
-    info = os.fstat(fd)
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 65536):
-        raise ValueError('provenance_intent_unsafe')
-    raw = os.read(fd, 65537)
-    def unique(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError('provenance_intent_duplicate')
-            result[key] = value
-        return result
-    value = json.loads(raw.decode('utf8'), object_pairs_hook=unique,
-                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite')))
-    if len(raw) != info.st_size or not isinstance(value, dict) or canonical_json_bytes(value) != raw:
-        raise ValueError('provenance_intent_invalid')
-    return value, info
-
-
-
-
-def _compiled_intent_is_stored(store, handle, intent):
-    """A consumed filename is a witness only if its exact evidence is stored."""
-    from memvane.store import api as values
-    result = {key: value for key, value in intent.items()
-              if key not in ('kind', 'verdict_digest', 'result_digest')}
-    if (intent.get('kind') != 'compile' or intent['viewId'] != handle.view_id
-            or values.compile_result_digest(result, intent['verdict_digest']) != intent['result_digest']):
-        return False
-    sources = []
-    for fp in intent['sourceFingerprints']['fingerprints']:
-        if (fp['worktree_id'], fp['branch_key']) != (handle.worktree_id, handle.branch_key):
-            return False
-        fingerprint_id = values.digest('memvane-source-fingerprint-v1', values.fingerprint(fp, store._repository['gitObjectFormat']))
-        spans = [dict(span, kind='lines-v1') for span in intent['sourceSpans']
-                 if span['path'] == fp['path'] and span['sourceSha256'] == fp['source_sha']]
-        sources.append(dict(fingerprint_id=fingerprint_id, spans=spans))
-    spec = values.attestation(dict(blob_sha=intent['cardSha'], verification_kind='compiled',
-        engine_identity=intent['producingEngine'], policy_digest=handle.policy_digest,
-        receipt=dict(schema='memvane-card-evidence-v2', verdict='verified',
-                     result_digest=intent['result_digest'], prior_trust=None,
-                     verdict_digest=intent['verdict_digest'], verified_mode=intent['verifiedMode'],
-                     verify_engine=intent['verifyEngine']), sources=sources))
-    trust = values.digest('memvane-card-attestation-v1', spec)
-    try:
-        return store.attestation(trust) == spec
-    except store_types.BlobStoreError:
-        return False
-
-
 def _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current):
-    """Consume bounded compile intents without changing the view's member trust."""
-    from memvane.store import api as values
-    from memvane.journal import api as ledger
-    from memvane.journal.api import _reader as reader
+    """Consume this view's compile intents without changing its member trust (``compile_intents``)."""
     from memvane.journal.api import writer as normal
-    from memvane.wiki.card.api import card_support as source_spans
-    from memvane.wiki.card import api as wiki_card
-    from memvane.wiki.verify import api as wiki_verify_worker
-
-    result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
-    state = reader._state(Path(decision['journalPath']).parent)
-    directory = state / 'provenance-intents'
-    try:
-        info = directory.lstat()
-    except FileNotFoundError:
-        return result
-    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
-        raise IndexContractError('provenance_intent_directory_unsafe')
-    names = sorted(entry.name for entry in os.scandir(directory)
-                   if re.fullmatch(r'compile-[0-9a-f]{64}\.json', entry.name))
-    if not names:
-        return result
-    cursor_path = state / 'provenance-intents.cursor'
-    try:
-        cursor = ledger.ledger_read_json(cursor_path)
-        if not isinstance(cursor, dict):
-            raise IndexContractError('provenance_cursor_invalid')
-    except FileNotFoundError:
-        cursor = {}
-    last = cursor.get('last')
-    if not isinstance(last, str):
-        last = ''
-    witnesses = sorted(entry.name for entry in os.scandir(directory)
-                       if re.fullmatch(r'compile-[0-9a-f]{64}\.consumed\.json', entry.name))
-    scan_limit = 512
-    if witnesses:
-        # Rotate over durable consumed witnesses and pending names. This keeps
-        # crash/replay safe without an unbounded in-memory path index.
-        witness_name = cursor.get('witness')
-        after = cursor.get('sweep_after', '')
-        if (witness_name not in witnesses or cursor.get('sweep_done') is True):
-            witness_name = next((name for name in witnesses if name > str(witness_name or '')), witnesses[0])
-            after = ''
-        if not isinstance(after, str):
-            raise IndexContractError('provenance_cursor_invalid')
-        witness_path = directory / witness_name
-        witness = None
-        try:
-            witness_fd = os.open(witness_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-            try:
-                witness, _ = _read_compile_intent(witness_fd)
-            finally:
-                os.close(witness_fd)
-            if (witness_name != 'compile-' + wiki_verify_worker.compile_intent_id(witness) + '.consumed.json'
-                    or not _compiled_intent_is_stored(store, handle, witness)):
-                witness = None
-        except (OSError, ValueError, TypeError, KeyError, store_types.BlobStoreError):
-            witness = None
-        candidates = [name for name in names if name > after][:255]
-        for candidate in candidates:
-            if witness is None:
-                break
-            candidate_path = directory / candidate
-            try:
-                candidate_fd = os.open(candidate_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-                try:
-                    waiting, initial = _read_compile_intent(candidate_fd)
-                    if (candidate != 'compile-' + wiki_verify_worker.compile_intent_id(waiting) + '.json'
-                            or waiting.get('viewId') != witness['viewId']
-                            or waiting.get('targetPath') != witness['targetPath']
-                            or waiting.get('cardSha') == witness['cardSha']
-                            or waiting['sourceFingerprints']['observedNs'] >= witness['sourceFingerprints']['observedNs']):
-                        continue
-                    _ack_compile_intent(candidate_path, candidate_fd, initial, 'superseded')
-                    result['superseded'] += 1
-                finally:
-                    os.close(candidate_fd)
-            except (OSError, ValueError, TypeError, KeyError, store_types.BlobStoreError):
-                continue
-        sweep_after = candidates[-1] if candidates else after
-        sweep_done = witness is None or not any(name > sweep_after for name in names)
-        cursor.update(witness=witness_name, sweep_after=sweep_after, sweep_done=sweep_done)
-        scan_limit = 255
-    ordered = [name for name in names if name > last] + [name for name in names if name <= last]
-    scanned = ordered[:scan_limit]
-    attempted = 0
-    last_scanned = None
-    for name in scanned:
-        if attempted >= SCHEMA3_MAX_INGEST:
-            break
-        last_scanned = name
-        path = directory / name
-        try:
-            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
-        except FileNotFoundError:
-            continue
-        try:
-            initial = None
-            try:
-                intent, initial = _read_compile_intent(fd)
-                if intent.get('viewId') != handle.view_id:
-                    continue
-                fingerprints = intent['sourceFingerprints']['fingerprints']
-                if (not fingerprints or any((fp.get('worktree_id'), fp.get('branch_key')) !=
-                                            (handle.worktree_id, handle.branch_key) for fp in fingerprints)):
-                    continue
-                if name != 'compile-' + wiki_verify_worker.compile_intent_id(intent) + '.json':
-                    continue
-                target = intent['targetPath']
-                values.relative(target)
-                member, image = members.get(target), current.get(target)
-                if member is None or image is None or member['blob_sha'] != intent['cardSha'] or image[0] != intent['cardSha']:
-                    result['waiting'] += 1
-                    continue
-                text = image[1].decode('utf8')
-                block = source_spans.source_spans._frontmatter_block(text)
-                if block is None:
-                    raise ValueError('provenance_parity_mismatch')
-                revisions = wiki_card.frontmatter_source_revisions(block)
-                span_state, spans = source_spans.source_spans.read_card_spans(block)
-                found = {(r['path'], r['sha256'], r['size']) for r in revisions}
-                expected = {(fp['path'], fp['source_sha'], fp['byte_length']) for fp in fingerprints}
-                if (found != expected or source_spans.source_spans.is_invalid(span_state)
-                        or spans != sorted(intent['sourceSpans'], key=lambda s: (s['path'], s['startLine'], s['endLine']))):
-                    raise ValueError('provenance_parity_mismatch')
-                attempted += 1
-                if 'proof' not in marks:
-                    _mark_schema3_write(writer, proof, marks)
-                store.put_compiled_attestation(handle.worktree_id, intent, policy_digest=handle.policy_digest)
-                normal.validate_normal_writer(writer)
-                outcome = 'consumed'
-            except (store_types.BlobStoreError, KeyError, TypeError, ValueError, UnicodeError) as exc:
-                if initial is None:
-                    continue
-                reason = ('provenance_parity_mismatch' if str(exc) == 'provenance_parity_mismatch'
-                          else 'provenance_value_invalid')
-                result['rejected'][reason] = result['rejected'].get(reason, 0) + 1
-                outcome = 'rejected'
-            _ack_compile_intent(path, fd, initial, outcome)
-            if outcome == 'consumed':
-                result['consumed'] += 1
-        finally:
-            os.close(fd)
-    if last_scanned is not None:
-        cursor['last'] = last_scanned
-    if witnesses or len(names) > len(scanned) or attempted >= SCHEMA3_MAX_INGEST:
-        ledger.ledger_write(cursor_path, cursor, replace=True)
-    return result
+    from memvane.sync import compile_intents
+    return compile_intents.consume(
+        store, decision, handle, members, current,
+        mark=lambda: 'proof' in marks or _mark_schema3_write(writer, proof, marks),
+        validate=lambda: normal.validate_normal_writer(writer),
+        passthrough=SCHEMA3_BINDING_REASONS | SCHEMA3_TRANSIENT_REASONS,
+        ingest_limit=SCHEMA3_MAX_INGEST)
 
 
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
