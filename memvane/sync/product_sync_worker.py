@@ -5,7 +5,7 @@ route, installer journal, provider attestation and DB/queue incarnation. A
 failed or deferred attempt leaves the wake for the runtime dispatcher to retry.
 """
 from __future__ import annotations
-from memvane.sync.types import EMBED_POLICY
+from memvane.resident.types import EMBED_POLICY
 
 from collections.abc import Mapping
 from contextlib import contextmanager

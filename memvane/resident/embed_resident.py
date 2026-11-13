@@ -246,7 +246,7 @@ def admit_query(*, coordinator=None, report=None):
     """
     from memvane.learning.context_learning.resource_coordination import Coordinator
     from memvane.learning.api import resource_report
-    from memvane.sync.types import EMBED_POLICY
+    from memvane.resident.types import EMBED_POLICY
 
     try:
         # The learning lane root may be mid-move (a sentinel where the old
