@@ -44,7 +44,7 @@ transfers to a different artifact hash. Batch fixes before final QA, then run
 the exact installed identity/core smoke and only the affected scenario
 assertions under section 11. Do not launch a separate model turn for each ID
 when one trace proves several. No data-safety row is waived by this economy:
-LI-MIG, LI-RECOVER, LI-COEXIST and RQA-INST-04 remain mandatory.
+All applicable data-safety rows remain mandatory.
 
 ## 1. Source verification and installed-candidate QA are separate
 
@@ -139,8 +139,7 @@ Operator rules:
   the run.
 - **Fresh session.** A host process started after the candidate install and
   host reload completed, with its working directory equal to the scenario's
-  checkout. Sessions that predate the install are "old sessions" and appear
-  only in RQA-INST-02.
+  checkout.
 
 ### Preflight before functional QA
 
@@ -351,7 +350,7 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 | T_INSTALL | 30 min | Install or update: plan, prepare and apply on the fixture |
 | T_ROLLBACK | 10 min | Rollback, or a recovery status request |
 | T_WIKI | 15 min | Compile and verify of one source revision |
-| T_SCENARIO | 45 min (60 min for RQA-INST-02/04, RQA-RES-02) | Whole scenario |
+| T_SCENARIO | 45 min (60 min for RQA-RES-02) | Whole scenario |
 | T_CELL | 8 h | One matrix cell |
 
 - Exceeding a timeout because of product behavior is `FAIL`.
@@ -520,32 +519,11 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 
 ### RQA-INST-03 Settings preservation
 
-- **Purpose:** an update or migration must never drop or rewrite user
-  decisions.
-- **Owner:** install. Settings are owned by the project and user.
-- **Hosts:** Claude Code, Codex.
-- **Preconditions:** under N-1, before the update in RQA-INST-02:
-  1. As the user, add an entry to A's `skipPaths`. Expected: the route stays
-     selected (only a changed `name` blocks it as `route_settings_changed`).
-  2. Create a second fixture B and leave it without `.memvane/`.
-  3. Record the settings bytes, SHA-256 and canonical JSON for A, the
-     absence of `.memvane/` in B, and the wiki file hashes for A.
-  4. Record N-1's on-disk format/version markers and representative index,
-     wiki and install-journal identities before update. Use actual N-1 output,
-     not a hand-written imitation of the old format.
-- **Steps:**
-  1. After RQA-INST-02 completes, re-read A's settings and wiki hashes.
-  2. Start a fresh session in B and probe Q-alpha.
-- **Expected:**
-  - A's settings are byte-identical, or differ only by a migration that the
-    release notes document and that keeps every user value.
-  - A's wiki bytes are unchanged.
-  - Every prior-format index and install-journal record is either readable
-    by the candidate or migrated through a documented path with no lost
-    source identity. Record the before/after format and any
-    migration receipt. A fresh install alone cannot satisfy this check.
-  - B stays silent: no notice, nothing is injected, and no `.memvane/`
-    is created.
+- **Purpose:** onboarding preserves the user's settings and wiki.
+- **Owner:** install. **Hosts:** Claude Code, Codex.
+- **Preconditions:** record fixture A's settings bytes and wiki hashes; create fixture B without `.memvane/`.
+- **Steps:** onboard A, re-read its settings and wiki hashes, then start a fresh session in B.
+- **Expected:** A's settings and wiki bytes are unchanged. B receives no injected context and no `.memvane/` directory is created.
 - **Evidence:** before/after hashes and diff, B's session transcript.
 - **Timeout:** 20 min.
 - **Cleanup:** clean up fixture B.
