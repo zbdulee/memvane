@@ -7,6 +7,7 @@ import os
 import re
 import stat
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, NoReturn
 
@@ -409,5 +410,37 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
         by_path=MappingProxyType({f.path: f for f in files}),
         undecodable=tuple(sorted(budget.undecodable)),
     )
+
+
+
+_MAX_COLLECTIONS = 16
+
+
+def _collection_roots(roots):
+    """Return a frozen sorted copy of valid disjoint roots, else None."""
+    try:
+        items = sorted(roots.items())
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= len(items) <= _MAX_COLLECTIONS:
+        return None
+    paths = []
+    for name, root in items:
+        if (not isinstance(name, str) or _COLLECTION.fullmatch(name) is None
+                or not isinstance(root, str)):
+            return None
+        try:
+            path = Path(root)
+            if (not path.is_absolute() or not path.is_dir()
+                    or str(path.resolve(strict=True)) != root):
+                return None
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+        paths.append(path)
+    # Path ancestry, not a string prefix: '/' must overlap every other root.
+    if any(left == right or left in right.parents or right in left.parents
+           for i, left in enumerate(paths) for right in paths[i + 1:]):
+        return None
+    return MappingProxyType(dict(items))
 
 

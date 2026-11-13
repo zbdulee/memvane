@@ -15,7 +15,7 @@ import weakref
 import laya_journal_reader as R
 import laya_reader_windows as W
 import laya_writer_open_plan as P
-from laya_index_sync import validate_sync_owner
+from sync_owner_lock import validate_sync_owner
 
 _owners = {}
 _retained = {}
@@ -164,7 +164,7 @@ class _Owner:
         if record is None or self.scope.expired or time.monotonic() >= record['deadline']:
             return 1
         try:
-            from laya_index_sync import _lease_record
+            from sync_owner_lock import _lease_record
             _lease_record(record['queue_owner'])
             P._proof_window_record(record['window'])
         except Exception:
@@ -314,7 +314,7 @@ def _expired(scope):
         return True
     # Inspect issued lifetime without applying the observing thread's identity
     # to another creator's lease. Only its creator may perform native cleanup.
-    from laya_index_sync import _sync_leases
+    from sync_owner_lock import _sync_leases
     lease = _sync_leases.get(record['queue_owner'])
     return lease is None or lease['pid'] != scope.pid or lease['thread'] is not scope.thread
 

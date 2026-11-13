@@ -41,7 +41,7 @@ def _compile_proof(decision, *, owner=None):
     if 'journalPath' not in decision:
         return verify_selected_route_for_write(decision,'compile')
     import laya_install_journal as journal
-    from laya_index_sync import sync_owner
+    from sync_owner_lock import sync_owner
     from resource_deferred import ResourceDeferred
     with sync_owner(Path(decision['queuePath'])) as acquired:
         if acquired is None:

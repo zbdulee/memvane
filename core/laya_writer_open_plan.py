@@ -304,7 +304,7 @@ def _proof_window_record(window):
 
 def validate_writer_proof_window(window):
     """Validate live owner and original locks before a later proof operation."""
-    from laya_index_sync import validate_sync_owner
+    from sync_owner_lock import validate_sync_owner
     proof = _proof_window_record(window)
     plan = proof['plan']
     validate_sync_owner(proof['queue_owner'], plan.queue_path)
@@ -331,7 +331,7 @@ class _WriterProofContext:
         self.stack = self.window = None
 
     def __enter__(self):
-        from laya_index_sync import validate_sync_owner
+        from sync_owner_lock import validate_sync_owner
         from laya_writer_proof_reader import _ProofExitStack
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
                 'writer_proof_owner_changed')

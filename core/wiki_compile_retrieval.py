@@ -433,7 +433,7 @@ def _schema3_search(bound, text):
     import laya_reader_lease as lease
     import project_dir
     from laya_index_host_route import wiki_index_roots
-    from laya_index_sync import sync_owner
+    from sync_owner_lock import sync_owner
     from laya_product_sync_worker import _owned_selected_proof, _writer_executing_root
     from resource_deferred import ResourceDeferred
     decision, proof = bound

@@ -23,9 +23,8 @@ from context_learning.shared import resource_report
 from laya_index_a import IndexContractError
 from laya_index_host_route import (select_route, selected_collection_roots,
                                    wiki_index_roots)
-from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX, LayaIndexRuntime,
-                                _collection_roots, capacity_store_paths)
-from laya_index_sync import prepare_candidate_batch_off_hook, sync_full, sync_step, sync_owner
+from source_scan import _collection_roots
+from sync_owner_lock import sync_owner
 from laya_install_journal import (JournalEvidenceError, cas_mark_new_write, inspect_journal,
                                   preflight_product_candidate,
                                   verify_selected_route_for_write as verify_selected_route,

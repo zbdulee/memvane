@@ -1737,7 +1737,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         from resource_deferred import ResourceDeferred
         try:
             if 'journalPath' in decision:
-                from laya_index_sync import sync_owner
+                from sync_owner_lock import sync_owner
                 from wiki_selected_laya import _owner_scope
                 with sync_owner(Path(decision['queuePath'])) as owner:
                     if owner is None:

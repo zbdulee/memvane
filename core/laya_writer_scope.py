@@ -23,7 +23,7 @@ import laya_install_journal as J
 import laya_journal_reader as R
 import laya_reader_windows as W
 import laya_writer_open_plan as P
-from laya_index_sync import validate_sync_owner
+from sync_owner_lock import validate_sync_owner
 
 # Keep abandoned admissions strongly owned. Only explicit creator exit can
 # release their lifetime and queue pin; no generator/finalizer does cleanup.
