@@ -7,9 +7,6 @@ CURRENT = '.memvane'
 NAMES = (CURRENT,)
 SETTINGS = 'settings.json'
 WIKI = 'wiki'
-IGNORE_SUFFIXES = ('compile/', 'file-changes/', 'laya-index-route.json',
-                   'laya-index-selection.json', 'memvane-*.json', '*.lock', '.*.lock',
-                   'wiki/' + '.memvane-root')
 
 
 def active_name(project) -> str:

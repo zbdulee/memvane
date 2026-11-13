@@ -36,8 +36,8 @@ SCHEMA_V2 = "laya-index-route-v2"
 # the MemVane rename reads only v1/v2, so it classifies a v3 route as blocked
 # and can neither serve nor move (downgrade) an install this release owns.
 SCHEMA_V3 = "memvane-route-v3"
-RECORD = "laya-index-route.json"
-QMD_SELECTION_MARKER = "laya-index-selection.json"
+RECORD = "route.json"
+QMD_SELECTION_MARKER = "selection.json"
 MAX_RECORD_BYTES = 8192
 MAX_SETTINGS_BYTES = 2 * 1024 * 1024
 FIELDS = frozenset({"schema", "status", "projectRoot", "settingsSha256",

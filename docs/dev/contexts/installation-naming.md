@@ -12,7 +12,7 @@ live `v1/`에 쓰는 setup과 writer는 실행 플러그인 루트가 Claude 또
 ### 이름과 내부 명명
 - 제품 이름은 MemVane, 플러그인 id는 `memvane`, marketplace는 `memvane-marketplace`, 저장소는 `zbdulee/memvane`이다. skill id는 `memvane:<skill>`, 색인 DB의 사용자용 이름은 memvane-db, hook·안내 메시지 태그는 `[memvane]`이다.
 - 사용자별 루트는 `core/memvane_paths.py`가 정한다: 상태 `~/.local/state/memvane/v1`(설치별 state root, `embed-runtime`, `service`, `initial-builds`, `auto-context` 로그·scan state: 프로젝트 폴더와 별개인 사용자별 디렉터리라 이름이 그대로다), 지원 디렉터리 `~/Library/Application Support/memvane`(그 밖의 OS는 `~/.local/share/memvane`), 설정 `~/.config/memvane`, 캐시 `~/Library/Caches/memvane`·`~/.cache/memvane`. 새 설치·온보딩은 이 루트에만 쓴다.
-- 내부 명명은 그대로다: `core/laya_*.py` 모듈, Laya 엔진 용어, `laya-*` 스키마 id, 프로젝트 폴더 안 `laya-index-route.json`·`laya-index-selection.json`, `configFormat` 값 `auto-context-dir`, `QMD_*` 환경 변수. 사용자에게 보이지 않고, 바꾸면 봉인된 기록과 테스트만 흔들린다.
+- 내부 명명은 `core/laya_*.py` 모듈, Laya 엔진 용어, `configFormat` 값 `auto-context-dir`, `QMD_*` 환경 변수를 쓴다. 프로젝트 포인터는 `.memvane/route.json`과 `.memvane/selection.json`이다.
 - 프로젝트 폴더는 `.memvane/`다. 설정, `wiki/`, route·selection·lock·`compile/` 런타임 파일을 이 폴더에 둔다(`core/project_dir.py`).
 - resident service는 사용자별 서비스 루트에서 동작한다. worker는 바인딩과 진행 중 요청이 없으면 `RECLAIM_SECONDS` 뒤 정지한다. 바인딩은 `OWNER_RECHECK_SECONDS` 간격으로 소유를 재증명하며, owner 잠금 경합이면 바인딩과 socket을 유지한다. `LAYA_SERVICE_TIME_SCALE`은 fixture 전용 내부 환경 변수다.
 - wiki-dedup resolver는 프로젝트별 run-lock을 사용한다.

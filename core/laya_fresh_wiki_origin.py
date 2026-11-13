@@ -25,8 +25,8 @@ from persistent_identity import persistent_node_equal
 SCHEMA = 'laya-fresh-wiki-cutover-v1'
 MARKER_SCHEMA = 'laya-fresh-wiki-selection-marker-v1'
 LEDGER = 'fresh-wiki-cutover.json'
-MARKER = 'laya-index-selection.json'
-ROUTE = 'laya-index-route.json'
+MARKER = 'selection.json'
+ROUTE = 'route.json'
 PHASES = ('prepared', 'switching', 'active', 'upgrading', 'restoring', 'restored', 'retired')
 HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 HEX32 = re.compile(r'[0-9a-f]{32}\Z')
