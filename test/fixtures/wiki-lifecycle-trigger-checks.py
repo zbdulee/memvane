@@ -34,7 +34,7 @@ sys.path.insert(0, str(CORE))
 from memvane.host import host_response as response  # noqa: E402
 from memvane.journal import install_journal as laya_install_journal  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
-import wiki_selected_laya  # noqa: E402
+from memvane.wiki.workspace import wiki_selected_laya  # noqa: E402
 from memvane.wiki.compile import wiki_compile_retrieval  # noqa: E402
 from memvane.wiki.card import yaml_scalars  # noqa: E402
 

@@ -17,10 +17,10 @@ import tracemalloc
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import wiki_compile as wc
-import wiki_compile_worker as worker
+from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile_worker as worker
 from memvane.wiki.card import wiki_freshness
-import wiki_selected_laya
+from memvane.wiki.workspace import wiki_selected_laya
 from memvane.wiki.intake import wiki_compile_enqueue
 from memvane.wiki.card import yaml_scalars as ys
 

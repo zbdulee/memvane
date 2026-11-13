@@ -35,7 +35,7 @@ from memvane.settings import source_text
 from memvane.settings.collection_match import select_collections
 from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from memvane.wiki.intake.wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
-import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_card_budget
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import yaml_scalars
@@ -336,7 +336,7 @@ def gather_similar_pages(
     collection, _ = wc.find_wiki_collection(config)
     if not collection or not wc.shared_collection_owned(root, config, collection):
         return None
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is not None:
         rows = wiki_selected_laya.wiki_matches(root, wiki_root, content,
@@ -637,7 +637,7 @@ def is_hidden_source_path(rel_path: str) -> bool:
     return any(part.startswith(".") for part in Path(rel_path).parts)
 
 
-CARD_RULES_DIR = Path(__file__).resolve().parent / "wiki_card_rules"
+CARD_RULES_DIR = Path(__file__).resolve().parents[3] / "core/wiki_card_rules"
 CARD_RULES_PRESETS = ("default", "novel")
 # Primary novel marker: a numbered manuscript directory at the project root
 # (`04_Manuscript/`, `03_Manuscript/`). Minimal settings carry no preset key.
@@ -711,7 +711,7 @@ def _argv_list(value) -> list[str] | None:
 def _builtin_adapter_argv(engine: str) -> list[str] | None:
     if engine not in BUILTIN_EXTRACTOR_ENGINES:
         return None
-    adapter = Path(__file__).resolve().parent / "extractors" / f"{engine}_adapter.py"
+    adapter = Path(__file__).resolve().parents[3] / "core/extractors" / f"{engine}_adapter.py"
     if not adapter.is_file():
         return None
     return [sys.executable, str(adapter)]
@@ -908,7 +908,7 @@ def compile_candidate(root: Path, candidate: dict, *, final_reason: str | None =
     ``final_reason``: the trusted final pass of the card budget (``--budget-final``).
     ``check``: validate only (``--check``); nothing is written.
     """
-    argv = [sys.executable, str(Path(__file__).parent / "wiki_compile.py"), "--cwd", str(root)]
+    argv = [sys.executable, str(Path(__file__).resolve().parents[3] / "entry/run.py"), "wiki-compile", "--cwd", str(root)]
     if final_reason is not None:
         argv += ["--budget-final", final_reason]
     if check:
@@ -1072,7 +1072,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     # only from the stable source bytes this invocation actually read.
     job.pop('_processedContentRevision', None)
     job.pop('_backfillSkipped', None)
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     cpath = candidate_path(root, compile_cfg)
     if selected_route is not None:
@@ -1639,7 +1639,7 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
     written. Returns False only when the source changed during the re-prompt; the
     caller keeps the job for the new revision.
     """
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     written = parts = 0
     split_reason = None
     budget = _EXTRACTOR_BUDGET.get()
@@ -1821,7 +1821,7 @@ def main():
         return _main()
     except ResourceDeferred as exc:
         if '--json' in sys.argv:
-            import wiki_selected_laya
+            from memvane.wiki.workspace import wiki_selected_laya
             print(json.dumps(wiki_selected_laya.deferred_result(exc), ensure_ascii=False))
         return 0
 
@@ -1837,7 +1837,7 @@ def _main():
         return 0
     found = qmd_config.find_project_config(args.cwd)
     root = Path(found["projectRoot"]).resolve()
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     # Only a selected Laya route compiles; synthetic fixtures stand in for one.
     if selected_route is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
@@ -1954,7 +1954,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
             try:
                 budget_token = _EXTRACTOR_BUDGET.set(attempt_budget)
                 try:
-                    import wiki_selected_laya
+                    from memvane.wiki.workspace import wiki_selected_laya
                     try:
                         checkout = wiki_selected_laya.schema3_checkout(selected_route)
                     except (OSError, RuntimeError, ValueError, sqlite3.Error):
@@ -1989,7 +1989,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
         # Productive budget continuation gets a new wake revision. The runtime
         # owner resets retry accounting on that revision; this is not a failed
         # extractor attempt and must not exhaust the transient-failure cap.
-        import wiki_selected_laya
+        from memvane.wiki.workspace import wiki_selected_laya
         wiki_selected_laya.request_compile(root, selected_route)
     if args.json:
         print(json.dumps({

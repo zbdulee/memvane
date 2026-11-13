@@ -47,7 +47,7 @@ def main(argv):
         from memvane.sync.product_sync_worker import run
         result = run(Path(project))
     else:
-        from wiki_selected_laya import run
+        from memvane.wiki.workspace.wiki_selected_laya import run
         result = run(Path(project))
     print(json.dumps(result, sort_keys=True))
     return 0

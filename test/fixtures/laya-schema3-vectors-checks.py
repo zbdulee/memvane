@@ -448,7 +448,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         def approved(candidate, current):
             manifest = dict(current.get('providerManifest') or {}, modelSha256=MODEL_SHA)
             return real(candidate, dict(current, providerManifest=manifest))
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         with self.seed.authority(), mock.patch.object(retrieval, 'selected_search', new=spy), \
                 mock.patch.object(self.dispatch, '_approved_profile_matches', new=approved), \
                 mock.patch.object(retrieval, 'query_provider',

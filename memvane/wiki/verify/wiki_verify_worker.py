@@ -61,8 +61,8 @@ from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
-import wiki_compile as wc
-import wiki_compile_worker as wcw
+from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.card import source_spans
@@ -431,7 +431,7 @@ def record_verify_suppression(
 def reindex_wiki(root: Path, config: dict) -> None:
     collection, collection_path = wc.find_wiki_collection(config)
     if collection and collection_path:
-        import wiki_selected_laya
+        from memvane.wiki.workspace import wiki_selected_laya
         selected = wiki_selected_laya.selected(root)
         if selected is not None:
             wiki_selected_laya.request_sync(root, selected)
@@ -439,7 +439,7 @@ def reindex_wiki(root: Path, config: dict) -> None:
 
 def wake_pending_retirement(root: Path) -> None:
     """Recheck a held deletion only after a successful replacement review."""
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     selected = wiki_selected_laya.selected(root)
     if selected is None:
         return
@@ -980,7 +980,7 @@ def process_verify_job(
     *, snapshots: dict | None = None,
 ) -> tuple[bool, bool]:
     """Return (processed, preserve_job) — wiki_compile_worker.process_job과 동일 계약."""
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     checkout = None
     if selected_route is not None and isinstance(job.get('sourceFingerprints'), dict):
@@ -1576,7 +1576,7 @@ def run(
     """
     result = {"processed": 0, "remaining": 0}
     vcfg = verify_cfg_of(compile_cfg)
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     selected_route = wiki_selected_laya.selected(root)
     if selected_route is not None:
         # Selected Laya keeps wiki bytes for recovery. The legacy default

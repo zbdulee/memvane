@@ -37,7 +37,7 @@ def plugin_root(explicit: str | None = None) -> Path:
     if env:
         return Path(env).resolve()
     # this file lives at <root>/core/wiki_compile_defaults.py
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[3]
 
 
 def parse_engines(value: str | None) -> tuple[str, ...]:

@@ -75,7 +75,7 @@ class EntryPoints(unittest.TestCase):
         self.assertEqual(result['status'],'deferred_resource');policy.assert_not_called()
 
     def test_custom_wiki_extractor_defer_never_launches_child(self):
-        a=self.admission();import wiki_compile_worker as worker
+        a=self.admission();from memvane.wiki.compile import wiki_compile_worker as worker
         with patch.object(a,'sample',return_value=None),patch.object(worker.subprocess,'Popen') as spawn:
             result=worker.run_extractor(['/synthetic/provider'],{},1,self.root)
         self.assertEqual(result,(None,'resource_deferred',75));spawn.assert_not_called()

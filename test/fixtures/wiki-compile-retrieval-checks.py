@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.wiki.compile import wiki_compile_retrieval as retrieval
-import wiki_selected_laya as selected
+from memvane.wiki.workspace import wiki_selected_laya as selected
 
 
 class OverlayChecks(unittest.TestCase):
@@ -160,7 +160,7 @@ class OverlayChecks(unittest.TestCase):
 
     def test_twenty_compact_cards_reach_actual_extractor_payload_and_prompt(self):
         from memvane.settings import config
-        import wiki_compile_worker as worker
+        from memvane.wiki.compile import wiki_compile_worker as worker
         from memvane.wiki.dedup import wiki_dedup_judge
         from extractors.lib import build_prompt, render_existing_context_section
         docs = self.root / 'docs'

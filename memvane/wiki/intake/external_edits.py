@@ -370,7 +370,7 @@ def drain(decision, *, recheck, owner=None):
     from memvane.route import index_host_route as routes
     from memvane.journal import install_journal as journal
     from memvane.wiki.intake import wiki_compile_enqueue as enqueue
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     from memvane.wiki.intake.wiki_discovery import _locked, _write
     if not isinstance(decision.get('collections'), list):
         return {'remaining': 0, 'processed': 0}

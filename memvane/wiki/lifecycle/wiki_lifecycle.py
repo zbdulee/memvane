@@ -99,7 +99,7 @@ from memvane.settings import config as qmd_config
 from memvane.kernel import memvane_paths
 from memvane.wiki.workspace import scan_state
 from memvane.settings import source_text
-import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.lifecycle import wiki_source_retire
 
@@ -553,7 +553,7 @@ def run(cwd: str) -> dict:
             result["gitOperation"] = operation
             return result
 
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     try:
         selected = wiki_selected_laya.selected(root)
     except ValueError as exc:

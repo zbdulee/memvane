@@ -225,7 +225,7 @@ def lexical_probe(text: str, deadline: float):
 @contextmanager
 def overlay(root: Path, bound):
     """Private SQLite transaction; failed refreshes never publish partial FTS."""
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     wiki_selected_laya.recheck(bound)
     base = cp.compile_dir(root, create=True)
     if base is None:

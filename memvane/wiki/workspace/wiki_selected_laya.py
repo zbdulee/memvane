@@ -289,7 +289,7 @@ def _run(project: Path):
             # A lifecycle pass that left nothing to compile skips the worker.
             return {'state': 'drained', 'processed': 0}
     proc = subprocess.run(
-        [sys.executable, '-B', str(Path(__file__).with_name('wiki_compile_worker.py')),
+        [sys.executable, '-B', str(Path(__file__).resolve().parents[3] / 'entry/run.py'), 'wiki-compile-worker',
          '--cwd', str(project), '--json', '--flush-all'],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False,
         env={**os.environ, 'QMD_RUNTIME_DISPATCH': '1'})
@@ -327,7 +327,7 @@ def _queue_busy(queue: Path):
         return False
     import fcntl
     from memvane.wiki.intake.wiki_compile_enqueue import _queue_lock_path
-    from wiki_compile_worker import reclaim_orphaned_claimed
+    from memvane.wiki.compile.wiki_compile_worker import reclaim_orphaned_claimed
     prefix = queue.name + '.claimed.'
     with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
@@ -342,7 +342,7 @@ def _queue_busy(queue: Path):
 
 def _compile_idle(project: Path, source: Path, verify: Path, bound):
     """True when no worker, queue row, claim or active refresh is left; None if unknown."""
-    import wiki_compile_worker as wcw
+    from memvane.wiki.compile import wiki_compile_worker as wcw
     run_lock = None
     try:
         if (source.parent / wcw.COMPILE_RUN_LOCK).exists():

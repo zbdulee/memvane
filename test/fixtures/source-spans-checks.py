@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
 from memvane.wiki.card import source_spans
-import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import yaml_scalars
 
 SOURCE = (

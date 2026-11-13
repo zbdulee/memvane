@@ -22,7 +22,9 @@ TARGETS = {
     'resident-service': ('memvane/resident/resident_service.py', None),
     'runtime-work': ('memvane/runtime/runtime_work.py', None),
     'runtime-monitor': ('memvane/runtime/runtime_monitor.py', None),
-    'wiki-extract': ('core/wiki_extract.py', None),
+    'wiki-compile': ('memvane/wiki/compile/wiki_compile.py', None),
+    'wiki-compile-worker': ('memvane/wiki/compile/wiki_compile_worker.py', None),
+    'wiki-extract': ('memvane/wiki/compile/wiki_extract.py', None),
     'wiki-dedup-resolve': ('memvane/wiki/dedup/wiki_dedup_resolve.py', None),
 }
 

@@ -15,7 +15,7 @@ from memvane.settings import project_dir
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.wiki.card import wiki_card
 from memvane.settings import resolve_paths as qmd_resolve_paths
-import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import yaml_scalars
 
 # 카드가 있는데 소스 항목을 하나도 파일로 읽을 수 없는 상태를 "소실"로 볼 수 없는 사유.

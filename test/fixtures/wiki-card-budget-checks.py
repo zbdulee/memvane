@@ -311,7 +311,7 @@ class CompileChecks(unittest.TestCase):
         self.assertEqual(self.p.ledger('manifest.jsonl'), [])
 
     def test_within_budget_card_is_written_unchanged(self):
-        import wiki_compile as wc
+        from memvane.wiki.compile import wiki_compile as wc
         sent = candidate()
         out = self.p.compile(sent)
         self.assertEqual(out['action'], 'created', out)
@@ -326,7 +326,7 @@ class CompileChecks(unittest.TestCase):
         text = (self.p.root / out['targetPath']).read_text()
         self.assertIn('related:\n  - "part-two"\n', text)
         self.assertNotIn('- "part-one"', text, "a card never relates to its own key")
-        import wiki_compile as wc
+        from memvane.wiki.compile import wiki_compile as wc
         meta, ok = wc.parse_frontmatter(text)
         self.assertTrue(ok, 'a related block never fail-closes verify or dedup parsing')
         self.assertEqual(meta.get('related'), ['part-two'])
@@ -360,7 +360,7 @@ class CompileChecks(unittest.TestCase):
                          'the hand-written section alone fits, so a smaller summary can')
 
     def test_without_a_selector_tokenizer_the_card_is_written_and_logged(self):
-        import wiki_compile as wc
+        from memvane.wiki.compile import wiki_compile as wc
         bare = Project(self, selector=False)
         out = bare.compile(candidate(summary=LONG_SUMMARY))
         self.assertEqual(out['action'], 'created', out)
@@ -376,7 +376,7 @@ class CompileChecks(unittest.TestCase):
                          [('wiki.card', 'unmeasured', 'unavailable')])
 
     def test_measure_failure_logs_codes_and_attempts_without_raw_text(self):
-        import wiki_compile as wc
+        from memvane.wiki.compile import wiki_compile as wc
         python = Path(self.p.tokenizer[0])
         python.write_text(f'#!/bin/sh\necho "{STDERR_MARKER} $0" >&2\nexit 7\n')
         second = install_selector(self.p.home, name='b' * 64)
@@ -406,7 +406,7 @@ class CompileChecks(unittest.TestCase):
             self.assertEqual(raw.count(needle), 0, needle)
 
     def test_a_fallback_runtime_keeps_the_failed_attempt_on_every_outcome(self):
-        import wiki_compile as wc
+        from memvane.wiki.compile import wiki_compile as wc
         state = self.p.state_root()
         bound = ({'journalPath': str(state / 'install-journal.sqlite'), 'installId': 'i1'}, {})
 
@@ -451,7 +451,7 @@ class CompileChecks(unittest.TestCase):
             self.assertEqual(raw.count(needle), 0, needle)
 
     def test_the_final_pass_writes_an_over_budget_card_and_logs_it(self):
-        import wiki_compile as wc
+        from memvane.wiki.compile import wiki_compile as wc
         claimed = self.p.compile(candidate(summary=LONG_SUMMARY, budgetFinal=True,
                                            budgetFinalReason='split_part_over_budget'))
         self.assertEqual(claimed['action'], 'split-required', 'a candidate field never claims it')
@@ -524,7 +524,7 @@ class CompileChecks(unittest.TestCase):
         self.assertEqual(run('--budget-final')['action'], 'created')
 
     def test_refusal_logs_a_wiki_card_event_for_a_selected_install(self):
-        import wiki_compile as wc
+        from memvane.wiki.compile import wiki_compile as wc
         state = self.p.state_root()
         bound = ({'journalPath': str(state / 'install-journal.sqlite'), 'installId': 'i1'}, {})
         record = {'title': 'Big Card', 'targetPath': 'x', 'canonicalKey': 'big'}
@@ -550,7 +550,7 @@ class WorkerChecks(unittest.TestCase):
         cfg['compile']['mode'] = 'guarded'
         settings.write_text(json.dumps(cfg))
         from memvane.settings import config
-        import wiki_compile_worker as w
+        from memvane.wiki.compile import wiki_compile_worker as w
         self.w = w
         self.config = config.find_project_config(str(self.p.root))['config']
         self.job = {'ts': '2026-10-30T00:00:00Z', 'trigger': 'post_tool_source',
@@ -790,7 +790,7 @@ class DedupChecks(unittest.TestCase):
 
     def resolve(self, bound=None):
         from memvane.wiki.dedup import wiki_dedup_resolve as R
-        import wiki_selected_laya as S
+        from memvane.wiki.workspace import wiki_selected_laya as S
         entry = {'pageA': 'entities/loser.md', 'pageB': 'entities/winner.md', 'score': 0.95}
         with patch.object(S, 'recheck'), patch.object(S, 'request_sync', return_value=True):
             return R.resolve_entry(self.p.root, self.p.wiki,

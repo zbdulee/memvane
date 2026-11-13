@@ -560,7 +560,7 @@ class GitBranchTests(MoveCase):
 
     def test_writers_recheck_with_their_own_action_and_stop_mid_run(self):
         from memvane.sync import product_sync_worker as sync_worker
-        import wiki_selected_laya
+        from memvane.wiki.workspace import wiki_selected_laya
         # The fixture has no sealed plugin bundle: prove routes read-only.
         stack = ExitStack()
         self.addCleanup(stack.close)

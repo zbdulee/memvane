@@ -1718,7 +1718,7 @@ def _after_sync(decision, proof, grants, result, *, raw_snapshot=None):
                 if _owned_selected_proof(decision, owner) != proof:
                     raise IndexContractError('selected_proof_changed')
             from memvane.wiki.intake import external_edits as laya_external_edits
-            from wiki_selected_laya import _owner_scope
+            from memvane.wiki.workspace.wiki_selected_laya import _owner_scope
             with _owner_scope((decision, proof), owner):
                 external = laya_external_edits.drain(decision, recheck=recheck, owner=owner)
                 if isinstance(external, dict) and external.get('remaining', 0):

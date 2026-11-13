@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.wiki.lifecycle import wiki_lifecycle as lifecycle
-import wiki_selected_laya
+from memvane.wiki.workspace import wiki_selected_laya
 from memvane.wiki.card import yaml_scalars
 
 COMPILE = {'mode': 'auto-wiki', 'triggers': ['session_start_source', 'post_tool_source']}

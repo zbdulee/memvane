@@ -25,10 +25,10 @@ from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import wiki_mutation_lock
-import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
-import wiki_selected_laya
-from wiki_compile_worker import claim_queue, requeue_lines
+from memvane.wiki.workspace import wiki_selected_laya
+from memvane.wiki.compile.wiki_compile_worker import claim_queue, requeue_lines
 
 ACTIONS = {"merge", "skip"}
 

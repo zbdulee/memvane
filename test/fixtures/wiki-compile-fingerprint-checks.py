@@ -38,9 +38,9 @@ os.environ.update(GIT_ENV)
 from memvane.wiki.lifecycle import git_branch_safety  # noqa: E402
 from memvane.store import blob_values as laya_blob_values  # noqa: E402
 from memvane.store import checkout_view as view  # noqa: E402
-import wiki_compile_worker as worker  # noqa: E402
+from memvane.wiki.compile import wiki_compile_worker as worker  # noqa: E402
 from memvane.wiki.card import wiki_freshness  # noqa: E402
-import wiki_selected_laya  # noqa: E402
+from memvane.wiki.workspace import wiki_selected_laya  # noqa: E402
 
 REAL_RUN_GIT = git_branch_safety.run_git
 REAL_SNAPSHOT = wiki_freshness.snapshot_bytes
@@ -371,7 +371,7 @@ class FingerprintChecks(unittest.TestCase):
         import io
         from memvane.host import host_response as laya_host_response
         from memvane.wiki.workspace import wiki_activity_log
-        import wiki_compile
+        from memvane.wiki.compile import wiki_compile
         project = Project(self.base, 'schema3-queue', git_repo=True)
         self.assertEqual(self.run_job(project, project.binding()), (True, False, []))
         candidate = self.candidates[-1]
@@ -400,7 +400,7 @@ class FingerprintChecks(unittest.TestCase):
         import io
         from memvane.host import host_response as laya_host_response
         from memvane.wiki.workspace import wiki_activity_log
-        import wiki_compile
+        from memvane.wiki.compile import wiki_compile
         project = Project(self.base, 'writer-reader-busy', git_repo=True)
         self.assertEqual(self.run_job(project, project.binding()), (True, False, []))
         decision = {'recallSettings': {'skipPaths': []}, 'collections': [

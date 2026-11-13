@@ -77,7 +77,7 @@ def _eligible(decision, snapshot, config):
 
 def _authority(decision, row, job, *, markerless=False):
     """Validate frozen source authority against the selected store."""
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     old = job.get('selectedRoute')
     current = wiki_selected_laya.route_identity((decision, None))
     if (not isinstance(old, dict) or set(old) != set(current)
@@ -171,7 +171,7 @@ def write_discard_receipt(job):
     exact token/hash are checked again by reconciliation outside the queue lock.
     """
     from memvane.wiki.intake import wiki_discovery as d
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     receipt = discard_receipt(job)
     if receipt is None:
         if job.get('initialBackfill') is not None:
@@ -246,7 +246,7 @@ def reconcile_discards(bound):
     if bound is None:
         return
     from memvane.wiki.intake import wiki_discovery as d
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     decision = bound[0]
     try:
         path = _path(decision)
@@ -347,7 +347,7 @@ def settle_job(bound, job):
     if bound is None or (not isinstance(marker, str) and not isinstance(revision, str)):
         return
     from memvane.wiki.intake import wiki_discovery as d
-    import wiki_selected_laya
+    from memvane.wiki.workspace import wiki_selected_laya
     decision = bound[0]
     try:
         path = _path(decision)

@@ -12,7 +12,7 @@ from memvane.diagnostics import diagnostic_trace as diag
 from memvane.diagnostics import event_log
 from memvane.route import index_host_route as routes
 import laya_runtime_dispatch as dispatch
-import wiki_compile_worker as compile_worker
+from memvane.wiki.compile import wiki_compile_worker as compile_worker
 from memvane.wiki.verify import wiki_verify_worker
 
 SENTINEL = 'synthetic-worker-exception-091'

@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'core'))
 
 from memvane.runtime import runtime_wake_policy as policy
-import wiki_selected_laya
-import wiki_compile_worker
+from memvane.wiki.workspace import wiki_selected_laya
+from memvane.wiki.compile import wiki_compile_worker
 from memvane.kernel.resource_deferred import ResourceDeferred
 
 

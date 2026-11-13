@@ -28,7 +28,7 @@ HERE = Path(__file__).resolve().parent
 CORE = HERE.parents[1] / 'core'
 sys.path.insert(0, str(CORE))
 from memvane.wiki.lifecycle import wiki_lifecycle as lifecycle  # noqa: E402
-import wiki_selected_laya  # noqa: E402
+from memvane.wiki.workspace import wiki_selected_laya  # noqa: E402
 from memvane.wiki.lifecycle import wiki_source_retire  # noqa: E402
 from memvane.wiki.card import yaml_scalars  # noqa: E402
 

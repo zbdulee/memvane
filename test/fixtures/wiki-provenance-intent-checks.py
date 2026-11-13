@@ -83,7 +83,7 @@ class IntentAckChecks(unittest.TestCase):
 
 class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
     def test_reader_selection_change_during_issuance_is_rejected(self):
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         views = importlib.import_module('memvane.store.view_store')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
@@ -100,7 +100,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                     selected.schema3_checkout(authority)
 
     def test_reader_selection_change_during_capture_is_rejected(self):
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         checkout_module = importlib.import_module('memvane.store.checkout_view')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
@@ -117,7 +117,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                     checkout.capture()
 
     def test_checkout_refuses_route_fence_after_issuance(self):
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         routes = importlib.import_module('memvane.route.index_host_route')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         self.select_schema3()
@@ -131,7 +131,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                     checkout.capture()
 
     def test_checkout_rejects_forged_and_stale_route_authority(self):
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
@@ -149,7 +149,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
             self.assertIsNone(selected.schema3_checkout(bound))
 
     def test_selected_checkout_tracks_full_registered_capture(self):
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
@@ -172,9 +172,9 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                         crash=False, through_process=False, unavailable=False, sqlite_failure=False,
                         initial_sqlite=False):
         checkout = importlib.import_module('memvane.store.checkout_view')
-        compiler = importlib.import_module('wiki_compile_worker')
+        compiler = importlib.import_module('memvane.wiki.compile.wiki_compile_worker')
         verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         locks = importlib.import_module('memvane.wiki.workspace.compile_paths')
         mutations = importlib.import_module('memvane.wiki.workspace.wiki_mutation_lock')
@@ -322,9 +322,9 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
 
     def run_pending_replay(self, mode):
         checkout_module = importlib.import_module('memvane.store.checkout_view')
-        compiler = importlib.import_module('wiki_compile_worker')
+        compiler = importlib.import_module('memvane.wiki.compile.wiki_compile_worker')
         verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         freshness = importlib.import_module('memvane.wiki.card.wiki_freshness')
         yaml = importlib.import_module('memvane.wiki.card.yaml_scalars')

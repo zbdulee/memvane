@@ -727,7 +727,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_full_selected_compile_retrieval_rechecks_with_owned_connections(self):
         from memvane.wiki.compile import wiki_compile_retrieval as retrieval
-        import wiki_selected_laya as selected
+        from memvane.wiki.workspace import wiki_selected_laya as selected
         from memvane.host import host_response as response
         with self._compile_warm(),self.seed.authority():
             calls=[]
@@ -802,7 +802,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.intake import wiki_discovery as discovery
         from memvane.wiki.intake import wiki_backfill as backfill
-        import wiki_selected_laya as selected
+        from memvane.wiki.workspace import wiki_selected_laya as selected
         with self.fixture.F.warm(),self.seed.authority():
             decision,proof=self.selected()
             state,_grants,_lock=discovery._paths(decision)
@@ -894,7 +894,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         from memvane.runtime import runtime_work
-        import wiki_selected_laya
+        from memvane.wiki.workspace import wiki_selected_laya
         with self.fixture.F.warm(), self.seed.authority():
             decision, proof = self.selected()
             inbox = laya_external_edits._inbox_path(decision)

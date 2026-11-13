@@ -19,7 +19,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.wiki.card import wiki_card
 from memvane.settings import resolve_paths as qmd_resolve_paths
-import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.card import wiki_freshness
 
 TYPE_DIRS = {
@@ -257,8 +257,8 @@ def to_candidate(payload: dict[str, Any], item: dict[str, Any]) -> dict[str, Any
 
 def run_compile(cwd: str, candidate: dict[str, Any], regenerate: bool = False,
                 budget_final: bool = False) -> str:
-    script = Path(__file__).resolve().with_name("wiki_compile.py")
-    argv = [sys.executable, str(script), "--cwd", cwd]
+    script = Path(__file__).resolve().parents[3] / "entry/run.py"
+    argv = [sys.executable, str(script), "wiki-compile", "--cwd", cwd]
     if regenerate:
         argv.append("--regenerate")
     if budget_final:

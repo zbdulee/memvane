@@ -47,7 +47,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         return path
 
     def selected(self):
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         with self.seed.authority():
             return selected.selected(self.case.project)
 
@@ -94,7 +94,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         first, _calls = self.run_pass()
         self.assertEqual(first['state'], 'indexed', first)
         retrieval = importlib.import_module('memvane.wiki.compile.wiki_compile_retrieval')
-        selected = importlib.import_module('wiki_selected_laya')
+        selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         dispatch = importlib.import_module('memvane.recall.reader_dispatch')
         captured, queries = [], []
         original_search = retrieval.selected_search

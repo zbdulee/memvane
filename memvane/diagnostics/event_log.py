@@ -712,7 +712,7 @@ def wiki_state_root(root, bound=_UNRESOLVED) -> Path | None:
     """
     try:
         if bound is _UNRESOLVED:
-            import wiki_selected_laya
+            from memvane.wiki.workspace import wiki_selected_laya
             bound = wiki_selected_laya.selected(Path(root).resolve())
         if bound is None:
             return None

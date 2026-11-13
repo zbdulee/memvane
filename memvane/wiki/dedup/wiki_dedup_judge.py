@@ -211,7 +211,7 @@ def judge_engine_pool(compile_cfg: dict) -> list[str]:
     QMD_ENGINE is honored only when that engine is actually configured; an unconfigured
     host (gemini on a claude/codex-only project) must not resolve to a dead label.
     """
-    import wiki_compile_worker as wcw
+    from memvane.wiki.compile import wiki_compile_worker as wcw
 
     pool = wcw.extractor_engine_pool(compile_cfg)
     env = os.environ.get("QMD_ENGINE", "")
@@ -249,7 +249,7 @@ def plan_judge_attempts(
     `cooled` are cooldown keys whose last PAID call failed; skipping them is what makes
     the next run degrade to the next candidate instead of re-billing the same failure.
     """
-    import wiki_compile_worker as wcw
+    from memvane.wiki.compile import wiki_compile_worker as wcw
 
     mode = cross_engine_mode(compile_cfg)
     # 귀속이 **경로 차원에서** 불가능하면 require를 적용하지 않는다(`require_waived` 참조).
@@ -354,7 +354,7 @@ def judge_pair(
     """
     # Lazy import: wiki_compile_worker imports wiki_compile, which imports this
     # module -- a module-level import here would close the cycle.
-    import wiki_compile_worker as wcw
+    from memvane.wiki.compile import wiki_compile_worker as wcw
 
     if not is_enabled(compile_cfg):
         return None, {"outcome": OUTCOME_UNAVAILABLE, "reason": "judge_disabled"}
@@ -501,7 +501,7 @@ def _back_off(root: Path, jcfg: dict, key: str, has_more: bool) -> dict:
     종점을 보장하고, 두 기록 모두 실패하면 사실을 `cooldownWriteFailed`로 표면화한다 —
     조용히 삼키면 다음 run이 같은 후보를 다시 유료로 부른다.
     """
-    import wiki_compile_worker as wcw
+    from memvane.wiki.compile import wiki_compile_worker as wcw
 
     seconds = _int(jcfg.get("cooldownSeconds"), DEFAULT_COOLDOWN_SECONDS)
     if has_more and wcw.set_engine_cooldown(engine_cooldown_path(root), key, seconds):

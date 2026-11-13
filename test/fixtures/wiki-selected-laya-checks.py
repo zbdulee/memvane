@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import wiki_selected_laya as selected
+from memvane.wiki.workspace import wiki_selected_laya as selected
 from memvane.wiki.compile import wiki_compile_retrieval as retrieval
 from contextlib import contextmanager
 
@@ -211,7 +211,7 @@ class SelectedWikiChecks(unittest.TestCase):
                                       (self.decision, self.proof))
 
     def test_running_worker_is_not_idle(self):
-        import wiki_compile_worker as wcw
+        from memvane.wiki.compile import wiki_compile_worker as wcw
         (self.root / '.auto-context' / 'compile').mkdir(parents=True)
         held = wcw.try_run_lock(self.root)
         self.assertIsNotNone(held)

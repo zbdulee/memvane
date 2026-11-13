@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.wiki.intake import wiki_backfill as backfill
 from memvane.wiki.intake import wiki_discovery as discovery
 from memvane.wiki.intake import wiki_compile_enqueue as enqueue
-import wiki_compile_worker as worker
-import wiki_selected_laya as selected
+from memvane.wiki.compile import wiki_compile_worker as worker
+from memvane.wiki.workspace import wiki_selected_laya as selected
 from memvane.runtime import runtime_work
 
 
