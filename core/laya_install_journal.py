@@ -924,6 +924,74 @@ def create_journal(journal_path, bundle_proof, proposed_route_raw, *, user_qmd_r
     return inspect_journal(path)
 
 
+def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
+    """Create an inactive journal under the installer's lock after review approval."""
+    import project_dir
+    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane_version import plugin_version, same_major
+    from laya_index_host_route import _classify_v4
+    path = _private_parent(journal_path)
+    require_cached_plugin_for_live_write(path.parent)
+    if path.exists() or path.is_symlink():
+        _fail('journal_already_exists')
+    route, route_sha = _route(route_raw, path)
+    if route.get('schema') != 'memvane-route-v4' or not same_major(route['stateFormat']):
+        _fail('state_format_mismatch')
+    project = Path(route['projectRoot'])
+    settings = project_dir.settings_path(project)
+    if settings is None or _classify_v4(project, settings, route).get('state') != 'candidate':
+        _fail('journal_route_unproved')
+    attestation, digest = _attestation(path)
+    if (type(expected_attestation_sha256) is not str or not SHA.fullmatch(expected_attestation_sha256)
+            or digest != expected_attestation_sha256):
+        _fail('production_attestation_changed')
+    _v1_provider_manifest(attestation, route['vectorProfile'])
+    node = project.lstat()
+    if not stat.S_ISDIR(node.st_mode) or node.st_uid != os.getuid():
+        _fail('journal_project_unavailable')
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    try:
+        original = os.fstat(fd)
+    finally:
+        os.close(fd)
+    try:
+        with closing(sqlite3.connect(path, timeout=2, isolation_level=None)) as db:
+            db.execute('PRAGMA journal_mode=DELETE')
+            db.execute('PRAGMA synchronous=FULL')
+            db.execute(f'PRAGMA application_id={V1_APP_ID}')
+            db.execute('PRAGMA user_version=1')
+            db.execute('BEGIN IMMEDIATE')
+            db.execute(V1_SELECTION_DDL)
+            db.execute(V1_READER_DDL)
+            db.execute('INSERT INTO selection VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (V1_SCHEMA, 1, 'prepared', route['installId'], route['scopeId'],
+                        str(project), node.st_ino, route['stateFormat'], '1.0.0', plugin_version(),
+                        route['storePath'], route['storeNode'][1], route['storeIncarnation'],
+                        route_sha, digest, _canon(route['vectorProfile']), None, 0))
+            _inspect_v1_row(db)
+            if (_attestation(path)[1] != digest
+                    or _classify_v4(project, settings, route).get('state') != 'candidate'
+                    or project.lstat().st_ino != node.st_ino):
+                _fail('journal_identity_changed')
+            db.commit()
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            current = os.fstat(fd)
+            if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
+                _fail('journal_file_changed')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except (OSError, sqlite3.Error) as exc:
+        raise JournalEvidenceError('journal_creation_incomplete') from exc
+    return inspect_journal(path)
+
+
 def _inspect_v1_row(db):
     """Read the v1 journal row without granting a reader or writer authority."""
     from memvane_version import version_key
