@@ -1,4 +1,4 @@
-"""Generation-owned FTS5 commitments for the inactive candidate format.
+"""View-head FTS5 commitments for the row format.
 
 Shadow values are opaque SQLite storage commitments, not an FTS format parser.
 No shadow table is written directly. Prepared statements are uncached and the
@@ -23,14 +23,13 @@ MAX_FTS_BYTES=128*1024*1024
 
 
 
-def head_table(view_id, *, sidecar=False):
+def head_table(view_id):
     v.identifier(view_id)
-    if type(sidecar) is not bool:v.fail('invalid_fts_view')
-    return PREFIX+('hs_' if sidecar else 'h_')+view_id
+    return PREFIX+'h_'+view_id
 
 
-def head_ddl(view_id, *, sidecar=False):
-    return (f'CREATE VIRTUAL TABLE {head_table(view_id,sidecar=sidecar)} USING '
+def head_ddl(view_id, ):
+    return (f'CREATE VIRTUAL TABLE {head_table(view_id)} USING '
             "fts5(filepath,title,body,path_key UNINDEXED,tokenize='porter unicode61')")
 
 
@@ -149,21 +148,21 @@ def _entries(rows, *, insertion_order=False):
 
 
 
-def create_head(db,view_id,*,sidecar=False):
-    _execute(db,head_ddl(view_id,sidecar=sidecar))
+def create_head(db,view_id,):
+    _execute(db,head_ddl(view_id))
 
 
-def populate_head(db,view_id,rows,*,sidecar=False):
-    for row in _entries(rows,insertion_order=sidecar):
-        _execute(db,f'INSERT INTO {head_table(view_id,sidecar=sidecar)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
+def populate_head(db,view_id,rows,):
+    for row in _entries(rows,insertion_order=False):
+        _execute(db,f'INSERT INTO {head_table(view_id)}(filepath,title,body,path_key) VALUES(?,?,?,?)',row)
 
 
-def head_map_matches(db,view_id,rows,*,sidecar=False):
+def head_map_matches(db,view_id,rows,):
     """True when the rowid map names exactly the head FTS table's ``rows`` rows (path and rowid).
 
     ``rows`` is the row count the caller already proved for the table.
     """
-    name=head_table(view_id,sidecar=sidecar);origin='sidecar' if sidecar else 'base'
+    name=head_table(view_id);origin='base'
     table=rows
     mapped=_execute(db,'SELECT COUNT(*) FROM s_head_fts_map WHERE view_id=? AND origin=?',(view_id,origin))[0][0]
     joined=_execute(db,f'SELECT COUNT(*) FROM {name} t JOIN s_head_fts_map m ON m.view_id=? AND m.origin=? '
@@ -171,30 +170,30 @@ def head_map_matches(db,view_id,rows,*,sidecar=False):
     return table==mapped==joined
 
 
-def head_map_rows(db,view_id,*,sidecar=False):
+def head_map_rows(db,view_id,):
     """(path_key, rowid) of the head FTS table and of its map, both path-ordered."""
-    name=head_table(view_id,sidecar=sidecar)
+    name=head_table(view_id)
     table=[tuple(r) for r in _execute(db,f'SELECT path_key,rowid FROM {name} ORDER BY path_key COLLATE BINARY,rowid')]
     mapped=[tuple(r) for r in _execute(db,'SELECT path_key,fts_rowid FROM s_head_fts_map WHERE view_id=? AND origin=? '
-                                        'ORDER BY path_key COLLATE BINARY',(view_id,'sidecar' if sidecar else 'base'))]
+                                        'ORDER BY path_key COLLATE BINARY',(view_id,'base'))]
     return table,mapped
 
 
-def map_head(db,view_id,*,sidecar=False):
+def map_head(db,view_id,):
     """Record every current head FTS row in the rowid map (fresh head FTS only)."""
-    origin='sidecar' if sidecar else 'base'
-    for path,rowid in head_map_rows(db,view_id,sidecar=sidecar)[0]:
+    origin='base'
+    for path,rowid in head_map_rows(db,view_id)[0]:
         _execute(db,'INSERT INTO s_head_fts_map(view_id,origin,path_key,fts_rowid) VALUES (?,?,?,?)',
                  (view_id,origin,path,rowid))
 
 
-def apply_mapped_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):
+def apply_mapped_head_changes(db,view_id,changes,*,deadline=None):
     """Apply checked FTS row deltas, finding each path's rowid in the head map.
 
     Reads and writes only the changed paths. The caller holds the view's FTS
     capability, proves the head and owns the transaction.
     """
-    name=head_table(view_id,sidecar=sidecar);origin='sidecar' if sidecar else 'base'
+    name=head_table(view_id);origin='base'
     if not db.in_transaction or not isinstance(changes,list) or len(changes)>MAX_ROWS:
         v.fail('fts_changes_invalid')
     seen=set()
@@ -228,7 +227,7 @@ def apply_mapped_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):
                      (view_id,origin,path,new_rowid))
 
 
-def apply_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):
+def apply_head_changes(db,view_id,changes,*,deadline=None):
     """Apply checked FTS row deltas inside an existing view-head capability.
 
     Old rows are compared before writing. The caller proves the current head,
@@ -236,7 +235,7 @@ def apply_head_changes(db,view_id,changes,*,sidecar=False,deadline=None):
     commits within the guard. Path lookup scans the corpus once and its cost
     must be measured for the final publication path.
     """
-    name=head_table(view_id,sidecar=sidecar)
+    name=head_table(view_id)
     if not db.in_transaction or not isinstance(changes,list) or len(changes)>MAX_ROWS:
         v.fail('fts_changes_invalid')
     old_rows=[];new_rows=[];seen=set();normalized=[]
@@ -310,16 +309,16 @@ def _schema(db):
 
 
 @lru_cache(maxsize=64)
-def _expected_head_schema(view_id,sidecar=False):
+def _expected_head_schema(view_id):
     db=sqlite3.connect(':memory:',cached_statements=0)
     try:
-        _execute(db,head_ddl(view_id,sidecar=sidecar))
+        _execute(db,head_ddl(view_id))
         return tuple(_schema(db))
     finally:db.close()
 
 
-def _one_head_schema(db,view_id,*,sidecar=False):
-    base=head_table(view_id,sidecar=sidecar)
+def _one_head_schema(db,view_id,):
+    base=head_table(view_id)
     actual=[r for r in _schema(db) if r[1]==base or r[1].startswith(base+'_') or r[2]==base or r[2].startswith(base+'_')]
     expected=list(_expected_head_schema(view_id,sidecar))
     if sorted(actual)!=sorted(expected):v.fail('fts_schema_mismatch')
@@ -360,9 +359,9 @@ def _typed(value):
 
 
 
-def head_storage_digest(db,view_id,deadline=None,*,sidecar=False):
-    metadata=_one_head_schema(db,view_id,sidecar=sidecar)
-    return _storage_digest(db,head_table(view_id,sidecar=sidecar),metadata,deadline)
+def head_storage_digest(db,view_id,deadline=None,):
+    metadata=_one_head_schema(db,view_id)
+    return _storage_digest(db,head_table(view_id),metadata,deadline)
 
 
 def _storage_digest(db,base,metadata,deadline):
@@ -394,16 +393,16 @@ def _storage_digest(db,base,metadata,deadline):
 
 
 
-def verify_head_index(db,view_id,*,sidecar=False):
-    name=head_table(view_id,sidecar=sidecar)
+def verify_head_index(db,view_id,):
+    name=head_table(view_id)
     try:
         _execute(db,f"INSERT INTO {name}({name}) VALUES('integrity-check')")
     except sqlite3.Error:
         v.fail('fts_integrity_failed')
 
 
-def head_logical_digest(rows,deadline=None,*,sidecar=False):
-    """The logical digest ``head_proof`` returns for the same rows (path order unless sidecar)."""
+def head_logical_digest(rows,deadline=None,):
+    """The logical digest ``head_proof`` returns for the same rows (path order)."""
     logical=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0')
     previous=None;size=0
     for count,item in enumerate(rows,1):
@@ -411,7 +410,7 @@ def head_logical_digest(rows,deadline=None,*,sidecar=False):
         if count>MAX_ROWS:v.fail('fts_rows_invalid')
         row=_entries([item],insertion_order=True)[0]
         encoded_path=row[3].encode('utf8')
-        if not sidecar and previous is not None and encoded_path<=previous:v.fail('fts_rows_invalid')
+        if previous is not None and encoded_path<=previous:v.fail('fts_rows_invalid')
         previous=encoded_path
         size+=sum(len(value.encode('utf8')) for value in row)
         if size>MAX_FTS_BYTES:v.fail('fts_rows_too_large')
@@ -420,15 +419,15 @@ def head_logical_digest(rows,deadline=None,*,sidecar=False):
     return logical.hexdigest()
 
 
-def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,sidecar=False,logical=True):
+def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,logical=True):
     """Stream an ordered head corpus and its physical commitment in one snapshot."""
     try:rows=iter(rows)
     except TypeError:v.fail('fts_rows_invalid')
-    physical=head_storage_digest(db,view_id,deadline,sidecar=sidecar)
+    physical=head_storage_digest(db,view_id,deadline)
     if expected_storage is not None and physical!=expected_storage:
         v.fail('fts_storage_mismatch')
-    order='rowid' if sidecar else 'path_key COLLATE BINARY'
-    name=head_table(view_id,sidecar=sidecar)
+    order='path_key COLLATE BINARY'
+    name=head_table(view_id)
     cursor=db.execute(f'SELECT filepath,title,body,path_key FROM {name} ORDER BY {order}')
     digest=hashlib.sha256(b'memvane-view-head-fts-logical-v1\0') if logical else None
     seen=set();previous=None;size=0
@@ -438,7 +437,7 @@ def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,sidecar=Fal
             if count>MAX_ROWS:v.fail('fts_rows_invalid')
             row=_entries([item],insertion_order=True)[0]
             path=row[3];encoded_path=path.encode('utf8')
-            if path in seen or (not sidecar and previous is not None and encoded_path<=previous):
+            if path in seen or (previous is not None and encoded_path<=previous):
                 v.fail('fts_rows_invalid')
             seen.add(path);previous=encoded_path
             size+=sum(len(value.encode('utf8')) for value in row)
