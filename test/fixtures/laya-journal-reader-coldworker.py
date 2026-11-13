@@ -15,7 +15,7 @@ spec = importlib.util.spec_from_file_location('cold_base', HERE / 'laya-journal-
 base = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(base)
 J = base.J
-import laya_journal_reader as R
+from memvane.journal import journal_reader as R
 import laya_bridge_readiness as B
 
 

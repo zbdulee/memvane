@@ -340,7 +340,7 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
 
         def identity_rows(attestation):
             return [[attestation['providerManifest']['providerPath'], 1, 2, 3, 4, 5]]
-        paths = importlib.import_module('laya_journal_paths')
+        paths = importlib.import_module('memvane.journal.journal_paths')
         real_directory, env_lock = paths.journal_directory, threading.Lock()
 
         def directory(*parts, create=False):

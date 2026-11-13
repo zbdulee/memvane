@@ -335,7 +335,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
     """Publish the registered main view under the existing build and sync owners."""
     from contextlib import ExitStack
     import laya_initial_build as build
-    import laya_writer_scope as normal
+    from memvane.journal import writer_scope as normal
     from memvane.store.view_store import ViewStore
     state = Path(decision['stateRoot'])
     try:
@@ -475,7 +475,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     asks for query vectors (``resettle_selection``).
     """
     from contextlib import ExitStack
-    import laya_writer_scope as normal
+    from memvane.journal import writer_scope as normal
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:
@@ -487,7 +487,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
                                                    report=report, start_service=start_service)
                 vectors['rawScan'] = raw_scan
                 result, proof = _publish_schema3(decision, proof, writer, vectors)
-            from laya_journal_reader import resettle_selection
+            from memvane.journal.journal_reader import resettle_selection
             status, proof = resettle_selection(decision, owner)
             if status != 'unchanged':
                 result = {**result, 'readerResettle': status}
@@ -557,7 +557,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         vectors = {'spec': None}
     from memvane.store import blob_values as v
     from memvane.store import checkout_view as checkout
-    import laya_writer_scope as normal
+    from memvane.journal import writer_scope as normal
     from memvane.store.view_store import ViewStore
     info = normal.writer_store(writer)
     deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
@@ -719,7 +719,7 @@ def _mark_schema3_write(writer, proof, marks):
     ``proof`` is the pass's admission proof; the fresh one is kept in
     ``marks['proof']`` for ``_after_sync``.
     """
-    import laya_writer_scope as normal
+    from memvane.journal import writer_scope as normal
     fresh = normal.mark_new_write(writer)
     expected_epoch = proof['selectionEpoch'] + (0 if proof.get('buildPending') else 1)
     if (fresh.get('selectionEpoch') != expected_epoch
@@ -800,8 +800,8 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     """Consume bounded compile intents without changing the view's member trust."""
     from memvane.store import blob_values as values
     import laya_ledger_common as ledger
-    import laya_journal_reader as reader
-    import laya_writer_scope as normal
+    from memvane.journal import journal_reader as reader
+    from memvane.journal import writer_scope as normal
     from memvane.wiki.card import source_spans
     from memvane.wiki.card import wiki_card
     from memvane.wiki.verify import wiki_verify_worker
@@ -965,7 +965,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     gets its vector generation from the same manifest.
     """
     from memvane.store import blob_values as v
-    import laya_writer_scope as normal
+    from memvane.journal import writer_scope as normal
     from memvane.wiki.lifecycle import wiki_lifecycle
     from memvane.store.blob_store import _regular
     from memvane.store import view_values as view_values
@@ -1230,7 +1230,7 @@ def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, 
 
     Returns ``(generation, vector)``; an unfinished fill keeps the lexical head.
     """
-    import laya_writer_scope as normal
+    from memvane.journal import writer_scope as normal
     vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline)
     head = store.head(handle)
     if vector['state'] != 'complete':

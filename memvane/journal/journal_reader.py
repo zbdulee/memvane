@@ -128,7 +128,7 @@ def _file(path, state):
 
 
 def _state(state):
-    from laya_journal_paths import check_journal_namespace
+    from memvane.journal.journal_paths import check_journal_namespace
     state = Path(state)
     check_journal_namespace(state)
     _need(state.is_absolute() and state.resolve(strict=True) == state and
@@ -346,7 +346,7 @@ def _v1_reader_evidence(state, project, saved, *, allow_settings_change=False):
 
 
 def _issue_v1_reader(state, project, root, saved):
-    from laya_reader_lease import _require_reader_scope, _bind_reader_scope
+    from memvane.journal.reader_lease import _require_reader_scope, _bind_reader_scope
     scope = _require_reader_scope(saved.get('install_id'))
     _need(_schema3_shape(saved), 'reader_endpoint_invalid')
     raw, _proof = _v1_reader_evidence(state, project, saved)
@@ -364,7 +364,7 @@ def _issue_v1_reader(state, project, root, saved):
 
 def _recheck(endpoint):
     _need(type(endpoint) is VerifiedEndpoint and endpoint in _issued, 'reader_endpoint_not_issued')
-    from laya_reader_lease import _check_reader_scope
+    from memvane.journal.reader_lease import _check_reader_scope
     _check_reader_scope(endpoint)
     state, project, root, options, packed, raw = _issued[endpoint]
     saved = json.loads(packed)
@@ -385,7 +385,7 @@ def _sync(path, directory=False):
 
 
 def _lock_dir(install_id, *, create):
-    from laya_journal_paths import journal_directory
+    from memvane.journal.journal_paths import journal_directory
     _need(type(install_id) is str and journal.ID.fullmatch(install_id), 'reader_install_invalid')
     return journal_directory('reader-locks', install_id, create=create)
 
@@ -526,7 +526,7 @@ def resettle_selection(decision, owner):
     """Re-seal the selected reader under the existing sync owner and lifetime."""
     from contextlib import closing
     from sync_owner_lock import validate_sync_owner
-    from laya_reader_windows import _Lifetime
+    from memvane.journal.reader_windows import _Lifetime
     from laya_view_vectors import provider_spec
     import time
     project = Path(decision['projectRoot'])

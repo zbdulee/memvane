@@ -38,7 +38,7 @@ class SyncFirstProofChecks(unittest.TestCase):
     def setUp(self):
         self.fixture=existing.NormalWriterConnectionChecks('runTest')
         self.addCleanup(self.fixture.doCleanups)
-        reader=importlib.import_module('laya_journal_reader')
+        reader=importlib.import_module('memvane.journal.journal_reader')
         convert=reader.convert_reader_v5;self.v4=None
         def observed(state,*args,**kwargs):
             absent_sidecar_cases = {

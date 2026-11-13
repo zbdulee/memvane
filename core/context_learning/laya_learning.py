@@ -60,8 +60,8 @@ def _schema3_members(root, decision):
     The journal-selected reader and its pinned main-view head provide
     member paths and their raw-byte SHA-256 values.
     """
-    import laya_journal_reader as reader
-    import laya_reader_lease as lease
+    from memvane.journal import journal_reader as reader
+    from memvane.journal import reader_lease as lease
     from laya_product_sync_worker import _writer_executing_root
     deadline = time.monotonic() + SCHEMA3_READ_SECONDS
     with lease.resolve_endpoint(root, action='recall', host_root=_writer_executing_root()) as endpoint:

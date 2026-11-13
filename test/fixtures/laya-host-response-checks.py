@@ -94,7 +94,7 @@ def serve_v2_recall(decision, *, verify, scan, request=None, index=None,
     """Run selected v2 recall with fake journal/runtime/source; return the failure."""
     from contextlib import ExitStack, nullcontext
     from memvane.settings import config
-    import keywords
+    from memvane.recall import keywords
     import laya_install_journal
     import laya_index_runtime
     import laya_local_embed_provider
@@ -836,7 +836,7 @@ class ResponseChecks(unittest.TestCase):
                 card, decision, source_skip_paths=('build',)))
 
     def test_v2_refills_before_fusion_and_reports_exclusion_cap(self):
-        import keywords
+        from memvane.recall import keywords
         import laya_index_source_port as source_port
         runtime = SimpleNamespace(index=FakeIndex())
         seal = (SCOPE, 'generation-7', 'manifest')
@@ -912,7 +912,7 @@ class ResponseChecks(unittest.TestCase):
     def _lexical_only_phase(self, index, source_filter, diagnostics=None,
                             general=('alpha', 'beta', 'gamma')):
         """Real ``_pinned_vector`` with a provider that is unavailable."""
-        import keywords
+        from memvane.recall import keywords
         import laya_index_source_port as source_port
         import laya_index_vector
 
@@ -985,7 +985,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(index.calls[-1], (('"alpha"* OR "beta"* OR "gamma"*',), 2.0))
 
     def test_v2_probe_only_rejections_are_not_counted_as_matches(self):
-        import keywords
+        from memvane.recall import keywords
         import laya_index_source_port as source_port
 
         class ProbeIndex(FakeIndex):
@@ -1010,7 +1010,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(diagnostics['probeOnlyPaths'], frozenset({'wiki/index.md'}))
 
     def test_v2_lexical_full_page_with_few_proved_rows_is_capped(self):
-        import keywords
+        from memvane.recall import keywords
         import laya_index_source_port as source_port
         seal = (SCOPE, 'generation-7', 'manifest')
         page = ([row(path=f'wiki/excluded-{n}.md') for n in range(99)]
@@ -1261,7 +1261,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(response._fts_atom('target'), '"target"*')
 
     def test_v2_df_probes_share_one_batch_and_source_scan(self):
-        import keywords
+        from memvane.recall import keywords
         import laya_index_source_port as source_port
 
         class BatchedIndex:
@@ -1294,7 +1294,7 @@ class ResponseChecks(unittest.TestCase):
         self.assertEqual(index.calls[1][2]['deadline_seconds'], 2.0)
 
     def test_v2_df_timeout_discards_probe_batch_and_primary_timeout_fails(self):
-        import keywords
+        from memvane.recall import keywords
         import laya_index_source_port as source_port
         from laya_index_a import IndexContractError
 
@@ -1673,7 +1673,7 @@ class BundleDriftChecks(unittest.TestCase):
 
     def drifted(self, stack, code='executing_code_outside_bundle'):
         import laya_install_journal
-        import laya_journal_reader
+        from memvane.journal import journal_reader as laya_journal_reader
         import runtime_work
         from contextlib import nullcontext
         stack.enter_context(patch.object(laya_journal_reader, '_journal', side_effect=lambda path:path))
@@ -1849,9 +1849,9 @@ class EndpointRecallChecks(unittest.TestCase):
 
     def serve(self, rows, *, title_only=frozenset(), locations=None):
         from contextlib import ExitStack, contextmanager, nullcontext
-        import laya_journal_reader
+        from memvane.journal import journal_reader as laya_journal_reader
         import laya_reader_dispatch
-        import laya_reader_lease
+        from memvane.journal import reader_lease as laya_reader_lease
         import laya_reader_open
         from laya_v6_reader import ReaderResult
         with tempfile.TemporaryDirectory(prefix='laya-endpoint-recall-') as temp:
@@ -2140,7 +2140,7 @@ class ProofRetryChecks(unittest.TestCase):
             raise laya_install_journal.JournalEvidenceError('executing_bundle_not_selected')
         read_only = {**self.proof(4, bundleManifestSha256='e' * 64),
                      'productRouteAllowed': False, 'readOnlyAllowed': True}
-        import laya_journal_reader
+        from memvane.journal import journal_reader as laya_journal_reader
         from contextlib import nullcontext
         with patch.object(laya_journal_reader, '_journal', side_effect=lambda path:path), \
              patch.object(laya_journal_reader, '_readonly', return_value=nullcontext(object())), \

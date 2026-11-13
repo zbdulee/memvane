@@ -206,7 +206,7 @@ class RebootChecks(unittest.TestCase):
         import laya_reader_open as opens
         import laya_worker_journal as worker
         import laya_writer_open_plan as plans
-        import laya_writer_scope as writers
+        from memvane.journal import writer_scope as writers
         from laya_index_sync import sync_owner
         case = self.case_from('laya-reader-move-seal-checks.py', 'MoveSealChecks')
         project = case.case
@@ -288,7 +288,7 @@ class RebootChecks(unittest.TestCase):
 
     def switch_after_reboot(self, case):
         """A v6 reader sealed before the reboot; the schema3 target and the CAS after it."""
-        import laya_reader_lease as lease
+        from memvane.journal import reader_lease as lease
         case.publish()
         initial = case.reader.read_selection(case.case.journal)
         v6 = self.stored_record(case, initial.preferred_endpoint)
@@ -356,7 +356,7 @@ class RebootChecks(unittest.TestCase):
 
     def test_record_nodes_still_differ_by_inode_and_in_process_owners_keep_the_device(self):
         import laya_move_read_seal as seal
-        reader = importlib.import_module('laya_journal_reader')
+        reader = importlib.import_module('memvane.journal.journal_reader')
         base = {'project_node': [4, 8], 'state_node': [4, 9], 'db_node': [4, 10], 'scope': 's'}
         keys = tuple(base)
         self.assertTrue(reader.records_agree(base, {**base, 'project_node': [5, 8], 'state_node': [5, 9],

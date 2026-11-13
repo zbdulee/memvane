@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-import laya_journal_reader as journal
+from memvane.journal import journal_reader as journal
 
 @dataclass(frozen=True)
 class ReaderResult:
@@ -74,7 +74,7 @@ def _persisted_schema3(endpoint):
 
 
 def _vector_proof(authority,snapshot,decision,provider,deadline):
-    import laya_reader_lease as leases
+    from memvane.journal import reader_lease as leases
     from laya_local_embed_provider import ReviewedLocalQmdProvider
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline or not _persisted_schema3(authority)
@@ -189,7 +189,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     worktree project root. A view sealed without vectors answers lexical
     lists only (``lexical_only``).
     """
-    import laya_reader_lease as leases
+    from memvane.journal import reader_lease as leases
     selected=leases._reader_selections.get(endpoint)
     if (not _persisted_schema3(endpoint) or selected is None
             or selected.preferred_endpoint!=endpoint.endpoint_id):

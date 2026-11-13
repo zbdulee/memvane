@@ -43,8 +43,8 @@ class Schema3WriterPlanChecks(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups); self.fixture.setUp()
         for name in ('F', 'seed', 'case', 'P', 'W', 'J', 'sync', 'queue', 'plan'):
             setattr(self, name, getattr(self.fixture, name))
-        self.N = importlib.import_module('laya_writer_scope')
-        self.R = importlib.import_module('laya_journal_reader')
+        self.N = importlib.import_module('memvane.journal.writer_scope')
+        self.R = importlib.import_module('memvane.journal.journal_reader')
         project = self.case.project
         git = ['git', '-C', str(project), '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + os.devnull,
                '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']

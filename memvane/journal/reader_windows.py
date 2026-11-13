@@ -2,8 +2,8 @@
 import fcntl
 import math
 import os
-import laya_journal_reader as R
-import laya_reader_lease as L
+from memvane.journal import journal_reader as R
+from memvane.journal import reader_lease as L
 
 
 class ReaderWindowBusy(ValueError):

@@ -1013,7 +1013,7 @@ def _inspect_v1_row(db):
             if type(raw) is not str or len(raw.encode('utf-8')) > 65536:
                 _fail('journal_reader_invalid')
             reader = json.loads(raw, object_pairs_hook=_pairs, parse_constant=_nonfinite)
-            from laya_journal_reader import _schema3_shape
+            from memvane.journal.journal_reader import _schema3_shape
             if (not isinstance(reader, dict) or _canon(reader) != raw
                     or not _schema3_shape(reader)
                     or reader['install_id'] != row['installId']
@@ -1083,7 +1083,7 @@ def _cas(path, expected_epoch, mutate):
     path = _private_parent(path)
 
     def v5():
-        from laya_journal_reader import mutate_image
+        from memvane.journal.journal_reader import mutate_image
         mutate_image(path, lambda image: _mutate_row(
             image, path, _row(image), expected_epoch, mutate))
         return inspect_journal(path)

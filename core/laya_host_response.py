@@ -622,7 +622,7 @@ def _fts_atom(term: str) -> str:
 
 
 def _hybrid_fts_queries(prompt: str, lexical_patterns: tuple[str, ...]) -> list[str]:
-    from keywords import build_lexical_terms
+    from memvane.recall.keywords import build_lexical_terms
     if (not isinstance(lexical_patterns, tuple)
             or any(pattern != "ep" for pattern in lexical_patterns)
             or len(lexical_patterns) > 1):
@@ -1165,7 +1165,7 @@ _RESETTLE_PENDING = 'reader_settings_resealing'
 
 def _settings_resettle_pending(decision, project, root) -> bool:
     try:
-        import laya_journal_reader as reader
+        from memvane.journal import journal_reader as reader
         return (decision.get('state') == 'candidate' and
                 reader.settings_resettle_pending(Path(decision['journalPath']).parent, project, root))
     except Exception:
@@ -1216,8 +1216,8 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
             (requested != project and project not in requested.parents)):
         _fail('reader_selection_unproved')
     from memvane.kernel import hook_budget
-    import laya_reader_lease as lease
-    import laya_journal_reader as reader
+    from memvane.journal import reader_lease as lease
+    from memvane.journal import journal_reader as reader
     deadline = time.monotonic() + hook_budget.remaining()
     root = Path(__file__).resolve().parents[1]
     with ExitStack() as stack:
@@ -1270,7 +1270,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     back to another view.
     """
     from memvane.settings import config
-    import laya_journal_reader as reader
+    from memvane.journal import journal_reader as reader
     import laya_reader_dispatch as dispatch
     from laya_store_primitives import IndexContractError
     from laya_local_embed_provider import ReviewedLocalQmdProvider

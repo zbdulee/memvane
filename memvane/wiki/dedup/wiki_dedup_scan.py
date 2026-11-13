@@ -173,8 +173,8 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
     ``cards`` is None while the head is lexical.
     """
     import struct
-    import laya_journal_reader as reader
-    import laya_reader_lease as lease
+    from memvane.journal import journal_reader as reader
+    from memvane.journal import reader_lease as lease
     from laya_product_sync_worker import _writer_executing_root
     from memvane.wiki.lifecycle import wiki_source_retire
     root = Path(decision["projectRoot"])

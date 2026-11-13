@@ -141,7 +141,7 @@ class NormalWriterConnectionChecks(unittest.TestCase):
         self.F, self.seed, self.case = self.fixture.F, self.fixture.seed, self.fixture.case
         self.P, self.W, self.J = self.fixture.P, self.fixture.W, self.fixture.J
         self.sync, self.queue, self.plan = self.fixture.sync, self.fixture.queue, self.fixture.plan
-        self.N = importlib.import_module('laya_writer_scope')
+        self.N = importlib.import_module('memvane.journal.writer_scope')
 
     def component(self, writer, role):
         try: return self.W.component_for(writer, role)

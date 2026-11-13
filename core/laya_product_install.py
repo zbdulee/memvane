@@ -514,7 +514,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
                 'storePath': store['storePath'], 'storeNode': store['storeNode'],
                 'storeIncarnation': store['storeIncarnation'], 'journalPath': str(journal),
                 'routeSha256': route_sha, 'attestationSha256': staged['attestationSha256']}
-    from laya_reader_lease import _prepare_lifetime
+    from memvane.journal.reader_lease import _prepare_lifetime
     _prepare_lifetime(install_id)
     with initial_build.owner(state) as owned:
         if not owned:
@@ -560,7 +560,7 @@ def finalize_initial_build(*, project_root, state_root):
     """Seal the ready single-store head in the prepared journal and ledger."""
     import laya_initial_build as build
     import laya_install_journal as journal
-    import laya_journal_reader as reader
+    from memvane.journal import journal_reader as reader
     import laya_runtime_dispatch as dispatch
     import laya_product_sync_worker as sync
     from memvane.store import blob_values as values
@@ -715,7 +715,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     """Publish or recover the proved v1 selection under the install lock."""
     import laya_initial_build as build
     import laya_install_journal as journal_module
-    import laya_journal_reader as reader
+    from memvane.journal import journal_reader as reader
     import laya_product_sync_worker as sync
     from memvane.wiki.intake import wiki_discovery as discovery
     from memvane.settings import project_dir
@@ -723,7 +723,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from contextlib import closing
     from laya_index_host_route import _classify_v4, SELECTION_SCHEMA_V1
     from laya_ledger_common import _read_json, _write
-    from laya_reader_lease import reader_lifetime
+    from memvane.journal.reader_lease import reader_lifetime
     from sync_owner_lock import sync_owner
     project = _checked_project(project_root)
     journal = Path(journal_path)
@@ -848,7 +848,7 @@ def _restore_v1_locked(project, state):
     from contextlib import closing
     from laya_index_host_route import SELECTION_SCHEMA_V1
     from laya_ledger_common import _read_json, _write, _fsync_dir
-    from laya_reader_lease import reader_lifetime
+    from memvane.journal.reader_lease import reader_lifetime
     from sync_owner_lock import sync_owner
     from memvane.wiki.workspace import wiki_mutation_lock
     with build.owner(state) as owned:

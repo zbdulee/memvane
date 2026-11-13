@@ -11,7 +11,7 @@ import stat
 import time
 import weakref
 
-import laya_journal_reader as reader
+from memvane.journal import journal_reader as reader
 
 _shared_stack = ContextVar('reader_shared_lifetimes', default=())
 _shared_scopes = weakref.WeakSet()

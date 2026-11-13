@@ -7,8 +7,8 @@ import threading
 import time
 
 import laya_install_journal as J
-import laya_journal_reader as R
-import laya_reader_windows as W
+from memvane.journal import journal_reader as R
+from memvane.journal import reader_windows as W
 from sync_owner_lock import validate_sync_owner
 
 # Keep abandoned admissions strongly owned. Only explicit creator exit can

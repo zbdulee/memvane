@@ -169,7 +169,7 @@ def terms(text: str) -> set[str]:
 
 def lexical_atoms(text: str) -> list[str]:
     """Bounded query atoms shared by overlay retrieval and live-body evidence."""
-    from keywords import EN_STOPWORDS, KO_STOPWORDS, strip_ko_suffix
+    from memvane.recall.keywords import EN_STOPWORDS, KO_STOPWORDS, strip_ko_suffix
     from laya_host_response import _fts_atom
     words = list(dict.fromkeys(strip_ko_suffix(word) for word in
                                re.findall(r'\w+', text.casefold())))
@@ -428,9 +428,9 @@ def _schema3_search(bound, text):
     ``vectorCosines``) adds vector-only candidates and carries the cosine the
     vector-only relevance rule needs; otherwise the list is lexical only.
     """
-    import laya_journal_reader as reader
+    from memvane.journal import journal_reader as reader
     import laya_reader_dispatch as dispatch
-    import laya_reader_lease as lease
+    from memvane.journal import reader_lease as lease
     from memvane.settings import project_dir
     from laya_index_host_route import wiki_index_roots
     from sync_owner_lock import sync_owner
@@ -474,7 +474,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     ``generation`` (the lexical rows' generation).
     """
     import laya_host_response as response
-    import laya_journal_reader as reader
+    from memvane.journal import journal_reader as reader
     from laya_reader_dispatch import _approved_profile_matches
     from laya_view_vectors import DEFERRED
     from memvane.store.blob_values import BlobStoreError
@@ -519,7 +519,7 @@ def matches(root, wiki, text, top_k, cap_chars, bound):
     if not query_terms:
         return []
     deadline = time.monotonic() + QUERY_SECONDS
-    from keywords import EN_STOPWORDS, KO_STOPWORDS
+    from memvane.recall.keywords import EN_STOPWORDS, KO_STOPWORDS
     with selected_search(bound, text) as (published, exclusions, name, mode), \
             opened_directory(wiki) as wiki_fd, lexical_probe(text, deadline) as supported:
         with overlay(root, bound) as db:

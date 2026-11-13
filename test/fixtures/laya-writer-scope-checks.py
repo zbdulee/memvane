@@ -34,7 +34,7 @@ class WriterScopeChecks(unittest.TestCase):
         if importlib.util.find_spec('laya_writer_scope') is None:
             emit('normal-writer-feature-absence', actualV5=True, actualManagedProof=True)
             self.fail('normal writer admission absent after owned journal proof baseline')
-        module = importlib.import_module('laya_writer_scope')
+        module = importlib.import_module('memvane.journal.writer_scope')
         for name in ('normal_writer_scope', 'validate_normal_writer'):
             self.assertTrue(callable(getattr(module, name, None)), name)
         return module

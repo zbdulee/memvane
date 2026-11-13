@@ -702,7 +702,7 @@ class RecoveryChecks(unittest.TestCase):
         # Primitive coordination only: no route/proof/queue/provider or CAS.
         # Keep the explicit guarded test-runtime namespace identical in both
         # processes; only the second process's HOME changes.
-        import laya_journal_reader as reader
+        from memvane.journal import journal_reader as reader
         temporary = tempfile.TemporaryDirectory(prefix='uid-transition-', dir=os.environ['HOME'])
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -1130,7 +1130,7 @@ class RecoveryChecks(unittest.TestCase):
 
     def test_readiness_registry_ignores_home_and_invalid_override_never_uses_live_fallback(self):
         import laya_bridge_readiness as bridge
-        import laya_journal_paths as paths
+        from memvane.journal import journal_paths as paths
         temporary = tempfile.TemporaryDirectory(prefix='registry-negative-', dir=os.environ['HOME'])
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()

@@ -73,7 +73,7 @@ class ReaderLeaseChecks(unittest.TestCase):
     def api(self):
         if importlib.util.find_spec('laya_reader_lease') is None:
             self.fail('T2 feature RED: lifetime API absent after actual v5 conversion; not a T1 regression')
-        api=importlib.import_module('laya_reader_lease')
+        api=importlib.import_module('memvane.journal.reader_lease')
         for name in ('reader_lifetime','resolve_endpoint'):
             self.assertTrue(callable(getattr(api,name,None)),name)
         return api

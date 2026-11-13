@@ -96,7 +96,7 @@ def schema3_checkout(bound):
         return None
     decision = bound[0]
     import laya_install_journal as journal
-    import laya_journal_reader as reader
+    from memvane.journal import journal_reader as reader
     path = decision.get('journalPath')
     if not isinstance(path, str) or journal.journal_version(path) != 5:
         return None
@@ -151,7 +151,7 @@ class _Schema3Checkout:
 
     def _selection_current(self):
         import laya_install_journal as journal
-        import laya_journal_reader as reader
+        from memvane.journal import journal_reader as reader
         from laya_index_host_route import select_route
         if select_route(self.decision['projectRoot'], action='compile') != self.decision:
             return False

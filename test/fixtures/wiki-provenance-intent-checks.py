@@ -24,7 +24,7 @@ spec.loader.exec_module(seed)
 class IntentAckChecks(unittest.TestCase):
     def test_replay_rejects_symlinked_card_before_intent_ack(self):
         verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
-        reader = importlib.import_module('laya_journal_reader')
+        reader = importlib.import_module('memvane.journal.journal_reader')
         ledger = importlib.import_module('laya_ledger_common')
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             root = Path(directory)

@@ -36,7 +36,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         super().setUp()
         self.worker = importlib.import_module('laya_product_sync_worker')
         self.views = importlib.import_module('memvane.store.view_store')
-        self.lease = importlib.import_module('laya_reader_lease')
+        self.lease = importlib.import_module('memvane.journal.reader_lease')
         self.dispatch = importlib.import_module('laya_reader_dispatch')
         root = mock.patch.object(self.worker, '_writer_executing_root', return_value=self.case.plugin)
         root.start(); self.addCleanup(root.stop)
