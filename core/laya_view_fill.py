@@ -101,19 +101,6 @@ class FillMixin:
             v.fail('fill_job_invalid')
         return cursor
 
-    def _fill_plan(self, handle, manifest, recipe_id, profile_id):
-        import laya_view_store as views  # the store module owns capture/settings rechecks
-        entry = self._check(handle)
-        manifest = vals.manifest(manifest, handle.policy_digest)
-        v.identifier(recipe_id); v.identifier(profile_id)
-        saved = self._observe(entry)
-        skips = views._skip_patterns(saved)
-        with self._session() as db:
-            self._recipe(recipe_id); self._profile(profile_id)
-            targets = _targets(self._derive(handle, manifest, skips, retain_bodies=False))
-            job = _job(self._incarnation, handle, entry, saved, manifest, skips, recipe_id, profile_id, targets)
-            stored = self._fill_cursor(db, job, targets)
-        return entry, saved, job, targets, stored
 
     def fill_status(self, handle, manifest, recipe_id, profile_id):
         """Readonly; an absent job reports cursor 0 and complete false.
@@ -130,27 +117,3 @@ class FillMixin:
                                     max_files=max_files, max_bytes=max_bytes,
                                     deadline_seconds=deadline_seconds)
 
-    def _fill_commit(self, entry, saved, job, targets, stored, new, fence, deadline):
-        """Separate cursor transaction after the covered content sets committed."""
-        import laya_view_store as views
-        _remaining(deadline)
-        self._check(entry['handle'])
-        fence()
-        cursor = 0 if stored is None else stored
-        with self._session(write=True) as db:
-            if self._fill_cursor(db, job, targets) != stored:
-                v.fail('fill_cursor_conflict')
-            for target in targets[cursor:new]:
-                if db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
-                              (target['blob_sha'], job['recipe_id'], job['profile_id'])).fetchone() is None:
-                    v.fail('fill_content_missing')
-            if stored is None:
-                _insert(db, 'fill_jobs', dict(job, cursor=0, created_ns=time.time_ns()))
-                for ordinal, target in enumerate(targets):
-                    _insert(db, 'fill_targets', dict(target, job_id=job['job_id'], ordinal=ordinal))
-            if new != cursor and db.execute('UPDATE fill_jobs SET cursor=? WHERE job_id=? AND cursor=?',
-                                            (new, job['job_id'], cursor)).rowcount != 1:
-                v.fail('fill_cursor_conflict')
-            views._live(db, saved, {})
-            views._current_capture(saved, self._repository, self._policy, entry['capture'])
-            _remaining(deadline)

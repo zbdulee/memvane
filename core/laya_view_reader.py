@@ -131,19 +131,6 @@ class ReaderMixin:
             v.fail('generation_view_mismatch')
         return handle, dict(handle=handle, capture=capture, binding=saved['binding_digest']), saved
 
-    def _read_generation(self, db, gen_id, live_handle, deadline, *, full_vectors=False):
-        _remaining(deadline)
-        generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
-        if generation is None or generation['state'] not in ('prepared', 'published'):
-            v.fail('generation_unsealed')
-        seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (gen_id,)).fetchone()
-        if seal is None:
-            v.fail('generation_unsealed')
-        # The shared verifier compares physical bytes before virtual content.
-        handle, entry, saved = self._sealed_handle(db, generation, live_handle)
-        stage = self._verify_generation(db, handle, entry, saved, generation, deadline=deadline,
-                                        full_vectors=full_vectors)
-        return dict(generation), dict(seal), entry['capture'], stage
 
     def _commit_stamp(self, db):
         """Changes whenever any commit could have touched the store since the last stamp.
@@ -179,19 +166,6 @@ class ReaderMixin:
         """
         return self._rows_preverify(handle, deadline)
 
-    def _generation_for_pin(self, db, gen_id, handle, deadline):
-        """``_read_generation`` for ``pin_view``, reusing a matching pre-verification."""
-        cached = getattr(self, '_preverified', None)
-        if (cached is not None and cached['gen_id'] == gen_id
-                and cached['view'] == (handle.view_id, handle.worktree_id, handle.branch_key)
-                and cached['stamp'] == self._commit_stamp(db)):
-            generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
-            seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (gen_id,)).fetchone()
-            if (generation is not None and seal is not None and dict(generation) == cached['generation']
-                    and dict(seal) == cached['seal']):
-                return dict(generation), dict(seal), cached['capture'], cached['stage']
-        self._preverified = None
-        return self._read_generation(db, gen_id, handle, deadline)
 
     def pin_view(self, handle, *, deadline=None, _observed=False):
         # ``_observed``: the caller observed this checkout just before and

@@ -537,148 +537,16 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
                     bodies=bodies, body_bytes=body_bytes,
                     verified_bodies=verified_bodies if retain_bodies else {})
 
-    @staticmethod
-    def _roots(db, ordinal, plan, rows, vector_spec, coverage, deadline=None, *,
-               expected_storage=None, sidecar_rows=None):
-        if sidecar_rows is None:
-            lexical, storage = view_fts.proof(db, ordinal, rows, deadline, return_storage=True,
-                                              expected_storage=expected_storage)
-        else:
-            lexical, storage = view_fts.proof_pair(db, ordinal, rows, sidecar_rows, deadline,
-                                                   expected_storage=expected_storage)
-        return vals.roots(plan['members'], plan['sources'], plan['cards'], lexical, storage,
-                          vector_spec, coverage)
 
-    def _legacy_fts_rows(self, legacy, *, verified_bodies=None, deadline=None, sidecar=False):
-        """Rebuild the sealed old wiki FTS corpus from admitted wiki blobs."""
-        if deadline is not None and time.monotonic() >= deadline:
-            v.fail('fts_deadline_exceeded')
-        bodies, checked, total, side_rows = {}, dict(verified_bodies or {}), 0, []
-        corpus = legacy['sidecar_corpus' if sidecar else 'corpus']
-        for row in sorted(corpus, key=lambda item: item['rowid']) if sidecar else corpus:
-            if deadline is not None and time.monotonic() >= deadline:
-                v.fail('fts_deadline_exceeded')
-            if row['hash'] not in checked:
-                checked[row['hash']] = self._blob(row['hash'])
-            body = checked[row['hash']]
-            total += len(body.encode('utf8'))
-            if total > vals.MAX_WIKI_BYTES:
-                v.fail('generation_too_large')
-            if sidecar:
-                side_rows.append(dict(filepath=row['path'], title=row['title'], body=body, path_key=row['path']))
-            else:
-                bodies[row['path']] = body
-        if sidecar:
-            if deadline is not None and time.monotonic() >= deadline:
-                v.fail('fts_deadline_exceeded')
-            return side_rows
-        return vals.fts_rows(bodies, deadline=deadline)
 
     def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None,
                            deadline=None):
         return self._rows_prepare(handle, manifest, expected_head=expected_head, vector_spec=vector_spec,
                                   deadline=deadline)
 
-    def _stored(self, db, gen_id):
-        members = [dict(r) for r in db.execute(
-            'SELECT path,blob_sha,display_title,eligible,trust_digest FROM wiki_members WHERE gen_id=? ORDER BY path',
-            (gen_id,))]
-        sources = [dict(r) for r in db.execute(
-            'SELECT path,fingerprint_id,presence FROM source_members WHERE gen_id=? ORDER BY path', (gen_id,))]
-        cards = [dict(wiki_path=r['wiki_path'], ordinal=r['ordinal'], fingerprint_id=r['fingerprint_id'],
-                      spans=v.parse_canonical(r['spans_json'])) for r in db.execute(
-            'SELECT * FROM card_sources WHERE gen_id=? ORDER BY wiki_path,ordinal', (gen_id,))]
-        return members, sources, cards
 
-    def _verify_generation(self, db, handle, entry, saved, generation, deadline=None, full_vectors=False):
-        """Recompute rows, FTS proof, vector references, roots and binding from the original slot."""
-        slot = db.execute('SELECT * FROM generation_slots WHERE ordinal=?', (generation['ordinal'],)).fetchone()
-        if slot is None or slot['view_id'] != generation['view_id']:
-            v.fail('generation_slot_invalid')
-        stage = vals.check_stage(v.parse_canonical(slot['stage_json']), handle, self._incarnation)
-        if (stage['build_id'] != slot['build_id'] or stage['manifest_digest'] != slot['manifest_digest']
-                or stage['worktree_binding'] != saved['binding_digest']):
-            v.fail('generation_binding_mismatch')
-        seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (generation['gen_id'],)).fetchone()
-        if seal is None:
-            v.fail('fts_storage_mismatch')
-        v.identifier(seal['fts_storage_digest'])
-        plan = self._derive(handle, stage['manifest'], stage['skip_paths'],
-                            legacy_paths=stage.get('legacy', {}).get('paths', ()), deadline=deadline)
-        if self._stored(db, generation['gen_id']) != (plan['members'], plan['sources'], plan['cards']):
-            v.fail('generation_rows_mismatch')
-        # Actual stored references, compared with the sealed spec's complete coverage.
-        coverage = self._verified_vectors(db, stage, plan, generation['gen_id'], full=full_vectors, deadline=deadline)
-        rows = (self._legacy_fts_rows(stage['legacy'], verified_bodies=plan['verified_bodies'], deadline=deadline) if 'legacy' in stage else
-                vals.fts_rows(plan['bodies'], {m['path']: m['display_title'] for m in plan['members']}, deadline=deadline))
-        side_rows = (self._legacy_fts_rows(stage['legacy'], verified_bodies=plan['verified_bodies'],
-                                          deadline=deadline, sidecar=True)
-                     if 'sidecar_corpus' in stage.get('legacy', {}) else None)
-        roots = self._roots(db, generation['ordinal'], plan, rows, stage['vector_spec'], coverage, deadline,
-                            expected_storage=seal['fts_storage_digest'], sidecar_rows=side_rows)
-        if roots['fts_storage_digest'] != seal['fts_storage_digest']:
-            v.fail('fts_storage_mismatch')
-        binding = vals.binding(stage, generation['ordinal'], entry['capture'], roots)
-        fields = vals.generation_fields(stage, generation['ordinal'], binding, entry['capture'])
-        seal = db.execute('SELECT * FROM generation_seals WHERE gen_id=?', (generation['gen_id'],)).fetchone()
-        if (seal is None or any(generation[k] != val for k, val in fields.items())
-                or seal['binding_digest'] != binding or any(seal[k] != val for k, val in roots.items())):
-            v.fail('generation_seal_mismatch')
-        return stage
 
     def publish_generation(self, handle, gen_id, *, expected_head, deadline=None):
         return self._rows_publish(handle, gen_id, expected_head=expected_head,
                                   deadline=deadline)
 
-    def _publish_generation_checked(self, handle, gen_id, entry, base, saved, *,
-                                    expected_stage=None, deadline=None, publication_cut=None):
-        def capture():
-            try:
-                _current_capture(saved, self._repository, self._policy, entry['capture'], deadline=deadline)
-            except checkout.CheckoutUnavailable as exc:
-                if publication_cut is None or exc.reason != 'checkout_budget_exhausted':
-                    raise
-                # A spent step budget is transient; the prepared candidate stays.
-                v.fail('fts_deadline_exceeded')
-
-        def finish(db, result):
-            if deadline is not None and time.monotonic() >= deadline:
-                v.fail('reader_snapshot_deadline')
-            if publication_cut is not None:
-                # Only the identity recheck and the commit run under the cut.
-                with publication_cut() as cut_deadline:
-                    if time.monotonic() >= cut_deadline:
-                        v.fail('reader_snapshot_deadline')
-                    db.commit()
-            return result
-
-        with self._session(write=True) as db:
-            generation = db.execute('SELECT * FROM generations WHERE gen_id=?', (gen_id,)).fetchone()
-            if generation is None or generation['view_id'] != handle.view_id:
-                v.fail('generation_missing')
-            stage = self._verify_generation(db, handle, entry, saved, generation, deadline=deadline, full_vectors=True)
-            if (expected_stage is not None and stage != expected_stage) or (
-                    expected_stage is None and 'legacy' in stage):
-                v.fail('migration_snapshot_changed')
-            if stage['base'] != base:
-                v.fail('view_head_conflict')
-            current = self._head(db, handle)
-            if generation['state'] == 'published':
-                if current['gen_id'] == gen_id and current['epoch'] == base['epoch'] + 1:
-                    capture()
-                    return finish(db, current)  # exact replay of this publication only
-                v.fail('view_head_conflict')
-            if generation['state'] != 'prepared' or current != base:
-                v.fail('view_head_conflict')
-            _live(db, saved, stage['files'])
-            if db.execute("UPDATE generations SET state='published' WHERE gen_id=? AND state='prepared'",
-                          (gen_id,)).rowcount != 1:
-                v.fail('view_head_conflict')
-            if base['gen_id'] is None:
-                _insert(db, 'view_heads', dict(view_id=handle.view_id, gen_id=gen_id, epoch=1))
-            elif db.execute('UPDATE view_heads SET gen_id=?,epoch=epoch+1 WHERE view_id=? AND gen_id=? AND epoch=?',
-                            (gen_id, handle.view_id, base['gen_id'], base['epoch'])).rowcount != 1:
-                v.fail('view_head_conflict')
-            capture()
-            _live(db, saved, stage['files'])
-            return finish(db, self._head(db, handle))

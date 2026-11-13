@@ -348,17 +348,7 @@ class VectorMixin:
                              profile_id=profile_id, **heads[blob]))
         return rows
 
-    @staticmethod
-    def _stored_vectors(db, gen_id):
-        return [dict(r) for r in db.execute(
-            'SELECT ' + ','.join(REF_FIELDS) + ' FROM member_vectors WHERE gen_id=? ORDER BY path', (gen_id,))]
 
-    def _verified_vectors(self, db, stage, plan, gen_id, *, full=False, deadline=None):
-        """Actual stored references must equal complete coverage of the sealed spec."""
-        stored = self._stored_vectors(db, gen_id)
-        if stored != self._vector_coverage(db, plan, stage['vector_spec'], full=full, deadline=deadline):
-            v.fail('vector_rows_mismatch')
-        return stored
 
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None):
