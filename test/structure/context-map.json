@@ -954,6 +954,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/settings/diagnostic_consent.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/settings/project_dir.py": {
       "context": "settings",
       "layer": "adapter",

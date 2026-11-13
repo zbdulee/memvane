@@ -413,8 +413,9 @@ def _trace_capture(trace, reason, *, exc=None, warning=False):
         if diag is None or (exc is None and diag['count'] >= _MAX_DIAGNOSTICS):
             return None
         from memvane.diagnostics import api as diagnostic_trace
+        from memvane.settings.api import diagnostic_enabled
         if diag['enabled'] is None:
-            diag['enabled'] = diagnostic_trace.enabled(diag['decision']) is True
+            diag['enabled'] = diagnostic_enabled(diag['decision']) is True
         if not diag['enabled']:
             return None
         diag['count'] += 1
@@ -422,7 +423,8 @@ def _trace_capture(trace, reason, *, exc=None, warning=False):
                                session=diag['session'])
         try:
             return diagnostic_trace.capture(diag['decision'], event=diag['action'],
-                                            reason=reason, exc=exc, warning=warning)
+                                            reason=reason, exc=exc, warning=warning,
+                                            consent=diagnostic_enabled)
         finally:
             event_log.unbind(token)
     except Exception:  # noqa: BLE001 - diagnostics never alter the hook result

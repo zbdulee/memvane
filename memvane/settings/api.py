@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from memvane.settings.types import (CURRENT, NAMES, SETTINGS, WIKI, SOURCE_TEXT_EXTENSIONS,
-                                     WIKI_TEXT_EXTENSIONS, DENIED_SOURCE_SEGMENTS)
+                                     DENIED_SOURCE_SEGMENTS)
+
+
+def diagnostic_enabled(*args, **kwargs):
+    from memvane.settings.diagnostic_consent import enabled as implementation
+    return implementation(*args, **kwargs)
 
 
 def find_project_config(*args, **kwargs):

@@ -74,11 +74,6 @@ def capture(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def enabled(*args, **kwargs):
-    from memvane.diagnostics.diagnostic_trace import enabled as implementation
-    return implementation(*args, **kwargs)
-
-
 def telemetry_emit(*args, **kwargs):
     from memvane.diagnostics.job_telemetry import emit as implementation
     return implementation(*args, **kwargs)

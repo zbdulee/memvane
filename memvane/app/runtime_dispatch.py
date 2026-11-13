@@ -337,18 +337,19 @@ def _diagnostic_fields(target, kind, exc):
         if route is None:
             return fields
         from memvane.diagnostics import api as diagnostic_trace
+        from memvane.settings.api import diagnostic_enabled
         if code == 'target_child_failed':
-            if not diagnostic_trace.enabled(route):
+            if not diagnostic_enabled(route):
                 return fields
             detail = getattr(exc, 'detail', None)
             diagnostic_id = (diagnostic_trace.capture(
                 route, event='wake.' + kind.removeprefix('laya-'), reason=code,
-                child_stderr=detail) if getattr(exc, 'child_stderr_available', False)
+                child_stderr=detail, consent=diagnostic_enabled) if getattr(exc, 'child_stderr_available', False)
                 and isinstance(detail, str) and detail else None)
             if diagnostic_id is None and exc.__cause__ is not None:
                 diagnostic_id = diagnostic_trace.capture(
                     route, event='wake.' + kind.removeprefix('laya-'),
-                    reason=code, exc=exc.__cause__)
+                    reason=code, exc=exc.__cause__, consent=diagnostic_enabled)
             if diagnostic_id:
                 fields['diagnostic_id'] = diagnostic_id
             return fields
@@ -356,7 +357,7 @@ def _diagnostic_fields(target, kind, exc):
             route, event='wake.' + kind.removeprefix('laya-'),
             reason=code or type(exc).__name__,
             exc=None if code == 'target_preparing' else exc,
-            warning=code == 'target_preparing')
+            warning=code == 'target_preparing', consent=diagnostic_enabled)
         return {'diagnostic_id': diagnostic_id} if diagnostic_id else {}
     except Exception:  # noqa: BLE001 - diagnostics never alter the wake
         return fields

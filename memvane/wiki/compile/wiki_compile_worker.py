@@ -1378,6 +1378,7 @@ def _verify_diagnostic(root: Path, exc: BaseException) -> str | None:
     """
     try:
         from memvane.diagnostics import api as diagnostic_trace
+        from memvane.settings.api import diagnostic_enabled
         from memvane.diagnostics import api as event_log
         from memvane.route import api as laya_index_host_route
         bound = event_log.bound()
@@ -1389,7 +1390,8 @@ def _verify_diagnostic(root: Path, exc: BaseException) -> str | None:
                 or event_log.install_of(route) != bound.get('install')):
             return None
         return diagnostic_trace.capture(route, event='compile.verify_pass',
-                                        reason=type(exc).__name__, exc=exc)
+                                        reason=type(exc).__name__, exc=exc,
+                                        consent=diagnostic_enabled)
     except Exception:  # noqa: BLE001 - a diagnostic never alters the outcome
         return None
 
