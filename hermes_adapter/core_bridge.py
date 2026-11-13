@@ -166,8 +166,8 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
         return
     token = None
     try:
-        import event_log
-        import diagnostic_trace
+        from memvane.diagnostics import event_log
+        from memvane.diagnostics import diagnostic_trace
         token = event_log.bind(decision=decision, host="hermes")
         reason = None
         try:
@@ -192,7 +192,7 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
     finally:
         if token is not None:
             try:
-                import event_log
+                from memvane.diagnostics import event_log
                 event_log.unbind(token)
             except Exception:
                 pass

@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import secrets
-import job_telemetry
+from memvane.diagnostics import job_telemetry
 
 from .compact_input import derive
 from .contracts import digest, validate_label, validate_request

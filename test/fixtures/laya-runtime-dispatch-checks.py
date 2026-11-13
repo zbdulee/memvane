@@ -340,7 +340,7 @@ class DispatchBoundary(unittest.TestCase):
 
 class StallEvent(unittest.TestCase):
     def test_stalled_preparing_streak_is_logged_once_as_a_failure(self):
-        import event_log
+        from memvane.diagnostics import event_log
         import laya_index_host_route
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary).resolve()

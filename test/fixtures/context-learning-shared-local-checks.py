@@ -208,7 +208,7 @@ with tempfile.TemporaryDirectory(prefix="qmd-shared-", dir="/tmp") as name:
         assert completed["metrics"]["holdout_questions"] == 1
         assert len(completed["metrics"]["candidate"]["projects"]) == 2
         assert sorted(x["questions"] for x in completed["metrics"]["candidate"]["projects"].values()) == [0, 1]
-        from job_telemetry import replay
+        from memvane.diagnostics.job_telemetry import replay
         train_events = (root / "job-telemetry.jsonl").read_text().splitlines()
         train_job = [row for row in replay(train_events)
                      if row["job_id"] == completed["cycle_id"] + ":train"]

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core"))
-import event_log
+from memvane.diagnostics import event_log
 import laya_host_response as response
 import laya_index_vector as vector
 

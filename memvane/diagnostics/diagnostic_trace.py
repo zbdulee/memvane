@@ -34,7 +34,7 @@ import re
 import traceback
 
 import config
-import event_log
+from memvane.diagnostics import event_log
 import project_dir
 
 __all__ = ["enabled", "capture", "reassemble"]

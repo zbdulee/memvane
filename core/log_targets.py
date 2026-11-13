@@ -89,7 +89,7 @@ def route_for(root: Path):
     install is bound. Reads route state only; creates nothing.
     """
     try:
-        import event_log
+        from memvane.diagnostics import event_log
         import laya_index_host_route
         decision = laya_index_host_route.select_route(str(root), action='recall')
     except Exception:

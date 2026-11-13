@@ -50,7 +50,7 @@ def minimal_settings(**extra):
 
 def trace():
     """Lazily import the future module so config checks fail independently."""
-    import diagnostic_trace
+    from memvane.diagnostics import diagnostic_trace
     return diagnostic_trace
 
 

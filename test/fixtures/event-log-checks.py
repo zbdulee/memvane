@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
-import event_log  # noqa: E402
+from memvane.diagnostics import event_log  # noqa: E402
 
 SCHEMA_KEYS = {'ts', 'v', 'install', 'host', 'session', 'event', 'outcome', 'reason', 'ms'}
 

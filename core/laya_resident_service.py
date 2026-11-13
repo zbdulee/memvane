@@ -563,7 +563,7 @@ class Binding:
 def _event(targets, event, outcome, reason=None, **fields):
     """One service event per adopted installation's event log; never raises."""
     try:
-        import event_log
+        from memvane.diagnostics import event_log
         for state_root, install in targets:
             event_log.emit(event, outcome=outcome, reason=reason, state_root=state_root,
                            install=install, host='worker', pid=os.getpid(), **fields)
@@ -1166,7 +1166,7 @@ class Service:
                 self.waiting[project] = reason
         targets = []
         with suppress(Exception):
-            import event_log
+            from memvane.diagnostics import event_log
             if callable(decision):
                 decision = decision()
             state_root = event_log.state_root_for_decision(decision)
@@ -1247,7 +1247,7 @@ class Service:
             binding = Binding(project, manifest, identity, mode, owner_fd, service_fd, listener)
             binding.recheck_at = time.monotonic() + self.owner_recheck_seconds
             with suppress(Exception):
-                import event_log
+                from memvane.diagnostics import event_log
                 binding.events = (event_log.state_root_for_decision(decision),
                                   event_log.install_of(decision))
         except Exception:

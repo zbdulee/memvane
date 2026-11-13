@@ -13,7 +13,7 @@ matches ``event_log.code`` so the log keeps it verbatim.
 """
 from __future__ import annotations
 
-import event_log
+from memvane.diagnostics import event_log
 import wiki_card_budget
 
 TAIL_CHARS = event_log.WIKI_TAIL_CHARS

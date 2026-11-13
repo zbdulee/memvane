@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
-import event_log
+from memvane.diagnostics import event_log
 from memvane.kernel import hook_budget
 
 

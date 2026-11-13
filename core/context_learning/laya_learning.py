@@ -124,7 +124,7 @@ def corpus_snapshot(project_root, config, *, decision=None):
 def _log(decision, host, status):
     """One ``learning.capture`` event in the install log; never raises."""
     try:
-        import event_log
+        from memvane.diagnostics import event_log
         event_log.emit('learning.capture', outcome=status, decision=decision, host=host)
     except Exception:
         pass

@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import time
 
-import job_telemetry
+from memvane.diagnostics import job_telemetry
 
 from .automatic_cohort import training_and_validation
 from .contracts import digest

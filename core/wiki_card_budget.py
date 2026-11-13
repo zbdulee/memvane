@@ -384,7 +384,7 @@ def emit(root, outcome: str, *, bound, path: str = '', title: str = '',
     Field names avoid the word "token": the event log drops such keys.
     """
     try:
-        import event_log
+        from memvane.diagnostics import event_log
         state_root = event_log.wiki_state_root(root, bound)
         if state_root is None:
             return False

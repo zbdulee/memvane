@@ -37,7 +37,7 @@ sys.dont_write_bytecode = True
 CORE = Path(__file__).resolve().parents[3] / 'core'
 sys.path.insert(0, str(CORE))
 
-import event_log  # noqa: E402
+from memvane.diagnostics import event_log  # noqa: E402
 import log_targets  # noqa: E402
 
 ALL_READ_LIMIT = 16 * 1024 * 1024
@@ -183,7 +183,7 @@ class _View:
         if not group:
             return incomplete
         try:
-            import diagnostic_trace
+            from memvane.diagnostics import diagnostic_trace
             result = diagnostic_trace.reassemble(group, ident)
         except Exception:  # noqa: BLE001 - reported, never raised
             return {'status': 'unavailable', 'diagnostic_id': ident}

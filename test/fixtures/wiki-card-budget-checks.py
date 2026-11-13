@@ -243,7 +243,7 @@ class MeasureChecks(unittest.TestCase):
         self.assertEqual([a['reason'] for a in diagnostic['attempts']], ['input_unencodable'])
 
     def test_reason_codes_survive_the_event_log(self):
-        import event_log
+        from memvane.diagnostics import event_log
         import wiki_activity_log
         self.assertEqual(wiki_activity_log.REASON_CODES['card_measure'], budget.MEASURE_REASONS)
         self.assertEqual(len(set(budget.MEASURE_REASONS)), len(budget.MEASURE_REASONS))

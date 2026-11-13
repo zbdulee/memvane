@@ -17,8 +17,8 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
 sys.path.insert(0, str(REPO))
-import diagnostic_trace as diag
-import event_log
+from memvane.diagnostics import diagnostic_trace as diag
+from memvane.diagnostics import event_log
 import laya_bundle_upgrade as upgrade
 import laya_host_response as host_response
 import laya_index_host_route as routes

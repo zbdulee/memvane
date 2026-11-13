@@ -308,7 +308,7 @@ def _diagnostic_route(target):
     lookup failure or mismatch fails closed. Never raises.
     """
     try:
-        import event_log
+        from memvane.diagnostics import event_log
         import laya_index_host_route
         route = laya_index_host_route.select_route(target['project'], action='update')
         main = (route.get('mainRoute') if isinstance(route, dict)
@@ -344,7 +344,7 @@ def _diagnostic_fields(target, kind, exc):
         route = _diagnostic_route(target)
         if route is None:
             return fields
-        import diagnostic_trace
+        from memvane.diagnostics import diagnostic_trace
         if code == 'target_child_failed':
             if not diagnostic_trace.enabled(route):
                 return fields
@@ -373,7 +373,7 @@ def _diagnostic_fields(target, kind, exc):
 def _event(target, kind, started, *, outcome, reason=None, result=None, extra=None):
     """One ``wake.*`` event (and ``index.publish``) in the target install's log."""
     try:
-        import event_log
+        from memvane.diagnostics import event_log
         state_root = event_log.state_root_of(target.get('journalPath'))
         if state_root is None:
             return
@@ -405,7 +405,7 @@ def drop_event(kind, value, *, reason, attempts=None):
     try:
         if not Path(value).is_dir():
             return False
-        import event_log
+        from memvane.diagnostics import event_log
         from laya_index_host_route import select_route
         decision = select_route(str(value), action='update')
         return event_log.emit('wake.drop', outcome='dropped', reason=reason,
@@ -424,7 +424,7 @@ def stall_event(kind, value, *, since, observations, retry_in):
     try:
         if not Path(value).is_dir():
             return False
-        import event_log
+        from memvane.diagnostics import event_log
         from laya_index_host_route import select_route
         decision = select_route(str(value), action='update')
         return event_log.emit('wake.' + kind.removeprefix('laya-'), outcome='failed',

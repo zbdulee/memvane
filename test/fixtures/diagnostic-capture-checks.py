@@ -9,8 +9,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import diagnostic_trace as diag
-import event_log
+from memvane.diagnostics import diagnostic_trace as diag
+from memvane.diagnostics import event_log
 
 
 class Capture(unittest.TestCase):
