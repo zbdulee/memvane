@@ -10,6 +10,6 @@
 - **wiki 카드에 보존할 내용을 접어 넣을 때는 항상 `<!-- qmd:auto:end -->` 밖에 둔다.** auto 블록은 소스 변경 시 `AUTO_BLOCK_RE.sub`로 통째 재생성되고 `verified`는 `is_auto_writable_page` 보호 집합에 없어(의도적) 갱신 대상이다 — 블록 안의 고유 사실은 다음 소스 편집에 소실된다. 블록 밖은 frontmatter 포함 보존되므로 dedup consolidation의 alias·canonicalKey·sources 이식은 안전하다 — **단 이 보장의 범위는 "소스 변경에 의한 auto 블록 재생성"까지다.** 카드가 **삭제**되면(기계 검수 `fail`·`inconclusive`, 둘 다 기본값) 블록 밖 내용도 함께 사라지고 `verify-deleted.jsonl`에 본문이 없어 **복구 수단이 없다**. 따라서 고유 사실은 계속 블록 밖에 두되 **카드를 "소스에서 재생성할 수 없는 것의 유일한 사본"으로 쓰지 않는다.** `maxAutoPageLines`는 candidate summary 줄 수만 보므로 보존 섹션은 lint에 영향이 없다.
   - **한 경로의 보장을 전 경로의 보장으로 서술하지 말 것.** 보존·안전을 약속하는 문장을 쓸 때는 **어느 연산에 대해 참인지**를 함께 적는다(재생성 / 갱신 / 삭제 / 병합).
 - `hint`에 해당하는 skill은 만들지 않는다. 선택된 route의 PostToolUse `posttool`은 힌트를 주입하지 않는 observer이고 durable sync는 `index`가 맡는다.
-- `gate`에 해당하는 skill은 만들지 않는다. gate는 선택된 route에서 편집 이벤트의 route 증명을 확인하는 내부 hook이고, 증명이 유지되면 allow를 낸다.
+- `gate`에 해당하는 skill은 만들지 않는다. gate는 선택된 route에서 편집 이벤트의 route 증명을 확인하는 내부 hook이고, 증명이 유지되면 Claude·Codex에는 빈 응답 `{}`을, Hermes에는 `{"action": "continue"}`를 낸다.
 
 > **dogfooding**: 이 저장소 자체의 `.memvane/settings.json`은 minimal settings(`{"name": "qmd-auto-context", "skipPaths": []}`)다. 온보딩해 Laya route가 선택된 체크아웃에서는 raw 컬렉션 `qmd-auto-context`(프로젝트 루트)와 wiki 컬렉션 `qmd-auto-context-wiki`(`.memvane/wiki`)를 쓴다. 컬렉션 이름은 프로젝트 데이터라 플러그인 이름과 별개다.
