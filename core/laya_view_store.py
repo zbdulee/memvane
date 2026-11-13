@@ -443,30 +443,23 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
         with self._session() as db:
             return self._head(db, handle)
 
-    def _card(self, handle, member, current, *, legacy=False, cache=None):
+    def _card(self, handle, member, current, *, cache=None):
         """Original attestation refs stay unchanged; eligibility is derived only."""
         if member['trust_digest'] is None:
             return 0, []
         spec = self._attestation(member['trust_digest'], cache=cache)
         if spec['blob_sha'] != member['blob_sha'] or spec['policy_digest'] != handle.policy_digest:
             v.fail('card_trust_mismatch')
-        if legacy and spec['verification_kind'] != 'legacy_verified':
-            v.fail('legacy_card_trust_invalid')
         # A writer-ingested legacy_verified card keeps the v6 reader rule: its
         # unbound sources are not compared with the current scan (no HEAD or
         # raw reread is claimed); anything but fully unbound sources is ineligible.
-        unbound = not legacy and spec['verification_kind'] == 'legacy_verified'
+        unbound = spec['verification_kind'] == 'legacy_verified'
         ok, refs = bool(spec['sources']), []
         for ordinal, source in enumerate(spec['sources']):
             old = self._fingerprint(source['fingerprint_id'], cache=cache)
             if (old['worktree_id'], old['branch_key']) != (handle.worktree_id, handle.branch_key):
                 v.fail('foreign_card_trust')
             refs.append(dict(ordinal=ordinal, fingerprint_id=source['fingerprint_id'], spans=source['spans']))
-            if legacy:
-                if (old['binding_state'] != 'legacy_unbound' or old['head_oid'] is not None
-                        or old['tracked_state'] != 'unknown'):
-                    v.fail('legacy_card_trust_invalid')
-                continue
             if unbound:
                 if (old['binding_state'] != 'legacy_unbound' or old['head_oid'] is not None
                         or old['tracked_state'] != 'unknown'):
@@ -479,11 +472,10 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
                 ok = False
         return int(ok), refs
 
-    def _derive(self, handle, manifest, skips, *, retain_bodies=True, legacy_paths=(), deadline=None):
+    def _derive(self, handle, manifest, skips, *, retain_bodies=True, deadline=None):
         """Metadata-only derivation inside a short read transaction."""
         if deadline is not None and time.monotonic() >= deadline:
             v.fail('fts_deadline_exceeded')
-        legacy_paths = frozenset(legacy_paths)
         if not self._db.in_transaction:
             v.fail('candidate_transaction_required')
         cache = {'blobs': set(), 'worktrees': {}, 'captures': set(), 'fingerprints': {}}
@@ -513,12 +505,11 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
                 verified_bodies[blob] = body if retain_bodies else len(body.encode('utf8'))
             value = verified_bodies[blob]
             size = len(value.encode('utf8')) if retain_bodies else value
-            legacy = member['path'] in legacy_paths
-            key = (blob, member['trust_digest'], legacy)
+            key = (blob, member['trust_digest'])
             if key not in verified_cards:
-                verified_cards[key] = self._card(handle, member, current, legacy=legacy, cache=cache)
+                verified_cards[key] = self._card(handle, member, current, cache=cache)
             eligible, refs = verified_cards[key]
-            if not legacy and vals.skipped(member['path'], skips):
+            if vals.skipped(member['path'], skips):
                 continue
             total += size
             if total > vals.MAX_WIKI_BYTES:
