@@ -12,7 +12,7 @@ import re
 import time
 
 import laya_blob_values as v
-import laya_index_a as legacy
+import laya_store_primitives as legacy
 import laya_view_vectors as vectors
 
 MAX_MEMBERS = 20000
