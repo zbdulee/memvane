@@ -47,18 +47,15 @@ _POINTER_KEYS = ({'executable', 'runtime_identity_sha256'},
                   'model_dir'},
                  {'executable', 'runtime_identity_sha256', 'attestation', 'adapter_path',
                   'model_dir', 'previous'})
-STATE_SWITCH = 'learning-state.json'
-STATE_SWITCH_SCHEMA = 'memvane-learning-state-v1'
 
 
 def _support_parts():
     return ('Library', 'Application Support') if sys.platform == 'darwin' else ('.local', 'share')
 
 
-def _support_dirs(home=None):
+def _support_dir(home=None):
     home = Path(home) if home is not None else Path.home()
-    parts = _support_parts()
-    return home.joinpath(*parts, 'memvane'), home.joinpath(*parts, 'qmd-auto-context')
+    return home.joinpath(*_support_parts(), 'memvane')
 
 
 def _activated(runtime_root):
@@ -93,50 +90,13 @@ def _activated(runtime_root):
 
 
 def runtime_base(home=None):
-    """Support directory whose ``runtimes/laya`` is the managed runtime.
-
-    ``~/Library/Application Support/memvane`` on macOS, ``~/.local/share/memvane``
-    elsewhere, once its runtime is activated; else the pre-rename directory
-    when its runtime is activated; else the MemVane directory. The runtime
-    is a virtual environment with absolute interpreter paths, so it is
-    re-provisioned, never moved, and the switch is its activation pointer.
-    """
-    current, legacy = _support_dirs(home)
-    if _activated(current/'runtimes'/'laya'):
-        return current
-    if _activated(legacy/'runtimes'/'laya'):
-        return legacy
-    return current
-
-
-def _state_switched(current):
-    path = current/STATE_SWITCH
-    try:
-        info = path.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077 or info.st_size > 4096):
-            return False
-        value = json.loads(path.read_text('utf-8'))
-    except (OSError, ValueError, UnicodeError):
-        return False
-    return value == {'schema': STATE_SWITCH_SCHEMA, 'root': str(current)}
+    """Support directory for the managed runtime."""
+    return _support_dir(home)
 
 
 def learning_state_base(home=None):
-    """Support directory of the learning state (``live-selection``, ``laya-inference``).
-
-    Independent of the runtime location. State written under the pre-rename
-    directory stays there (selectors, checkpoints, policies, the inference
-    service and its resource lanes) until a verified move records the switch
-    (``learning-state.json`` in the MemVane directory). A fresh account uses
-    the MemVane directory.
-    """
-    current, legacy = _support_dirs(home)
-    if _state_switched(current):
-        return current
-    if any((legacy/name).is_dir() for name in ('live-selection', 'laya-inference')):
-        return legacy
-    return current
+    """Support directory for learning state."""
+    return _support_dir(home)
 
 
 def default_managed_root(home=None):

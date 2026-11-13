@@ -1,6 +1,6 @@
 """Read-only compatibility for the same adapter in official host/version caches.
 
-The policy's old adapter is an identity anchor, never an execution target.
+The policy's adapter is an identity anchor, never an execution target.
 Only the current package adapter is returned, and its normal trainer/runtime
 checks still apply. No policy, installation record or authorization is written.
 """
@@ -17,10 +17,7 @@ PLUGIN_NAME = 'memvane'
 MARKETPLACE = 'memvane-marketplace'
 PLUGIN_ID = PLUGIN_NAME + '@' + MARKETPLACE
 REPOSITORY = 'zbdulee/memvane'
-# A policy written before the rename anchors on an adapter in the earlier
-# plugin id's cache; that cache stays a valid identity anchor (never executed).
-CACHE_IDENTITIES = ((MARKETPLACE, PLUGIN_NAME),
-                    ('qmd-auto-context-marketplace', 'qmd-auto-context'))
+CACHE_IDENTITIES = ((MARKETPLACE, PLUGIN_NAME),)
 REPOSITORY_URLS = frozenset({'https://github.com/' + REPOSITORY,
                             'https://github.com/' + REPOSITORY + '.git'})
 
