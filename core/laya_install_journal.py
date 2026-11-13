@@ -1519,134 +1519,6 @@ def _executing_root():
     return Path(__file__).resolve().parent.parent
 
 
-def _verify_selected_route(decision, *, dispatch_target=False):
-    from laya_index_a import LayaIndexA
-    from laya_index_claim_queue import ClaimQueue, UnknownDatabase
-    """Read-only product proof for a host-validated candidate decision.
-
-    The caller must still construct LayaIndexRuntime, which rechecks DB and
-    queue identity before serving. No legacy fallback is authorized on error.
-    """
-    binding = _writer_identity_reads.get()
-    legacy_only = _legacy_identity_reads.get()
-    if binding is not None:
-        binding.check()
-    if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
-            any(type(decision.get(key)) is not str for key in
-                ('journalPath', 'pluginRoot', 'projectRoot', 'dbPath',
-                 'queuePath', 'dbIncarnation', 'scopeId'))):
-        _fail('unselected_host_route')
-    journal = _private_parent(decision.get('journalPath'))
-    engine = Path(decision.get('pluginRoot'))
-    raw = _observed_route({'project_root': decision.get('projectRoot')}, None)
-    route, digest = _route(raw, journal)
-    allowed = {digest}
-    if (journal != journal.parent / 'journal.sqlite' or
-            (route['schema'] == ROUTE_SCHEMA and engine.parent != journal.parent)):
-        _fail('journal_engine_root_mismatch')
-    fresh = select_route(route['projectRoot'], action='recall')
-    if fresh.get('state') != 'candidate' or fresh != decision:
-        _fail('host_route_unverified')
-    for key in ROUTE_FIELDS:
-        if key in fresh and fresh[key] != route[key]:
-            _fail('host_decision_changed')
-    path, db = _open(journal, write=False)
-    with closing(db):
-        db.execute('BEGIN')
-        try:
-            row = _row(db)
-            if legacy_only and row['_version'] == 5:
-                _fail('writer_plan_v5_required')
-            if (row['state'] not in ('active', 'restored_old') or
-                    row['selected'] is None or row['selected_route_sha'] not in allowed or
-                    not _project_matches(route, row) or
-                    route['scopeId'] != row['scope_id'] or
-                    any(route.get(k) != row['selected'].get(k) for k in
-                        ('pluginRoot', 'installId', 'generation',
-                         'bundleManifestSha256', 'ownershipManifestSha256',
-                         'vectorProfile'))):
-                _fail('inactive_or_mismatched_journal')
-            proof = _inspect_identity(row['selected'])
-            # Only Laya-owned evidence binds the route: the global QMD
-            # directories are neither read nor required to exist.
-            # Read-only DB/queue identity classification. The runtime repeats
-            # both checks when opening writable connections.
-            db_path, queue_path = Path(route['dbPath']), Path(route['queuePath'])
-            if (not db_path.is_absolute() or not queue_path.is_absolute() or
-                    db_path.is_symlink() or queue_path.is_symlink() or
-                    db_path == queue_path):
-                _fail('invalid_index_paths')
-            for candidate_path in (db_path, queue_path):
-                canonical_path = candidate_path.resolve(strict=True)
-                plugin_root = Path(row['selected']['pluginRoot'])
-                if canonical_path == plugin_root or plugin_root in canonical_path.parents:
-                    _fail('index_path_overlaps_plugin')
-            with _identity_connection(db_path, binding=binding) as index_db:
-                index_db.execute('BEGIN')
-                LayaIndexA._check_header(index_db)
-                incarnation = index_db.execute(
-                    "SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
-                if incarnation != route['dbIncarnation']:
-                    _fail('index_incarnation_mismatch')
-                index_db.commit()
-            with _identity_connection(queue_path, binding=binding) as queue_db:
-                queue_db.execute('BEGIN')
-                if ClaimQueue._check_database(queue_db) != incarnation:
-                    _fail('queue_incarnation_mismatch')
-                queue_db.commit()
-            db.commit()
-        except (OSError, RuntimeError, sqlite3.Error, IndexContractError,
-                UnknownDatabase) as exc:
-            db.rollback()
-            raise JournalEvidenceError('runtime_identity_unavailable') from exc
-        except BaseException:
-            db.rollback()
-            raise
-    full = row['selected']['bundleKind'] == 'full_plugin'
-    # The UID queue may be held by another installed version. Its dispatcher
-    # needs the sealed target identity before it can enter that version's code;
-    # a host/query/worker still requires the executing-root proof below.
-    executing_root = (_verified_executing_root(row['selected'], proof)
-                      if full and not dispatch_target else None)
-    attestation, observed_sha = _attestation(path) if full else (None, None)
-    sealed_sha = row['provider_attestation_sha']
-    if sealed_sha is not None and observed_sha != sealed_sha:
-        _fail('production_attestation_changed')
-    provider_manifest = None
-    if sealed_sha is not None:
-        if (row['provider_file_identity'] is None or
-                not _provider_identity_equal(row['provider_file_identity'], _provider_file_identity(attestation)) or
-                attestation.get('vectorProfile') != proof.get('vectorProfile') or
-                any(attestation.get(key) != proof.get(key) for key in
-                    ('sourceCommit', 'bundleManifestSha256',
-                     'ownershipManifestSha256'))):
-            _fail('production_provider_identity_changed')
-        # Full hashes and recipe closure were checked at installer activation.
-        # The journal seals that result; per-hook stat checks keep the model
-        # and native closure bounded without reopening hundreds of MB.
-        provider_manifest = attestation['providerManifest']
-    approved = full and sealed_sha is not None and provider_manifest is not None
-    _finish_identity_reads(binding, row)
-    return {'status': ('installer_active_full_plugin_verified' if approved else
-                       'production_attestation_unapproved' if sealed_sha is not None else
-                       'production_attestation_unbound' if full else
-                       'engine_subbundle_verified_host_closure_unproved'),
-            'productRouteAllowed': approved,
-            'journalPath': str(path), 'selectionEpoch': row['epoch'],
-            'pluginRoot': row['selected']['pluginRoot'], 'sourceCommit': proof['sourceCommit'],
-            **({'executingPluginRoot': executing_root}
-               if full and not dispatch_target else {}),
-            'bundleManifestSha256': proof['bundleManifestSha256'],
-            'ownershipManifestSha256': proof['ownershipManifestSha256'],
-            'installId': route['installId'], 'generation': route['generation'],
-            'projectRoot': route['projectRoot'], 'scopeId': route['scopeId'],
-            'dbIncarnation': route['dbIncarnation'],
-            'vectorProfile': proof.get('vectorProfile'),
-            **({'providerManifest': provider_manifest} if approved else {})}
-
-
-
-
 def _verify_v1_selected(decision):
     """Reprove the selected v1 journal, route, ledger and provider."""
     import project_dir
@@ -1707,9 +1579,9 @@ def _verify_v1_selected(decision):
 
 def verify_selected_route(decision):
     """Full selected-route proof, including the currently executing bundle."""
-    if isinstance(decision, dict) and decision.get('routeSchema') == 'memvane-route-v4':
-        return _verify_v1_selected(decision)
-    return _verify_selected_route(decision)
+    if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
+        _fail('unselected_host_route')
+    return _verify_v1_selected(decision)
 
 
 def verify_selected_route_for_write(decision, action='update'):
@@ -1728,103 +1600,52 @@ def verify_selected_route_for_write(decision, action='update'):
 
 def verify_dispatch_target(decision):
     """Read-only owner proof for choosing a child; never authorizes work here."""
-    proof = (verify_selected_route(decision) if decision.get('routeSchema') == 'memvane-route-v4'
-             else _verify_selected_route(decision, dispatch_target=True))
+    proof = verify_selected_route(decision)
     if proof['productRouteAllowed'] is not True:
         _fail('dispatch_target_unapproved')
     return proof
 
 
 def verify_notification_target(decision):
-    """Journal, route and bundle metadata proof for leaving a change hint.
-
-    Another project's hook may only leave an untrusted hint and wake the
-    owner. This never opens the owner's index or claim DB, starts a provider,
-    CASes the journal or proves the executing bundle, and never authorizes a
-    store write: the owner's worker repeats the full selected-route proof.
-    """
-    if (not isinstance(decision, dict) or decision.get('state') != 'candidate' or
-            any(type(decision.get(key)) is not str for key in
-                ('journalPath', 'pluginRoot', 'projectRoot', 'dbPath',
-                 'queuePath', 'dbIncarnation', 'scopeId'))):
+    """Prove an external-edit hint using only local metadata and the journal."""
+    import project_dir
+    from laya_index_host_route import select_notification_route
+    from laya_initial_build import read_v1
+    from laya_ledger_common import _private_file, _read_json
+    from memvane_version import same_major, writer_floor_allows
+    if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
         _fail('unselected_host_route')
-    journal = _private_parent(decision['journalPath'])
-    raw = _observed_route({'project_root': decision['projectRoot']}, None)
-    route, digest = _route(raw, journal)
-    if (route['schema'] == ROUTE_SCHEMA and
-            Path(decision['pluginRoot']).parent != journal.parent):
-        _fail('journal_engine_root_mismatch')
-    fresh = select_route(route['projectRoot'], action='recall')
-    if fresh.get('state') != 'candidate' or fresh != decision:
-        _fail('host_route_unverified')
-    for key in ROUTE_FIELDS | ROUTE_FIELDS_V2:
-        if key in fresh and fresh[key] != route[key]:
-            _fail('host_decision_changed')
-    try:
-        # Path classification only; neither store is opened.
-        db_path, queue_path = Path(route['dbPath']), Path(route['queuePath'])
-        if (not db_path.is_absolute() or not queue_path.is_absolute() or
-                db_path.is_symlink() or queue_path.is_symlink() or
-                db_path == queue_path):
-            _fail('invalid_index_paths')
-        plugin_root = Path(route['pluginRoot'])
-        for candidate_path in (db_path, queue_path):
-            canonical_path = candidate_path.resolve(strict=True)
-            if canonical_path == plugin_root or plugin_root in canonical_path.parents:
-                _fail('index_path_overlaps_plugin')
-    except (OSError, RuntimeError) as exc:
-        raise JournalEvidenceError('runtime_identity_unavailable') from exc
-    path, db = _open(journal, write=False)
-    with closing(db):
-        db.execute('BEGIN')
-        try:
-            row = _row(db)
-            db.commit()
-        except (OSError, RuntimeError, sqlite3.Error) as exc:
-            db.rollback()
-            raise JournalEvidenceError('journal_unavailable') from exc
-        except BaseException:
-            db.rollback()
-            raise
-    if (row['state'] not in ('active', 'restored_old') or
-            row['selected'] is None or row['selected_route_sha'] != digest or
-            not _project_matches(route, row) or
-            route['scopeId'] != row['scope_id'] or
-            any(route.get(k) != row['selected'].get(k) for k in
-                ('pluginRoot', 'installId', 'generation',
-                 'bundleManifestSha256', 'ownershipManifestSha256',
-                 'vectorProfile'))):
-        _fail('inactive_or_mismatched_journal')
-    if (row['selected']['bundleKind'] != 'full_plugin' or
-            row['provider_attestation_sha'] is None or
-            row['provider_file_identity'] is None):
+    project = Path(decision['projectRoot'])
+    if select_notification_route(project) != decision:
+        _fail('host_decision_changed')
+    path = _private_parent(decision['journalPath'])
+    raw = _private_file(project_dir.runtime_file(project, 'route.json'), 8192)
+    route, digest = _route(raw, path)
+    row = inspect_journal(path)
+    build = read_v1(path.parent)
+    ledger = _read_json(path.parent / 'ledger.json')
+    attestation, att_sha = _attestation(path)
+    if (build is None or build['phase'] != 'ready' or not isinstance(ledger, dict)
+            or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
+            or ledger.get('schema') != 'memvane-install-ledger-v1'
+            or ledger.get('phase') != 'selected' or ledger.get('identity') != build['identity']
+            or row['state'] != 'selected' or row['routeSha256'] != digest
+            or att_sha != row['attestationSha256'] or row['reader'] is None
+            or any(row[k] != decision[k] for k in
+                   ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))
+            or route['vectorProfile'] != row['vectorProfile']
+            or not isinstance(attestation, dict)
+            or attestation.get('vectorProfile') != row['vectorProfile']
+            or not same_major(row['stateFormat']) or not writer_floor_allows(row['writerFloor'])):
         _fail('notification_target_unapproved')
-    try:
-        proof = _inspect_identity(row['selected'])
-    except BundleEvidenceError as exc:
-        raise JournalEvidenceError('installed_bundle_changed') from exc
-    # The sealed bytes and their bundle identity; provider files and runtime
-    # hashes are the owner worker's proof, not this hint's.
-    attestation, observed_sha = _attestation(path)
-    if observed_sha != row['provider_attestation_sha'] or not isinstance(attestation, dict):
-        _fail('production_attestation_changed')
-    if (attestation.get('vectorProfile') != proof.get('vectorProfile') or
-            any(attestation.get(key) != proof.get(key) for key in
-                ('sourceCommit', 'bundleManifestSha256', 'ownershipManifestSha256'))):
-        _fail('production_provider_identity_changed')
-    # The visible route must still be the one just bound to the journal.
-    _observed_route({'project_root': route['projectRoot']}, raw)
-    return {'status': 'installer_active_notification_target',
-            'notificationOnly': True,
+    if (select_notification_route(project) != decision or inspect_journal(path) != row
+            or _private_file(project_dir.runtime_file(project, 'route.json'), 8192) != raw):
+        _fail('host_decision_changed')
+    return {'status': 'installer_v1_notification_target', 'notificationOnly': True,
             'journalPath': str(path), 'selectionEpoch': row['epoch'],
-            'pluginRoot': row['selected']['pluginRoot'],
-            'sourceCommit': proof['sourceCommit'],
-            'bundleManifestSha256': proof['bundleManifestSha256'],
-            'ownershipManifestSha256': proof['ownershipManifestSha256'],
-            'installId': route['installId'], 'generation': route['generation'],
-            'projectRoot': route['projectRoot'], 'scopeId': route['scopeId'],
-            'dbIncarnation': route['dbIncarnation'],
-            'vectorProfile': proof.get('vectorProfile')}
+            'projectRoot': str(project), 'installId': row['installId'],
+            'scopeId': row['scopeId'], 'storePath': row['storePath'],
+            'storeIncarnation': row['storeIncarnation']}
 
 
 def verify_worker_attestation(decision):

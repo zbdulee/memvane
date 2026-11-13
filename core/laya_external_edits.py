@@ -228,14 +228,14 @@ def _targets(origin, deadline):
             pointer = state / 'journal.sqlite'
             metadata = journal.inspect_journal(pointer)
             project = metadata.get('projectRoot')
-            if (metadata.get('state') not in ('active', 'restored_old')
+            if (metadata.get('state') != 'selected'
                     or project == origin or project in seen or not isinstance(project, str)):
                 continue
             if row is not None and project != row['projectRoot']:
                 continue
             if memvane_registry.excluded(view, state.name, project):
                 continue
-            decision = routes.select_route(project, action='index')
+            decision = routes.select_notification_route(project)
             if (decision.get('state') != 'candidate' or decision.get('projectRoot') != project
                     or decision.get('journalPath') != str(pointer)):
                 continue

@@ -350,7 +350,7 @@ def _candidate_paths(cwd: Path):
         yield directory, path.parent, path
 
 
-def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
+def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True) -> dict:
     """Classify a local single-store route without granting runtime authority."""
     import memvane_paths
     import sqlite3
@@ -392,7 +392,7 @@ def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
         observed[field] = (info.st_dev, info.st_ino)
     identity = None
     matching_major = same_major(record['stateFormat'])
-    if matching_major:
+    if matching_major and inspect_store:
         try:
             with closing(sqlite3.connect(store.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
                 db.execute('PRAGMA query_only=ON')
@@ -403,7 +403,7 @@ def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
         info = path.lstat()
         if (info.st_dev, info.st_ino) != observed[field]:
             raise ValueError('route_store_changed')
-    if matching_major and identity != (record['storeIncarnation'], record['scopeId']):
+    if matching_major and inspect_store and identity != (record['storeIncarnation'], record['scopeId']):
         return _decision('legacy', 'foreign_install')
     if record['projectRoot'] != str(root):
         raise ValueError('route_project_mismatch')
@@ -427,6 +427,29 @@ def _classify_v4(root: Path, settings: Path, record: dict) -> dict:
                      recallSettings={key: cfg[key] for key in
                                      ('recallStrategy', 'minScore', 'rawFallbackMinScore',
                                       'topN', 'skipPaths', 'lexicalPatterns')})
+
+
+def select_notification_route(project):
+    """Classify an external-edit hint without opening the recipient store."""
+    from laya_ledger_common import _read_json
+    try:
+        root = Path(project)
+        if not root.is_absolute() or root.resolve(strict=True) != root:
+            raise ValueError('invalid_project_root')
+        marker = _read_json(project_dir.runtime_file(root, QMD_SELECTION_MARKER))
+        raw = _read_regular(project_dir.runtime_file(root, RECORD), MAX_RECORD_BYTES)
+        route = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
+        if (not isinstance(route, dict) or route.get('schema') != SCHEMA_V4
+                or not isinstance(marker, dict) or set(marker) !=
+                {'schema', 'projectRoot', 'installId', 'routeSha256'}
+                or marker['schema'] != SELECTION_SCHEMA_V1
+                or marker['projectRoot'] != str(root)
+                or marker['installId'] != route.get('installId')
+                or marker['routeSha256'] != hashlib.sha256(raw).hexdigest()):
+            raise ValueError('selection_marker_invalid')
+        return _classify_v4(root, project_dir.settings_path(root), route, inspect_store=False)
+    except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
+        return _decision('blocked', 'selection_marker_invalid')
 
 
 def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
