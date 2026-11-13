@@ -548,15 +548,9 @@ _RESETTLED_WITH = frozenset(('attestation_sha256',))
 def resettled_pair(old, new):
     """``new`` is the schema3 ``old`` re-sealed by its owner.
 
-    Either the project's recall settings changed (``settings``), or a record
-    sealed without a vector spec adopts the spec of a vector head the owner
-    published (``vector_profile``/``vector_recipe``: both None before, both
-    set after; never changed or cleared). A record a bundle upgrade left on
-    its sealed predecessor attestation (read through the successor chain)
-    is re-sealed with the current one (``attestation_sha256``), but only
-    together with such a change; ``resettle_selection`` proves that step on
-    the chain. Store, incarnation, worktree binding, policy, roots and every
-    other field are identical.
+    Recall settings or the vector spec may change. The owner proves a new
+    vector spec against the published main head before selecting it. Store,
+    incarnation, worktree binding, policy, roots and other fields stay fixed.
     """
     try:
         if not (old.get('store_format') == new.get('store_format') == 'schema3'
@@ -565,8 +559,7 @@ def resettled_pair(old, new):
         changed = {k for k in _SCHEMA3_KEYS if not records_agree(old, new, (k,))} - _RESETTLED_WITH
         vector = changed & {'vector_profile', 'vector_recipe'}
         return (bool(changed) and changed <= _RESETTLED
-                and (not vector or (old['vector_profile'] is None and old['vector_recipe'] is None
-                                    and type(new['vector_profile']) is str
+                and (not vector or (type(new['vector_profile']) is str
                                     and type(new['vector_recipe']) is str)))
     except (AttributeError, KeyError, TypeError):
         return False
@@ -580,7 +573,8 @@ def _adopted_vector_spec(record, proof, *, deadline):
         return None
     from laya_blob_values import BlobStoreError
     try:
-        with _schema3_pin(record, deadline=deadline) as (store, _handle, pin):
+        unbound = dict(record, vector_profile=None, vector_recipe=None)
+        with _schema3_pin(unbound, deadline=deadline) as (store, _handle, pin):
             vector = store._pinned(pin)['vector']
     except BlobStoreError:
         # Best effort: a cold view, a moving checkout or a busy store leaves
@@ -634,10 +628,9 @@ def settings_resettle_pending(state, project, executing_root) -> bool:
 def resettle_selection(state, project, executing_root):
     """Owner re-seal of the selected schema3 endpoint (recall settings or vector spec).
 
-    The selected record is proved again from the current install (the same
-    full proof a persisted reader needs, no bundle drift). A record sealed
-    without a vector spec adopts the main head's spec once the owner has
-    published a vector generation of the install provider's spec. When the
+    The selected record is proved again from the current install. The owner
+    adopts the main head's spec once it has published a vector generation
+    matching the install provider, including when replacing an older spec. When the
     result differs from the stored record only as ``resettled_pair`` allows,
     one journal image transaction selects the re-sealed record. The selected
     attestation must match. Returns ``'resealed'`` or ``'unchanged'``.
@@ -648,10 +641,9 @@ def resettle_selection(state, project, executing_root):
     if found is None:
         return 'unchanged'
     path, selected, stored, attestation, current, raw, proof = found
-    if stored['vector_profile'] is None:
-        adopted = _adopted_vector_spec(current, proof, deadline=time.monotonic() + 10)
-        if adopted is not None:
-            current['vector_profile'], current['vector_recipe'] = adopted['profile_id'], adopted['recipe_id']
+    adopted = _adopted_vector_spec(current, proof, deadline=time.monotonic() + 10)
+    if adopted is not None:
+        current['vector_profile'], current['vector_recipe'] = adopted['profile_id'], adopted['recipe_id']
     if _raw(current) == _raw(stored) or not resettled_pair(stored, current):
         return 'unchanged'
     packed = _raw(current)
