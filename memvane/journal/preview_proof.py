@@ -15,9 +15,8 @@ def verify_preview_route(decision: dict) -> dict:
         raise ValueError('initial_preview_changed')
     if decision.get('routeSchema') == SCHEMA_V4:
         from memvane.journal.install_journal import inspect_journal, _attestation, _v1_provider_manifest
-        from memvane.journal.api import verify_dispatch_target
-        target = select_route(decision['projectRoot'], action='update')
-        verify_dispatch_target(target)
+        from memvane.journal.dispatch_target import dispatch_target
+        dispatch_target(decision['projectRoot'], build=True)
         journal = inspect_journal(decision['journalPath'])
         attestation, digest = _attestation(Path(decision['journalPath']))
         if journal['state'] != 'prepared' or digest != journal['attestationSha256']:

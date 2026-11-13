@@ -1117,8 +1117,8 @@ def _schema3_worker_manifest(decision, proof):
     from memvane.journal.api import _install_journal as journal
     with journal.read_only_journals():
         if proof.get('buildPending'):
-            from memvane.journal.api import verify_dispatch_target
-            verify_dispatch_target(decision)
+            from memvane.journal.api import dispatch_target
+            dispatch_target(decision['projectRoot'], build=True)
             row = journal.inspect_journal(decision['journalPath'])
             attestation, digest = journal._attestation(Path(decision['journalPath']))
             if row['state'] != 'prepared' or digest != row['attestationSha256']:

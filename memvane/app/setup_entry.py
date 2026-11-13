@@ -159,7 +159,7 @@ def main(argv=None):
                     model_path=args.provider_model_file,
                     dimension=args.provider_dimension)
             else:
-                state = product.private_parent(args.state_root)
+                state = product._private_parent(args.state_root)
                 journal = state / 'journal.sqlite'
                 if args.action == 'index-origin-status':
                     from memvane.journal.api import inspect_journal
@@ -184,8 +184,8 @@ def main(argv=None):
                     result = product.restore_origin_selection(
                         project_root=args.project, state_root=state)
                 else:
-                    route = product.read_private(state / 'route.json', 8192)
-                    with product.install_lock(state):
+                    route = product._read_private(state / 'route.json', 8192)
+                    with product._install_lock(state):
                         if args.action == 'activate-index-origin':
                             if not args.approve_index_origin_activation:
                                 raise ValueError('index_origin_activation_approval_required')

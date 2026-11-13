@@ -229,6 +229,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/journal/dispatch_target.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/journal/install_journal.py": {
       "context": "journal",
       "layer": "adapter",
