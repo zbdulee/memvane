@@ -688,37 +688,16 @@ def read(state_root, *, generations: bool = True, max_bytes=_UNRESOLVED, strict=
 
 # ------------------------------------------------------------ wiki activity
 
-def wiki(root, action: str, rel: str, title: str, *, reason=None, bound=_UNRESOLVED) -> bool:
-    """One wiki card write/delete for ``root``'s install. Never fails the write."""
+def wiki(state_root, action: str, rel: str, title: str, *, reason=None, install=None) -> bool:
+    """Record a wiki card write or deletion without failing the caller."""
     try:
-        state_root = wiki_state_root(root, bound)
         if state_root is None:
             return False
-        install = None
-        if bound is not _UNRESOLVED and bound is not None:
-            install = install_of(bound[0])
         title = ' '.join(str(title).split())[:200]
         return emit('wiki', outcome=action, reason=reason, state_root=state_root,
                     install=install, path=str(rel)[:_STR_LIMIT], title=title)
     except Exception:  # noqa: BLE001
         return False
-
-
-def wiki_state_root(root, bound=_UNRESOLVED) -> Path | None:
-    """The install state root for ``root``'s verified route, or None.
-
-    ``bound`` is the ``wiki_selected_laya.selected`` result the caller holds;
-    omitted, it is resolved here. An unproven route yields None.
-    """
-    try:
-        if bound is _UNRESOLVED:
-            from memvane.wiki.workspace import wiki_selected_laya
-            bound = wiki_selected_laya.selected(Path(root).resolve())
-        if bound is None:
-            return None
-        return state_root_of(bound[0].get('journalPath'))
-    except Exception:  # noqa: BLE001
-        return None
 
 
 _WIKI_OUTCOMES = frozenset(('created', 'updated', 'deleted', 'retired'))
@@ -747,13 +726,12 @@ def _wiki_line(row) -> str | None:
     return f"- {row['ts'][:19]}Z {outcome} {path} - {title}"
 
 
-def wiki_tail(root, bound=_UNRESOLVED, limit: int = WIKI_TAIL_CHARS) -> str:
+def wiki_tail(state_root, limit: int = WIKI_TAIL_CHARS) -> str:
     """Recent wiki card writes as ``- <ts> <action> <path> - <title>`` lines.
 
     Only valid ``wiki`` events are rendered: recall, upgrade and prompt fields
     never reach the extractor prompt this feeds.
     """
-    state_root = wiki_state_root(root, bound)
     if state_root is None:
         return ''
     try:

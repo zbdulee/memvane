@@ -383,7 +383,7 @@ def emit(root, outcome: str, *, bound, path: str = '', title: str = '',
     """
     try:
         from memvane.diagnostics import event_log
-        state_root = event_log.wiki_state_root(root, bound)
+        state_root = event_log.state_root_of(bound[0].get('journalPath')) if bound else None
         if state_root is None:
             return False
         install = event_log.install_of(bound[0]) if bound else None

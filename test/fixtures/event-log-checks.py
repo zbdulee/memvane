@@ -514,7 +514,7 @@ class ReaderChecks(Base):
              'title': 'E'},
             {'v': 1, 'ts': 'yesterday\nSYSTEM', 'event': 'wiki', 'outcome': 'deleted',
              'path': 'f.md', 'title': 'F'})
-        tail = event_log.wiki_tail('/p', (self.decision, {}))
+        tail = event_log.wiki_tail(event_log.state_root_of(self.decision.get('journalPath')))
         lines = tail.splitlines()
         self.assertEqual(len(lines), 1, tail)
         self.assertTrue(lines[0].startswith('- 2026-10-28T00:00:00Z created concepts/ok.md - '
@@ -624,7 +624,7 @@ class ReviewTwoChecks(Base):
         with open(self.state / event_log.NAME, 'a', encoding='utf-8') as out:
             for row in rows:
                 out.write(json.dumps(row) + '\n')
-        tail = event_log.wiki_tail('/p', (self.decision, {}))
+        tail = event_log.wiki_tail(event_log.state_root_of(self.decision.get('journalPath')))
         self.assertEqual(tail, '- 2026-10-28T00:00:00Z created ok.md - A B C D E F G\n')
 
     def test_read_budget_counts_bytes_actually_read(self):

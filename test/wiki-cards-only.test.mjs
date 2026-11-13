@@ -278,12 +278,12 @@ test('wiki activity: event log in the state root only, no-follow walk, owner-onl
         'def bound(d): return ({"journalPath": str(d / "install-journal.sqlite"), "installId": "i1"}, {})',
         'state = base / "state"; state.mkdir(mode=0o700); os.chmod(state, 0o700)',
         'r = {}',
-        'r["root"] = str(E.wiki_state_root(project, bound(state)))',
+        'r["root"] = str(E.state_root_of(bound(state)[0].get("journalPath")))',
         'r["wrote"] = L.append(project, "created", "concepts/a.md", "A\\nB", bound=bound(state), reason="compile")',
         'r["line"] = json.loads((state / E.NAME).read_text())',
         'r["legacy"] = (state / "wiki-activity.log").exists()',
         // Unselected project: no state root, nothing written anywhere.
-        'r["noBound"] = [E.wiki_state_root(project, None), L.append(project, "created", "x.md", "X", bound=None), L.tail(project, None)]',
+        'r["noBound"] = [None, L.append(project, "created", "x.md", "X", bound=None), L.tail(project, None)]',
         'r["noJournal"] = L.append(project, "created", "x.md", "X", bound=({}, {}))',
         // A symlinked ancestor is refused and nothing lands behind it.
         'real = base / "real"; (real / "inner").mkdir(parents=True, mode=0o700); os.chmod(real / "inner", 0o700)',
