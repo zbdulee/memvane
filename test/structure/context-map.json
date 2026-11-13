@@ -701,11 +701,6 @@
       "layer": "application",
       "pinned": false
     },
-    "core/laya_sidecar_create.py": {
-      "context": "v6",
-      "layer": "adapter",
-      "pinned": false
-    },
     "core/laya_source_exclusion.py": {
       "context": "host",
       "layer": "domain",

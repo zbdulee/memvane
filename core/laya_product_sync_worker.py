@@ -933,7 +933,7 @@ def _read_compile_intent(fd):
 
 def _ack_compile_intent(path, fd, initial, outcome):
     """Rename only the exact private file read by this process, without replacement."""
-    from laya_sidecar_create import _rename_noreplace
+    from atomic_rename import rename_noreplace
     directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
     try:
         parent = os.fstat(directory_fd)
@@ -942,7 +942,7 @@ def _ack_compile_intent(path, fd, initial, outcome):
         if (not os.path.samestat(parent, path.parent.lstat()) or identity(initial) != identity(now)
                 or identity(initial) != identity(after)):
             raise IndexContractError('provenance_intent_changed')
-        _rename_noreplace(directory_fd, path.name, path.stem + '.' + outcome + '.json')
+        rename_noreplace(directory_fd, path.name, path.stem + '.' + outcome + '.json')
         os.fsync(directory_fd)
     finally:
         os.close(directory_fd)
