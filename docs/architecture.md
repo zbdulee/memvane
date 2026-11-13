@@ -142,21 +142,13 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | `candidate`, `preview`, `worktree` | `exec core/laya_host_response.py serve-stdin` |
 | `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
 | `blocked` or lookup failure | exit 3, no fallback |
-| `upgrading` (recall only) | The selected route is fenced by a bundle upgrade (fresh-wiki ledger `upgrading`). Route selection re-reads it for up to 1.5 s first; still fenced, the hook gives no context and exits 0. A recall the fence interrupts mid-run also exits 0, and so does a route or proof transition error (`selected_route_changed` and similar) within 30 s of a `running` or `complete` worker status; any other error keeps exit 3. Every fenced recall and SessionStart asks the upgrade worker to finish, at most once a minute per install whichever host copy asks. A fence older than 10 minutes, or with a future mtime, is a stopped upgrade: recall answers at once without context (exit 0) and SessionStart names the stop. The worker also finishes an upgrade that stopped after the journal activation but before the fence was released. |
+| `upgrading` (recall only) | A fenced recall exits 0 without context; route or proof transition errors in the 30-second transition window do the same. Other proof errors remain exit 3. |
 
-`worktree` is a linked git worktree of a selected main checkout. What its
-search reads follows the reader format the main checkout's install journal
-selects. With the v6 reader, search serves the main checkout's published index
-read-only and the worktree's hooks record no wake. With the schema3 reader,
-search reads only that worktree's own view in the same view store, labelled as
-such; a view with no published head (a first-seen worktree or branch) answers
-with no context and `view_preparing`, never with another view. The worktree's
-SessionStart, successful edit (`index`) and successful Bash record the main
-checkout's `laya-sync` wake; its owner publishes the main view and then up to 16
-linked worktree views per pass in `git worktree list` order. Recall records no
-wake, so right after `git switch` the view stays `view_preparing` until the next
-SessionStart or edit. With either reader, compile, wiki lifecycle and learning
-run only from the main checkout.
+A linked worktree reads its own published view. With no published head it
+returns `view_preparing` without context or fallback to another view.
+SessionStart and successful edits request the main checkout's sync; recall
+does not record a wake. The main owner publishes the main view and then up
+to 16 linked worktree views per pass.
 
 ### Hermes Agent
 
@@ -195,7 +187,7 @@ The project file is:
 .memvane/settings.json
 ```
 
-A project that only has `.auto-context/` reads `.auto-context/settings.json`
+A project uses `.memvane/settings.json`
 (see [Project folder](#project-folder)).
 
 Onboarding accepts only the minimal shape `{name, skipPaths}`; any other shape
@@ -227,171 +219,21 @@ The hook records only a durable wake. The owner worker
 (`core/laya_product_sync_worker.py`) performs resource admission, document
 embedding through the resident service and the journal-fenced full-scan sync,
 then discovers changed raw sources for wiki compile
-(`core/laya_wiki_discovery.py`). When the host executes a different installed
-plugin bundle, SessionStart instead asks `core/laya_bundle_upgrade.py` to move
-the install to that bundle off the hook; until it finishes, recall serves the
-last published index read-only and sync, compile and index wakes wait.
-The same worker then moves an install still under the pre-rename state base
-(see [State roots](#state-roots)); SessionStart names that move while it is
-pending.
-
+(`core/laya_wiki_discovery.py`).
 ### State roots
 
-Every install lives in `~/.local/state/memvane/<install id>`. An install
-onboarded before the rename sits in `~/.local/state/laya/<install id>`; after
-its bundle step, the upgrade worker (`core/laya_state_move.py`, called from
-`laya_bundle_upgrade.run`) moves it with one same-volume `rename(2)` of the
-whole directory. Every store keeps its inode, so the selection ledger's
-`[st_dev, st_ino]` pins, SQLite `-wal`/`-shm` files, backups and receipts stay
-valid. Only the records that name the directory are rewritten, each from bytes
-computed before the rename and kept in `state-move-intent.json`: the project
-route and selection marker, the reviewed route, the production attestation
-(journal and socket paths), the selection ledger, the build record and wake
-pointer, the incremental document store's candidate path, and the install
-journal (`cas_relocate_state_root`: same bundle identity and provider files,
-new route and attestation digests, `previous*` cleared so no rollback names
-the old directory).
-
-| Phase | Where | On a crash |
-|---|---|---|
-| prepare | old root, plus `memvane-state-move.json` in the project folder | intent discarded; recall never changed |
-| move | `rename(old, new)` | resumed from the project pointer |
-| switch | compare-and-replace writes, journal CAS, ledger, route, marker | replayed; each write accepts the already-new bytes |
-| verify | marker classification, route selection, read-only journal proof, store counts | resumed |
-| settle | pointer removed, intent archived as `state-move-<tag>-settled.json` | resumed |
-
-The move holds the install lock, build owner, route operation lock, the
-provider lane and the install's wiki discovery lock for its whole run, so no
-selected writer runs; readers take no lock. A wiki grant writer that waited on
-the discovery lock across the rename finds its lock path gone
-(`state_dir_moved`) and writes once more through the re-selected route of the
-same install. After the rename a move only goes forward and needs no bundle review,
-network or model. A settled bundle-upgrade intent (it names the old root) is
-archived before the rename; an unsettled upgrade defers the move. Before the
-rename every rewritten path is checked: a target on another volume refuses
-`state_move_cross_device`, and a provider socket path that would cross the
-provider's 100-byte limit only because of the longer base refuses
-`state_move_socket_path_too_long`; in both cases the install keeps working
-where it is. A newly created base directory is fsynced into its parent before
-the rename.
-
-Recall during the move: between the rename and the route write (a few small
-file writes) the route classifies `blocked`. For recall and SessionStart,
-`laya_index_host_route.select_route_settled` re-reads it every 25 ms for up to
-1.5 s while the project pointer is fresh; the hook entry's second route read
-(`laya_host_response._reselect`) does the same and accepts exactly the
-relocated route. A recall that proved the old route and then hits a vanished
-path retries once (`_recall_retry_decision`), accepting only the same install,
-scope, incarnation and project at `~/.local/state/memvane/<install id>` with
-the same store basenames. If the worker dies inside that window, a recall gets
-no context, names `state_root_move_pending` and requests the worker: a
-`running` status whose worker no longer holds `bundle-auto-upgrade.lock` is due
-at once (`laya_bundle_upgrade.worker_holds`), so the next prompt starts the
-resume. A sealed provider manifest the provider cannot load does not fail a
-recall: it serves the lexical lists with
-`selected_provider_manifest_<reason>`. The resident service re-proves each bound project, so it releases the
-old socket binding and adopts the moved one; recall serves lexical results for
-that gap, as on a bundle switch.
-
-Shared pre-rename trees are retired at the end of a worker run once no
-install is left under `~/.local/state/laya`:
-
-- `embed-runtime` is removed when no install attestation under either base
-  names a file in it and no live process executes from it (read from the
-  process table; nothing is signalled);
-- `service` is removed only by a holder of its lease (`service.lock`, taken
-  non-blocking) and only when no pre-rename plugin copy is installed in
-  Claude, Codex or Hermes and no pre-rename install is left: then nothing can
-  open that lease again. The running MemVane service holds it (it excludes a
-  pre-rename service), so that service removes the directory itself
-  (`Service._retire_legacy`, checked every 10 minutes); with no service
-  running, the worker's shared pass takes the lease and removes it;
-- `auto-context` entries are renamed into `~/.local/state/memvane/auto-context`;
-- an empty `initial-builds` and then the empty base are removed.
-
-Removal walks directory descriptors from HOME without following links and
-refuses a tree that contains a mount point (`core/safe_rmtree.py`).
-
-After the install steps, every worker run moves the learning state once per
-account (`~/Library/Application Support/qmd-auto-context/{live-selection,laya-inference}`
-to `.../memvane`, `core/context_learning/state_move.py`) and heals the
-project's prepared selector (`core/context_learning/selector_heal.py`); see
-[continual learning](continual-learning.md#learning-state-location).
+User-owned paths are resolved by `core/memvane_paths.py`. Installation identity,
+route proof and the selected store are bound to the installation state.
 
 ### Project folder
 
-A project keeps its settings, wiki cards and per-machine runtime files (route
-record, selection marker, locks, `compile/`, `file-changes/`) in one folder at
-the project root, `.memvane/` (`core/project_dir.py`). A project that only has
-`.auto-context/` is read from there: readers look in `.memvane/` first and fall
-back to `.auto-context/` per file, and every writer uses one active folder
-(`.memvane/` when it exists, else `.auto-context/`, else `.memvane/`). Settings
-path values that start with either folder name follow the active folder.
+Project settings, wiki cards and runtime files live under `.memvane/`.
 
-The bundle upgrade worker (`core/laya_project_dir_move.py`, called from
-`laya_bundle_upgrade.run`) moves each selected project once:
+### Bundle trust boundary
 
-- `rename`: one `rename(2)` of `.auto-context` to `.memvane`; settings, cards
-  and runtime files keep their inodes;
-- `adopt`: git already brought `.memvane/settings.json` and `.memvane/wiki` (a
-  pulled or checked-out rename) while the runtime files stay in
-  `.auto-context/`; each runtime entry is renamed into `.memvane/` and the
-  empty legacy folder is removed.
-
-The intent `project-dir-move-intent.json` in the state root precomputes every
-record, and the pointer `memvane-project-move.json` in the project folder
-resumes a crash. The ledger is fenced (`upgrading`) before the move; a crash
-before the fence discards the intent, after it the move only goes forward. The
-index is rebound, not re-embedded: a clone generation of the published head is
-bound to `<project>/.memvane/wiki` in a new binding store, and the catalog
-keeps its scans while its `binding`/`roots` metadata is rewritten. While the
-move runs, recall waits up to 1.5 s and retries once; search keeps serving.
-
-| Layout (`project_dir.layout`) | Folders | Behavior |
-|---|---|---|
-| `none` | neither | writers create `.memvane/` |
-| `legacy` | `.auto-context/` only | read from there; the worker renames it |
-| `current` | `.memvane/` only | normal |
-| `adopt` | `.memvane/` has the settings, `.auto-context/` only runtime files | the worker moves the runtime files |
-| `split` | `.auto-context/` has the settings, `.memvane/` does not (an older branch checked out over a moved project) | `.memvane/` wins; index and wiki writers hold with `project_dir_split`, also mid-run (their route proof, `verify_selected_route_for_write`, refuses a split layout); recall and the edit gate continue (the untracked `.memvane/wiki/.memvane-root` keeps the bound wiki directory through the checkout); no second index; SessionStart prints a notice |
-| `conflict` | both hold settings or wiki cards (an older branch merged) | `.memvane/` wins, `.auto-context/` is ignored; the notice says to `git mv` leftover cards |
-
-Linked worktrees on either folder name share the main checkout's index (with
-the schema3 reader, each reads its own view inside that index's store). After
-a move, SessionStart names the owner's commit,
-`git add -A .memvane .auto-context`, and prints `.memvane/...` equivalents of
-any `.auto-context` lines in the project's own `.gitignore`; nothing edits user
-files.
-
-### Bundle Adoption Trust Boundary
-
-Adoption (`core/laya_product_bundle.py` `adopt_host_loaded_plugin`) proves
-every installed plugin file against the selected commit in the host
-marketplace clone: the exact file set, each blob's object id, the bytes, and
-the executable bit (git executable iff the owner may execute). Seal metadata
-(`.laya-product`) is never evidence for adoption; it pins inode, ctime and
-mtime for the later per-request proofs. Metadata that no longer verifies, as
-after a host re-extracts a version directory in place, is rewritten only after
-that exact comparison passes. Git runs with replacement objects and grafts
-disabled, so `refs/replace` cannot substitute a tree under an unchanged
-commit id.
-
-An in-place re-extraction leaves every install bound to that root with an
-ownership digest the files no longer have. The bundle upgrade worker
-re-adopts the root for selected, bound and inactive installs alike, through
-each kind's own review and switch. A selected project's SessionStart asks for
-the worker; an unselected build's SessionStart (the build-progress notice)
-asks for it when the bound root is another plugin root or no longer proves.
-A re-adopted inactive build has no old seal to restore to: a failed switch
-stays fenced (`upgrading`) with its intent, and the next run finishes it
-forward.
-
-The exact comparison defends against stale or forged seal metadata and
-accidental drift between the cache and the commit. A process running as the
-same UID that can write the marketplace clone or the plugin cache is outside
-the trust boundary: it can change the clone and the cache consistently. This
-is the same limit as the accepted same-UID TOCTOU window between a final
-check and use.
+A selected installation verifies the running plugin bundle and its attestation
+before opening the store. Bundle drift permits only a separately proved
+read-only route.
 
 ### Hook Budget and Detached Jobs
 
@@ -431,54 +273,12 @@ holds (`status: verified`, `createdBy: memvane` or the earlier plugin name
 change, the last completed generation answers until the sync owner publishes a
 new one. Details are in [flow 03](architecture/flows/03-wiki-index-search.md).
 
-#### Reader format and shadow migration
+#### Reader and store identity
 
-Persisted file and directory identities bind by canonical path and inode,
-plus their recorded content and metadata fields. `st_dev` is boot-local on
-macOS APFS and is not compared across processes. Journal rows, endpoint IDs,
-ownership manifests and their digests retain their original bytes. Two reader
-endpoint records sealed in different boots compare their `*_node` fields by
-inode too (`laya_journal_reader.records_agree`: reader switch and rollback CAS,
-selection checks, a reader lease's journal image advance, the store check of
-the v6 reader a rollback re-issues). Live
-fd/path and before/after checks within one process compare device numbers;
-source traversal compares each file's device with its live root fd's device.
-
-The install journal (v5) records which reader endpoint recall uses. A `v6`
-endpoint reads the v6 memvane-db database; a `schema3` endpoint reads the published
-generation of a view in the private view store (`core/laya_view_store.py`), one
-view per checkout and branch. Recall branches on the selected endpoint
-(`laya_host_response.serve_endpoint_recall`); neither reader rereads source files.
-
-A v6-selected main checkout builds the schema3 copy off-hook. After a selected
-sync ends `indexed` or `unchanged`, `laya_product_sync_worker.shadow_pass` runs at
-about 60 seconds of bounded steps, at most 32 (`core/laya_shadow_migration.py`):
-`copying → caught_up → shadow_verified → reader_ready → switched`. The copy holds
-published wiki bytes and trust only, never raw bodies or raw FTS. A space
-pre-check defers a step without writing. A pass that progressed or ran out of its
-budget before `shadow_verified` re-offers the same `laya-sync` wake, due 30
-seconds later (`_shadow_rewake`), so the copy reaches `shadow_verified` without
-further edits; gate, space and retry waits do not, and an error pass stops
-re-offering from the third in a row until a natural wake. At `shadow_verified` the switch waits for
-its gates: the parity receipt, a catch-up under the sync owner lock, loaded-reader
-receipts from both a Claude Code and a Codex recall hook of the selected release
-(a hook receipt holds while the journal epoch, preferred endpoint and release
-commit it observed stay selected, for at most 24 hours, so the two hosts may
-answer hours apart), the executing bundle equal to the journal-selected one, no
-bundle upgrade, state move or project-folder move intent, a `current` project
-folder layout, and no Hermes copy of the plugin. One pass records
-`reader_ready`; a later pass proves the same gates again and runs one journal CAS
-(`cas_reader`). A re-sealed target that differs only in its endpoint id and the transition id
-derived from it (the record's `creation_epoch` is the install journal epoch, which each
-sync wake's first-write mark bumps) is written to `reader_ready` under the same
-locks before the CAS; any other difference drops the record (`switch_reader_ready_stale`)
-for a fresh proof. The driver does nothing for a linked worktree, during an upgrade
-fence or bundle mismatch, for a `split` layout or QMD-origin state root, after a
-rollback, or with `MEMVANE_SHADOW_MIGRATION=off`.
-
-A schema3-selected sync pass publishes changed cards (64 per pass, 45 seconds)
-into the main view and then the linked worktree views, lexical first, and fills
-vectors from the install provider into a later vector generation..
+Persisted file and directory identities bind by canonical path, inode and
+recorded content and metadata. APFS `st_dev` is boot-local and is not compared
+across processes. Sync publishes the main view, then linked worktree views;
+it publishes lexical data first and vector data after fill completes.
 
 ### 3. PreToolUse Gate
 
