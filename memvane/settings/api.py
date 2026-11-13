@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 from memvane.settings.types import (CURRENT, NAMES, SETTINGS, WIKI, SOURCE_TEXT_EXTENSIONS,
-                                     WIKI_TEXT_EXTENSIONS, WIKI_META_PAGES, DENIED_SOURCE_SEGMENTS)
+                                     WIKI_TEXT_EXTENSIONS, DENIED_SOURCE_SEGMENTS)
+
+
+def find_project_config(*args, **kwargs):
+    from memvane.settings.config import find_project_config as implementation
+    return implementation(*args, **kwargs)
 
 
 def auxiliary_wiki_row(*args, **kwargs):

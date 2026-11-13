@@ -39,7 +39,7 @@ sys.dont_write_bytecode = True
 
 import time
 
-from memvane.settings import config
+from memvane.settings import api as config
 from memvane.kernel import memvane_paths
 from memvane.kernel.paths import canonical
 

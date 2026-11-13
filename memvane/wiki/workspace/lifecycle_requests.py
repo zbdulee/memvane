@@ -9,7 +9,7 @@ from memvane.wiki.workspace.types import REQUEST_VERSION, REQUEST_SUFFIX, SERVED
 
 
 def _paths(root) -> tuple[Path, Path]:
-    from memvane.settings import config
+    from memvane.settings import api as config
     found = config.find_project_config(str(root))
     project = str(Path(found["projectRoot"]).resolve())
     key = scan_state.project_key(project, found.get("configPath"))

@@ -64,7 +64,7 @@ def laya_compile(row):
 
 
 def learning(row):
-    from memvane.settings import config
+    from memvane.settings import api as config
     from memvane.learning import api as shared
     from memvane.learning.api import ready
     project=Path(row['target'])

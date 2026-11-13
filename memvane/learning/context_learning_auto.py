@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import sys
 
-from memvane.settings import config as qmd_config
+from memvane.settings import api as qmd_config
 from memvane.learning.context_learning.contracts import digest
 from memvane.learning.context_learning.dataset import read_private_json
 from memvane.learning.context_learning.local_cycle import LocalTrainer, VerifiedLayaTrainer, _atomic_json

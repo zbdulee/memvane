@@ -302,7 +302,7 @@ def _current_config(root, project):
     if not _consent(root, project):
         return None
     try:
-        from memvane.settings import config as qmd_config
+        from memvane.settings import api as qmd_config
         found = qmd_config.find_project_config(str(project))
         cfg = found["config"]
         shared = cfg.get("sharedLearning", {})
