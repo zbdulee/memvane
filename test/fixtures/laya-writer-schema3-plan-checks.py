@@ -240,7 +240,7 @@ class Schema3WriterPlanChecks(unittest.TestCase):
         self.select_schema3()
         epoch = self.J.inspect_journal(self.case.journal)['epoch']
         with self.F.warm(), self.seed.authority(), ExitStack() as owners, \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin):
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin):
             owner = owners.enter_context(self.sync.sync_owner(self.queue))
             proof = worker._selected_v5_proof(self.case.project, decision, owner)
             files = self.v6_files()

@@ -154,10 +154,6 @@ def _initial_build_waiting(controller, project):
     return bool(waiting)
 
 
-def _writer_executing_root():
-    return Path(__file__).resolve().parents[2]
-
-
 def _owned_selected_proof(decision, owner):
     """Reprove the selected route while the sync owner is held."""
     from memvane.sync.sync_owner_lock import validate_sync_owner

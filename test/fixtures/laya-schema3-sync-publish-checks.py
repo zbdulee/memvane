@@ -38,7 +38,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.views = importlib.import_module('memvane.store.view.view_store')
         self.lease = importlib.import_module('memvane.journal.reader_lease')
         self.dispatch = importlib.import_module('memvane.recall.reader_dispatch')
-        root = mock.patch.object(self.worker, '_writer_executing_root', return_value=self.case.plugin)
+        root = mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin)
         root.start(); self.addCleanup(root.stop)
         # warm() writes a one-time v6 sentinel; hold it once for the whole check.
         warm = self.F.warm(); warm.__enter__()

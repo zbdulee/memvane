@@ -67,7 +67,7 @@ class CompanionResidentChecks(unittest.TestCase):
             stack.enter_context(self.seed.authority())
             stack.enter_context(mock.patch.object(J, '_verified_executing_root', side_effect=verified))
             stack.enter_context(mock.patch.object(J, '_executing_root', return_value=root))
-            stack.enter_context(mock.patch.object(self.W, '_writer_executing_root', return_value=root))
+            stack.enter_context(mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=root))
             yield
 
     def test_01_owner_copy_resident_proves_selected(self):
@@ -356,7 +356,7 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
             stack.enter_context(mock.patch.object(J, '_verified_executing_root', side_effect=verified))
             stack.enter_context(mock.patch.object(J, '_provider_file_identity', side_effect=identity_rows))
             stack.enter_context(mock.patch.object(J, '_executing_root', return_value=Path(executing)))
-            stack.enter_context(mock.patch.object(self.W, '_writer_executing_root',
+            stack.enter_context(mock.patch('memvane.kernel.bundle_paths.plugin_root',
                                                   return_value=Path(executing)))
             seed = self.a
             for module in (J, self.bundle, seed.reader, seed.bridge, seed.lease, seed.mover):

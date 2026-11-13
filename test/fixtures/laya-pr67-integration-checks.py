@@ -96,7 +96,7 @@ with helper.full_authority(case, reader, bridge, lease, mover), \
         mock.patch.object(bridge, 'inspect_full_plugin_candidate', side_effect=inspect), \
         mock.patch.object(project_dir, 'layout',
                           side_effect=lambda p: 'current' if Path(p) == project else real_layout(p)), \
-        mock.patch.object(worker, '_writer_executing_root', return_value=case.plugin), \
+        mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=case.plugin), \
         mock.patch.object(worker, '_run_sync', return_value={'state': 'unchanged'}), \
         mock.patch.object(ledger, '_write', side_effect=write), \
         mock.patch.object(J, '_conversion_step', side_effect=step), \
@@ -250,7 +250,7 @@ class Pr67IntegrationChecks(unittest.TestCase):
         paths = {self.case.project, *extra}
         with ExitStack() as stack:
             stack.enter_context(self.u10.bridge_authority())
-            stack.enter_context(mock.patch.object(self.W, '_writer_executing_root', return_value=self.case.plugin))
+            stack.enter_context(mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin))
             stack.enter_context(mock.patch.object(
                 self.u15.project_dir, 'layout', side_effect=lambda p: 'current' if Path(p) in paths else real(p)))
             yield
@@ -305,7 +305,7 @@ class Pr67IntegrationChecks(unittest.TestCase):
                                                   return_value=[[str(new / 'p.py'), 1, 2, 3, 4, 5]]))
             stack.enter_context(mock.patch.object(self.u10.bridge, 'inspect_full_plugin_candidate',
                                                   side_effect=lambda root: {**target, 'pluginRoot': str(root)}))
-            stack.enter_context(mock.patch.object(self.W, '_writer_executing_root', return_value=new))
+            stack.enter_context(mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=new))
             if run_sync:
                 stack.enter_context(mock.patch.object(self.W, '_run_sync', return_value={'state': 'unchanged'}))
             stack.enter_context(mock.patch.object(

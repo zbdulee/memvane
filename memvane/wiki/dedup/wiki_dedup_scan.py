@@ -173,11 +173,11 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
     import struct
     from memvane.journal import journal_reader as reader
     from memvane.journal import reader_lease as lease
-    from memvane.sync.product_sync_worker import _writer_executing_root
+    from memvane.kernel.bundle_paths import plugin_root
     from memvane.wiki.lifecycle import wiki_source_retire
     root = Path(decision["projectRoot"])
     deadline = min(deadline, time.monotonic() + SCHEMA3_READ_SECONDS)
-    with lease.resolve_endpoint(root, action="recall", host_root=_writer_executing_root()) as endpoint:
+    with lease.resolve_endpoint(root, action="recall", host_root=plugin_root()) as endpoint:
         record, _raw, _proof = reader._recheck(endpoint)
         if record.get("store_format") != "schema3" or record["scope"] != decision["scopeId"]:
             raise ValueError("selected_dedup_schema3_endpoint_changed")

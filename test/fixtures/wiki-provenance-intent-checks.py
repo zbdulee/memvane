@@ -88,7 +88,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin):
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin):
             authority = selected.selected(self.case.project)
             actual = views.ViewStore._observe_worktree
             def switch_after_observation(store, *args, **kwargs):
@@ -105,7 +105,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin):
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin):
             checkout = selected.schema3_checkout(selected.selected(self.case.project))
             actual_capture = checkout_module.capture_view
             def switch_after_capture(*args, **kwargs):
@@ -122,7 +122,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin):
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin):
             checkout = selected.schema3_checkout(selected.selected(self.case.project))
             capture = checkout.capture()
             with mock.patch.object(routes, 'select_route', return_value={'state': 'blocked'}):
@@ -135,7 +135,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         _, previous, _ = self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin):
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin):
             bound = selected.selected(self.case.project)
             self.assertIsNotNone(bound)
             with self.assertRaises((ValueError, RuntimeError)):
@@ -153,7 +153,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin):
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin):
             self.assertTrue(hasattr(selected, 'schema3_checkout'), 'selected checkout integration missing')
             authority = selected.selected(self.case.project)
             bound = selected.schema3_checkout(authority)
@@ -208,7 +208,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                   'collectionRoles': {'docs': 'raw'}}
         self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin), \
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin), \
                 mock.patch.object(verify, 'reindex_wiki'), \
                 mock.patch.object(verify, 'wake_pending_retirement'):
             authority = selected.selected(project)
@@ -364,7 +364,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                   'collectionRoles': {'docs': 'raw'}}
         self.select_schema3()
         with self.F.warm(), self.seed.authority(), \
-                mock.patch.object(worker, '_writer_executing_root', return_value=self.case.plugin), \
+                mock.patch('memvane.kernel.bundle_paths.plugin_root', return_value=self.case.plugin), \
                 mock.patch.object(verify, 'reindex_wiki'), \
                 mock.patch.object(verify, 'wake_pending_retirement'), \
                 mock.patch.object(retire, 'archive_card', return_value=True):

@@ -72,7 +72,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         self.worker=importlib.import_module('memvane.sync.product_sync_worker')
         # Synthetic executing-bundle authority, consistent with the seed's
         # actual fullproof. Product default derives its own module root.
-        root=mock.patch.object(self.worker,'_writer_executing_root',create=True,return_value=self.case.plugin)
+        root=mock.patch('memvane.kernel.bundle_paths.plugin_root',create=True,return_value=self.case.plugin)
         root.start();self.addCleanup(root.stop)
 
     def selected(self):return self.worker._selected(self.case.project)

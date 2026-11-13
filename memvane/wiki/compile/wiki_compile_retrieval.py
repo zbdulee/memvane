@@ -434,7 +434,8 @@ def _schema3_search(bound, text):
     from memvane.settings import project_dir
     from memvane.route.index_host_route import wiki_index_roots
     from memvane.sync.sync_owner_lock import sync_owner
-    from memvane.sync.product_sync_worker import _owned_selected_proof, _writer_executing_root
+    from memvane.sync.product_sync_worker import _owned_selected_proof
+    from memvane.kernel.bundle_paths import plugin_root
     from memvane.kernel.resource_deferred import ResourceDeferred
     decision, proof = bound
     project = Path(decision['projectRoot'])
@@ -445,7 +446,7 @@ def _schema3_search(bound, text):
         if _owned_selected_proof(decision, owner) != proof:
             raise ValueError('selected_compile_proof_changed')
         with lease.resolve_endpoint(project, action='recall',
-                                    host_root=_writer_executing_root()) as endpoint:
+                                    host_root=plugin_root()) as endpoint:
             if endpoint.record.get('store_format') != 'schema3':
                 raise ValueError('selected_store_format_changed')
             _record, _raw, current = reader._recheck(endpoint)

@@ -62,9 +62,9 @@ def _schema3_members(root, decision):
     """
     from memvane.journal import journal_reader as reader
     from memvane.journal import reader_lease as lease
-    from memvane.sync.product_sync_worker import _writer_executing_root
+    from memvane.kernel.bundle_paths import plugin_root
     deadline = time.monotonic() + SCHEMA3_READ_SECONDS
-    with lease.resolve_endpoint(root, action='recall', host_root=_writer_executing_root()) as endpoint:
+    with lease.resolve_endpoint(root, action='recall', host_root=plugin_root()) as endpoint:
         record, _raw, _proof = reader._recheck(endpoint)
         names = [item['name'] for item in record['roots'] if item.get('role') == 'wiki']
         if (record.get('store_format') != 'schema3' or record['scope'] != decision['scopeId']
