@@ -1,4 +1,4 @@
-"""Historical provenance may resolve only for reviewed edit inference."""
+"""Only the reviewed installed adapter is used for edit inference."""
 import hashlib
 import json
 from pathlib import Path
@@ -52,9 +52,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
             patch.object(shared, '__file__', str(installed / 'shared.py')), \
             patch('context_learning.local_cycle.LocalTrainer', SegmentTrainer), \
             patch('hook_budget.remaining', return_value=8):
-        old = shared._v45_adapter_path()
-        assert not old.exists()
-        policy = {'trainerArgv': [sys.executable, str(old), str(model)],
+        old = root / 'retired' / 'laya_adapter.py'
+        policy = {'trainerArgv': [sys.executable, str(adapter), str(model)],
                   'modelInputView': EDIT_INPUT_VIEW, 'maxRssMib': 512}
         frozen = json.dumps(policy, sort_keys=True)
         rejected(lambda: shared.inference_argv(policy, 'predict'),
@@ -63,6 +62,9 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
             expected = [sys.executable, str(adapter), str(model)]
             assert shared.inference_argv(policy, 'segment') == expected
             assert shared.inference_argv(policy, 'predict') == expected
+            rejected(lambda: shared.inference_argv({**policy, 'trainerArgv':
+                     [sys.executable, str(old), str(model)]}, 'predict'),
+                     'historical_inference_adapter_unverified')
             assert shared.inference_argv({**policy, 'trainerArgv': expected},
                                          'segment') == expected
             assert json.dumps(policy, sort_keys=True) == frozen
@@ -91,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-inference-argv-', dir=reviewed.pare
                      'historical_inference_adapter_unverified')
             adapter.unlink()
 
-print(json.dumps({'missingOldCacheResolved': True,
+print(json.dumps({'retiredAdapterRejected': True,
                   'currentAdapterHashAndViewPinned': True,
                   'invalidAdaptersRejectedBeforeExecution': True,
                   'trainingNotResolved': True}))

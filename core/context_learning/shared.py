@@ -36,51 +36,11 @@ DATABASE_NAME = "shared-learning.sqlite3"
 SCHEMA = "qmd-shared-learning-v1"
 STATUSES = ("awaiting_local", "queued", "first_running", "first_done", "second_running",
             "gold", "pending_review", "failed")
-V45_ADAPTER_SHA256 = 'd36ab90d7b0b89a7725e66bab3c4761fc2c26d6cbbfc0631d71ca839af9996c4'
 REVIEWED_ADAPTER_SHA256 = '1509e6833ba8b2ca23d6e7811173d268c09b16005a2b3d9f9f2838c9ae23bf5e'
 
 
-def _v45_adapter_path():
-    return (Path.home() / '.codex/plugins/cache/qmd-shared-v21-local/'
-            'qmd-auto-context/0.35.2-dev.20261009-fantasy-pilot-v45/'
-            'core/context_learning/laya_adapter.py')
-
-
-def _historical_trainer_policy(policy):
-    argv = policy.get('trainerArgv') if isinstance(policy, dict) else None
-    return (isinstance(argv, list) and len(argv) == 3
-            and isinstance(argv[1], str)
-            and Path(argv[1]) == _v45_adapter_path())
-
-
-def _historical_v45_adapter_reference(path, current_adapter):
-    """Recognize one approved policy reference without authorizing execution.
-
-    An installer may remove the old cache directory. The exact historical
-    string remains part of the approved policy, while all executable trainer
-    paths stay gated to this installed version elsewhere.
-    """
-    old = _v45_adapter_path()
-    path = Path(path)
-    if path != old or hashlib.sha256(current_adapter.read_bytes()).hexdigest() != REVIEWED_ADAPTER_SHA256:
-        return False
-    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
-        return False
-    if path.exists():
-        info = path.stat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                or hashlib.sha256(path.read_bytes()).hexdigest() != V45_ADAPTER_SHA256):
-            return False
-    return True
-
-
 def inference_argv(policy, operation):
-    """Resolve a reviewed historical reference for edit inference only.
-
-    The approved policy retains the v45 path as immutable provenance. Its
-    missing cache entry must never be recreated, and this resolver must never
-    supply an executable for training, observation, or final evaluation.
-    """
+    """Resolve the reviewed installed adapter for edit inference only."""
     if operation not in ('segment', 'predict'):
         raise ValueError('invalid_shared_inference_operation')
     argv = policy.get('trainerArgv') if isinstance(policy, dict) else None
@@ -110,13 +70,9 @@ def inference_argv(policy, operation):
         trusted_current = False
     if not trusted_current:
         raise ValueError('historical_inference_adapter_unverified')
-    if Path(argv[1]) == current.resolve():
-        return list(argv)
-    if (not _historical_trainer_policy(policy)
-            or not _historical_v45_adapter_reference(argv[1], current)):
+    if Path(argv[1]) != current.resolve():
         raise ValueError('historical_inference_adapter_unverified')
-    return [argv[0], str(current), argv[2]]
-
+    return list(argv)
 
 def _safe_root(config, project):
     opts = config.get("sharedLearning", {})
@@ -217,8 +173,7 @@ def _policy(root):
     if (not isinstance(argv, list) or len(argv) != 3
             or any(not isinstance(x, str) or not Path(x).is_absolute() for x in argv)
             or (Path(argv[1]).resolve() != adapter
-                and not general_grant
-                and not _historical_v45_adapter_reference(argv[1], adapter))):
+                and not general_grant)):
         raise ValueError("invalid_shared_trainer")
     if 'adaptiveMemory' in value:
         from .memory_policy import validate
@@ -1178,8 +1133,6 @@ def _due_threshold(rows, threshold, policy):
 
 def train_due(root, policy, *, trainer_factory=None):
     """One globally serialized, local-only cumulative cycle."""
-    if _historical_trainer_policy(policy):
-        return {"status": "runtime_approval_required"}
     if policy.get('_runtime_authorization_v2') is True:
         from .runtime_authorization import require_operation
         from .automatic_staging import train_due_staged
@@ -1532,8 +1485,6 @@ def prepare_multilingual_trial(root, *, expected_old_pointer_sha256):
 
 def observe_trial(root, policy, *, trainer_factory=None):
     """Compare the trial on later held-out captures, then undo clear regression."""
-    if _historical_trainer_policy(policy):
-        return {"status": "runtime_approval_required"}
     if policy.get('_runtime_authorization_v2') is True:
         # A v2 stage-only grant does not permit observation or rollback of a
         # previously published trial through this direct legacy entrypoint.
@@ -1732,16 +1683,10 @@ def run(root, *, project=None, sync_config=None, wait_for_lock=False):
                 before_report = resource_report(_policy(root), detailed=True)
             except Exception:
                 before_report = {}
-        # A historical v45 trainer path is a readable policy reference, not
-        # executable approval. Check it before generic sync can reconcile
-        # queued rows, while retaining the normal worker telemetry envelope.
-        if sync_config is not None and _historical_trainer_policy(_policy(root)):
-            result = {'status': 'runtime_approval_required'}
-        else:
-            synced = sync_reviewed(sync_config, project) if sync_config is not None else None
-            result = _run_impl(root, project=project, wait_for_lock=wait_for_lock)
-            if synced is not None:
-                result = {**result, "synced": synced}
+        synced = sync_reviewed(sync_config, project) if sync_config is not None else None
+        result = _run_impl(root, project=project, wait_for_lock=wait_for_lock)
+        if synced is not None:
+            result = {**result, 'synced': synced}
         worker_status = ("error" if result["status"] == "failed" else
                          "skipped" if result["status"] == "busy" else
                          "deferred" if result["status"] in (
@@ -1768,8 +1713,6 @@ def run(root, *, project=None, sync_config=None, wait_for_lock=False):
 def _run_impl(root, *, project=None, wait_for_lock=False):
     root = Path(root)
     policy = _policy(root)
-    if _historical_trainer_policy(policy):
-        return {'status': 'runtime_approval_required'}
     automatic_grant = None
     if policy.get('_runtime_authorization_v2') is True:
         from .runtime_authorization import require_operation
@@ -1853,8 +1796,6 @@ def launch(config, project, *, parent_id=None, episode=None,
     from .learning_profile import present,SCHEMA
     selected_profile=present(root) or config.get('sharedLearning',{}).get('profile')==SCHEMA
     policy = _policy(root)
-    if _historical_trainer_policy(policy):
-        return {"status": "runtime_approval_required"}
     # A selected profile's normal worker is training/evaluation only. Let the
     # durable wake own its start, admission and retries instead of spawning a
     # competing detached trainer directly from the hook. General project and

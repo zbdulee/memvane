@@ -153,7 +153,6 @@ with tempfile.TemporaryDirectory(prefix='qmd-auto-stage-', dir='/tmp') as tmp:
             shared, '_case_active',
             side_effect=lambda *_args: runtime_state['source_active']), patch.object(
             shared, 'resource_report', side_effect=fresh_ready), patch.object(
-            shared, '_historical_trainer_policy', return_value=False), patch.object(
             automatic_staging, 'require_operation', side_effect=operation), patch(
             'context_learning.runtime_authorization.require_operation',
             side_effect=operation), patch(
