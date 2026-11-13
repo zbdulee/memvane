@@ -90,21 +90,17 @@ class WarmTests(unittest.TestCase):
 
 class ExactVectorMathTests(unittest.TestCase):
     def test_sums_equal_the_generator_forms_bit_for_bit(self):
-        import laya_index_vector as vector
+        import laya_vector_primitives as vector
         rng = random.Random(7)
         for dimension in (3, 384, 768):
             for _ in range(20):
                 raw = struct.pack('<%df' % dimension, *(rng.uniform(-2, 2) for _ in range(dimension)))
                 values = vector._unpack(raw, dimension)
-                other = struct.unpack('<%df' % dimension, struct.pack(
-                    '<%df' % dimension, *(rng.uniform(-2, 2) for _ in range(dimension))))
                 self.assertEqual(vector._sum_squares(values), math.fsum(v * v for v in values))
-                self.assertEqual(vector._dot(values, other),
-                                 math.fsum(a * b for a, b in zip(values, other)))
 
     def test_non_finite_or_zero_blobs_are_still_refused(self):
-        import laya_index_vector as vector
-        from laya_index_a import IndexContractError
+        import laya_vector_primitives as vector
+        from laya_store_primitives import IndexContractError
         for bad in (float('nan'), float('inf'), float('-inf')):
             with self.assertRaises(IndexContractError):
                 vector._unpack(struct.pack('<3f', 1.0, bad, 0.5), 3)

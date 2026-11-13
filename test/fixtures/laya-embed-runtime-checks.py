@@ -34,8 +34,8 @@ import laya_bundle_upgrade as auto  # noqa: E402
 import laya_embed_runtime as R  # noqa: E402
 import laya_product_bundle as bundle  # noqa: E402
 import laya_product_install as product  # noqa: E402
-from laya_index_a import IndexContractError  # noqa: E402
-from laya_index_vector import profile_identity  # noqa: E402
+from laya_store_primitives import IndexContractError  # noqa: E402
+from laya_vector_primitives import profile_identity  # noqa: E402
 from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,  # noqa: E402
                                        ReviewedLocalQmdProvider, recipe_fingerprint)
 from laya_local_embed_service import start_owned_embed_service  # noqa: E402
