@@ -838,11 +838,11 @@ def main() -> int:
     # The retroactive dedup scan shares this child's time limit and trigger.
     # It logs to its own file and never changes this exit code or output.
     try:
-        import wiki_dedup_scan
+        from memvane.wiki.dedup import wiki_dedup_scan
         wiki_dedup_scan.run(args.cwd)
     except Exception as exc:
         try:
-            import wiki_dedup_scan
+            from memvane.wiki.dedup import wiki_dedup_scan
             wiki_dedup_scan.log(f"EXCEPTION: {exc!r}")
         except Exception:
             pass

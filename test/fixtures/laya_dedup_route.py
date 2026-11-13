@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import wiki_dedup_resolve as dedup
+from memvane.wiki.dedup import wiki_dedup_resolve as dedup
 
 
 def exercise():

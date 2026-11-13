@@ -418,7 +418,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         (self.wiki / 'concepts/egret-two.md').write_bytes((self.wiki / 'concepts/egret-one.md').read_bytes())
         result, _ingests, _calls = self.run_vector_pass()
         self.assertEqual(result['vector']['state'], 'published', result)
-        scan = importlib.import_module('wiki_dedup_scan')
+        scan = importlib.import_module('memvane.wiki.dedup.wiki_dedup_scan')
         learning = importlib.import_module('context_learning.laya_learning')
         config = importlib.import_module('memvane.settings.config')
         queue = self.case.auto / 'compile' / 'dedup-needed.jsonl'

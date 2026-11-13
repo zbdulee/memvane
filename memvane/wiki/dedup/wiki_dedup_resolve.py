@@ -26,7 +26,7 @@ from memvane.settings import config as qmd_config
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import wiki_mutation_lock
 import wiki_compile as wc
-import wiki_dedup_scan as dedup_scan
+from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
 import wiki_selected_laya
 from wiki_compile_worker import claim_queue, requeue_lines
 

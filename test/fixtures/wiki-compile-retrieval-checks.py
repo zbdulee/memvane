@@ -161,7 +161,7 @@ class OverlayChecks(unittest.TestCase):
     def test_twenty_compact_cards_reach_actual_extractor_payload_and_prompt(self):
         from memvane.settings import config
         import wiki_compile_worker as worker
-        import wiki_dedup_judge
+        from memvane.wiki.dedup import wiki_dedup_judge
         from extractors.lib import build_prompt, render_existing_context_section
         docs = self.root / 'docs'
         docs.mkdir()

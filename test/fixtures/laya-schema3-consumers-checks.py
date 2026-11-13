@@ -127,7 +127,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         self.select_schema3()
         self.card('concepts/egret-perch.md', 'egretprobe')
         self.run_pass()
-        scan = importlib.import_module('wiki_dedup_scan')
+        scan = importlib.import_module('memvane.wiki.dedup.wiki_dedup_scan')
         learning = importlib.import_module('context_learning.laya_learning')
         config = importlib.import_module('memvane.settings.config')
         with self.seed.authority(), \

@@ -16,7 +16,7 @@ sys.path.insert(0, str(CORE))
 
 from laya_index_a import LayaIndexA, _digest as manifest_digest  # noqa: E402
 from laya_index_vector import LayaVectorIndex, profile_identity, qmd_markdown_title  # noqa: E402
-import wiki_dedup_scan as scan  # noqa: E402
+from memvane.wiki.dedup import wiki_dedup_scan as scan  # noqa: E402
 import wiki_selected_laya  # noqa: E402
 
 SCOPE = '7' * 32

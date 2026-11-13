@@ -789,7 +789,7 @@ class DedupChecks(unittest.TestCase):
         self.loser.write_text(card_text('\nloser fact\n', 'Loser Card'))
 
     def resolve(self, bound=None):
-        import wiki_dedup_resolve as R
+        from memvane.wiki.dedup import wiki_dedup_resolve as R
         import wiki_selected_laya as S
         entry = {'pageA': 'entities/loser.md', 'pageB': 'entities/winner.md', 'score': 0.95}
         with patch.object(S, 'recheck'), patch.object(S, 'request_sync', return_value=True):
