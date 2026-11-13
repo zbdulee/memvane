@@ -7,12 +7,12 @@ import sqlite3
 import time
 import uuid
 
-import laya_blob_values as v
-from laya_blob_values import BlobStoreError
-from laya_blob_store import _worktree_record
-import laya_checkout_view as checkout
-import laya_view_fts as fts
-import laya_view_values as vals
+from memvane.store import blob_values as v
+from memvane.store.blob_values import BlobStoreError
+from memvane.store.blob_store import _worktree_record
+from memvane.store import checkout_view as checkout
+from memvane.store import view_fts as fts
+from memvane.store import view_values as vals
 
 MAX_PINS = 128
 

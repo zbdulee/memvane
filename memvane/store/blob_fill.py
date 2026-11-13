@@ -17,10 +17,10 @@ import struct
 import threading
 import time
 
-import laya_blob_lease as lease
-import laya_blob_values as v
-from laya_blob_store import BlobStore
-from laya_blob_values import BlobStoreError
+from memvane.store import blob_lease as lease
+from memvane.store import blob_values as v
+from memvane.store.blob_store import BlobStore
+from memvane.store.blob_values import BlobStoreError
 
 MAX_DEADLINE = 300
 

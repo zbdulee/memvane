@@ -15,7 +15,7 @@ spec.loader.exec_module(helpers)
 class FormatChecks(helpers.BlobStoreCase):
     def legacy_v2(self):
         """Real old DDL, with synthetic current fixture identity metadata."""
-        import laya_blob_schema as schema
+        from memvane.store import blob_schema as schema
         store, repository, _ = self.create(path=self.state / 'seed.db')
         meta = dict(store._db.execute('SELECT * FROM store_meta').fetchone())
         # The v2 worktree row also carried the settings path and byte digest.
@@ -63,7 +63,7 @@ class FormatChecks(helpers.BlobStoreCase):
         self.assertFalse(Path(str(path) + '-wal').exists())
 
     def test_new_file_uses_format3_and_exact_manifest(self):
-        import laya_blob_schema as schema
+        from memvane.store import blob_schema as schema
         store, _, _ = self.create()
         self.assertEqual((schema.FORMAT, schema.SCHEMA_VERSION),
                          ('memvane-git-blob-candidate-v3', 3))

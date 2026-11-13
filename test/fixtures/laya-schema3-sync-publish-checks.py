@@ -35,7 +35,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
     def setUp(self):
         super().setUp()
         self.worker = importlib.import_module('laya_product_sync_worker')
-        self.views = importlib.import_module('laya_view_store')
+        self.views = importlib.import_module('memvane.store.view_store')
         self.lease = importlib.import_module('laya_reader_lease')
         self.dispatch = importlib.import_module('laya_reader_dispatch')
         root = mock.patch.object(self.worker, '_writer_executing_root', return_value=self.case.plugin)
@@ -481,7 +481,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         # Collection name (and so the v6 settings identity) changes.
         settings.write_text(json.dumps(dict(value, name=value['name'] + '-renamed')), encoding='utf8')
         try:
-            with self.assertRaises(importlib.import_module('laya_blob_values').BlobStoreError) as caught:
+            with self.assertRaises(importlib.import_module('memvane.store.blob_values').BlobStoreError) as caught:
                 store.capture_view(self.worktree['worktreeId'])
             self.assertEqual(caught.exception.reason, 'wiki_binding_changed')
             try:
@@ -520,7 +520,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
                     break
                 self.assertEqual(result['reason'], 'schema3_view_preparing', result)
                 self.assertEqual(self.view_heads(), views_before)
-                with self.assertRaises(importlib.import_module('laya_blob_values').BlobStoreError) as caught:
+                with self.assertRaises(importlib.import_module('memvane.store.blob_values').BlobStoreError) as caught:
                     self.recall('kestrelprobe')
                 self.assertEqual(caught.exception.reason, 'view_preparing')
                 self.assertLess(len(passes), len(cards))

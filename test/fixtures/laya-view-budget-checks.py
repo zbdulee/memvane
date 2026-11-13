@@ -324,10 +324,10 @@ def _profile_top(profiler, limit=25):
 def warm_sample(raw):
     """One hook-shaped reader process: open, capture, pin, search, exit."""
     from unittest import mock
-    import laya_blob_store as blob_store
-    import laya_checkout_view as checkout
-    import laya_view_fts as fts
-    import laya_view_store as views
+    from memvane.store import blob_store as blob_store
+    from memvane.store import checkout_view as checkout
+    from memvane.store import view_fts as fts
+    from memvane.store import view_store as views
     args = json.loads(raw)
     timers, sql = {}, {}
     patches = [mock.patch.object(checkout, '_git', _timed(timers, 'git', checkout._git)),

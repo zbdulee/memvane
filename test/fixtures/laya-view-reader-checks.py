@@ -92,7 +92,7 @@ class ReaderChecks(helpers.GenerationCase):
         self.assertTrue(opened)
         self.assertTrue(all('?mode=ro' in path for path in opened),opened)
         self.assertEqual(reader._db.execute('PRAGMA query_only').fetchone()[0],1)
-        checkout=importlib.import_module('laya_checkout_view')
+        checkout=importlib.import_module('memvane.store.checkout_view')
         actual_capture=checkout.capture_view
         deadlines=[]
         def capture(*args,**kwargs):
@@ -152,7 +152,7 @@ class ReaderChecks(helpers.GenerationCase):
             reader.prepare_generation(None,None,expected_head=None)
         with self.assertRaisesRegex(ValueError,'candidate_binding_mismatch'):
             type(store).open_reader(store._path,repository=repository,scope_id='f'*32)
-        blob_module=importlib.import_module('laya_blob_store')
+        blob_module=importlib.import_module('memvane.store.blob_store')
         late=[]; connections=[]; real_clock=time.monotonic
         def clock():return real_clock()+(20 if late else 0)
         def connect_traced(*args,**kwargs):

@@ -477,7 +477,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     import laya_journal_reader as reader
     from laya_reader_dispatch import _approved_profile_matches
     from laya_view_vectors import DEFERRED
-    from laya_blob_values import BlobStoreError
+    from memvane.store.blob_values import BlobStoreError
     decision, _proof = bound
     if record.get('vector_profile') is None:
         return {}

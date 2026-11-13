@@ -18,8 +18,8 @@ import struct
 import time
 from pathlib import Path
 
-import laya_blob_values as v
-from laya_blob_values import BlobStoreError
+from memvane.store import blob_values as v
+from memvane.store.blob_values import BlobStoreError
 
 SPEC_FIELDS = ('recipe_id', 'profile_id')
 DEFAULT_WORK = 4000000

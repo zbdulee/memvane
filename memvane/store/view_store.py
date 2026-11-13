@@ -15,17 +15,17 @@ from pathlib import Path
 import time
 import uuid
 
-import laya_blob_values as v
-import laya_checkout_view as checkout
-from laya_blob_values import BlobStoreError
-from laya_blob_store import (BlobStore, _bound_settings, _current_file_node, _insert, _regular,
+from memvane.store import blob_values as v
+from memvane.store import checkout_view as checkout
+from memvane.store.blob_values import BlobStoreError
+from memvane.store.blob_store import (BlobStore, _bound_settings, _current_file_node, _insert, _regular,
                              _worktree_record, _worktree_row)
-import laya_view_fts as view_fts
-import laya_view_values as vals
+from memvane.store import view_fts as view_fts
+from memvane.store import view_values as vals
 import laya_view_vectors as vectors
-from laya_view_fill import FillMixin
-from laya_view_reader import ReaderMixin
-from laya_view_rows import RowsMixin
+from memvane.store.view_fill import FillMixin
+from memvane.store.view_reader import ReaderMixin
+from memvane.store.view_rows import RowsMixin
 from laya_view_vectors import VectorMixin
 
 # Publication cut budget; only an O(1) source identity and the commit run under it.

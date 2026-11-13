@@ -16,11 +16,11 @@ import stat
 import time
 import uuid
 
-import laya_blob_schema as schema
-import laya_blob_values as v
-from laya_blob_values import BlobStoreError
-import laya_checkout_view as checkout
-import laya_view_fts as view_fts
+from memvane.store import blob_schema as schema
+from memvane.store import blob_values as v
+from memvane.store.blob_values import BlobStoreError
+from memvane.store import checkout_view as checkout
+from memvane.store import view_fts as view_fts
 
 NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
@@ -516,7 +516,7 @@ class BlobStore:
         except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
             if db is not None: db.close()
             if reader_only and deadline is not None:
-                from laya_view_reader import _sqlite_interrupted
+                from memvane.store.view_reader import _sqlite_interrupted
                 if _sqlite_interrupted(exc) and time.monotonic() >= deadline:
                     v.fail('fts_deadline_exceeded')
             v.fail('candidate_open_failed')

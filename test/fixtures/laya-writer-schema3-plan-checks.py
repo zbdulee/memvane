@@ -53,8 +53,8 @@ class Schema3WriterPlanChecks(unittest.TestCase):
         subprocess.run(git + ['commit', '--allow-empty', '-qm', 'fixture'],
                        check=True, capture_output=True, timeout=10)
         time.sleep(1.1)  # Git racy-index window before the checkout capture.
-        checkout = importlib.import_module('laya_checkout_view')
-        views = importlib.import_module('laya_view_store')
+        checkout = importlib.import_module('memvane.store.checkout_view')
+        views = importlib.import_module('memvane.store.view_store')
         self.repository = checkout.register_repository(str(project))
         self.worktree = checkout.register_worktree(str(project), self.repository)
         self.store_path = self.case.state / 'writer-schema3-store.sqlite'

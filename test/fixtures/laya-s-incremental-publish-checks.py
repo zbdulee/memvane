@@ -148,7 +148,7 @@ class IncrementalPublicationChecks(seed.GenerationCase):
             store.release(pin)
 
     def test_sealed_physical_digest_survives_commit_and_reopen(self):
-        import laya_view_fts as fts
+        from memvane.store import view_fts as fts
         store, repository, handle = self.rows_store()
         self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
         self.publish(store, handle, b'# Second\nuniquebeta synthetic card\n')
@@ -180,7 +180,7 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(self.found(store, handle, 'uniquebeta'), [])
 
     def test_other_view_fts_is_not_changed_by_a_neighbor_publication(self):
-        import laya_view_fts as fts
+        from memvane.store import view_fts as fts
         main, linked = self.project('rows'), self.home / 'projects' / 'rows-linked'
         for args in [('init', '-q'), ('add', '-A'), ('commit', '-q', '-m', 'fixture'),
                      ('worktree', 'add', '-q', '-b', 'side', str(linked))]:
@@ -349,7 +349,7 @@ class IncrementalPublicationChecks(seed.GenerationCase):
                     db.execute('SELECT COUNT(*) FROM s_stage_items').fetchone()[0])
         before = state()
         self.assertGreater(before[1], 0)
-        import laya_view_rows as rows
+        from memvane.store import view_rows as rows
         real, failed = rows._expired, []
 
         def late(deadline):
@@ -510,7 +510,7 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertTrue(store.collect_view_rows(handle, limit=64)['s_cards'])
 
     def test_generations_persist_seal_accumulators_and_a_head_rowid_map(self):
-        import laya_view_fts as fts
+        from memvane.store import view_fts as fts
         store, _, handle = self.rows_store()
         self.publish(store, handle, b'# First\nuniquealpha synthetic card\n')
         db = store._db
@@ -524,8 +524,8 @@ class IncrementalPublicationChecks(seed.GenerationCase):
             sorted(tuple(r) for r in db.execute(f'SELECT path_key,rowid FROM {name}')))
 
     def test_rollback_after_restart_reads_only_the_delta(self):
-        import laya_view_fts as fts
-        import laya_view_rows as rows
+        from memvane.store import view_fts as fts
+        from memvane.store import view_rows as rows
         store, repository, handle = self.rows_store()
         many = {f'cards/m{i:03d}.md': (f'# M {i}\nuniquemany{i:03d} x\n'.encode(), True) for i in range(40)}
         self.publish_cards(store, handle, many)

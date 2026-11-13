@@ -43,7 +43,7 @@ class LineageChecks(helpers.helpers.GenerationCase):
         fresh=store.capture_view(old.worktree_id)
         self.assertEqual(fresh.view_id,old.view_id)
         if os.environ.get('MEMVANE_TEST_GIT_TIMING'):
-            import laya_checkout_view as checkout
+            from memvane.store import checkout_view as checkout
             timings=[]
             original=checkout._git
             def timed(args,*pos,**kw):
@@ -83,8 +83,8 @@ class LineageChecks(helpers.helpers.GenerationCase):
         self.assertEqual((rows[0]['gen_id'],rows[0]['snapshot_state']),(gen,'lineage_unverified'))
 
     def test_04_active_pin_survives_handle_eviction_and_pin_limit_recovers(self):
-        import laya_view_values as values
-        import laya_view_reader as reader
+        from memvane.store import view_values as values
+        from memvane.store import view_reader as reader
         store,_,h,_=self.published();pin=store.pin_view(h)
         with mock.patch.object(values,'MAX_HANDLES',2):
             for _ in range(3):store.capture_view(h.worktree_id)

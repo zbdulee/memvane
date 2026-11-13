@@ -28,8 +28,8 @@ class ReaderRowsChecks(journal.Schema3EndpointChecks):
     def test_recall_repins_once_after_the_view_head_moved(self):
         self.switched()
         before = self.answer()
-        import laya_view_rows as rows
-        import laya_blob_values as v
+        from memvane.store import view_rows as rows
+        from memvane.store import blob_values as v
         real, calls = rows.RowsMixin._rows_search, []
 
         def moved_once(self_, *args, **kwargs):

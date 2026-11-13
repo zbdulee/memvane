@@ -186,7 +186,7 @@ class Schema3RecallChecks(unittest.TestCase):
                               after['stderr'])
         # One full generation verification per recall (the serving pin): its
         # lexical/exact reads reuse it and the closing head check skips it.
-        view_store = importlib.import_module('laya_view_store')
+        view_store = importlib.import_module('memvane.store.view_store')
         original, verified = view_store.ViewStore._verify_generation, []
 
         def counted(store, *args, **kwargs):

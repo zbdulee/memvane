@@ -56,7 +56,7 @@ class _SelectedWriterContext:
         self.marked = False
 
     def __enter__(self):
-        from laya_view_store import ViewStore
+        from memvane.store.view_store import ViewStore
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread()
                 and not self.entered and not self.finished, 'normal_writer_reentered')
         try:
@@ -135,7 +135,7 @@ class _BuildWriterContext:
         import laya_initial_build as build
         import laya_runtime_dispatch as dispatch
         from laya_install_journal import _attestation, _v1_provider_manifest, inspect_journal
-        from laya_view_store import ViewStore
+        from memvane.store.view_store import ViewStore
         from laya_store_primitives import _query_only_uri
         import sqlite3
         from contextlib import closing

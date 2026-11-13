@@ -14,12 +14,12 @@ import math
 import sqlite3
 import time
 
-import laya_blob_values as v
-from laya_blob_values import BlobStoreError
-from laya_blob_fill import ContentFiller
-from laya_blob_store import _insert
-import laya_fill_schema as fill_schema
-import laya_view_values as vals
+from memvane.store import blob_values as v
+from memvane.store.blob_values import BlobStoreError
+from memvane.store.blob_fill import ContentFiller
+from memvane.store.blob_store import _insert
+from memvane.store import fill_schema as fill_schema
+from memvane.store import view_values as vals
 
 MAX_DEADLINE = 300
 MAX_FILES = 64

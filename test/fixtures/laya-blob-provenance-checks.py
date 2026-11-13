@@ -74,7 +74,7 @@ class ProvenanceChecks(unittest.TestCase):
         fingerprint and manifest source path rule refuses only empty, ``.``
         and ``..`` segments. Wiki card paths keep refusing dot segments."""
         values = sys.modules['laya_blob_values']
-        view_values = __import__('laya_view_values')
+        view_values = __import__('memvane.store.view_values')
         for path in ('.nova/06_Sessions/ep01.md', '.hidden/x.md', '.nova/x/.drafts/a.md', '..a/b.md'):
             with self.subTest(path=path):
                 key = self.store.put_fingerprint(self.fp(path=path))
@@ -248,7 +248,7 @@ class ProvenanceChecks(unittest.TestCase):
         self.assertEqual(self.store.counts()['attestation_sources'], 0)
 
     def git_pair(self):
-        import laya_checkout_view as checkout
+        from memvane.store import checkout_view as checkout
         main, linked = self.root / 'git', self.root / 'linked'
         (main / '.memvane/wiki').mkdir(parents=True)
         (main / '.memvane/settings.json').write_text(json.dumps({'name': 'fixture'}), encoding='utf8')
@@ -435,7 +435,7 @@ class ProvenanceChecks(unittest.TestCase):
         self.assertEqual(self.store.counts()['card_attestations'], 0)
 
     def normal_generation(self, members):
-        views = importlib.import_module('laya_view_store')
+        views = importlib.import_module('memvane.store.view_store')
         view = views.ViewStore.open(self.path, repository=self.repository, scope_id=self.scope)
         self.addCleanup(view.close)
         handle = view.capture_view(self.worktree['worktreeId'])
@@ -510,7 +510,7 @@ class ProvenanceChecks(unittest.TestCase):
         return dict(value, **changes)
 
     def test_26_delete_receipts_table_is_reserved_append_only(self):
-        import laya_blob_schema as schema
+        from memvane.store import blob_schema as schema
         self.assertIn('delete_receipts', schema.TABLES)
         self.assertEqual(self.store.counts()['delete_receipts'], 0)
         row = dict(receipt_id='1' * 64, view_id='2' * 64, base_gen='g-x', path='notes/source.md',
@@ -539,7 +539,7 @@ class ProvenanceChecks(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM delete_receipts').fetchone()[0], 1)
 
     def test_27_store_created_with_reserved_manifest_reopens(self):
-        import laya_blob_schema as schema
+        from memvane.store import blob_schema as schema
         self.assertNotEqual(schema.expected_manifest(), self.PRE_RESERVATION_MANIFEST)
         self.store.close()
         store = self.Store.open(str(self.path), repository=self.repository, scope_id=self.scope)
@@ -549,7 +549,7 @@ class ProvenanceChecks(unittest.TestCase):
         self.assertTrue(store.verify())
 
     def test_28_pre_reservation_schema3_store_is_refused_readonly(self):
-        import laya_blob_schema as schema
+        from memvane.store import blob_schema as schema
         # That store's worktree rows also carried the settings path and byte digest.
         old_ddl = [ddl.replace('policy_digest TEXT NOT NULL', OLD_SETTINGS_COLUMNS + 'policy_digest TEXT NOT NULL', 1)
                    if ddl.startswith('CREATE TABLE worktrees(') else ddl

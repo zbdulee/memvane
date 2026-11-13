@@ -16,8 +16,8 @@ import os
 from pathlib import Path
 import stat
 
-import laya_blob_values as v
-from laya_blob_values import BlobStoreError
+from memvane.store import blob_values as v
+from memvane.store.blob_values import BlobStoreError
 
 ROOT_SUFFIX = '.content-locks'
 NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC

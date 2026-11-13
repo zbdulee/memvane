@@ -16,9 +16,9 @@ import math
 import time
 import uuid
 
-import laya_blob_values as v
-import laya_view_fts as fts
-import laya_view_values as vals
+from memvane.store import blob_values as v
+from memvane.store import view_fts as fts
+from memvane.store import view_values as vals
 
 ROW_STAGE_SCHEMA = 'memvane-row-stage-v1'
 ROW_SEAL_SCHEMA = 'memvane-row-generation-seal-v1'
@@ -480,7 +480,7 @@ class RowsMixin:
     @staticmethod
     def _rows_put_source_objects(db, objects):
         """Insert content and observation rows that are not stored yet; stored ones must be identical."""
-        from laya_blob_store import _insert
+        from memvane.store.blob_store import _insert
         for content, observation in objects:
             if content is not None:
                 row = db.execute('SELECT content_id,source_sha,byte_length FROM s_source_content WHERE content_id=?',
@@ -554,9 +554,9 @@ class RowsMixin:
     # -- publication ---------------------------------------------------------
 
     def _rows_prepare(self, handle, manifest, *, expected_head, vector_spec, deadline):
-        from laya_view_store import _skip_patterns, _wiki_files, _live
-        from laya_blob_store import _insert
-        import laya_view_store as store_module
+        from memvane.store.view_store import _skip_patterns, _wiki_files, _live
+        from memvane.store.blob_store import _insert
+        from memvane.store import view_store as store_module
         _deadline_value(deadline)
         self._require_write()
         entry = self._check(handle)
@@ -647,8 +647,8 @@ class RowsMixin:
         return gen_id
 
     def _rows_publish(self, handle, gen_id, *, expected_head, deadline):
-        from laya_view_store import _live, _skip_patterns, _wiki_files
-        import laya_view_store as store_module
+        from memvane.store.view_store import _live, _skip_patterns, _wiki_files
+        from memvane.store import view_store as store_module
         _deadline_value(deadline)
         self._require_write()
         entry = self._check(handle)
@@ -788,7 +788,7 @@ class RowsMixin:
         prior generation rows) updates the head accumulators from the delta
         only, must reach the prior's accumulators and seals the deferral value.
         """
-        import laya_view_store as store_module
+        from memvane.store import view_store as store_module
         view_id = generation['view_id']
         open_sources = {row['path']: row for row in self._rows_open_sources(db, view_id)}
         for old, new in source_deltas:
@@ -894,7 +894,7 @@ class RowsMixin:
         FTS corpus; its physical FTS bytes are sealed anew. The caller holds
         the owner proof and its explicit approval.
         """
-        import laya_view_store as store_module
+        from memvane.store import view_store as store_module
         _deadline_value(deadline)
         self._require_write()
         entry = self._check(handle)
@@ -960,7 +960,7 @@ class RowsMixin:
         One batch is one transaction. Shared content (blobs, attestations,
         chunk and embedding sets) is never deleted here.
         """
-        import laya_view_store as store_module
+        from memvane.store import view_store as store_module
         _deadline_value(deadline)
         self._require_write()
         v.integer(limit, 1, 4096)
@@ -1093,7 +1093,7 @@ class RowsMixin:
         return generation, capture
 
     def _rows_pin(self, handle, deadline):
-        from laya_view_reader import MAX_PINS, ViewPin, _remaining
+        from memvane.store.view_reader import MAX_PINS, ViewPin, _remaining
         issued = self._check(handle)
         self._observe(issued, deadline=deadline)
         _remaining(deadline)
@@ -1120,7 +1120,7 @@ class RowsMixin:
 
     def _rows_search(self, pin, fts_query, limit, *, path_prefixes, excluded_paths, deadline_seconds):
         import sqlite3
-        from laya_view_reader import _query, _remaining
+        from memvane.store.view_reader import _query, _remaining
         deadline = _query(fts_query, limit, path_prefixes, excluded_paths, deadline_seconds)
         record = self._pinned(pin)
         _remaining(deadline)
@@ -1217,8 +1217,8 @@ class RowsMixin:
 
     def _rows_fill_plan(self, handle, recipe_id, profile_id):
         """Eligible head cards in path order and the head/spec-bound cursor of this view."""
-        from laya_view_fill import JOB_SCHEMA
-        import laya_fill_schema as fill_schema
+        from memvane.store.view_fill import JOB_SCHEMA
+        from memvane.store import fill_schema as fill_schema
         entry = self._check(handle)
         v.identifier(recipe_id); v.identifier(profile_id)
         saved = self._observe(entry)
@@ -1264,10 +1264,10 @@ class RowsMixin:
         The cursor moves forward in its own transaction only after every
         covered target's set committed; a new head or spec starts over.
         """
-        import laya_fill_schema as fill_schema
-        import laya_view_fill as fills
-        import laya_view_store as views
-        from laya_blob_fill import ContentFiller
+        from memvane.store import fill_schema as fill_schema
+        from memvane.store import view_fill as fills
+        from memvane.store import view_store as views
+        from memvane.store.blob_fill import ContentFiller
         self._require_write()
         deadline = fills._deadline(deadline_seconds)
         fills._bounded(expected_cursor, 0, fill_schema.MAX_TARGETS, 'fill_cursor_invalid')

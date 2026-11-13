@@ -11,7 +11,7 @@ import json
 import re
 import time
 
-import laya_blob_values as v
+from memvane.store import blob_values as v
 import laya_store_primitives as primitives
 
 MAX_MEMBERS = 20000

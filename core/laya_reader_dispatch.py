@@ -52,7 +52,7 @@ def _approved_profile_matches(candidate, proof):
     """Compare profile facts; this check alone grants no caller authority."""
     if not isinstance(candidate,dict) or not isinstance(proof,dict) or proof.get('productRouteAllowed') is not True:
         return False
-    from laya_blob_values import profile as validate_profile
+    from memvane.store.blob_values import profile as validate_profile
     try:
         validate_profile(candidate)
     except (TypeError, ValueError):
@@ -219,7 +219,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                                     _fail)
     from laya_index_host_route import wiki_index_roots
     from source_scan import auxiliary_wiki_row
-    from laya_blob_values import BlobStoreError
+    from memvane.store.blob_values import BlobStoreError
     from laya_view_vectors import DEFERRED
     queries=[query for query in _hybrid_fts_queries(
         prompt,tuple(decision['recallSettings'].get('lexicalPatterns',())) ) if query]
