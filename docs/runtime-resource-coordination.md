@@ -27,14 +27,13 @@ development execution guard is separate; see
   `laya_compile` call `laya_runtime_dispatch.run`, which routes the wake into the
   sealed installed bundle with the wake's lease FD; the target process repeats
   the full owner proof before any model or store work.
-- Schema3 reader sync and shadow migration: a schema3-selected `laya-sync` pass
+- Selected view sync: a schema3-selected `laya-sync` pass
   takes the same provider activity only when a view's vector fill has content no
   stored set holds (`_schema3_vectors`); one pass embeds content shared by two
   views once, and a refused lane or service leaves the lexical generation
   published and the wake `deferred`. Before each provider call the fill
   yields (`laya_sync_yield_priority`) to another project's initial build
-  waiting on the owner (`_initial_build_waiting`, as the v6 capacity path
-  does between rounds), whose wake is pulled ahead. A pass whose main-view
+  waiting on the owner (`_initial_build_waiting`), whose wake is pulled ahead. A pass whose main-view
   fill added embedding sets but did not finish (including a stop on that
   yield or on a provider failure) is acknowledged and offers its own wake
   again 30 seconds later (`WakeQueue.offer(delay=)`), inside the worker's
@@ -53,15 +52,7 @@ development execution guard is separate; see
   once, so the last provider call can run past the pass deadline by that one
   document; that pass publishes its generation (lexical, or vector when the
   fill completed) with a fresh publish reserve. A linked view held only by
-  the pass budget after such a pass gets the same re-offer. The shadow migration driver
-  (`shadow_pass`) runs after the sync owner is released, inside the same wake,
-  about 60 seconds of steps, at most 32. A pass that can go on re-offers its own
-  wake due 30 seconds later (`WakeQueue.offer(delay=)`); the drain releases the
-  lease and the lease-free timer runs it, so the next pass takes the same sync
-  admission and owner checks. The reader switch step holds the install,
-  initial-build, operation and sync owner locks and
-  `Coordinator().quiesce_provider()` for at most 10 seconds; a busy lock is a
-  retry for a later pass, never a wait.
+  the pass budget after such a pass gets the same re-offer..
 - Selected Laya route sync: `laya_product_sync_worker.py` holds a Coordinator
   `activity('provider', EMBED_POLICY)` around embedding work and rechecks the
   policy immediately before the embed service loads its model. `EMBED_POLICY`
@@ -140,15 +131,6 @@ development execution guard is separate; see
   the installation's own log.
 - A `laya-sync` pending result with committed schema3 ingest or vector progress uses the exact detail `deferred:pending:schema3_progress_ingest` or `deferred:pending:schema3_progress_vector`. The wake retries in 30 seconds without incrementing its attempt count; pending without durable progress keeps the ordinary retry policy.
 - When no worker is ready and full proof is loading or deferred, a drifted installation waiting as `read_only_no_worker` defers reproof for up to 30 seconds. A ready worker wakes the waiting installation; the usual proof and identity checks still apply.
-- A shadow switch step has a maximum 30-second proof budget, bounded by its caller deadline.
-- On the capacity path every sync wake rescans, so the pending fill offers
-  each cached member again. A member whose sidecar row is already identical,
-  or an unverified card, skips the route proof, the journal write fence and the
-  sidecar transaction (`laya_incremental_docs.publish_needed` over one
-  read-only `PublishedReader` per wake). The pending and the ordinary vector
-  fill each cross that fence once, before their first candidate write
-  (profile, content or chunk rows), so `newWriteSeen` is durable before any
-  vector commit; a step over cached members only does not cross it.
 - `chunkDocumentByTokens` returns chunks in source position order. A
   re-split first-pass chunk can end after the next overlapping chunk starts,
   and the reviewed provider accepts only strictly increasing positions; an
@@ -158,16 +140,6 @@ development execution guard is separate; see
 - A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
-- A v6 capacity sync marks its first write through
-  `laya_writer_scope.mark_new_write`. Validation with the first writer proof,
-  the journal image CAS with the plan recapture after it, and the reproof each
-  get their own operation deadline
-  (2 seconds for the worker writer); each proof first waits for the physical
-  windows readers hold. A proof that runs out (`writer_proof_deadline`,
-  `writer_proof_physical_busy`) ends the wake `deferred`, and its `wake.sync`
-  detail names each stage's milliseconds
-  (`p1_lock<ms>_sql<ms>:img<ms>:p2_lock<ms>_sql<ms>`: the window wait, then the
-  reads inside).
 - A selected sync yields (`laya_sync_yield_priority`) to a due `index` or
   `update` wake that has failed fewer than 3 times (those retired kinds are
   acknowledged on dispatch without work), and, between rounds, to another
@@ -324,41 +296,6 @@ cannot preempt an already running atomic embedding or model operation; SQLite
 contention may still affect latency. Compatibility requires all
 participating installed copies to use the same Coordinator. Explicit operator
 tools outside these plugin paths are not intercepted.
-
-## Bundle upgrade I/O
-
-A bundle upgrade (inactive, bound or selected) holds the install lock, the
-build owner or operation lock and, for a selected index, the per-user
-provider lane. Under those locks its work is O(metadata):
-
-- The backup (`inactive-upgrade-backup-*`, receipt
-  `laya-inactive-upgrade-backup-v2`) copies only the install journal with an
-  online SQLite backup. The candidate DB, claim queue, catalog, binding store
-  and incremental-docs sidecar are pinned, not copied: inode plus logical
-  evidence from one read snapshot (application id, user version, page size,
-  DDL digest, small identity tables row for row, largest rowid per rowid
-  table). No restore reads store bytes from a backup; restores rebind the
-  metadata from the intent and rewind the journal by CAS, then compare the
-  pins while the upgrade fence still stands.
-- The store check reads schema, binding rows and largest rowids; it runs no
-  `quick_check`, `integrity_check` or full `COUNT`. Only an unfinished intent
-  written by a bundle up to 0.44.15 (exact row counts, full-copy backup)
-  resumes through the earlier full inspection and copy hashes. A settled
-  intent is archived with a receipt check alone, because the same step
-  deletes its backup.
-- The claim queue and source catalog pins compare the file and schema only:
-  after a settled upgrade a sync pass scans the catalog and claims work before
-  it marks the journal's first new write. Their bindings are rechecked with
-  the other store bindings.
-- The worker keeps one backup-proof scope across its busy retries, so a proof
-  is reused while the backup files' stamps are unchanged.
-- An upgrade deletes its own backup right after its receipt is durable; a
-  backup that a live intent names is kept, and older backups stay for the
-  owner.
-- Stage lines (`bundle.upgrade` with outcomes `backup.*`, `verify.*`,
-  `activate.done`, `store_check.done`) carry the worker's `operation` and
-  `kind`; a copy or hash longer than 30 seconds adds `*.progress` lines with
-  `bytesDone`/`bytesTotal`.
 
 ## Additional entry points
 
