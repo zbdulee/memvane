@@ -436,7 +436,7 @@ def _run_isolated_admitted(cmd: list[str], timeout: int) -> tuple[str | None, in
         except subprocess.TimeoutExpired:
             # Match subprocess.run's owned-child cleanup; never signal another PID.
             timed_out = True
-            from memvane.learning.context_learning.transport import _stop_owned
+            from memvane.kernel.process import stop_owned as _stop_owned
             _stop_owned(proc)
             stdout, stderr = proc.communicate(timeout=2)
         code = 124 if timed_out else proc.returncode
@@ -463,7 +463,7 @@ def _run_isolated_admitted(cmd: list[str], timeout: int) -> tuple[str | None, in
         if proc is not None:
             # Reap only this owned child if communicate itself raised.
             if proc.poll() is None:
-                from memvane.learning.context_learning.transport import _stop_owned
+                from memvane.kernel.process import stop_owned as _stop_owned
                 _stop_owned(proc)
             if proc.stdout is not None: proc.stdout.close()
             if proc.stderr is not None: proc.stderr.close()

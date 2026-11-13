@@ -149,8 +149,8 @@ class EntryPoints(unittest.TestCase):
             self.assertEqual(os.fstat(fd).st_ino,(self.root/'provider.lock').stat().st_ino)
             with self.c.inference_compute(time.monotonic()+.05):pass
             return Child()
-        from memvane.learning.context_learning import transport
-        with patch.object(a.subprocess,'Popen',side_effect=spawn),patch.object(transport,'_stop_owned',return_value=True):
+        from memvane.kernel import process
+        with patch.object(a.subprocess,'Popen',side_effect=spawn),patch.object(process,'stop_owned',return_value=True):
             result=a.provider_run(['/synthetic/provider'],env={'INDEX_PATH':'/synthetic/index'},timeout=1,capture_output=True,text=True)
         self.assertEqual(result.stdout,'answer')
 

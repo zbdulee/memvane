@@ -26,7 +26,8 @@ from .dataset import read_private_json
 from .egress_guard import inspect_payload
 from .shared import _case_active, _db, _policy, _project_key, resource_report
 from .store import canonical
-from .transport import _stop_owned, _unique_object
+from memvane.kernel.process import stop_owned as _stop_owned
+from .transport import _unique_object
 
 CONSENT_NAME='project-teacher-consent.json'
 

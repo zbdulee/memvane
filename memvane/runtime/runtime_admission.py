@@ -153,7 +153,7 @@ def provider_popen(argv,*,before_launch=None,launch_failed=None,defer_launch=Non
 
 def provider_run(argv,**options):
     """Bounded owned group; preserve the caller's routing/environment exactly."""
-    from memvane.learning.context_learning.transport import _stop_owned
+    from memvane.kernel.process import stop_owned as _stop_owned
     with provider():
         timeout=options.pop('timeout',120)
         if type(timeout) not in (int,float) or not 0<timeout<=600:

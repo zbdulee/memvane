@@ -8,12 +8,13 @@ import os
 from pathlib import Path
 import selectors
 import shutil
-import signal
 import sqlite3
 import subprocess
 import tempfile
 import threading
 import time
+
+from memvane.kernel.process import stop_owned as _stop_owned
 
 from . import claude_adapter, codex_adapter
 from .contracts import validate_request
@@ -32,36 +33,6 @@ class TransportFailure(Exception):
     pass
 
 
-def _stop_owned(process):
-    # Popen creates a new group. Never discover/kill unrelated system processes.
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    try:
-        process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            return False
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            return False
-    # A descendant may keep pipes open even after the group leader exits.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        # The leader and its process group have already exited.
-        pass
-    except PermissionError:
-        return False
-    return True
 
 
 def _unique_object(pairs):

@@ -269,6 +269,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/kernel/process.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/kernel/resource_deferred.py": {
       "context": "kernel",
       "layer": "adapter",
