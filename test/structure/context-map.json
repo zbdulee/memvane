@@ -839,6 +839,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/settings/api.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/settings/collection_match.py": {
       "context": "settings",
       "layer": "adapter",
@@ -877,6 +882,11 @@
     "memvane/settings/source_text.py": {
       "context": "settings",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/types.py": {
+      "context": "settings",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/store/__init__.py": {
