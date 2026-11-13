@@ -1,13 +1,13 @@
 """Durable compile queue claim, read, and orphan recovery."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import fcntl
 import json
 import os
 from pathlib import Path
 import time
 import uuid
+from memvane.kernel.paths import now_iso
 
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.wiki.workspace import compile_paths as cp
@@ -15,8 +15,6 @@ from memvane.wiki.workspace.queue_paths import _queue_lock_path
 from memvane.wiki.workspace.types import MAX_REQUEUE_COUNT, DEDUP_RESOLVE_IMPLICIT_TTL, CLAIMED_PID_BACKSTOP_SECS
 
 
-def now_iso():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def append_jsonl(path: Path, payload: dict):

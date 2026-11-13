@@ -38,3 +38,5 @@ TRIGGERS = frozenset(("session_start", "source_edit"))
 
 DEFERRED_REASONS = frozenset(('owner_busy', 'writer_proof_deadline',
                               'reader_lifetime_busy', 'writer_proof_physical_busy'))
+
+LOG_MAX_BYTES = 256 * 1024

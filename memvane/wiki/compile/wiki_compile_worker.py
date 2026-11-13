@@ -24,6 +24,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.kernel.paths import now_iso
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_argv, extractor_engine_pool,
@@ -37,7 +38,7 @@ from memvane.settings.api import select_collections
 from memvane.wiki.intake.api import append_source_jobs
 from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
-                                        requeue_lines, now_iso, append_jsonl, read_queue, claim_queue)
+                                        requeue_lines, append_jsonl, read_queue, claim_queue)
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_card_budget
 from memvane.wiki.card import wiki_freshness

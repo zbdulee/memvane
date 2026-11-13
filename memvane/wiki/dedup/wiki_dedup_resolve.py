@@ -23,7 +23,8 @@ from memvane.settings import api as project_dir
 from memvane.settings import api as qmd_config
 from memvane.wiki.workspace import wiki_activity_log
 from memvane.wiki.workspace import wiki_mutation_lock
-from memvane.wiki.compile import wiki_compile as wc
+from memvane.kernel.paths import safe_managed_dir
+from memvane.wiki.card.api import parse_frontmatter
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
 from memvane.wiki.workspace import api as wiki_selected_laya
 from memvane.wiki.workspace.api import claim_queue, requeue_lines
@@ -94,7 +95,7 @@ def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> 
         return False
     first, second = sorted((page_a, page_b))  # order-independent pair key
     try:
-        wc.append_jsonl(skipped_path, {
+        cp.append_jsonl(skipped_path, {
             "pageA": first,
             "pageB": second,
             "pageAHash": dedup_scan.body_hash(texts[first]),
@@ -232,7 +233,7 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
             record_recovery(compile_dir, delete_rel, paired_with, content)
         deleted_path = cp.ledger(root, ct.DEDUP_DELETED)
         if deleted_path is not None:
-            wc.append_jsonl(deleted_path, {
+            cp.append_jsonl(deleted_path, {
                 "deletedPath": delete_rel,
                 "content": content,
                 "pairedWith": paired_with,
@@ -241,9 +242,9 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
             })
             # write-only audit log storing full deleted-card bodies (KB each) --
             # cap it so it can't grow unbounded.
-            wc.trim_jsonl(deleted_path)
+            cp.trim_jsonl(deleted_path)
         target.unlink()
-        meta, _ = wc.parse_frontmatter(content)
+        meta, _ = parse_frontmatter(content)
         title = str(meta.get("title") or Path(delete_rel).stem)
         wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  title, bound=laya_bound, reason='dedup')
@@ -270,7 +271,7 @@ def main() -> int:
     root = Path(found["projectRoot"]).resolve()
     config = found["config"]
     wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
-    wiki_root = wc.safe_managed_dir(root, wiki_rel)
+    wiki_root = safe_managed_dir(root, wiki_rel)
     compile_dir = project_dir.compile_dir(root, create=True)
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))

@@ -57,9 +57,6 @@ def requeue_lines(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-def now_iso(*args, **kwargs):
-    from memvane.wiki.workspace.queue import now_iso as implementation
-    return implementation(*args, **kwargs)
 
 
 
@@ -149,4 +146,9 @@ def read_state(*args, **kwargs):
 
 def write_state_atomic(*args, **kwargs):
     from memvane.wiki.workspace.scan_state import write_state_atomic as implementation
+    return implementation(*args, **kwargs)
+
+
+def trim_jsonl(*args, **kwargs):
+    from memvane.wiki.workspace.atomic_io import trim_jsonl as implementation
     return implementation(*args, **kwargs)

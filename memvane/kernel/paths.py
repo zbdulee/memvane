@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 import subprocess
 import time
 try:
@@ -174,3 +175,7 @@ def read_jsonl(path: Path) -> list[dict]:
         if isinstance(parsed, dict):
             rows.append(parsed)
     return rows
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
