@@ -66,41 +66,6 @@ def stable_fields(first, second):
     return _V6_STABLE
 
 
-# A state-root move re-seals the selected endpoint with only its state
-# directory paths and attestation digest changed.
-_RELOCATED = frozenset(('state', 'db_path', 'attestation_sha256'))
-_V6_STORE_PATHS = ('db_path', 'catalog_path', 'binding_path', 'sidecar_path')
-_RELOCATED_V6 = frozenset(('state', 'attestation_sha256') + _V6_STORE_PATHS)
-
-
-def relocated_pair(old, new):
-    """``new`` is ``old`` re-sealed after its state directory moved by rename(2).
-
-    Both are schema3, or both are steady v6 (``v6-ro-v1``). ``state`` and the
-    store paths name the same basenames under another parent and keep their
-    ``[dev, ino]``; the attestation digest may follow the relocated
-    attestation. Every other field is identical.
-    """
-    try:
-        if old.get('store_format') != new.get('store_format') or set(old) != set(new):
-            return False
-        if old['store_format'] == 'schema3':
-            paths, moved = ('db_path',), _RELOCATED
-            if set(old) != _SCHEMA3_KEYS:
-                return False
-        elif old['store_format'] == 'v6' and old['capability'] == new['capability'] == 'v6-ro-v1':
-            paths, moved = _V6_STORE_PATHS, _RELOCATED_V6
-        else:
-            return False
-        return (records_agree(old, new, set(old) - moved)
-                and old['state'] != new['state']
-                and Path(old['state']).name == Path(new['state']).name
-                and all(Path(old[k]).parent == Path(old['state'])
-                        and Path(new[k]) == Path(new['state']) / Path(old[k]).name for k in paths))
-    except (AttributeError, KeyError, TypeError):
-        return False
-
-
 @dataclass(frozen=True, eq=False, init=False)
 class VerifiedEndpoint:
     endpoint_id: str
@@ -1541,8 +1506,7 @@ def _selection(db):
         previous = _stored_endpoint(db, selected.previous_endpoint)
         fields = (INSTALL_IDENTITY if 'schema3' in (record['store_format'], previous['store_format'])
                   else ('install_id',))
-        _need(records_agree(record, previous, fields) or relocated_pair(previous, record)
-              or resettled_pair(previous, record) or rollback_pair(previous, record)
+        _need(records_agree(record, previous, fields) or resettled_pair(previous, record) or rollback_pair(previous, record)
               or upgraded_pair(previous, record),
               'reader_install_changed')
     from laya_move_reader_journal import validate_selection
@@ -1578,52 +1542,6 @@ def _insert_endpoint(db, endpoint, record, raw):
         db.execute('INSERT INTO read_endpoints VALUES(?,?,?)', (endpoint.endpoint_id, *row))
     else:
         _need(existing == row, 'reader_endpoint_conflict')
-
-
-def relocate_selection(db, journal_path, attestation_sha256, *, released=None):
-    """Re-seal the selected endpoint after its state root moved (``after_v5``).
-
-    Runs in the bundle journal's relocation image transaction: the new route
-    and this endpoint commit together. A schema3 or steady v6 endpoint gets
-    its state paths rebased onto the moved directory; any other selected
-    format refuses the move.
-
-    ``released`` (``(project, decision, proof)``: the caller's recall route
-    decision and its read-only selected proof) re-seals, in a later image
-    transaction, a steady v6 endpoint that a released state move (no reader
-    re-seal) left naming the legacy root; see ``_released_move``.
-    """
-    current, record = _selection(db)
-    state = Path(journal_path).parent
-    raw = _read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
-    observed = None if released is None else _released_move(db, current, record, state, raw, *released)
-    if record.get('store_format') == 'schema3':
-        paths, nodes = ('db_path',), (('db_path', 'db_node'),)
-    else:
-        _need(record.get('capability') == 'v6-ro-v1', 'reader_relocation_unproved')
-        paths = _V6_STORE_PATHS
-        nodes = (('db_path', 'db_node'), ('catalog_path', 'catalog_node'), ('binding_path', 'binding_node'))
-    _need(type(raw) is bytes, 'reader_relocation_unproved')
-    moved = dict(record, state=str(state), attestation_sha256=_sha(raw),
-                 **{k: str(state / Path(record[k]).name) for k in paths})
-    _need(moved['attestation_sha256'] == attestation_sha256
-          and relocated_pair(record, moved)
-          and (record['store_format'] != 'schema3' or _schema3_shape(moved))
-          and persistent_node_equal(record['state_node'], _node(state))
-          and all(persistent_node_equal(record[n], _file(Path(moved[k]), state)) for k, n in nodes)
-          and (observed is None or observed == moved), 'reader_relocation_unproved')
-    packed = _raw(moved)
-    endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
-    transition = _sha(b'memvane-reader-relocate-v1\0' + endpoint_id.encode('ascii'))[:32]
-    _need(not db.execute('SELECT 1 FROM read_endpoints WHERE endpoint_id=?', (endpoint_id,)).fetchone()
-          and not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
-                             (transition,)).fetchone(), 'reader_relocation_unproved')
-    db.execute('INSERT INTO read_endpoints VALUES(?,?,?)', (endpoint_id, packed.decode('utf8'), raw))
-    epoch = current.epoch + 1
-    db.execute('INSERT INTO reader_transitions VALUES(?,?,?,?)',
-               (transition, epoch, endpoint_id, current.preferred_endpoint))
-    db.execute('UPDATE reader_selection SET epoch=?,preferred_endpoint=?,previous_endpoint=?,transition_id=? '
-               'WHERE id=1', (epoch, endpoint_id, current.preferred_endpoint, transition))
 
 
 _RESETTLED = frozenset(('settings', 'vector_profile', 'vector_recipe'))
@@ -1815,167 +1733,6 @@ def resettle_selection(state, project, executing_root):
         return True
     mutate_image(path, reseal)
     return 'resealed'
-
-
-def _released_move(db, current, record, state, raw, project, decision, proof):
-    """Prove a stale v6 endpoint names this install's pre-move root.
-
-    A released state move relocated the journal (route, attestation) but not
-    the reader. Accepted only when the move's settled intent here names the
-    endpoint's root as its source and this root as its target, the endpoint's
-    sealed attestation is that move's old attestation and relocates to the
-    current one, and the live install observed now differs from the stored
-    record only in the relocated fields (same store inodes).
-    """
-    import laya_initial_build as build
-    import laya_state_move as mover
-    import memvane_paths
-    _need(record.get('store_format') == 'v6' and record.get('capability') == 'v6-ro-v1'
-          and record.get('state') != str(state), 'reader_relocation_unproved')
-    old = Path(record['state'])
-    _need(len(old.parents) > len(memvane_paths.LEGACY_STATE_PARTS), 'reader_relocation_unproved')
-    # The one legal move: <home>/.local/state/laya/<id> -> <home>/.local/state/memvane/<id>.
-    home = old.parents[len(memvane_paths.LEGACY_STATE_PARTS)]
-    (sealed,) = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
-                           (current.preferred_endpoint,)).fetchone()
-    settled = []
-    for path in state.glob('state-move-*-settled.json'):
-        intent = build._read_json(path, max_bytes=mover.LIMIT)
-        if (isinstance(intent, dict) and set(intent) == mover.INTENT_FIELDS
-                and intent['schema'] == mover.SCHEMA
-                and path.name == 'state-move-%s-settled.json' % mover._sha(mover._canonical(intent))[:20]
-                and (intent['fromRoot'], intent['toRoot']) == (str(old), str(state))):
-            settled.append(intent)
-    _need(len(settled) == 1, 'reader_relocation_unproved')
-    intent = settled[0]
-    _need(intent['projectRoot'] == str(project) == record['project']
-          and intent['installId'] == state.name == old.name
-          and mover.legacy_root(old, home) and mover.target_root(old, home) == state
-          and intent['oldAttestation'].encode('utf-8') == sealed
-          and intent['newAttestation'].encode('utf-8') == raw
-          and journal._canon(journal.relocated_attestation(
-              json.loads(sealed, object_pairs_hook=journal._pairs, parse_constant=journal._nonfinite),
-              old, state)).encode('utf-8') == raw, 'reader_relocation_unproved')
-    import laya_fresh_wiki_origin as fresh
-    _need(proof.get('readOnlyAllowed') is True and proof.get('journalPath') == str(state / _JOURNAL)
-          and proof.get('projectRoot') == str(project), 'reader_relocation_unproved')
-    observed, live, _proof = _evidence_stores(state, project, decision, proof,
-                                              fresh._load(state / fresh.LEDGER),
-                                              journal.inspect_journal(state / _JOURNAL))
-    if 'legacy_sidecar_baseline' in record:
-        observed['legacy_sidecar_baseline'] = record['legacy_sidecar_baseline']
-    observed['creation_epoch'] = record['creation_epoch']
-    _preserve_node_devices(record, observed)
-    _need(live == raw and relocated_pair(record, observed), 'reader_relocation_unproved')
-    return observed
-
-
-def convert_reader_v5(state: Path, project: Path, *, installer: InstallerSeal, readiness) -> ReaderSelection:
-    import laya_journal_recovery as recovery
-    import laya_bridge_readiness as bridge
-    import laya_initial_build as build
-    import laya_fresh_wiki_origin as fresh
-    import project_dir
-    from context_learning.resource_coordination import Coordinator
-    from laya_index_sync import _owner_lock
-    from laya_ledger_common import _operation_lock
-    endpoint = _installer(installer, conversion=True)
-    state, project = _state(state), Path(project)
-    _need(_issued[endpoint][:2] == (state, project), 'reader_install_changed')
-    recovery.recover_initial(state, project, _issued[endpoint][2],
-                             bootstrap=installer in _bootstrap_installers)
-    _record, _att, proof = _recheck(endpoint)
-    bridge.require_bridge_preflight(readiness, state, proof)
-    path = _journal(state / _JOURNAL)
-    with ExitStack() as locks:
-        locks.enter_context(_install_lock(state))
-        _need(locks.enter_context(build.owner(state)), 'initial_build_busy')
-        locks.enter_context(_operation_lock(project_dir.runtime_file(project, fresh.MARKER)))
-        # Older capacity workers can publish a sidecar between queue leases.
-        # Their existing provider lane covers the whole worker lifetime.
-        locks.enter_context(Coordinator().quiesce_provider())
-        queue = Path(journal.select_route(str(project), action='recall')['queuePath'])
-        _need(locks.enter_context(_owner_lock(queue)), 'sync_owner_busy')
-        version = journal.journal_version(path)
-        _need(version in (3, 4, 5), 'reader_schema_unknown')
-        locks.enter_context(_transition(proof['installId'], create=version != 5))
-        _need(journal.journal_version(path) == version, 'reader_selection_changed')
-        from laya_reader_lease import _prepare_lifetime
-        _prepare_lifetime(proof['installId'], create=version != 5)
-        if version != 5:
-            # A legacy capacity worker can publish after initial seal issuance.
-            # Bind the final sidecar only after the existing owners are quiescent.
-            old_record, old_raw, _ = _recheck(endpoint)
-            issue = _bootstrap_endpoint if endpoint in _bootstrap_endpoints else _endpoint
-            refreshed, _ = issue(state,project,_issued[endpoint][2],_issued[endpoint][3])
-            new_record, new_raw, _ = _recheck(refreshed)
-            old_common=dict(old_record);new_common=dict(new_record)
-            old_common.pop('legacy_sidecar_baseline',None)
-            new_common.pop('legacy_sidecar_baseline',None)
-            old_epoch=old_common.pop('creation_epoch')
-            new_epoch=new_common.pop('creation_epoch')
-            _need(new_epoch>=old_epoch and old_common==new_common and old_raw==new_raw,
-                  'reader_endpoint_changed')
-            if refreshed.endpoint_id != endpoint.endpoint_id:
-                endpoint=refreshed
-                object.__setattr__(installer,'endpoint',endpoint)
-                _issued[installer]=endpoint
-        from laya_reader_windows import _prepare_conversion_windows
-        _prepare_conversion_windows(installer)
-        if journal.journal_version(path) == 3:
-            journal.convert_to_v4(path)
-        if journal.journal_version(path) == 5:
-            selected = read_selection(path)
-            _need(selected.preferred_endpoint == endpoint.endpoint_id, 'reader_selection_changed')
-            return selected
-        record, _, proof = _recheck(endpoint)
-        bridge.require_bridge_preflight(readiness, state, proof)
-        if os.path.lexists(record['sidecar_path']):
-            decision=journal.select_route(str(project),action='recall')
-            with _readonly(Path(record['sidecar_path']),state) as db:
-                observed=_sidecar_snapshot(db,decision)
-            if not observed['baseline']:
-                _need(observed['legacyCommitment']==record.get('legacy_sidecar_baseline'),
-                      'reader_sidecar_revision_unproved')
-            else:
-                _need('legacy_sidecar_baseline' not in record,'reader_sidecar_revision_unproved')
-        else:
-            _need('legacy_sidecar_baseline' not in record,'reader_sidecar_revision_unproved')
-        initial = recovery.prepare(state, project, endpoint, record, proof)
-        with closing(journal._open(path, write=True)[1]) as db:
-            db.execute('PRAGMA synchronous=FULL')
-            db.execute('BEGIN IMMEDIATE')
-            try:
-                row = journal._row(db)
-                _need(row == initial.row, 'reader_selection_changed')
-                record, raw, proof = _recheck(endpoint)
-                bridge.require_bridge_preflight(readiness, state, proof)
-                _need(row['epoch'] == proof['selectionEpoch'] and
-                      row['provider_attestation_sha'] == _sha(raw), 'reader_selection_changed')
-                _need(row['_version'] == 4, 'reader_schema_unknown')
-                journal._step('v5-locked')
-                for sql in journal._READER_DDL.values():
-                    db.execute(sql)
-                _insert_endpoint(db, endpoint, record, raw)
-                transition = initial.data['transition']
-                db.execute('INSERT INTO reader_transitions VALUES(?,1,?,NULL)',
-                           (transition, endpoint.endpoint_id))
-                db.execute('INSERT INTO reader_selection VALUES(1,1,?,NULL,?)',
-                           (endpoint.endpoint_id, transition))
-                journal._step('v5-sealed')
-                db.execute('UPDATE selection SET schema=? WHERE id=1', (journal.SCHEMA_V5,))
-                db.execute('PRAGMA user_version=5')
-                journal._step('v5-versioned')
-                selected, _ = _selection(db)
-                db.commit()
-            except BaseException:
-                db.rollback()
-                raise
-        journal._step('v5-committed')
-        _sync(path)
-        _sync(state, True)
-        recovery.finish(initial)
-        return selected
 
 
 def _discard_staging(lockfd, path):
