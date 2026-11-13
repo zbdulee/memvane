@@ -193,7 +193,7 @@ def _directory(home, create):
         if name == PARENT and create and not os.path.lexists(cursor):
             # Creating it is one more state base entry: never past the
             # older bundles' entry limit.
-            from laya_external_edits import MAX_STATE_ENTRIES
+            from memvane.wiki.intake.external_edits import MAX_STATE_ENTRIES
             if len(os.listdir(parent)) >= MAX_STATE_ENTRIES:
                 _fail('registry_state_base_full')
         _owned_dir(cursor, create=create, private=name == DIRECTORY)

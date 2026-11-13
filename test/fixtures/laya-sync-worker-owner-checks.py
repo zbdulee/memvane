@@ -15,7 +15,7 @@ seed=importlib.util.module_from_spec(spec);spec.loader.exec_module(seed)
 import laya_product_sync_worker as worker
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_sync import sync_owner
-import laya_wiki_discovery as discovery
+from memvane.wiki.intake import wiki_discovery as discovery
 import laya_embed_resident as resident
 import laya_resident_service as resident_service
 import laya_install_journal as journal

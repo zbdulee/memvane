@@ -647,7 +647,7 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
     base = state['baseGen'] if state is not None else head
     snapshot = (dict(raw_snapshot) if isinstance(raw_snapshot, dict)
                 else _raw_snapshot(decision, raw))
-    import laya_wiki_backfill as backfill
+    from memvane.wiki.intake import wiki_backfill as backfill
     # Existing synthetic/noninstalled cursors have no backfill contract. Keep
     # their unchanged/no-pending sync independent of compile configuration.
     cfg = _project_config(decision) if os.path.isfile(decision['journalPath']) else None
@@ -702,7 +702,7 @@ def _drain_once(decision, seen_ids, recheck, state_path, grants_path, roots, raw
                                pending=len(pending)))
     if cfg is None:
         cfg = _project_config(decision)
-    import wiki_compile_enqueue
+    from memvane.wiki.intake import wiki_compile_enqueue
     for kind in live:
         engine = engines[kind]
         recheck()

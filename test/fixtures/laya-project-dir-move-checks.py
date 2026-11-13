@@ -35,7 +35,7 @@ import laya_install_journal as journal_mod  # noqa: E402
 import laya_project_dir_move as dir_move  # noqa: E402
 import laya_state_move  # noqa: E402
 import laya_vector_capacity as vc  # noqa: E402
-import laya_wiki_discovery as discovery  # noqa: E402
+from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from memvane.settings import project_dir  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from laya_index_capacity import (GenerationBindingStore, binding_digest,  # noqa: E402

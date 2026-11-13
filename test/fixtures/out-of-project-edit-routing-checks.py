@@ -42,7 +42,7 @@ import out_of_project_installs as installs  # noqa: E402
 # laya_install_journal, so the module must look them up at call time (as
 # laya_host_response and wiki_selected_laya do), never bind them at import.
 try:
-    import laya_external_edits
+    from memvane.wiki.intake import external_edits as laya_external_edits
 except ImportError:
     laya_external_edits = None
 
@@ -631,7 +631,7 @@ class OwnerDrain(Routing):
         self.assertEqual(len(self.queue_rows(self.b)), 1)
 
     def test_legacy_bad_rows_do_not_block_valid_hints_or_discovery(self):
-        import laya_wiki_discovery
+        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         self.index()
         decision = self.decision(self.b)
         path = external()._inbox_path(decision)
@@ -662,7 +662,7 @@ class OwnerDrain(Routing):
         self.assertEqual(self.queue_rows(self.b), [])
 
     def test_oversize_hint_does_not_block_valid_hints_or_existing_discovery(self):
-        import laya_wiki_discovery
+        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         self.index()
         valid = self.b.project / 'valid.md'
         valid.write_text('still eligible\n')

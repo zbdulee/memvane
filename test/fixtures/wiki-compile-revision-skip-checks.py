@@ -21,7 +21,7 @@ import wiki_compile as wc
 import wiki_compile_worker as worker
 from memvane.wiki.card import wiki_freshness
 import wiki_selected_laya
-import wiki_compile_enqueue
+from memvane.wiki.intake import wiki_compile_enqueue
 from memvane.wiki.card import yaml_scalars as ys
 
 

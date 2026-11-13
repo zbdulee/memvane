@@ -111,7 +111,7 @@ class DeletedSourceRetirement(RetireFixture):
         self.assertIn('concepts/recoverable.md', sidecars[0].read_text())
 
     def test_forced_refresh_and_shared_wait_keep_distinct_queue_keys(self):
-        import wiki_source_intent as intent
+        from memvane.wiki.intake import wiki_source_intent as intent
         base = {'source': {'collection': 'raw', 'path': 'docs/still.md'},
                 'contentRevision': 'a' * 64, 'trigger': 'post_sync_source'}
         keys = [intent.revision_key({**base, **flags}) for flags in

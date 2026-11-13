@@ -29,7 +29,7 @@ FIXTURES = Path(__file__).resolve().parent
 REPO = FIXTURES.parents[1]
 sys.path.insert(0, str(REPO / 'core'))
 sys.path.insert(1, str(FIXTURES))
-import laya_external_edits as external  # noqa: E402
+from memvane.wiki.intake import external_edits as external  # noqa: E402
 import laya_index_host_route as routes  # noqa: E402
 import laya_install_journal as journal  # noqa: E402
 from memvane.kernel import memvane_paths  # noqa: E402

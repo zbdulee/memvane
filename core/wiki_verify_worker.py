@@ -67,7 +67,7 @@ from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.card import source_spans
 from memvane.wiki.card import yaml_scalars
-from wiki_compile_enqueue import _queue_lock_path, _safe_queue_path
+from memvane.wiki.intake.wiki_compile_enqueue import _queue_lock_path, _safe_queue_path
 
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
 # `skippedPath`/`deletedPath` 오타가 유료 과금 루프의 입구였던 실패 클래스가 함께 사라진다).

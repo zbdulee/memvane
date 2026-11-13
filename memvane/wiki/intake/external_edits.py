@@ -33,7 +33,7 @@ def _state_bases():
 
 
 def _inbox_path(decision):
-    from laya_wiki_discovery import _paths
+    from memvane.wiki.intake.wiki_discovery import _paths
     scope, incarnation = decision.get('scopeId'), decision.get('storeIncarnation')
     if (not isinstance(scope, str) or not _HEX32.fullmatch(scope) or
             not isinstance(incarnation, str) or not _HEX32.fullmatch(incarnation)):
@@ -61,7 +61,7 @@ def _valid_row(row):
 
 
 def _read_box(path, decision):
-    from laya_wiki_discovery import _read
+    from memvane.wiki.intake.wiki_discovery import _read
     value = _read(path)
     if value is None:
         return {**_binding(decision), 'edits': [], 'seen': [], 'tokens': {}}
@@ -295,7 +295,7 @@ def notify(paths, *, cwd, host, origin):
     """Offer inert revision hints and normal sync wakes, never owner store work."""
     import laya_install_journal as journal
     import runtime_work
-    from laya_wiki_discovery import _locked, _write
+    from memvane.wiki.intake.wiki_discovery import _locked, _write
     deadline = time.monotonic() + HOOK_SECONDS
     try:
         targets = _targets(origin, deadline)
@@ -369,9 +369,9 @@ def drain(decision, *, recheck, owner=None):
     from memvane.settings import config
     import laya_index_host_route as routes
     import laya_install_journal as journal
-    import wiki_compile_enqueue as enqueue
+    from memvane.wiki.intake import wiki_compile_enqueue as enqueue
     import wiki_selected_laya
-    from laya_wiki_discovery import _locked, _write
+    from memvane.wiki.intake.wiki_discovery import _locked, _write
     if not isinstance(decision.get('collections'), list):
         return {'remaining': 0, 'processed': 0}
     inbox = _inbox_path(decision)

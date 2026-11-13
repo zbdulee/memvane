@@ -717,7 +717,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     import laya_install_journal as journal_module
     import laya_journal_reader as reader
     import laya_product_sync_worker as sync
-    import laya_wiki_discovery as discovery
+    from memvane.wiki.intake import wiki_discovery as discovery
     from memvane.settings import project_dir
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing

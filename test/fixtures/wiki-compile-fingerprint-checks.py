@@ -330,7 +330,7 @@ class FingerprintChecks(unittest.TestCase):
         self.assertNotIn('sourceFingerprints', self.candidates[-1])
 
     def test_batch_passes_selected_checkout_to_the_real_job(self):
-        import laya_wiki_backfill
+        from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
         project = Project(self.base, 'batch-selected', git_repo=True)
         queue = project.root / '.auto-context' / 'compile' / 'source-queue.jsonl'
         queue.write_text(json.dumps(project.job()) + '\n', encoding='utf8')
@@ -350,7 +350,7 @@ class FingerprintChecks(unittest.TestCase):
                          (SOURCE, self.candidates[0]['sourceRevisions'][0]['sha256']))
 
     def test_batch_reader_error_defers_without_paid_extraction(self):
-        import laya_wiki_backfill
+        from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
         project = Project(self.base, 'batch-reader-busy', git_repo=True)
         queue = project.root / '.auto-context' / 'compile' / 'source-queue.jsonl'
         queue.write_text(json.dumps(project.job()) + '\n', encoding='utf8')

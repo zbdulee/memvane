@@ -19,8 +19,8 @@ from unittest import mock
 sys.path.insert(0, str(Path.cwd() / 'core'))
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import config as qmd_config
-import wiki_compile_enqueue as E
-import wiki_source_intent as I
+from memvane.wiki.intake import wiki_compile_enqueue as E
+from memvane.wiki.intake import wiki_source_intent as I
 
 FROZEN_TS = '2026-10-17T00:00:00Z'
 

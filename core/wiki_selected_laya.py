@@ -267,7 +267,7 @@ def _run(project: Path):
     bound = selected(project)
     if bound is None or bound[0]['projectRoot'] != str(project):
         return {'state': 'deferred', 'reason': 'selected_compile_route_unavailable'}
-    from wiki_compile_enqueue import _safe_queue_path
+    from memvane.wiki.intake.wiki_compile_enqueue import _safe_queue_path
     from memvane.wiki.workspace import compile_paths as cp
     source = _safe_queue_path(project, cp.rel(cp.SOURCE_QUEUE))
     verify = _safe_queue_path(project, cp.rel(cp.VERIFY_QUEUE))
@@ -326,7 +326,7 @@ def _queue_busy(queue: Path):
     if not queue.parent.is_dir():
         return False
     import fcntl
-    from wiki_compile_enqueue import _queue_lock_path
+    from memvane.wiki.intake.wiki_compile_enqueue import _queue_lock_path
     from wiki_compile_worker import reclaim_orphaned_claimed
     prefix = queue.name + '.claimed.'
     with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:

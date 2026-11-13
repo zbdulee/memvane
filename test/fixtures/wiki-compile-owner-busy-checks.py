@@ -128,7 +128,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue()), {'state': 'deferred', 'reason': 'owner_busy'})
 
     def test_claimed_job_is_requeued_if_owner_becomes_busy(self):
-        import laya_wiki_backfill
+        from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
         with tempfile.TemporaryDirectory(dir=os.environ['HOME']) as temp:
             root = Path(temp).resolve()
             queue = root / 'queue.jsonl'

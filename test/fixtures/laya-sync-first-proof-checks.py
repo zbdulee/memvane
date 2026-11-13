@@ -339,7 +339,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             service.stop.assert_called_once_with()
 
     def test_full_worker_marks_actual_journal_before_publish_with_owned_runtime(self):
-        import laya_external_edits
+        from memvane.wiki.intake import external_edits as laya_external_edits
         import laya_writer_proof_reader
         with self.fixture.F.warm(), self.seed.authority():
             _, proof = self.selected()
@@ -379,7 +379,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             service.stop.assert_called_once_with()
 
     def test_full_worker_actual_changed_card_is_fenced_published_and_acked(self):
-        import laya_external_edits
+        from memvane.wiki.intake import external_edits as laya_external_edits
         from laya_index_claim_queue import ClaimQueue
         with self.fixture.F.warm(), self.seed.authority():
             _, proof = self.selected()
@@ -593,7 +593,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_capacity_worker_opens_existing_runtime_with_owned_components(self):
         import laya_incremental_docs
-        import laya_wiki_discovery
+        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         from laya_source_catalog import LayaSourceCatalog
         class ReachedCapacity(Exception):
             pass
@@ -640,8 +640,8 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_compile_edit_is_durable_when_sync_owner_is_busy(self):
         import laya_host_response as response
-        import laya_wiki_discovery as discovery
-        import laya_external_edits
+        from memvane.wiki.intake import wiki_discovery as discovery
+        from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.workspace import compile_paths as cp
         import runtime_work
         with self._compile_warm(),self.seed.authority():
@@ -669,9 +669,9 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_compile_edit_owner_race_after_append_queues_once(self):
         import laya_host_response as response
-        import laya_wiki_discovery as discovery
-        import laya_external_edits
-        import wiki_compile_enqueue as enqueue
+        from memvane.wiki.intake import wiki_discovery as discovery
+        from memvane.wiki.intake import external_edits as laya_external_edits
+        from memvane.wiki.intake import wiki_compile_enqueue as enqueue
         from memvane.wiki.workspace import compile_paths as cp
         import runtime_work
         with self._compile_warm(),self.seed.authority():
@@ -799,9 +799,9 @@ class SyncFirstProofChecks(unittest.TestCase):
                 self.W.drain_pending(deadline=time.monotonic()+3)
 
     def test_actual_discovery_pass_uses_owned_base_connections(self):
-        import laya_external_edits
-        import laya_wiki_discovery as discovery
-        import laya_wiki_backfill as backfill
+        from memvane.wiki.intake import external_edits as laya_external_edits
+        from memvane.wiki.intake import wiki_discovery as discovery
+        from memvane.wiki.intake import wiki_backfill as backfill
         import wiki_selected_laya as selected
         with self.fixture.F.warm(),self.seed.authority():
             decision,proof=self.selected()
@@ -825,8 +825,8 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertEqual(result['state'],'unchanged',result)
 
     def test_discovery_real_enqueue_reuses_owned_compile_proof(self):
-        import laya_external_edits
-        import laya_wiki_discovery as discovery
+        from memvane.wiki.intake import external_edits as laya_external_edits
+        from memvane.wiki.intake import wiki_discovery as discovery
         import runtime_work
         from memvane.wiki.workspace import compile_paths as cp
         with self.fixture.F.warm(),self.seed.authority():
@@ -849,9 +849,9 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertTrue(any(call.args[0]=='laya-compile' for call in request.call_args_list))
 
     def test_discovery_close_failure_retains_owner_until_creator_drains(self):
-        import laya_external_edits
-        import laya_wiki_discovery as discovery
-        import laya_wiki_backfill as backfill
+        from memvane.wiki.intake import external_edits as laya_external_edits
+        from memvane.wiki.intake import wiki_discovery as discovery
+        from memvane.wiki.intake import wiki_backfill as backfill
         with self.fixture.F.warm(),self.seed.authority():
             decision,proof=self.selected()
             state_path,_grants,_lock=discovery._paths(decision)
@@ -891,8 +891,8 @@ class SyncFirstProofChecks(unittest.TestCase):
                 self.W.drain_pending(deadline=time.monotonic()+3)
 
     def test_discovery_external_inbox_full_proofs_use_owned_readers(self):
-        import laya_external_edits
-        import laya_wiki_discovery
+        from memvane.wiki.intake import external_edits as laya_external_edits
+        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         import runtime_work
         import wiki_selected_laya
         with self.fixture.F.warm(), self.seed.authority():
@@ -916,8 +916,8 @@ class SyncFirstProofChecks(unittest.TestCase):
             request.assert_called_once()
 
     def test_external_edit_inbox_enqueues_with_existing_sync_owner(self):
-        import laya_external_edits as external
-        import laya_wiki_discovery as discovery
+        from memvane.wiki.intake import external_edits as external
+        from memvane.wiki.intake import wiki_discovery as discovery
         from memvane.wiki.workspace import compile_paths as cp
         import runtime_work
         with self._compile_warm(),self.seed.authority():

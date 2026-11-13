@@ -15,7 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 import laya_fresh_wiki_origin as fresh
 import laya_product_install as product
-import laya_wiki_discovery as discovery
+from memvane.wiki.intake import wiki_discovery as discovery
 
 
 class Interrupted(BaseException):

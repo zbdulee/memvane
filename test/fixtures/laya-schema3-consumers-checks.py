@@ -29,8 +29,8 @@ def emit(label, **values):
 class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
     def setUp(self):
         super().setUp()
-        self.D = importlib.import_module('laya_wiki_discovery')
-        self.X = importlib.import_module('laya_external_edits')
+        self.D = importlib.import_module('memvane.wiki.intake.wiki_discovery')
+        self.X = importlib.import_module('memvane.wiki.intake.external_edits')
         self.wakes = []
         work = importlib.import_module('runtime_work')
 

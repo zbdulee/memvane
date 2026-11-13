@@ -494,7 +494,7 @@ def regeneration_config(config: dict) -> dict:
     """
     if not qmd_config.is_minimal_config(config):
         return config
-    import wiki_source_intent
+    from memvane.wiki.intake import wiki_source_intent
     compile_cfg = dict(config.get("compile") or {})
     triggers = list(compile_cfg.get("triggers") or [])
     for trigger in wiki_source_intent.SESSION_START_ACCEPTED_TRIGGERS:
@@ -700,7 +700,7 @@ def run(cwd: str) -> dict:
         last = rel
 
     if changed_files:
-        import wiki_compile_enqueue
+        from memvane.wiki.intake import wiki_compile_enqueue
         outcome = wiki_compile_enqueue.enqueue_changed_sources(
             str(root), regeneration_config(config), changed_files, session_start=True)
         reason = outcome.get("reason")

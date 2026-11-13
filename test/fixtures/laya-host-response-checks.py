@@ -296,7 +296,7 @@ class ResponseChecks(unittest.TestCase):
 
     def test_selected_compile_passes_proved_edit_to_durable_enqueue(self):
         import laya_install_journal
-        import wiki_compile_enqueue
+        from memvane.wiki.intake import wiki_compile_enqueue
         with tempfile.TemporaryDirectory(prefix='laya-host-compile-') as temp:
             root = str(Path(temp).resolve())
             decision = {**DECISION,

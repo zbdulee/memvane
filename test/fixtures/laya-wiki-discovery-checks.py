@@ -32,10 +32,10 @@ from laya_index_a import IndexContractError, LayaIndexA
 import laya_index_host_route as host_route
 from laya_index_vector import profile_identity
 import laya_product_sync_worker as worker
-import laya_wiki_discovery as discovery
+from memvane.wiki.intake import wiki_discovery as discovery
 import runtime_handlers
 import runtime_work
-import wiki_compile_enqueue
+from memvane.wiki.intake import wiki_compile_enqueue
 from memvane.wiki.card import wiki_freshness
 
 
@@ -225,7 +225,7 @@ class DiscoveryChecks(unittest.TestCase):
 
     # -- end to end --------------------------------------------------------
     def test_selected_installed_project_starts_existing_md_backfill_once(self):
-        import laya_wiki_backfill
+        from memvane.wiki.intake import wiki_backfill as laya_wiki_backfill
         self.selected_route(triggers=('session_start_source', 'post_sync_source'))
         self.run_worker()  # synthetic old cursor predating the feature
         (self.home / 'install-journal.sqlite').touch()

@@ -19,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).parent.resolve()))
 from memvane.wiki.workspace import compile_paths as cp
 from memvane.settings import project_dir
 from memvane.settings import config as qmd_config
-import posttool
+from memvane.wiki.intake import posttool
 from memvane.wiki.card import wiki_freshness
-import wiki_source_intent as intent
+from memvane.wiki.intake import wiki_source_intent as intent
 from memvane.settings.collection_match import select_collections
 from memvane.settings import source_text
 

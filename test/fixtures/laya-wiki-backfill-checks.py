@@ -13,9 +13,9 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import laya_wiki_backfill as backfill
-import laya_wiki_discovery as discovery
-import wiki_compile_enqueue as enqueue
+from memvane.wiki.intake import wiki_backfill as backfill
+from memvane.wiki.intake import wiki_discovery as discovery
+from memvane.wiki.intake import wiki_compile_enqueue as enqueue
 import wiki_compile_worker as worker
 import wiki_selected_laya as selected
 import runtime_work

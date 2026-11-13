@@ -961,7 +961,7 @@ class V2CapacityWorkerChecks(unittest.TestCase):
         return result,len(self.services)-before
 
     def test_capacity_path_still_runs_wiki_discovery_after_sync(self):
-        import laya_wiki_discovery
+        from memvane.wiki.intake import wiki_discovery as laya_wiki_discovery
         self.stores()
         calls=[]
         def drain(decision,grants,*,recheck):

@@ -31,7 +31,7 @@ import laya_fresh_wiki_origin as fresh  # noqa: E402
 import laya_initial_build as initial_build  # noqa: E402
 import laya_product_install as product  # noqa: E402
 import laya_product_sync_worker as worker  # noqa: E402
-import laya_wiki_discovery as discovery  # noqa: E402
+from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
 from laya_index_host_route import (SCHEMA_V2 as ROUTE_V2,  # noqa: E402
                                    settings_identity_digest)

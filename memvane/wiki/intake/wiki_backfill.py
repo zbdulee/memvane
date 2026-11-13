@@ -17,13 +17,13 @@ CONTROL_NAMES = frozenset(('AGENTS.md', 'CLAUDE.md', 'GEMINI.md'))
 
 
 def _path(decision):
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     path = d._paths(decision)[0]
     return path.with_name(path.stem + '.backfill.json')
 
 
 def _load(decision):
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     row = d._read(_path(decision))
     if row is None:
         return None
@@ -52,7 +52,7 @@ def _eligible(decision, snapshot, config):
     """Mirror source admission's cheap path filters; enqueue re-proves each file."""
     from memvane.settings import source_text
     from memvane.settings.source_exclusion import excluded_source
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     _scope, _inc, _queue, roots, raw = d._binding(decision)
     project = Path(decision['projectRoot'])
     skips = config.get('skipPaths', [])
@@ -120,7 +120,7 @@ def _authority(decision, row, job, *, markerless=False):
 
 def discard_receipt(job):
     """Bounded metadata copied only into a durable terminal-discard record."""
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     marker, revision, source, route, cwd = (job.get('initialBackfill'), job.get('contentRevision'),
         job.get('source'), job.get('selectedRoute'), job.get('cwd'))
     if ((marker is not None and (not isinstance(marker, str) or not d._HEX32.fullmatch(marker)))
@@ -140,7 +140,7 @@ def discard_receipt(job):
 
 def _receipt_path(decision, row, key, *, create=False):
     """Private deterministic file; abandoned temp files are never enumerated."""
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     parent = _path(decision).with_suffix('.receipts')
     if create:
         try:
@@ -170,7 +170,7 @@ def write_discard_receipt(job):
     Frozen identity never changes in place. The current selected proof and the
     exact token/hash are checked again by reconciliation outside the queue lock.
     """
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     import wiki_selected_laya
     receipt = discard_receipt(job)
     if receipt is None:
@@ -209,7 +209,7 @@ def write_discard_receipt(job):
 
 def _sync_receipt(path):
     """A crash may have happened between replace and directory fsync."""
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     for target in (path, path.parent, path.parent.parent):
         fd = os.open(target, os.O_RDONLY | d._NOFOLLOW)
         try:
@@ -220,7 +220,7 @@ def _sync_receipt(path):
 
 def _reconcile_discard_locked(decision, row):
     """Only deterministic paths for this bounded cohort, never an audit scan."""
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     changed = False
     for key, item in row['items'].items():
         if item['stage'] not in ('pending', 'dispatched'):
@@ -245,7 +245,7 @@ def reconcile_discards(bound):
     """Outside the source-queue lock; receipt ACK survives claim unlink/crash."""
     if bound is None:
         return
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     import wiki_selected_laya
     decision = bound[0]
     try:
@@ -282,9 +282,9 @@ def _emit(decision, row):
 
 def discover(decision, snapshot, config, live, engines):
     """Called under discovery's lock; only a proved installation may initialize."""
-    import laya_wiki_discovery as d
-    import wiki_compile_enqueue as enqueue
-    import wiki_source_intent as intent
+    from memvane.wiki.intake import wiki_discovery as d
+    from memvane.wiki.intake import wiki_compile_enqueue as enqueue
+    from memvane.wiki.intake import wiki_source_intent as intent
     if not Path(decision['journalPath']).is_file():
         return None
     row = _load(decision)
@@ -314,8 +314,8 @@ def discover(decision, snapshot, config, live, engines):
 
 def dispatch(decision, row, snapshot, config, *, recheck):
     """One existing admission cap; wait for its jobs to settle before next batch."""
-    import laya_wiki_discovery as d
-    import wiki_compile_enqueue as enqueue
+    from memvane.wiki.intake import wiki_discovery as d
+    from memvane.wiki.intake import wiki_compile_enqueue as enqueue
     if row is None:
         return None
     _reconcile_discard_locked(decision, row)
@@ -346,7 +346,7 @@ def settle_job(bound, job):
     revision = job.get('_processedContentRevision')
     if bound is None or (not isinstance(marker, str) and not isinstance(revision, str)):
         return
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     import wiki_selected_laya
     decision = bound[0]
     try:
@@ -400,7 +400,7 @@ def settled_job(bound, job):
     marker = job.get('initialBackfill')
     if bound is None or not isinstance(marker, str):
         return False
-    import laya_wiki_discovery as d
+    from memvane.wiki.intake import wiki_discovery as d
     decision = bound[0]
     with d._locked(d._paths(decision)[2], d.WORKER_LOCK_SECONDS):
         row = _load(decision)
