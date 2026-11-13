@@ -87,8 +87,7 @@ def route_identity(bound):
     if bound is None:
         return None
     decision = bound[0]
-    return {key: decision[key] for key in ('installId', 'generation',
-                                           'scopeId', 'dbIncarnation')}
+    return {key: decision[key] for key in ('installId', 'scopeId', 'storeIncarnation')}
 
 
 def schema3_checkout(bound):

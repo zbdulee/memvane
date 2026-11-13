@@ -1077,16 +1077,9 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     cpath = candidate_path(root, compile_cfg)
     if selected_route is not None:
         if job.get('selectedRoute') != wiki_selected_laya.route_identity(selected_route):
-            import laya_wiki_backfill
-            rebound = laya_wiki_backfill.rebind_job(selected_route, job)
-            if rebound is None:
-                append_jsonl(cpath, bounded_failure('skipped', job,
-                                                   'selected_route_identity_changed'))
-                return False, True, []
-            if rebound == 'source_changed':
-                job['_backfillSkipped'] = True
-                append_jsonl(cpath, bounded_failure('skipped', job, 'initial_backfill_source_changed'))
-                return True, False, []
+            append_jsonl(cpath, bounded_failure('skipped', job,
+                                               'selected_route_identity_changed'))
+            return False, True, []
     elif 'selectedRoute' in job:
         append_jsonl(cpath, bounded_failure('skipped', job,
                                            'selected_route_unavailable'))
@@ -1986,7 +1979,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
             if preserve:
                 remaining.append(json.dumps(job, ensure_ascii=False)
                                  if job.get("partialCompile") is True or '_fallbackAttempts' in job
-                                 or job.get('_backfillRebound') is True else raw_line)
+                                 else raw_line)
     finally:
         requeue_lines(queue, remaining)
         claimed.unlink(missing_ok=True)

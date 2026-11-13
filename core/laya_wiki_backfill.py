@@ -11,7 +11,7 @@ import os
 import stat
 import uuid
 
-SCHEMA = 'laya-wiki-initial-backfill-v1'
+SCHEMA = 'memvane-wiki-initial-backfill-v1'
 STAGES = frozenset(('pending', 'dispatched', 'settled', 'skipped'))
 CONTROL_NAMES = frozenset(('AGENTS.md', 'CLAUDE.md', 'GEMINI.md'))
 
@@ -29,10 +29,10 @@ def _load(decision):
         return None
     scope, incarnation, _queue, roots, raw = d._binding(decision)
     if (not isinstance(row, dict) or set(row) !=
-            {'schema', 'scopeId', 'dbIncarnation', 'collectionRoots', 'installId', 'projectRoot',
+            {'schema', 'scopeId', 'storeIncarnation', 'collectionRoots', 'installId', 'projectRoot',
              'id', 'kind', 'engine', 'items'}
             or row['schema'] != SCHEMA or row['scopeId'] != scope
-            or row['dbIncarnation'] != incarnation or row['collectionRoots'] != roots
+            or row['storeIncarnation'] != incarnation or row['collectionRoots'] != roots
             or row['installId'] != decision.get('installId') or row['projectRoot'] != decision['projectRoot']
             or not isinstance(row['id'], str) or not d._HEX32.fullmatch(row['id'])
             or row['kind'] not in d.GRANT_KINDS or not isinstance(row['items'], dict)
@@ -76,14 +76,13 @@ def _eligible(decision, snapshot, config):
 
 
 def _authority(decision, row, job, *, markerless=False):
-    """Frozen source authority survives only a bundle-generation change."""
+    """Validate frozen source authority against the selected store."""
     import wiki_selected_laya
     old = job.get('selectedRoute')
     current = wiki_selected_laya.route_identity((decision, None))
     if (not isinstance(old, dict) or set(old) != set(current)
-            or not isinstance(old.get('generation'), str) or not old['generation']
             or any(old.get(key) != current[key] for key in
-                   ('installId', 'scopeId', 'dbIncarnation'))):
+                   ('installId', 'scopeId', 'storeIncarnation'))):
         return None
     cwd = job.get('cwd')
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or str(Path(cwd).resolve()) != row['projectRoot']:
@@ -119,49 +118,6 @@ def _authority(decision, row, job, *, markerless=False):
     return key, item, source_path
 
 
-def rebind_job(bound, job):
-    """Rebind exact frozen work to a newer bundle proof, never another scope."""
-    if bound is None:
-        return None
-    import laya_wiki_discovery as d
-    import wiki_freshness
-    import wiki_selected_laya
-    decision = bound[0]
-    old = job.get('selectedRoute')
-    current = wiki_selected_laya.route_identity(bound)
-    if (not isinstance(old, dict) or any(old.get(key) != current[key]
-            for key in ('installId', 'scopeId', 'dbIncarnation'))):
-        return None
-    if not _path(decision).exists():
-        return None
-    with d._locked(d._paths(decision)[2], d.WORKER_LOCK_SECONDS):
-        wiki_selected_laya.recheck(bound)
-        row = _load(decision)
-        found = _authority(decision, row, job, markerless=True) if row is not None else None
-        if found is None:
-            return None
-        _key, item, source = found
-        captured = wiki_freshness.snapshot_bytes(source)
-        if captured is None:
-            return None
-        actual = captured[0]['sha256']
-        wiki_selected_laya.recheck(bound)
-        old = dict(job['selectedRoute'])
-        current = wiki_selected_laya.route_identity(bound)
-        receipt = job.get('_fallbackAttempts')
-        if receipt is not None:
-            expected = {'path': job['source']['path'], 'collection': job['source']['collection']}
-            if (not isinstance(receipt, dict) or receipt.get('selectedRoute') != old
-                    or receipt.get('source') != expected or receipt.get('revision') != item['sha256']):
-                return None
-            job['_fallbackAttempts'] = {**receipt, 'selectedRoute': current}
-        job['selectedRoute'] = current
-        job['initialBackfill'] = row['id']
-        job['contentRevision'] = item['sha256']
-        job['_backfillRebound'] = True
-        return 'rebound' if actual == item['sha256'] else 'source_changed'
-
-
 def discard_receipt(job):
     """Bounded metadata copied only into a durable terminal-discard record."""
     import laya_wiki_discovery as d
@@ -173,10 +129,9 @@ def discard_receipt(job):
             or not isinstance(source, dict) or source.get('kind') != 'file'
             or not isinstance(source.get('path'), str) or len(source['path']) > 4096
             or not isinstance(source.get('collection'), str) or len(source['collection']) > 64
-            or not isinstance(route, dict) or set(route) != {'installId', 'generation', 'scopeId', 'dbIncarnation'}
-            or not isinstance(route['generation'], str) or len(route['generation']) > 128
+            or not isinstance(route, dict) or set(route) != {'installId', 'scopeId', 'storeIncarnation'}
             or any(not isinstance(route[key], str) or not d._HEX32.fullmatch(route[key])
-                   for key in ('installId', 'scopeId', 'dbIncarnation'))):
+                   for key in ('installId', 'scopeId', 'storeIncarnation'))):
         return None
     return {'initialBackfill': marker, 'contentRevision': revision, 'cwd': cwd,
             'source': {key: source[key] for key in ('kind', 'path', 'collection')},
@@ -340,7 +295,7 @@ def discover(decision, snapshot, config, live, engines):
         if kind is None:
             return None
         scope, incarnation, _queue, roots, _raw = d._binding(decision)
-        row = {'schema': SCHEMA, 'scopeId': scope, 'dbIncarnation': incarnation,
+        row = {'schema': SCHEMA, 'scopeId': scope, 'storeIncarnation': incarnation,
                'installId': decision['installId'], 'projectRoot': decision['projectRoot'],
                'collectionRoots': roots, 'id': uuid.uuid4().hex, 'kind': kind, 'engine': engines[kind],
                'items': {path: {'sha256': sha, 'stage': 'pending'}
