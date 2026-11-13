@@ -168,10 +168,8 @@ SCHEMA3_READ_SECONDS = 5.0
 def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[str, _Card] | None]:
     """``(generation, cards)`` from the selected schema3 endpoint's main-view head.
 
-    The journal-selected persisted reader endpoint and its pinned head (the
-    recall reader); no v6 database is opened. Each eligible member's chunk
-    vectors are the shared embedding set of the head's sealed spec; the
-    indexed hash is its ``blob_sha`` (the raw-byte sha256, as in v6).
+    The journal-selected reader and its pinned head provide each eligible
+    member's shared embedding set and raw-byte SHA-256.
     ``cards`` is None while the head is lexical.
     """
     import struct

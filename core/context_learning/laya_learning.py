@@ -1,18 +1,4 @@
-"""Context-learning evidence from a selected Laya route; never reads QMD.
-
-A project whose installer selected the memvane-db index serves recall, edits and
-index publishes from memvane-db only. Learning reads the same evidence:
-
-* corpus fingerprint: the published, sealed head generation of the route's
-  scope (eligible, non-excluded membership rows and their content hashes),
-  or on a schema3 selection the eligible members of the pinned view head;
-* capture: the verified rows the query-time selector already scored (no
-  source file re-read);
-* readiness: an installer-verified route, instead of a QMD store pointer.
-
-``selected`` distinguishes a legacy project (``None``) from a selected route
-that cannot be verified (``ValueError``); the latter never falls back to QMD.
-"""
+"""Context-learning evidence from a selected MemVane view."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -71,10 +57,8 @@ SCHEMA3_READ_SECONDS = 5
 def _schema3_members(root, decision):
     """``(generation, [(collection/relative, sha256)])`` of a schema3 view head.
 
-    The journal-selected persisted reader endpoint and its pinned main-view
-    head (the recall reader); no v6 database is opened. Member ``blob_sha`` is
-    the same raw-byte sha256 the v6 membership hash is, so an unchanged
-    corpus keeps its fingerprint across the switch.
+    The journal-selected reader and its pinned main-view head provide
+    member paths and their raw-byte SHA-256 values.
     """
     import laya_journal_reader as reader
     import laya_reader_lease as lease

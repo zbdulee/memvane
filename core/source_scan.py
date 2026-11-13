@@ -172,7 +172,7 @@ def _require_platform() -> None:
         _raise_stale("platform lacks fd scandir support")
 
 
-def _load_exclusions(index: Any, scope: str) -> tuple[frozenset[str], frozenset[str]]:
+def load_exclusions(index: Any, scope: str) -> tuple[frozenset[str], frozenset[str]]:
     # Assumed accessor over the `exclusions` table: rows of (scope, kind, value).
     try:
         rows = list(index.list_exclusions(scope))
@@ -322,7 +322,7 @@ def scan(root: str, scope: str, index: Any,
         raise TypeError("scope must be a non-empty str")
     budget = _Budget(_positive_int("max_files", max_files), _positive_int("max_bytes", max_bytes))
     _require_platform()
-    excluded_paths, excluded_hashes = _load_exclusions(index, scope)
+    excluded_paths, excluded_hashes = load_exclusions(index, scope)
     raw: list[tuple[str, str, bytes]] = []
     try:
         root_fd = _open_root_fd(root)
@@ -383,7 +383,7 @@ def scan_collections(roots: Mapping[str, str], scope: str, index: Any,
                      _positive_int("max_bytes", max_bytes))
     _require_platform()
     excluded_paths, excluded_hashes = ((frozenset(), frozenset()) if index is None
-                                       else _load_exclusions(index, scope))
+                                       else load_exclusions(index, scope))
     raw: list[tuple[str, str, bytes]] = []
     for name, root in ordered.items():
         try:
