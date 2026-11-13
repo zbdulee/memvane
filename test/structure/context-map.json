@@ -749,11 +749,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/provider/provider_reproof.py": {
-      "context": "provider",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/provider/types.py": {
       "context": "provider",
       "layer": "domain",

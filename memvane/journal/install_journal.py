@@ -29,7 +29,6 @@ from memvane.route.types import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as ROUTE_FIEL
 from memvane.route.api import select_route, written_schema
 from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
-                                 PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
                                  RUNTIME_FILES_FIELD,
                                  validate_production_provider_attestation,
                                  validate_vector_profile)
@@ -184,71 +183,6 @@ def _attestation(path):
         raise JournalEvidenceError('production_attestation_unavailable') from exc
 
 
-def stage_production_attestation(journal_path, bundle_proof, provider_manifest,
-                                 dependency_closure, profile_dependency_closure=None):
-    """No-clobber installer record, validated before journal CAS can bind it.
-
-    Repeating an identical, complete staging operation is safe. A partial or
-    different file is retained for explicit recovery instead of overwritten.
-    ``profile_dependency_closure`` is the reviewed closure of a re-attested
-    provider (``laya_provider_reproof.reattest``): the profile was derived
-    from those rows while the live rows are the same files elsewhere.
-    """
-    journal = _private_parent(journal_path)
-    proof = inspect_full_plugin_candidate(bundle_proof.get('pluginRoot'))
-    if proof != bundle_proof:
-        _fail('production_bundle_changed')
-    record = {'schema': PRODUCTION_ATTESTATION_SCHEMA,
-              'sourceCommit': proof['sourceCommit'],
-              'bundleManifestSha256': proof['bundleManifestSha256'],
-              'ownershipManifestSha256': proof['ownershipManifestSha256'],
-              'journalPath': str(journal),
-              'vectorProfile': proof['vectorProfile'],
-              'providerManifest': provider_manifest,
-              'dependencyClosure': dependency_closure}
-    if profile_dependency_closure is not None:
-        record[PROFILE_CLOSURE_FIELD] = profile_dependency_closure
-    try:
-        from memvane.provider.api import sealed_files_sha256
-        from memvane.provider.types import RuntimeUnavailable
-        files = sealed_files_sha256(provider_manifest.get('moduleEntryPath')
-                                    if isinstance(provider_manifest, dict) else None)
-    except (RuntimeUnavailable, OSError) as exc:
-        raise JournalEvidenceError('production_attestation_invalid') from exc
-    if files is not None:
-        # Seal every runtime file, not only the hashed entries and closure.
-        record[RUNTIME_FILES_FIELD] = files
-    try:
-        validate_production_provider_attestation(proof['vectorProfile'], proof, record)
-    except BundleEvidenceError as exc:
-        raise JournalEvidenceError('production_attestation_invalid') from exc
-    raw = _canon(record).encode('utf-8')
-    if len(raw) > 1024 * 1024:
-        _fail('production_attestation_too_large')
-    target = journal.parent / PRODUCTION_ATTESTATION
-    if target.exists() or target.is_symlink():
-        existing, digest = _attestation(journal)
-        if existing != record:
-            _fail('production_attestation_already_owned')
-        return {'attestationPath': str(target), 'attestationSha256': digest}
-    try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
-        with os.fdopen(fd, 'wb') as out:
-            out.write(raw)
-            out.flush()
-            os.fsync(out.fileno())
-        parent_fd = os.open(target.parent, os.O_RDONLY)
-        try:
-            os.fsync(parent_fd)
-        finally:
-            os.close(parent_fd)
-    except OSError as exc:
-        raise JournalEvidenceError('production_attestation_stage_incomplete') from exc
-    existing, digest = _attestation(journal)
-    if existing != record:
-        _fail('production_attestation_changed')
-    return {'attestationPath': str(target), 'attestationSha256': digest}
 
 
 def stage_v1_attestation(journal_path, reviewed_provider):
