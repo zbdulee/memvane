@@ -1347,6 +1347,226 @@ def _mark_schema3_write(writer, proof, marks):
     marks['proof'] = fresh
 
 
+def _read_compile_intent(fd):
+    """Read one canonical private intent from the descriptor that will be acknowledged."""
+    import laya_ledger_common as ledger
+    info = os.fstat(fd)
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 65536):
+        raise ValueError('provenance_intent_unsafe')
+    raw = os.read(fd, 65537)
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('provenance_intent_duplicate')
+            result[key] = value
+        return result
+    value = json.loads(raw.decode('utf8'), object_pairs_hook=unique,
+                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError('nonfinite')))
+    if len(raw) != info.st_size or not isinstance(value, dict) or ledger._canon(value) != raw:
+        raise ValueError('provenance_intent_invalid')
+    return value, info
+
+
+def _ack_compile_intent(path, fd, initial, outcome):
+    """Rename only the exact private file read by this process, without replacement."""
+    from laya_sidecar_create import _rename_noreplace
+    directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        parent = os.fstat(directory_fd)
+        now, after = path.lstat(), os.fstat(fd)
+        identity = lambda node: (node.st_dev, node.st_ino, node.st_size, node.st_mtime_ns, node.st_ctime_ns)
+        if (not os.path.samestat(parent, path.parent.lstat()) or identity(initial) != identity(now)
+                or identity(initial) != identity(after)):
+            raise IndexContractError('provenance_intent_changed')
+        _rename_noreplace(directory_fd, path.name, path.stem + '.' + outcome + '.json')
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _compiled_intent_is_stored(store, handle, intent):
+    """A consumed filename is a witness only if its exact evidence is stored."""
+    import laya_blob_values as values
+    result = {key: value for key, value in intent.items()
+              if key not in ('kind', 'verdict_digest', 'result_digest')}
+    if (intent.get('kind') != 'compile' or intent['viewId'] != handle.view_id
+            or values.compile_result_digest(result, intent['verdict_digest']) != intent['result_digest']):
+        return False
+    sources = []
+    for fp in intent['sourceFingerprints']['fingerprints']:
+        if (fp['worktree_id'], fp['branch_key']) != (handle.worktree_id, handle.branch_key):
+            return False
+        fingerprint_id = values.digest('memvane-source-fingerprint-v1', values.fingerprint(fp, store._repository['gitObjectFormat']))
+        spans = [dict(span, kind='lines-v1') for span in intent['sourceSpans']
+                 if span['path'] == fp['path'] and span['sourceSha256'] == fp['source_sha']]
+        sources.append(dict(fingerprint_id=fingerprint_id, spans=spans))
+    spec = values.attestation(dict(blob_sha=intent['cardSha'], verification_kind='compiled',
+        engine_identity=intent['producingEngine'], policy_digest=handle.policy_digest,
+        receipt=dict(schema='memvane-card-evidence-v2', verdict='verified',
+                     result_digest=intent['result_digest'], prior_trust=None,
+                     verdict_digest=intent['verdict_digest'], verified_mode=intent['verifiedMode'],
+                     verify_engine=intent['verifyEngine']), sources=sources))
+    trust = values.digest('memvane-card-attestation-v1', spec)
+    try:
+        return store.attestation(trust) == spec
+    except values.BlobStoreError:
+        return False
+
+
+def _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current):
+    """Consume bounded compile intents without changing the view's member trust."""
+    import laya_blob_values as values
+    import laya_ledger_common as ledger
+    import laya_journal_reader as reader
+    import laya_writer_scope as normal
+    import source_spans
+    import wiki_card
+    import wiki_verify_worker
+
+    result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
+    state = reader._state(Path(decision['journalPath']).parent)
+    directory = state / 'provenance-intents'
+    try:
+        info = directory.lstat()
+    except FileNotFoundError:
+        return result
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700):
+        raise IndexContractError('provenance_intent_directory_unsafe')
+    names = sorted(entry.name for entry in os.scandir(directory)
+                   if re.fullmatch(r'compile-[0-9a-f]{64}\.json', entry.name))
+    if not names:
+        return result
+    cursor_path = state / 'provenance-intents.cursor'
+    try:
+        cursor = ledger._read_json(cursor_path)
+        if not isinstance(cursor, dict):
+            raise IndexContractError('provenance_cursor_invalid')
+    except FileNotFoundError:
+        cursor = {}
+    last = cursor.get('last')
+    if not isinstance(last, str):
+        last = ''
+    witnesses = sorted(entry.name for entry in os.scandir(directory)
+                       if re.fullmatch(r'compile-[0-9a-f]{64}\.consumed\.json', entry.name))
+    scan_limit = 512
+    if witnesses:
+        # Rotate over durable consumed witnesses and pending names. This keeps
+        # crash/replay safe without an unbounded in-memory path index.
+        witness_name = cursor.get('witness')
+        after = cursor.get('sweep_after', '')
+        if (witness_name not in witnesses or cursor.get('sweep_done') is True):
+            witness_name = next((name for name in witnesses if name > str(witness_name or '')), witnesses[0])
+            after = ''
+        if not isinstance(after, str):
+            raise IndexContractError('provenance_cursor_invalid')
+        witness_path = directory / witness_name
+        witness = None
+        try:
+            witness_fd = os.open(witness_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+            try:
+                witness, _ = _read_compile_intent(witness_fd)
+            finally:
+                os.close(witness_fd)
+            if (witness_name != 'compile-' + wiki_verify_worker._compile_intent_id(witness) + '.consumed.json'
+                    or not _compiled_intent_is_stored(store, handle, witness)):
+                witness = None
+        except (OSError, ValueError, TypeError, KeyError, values.BlobStoreError):
+            witness = None
+        candidates = [name for name in names if name > after][:255]
+        for candidate in candidates:
+            if witness is None:
+                break
+            candidate_path = directory / candidate
+            try:
+                candidate_fd = os.open(candidate_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+                try:
+                    waiting, initial = _read_compile_intent(candidate_fd)
+                    if (candidate != 'compile-' + wiki_verify_worker._compile_intent_id(waiting) + '.json'
+                            or waiting.get('viewId') != witness['viewId']
+                            or waiting.get('targetPath') != witness['targetPath']
+                            or waiting.get('cardSha') == witness['cardSha']
+                            or waiting['sourceFingerprints']['observedNs'] >= witness['sourceFingerprints']['observedNs']):
+                        continue
+                    _ack_compile_intent(candidate_path, candidate_fd, initial, 'superseded')
+                    result['superseded'] += 1
+                finally:
+                    os.close(candidate_fd)
+            except (OSError, ValueError, TypeError, KeyError, values.BlobStoreError):
+                continue
+        sweep_after = candidates[-1] if candidates else after
+        sweep_done = witness is None or not any(name > sweep_after for name in names)
+        cursor.update(witness=witness_name, sweep_after=sweep_after, sweep_done=sweep_done)
+        scan_limit = 255
+    ordered = [name for name in names if name > last] + [name for name in names if name <= last]
+    scanned = ordered[:scan_limit]
+    attempted = 0
+    last_scanned = None
+    for name in scanned:
+        if attempted >= SCHEMA3_MAX_INGEST:
+            break
+        last_scanned = name
+        path = directory / name
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        except FileNotFoundError:
+            continue
+        try:
+            initial = None
+            try:
+                intent, initial = _read_compile_intent(fd)
+                if intent.get('viewId') != handle.view_id:
+                    continue
+                fingerprints = intent['sourceFingerprints']['fingerprints']
+                if (not fingerprints or any((fp.get('worktree_id'), fp.get('branch_key')) !=
+                                            (handle.worktree_id, handle.branch_key) for fp in fingerprints)):
+                    continue
+                if name != 'compile-' + wiki_verify_worker._compile_intent_id(intent) + '.json':
+                    continue
+                target = intent['targetPath']
+                values.relative(target)
+                member, image = members.get(target), current.get(target)
+                if member is None or image is None or member['blob_sha'] != intent['cardSha'] or image[0] != intent['cardSha']:
+                    result['waiting'] += 1
+                    continue
+                text = image[1].decode('utf8')
+                block = source_spans._frontmatter_block(text)
+                if block is None:
+                    raise ValueError('provenance_parity_mismatch')
+                revisions = wiki_card.frontmatter_source_revisions(block)
+                span_state, spans = source_spans.read_card_spans(block)
+                found = {(r['path'], r['sha256'], r['size']) for r in revisions}
+                expected = {(fp['path'], fp['source_sha'], fp['byte_length']) for fp in fingerprints}
+                if (found != expected or span_state == source_spans.INVALID
+                        or spans != sorted(intent['sourceSpans'], key=lambda s: (s['path'], s['startLine'], s['endLine']))):
+                    raise ValueError('provenance_parity_mismatch')
+                attempted += 1
+                if 'proof' not in marks:
+                    _mark_schema3_write(writer, proof, marks)
+                store.put_compiled_attestation(handle.worktree_id, intent, policy_digest=handle.policy_digest)
+                normal.validate_normal_writer(writer)
+                outcome = 'consumed'
+            except (values.BlobStoreError, KeyError, TypeError, ValueError, UnicodeError) as exc:
+                if initial is None:
+                    continue
+                reason = ('provenance_parity_mismatch' if str(exc) == 'provenance_parity_mismatch'
+                          else 'provenance_value_invalid')
+                result['rejected'][reason] = result['rejected'].get(reason, 0) + 1
+                outcome = 'rejected'
+            _ack_compile_intent(path, fd, initial, outcome)
+            if outcome == 'consumed':
+                result['consumed'] += 1
+        finally:
+            os.close(fd)
+    if last_scanned is not None:
+        cursor['last'] = last_scanned
+    if witnesses or len(names) > len(scanned) or attempted >= SCHEMA3_MAX_INGEST:
+        ledger._write(cursor_path, cursor, replace=True)
+    return result
+
+
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
                           vectors=None, *, raw_scan=None, window=False):
     """One view's pass: changed cards ingested, unchanged members keep their trust.
@@ -1413,6 +1633,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                            if 'snapshot' in scanned else None)
         if (not changed and not removed and not excluded and not cold
                 and _schema3_head_same(store, head, baseline, observed, handle)):
+            provenance = _consume_compile_intents(store, writer, proof, marks, decision, handle, old, current)
             if window:
                 # The main view has nothing to ingest: its vector fill (and the
                 # generation it may publish) gets the vector window. Linked
@@ -1428,7 +1649,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                                           vectors, deadline, window=window)
             if vector['state'] != 'complete':
                 return {'state': 'unchanged', 'storeFormat': 'schema3', 'generation': head['gen_id'],
-                        'vector': vector}
+                        'vector': vector, 'provenance': provenance}
             # The last fill call may run past the pass deadline: the vector
             # generation it completed gets a fresh publish reserve.
             deadline = max(deadline, time.monotonic() + SCHEMA3_PUBLISH_RESERVE)
@@ -1447,7 +1668,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             vector = dict(vector, state='published', publishMs=int((time.monotonic() - started) * 1000))
             return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
                     'ingested': 0, 'removed': 0, 'pending': 0, 'skipped': skipped,
-                    'sources': len(observed), 'vector': vector}
+                    'sources': len(observed), 'vector': vector,
+                    'provenance': provenance}
         # First store write of this pass: the journal fence comes first.
         _mark_schema3_write(writer, proof, marks)
         scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
@@ -1479,6 +1701,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                                  trust_digest=admitted['trust_digest'])
         if pending and not ingested and not removed and not excluded:
             return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
+        provenance = _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current)
         sources = _schema3_put_sources(store, handle, scan, observed)
         manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
                         complete=True, sources=sources, members=[members[p] for p in sorted(members)])
@@ -1506,14 +1729,14 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
                     **({'progressKind': 'ingest'} if ingested else {}),
                     'generation': None, 'prepared': generation, 'ingested': ingested,
-                    'removed': len(removed), 'pending': pending, 'skipped': skipped}
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped, 'provenance': provenance}
         if staging:
             # Published cards wait for new bytes: the head stays, the prepared
             # progress is the next pass's carry.
             return {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
                     **({'progressKind': 'ingest'} if ingested else {}),
                     'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
-                    'removed': len(removed), 'pending': pending, 'skipped': skipped}
+                    'removed': len(removed), 'pending': pending, 'skipped': skipped, 'provenance': provenance}
         store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
         if store._rows and vector['state'] == 'lexical_first':
             generation, vector = _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest,
@@ -1529,7 +1752,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         vector = dict(vector, state='published', publishMs=int((time.monotonic() - started) * 1000))
     result = {'state': 'pending' if pending else 'indexed', 'storeFormat': 'schema3',
               'generation': generation, 'ingested': ingested, 'removed': len(removed),
-              'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector}
+              'pending': pending, 'skipped': skipped, 'sources': len(sources), 'vector': vector,
+              'provenance': provenance}
     if pending:
         result['reason'] = 'schema3_ingest_backlog'
         if ingested:

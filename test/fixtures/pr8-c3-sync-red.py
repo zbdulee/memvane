@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import sqlite3
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('row_sync', HERE / 'laya-s-sync-rows-checks.py')
@@ -55,13 +56,25 @@ class Contract:
 
     def test_unchanged_pass_consumes_intent_once(self):
         head, trust, data, intent, path, before = self.prepare_intent()
-        result, _ = self.run_pass()
-        self.assertEqual(result.get('provenance', {}).get('consumed'), 1)
+        epoch = self.J.inspect_journal(self.case.journal)['epoch']
+        held = path.with_suffix('.held')
+        path.rename(held)
+        with mock.patch.object(self.worker, '_mark_schema3_write', wraps=self.worker._mark_schema3_write) as marker:
+            self.run_pass()
+            self.assertEqual(marker.call_count, 0)
+        self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], epoch)
+        held.rename(path)
+        with mock.patch.object(self.worker, '_mark_schema3_write', wraps=self.worker._mark_schema3_write) as marker:
+            result, _ = self.run_pass()
+            self.assertEqual(marker.call_count, 1)
+        self.assertEqual(result.get('provenance', {}).get('consumed'), 1, result)
+        self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], epoch + 1)
         self.assertTrue(path.with_suffix('.consumed.json').is_file())
         self.assertEqual(self.head(), head)
         self.assertEqual(self.member_trust(head[0], 'cards/c3.md'), trust)
         result, _ = self.run_pass()
         self.assertEqual(result.get('provenance', {}).get('consumed', 0), 0)
+        self.assertEqual(self.J.inspect_journal(self.case.journal)['epoch'], epoch + 1)
         with closing(sqlite3.connect(self.store_path)) as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0], before + 1)
 
@@ -136,6 +149,49 @@ class Contract:
                 break
         self.assertEqual(consumed, 1)
         self.assertTrue(path.with_suffix('.consumed.json').is_file())
+
+    def test_malformed_intent_does_not_block_valid_intent(self):
+        head, trust, data, intent, path, before = self.prepare_intent()
+        broken = path.parent / ('compile-' + '0' * 64 + '.json')
+        broken.write_bytes(b'{invalid'); broken.chmod(0o600)
+        result, _ = self.run_pass()
+        self.assertEqual(result['provenance']['consumed'], 1, result)
+        self.assertTrue(path.with_suffix('.consumed.json').exists())
+        self.assertTrue(broken.exists())
+
+    def test_forged_consumed_marker_cannot_supersede_waiting(self):
+        import laya_ledger_common as ledger
+        import laya_blob_values as values
+        import wiki_verify_worker
+        head, trust, data, current, path, before = self.prepare_intent()
+        path.rename(path.with_suffix('.consumed.json'))
+        old = copy.deepcopy(current)
+        old['cardSha'] = 'd' * 64
+        old['sourceFingerprints']['scanId'] = '3' * 32
+        old['sourceFingerprints']['observedNs'] = 3
+        old['sourceFingerprints']['fingerprints'][0]['scan_id'] = '3' * 32
+        old['sourceFingerprints']['fingerprints'][0]['observed_ns'] = 3
+        old['result_digest'] = values.compile_result_digest({k:v for k,v in old.items() if k not in ('kind','verdict_digest','result_digest')}, old['verdict_digest'])
+        old_path = path.parent / ('compile-' + wiki_verify_worker._compile_intent_id(old) + '.json')
+        ledger._write(old_path, old, replace=False)
+        result, _ = self.run_pass()
+        self.assertEqual(result['provenance']['superseded'], 0)
+        self.assertTrue(old_path.exists())
+
+    def test_swapped_intent_is_never_acknowledged(self):
+        import laya_ledger_common as ledger
+        from laya_index_a import IndexContractError
+        head, trust, data, intent, path, before = self.prepare_intent()
+        real = self.views.ViewStore.put_compiled_attestation
+        def swap(store, *args, **kwargs):
+            answer = real(store, *args, **kwargs)
+            ledger._write(path, intent, replace=True)
+            return answer
+        with mock.patch.object(self.views.ViewStore, 'put_compiled_attestation', new=swap):
+            with self.assertRaisesRegex(IndexContractError, 'provenance_intent_changed'):
+                self.run_pass()
+        self.assertTrue(path.exists())
+        self.assertFalse(path.with_suffix('.consumed.json').exists())
 
 
 class GenerationSync(Contract, rows.publish.Schema3SyncPublishChecks):

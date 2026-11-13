@@ -1147,6 +1147,36 @@ class BlobStore:
         with self._session(write=True) as db:
             return self._put_attestation(db, spec)
 
+    def put_compiled_attestation(self, worktree_id, intent, *, policy_digest):
+        """Store a verified compile claim atomically using the common evidence tables."""
+        v.exact(intent, ('kind', 'viewId', 'targetPath', 'cardSha', 'expectedTargetHash',
+                         'sourceFingerprints', 'sourceSpans', 'verifiedMode', 'verifyEngine',
+                         'producingEngine', 'verdict_digest', 'result_digest'))
+        if intent['kind'] != 'compile':
+            v.fail('invalid_compile_result')
+        result = {key: value for key, value in intent.items()
+                  if key not in ('kind', 'verdict_digest', 'result_digest')}
+        if v.compile_result_digest(result, intent['verdict_digest']) != intent['result_digest']:
+            v.fail('invalid_compile_result')
+        fingerprints = intent['sourceFingerprints']['fingerprints']
+        if any(row['worktree_id'] != worktree_id for row in fingerprints):
+            v.fail('source_worktree_missing')
+        self._require_write()
+        with self._session(write=True) as db:
+            sources = []
+            for row in fingerprints:
+                fingerprint_id = self._put_fingerprint(db, row)
+                spans = [dict(span, kind='lines-v1') for span in intent['sourceSpans']
+                         if span['path'] == row['path'] and span['sourceSha256'] == row['source_sha']]
+                sources.append(dict(fingerprint_id=fingerprint_id, spans=spans))
+            return self._put_attestation(db, dict(
+                blob_sha=intent['cardSha'], verification_kind='compiled',
+                engine_identity=intent['producingEngine'], policy_digest=policy_digest,
+                receipt=dict(schema='memvane-card-evidence-v2', verdict='verified',
+                             result_digest=intent['result_digest'], prior_trust=None,
+                             verdict_digest=intent['verdict_digest'], verified_mode=intent['verifiedMode'],
+                             verify_engine=intent['verifyEngine']), sources=sources))
+
     def attestation(self, trust_digest):
         with self._session():
             return self._attestation(trust_digest)

@@ -4,7 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {mkdtempSync, realpathSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-for (const name of ['GenerationSync', 'RowSync']) for (const method of ['test_unchanged_pass_consumes_intent_once', 'test_tampered_parity_is_rejected_without_store_write', 'test_intent_with_absent_card_waits_without_write', 'test_newer_consumed_supersedes_older_waiting', 'test_waiting_queue_rotates_to_valid_intent']) {
+for (const name of ['GenerationSync', 'RowSync']) for (const method of ['test_unchanged_pass_consumes_intent_once', 'test_tampered_parity_is_rejected_without_store_write', 'test_intent_with_absent_card_waits_without_write', 'test_newer_consumed_supersedes_older_waiting', 'test_waiting_queue_rotates_to_valid_intent', 'test_malformed_intent_does_not_block_valid_intent', 'test_forged_consumed_marker_cannot_supersede_waiting', 'test_swapped_intent_is_never_acknowledged']) {
   test(`${name} ${method}`, () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'pr8-c3-sync-')));
     try {
