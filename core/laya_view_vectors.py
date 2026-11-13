@@ -362,6 +362,10 @@ class VectorMixin:
 
     def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=DEFAULT_WORK,
                      deadline_seconds=2, path_prefixes=None, excluded_paths=None):
+        if self._rows:
+            return self._rows_search_exact(pin, query_vector, limit, profile_id=profile_id,
+                                           max_float_work=max_float_work, deadline_seconds=deadline_seconds,
+                                           path_prefixes=path_prefixes, excluded_paths=excluded_paths)
         deadline = time.monotonic() + options(limit, max_float_work, deadline_seconds,
                                               path_prefixes, excluded_paths)
         v.identifier(profile_id)

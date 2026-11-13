@@ -116,12 +116,23 @@ class FillMixin:
         return entry, saved, job, targets, stored
 
     def fill_status(self, handle, manifest, recipe_id, profile_id):
-        """Readonly; an absent job reports cursor 0 and complete false."""
+        """Readonly; an absent job reports cursor 0 and complete false.
+
+        A row-format store fills the current head's eligible cards; ``manifest``
+        is not read there.
+        """
+        if self._rows:
+            return self._rows_fill_status(handle, recipe_id, profile_id)
         _, _, job, _, stored = self._fill_plan(handle, manifest, recipe_id, profile_id)
         return _status(job, stored)
 
     def fill_view(self, handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence,
                   expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30):
+        if self._rows:
+            return self._rows_fill_view(handle, recipe_id, profile_id, chunker=chunker, embedder=embedder,
+                                        write_fence=write_fence, expected_cursor=expected_cursor,
+                                        max_files=max_files, max_bytes=max_bytes,
+                                        deadline_seconds=deadline_seconds)
         self._require_write()
         deadline = _deadline(deadline_seconds)
         _bounded(expected_cursor, 0, fill_schema.MAX_TARGETS, 'fill_cursor_invalid')

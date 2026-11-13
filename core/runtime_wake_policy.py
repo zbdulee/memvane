@@ -226,6 +226,11 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
         if isinstance(done, Dropped):
             return {'ack': True, 'due': now, 'reason': None, 'count': 0, 'drop': done.reason}
         return {'ack': True, 'due': now, 'reason': None, 'count': 0}
+    if (kind == 'laya-sync' and isinstance(error, DispatchFailure)
+            and error.code == 'target_deferred' and error.detail in (
+                'deferred:pending:schema3_progress_ingest',
+                'deferred:pending:schema3_progress_vector')):
+        return {'ack': False, 'due': now + 30, 'reason': failure_reason(error), 'count': 0}
     if (kind == 'laya-compile' and isinstance(error, DispatchFailure)
             and error.code == 'target_deferred'
             and error.detail == 'deferred:deferred:owner_busy'):

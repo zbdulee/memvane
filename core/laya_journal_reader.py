@@ -1067,8 +1067,15 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
 
 def _generation_ordinal(store, gen_id, view_id):
     with store._session() as db:
-        row = db.execute("SELECT ordinal FROM generations WHERE gen_id=? AND view_id=? AND state='published'",
-                         (gen_id, view_id)).fetchone()
+        if getattr(store, '_rows', False):
+            # Row format: a kept generation, else the parity anchor the conversion proved.
+            row = (db.execute('SELECT ordinal FROM s_generations WHERE gen_id=? AND view_id=?',
+                              (gen_id, view_id)).fetchone()
+                   or db.execute('SELECT ordinal FROM s_parity_anchor WHERE gen_id=? AND view_id=? AND incarnation=?',
+                                 (gen_id, view_id, store._incarnation)).fetchone())
+        else:
+            row = db.execute("SELECT ordinal FROM generations WHERE gen_id=? AND view_id=? AND state='published'",
+                             (gen_id, view_id)).fetchone()
     _need(row is not None, 'reader_parity_unproved')
     return row[0]
 

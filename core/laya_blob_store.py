@@ -50,6 +50,48 @@ def legacy_card_evidence(row, decision):
     return {'revisions': revisions, 'spans': spans, 'locators': list(locators)}
 
 
+def current_revision_evidence(evidence, current_sources):
+    """The evidence a writer ingest attests when ``current_sources`` observed this pass's raw files.
+
+    Only a path the card cites at two or more distinct (sha256, size)
+    revisions is judged, and only when that path was observed: the revision
+    matching the observed bytes stays (with its spans), the others go. When
+    none matches, the card is stale and gets no attestation (``None``). A
+    path cited once, or not observed, keeps every revision as before; no
+    revision is chosen by its order or its fingerprint.
+    """
+    if current_sources is None or evidence is None:
+        return evidence
+    revisions = {}
+    for revision in evidence['revisions']:
+        revisions.setdefault(revision['path'], set()).add((revision['sha256'], revision['size']))
+    judged = {path: tuple(current_sources[path]) for path, seen in revisions.items()
+              if len(seen) > 1 and path in current_sources}
+    if not judged:
+        return evidence
+    if any(current not in revisions[path] for path, current in judged.items()):
+        return None
+    kept = [r for r in evidence['revisions']
+            if r['path'] not in judged or (r['sha256'], r['size']) == judged[r['path']]]
+    pairs = {(r['path'], r['sha256']) for r in kept}
+    spans = [span for span in evidence['spans'] if (span['path'], span['sourceSha256']) in pairs]
+    import source_spans
+    return {'revisions': kept, 'spans': spans, 'locators': [source_spans.locator(span) for span in spans]}
+
+
+def _current_sources(value):
+    if value is None:
+        return None
+    if type(value) is not dict:
+        v.fail('current_sources_invalid')
+    for path, current in value.items():
+        if (not isinstance(path, str) or type(current) is not tuple or len(current) != 2
+                or not isinstance(current[0], str) or len(current[0]) != 64 or current[0].strip('0123456789abcdef')
+                or type(current[1]) is not int or current[1] < 0):
+            v.fail('current_sources_invalid')
+    return value
+
+
 def legacy_scan(provenance_scan):
     v.exact(provenance_scan, ('id', 'observed_ns'))
     v.identifier(provenance_scan['id'], v.UUID)
@@ -304,16 +346,17 @@ def _insert(db, table, row):
 
 
 def _header(db, repository, scope):
+    version = db.execute('PRAGMA user_version').fetchone()[0]
     if (db.execute('PRAGMA application_id').fetchone()[0] != schema.APP_ID
-            or db.execute('PRAGMA user_version').fetchone()[0] != schema.SCHEMA_VERSION):
+            or type(version) is not int or version not in schema.FORMATS):
         v.fail('candidate_format_mismatch')
-    if schema.manifest(db) != schema.expected_manifest():
+    if schema.manifest(db, version) != schema.expected_manifest(version):
         v.fail('candidate_schema_mismatch')
     row = db.execute('SELECT * FROM store_meta WHERE singleton=1').fetchone()
-    if (row is None or row['format'] != schema.FORMAT
-            or row['schema_version'] != schema.SCHEMA_VERSION
+    if (row is None or row['format'] != schema.FORMATS[version]
+            or row['schema_version'] != version
             or row['repository_json'] != v.canonical(repository)
-            or row['scope_id'] != scope or row['schema_digest'] != schema.expected_manifest()):
+            or row['scope_id'] != scope or row['schema_digest'] != schema.expected_manifest(version)):
         v.fail('candidate_binding_mismatch')
     v.identifier(row['incarnation'], v.UUID)
     v.identifier(row['settings_policy_digest'])
@@ -374,8 +417,11 @@ class _VectorPage:
 
 class BlobStore:
     @classmethod
-    def create(cls, path, *, project_root, repository, worktree, scope_id):
+    def create(cls, path, *, project_root, repository, worktree, scope_id, row_generations=False):
         repository = v.repository(repository); v.identifier(scope_id, v.UUID)
+        if type(row_generations) is not bool:
+            v.fail('candidate_format_invalid')
+        version = schema.ROW_SCHEMA_VERSION if row_generations else schema.SCHEMA_VERSION
         path = _database_path(path)
         temp = path.parent / ('.' + path.name + '.create-' + uuid.uuid4().hex)
         fd = None
@@ -398,14 +444,14 @@ class BlobStore:
                 db.execute('PRAGMA foreign_keys=ON')
                 db.execute('PRAGMA synchronous=FULL')
                 db.execute('BEGIN IMMEDIATE')
-                schema.create(db)
+                schema.create(db, version)
                 common = repository['commonGitDir'] or {}
-                _insert(db, 'store_meta', dict(singleton=1, format=schema.FORMAT, schema_version=schema.SCHEMA_VERSION,
+                _insert(db, 'store_meta', dict(singleton=1, format=schema.FORMATS[version], schema_version=version,
                     repo_id=repository['repoId'], scope_id=scope_id, incarnation=uuid.uuid4().hex,
                     common_git_dir=common.get('path'), common_dev=common.get('dev'), common_ino=common.get('ino'),
                     project_rel=repository['projectRelative'], git_object_format=repository['gitObjectFormat'],
                     repository_json=v.canonical(repository), settings_policy_digest=row['policy_digest'],
-                    schema_digest=schema.expected_manifest(), created_ns=created))
+                    schema_digest=schema.expected_manifest(version), created_ns=created))
                 _insert(db, 'worktrees', {**row, 'registered_ns': created})
                 if _worktree_row(project_root, repository, worktree)[0] != row:
                     v.fail('wiki_binding_changed')
@@ -491,6 +537,7 @@ class BlobStore:
             obj._reader_only = reader_only
             obj._fts_guard = fts_guard
             obj._incarnation, obj._policy = initial_meta['incarnation'], initial_meta['settings_policy_digest']
+            obj._rows = initial_meta['schema_version'] == schema.ROW_SCHEMA_VERSION
             return obj
         except BlobStoreError:
             if db is not None: db.close()
@@ -673,14 +720,18 @@ class BlobStore:
     def ingest_card(self, worktree_id, path):
         return self._ingest(worktree_id, path)[0]
 
-    def ingest_attested_card(self, worktree_id, path, *, decision, provenance_scan):
+    def ingest_attested_card(self, worktree_id, path, *, decision, provenance_scan, current_sources=None):
         """Admit a card plus, when its frontmatter passes the reader rule, its unbound attestation.
 
         ``decision`` is the caller's selected-route decision for this store's
         project and wiki root; a card that fails the rule is admitted untrusted.
+        ``current_sources`` (``{project path: (sha256, byte_length)}``) is the
+        caller's complete raw observation of this pass, or None; it judges
+        only a path the card cites at two revisions (``current_revision_evidence``).
         """
         legacy_scan(provenance_scan)
-        sha, trust = self._ingest(worktree_id, path, attest=(decision, provenance_scan))
+        current_sources = _current_sources(current_sources)
+        sha, trust = self._ingest(worktree_id, path, attest=(decision, provenance_scan, current_sources))
         return {'blob_sha': sha, 'trust_digest': trust}
 
     def _put_legacy_attestation(self, db, *, blob_sha, worktree_id, branch_key, evidence,
@@ -755,6 +806,7 @@ class BlobStore:
                     evidence = legacy_card_evidence({'path': path, 'body': body}, attest[0])
                 except (KeyError, TypeError, AttributeError):
                     v.fail('attestation_decision_mismatch')
+                evidence = current_revision_evidence(evidence, attest[2])
             trust = None
             with self._session(write=True) as db:
                 old = db.execute('SELECT blob_sha FROM wiki_blobs WHERE blob_sha=?', (sha,)).fetchone()
@@ -1124,7 +1176,7 @@ class BlobStore:
     def counts(self):
         with self._session() as db:
             return {name: db.execute(f'SELECT count(*) FROM {name}').fetchone()[0]
-                    for name in schema.TABLES}
+                    for name in (schema.ROW_TABLES if self._rows else schema.TABLES)}
 
     def close(self):
         self._db.close()

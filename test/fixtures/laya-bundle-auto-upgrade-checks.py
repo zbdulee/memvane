@@ -235,6 +235,30 @@ class WorkerBase(Base):
 
 
 class WorkerChecks(WorkerBase):
+    def test_claude_worker_records_codex_seal_created_during_upgrade(self):
+        import event_log
+        import laya_product_bundle as bundle
+        codex = self.home / '.codex' / 'plugins' / 'cache' / 'mkt' / 'memvane' / '0.44.22'
+        codex.mkdir(parents=True)
+        def upgrade(**_kwargs):
+            bundle._record_seal_write(codex)
+            return {'status': 'active_upgrade_complete'}
+        results, _calls, _rescan, _wake = self.run_worker('active', installed='2' * 40, active=upgrade)
+        self.assertEqual(results[0]['status'], 'active_upgrade_complete')
+        rows = event_log.read(self.state)
+        self.assertEqual(sum(row.get('codexSealWritten') is True for row in rows), 1)
+
+    def test_codex_seal_write_is_recorded_on_upgrade_event(self):
+        import event_log
+        self.root = self.home / '.codex' / 'plugins' / 'cache' / 'mkt' / 'memvane' / '0.44.22'
+        self.root.mkdir(parents=True)
+        with mock.patch.object(auto, '_seal_companion',
+                               return_value={'status': 'companion_sealed', 'codexSealWritten': True}):
+            results, _calls, _rescan, _wake = self.run_worker('active', installed='1' * 40)
+        self.assertEqual(results[0]['status'], 'companion_sealed')
+        events = [row for row in event_log.read(self.state) if row['event'] == 'bundle.upgrade']
+        self.assertEqual(sum(row.get('codexSealWritten') is True for row in events), 1)
+
     def test_unrecorded_noncompanion_preserves_legacy_hermes_deferral(self):
         (self.home / '.hermes' / 'plugins' / 'qmd-auto-context').mkdir(parents=True)
         results, calls, _rescan, wake = self.run_worker('active', installed=None)

@@ -1034,6 +1034,8 @@ class Service:
         self.retry = {}
         # Why an installation is not adopted yet, reported once per episode.
         self.waiting = {}
+        self.full_proof_deferred = set()
+        self.drift_yielded = set()
         # Codes already reported per installation since its last bind.
         self.unproved = {}
         # Consecutive moved-selection deferrals per installation (fingerprint, n).
@@ -1417,6 +1419,14 @@ class Service:
             with self.lock:
                 if project in self.bindings or self.retry.get(project, 0) > now:
                     continue
+                no_ready = not any(w.alive() for w in self.workers.values())
+                full_pending = any(w.loading for w in self.workers.values()) or bool(self.full_proof_deferred)
+                if (no_ready and full_pending and self.waiting.get(project) == 'read_only_no_worker'
+                        and project not in self.drift_yielded):
+                    self.retry[project] = now + 30
+                    self.drift_yielded.add(project)
+                    continue
+                self.drift_yielded.discard(project)
             self._adopt(project)
         self._reclaim()
 
@@ -1477,6 +1487,8 @@ class Service:
         with self.lock:
             self.unproved.pop(project, None)
             self.moved.pop(project, None)
+            self.full_proof_deferred.discard(project)
+            self.drift_yielded.discard(project)
         name = hashlib.sha256(project.encode()).hexdigest()[:32] + '.json'
         with suppress(OSError):
             os.unlink(self.root / PROJECTS / name)
@@ -1557,6 +1569,9 @@ class Service:
             if not os.path.isdir(project):
                 self._forget(project)  # the project is gone: stop re-proving it
             else:
+                if not _deferral(exc):
+                    with self.lock:
+                        self.full_proof_deferred.discard(project)
                 # Without this the install's resident state stays at the
                 # client's "starting" and nothing says why it is never bound.
                 self._report_waiting(project, lambda: _route_hint(project),
@@ -1573,6 +1588,9 @@ class Service:
         seal = hashlib.sha256(json.dumps([project, identity], sort_keys=True,
                                          default=str).encode()).hexdigest()
         worker = self.workers.get(key)
+        if mode == 'read_only':
+            with self.lock:
+                self.full_proof_deferred.discard(project)
         if worker is None or not worker.alive():
             if mode == 'read_only':
                 # A drifted bundle only attaches to a worker that a full proof
@@ -1739,14 +1757,20 @@ class Service:
                     worker.loading = False
                 if _deferral(exc):
                     # A busy window or a moved selection, not bad evidence.
+                    with self.lock:
+                        self.full_proof_deferred.add(project)
+                    self._report_waiting(project, decision, _proof_code(exc), outcome='waiting')
                     self._later(project, self._deferred_retry(project, manifest, exc))
                     return
+                with self.lock:
+                    self.full_proof_deferred.discard(project)
                 with suppress(Exception):
                     _write_state(manifest, 'attestation_invalid', terminal=True, attempts=3)
                 self._later(project, 60)
                 return
             self.attested.add(seal)
             with self.lock:
+                self.full_proof_deferred.discard(project)
                 if self.draining.is_set():
                     # The drain began during attestation: never start a model.
                     worker.loading = False
@@ -1780,6 +1804,10 @@ class Service:
                     return
                 worker.handle, worker.state, worker.failures = handle, 'ready', 0
                 self.retry.pop(project, None)
+                for waiting_project, reason in self.waiting.items():
+                    if reason == 'read_only_no_worker':
+                        self.retry.pop(waiting_project, None)
+                        self.drift_yielded.discard(waiting_project)
             elif reason == 'resource_deferred':
                 worker.state = 'resource_deferred'
                 # Keep real admission observations inside RECOVERY_MAX_GAP,

@@ -155,6 +155,54 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         finally:
             store.close()
 
+    def member_trust(self, gen_id, card):
+        with closing(sqlite3.connect(self.store_path.as_uri() + '?mode=ro', uri=True)) as db:
+            return db.execute('SELECT trust_digest,eligible FROM wiki_members WHERE gen_id=? AND path=?',
+                              (gen_id, card)).fetchone()
+
+    def attested_revisions(self, gen_id, card):
+        """``[(path, source_sha, byte_length)]`` of the attestation a member's trust digest names."""
+        trust = self.member_trust(gen_id, card)[0]
+        self.assertIsNotNone(trust)
+        store = self.views.ViewStore.open_reader(self.store_path, repository=self.repository,
+                                                 scope_id=self.case.route['scopeId'])
+        try:
+            return sorted(tuple(store.fingerprint(item['fingerprint_id'])[k]
+                                for k in ('path', 'source_sha', 'byte_length'))
+                          for item in store.attestation(trust)['sources'])
+        finally:
+            store.close()
+
+    def dual_card(self, relative, token, *, current):
+        """A verified card citing ``notes/<token>.md`` at an older and a compiled revision.
+
+        The source file then holds ``current``: the compiled bytes, or other
+        bytes that match neither revision (a stale card).
+        """
+        import yaml_scalars
+        older = ('Older source for ' + token + '.\n').encode('utf8')
+        compiled = ('Synthetic source for ' + token + '.\n').encode('utf8')
+        source = self.case.project / 'notes' / (token + '.md')
+        source.parent.mkdir(parents=True, exist_ok=True)
+        lines = yaml_scalars.dump_source_revisions([
+            dict(kind='file', path='notes/' + token + '.md', collection=self.raw_collection,
+                 sha256=hashlib.sha256(data).hexdigest(), size=len(data), mtimeNs=1) for data in (older, compiled)])
+        front = (f'title: "{token} card"\nstatus: verified\ncreatedBy: memvane\nsourceRevisions:\n'
+                 + ''.join('  - ' + line + '\n' for line in lines))
+        text = '---\n' + front + '---\n' + f'# {token} card\n{token} verified body\n'
+        text = text.replace('createdBy: memvane\n', 'createdBy: memvane\nverifiedBodyHash: '
+                            + yaml_scalars.card_body_hash(text) + '\n', 1)
+        path = self.wiki / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf8')
+        source.write_bytes(compiled if current == 'compiled' else current)
+        return 'notes/' + token + '.md', compiled
+
+    def compile_files(self):
+        root = self.case.auto / 'compile'
+        return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob('*')) if p.is_file()} \
+            if root.is_dir() else {}
+
     # -- checks ---------------------------------------------------------------
     def test_10_dot_raw_root_sources_are_observed_and_published(self):
         """A raw collection rooted at a dot directory (legacy ``collectionPaths``
@@ -185,6 +233,61 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual((idle['state'], idle_calls), ('unchanged', []), idle)
         self.assertEqual(self.head()[0], first['generation'])
         emit('schema3-dot-raw-root', sources=first['sources'])
+
+    # Writer ingest judges one path cited at two revisions by this pass's raw observation
+    # (user decision 11/13 08:45); the observation over its bounds keeps both.
+
+    def test_13_dual_revision_card_keeps_the_revision_this_pass_observed(self):
+        self.select_schema3()
+        path, compiled = self.dual_card('concepts/dual-current.md', 'dualcurrentprobe', current='compiled')
+        result, calls = self.run_pass()
+        self.assertEqual(result['state'], 'indexed', result)
+        self.assertIn('concepts/dual-current.md', calls)
+        self.assertEqual(self.attested_revisions(result['generation'], 'concepts/dual-current.md'),
+                         [(path, hashlib.sha256(compiled).hexdigest(), len(compiled))])
+        self.assertEqual(self.member_trust(result['generation'], 'concepts/dual-current.md')[1], 1)
+        self.assertIn('concepts/dual-current.md', self.paths(self.recall('dualcurrentprobe')))
+        emit('schema3-dual-revision-current', kept=1)
+
+    def test_14_dual_revision_card_matching_no_observed_revision_is_untrusted(self):
+        self.select_schema3()
+        self.card('concepts/plain-neighbor.md', 'plainneighborprobe')
+        self.dual_card('concepts/dual-stale.md', 'dualstaleprobe', current=b'Third bytes.\n')
+        queued = self.compile_files()
+        result, _calls = self.run_pass()
+        self.assertEqual(result['state'], 'indexed', result)
+        self.assertEqual(self.member_trust(result['generation'], 'concepts/dual-stale.md'), (None, 0))
+        self.assertEqual(self.member_trust(result['generation'], 'concepts/plain-neighbor.md')[1], 1)
+        self.assertNotIn('concepts/dual-stale.md', self.paths(self.recall('dualstaleprobe')))
+        self.assertEqual(self.compile_files(), queued, 'the writer queues no regeneration')
+        emit('schema3-dual-revision-stale', trusted=False)
+
+    def test_15_observation_over_its_bounds_keeps_both_revisions(self):
+        """Regression guard: no current observation picks no winner."""
+        import laya_wiki_discovery
+        self.select_schema3()
+        self.dual_card('concepts/dual-unbounded.md', 'dualunboundedprobe', current=b'Third bytes.\n')
+        with mock.patch.object(laya_wiki_discovery, 'RAW_SCAN_MAX_FILES', 1):
+            result, _calls = self.run_pass()
+        self.assertEqual(result['state'], 'indexed', result)
+        self.assertEqual(len(self.attested_revisions(result['generation'], 'concepts/dual-unbounded.md')), 2)
+        self.assertEqual(self.member_trust(result['generation'], 'concepts/dual-unbounded.md')[1], 1)
+        emit('schema3-dual-revision-unbounded', kept=2)
+
+    def test_16_published_dual_revision_card_is_judged_only_when_its_bytes_change(self):
+        """Regression guard: unchanged card bytes keep their trust; the lifecycle regenerates."""
+        import laya_wiki_discovery
+        self.select_schema3()
+        path, _compiled = self.dual_card('concepts/dual-kept.md', 'dualkeptprobe', current=b'Third bytes.\n')
+        with mock.patch.object(laya_wiki_discovery, 'RAW_SCAN_MAX_FILES', 1):
+            first, _calls = self.run_pass()
+        trust = self.member_trust(first['generation'], 'concepts/dual-kept.md')
+        (self.case.project / path).write_bytes(b'Fourth bytes.\n')
+        second, calls = self.run_pass()
+        self.assertNotIn('concepts/dual-kept.md', calls)
+        generation = second.get('generation') if second['state'] == 'indexed' else first['generation']
+        self.assertEqual(self.member_trust(generation, 'concepts/dual-kept.md'), trust)
+        emit('schema3-dual-revision-kept', state=second['state'])
 
     def test_11_card_citing_a_dot_source_keeps_its_reader_trust(self):
         """v6 trusts a verified card whose ``sourceRevisions`` path starts with a
@@ -477,6 +580,17 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         self.assertEqual(self.head(), (second['generation'], start[1] + 2))
         self.assertEqual(sorted(self.members(second['generation'])), sorted(first_calls + second_calls))
         emit('schema3-sync-ingest-cap', firstPass=first_calls, secondPass=second_calls)
+
+    def test_ingest_pending_detail_requires_committed_progress(self):
+        import laya_runtime_dispatch as dispatch
+        self.select_schema3()
+        self.card('concepts/kestrel-perch.md', 'kestrelprobe')
+        with mock.patch.object(self.worker, 'SCHEMA3_MAX_INGEST', 2):
+            first, calls = self.run_pass()
+        self.assertGreater(len(calls), 0)
+        self.assertEqual(first['state'], 'pending')
+        self.assertEqual(dispatch._deferred_detail(first),
+                         'deferred:pending:schema3_progress_ingest')
 
     def test_09_modified_cards_over_ingest_cap_converge_without_partial_publish(self):
         """Every published card changes and the change set exceeds one pass's ingest cap."""

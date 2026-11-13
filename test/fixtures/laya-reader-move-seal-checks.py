@@ -164,16 +164,16 @@ class MoveSealChecks(unittest.TestCase):
                 rows=runtime.index.db.execute('SELECT m.path,m.hash,c.body FROM membership m '
                     'JOIN content c ON c.hash=m.hash WHERE m.gen=? ORDER BY m.path',(gen,)).fetchall()
                 runtime.index.db.commit()
-                self.assertEqual(len(rows),3)
+                self.assertEqual(len(rows),len(base.published.CARDS))
                 for path,hashed,body in rows:
                     result=incremental.publish_document(runtime,identity,snapshot,path,hashed,
                         qmd_markdown_title(body,path),body,identity['vectorProfileId'],require_verified=True)
                     self.assertIn(result['status'],('published','already_published'),result)
             self.assertTrue(self.sidecar.is_file())
-            with self.ro(self.sidecar) as db:self.assertEqual(db.execute('SELECT count(*) FROM docs').fetchone(),(3,))
+            with self.ro(self.sidecar) as db:self.assertEqual(db.execute('SELECT count(*) FROM docs').fetchone(),(len(base.published.CARDS),))
         else:
             self.assertFalse(os.path.lexists(self.sidecar),'absence fixture must not create/delete an issued live sidecar')
-            self.assertEqual(len(self.case.head()[1]),3)
+            self.assertEqual(len(self.case.head()[1]),len(base.published.CARDS))
         before_conversion=getattr(self,'before_conversion',None)
         if before_conversion is not None:before_conversion()
         self.installer=self.helper.installer(self.case,self.reader,self.bridge)
@@ -185,7 +185,7 @@ class MoveSealChecks(unittest.TestCase):
         self.assertEqual(base.J.journal_version(self.case.journal),5)
         self.install=base.J.inspect_journal(self.case.journal)['selected']['installId']
         print(json.dumps(dict(case='move-seal-real-seed',journalVersion=5,publishedCards=3,
-            completedSidecarRows=3 if self.PUBLISH_SIDECAR else 0,
+            completedSidecarRows=len(base.published.CARDS) if self.PUBLISH_SIDECAR else 0,
             sidecarPublished=self.PUBLISH_SIDECAR,actualHostExecuted=False)),flush=True)
 
     def authority(self):

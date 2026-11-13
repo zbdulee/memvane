@@ -1150,7 +1150,7 @@ def compare_lexical_queries(snapshot, *, endpoint, decision, store, pin, queries
         roots = wiki_index_roots(decision['collections'])
         with readers._validation_deadline(snapshot.connections, deadline), store._reading(deadline) as db:
             generation, _, _, _ = store._read_pinned(db, pin, deadline)
-            name = fts_table(generation['ordinal'], sidecar=True)
+            name = store._pin_fts_table(pin, sidecar=True)
             for query in queries:
                 try:
                     old_probe = side.execute('SELECT d.path,d.hash,d.body FROM docs_fts f '
@@ -1259,7 +1259,7 @@ def compare_incremental_lexical_prompts(snapshot, *, endpoint, decision, store, 
             raise IndexContractError('migration_snapshot_changed')
         if 'sidecar_corpus' not in legacy:
             raise IndexContractError('migration_lexical_sidecar_unproved')
-        name = fts_table(generation['ordinal'], sidecar=True)
+        name = store._pin_fts_table(pin, sidecar=True)
         active = legacy['active_fts']['sidecar']
         paths_json = json.dumps(list(active), ensure_ascii=False, separators=(',', ':'))
         full_paths = legacy['fts_paths']
@@ -1419,7 +1419,7 @@ def compare_combined_lexical_prompts(snapshot, *, endpoint, decision, store, pin
                 or legacy['observation'] != selected['observation']):
             raise IndexContractError('migration_snapshot_changed')
         paired = 'sidecar_corpus' in legacy
-        side_table = fts_table(generation['ordinal'], sidecar=True)
+        side_table = store._pin_fts_table(pin, sidecar=True)
         # An unpaired (no sidecar) generation records no per-path FTS origin.
         full_paths, sources = legacy['fts_paths'], legacy.get('fts_sources')
         side_json = json.dumps(list(legacy['active_fts']['sidecar']), ensure_ascii=False,
@@ -2876,16 +2876,12 @@ def publish_shadow_generation(store, generation, *, project, executing_root, dea
                     store.release(pin)
                 trace['outcome'] = 'published'
                 return published
-            with store._session() as db:
-                row = db.execute('SELECT s.stage_json FROM generations g JOIN generation_slots s '
-                                 'ON s.ordinal=g.ordinal WHERE g.gen_id=?', (generation,)).fetchone()
-                if row is None:
-                    values.fail('generation_missing')
-                stage = view_values.check_stage(values.parse_canonical(row['stage_json']),
-                                                handle, store._incarnation)
+            stage = store._prepared_stage(generation, handle)
             legacy = stage.get('legacy')
-            if (legacy is None or legacy['observation'] != intent['observation']
-                    or legacy['scan'] != intent['provenance_scan']):
+            # A row-format stage keeps only its scan digest: publish re-derives and compares it.
+            if (legacy is None or (legacy.get('observation') is not None and (
+                    legacy['observation'] != intent['observation']
+                    or legacy['scan'] != intent['provenance_scan']))):
                 raise IndexContractError('migration_snapshot_changed')
             published = store.publish_generation(handle, generation, expected_head=stage['base'],
                 legacy_snapshot={'endpoint': endpoint, 'decision': decision,
@@ -3472,17 +3468,14 @@ def _candidate_sample(store, intent, record, deadline):
                     or legacy.get('observation') != record['observation']
                     or values.digest('memvane-read-pin-seal-v1', seal) != store._pinned(pin)['seal']):
                 raise IndexContractError('migration_snapshot_changed')
-            count = db.execute('SELECT count(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
-                               (pin.gen_id,)).fetchone()[0]
+            count = store._eligible_count(pin.gen_id)
             if count != len(legacy['paths']):
                 raise IndexContractError('migration_recall_parity_mismatch')
             if record['pages'] and count != record['members']:
                 raise IndexContractError('migration_recall_parity_mismatch')
             sampled = min(count, 10)
             after = '' if record['cursor'] is None else record['cursor']['after']
-            member = db.execute('SELECT path,blob_sha,display_title FROM wiki_members '
-                                'WHERE gen_id=? AND eligible=1 AND path>? '
-                                'ORDER BY path COLLATE BINARY LIMIT 1', (pin.gen_id, after)).fetchone()
+            member = store._eligible_member_after(pin.gen_id, after)
             paired = 'sidecar_corpus' in legacy
         prompt_hash, hit, next_cursor = None, False, None
         if record['prompts'] < sampled:
@@ -3694,7 +3687,7 @@ def shadow_parity_receipt(state, *, candidate, candidate_incarnation):
 # Lock bundle (design 4.3-2): installer -> build owner -> operation ->
 # provider lane -> sync owner, never waiting. cas_reader takes the journal
 # transition lock itself. Each step holds it for at most _SWITCH_SECONDS.
-_SWITCH_SECONDS = 10.0
+_SWITCH_SECONDS = 30.0
 _SWITCH_HOSTS = frozenset(('claude', 'codex'))
 _READY_RECORD = ('migration_id', 'generation', 'candidate_incarnation', 'parity_seal', 'observation',
                  'source_revision', 'release_commit', 'capability', 'endpoint_id', 'store_incarnation',
@@ -4204,6 +4197,102 @@ def reader_status(project):
             'rollback': _last_rollback(history), 'held': rollback_hold(state) is not None}
 
 
+def switch_rehearsal(project, *, executing_root=None):
+    """Read-only diagnostic; none of these observations authorize a switch."""
+    import laya_install_journal as install
+    with install.read_only_journals():
+        return _switch_rehearsal(project, executing_root=executing_root)
+
+
+def _switch_rehearsal(project, *, executing_root=None):
+    from pathlib import Path
+    import laya_bridge_readiness as bridge
+    import laya_install_journal as install
+    import laya_ledger_common as ledger
+    project = Path(project).resolve(strict=True)
+    root = Path(executing_root or Path(__file__).resolve().parent.parent)
+    checks = {}
+
+    def run(name, operation):
+        try:
+            value = operation()
+            checks[name] = {'status': 'pass'}
+            return value
+        except Exception as exc:
+            reason = str(exc) or type(exc).__name__
+            checks[name] = {'status': ('unavailable' if reason == 'candidate_rehearsal_unavailable'
+                                       else 'fail'), 'reason': reason}
+            return None
+
+    decision = journal.journal.select_route(str(project), action='recall')
+    if decision.get('state') != 'candidate' or decision.get('projectRoot') != str(project):
+        raise IndexContractError('migration_route_invalid')
+    state = journal._state(Path(decision['journalPath']).parent)
+    journal_path = state / 'install-journal.sqlite'
+    if any(Path(str(journal_path) + suffix).exists() for suffix in ('-wal', '-journal')):
+        raise IndexContractError('reader_journal_rehearsal_unavailable')
+    run('preconditions', lambda: _switch_preconditions(project, state))
+    intent = run('intent', lambda: ledger._read_json(state / _INTENT))
+    selection = run('selection', lambda: _read_history(state / 'install-journal.sqlite'))
+    proof = None
+    def selected():
+        import laya_fresh_wiki_origin as fresh
+        with install.read_only_journals():
+            proof = install.verify_notification_target(decision)
+            info = install.inspect_journal(state / 'install-journal.sqlite')
+            owner = install._inspect_identity(info['selected'])
+            if (proof['sourceCommit'] != info['selected']['sourceCommit']
+                    or str(install._verified_executing_root(info['selected'], owner)) != str(root)):
+                raise IndexContractError('switch_bundle_mismatch')
+            return state, project, decision, proof, fresh._load(state / fresh.LEDGER), info
+    selected_state = run('bundle_match', selected)
+    if selected_state is not None:
+        proof = selected_state[3]
+    receipt = None
+    if isinstance(intent, dict):
+        def parity():
+            value = shadow_parity_receipt(state, candidate=intent['candidate'],
+                                          candidate_incarnation=intent['candidate_incarnation'])
+            if value is None:
+                raise IndexContractError('switch_parity_missing')
+            return value
+        receipt = run('parity_receipt', parity)
+    else:
+        checks['parity_receipt'] = {'status': 'unavailable'}
+    if proof is None:
+        checks['claude_receipt'] = checks['codex_receipt'] = {'status': 'unavailable'}
+    else:
+        def bridges():
+            paths = bridge.find_loaded_bridge(state, release_commit=proof['sourceCommit'])
+            result = bridge.check_loaded_bridge(paths, release_commit=proof['sourceCommit'],
+                                                expected_hosts=_SWITCH_HOSTS)
+            if selection is None or (result['endpoint_id'], result['reader_epoch']) != (
+                    selection[0].preferred_endpoint, selection[0].epoch):
+                raise IndexContractError('switch_bridge_missing')
+        run('claude_receipt', bridges)
+        checks['codex_receipt'] = dict(checks['claude_receipt'])
+    if proof is None or receipt is None or selection is None or not isinstance(intent, dict):
+        checks['record_comparison'] = {'status': 'unavailable'}
+    else:
+        def compare():
+            candidate = Path(intent['candidate'])
+            if any(Path(str(candidate) + suffix).exists() for suffix in ('-wal', '-journal')):
+                raise IndexContractError('candidate_rehearsal_unavailable')
+            draft = {'db_path': intent['candidate'], 'worktree_id': intent['worktree_id'],
+                     'head_floor': None, 'parity': {k: receipt[k] for k in journal.PARITY_KEYS},
+                     'vector_profile': None, 'vector_recipe': None}
+            with install.read_only_journals():
+                target, _raw, _proof = journal._schema3_record(*selected_state, draft)
+            target['creation_epoch'] = _proof['selectionEpoch']
+            base = selection[1]
+            if not (journal.records_agree(target, base, journal.stable_fields(base, target))
+                    or journal.rollback_pair(base, target) or journal.upgraded_pair(base, target)):
+                raise IndexContractError('reader_install_changed')
+        run('record_comparison', compare)
+    checks['catchup_and_head'] = {'status': 'unavailable', 'reason': 'requires_pinned_snapshot'}
+    return {'status': 'inspected', 'checks': checks}
+
+
 def _rollback_transition_id(expected_endpoint, endpoint_id, epoch):
     # Fixed per (base, target, epoch): a retry after a committed CAS is its replay.
     return hashlib.sha256(('memvane-reader-rollback-v1\0%s\0%s\0%d' % (expected_endpoint, endpoint_id, epoch))
@@ -4661,14 +4750,7 @@ def _entered(manager, value):
 
 
 def _candidate_members(store, generation, after, limit):
-    with store._session() as db:
-        if after is None:
-            rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
-                              'ORDER BY path LIMIT ?', (generation, limit)).fetchall()
-        else:
-            rows = db.execute('SELECT path,blob_sha FROM wiki_members WHERE gen_id=? AND eligible=1 '
-                              'AND path>? ORDER BY path LIMIT ?', (generation, after, limit)).fetchall()
-        return [(row[0], row[1]) for row in rows]
+    return store._eligible_members(generation, after=after, limit=limit)
 
 
 def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
@@ -4705,9 +4787,7 @@ def advance_vectors(store, *, project, executing_root, vector_spec, deadline):
             trace['outcome'] = 'vectors_complete'
             return intent
         if record is None:
-            with store._session() as db:
-                total = db.execute('SELECT COUNT(*) FROM wiki_members WHERE gen_id=? AND eligible=1',
-                                   (receipt['generation'],)).fetchone()[0]
+            total = store._eligible_count(receipt['generation'])
             record = {'migration_id': intent['migration_id'], 'generation': receipt['generation'],
                       'candidate_incarnation': receipt['candidate_incarnation'],
                       'recipe_id': spec['recipe_id'], 'profile_id': spec['profile_id'],

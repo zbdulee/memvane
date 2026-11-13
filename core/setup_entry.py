@@ -106,6 +106,7 @@ def main(argv=None):
     parser.add_argument('--approve-legacy-cleanup', action='store_true')
     parser.add_argument('--approve-index-reader-rollback', action='store_true')
     parser.add_argument('--approve-index-reader-migration-resume', action='store_true')
+    parser.add_argument('--rehearse-switch', action='store_true')
     parser.add_argument('--include-user-qmd-data', action='store_true')
     parser.add_argument('--wake-revision', type=int)
     parser.add_argument('--session')
@@ -138,7 +139,14 @@ def main(argv=None):
             installed = Path(__file__).resolve(strict=True).parent.parent
             try:
                 if args.action == 'index-reader-status':
-                    result = migration.reader_status(project)
+                    if args.rehearse_switch:
+                        import laya_install_journal
+                        with laya_install_journal.read_only_journals():
+                            rehearsal = migration.switch_rehearsal(project, executing_root=installed)
+                            result = migration.reader_status(project)
+                        result['switchRehearsal'] = rehearsal
+                    else:
+                        result = migration.reader_status(project)
                 elif args.action == 'rollback-index-reader':
                     if not args.approve_index_reader_rollback:
                         raise ValueError('index_reader_rollback_approval_required')
@@ -353,6 +361,13 @@ def main(argv=None):
                     # Only the exact retired build's own pointer is named.
                     result['nextAction'] = pending['nextAction']
                     result['retireStateRoot'] = pending['stateRoot']
+    try:
+        # The selected project registry is a lookup index: it reflects a
+        # finished activation or release and never changes this result.
+        import memvane_registry
+        memvane_registry.after_setup(args.action, args.project, args.state_root, result)
+    except Exception:
+        pass
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     if result.get('status')=='deferred':return 75
     return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing', 'partial',

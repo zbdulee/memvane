@@ -2293,6 +2293,37 @@ def _project_dir_moved(decision) -> bool:
         return False
 
 
+def _codex_seal_notice(decision):
+    """Best-effort recent event notice; it does not observe hook trust."""
+    from datetime import datetime, timezone
+    state = event_log.state_root_for_decision(decision)
+    if state is None:
+        return None
+    try:
+        now = datetime.now(timezone.utc).timestamp()
+        pending = False
+        for row in event_log.read(state, max_bytes=1024 * 1024):
+            if row.get('event') != 'bundle.upgrade':
+                continue
+            try:
+                stamp = datetime.fromisoformat(row['ts'].replace('Z', '+00:00')).timestamp()
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if not 0 <= now - stamp <= 86400:
+                continue
+            if row.get('codexSealWritten') is True:
+                pending = True
+            elif row.get('outcome') == 'codex_hook_notice':
+                pending = False
+        if not pending:
+            return None
+        event_log.emit('bundle.upgrade', outcome='codex_hook_notice', state_root=state,
+                       host='claude')
+        return '[memvane] Codex hook approval may need to be renewed after the bundle seal.'
+    except Exception:
+        return None
+
+
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
@@ -2434,12 +2465,18 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         _trace_fields(grant=grant_kind if grant is not None else None)
         if action in ("index", "file-change-event"):
             return {}
+        if action == "update-queued":
+            _reconcile_registry(decision)
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
         if action == "update-queued":
             block_notice = _vector_block_notice(decision, payload)
             if block_notice:
                 move_notice = (move_notice + "\n" + block_notice if move_notice
                                else block_notice)
+            if host == 'claude':
+                trust_notice = _codex_seal_notice(decision)
+                if trust_notice:
+                    move_notice = (move_notice + "\n" + trust_notice if move_notice else trust_notice)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
@@ -2462,6 +2499,33 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                 exc._memvane_reader_attempted = True
             raise
     return _serve_recall(host, decision, payload, proof, verify_selected_route)
+
+
+def _reconcile_registry(decision: dict) -> None:
+    """Bounded opportunistic reconcile of the selected project registry.
+
+    SessionStart of a selected main checkout seeds its own row and checks a
+    few rows and backfill entries (``memvane_registry.HOOK_*``) without running
+    git (no linked worktree discovery). The registry
+    is a lookup index: any failure leaves this hook's output unchanged.
+    """
+    if decision.get('state') != 'candidate' or not isinstance(decision.get('journalPath'), str):
+        return
+    import hook_budget
+    try:
+        import memvane_registry
+        # Keep a second of the hook's own deadline for the rest of this response.
+        seconds = min(memvane_registry.HOOK_SECONDS, hook_budget.remaining() - 1.0)
+        if seconds <= 0:
+            return
+        memvane_registry.reconcile(
+            seed=(decision['projectRoot'], str(Path(decision['journalPath']).parent)),
+            max_rows=memvane_registry.HOOK_ROWS, seconds=seconds,
+            backfill_page=memvane_registry.HOOK_BACKFILL_PAGE,
+            busy_ms=memvane_registry.HOOK_BUSY_MS, worktrees=False)
+    except (Exception, hook_budget.HookDeadlineExceeded):
+        # An exhausted hook budget skips the reconcile; the response stays.
+        pass
 
 
 def _selected_store_format(decision: dict) -> str:
@@ -2631,6 +2695,10 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
         _trace_final('bundle_upgrade_pending')
         if verify_selected_route_read_only(decision) != proof:
             _fail('selected_proof_changed')
+        if host == 'claude' and action == 'update-queued':
+            trust_notice = _codex_seal_notice(decision)
+            if trust_notice:
+                notice += '\n' + trust_notice
         if host == 'hermes':
             return {'status': 'bundle_upgrade_pending', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
