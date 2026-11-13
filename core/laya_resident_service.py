@@ -729,8 +729,15 @@ def default_admit():
 
 
 def default_start_worker(manifest, admit):
+    from laya_local_embed_provider import _hash_file
     from laya_local_embed_service import start_owned_embed_service
-    return start_owned_embed_service(manifest, admit=admit)
+    root = Path(__file__).resolve().parent
+    provider, worker = root / 'laya_local_embed_provider.py', root / 'laya_local_embed_worker.mjs'
+    if (_hash_file(str(provider)) != manifest['providerArtifactSha256']
+            or _hash_file(str(worker)) != manifest['workerSha256']):
+        _fail('provider_attestation_invalid')
+    local = {**manifest, 'providerPath': str(provider), 'workerPath': str(worker)}
+    return start_owned_embed_service(local, admit=admit)
 
 
 class Service:
