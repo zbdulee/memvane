@@ -1,5 +1,5 @@
 """Public wiki card admission operations."""
-from __future__ import annotations
+from __future__ import annotations as _annotations
 
 
 def bounded_snapshot(*args, **kwargs):
@@ -59,6 +59,59 @@ def card_sources_allowed(*args, **kwargs):
 def card_body_hash(*args, **kwargs):
     from memvane.wiki.card.yaml_scalars import card_body_hash as implementation
     return implementation(*args, **kwargs)
+
+
+class source_spans:
+    """Public source-span parsing and binding operations."""
+
+    @staticmethod
+    def is_invalid(value):
+        return value == 'invalid'
+
+    @staticmethod
+    def bound_to_revisions(*args, **kwargs):
+        from memvane.wiki.card.source_spans import bound_to_revisions as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def bind_to_card(*args, **kwargs):
+        from memvane.wiki.card.source_spans import bind_to_card as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def card_revisions(*args, **kwargs):
+        from memvane.wiki.card.source_spans import card_revisions as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def derive_spans(*args, **kwargs):
+        from memvane.wiki.card.source_spans import derive_spans as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def evidence_item(*args, **kwargs):
+        from memvane.wiki.card.source_spans import evidence_item as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def locator(*args, **kwargs):
+        from memvane.wiki.card.source_spans import locator as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def read_card_spans(*args, **kwargs):
+        from memvane.wiki.card.source_spans import read_card_spans as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def verify_span(*args, **kwargs):
+        from memvane.wiki.card.source_spans import verify_span as implementation
+        return implementation(*args, **kwargs)
+
+    @staticmethod
+    def _frontmatter_block(*args, **kwargs):
+        from memvane.wiki.card.source_spans import _frontmatter_block as implementation
+        return implementation(*args, **kwargs)
 
 
 

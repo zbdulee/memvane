@@ -1092,7 +1092,7 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
         emitted = yaml_scalars.dump_source_spans(source_spans)
         if status != "verified" or not emitted:
             return None
-        from memvane.wiki.card import source_spans as spans_module
+        from memvane.wiki.card.api import source_spans as spans_module
         if not spans_module.bound_to_revisions(
                 yaml_scalars.load_source_spans(emitted) or [],
                 spans_module.card_revisions(expected_text)):
