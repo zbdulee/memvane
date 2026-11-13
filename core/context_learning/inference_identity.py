@@ -173,13 +173,14 @@ def _write(path, row):
 
 def _record(state, argv, *, view, verified, manifest=None, before_publish=None):
     """Internal publication after explicit synthetic verification, never predict."""
+    from memvane_version import plugin_version
     state = Path(state)
     roots = [*runtime_roots(), Path(argv[2]).resolve()]
     manifest = snapshot(roots, content=True) if manifest is None else manifest
     if snapshot(roots) != _stamps(manifest): raise ValueError('inference_identity_changed')
     receipt = {'schema': SCHEMA, 'createdAt': time.time(), 'namespace': _private_state(state),
         'executable': argv[0], 'model_dir': argv[2], 'view': view,
-        'verified': verified, 'code_sha256': code_identity(),
+        'verified': verified, 'code_sha256': code_identity(), 'pluginVersion': plugin_version(),
         'device': device_identity(), 'roots': [str(p) for p in roots],
         'manifest_sha256': _sha(manifest), 'checks': CHECKS,
         'policy_sha256': _sha(read_private_json(state/'live-selector.json')),
@@ -201,6 +202,7 @@ def has_evidence(state):
 
 def admit(state, argv, view):
     """Cheap client gate. No model hashing, imports or subprocesses."""
+    from memvane_version import plugin_version
     state = Path(state)
     if not has_evidence(state): return None
     try:
@@ -208,7 +210,7 @@ def admit(state, argv, view):
         receipt = read_private_json(state/RECEIPT)
         if (binding != {'schema': SCHEMA, 'receipt_sha256': _sha(receipt)}
                 or set(receipt) != {'schema','createdAt','namespace','executable','model_dir','view',
-                    'verified','code_sha256','device','roots','manifest_sha256','checks',
+                    'verified','code_sha256','pluginVersion','device','roots','manifest_sha256','checks',
                     'policy_sha256','approval_sha256','checkpoint_sha256'}
                 or receipt['schema'] != SCHEMA or receipt['checks'] != CHECKS
                 or type(receipt['createdAt']) not in (int,float)
@@ -216,6 +218,7 @@ def admit(state, argv, view):
                 or receipt['namespace'] != _private_state(state)
                 or receipt['executable'] != argv[0] or receipt['model_dir'] != argv[2]
                 or receipt['view'] != view or receipt['code_sha256'] != code_identity()
+                or receipt['pluginVersion'] != plugin_version()
                 or receipt['verified']['adapter_sha256'] != hashlib.sha256(Path(argv[1]).read_bytes()).hexdigest()
                 or receipt['policy_sha256'] != _sha(read_private_json(state/'live-selector.json'))
                 or receipt['approval_sha256'] != _sha(read_private_json(state/'laya-synthetic-attestation.json'))
