@@ -4,7 +4,6 @@ The selector proves only route/settings syntax. An installer-owned journal must
 prove the complete installed plugin before this module opens the runtime.
 """
 from __future__ import annotations
-from memvane.host.types import VectorUnavailable as _VectorUnavailable
 
 from contextlib import contextmanager, ExitStack
 import contextvars
