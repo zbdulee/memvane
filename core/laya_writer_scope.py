@@ -348,56 +348,8 @@ def admission_proof(writer):
     return json.loads(R._raw(_record(writer)['proof']))
 
 
-def adopt_created_sidecar(writer, material, node, *, deadline):
-    """Bind an atomically published private sidecar to this live writer."""
-    import laya_sidecar_create as creation
-    record = _record(writer)
-    context, old = record['context'], record['snapshot']
-    try:
-        context.check_deadline(deadline)
-        R._need(record.get('marked') is True and old['components']['sidecar']['node'] is None,
-                'normal_writer_sidecar_creation_unapproved')
-        item = creation._materials.get(material)
-        R._need(item is not None and item.pid == os.getpid()
-                and item.thread is threading.current_thread()
-                and item.node == list(node)
-                and item.component.role == 'sidecar'
-                and W._component(item.component)[1] is writer,
-                'normal_writer_sidecar_creation_unapproved')
-        path = Path(old['components']['sidecar']['path'])
-        R._need(R._file(path, Path(old['endpoint']['state'])) == list(node)
-                and os.path.samestat(os.fstat(item.fd), path.lstat())
-                and not any(os.path.lexists(str(path)+suffix) for suffix in ('-wal','-shm','-journal')),
-                'normal_writer_sidecar_creation_changed')
-        plan = P.capture_writer_plan(old['project'], executing_root=old['executing_root'])
-        current = P._plan_record(plan)[1]
-        normalized = json.loads(R._raw(current))
-        R._need(normalized['components']['sidecar']['node'] == list(node),
-                'normal_writer_sidecar_creation_changed')
-        normalized['components']['sidecar']['node'] = None
-        R._need(R._raw(normalized) == R._raw(old), 'normal_writer_sidecar_creation_changed')
-        validate_sync_owner(context.queue_owner, plan.queue_path)
-        context.lifetime.check()
-        context.check_deadline(deadline)
-        context.plan = plan
-        context.endpoint = _Endpoint(writer, current)
-        record['snapshot'] = current
-        record['created_sidecar_node'] = list(node)
-        validate_normal_writer(writer, deadline=deadline)
-    except BaseException:
-        _issued.pop(writer, None)
-        raise
 
 
-def finish_created_sidecar(writer, *, deadline):
-    record = _record(writer)
-    validate_normal_writer(writer, deadline=deadline)
-    path = Path(record['snapshot']['components']['sidecar']['path'])
-    files = _connection_check(writer, 'sidecar', path)
-    R._need(record.get('created_sidecar_node') == list(files[''][:2])
-            and files['-wal'] is not None and files['-shm'] is not None,
-            'normal_writer_sidecar_creation_changed')
-    record.pop('created_sidecar_node')
 
 
 def _idle_connections(context):
