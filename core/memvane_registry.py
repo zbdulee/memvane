@@ -98,7 +98,7 @@ _DDL = (
     "version INTEGER NOT NULL DEFAULT 1,"
     "UNIQUE(install_id, target_root))",
     'CREATE INDEX entries_target ON entries(target_root)',
-    "CREATE TABLE scans(base TEXT PRIMARY KEY CHECK(base IN ('current','legacy')),"
+    "CREATE TABLE scans(base TEXT PRIMARY KEY CHECK(base = 'current'),"
     'cursor TEXT, complete_at REAL, pass_started_at REAL)',
 )
 _FIELDS = {'install_id': 'installId', 'state_root': 'stateRoot', 'project_root': 'projectRoot',
@@ -322,8 +322,7 @@ def _public(row):
 
 def _bases(home):
     import memvane_paths
-    return (('current', memvane_paths.state_base(home)),
-            ('legacy', memvane_paths.legacy_state_base(home)))
+    return (('current', memvane_paths.state_base(home)),)
 
 
 def is_home_install(state, home=None):
@@ -799,7 +798,7 @@ def _check_main(home, row, now, deadline):
 
 
 def _backfill(home, now, page, clock, deadline, git_deadline):
-    """Page through both state bases; each keeps its own cursor and completion."""
+    """Page through the state base with a cursor and completion marker."""
     import laya_install_journal as journal
     done = 0
     for key, base in _bases(home):
@@ -857,7 +856,7 @@ def _backfill(home, now, page, clock, deadline, git_deadline):
 def _complete(db):
     found = {row['base']: row['complete_at'] for row in
              db.execute('SELECT base, complete_at FROM scans')}
-    return all(found.get(key) is not None for key in ('current', 'legacy'))
+    return all(found.get(key) is not None for key in ('current',))
 
 
 def reconcile(*, home=None, now=None, clock=None, max_rows=RECONCILE_ROWS,
@@ -989,7 +988,7 @@ def snapshot(*, home=None, reconcile=True, now=None):
             'busy' if reason == 'registry_busy' else 'recovery_required')
         return {'status': status, 'reason': reason, 'rows': [], 'scans': {}}
     complete = all(scans.get(key, {}).get('complete_at') is not None
-                   for key in ('current', 'legacy'))
+                   for key in ('current',))
     stale = not complete or any(
         now - (scans[key]['complete_at'] or 0) > 2 * RESCAN_SECONDS for key in scans)
     return {'status': 'ok', 'complete': complete, 'stale': stale,

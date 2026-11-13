@@ -29,7 +29,7 @@ _HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 
 def _state_bases():
     import memvane_paths
-    return memvane_paths.state_base(), memvane_paths.legacy_state_base()
+    return (memvane_paths.state_base(),)
 
 
 def _inbox_path(decision):

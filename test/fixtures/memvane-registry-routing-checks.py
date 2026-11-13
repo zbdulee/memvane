@@ -74,7 +74,7 @@ class Routing(unittest.TestCase):
 
         def counted(path='.'):
             if (isinstance(path, (str, os.PathLike)) and
-                    Path(path) in (memvane_paths.state_base(), memvane_paths.legacy_state_base())):
+                    Path(path) == memvane_paths.state_base()):
                 self.scans.append(str(path))
             return real(path)
         self.patch(os, 'scandir', side_effect=counted)

@@ -65,9 +65,9 @@ def _private_parent(path):
 
 
 def _state_bases():
-    """State bases an existing install may live under (current, pre-rename)."""
+    """State base an existing install may live under."""
     import memvane_paths
-    return (memvane_paths.state_base(), memvane_paths.legacy_state_base())
+    return (memvane_paths.state_base(),)
 
 
 def _prepare_state_root(path, install_id):

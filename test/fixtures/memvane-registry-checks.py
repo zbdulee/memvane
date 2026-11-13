@@ -683,47 +683,9 @@ class Reconcile(Base):
         self.assertEqual(result['checked'], 2, result)
         self.assertEqual(self.row(self.b)['status'], 'missing_pending')
 
-    def test_backfill_pages_both_bases_and_marks_complete_only_after_full_enumeration(self):
-        legacy = memvane_paths.legacy_state_base()
-        legacy.mkdir(parents=True, mode=0o700)
-        result = registry().reconcile(now=1000.0, max_rows=0, backfill_page=1)
-        self.assertFalse(result['complete'], result)
-        self.assertEqual(registry().routing_rows()['complete'], False)
-        done = self.backfill(now=1001.0)
-        self.assertTrue(done['complete'])
-        rows = registry().routing_rows()
-        self.assertTrue(rows['complete'])
-        self.assertEqual(sorted(row['installId'] for row in rows['rows']),
-                         sorted((self.a.install_id, self.b.install_id)))
 
-    def test_unreadable_base_never_completes(self):
-        legacy = memvane_paths.legacy_state_base()
-        legacy.mkdir(parents=True, mode=0o700)
-        legacy.chmod(0)
-        self.addCleanup(legacy.chmod, 0o700)
-        for step in range(4):
-            result = registry().reconcile(now=1000.0 + step, max_rows=8, backfill_page=64)
-        self.assertFalse(result['complete'], result)
-        self.assertFalse(registry().routing_rows()['complete'])
 
-    def test_duplicate_install_in_both_bases_registers_only_the_route_proved_root(self):
-        legacy = memvane_paths.legacy_state_base()
-        legacy.mkdir(parents=True, mode=0o700)
-        copy = legacy / self.a.install_id
-        shutil.copytree(self.a.state, copy)
-        self.backfill()
-        rows = [row for row in self.rows().values() if row['install_id'] == self.a.install_id]
-        self.assertEqual([row['state_root'] for row in rows], [str(self.a.state)])
 
-    def test_state_root_follows_the_route_proof_of_the_same_install(self):
-        self.register(self.a)
-        with contextlib.closing(sqlite3.connect(str(self.db))) as db:
-            db.execute('UPDATE entries SET state_root=? WHERE install_id=?',
-                       (str(memvane_paths.legacy_state_base() / self.a.install_id),
-                        self.a.install_id))
-            db.commit()
-        registry().reconcile(now=2000.0, backfill_page=0)
-        self.assertEqual(self.row(self.a)['state_root'], str(self.a.state))
 
     def test_backfill_never_resurrects_a_tombstone_or_overwrites_another_install(self):
         self.register(self.a)

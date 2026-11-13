@@ -205,49 +205,6 @@ class RuntimeReviewBinding(unittest.TestCase):
             g0, g1, _record, att1, _source, _commit = pair(case, machine=True)
             self.check_cutoff(case, 'provision-new', g0, g1, att1, case.provision)
 
-    def test_legacy_adoption_returns_the_generation_it_copied(self):
-        import memvane_paths
-        with fixture('Base') as case:
-            with mock.patch.object(memvane_paths, 'STATE_PARTS', memvane_paths.LEGACY_STATE_PARTS), \
-                    mock.patch.object(memvane_paths, 'state_base', memvane_paths.legacy_state_base):
-                legacy = R.ensure_for_attestation(case.old_att, case.home)
-            legacy_files = files(legacy)
-            manifest = {**case.old_att['providerManifest'],
-                        'nodePath': legacy['nodePath'], 'moduleEntryPath': legacy['moduleEntryPath'],
-                        'modelPath': legacy['modelPath']}
-            record = {**case.old_att, 'providerManifest': manifest,
-                      'dependencyClosure': legacy['dependencyClosure'],
-                      'profileDependencyClosure': case.old_closure,
-                      R.FILES_SHA: legacy[R.FILES_SHA]}
-            dependency = next(case.qmd_runtime.rglob('isexe/index.js'))
-            original = dependency.read_bytes()
-            try:
-                dependency.write_bytes(original + b'\n// synthetic ordinary JS dependency G1\n')
-                g1 = provision_sources(case)
-            finally:
-                dependency.write_bytes(original)
-            self.assertNotEqual(legacy[R.FILES_SHA], g1[R.FILES_SHA])
-            for key in ('nodeSha256', 'modelSha256', 'moduleEntrySha256'):
-                self.assertEqual(legacy[key], g1[key], key)
-            self.assertEqual([(row['sha256'], row['bytes']) for row in legacy['dependencyClosure']],
-                             [(row['sha256'], row['bytes']) for row in g1['dependencyClosure']])
-            source, commit = case.source_repo()
-            att1 = attest(case, g1, source, commit)
-            before_g1 = files(g1)
-            with switch_after_unlock(case, att1) as evidence:
-                returned = R.ensure_for_attestation(record, case.home)
-            expected = R.root(case.home) / 'generations' / Path(legacy['generation']).name
-            actual = R.select(case.home)
-            print(json.dumps({'case': 'legacy-adopt', 'chosen': evidence.get('chosen'),
-                              'expected': str(expected), 'returned': returned['generation'],
-                              'active': actual['generation'], 'g0Files': legacy[R.FILES_SHA],
-                              'g1Files': g1[R.FILES_SHA]}, sort_keys=True), flush=True)
-            self.assertEqual(evidence['chosen'], str(expected))
-            self.assertEqual(actual['generation'], g1['generation'])
-            self.assertEqual(files(legacy), legacy_files)
-            self.assertEqual(files({'generation': str(expected)}), legacy_files)
-            self.assertEqual(files(g1), before_g1)
-            self.assertEqual(returned['generation'], str(expected))
 
     def test_upgrade_real_review_keeps_the_generation_returned_by_ensure(self):
         with fixture() as case:
