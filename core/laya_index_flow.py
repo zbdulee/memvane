@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import sqlite3
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 from laya_index_claim_queue import ACK, REPROCESS, DEFER, LEASE_LOST
 import laya_index_source_port as source_port
 

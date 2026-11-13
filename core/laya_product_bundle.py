@@ -346,7 +346,7 @@ def validate_production_provider_attestation(profile, bundle_proof, attestation)
         if type(sealed) is not str or not SHA.fullmatch(sealed) or observed != sealed:
             _fail('production_runtime_files_mismatch')
     from laya_local_embed_provider import recipe_fingerprint
-    from laya_index_vector import profile_identity
+    from laya_vector_primitives import profile_identity
     try:
         fingerprint = recipe_fingerprint(
             model_id=provider['modelId'], model_sha256=provider['modelSha256'],

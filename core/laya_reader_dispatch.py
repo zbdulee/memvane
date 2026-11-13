@@ -33,7 +33,7 @@ _PROVIDER_CHILD='''
 import json,sys
 sys.path.insert(0,sys.argv[1])
 from laya_local_embed_provider import ReviewedLocalQmdProvider
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 request=json.load(sys.stdin)
 try:
     value=ReviewedLocalQmdProvider(request['manifest'])._embed('query',request['prompt'],timeout=request['timeout'])
@@ -99,7 +99,7 @@ def _vector_proof(authority,snapshot,decision,provider,deadline):
 
 def _provider_vector(provider,prompt,budget):
     """Use the existing provider in a child with an absolute completion bound."""
-    from laya_index_a import IndexContractError
+    from laya_store_primitives import IndexContractError
     deadline=time.monotonic()+budget
     payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,
                         'allowed':sorted(_PROVIDER_ERRORS)},
@@ -138,7 +138,7 @@ def _provider_vector(provider,prompt,budget):
 def approved_query_vector(*,authority,snapshot,decision,provider,prompt,deadline):
     """Bind one provider result to the live v6 snapshot and calling context."""
     from laya_view_vectors import query_values
-    from laya_index_a import IndexContractError
+    from laya_store_primitives import IndexContractError
     proof=_vector_proof(authority,snapshot,decision,provider,deadline)
     remaining=min(2,deadline-time.monotonic())
     if remaining<=0:raise ValueError('reader_snapshot_deadline')

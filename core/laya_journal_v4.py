@@ -152,7 +152,7 @@ def legacy_hermes_present(home=None):
 def refuse_while_legacy_hermes(home=None):
     """Refuse publishing a route in a project while that Hermes copy may run."""
     if legacy_hermes_present(home):
-        from laya_index_a import IndexContractError
+        from laya_store_primitives import IndexContractError
         raise IndexContractError(LEGACY_HERMES)
 
 

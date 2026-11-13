@@ -174,7 +174,7 @@ class _Owner:
     def open(self):
         record = self.scope.record
         try:
-            from laya_index_a import _query_only_uri
+            from laya_store_primitives import _query_only_uri
             self.db = sqlite3.connect(_query_only_uri(self.path), uri=True,
                 timeout=min(2., max(0., record['deadline'] - time.monotonic())),
                 isolation_level=None, factory=W._OwnedSQLite)

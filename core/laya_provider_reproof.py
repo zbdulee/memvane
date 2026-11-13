@@ -128,7 +128,7 @@ def reattest(old_attestation, reviewed_provider):
 
 def _fingerprint_reproduced(old_manifest, new_manifest, old_profile):
     """New content plus the reviewed closure digest gives the old profile."""
-    from laya_index_vector import profile_identity
+    from laya_vector_primitives import profile_identity
     from laya_local_embed_provider import recipe_fingerprint
     try:
         fingerprint = recipe_fingerprint(

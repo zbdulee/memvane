@@ -96,7 +96,7 @@ _BUNDLE = None
 
 
 def _fail(code):
-    from laya_index_a import IndexContractError
+    from laya_store_primitives import IndexContractError
     raise IndexContractError(code)
 
 

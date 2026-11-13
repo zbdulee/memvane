@@ -213,7 +213,7 @@ def open_warm_component(endpoint, role, *, deadline):
             R._need(R.persistent_node_equal(expected, before), 'reader_component_changed')
         R._need(auxiliary['-journal'] is None, 'reader_recovery_unproved')
         R._need(time.monotonic() < deadline, 'reader_open_deadline')
-        from laya_index_a import _query_only_uri
+        from laya_store_primitives import _query_only_uri
         db=sqlite3.connect(_query_only_uri(path),uri=True,isolation_level=None,
                            timeout=0.2,factory=_ReaderSQLite)
         owner=_ReaderOwner(db,locks);_owners[id(db)]=owner

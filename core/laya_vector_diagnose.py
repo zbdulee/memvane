@@ -34,7 +34,7 @@ def result_rule_code(envelope, manifest):
     ``unknown`` when the answer passes every rule.
     """
     import struct
-    from laya_index_vector import _sum_squares
+    from laya_vector_primitives import _sum_squares
     dimension = manifest['dimension']
     if not isinstance(envelope, dict):
         return 'envelope_invalid'
@@ -106,7 +106,7 @@ def diagnose(manifest, body, path, *, timeout, python=None, runner=subprocess.ru
 
 def _observe_and_embed(provider_module, provider, body, path, timeout, manifest):
     """In the child only: one embedding while recording what ``json.loads`` decodes."""
-    from laya_index_a import IndexContractError
+    from laya_store_primitives import IndexContractError
     real = provider_module.json
     seen = []
 

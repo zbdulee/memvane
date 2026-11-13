@@ -483,7 +483,7 @@ def _validate_state(value, decision):
 
 
 def _members(db, scope, gen):
-    from laya_index_a import _digest
+    from laya_store_primitives import _digest
     row = db.execute('SELECT scope,state,digest FROM generations WHERE gen=?', (gen,)).fetchone()
     if row is None or row[0] != scope or row[1] != 'published':
         raise DiscoveryBlocked('generation_unproved')

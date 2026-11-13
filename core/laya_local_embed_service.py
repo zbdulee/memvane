@@ -14,7 +14,7 @@ import stat
 import subprocess
 import time
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 from laya_local_embed_provider import ReviewedLocalQmdProvider
 
 

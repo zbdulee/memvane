@@ -14,8 +14,8 @@ import re
 import socket
 import stat
 
-from laya_index_a import IndexContractError
-from laya_index_vector import profile_identity
+from laya_store_primitives import IndexContractError
+from laya_vector_primitives import profile_identity
 
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -279,7 +279,7 @@ class ReviewedLocalQmdProvider:
                                       'embeddingFingerprint','ok','result'}):
                 _fail('provider_result_invalid')
             response = envelope['result']
-            from laya_index_vector import _blob
+            from laya_vector_primitives import _blob
             if kind == 'document_chunks':
                 if (not isinstance(response, dict) or set(response) != {'chunks'}
                         or not isinstance(response['chunks'], list)

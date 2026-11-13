@@ -63,7 +63,7 @@ import stat
 import tempfile
 import time
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 
 SCHEMA = 'laya-initial-build-v1'
 POINTER_SCHEMA = 'laya-initial-build-pointer-v1'

@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, Optional
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 
 DEFAULT_FILL_FILES = 8
 DEFAULT_FILL_BYTES = 2_000_000
@@ -86,7 +86,7 @@ def _diagnosed(diagnose, body, path, sha):
 
 def provider_profile_id(provider: Any) -> str:
     """Profile identity of a reviewed candidate provider; raises if unusable."""
-    from laya_index_vector import profile_identity
+    from laya_vector_primitives import profile_identity
     profile = getattr(provider, 'profile', None)
     if (not callable(getattr(provider, 'embed_document_chunks', None))
             or not isinstance(profile, dict)

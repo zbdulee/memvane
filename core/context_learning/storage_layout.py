@@ -32,7 +32,7 @@ def _initialized(base):
             return False
         # The registry is WAL; Apple's libsqlite3 refuses mode=ro once a stock
         # build closed it without -wal/-shm, which would pick the legacy root.
-        from laya_index_a import _query_only_uri
+        from laya_store_primitives import _query_only_uri
         db = sqlite3.connect(_query_only_uri(path), uri=True, timeout=1)
         try:
             db.execute('PRAGMA query_only=ON')

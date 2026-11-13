@@ -278,7 +278,7 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
     """
     import platform
     import laya_embed_runtime
-    from laya_index_vector import profile_identity
+    from laya_vector_primitives import profile_identity
     from laya_local_embed_provider import (DEFAULT_EMBED_MODEL_URI,
                                            _hash_file, recipe_fingerprint)
     from laya_product_bundle import (_git, _CommitSource, _read, COMMIT,
@@ -424,7 +424,7 @@ def prepare_capacity_stores(db_path, roots, scope, db_incarnation):
     created again. Both end as private regular files.
     """
     from contextlib import closing
-    from laya_index_a import IndexContractError
+    from laya_store_primitives import IndexContractError
     from laya_index_capacity import GenerationBindingStore
     from laya_index_runtime import (BINDING_STORE_SUFFIX, CATALOG_SUFFIX,
                                     capacity_store_paths)

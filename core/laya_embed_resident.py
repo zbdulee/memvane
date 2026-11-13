@@ -19,7 +19,7 @@ import stat
 import tempfile
 import time
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 from laya_local_embed_service import _private_parent
 from resource_deferred import ResourceDeferred
 

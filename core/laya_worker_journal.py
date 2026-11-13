@@ -12,7 +12,7 @@ import time
 import laya_install_journal as J
 import laya_journal_reader as R
 from persistent_identity import persistent_node_equal
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 from sync_owner_lock import sync_owner, validate_sync_owner
 from resource_deferred import ResourceDeferred
 

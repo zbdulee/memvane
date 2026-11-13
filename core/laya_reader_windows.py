@@ -662,7 +662,7 @@ def _connect_owned(component, mode):
         lifetime = _Lifetime(component.install_id)
         if is_normal:
             normal._connection_check(installer, component.role, component.path)
-        from laya_index_a import _query_only_uri
+        from laya_store_primitives import _query_only_uri
         uri = _query_only_uri(component.path) if mode == 'ro' else component.path.as_uri() + '?mode=' + mode
         db = sqlite3.connect(uri, uri=True,
                              timeout=2, isolation_level=None, factory=_OwnedSQLite)

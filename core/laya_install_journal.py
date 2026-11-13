@@ -597,7 +597,7 @@ def _identity_connection(path, *, binding=_CURRENT_IDENTITY_BINDING):
     if binding is _CURRENT_IDENTITY_BINDING:
         binding = _writer_identity_reads.get()
     if binding is None:
-        from laya_index_a import _query_only_uri
+        from laya_store_primitives import _query_only_uri
         db = sqlite3.connect(_query_only_uri(path.resolve(strict=True)),
                              uri=True, timeout=_reader_timeout())
         try:

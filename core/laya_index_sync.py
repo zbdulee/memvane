@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 
-from laya_index_a import IndexContractError
+from laya_store_primitives import IndexContractError
 from laya_index_flow import process_bound_one, process_one
 from laya_index_runtime import LayaIndexRuntime
 from laya_index_source_port import scan, scan_collections

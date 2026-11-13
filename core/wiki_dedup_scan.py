@@ -171,7 +171,7 @@ def indexed_cards(decision: dict, deadline: float) -> tuple[str, dict[str, _Card
     """
     from context_learning.laya_learning import _open, _sealed_head, wiki_names
     from laya_index_a import IndexContractError, _NOT_EXCLUDED
-    from laya_index_vector import _unpack
+    from laya_vector_primitives import _unpack
     import wiki_source_retire
 
     names = wiki_names(decision)
