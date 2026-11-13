@@ -915,13 +915,13 @@ def _mutate_row(db, path, row, expected_epoch, mutate, *, after=None):
     return True
 
 
-def _cas(path, expected_epoch, mutate, *, after_v5=None):
+def _cas(path, expected_epoch, mutate):
     path = _private_parent(path)
 
     def v5():
         from laya_journal_reader import mutate_image
         mutate_image(path, lambda image: _mutate_row(
-            image, path, _row(image), expected_epoch, mutate, after=after_v5))
+            image, path, _row(image), expected_epoch, mutate))
         return inspect_journal(path)
 
     if journal_version(path) == 5:
@@ -1208,12 +1208,7 @@ def cas_activate(journal_path, expected_epoch, observed_route_raw):
                 'pending_route_sha': None,
                 'provider_attestation_sha': att_sha,
                 'provider_file_identity': (_canon(file_identity) if file_identity is not None else None)}
-    def seal_successor(db, path, before, values):
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='upgrade_read_seals'").fetchone():
-            return
-        from laya_active_upgrade import _commit_reader_successor
-        _commit_reader_successor(db, path, before, values)
-    return _cas(journal_path, expected_epoch, activate, after_v5=seal_successor)
+    return _cas(journal_path, expected_epoch, activate)
 
 
 RELOCATED_ROUTE_FIELDS = frozenset(('journalPath', 'dbPath', 'queuePath'))
