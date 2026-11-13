@@ -18,6 +18,6 @@ test('selected schema3 sync pass publishes row-format view stores recall reads',
     });
     if (r.stdout) process.stdout.write(r.stdout);
     assert.ifError(r.error); assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.stderr, /Ran 13 tests\b/); assert.match(r.stderr, /\nOK\b/);
+    assert.match(r.stderr, /Ran 17 tests\b/); assert.match(r.stderr, /\nOK\b/);
   } finally { removeTemp(home); }
 });

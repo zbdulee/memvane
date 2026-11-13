@@ -1353,7 +1353,13 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 and len(removed) > wiki_lifecycle.MASS_DELETE_FRACTION * len(old)):
             return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
                     'storeFormat': 'schema3', 'removed': len(removed)}
-        observed = _schema3_sources(decision, handle, deadline, raw_scan=raw_scan)
+        scanned = {}
+        observed = _schema3_sources(decision, handle, deadline, raw_scan=scanned)
+        if raw_scan is not None and 'snapshot' in scanned:
+            raw_scan['snapshot'] = scanned['snapshot']
+        # Only a completed scan is a current observation; over its bounds no revision is judged.
+        current_sources = ({source: (sha, length) for source, (sha, length, _tracked) in observed.items()}
+                           if 'snapshot' in scanned else None)
         if (not changed and not removed and not excluded and not cold
                 and _schema3_head_same(store, head, baseline, observed, handle)):
             sealed = baseline['vector_spec']
@@ -1402,7 +1408,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 held += path in old
                 continue
             admitted = store.ingest_attested_card(worktree_id, path, decision=decision,
-                                                  provenance_scan=scan)
+                                                  provenance_scan=scan, current_sources=current_sources)
             ingested += 1
             body = (raw.decode('utf8') if admitted['blob_sha'] == sha
                     else store.document(admitted['blob_sha'])['body'])
