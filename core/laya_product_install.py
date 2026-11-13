@@ -1382,77 +1382,109 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
 
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
-    """Finish the same prepared or partially published v1 selection."""
+    """Finish the same partially published or withdrawn v1 selection."""
+    from laya_ledger_common import _read_json
+    state = Path(journal_path).parent
+    ledger = _read_json(state / 'ledger.json')
+    if ledger.get('phase') in ('restoring', 'restored'):
+        return _restore_v1_locked(_checked_project(project_root), state)
     return activate_origin_selection(project_root, journal_path, route_bytes)
 
 
 def restore_origin_selection(*, project_root, state_root):
-    """Withdraw a selected route before its first selected write.
-
-    The user-visible restore. Under the install lock it reads the ledger
-    beside the private journal and requires the same project, journal and
-    reviewed route bytes. ``active`` restores only while the journal has seen
-    no selected write; ``switching``/``restoring`` settle through recovery;
-    ``prepared`` never left the previous path and changes nothing. After a
-    selected write the route is forward-only. The candidate stores, the
-    ledger and the marker are kept; only the exact route file this selection
-    published is withdrawn.
-    """
-    import laya_fresh_wiki_origin as fresh
+    """Withdraw the selected route only before its first selected write."""
     project = _checked_project(project_root)
     state = _private_parent(state_root)
-    journal = state / 'journal.sqlite'
-    if not (state / fresh.LEDGER).exists():
-        _fail('cutover_ledger_missing')
-    return _restore_fresh_wiki_selection(project, state, journal)
-
-
-def _restore_fresh_wiki_selection(project, state, journal):
-    import laya_fresh_wiki_origin as fresh
-    auto = project_dir.folder(project)
-    def observed():
-        return {'cutoverPhase': fresh._load(state / fresh.LEDGER)['phase'],
-                'journalState': inspect_journal(journal)['state'],
-                'selection': fresh.classify_marker(project, auto / fresh.MARKER,
-                                                    auto / fresh.ROUTE)}
     with _install_lock(state):
-        row = fresh._load(state / fresh.LEDGER)
-        if row['phase'] == 'retired':
-            return {'status': 'binding_retired', 'cutoverPhase': 'retired',
-                    'journalState': inspect_journal(journal)['state'],
-                    'changesApplied': 0}
-        route_bytes = _read_private(state / 'reviewed-route.json', 8192)
-        if (row['projectRoot'] != str(project) or row['journalPath'] != str(journal) or
-                hashlib.sha256(route_bytes).hexdigest() != row['routeSha256']):
-            _fail('restore_cutover_mismatch')
-        before = observed()
-        if tuple(before.values()) in (('prepared', 'candidate_ready', 'legacy'),
-                                      ('restored', 'restored_origin', 'legacy')):
-            return {'status': 'legacy_selected', **before, 'changesApplied': 0}
-        try:
-            if row['phase'] == 'active':
-                fresh.restore(project, journal)
-            else:
-                fresh.recover(project, journal, route_bytes)
-        except fresh.FreshWikiBlocked as exc:
-            after = observed()
-            if str(exc) == 'fresh_wiki_rollback_forward_only':
-                return {'status': 'blocked', 'reason': 'rollback_forward_only',
-                        **after, 'changesApplied': int(after != before)}
-            if after == before:
-                raise
-            return {'status': 'recovery_required', 'reason': str(exc),
-                    **after, 'changesApplied': 1}
-        after = observed()
-    if tuple(after.values()) in (('prepared', 'candidate_ready', 'legacy'),
-                                 ('restored', 'restored_origin', 'legacy')):
-        from laya_embed_resident import wait_for_release
-        stopped = wait_for_release(state / 'runtime' / 'laya-embed.sock')
-        return {'status': 'legacy_restored', **after,
-                'changesApplied': int(after != before),
-                **({} if stopped else {'embedServiceCleanup': 'pending'})}
-    return {'status': 'recovery_required', 'reason': 'restore_unsettled',
-            **after, 'changesApplied': int(after != before)}
+        return _restore_v1_locked(project, state)
+
+
+def _restore_v1_locked(project, state):
+    import laya_initial_build as build
+    import laya_install_journal as journal
+    from contextlib import closing
+    from laya_index_host_route import SELECTION_SCHEMA_V1
+    from laya_ledger_common import _read_json, _write, _fsync_dir
+    from laya_reader_lease import reader_lifetime
+    from sync_owner_lock import sync_owner
+    import wiki_mutation_lock
+    with build.owner(state) as owned:
+        if not owned:
+            _fail('initial_build_busy')
+        record = build.read_v1(state)
+        if record is None or record['identity']['projectRoot'] != str(project):
+            _fail('initial_build_project_mismatch')
+        identity = record['identity']
+        ledger_path = state / 'ledger.json'
+        ledger = _read_json(ledger_path)
+        if (not isinstance(ledger, dict) or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
+                or ledger['schema'] != 'memvane-install-ledger-v1' or ledger['identity'] != identity
+                or type(ledger['epoch']) is not int or ledger['epoch'] < 1
+                or ledger['phase'] not in ('prepared', 'selected', 'restoring', 'restored')):
+            _fail('initial_build_ledger_changed')
+        path = state / 'journal.sqlite'
+        route_raw = _read_private(state / 'route.json', 8192)
+        if hashlib.sha256(route_raw).hexdigest() != identity['routeSha256']:
+            _fail('initial_build_route_changed')
+        with sync_owner(Path(identity['storePath']), wait=False) as owner:
+            if owner is None:
+                _fail('owner_busy')
+            with wiki_mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=True):
+                row = journal.inspect_journal(path)
+                if (row['routeSha256'] != identity['routeSha256']
+                        or row['attestationSha256'] != identity['attestationSha256']
+                        or any(row[k] != identity[k] for k in
+                               ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))):
+                    _fail('initial_build_journal_changed')
+                if row['newWriteSeen']:
+                    _fail('rollback_forward_only')
+                project_paths = [project_dir.runtime_file(project, name)
+                                 for name in ('route.json', 'selection.json')]
+                present = any(item.exists() or item.is_symlink() for item in project_paths)
+                if ledger['phase'] == 'prepared' and row['state'] == 'prepared' and not present:
+                    return {'status': 'not_selected', 'changesApplied': 0}
+                if ((ledger['phase'] == 'selected' and row['state'] != 'selected')
+                        or (ledger['phase'] == 'restored' and row['state'] != 'restored')
+                        or (ledger['phase'] == 'restoring' and row['state'] not in ('prepared', 'selected', 'restored'))):
+                    _fail('restore_state_invalid')
+                if ledger['phase'] in ('prepared', 'selected'):
+                    ledger = {**ledger, 'phase': 'restoring', 'epoch': ledger['epoch'] + 1}
+                    _write(ledger_path, ledger, replace=True)
+                if row['state'] in ('prepared', 'selected'):
+                    _, db = journal._open(path, write=True)
+                    with closing(db):
+                        db.execute('BEGIN IMMEDIATE')
+                        try:
+                            current = journal._inspect_v1_row(db)
+                            if current != {k: v for k, v in row.items() if k != 'journalPath'}:
+                                _fail('initial_build_journal_changed')
+                            if db.execute("UPDATE selection SET state='restored',epoch=epoch+1 "
+                                          "WHERE id=1 AND state=? AND new_write_seen=0 AND epoch=?",
+                                          (row['state'], row['epoch'])).rowcount != 1:
+                                _fail('restore_state_invalid')
+                            journal._inspect_v1_row(db)
+                            db.commit()
+                        except BaseException:
+                            db.rollback()
+                            raise
+                marker = {'schema': SELECTION_SCHEMA_V1, 'projectRoot': str(project),
+                          'installId': identity['installId'], 'routeSha256': identity['routeSha256']}
+                marker_raw = json.dumps(marker, sort_keys=True, ensure_ascii=False,
+                                        separators=(',', ':')).encode('utf-8')
+                for name, expected in (('route.json', route_raw), ('selection.json', marker_raw)):
+                    target = project_dir.runtime_file(project, name)
+                    if not target.exists() and not target.is_symlink():
+                        continue
+                    before = target.lstat()
+                    if _read_private(target, 8192) != expected or not os.path.samestat(before, target.lstat()):
+                        _fail('restore_project_pointer_changed')
+                    target.unlink()
+                    _fsync_dir(target.parent)
+                build.retire_project_pointer(identity)
+                if ledger['phase'] != 'restored':
+                    ledger = {**ledger, 'phase': 'restored', 'epoch': ledger['epoch'] + 1}
+                    _write(ledger_path, ledger, replace=True)
+    return {'status': 'restored', 'changesApplied': 1}
 
 
 def stage_host_loaded_candidate(*, source_root, plugin_root, state_root, commit_id,

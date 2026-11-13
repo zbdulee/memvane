@@ -447,7 +447,12 @@ def retire_project_pointer(identity):
     including after an interruption between the move and the removal.
     Returns ``retired``, ``absent`` or ``other``.
     """
-    _validate_identity(identity)
+    if isinstance(identity, dict) and set(identity) == V1_BUILD_IDENTITY:
+        record = read_v1(identity['stateRoot'])
+        if record is None or record['identity'] != identity:
+            _fail('initial_build_identity_invalid')
+    else:
+        _validate_identity(identity)
     pointer = {'schema': POINTER_SCHEMA, 'projectRoot': identity['projectRoot'],
                'stateRoot': identity['stateRoot'], 'installId': identity['installId']}
     archive = Path(_private_dir(identity['stateRoot'])) / RETIRED_POINTER
