@@ -26,8 +26,7 @@ from memvane.route.index_host_route import (select_route, selected_collection_ro
                                    wiki_index_roots)
 from memvane.sync.source_scan import _collection_roots
 from memvane.sync.sync_owner_lock import sync_owner
-from memvane.journal.install_journal import (JournalEvidenceError, cas_mark_new_write, inspect_journal,
-                                  preflight_product_candidate)
+from memvane.journal.install_journal import JournalEvidenceError, cas_mark_new_write, inspect_journal
 from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
 from memvane.provider.adapters.local_embed_service import start_owned_embed_service
 

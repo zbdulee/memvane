@@ -17,7 +17,6 @@ import re
 import sqlite3
 import stat
 import subprocess
-import sys
 import threading
 import time
 
@@ -27,9 +26,6 @@ from memvane.route.index_host_route import (FIELDS as ROUTE_FIELDS, FIELDS_V2 as
                                    SCHEMA_V2 as ROUTE_SCHEMA_V2,
                                    SCHEMA_V3 as ROUTE_SCHEMA_V3, select_route,
                                    written_schema)
-# Loaded for the executing-bundle proof (``_executing_from_candidate``),
-# which requires laya_package from the sealed core; no QMD inventory is read.
-from memvane.kernel import package as laya_package  # noqa: F401
 from memvane.install.product_bundle import (BundleEvidenceError, COMMIT,
                                  inspect_full_plugin_candidate,
                                  PRODUCTION_ATTESTATION_SCHEMA, PROFILE_CLOSURE_FIELD,
@@ -469,65 +465,10 @@ def _bind_attestation(journal_path, identity, proof):
     return digest, _provider_file_identity(record)
 
 
-def preflight_product_candidate(journal_path, *, require_executing=False):
-    """Review the pending installed provider before publishing a QMD cutover.
-
-    The returned digest is an expectation to persist before the route becomes
-    visible. Recovery must compare current attestation bytes to this value.
-    """
-    pending = inspect_journal(journal_path)
-    if pending['state'] != 'candidate_ready' or pending['pending'] is None:
-        _fail('product_candidate_not_pending')
-    identity = pending['pending']
-    if identity.get('bundleKind') != 'full_plugin':
-        _fail('product_full_plugin_required')
-    proof = _inspect_identity(identity)
-    if require_executing:
-        _verified_executing_root(identity, proof)
-    attestation, digest = _attestation(journal_path)
-    if not production_provider_approved(
-            proof.get('vectorProfile'), proof, attestation,
-            journal_attestation_sha256=digest):
-        _fail('production_provider_unapproved')
-    identity_rows = _provider_file_identity(attestation)
-    return {'attestationSha256': digest,
-            'providerFileIdentitySha256': hashlib.sha256(_canon(identity_rows).encode('utf-8')).hexdigest(),
-            'providerManifest': attestation['providerManifest'],
-            'pendingRouteSha256': pending['pendingRouteSha256']}
 
 
-def _executing_from_candidate(plugin_root):
-    """The verifier and its loaded Laya dependencies must be the sealed files."""
-    core = Path(plugin_root) / 'core'
-    required = ('laya_install_journal', 'laya_product_bundle', 'laya_store_primitives',
-                'laya_index_host_route', 'laya_package',
-                'config')
-    for name in required:
-        module = sys.modules.get(name)
-        source = getattr(module, '__file__', None)
-        if source is None or Path(source).resolve(strict=False) != core / (name + '.py'):
-            _fail('executing_code_outside_bundle')
-    # A candidate/core first import path is necessary so subsequent runtime,
-    # flow and source-port imports cannot silently come from another checkout.
-    if not sys.path or Path(sys.path[0]).resolve(strict=False) != core:
-        _fail('future_import_path_unbound')
 
 
-def _verified_executing_root(selected, owner_proof):
-    """Prove this host's sealed copy against the journal-bound owner copy."""
-    root = Path(__file__).resolve().parents[2]
-    if str(root) != selected['pluginRoot']:
-        try:
-            local = inspect_full_plugin_candidate(root)
-        except BundleEvidenceError as exc:
-            raise JournalEvidenceError('executing_code_outside_bundle') from exc
-        if (local['pluginRoot'] != str(root) or
-                any(local[key] != owner_proof[key] for key in
-                    ('sourceCommit', 'bundleManifestSha256',
-                     'vectorProfile', 'includedFiles'))):
-            _fail('executing_bundle_not_selected')
-    _executing_from_candidate(root)
-    return str(root)
 
 
 def _project_matches(route, row):

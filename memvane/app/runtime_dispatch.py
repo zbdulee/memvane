@@ -82,7 +82,7 @@ def resolve(kind, value):
         identity = record['identity']
         if record['phase'] in ('bound', 'retired'):
             return {'terminal': True, 'project': str(project)}
-        from memvane.journal.install_journal import inspect_journal, preflight_product_candidate
+        from memvane.journal.install_journal import inspect_journal
         try:
             journal = inspect_journal(identity['journalPath'])
         except (OSError, RuntimeError, ValueError) as exc:
@@ -116,17 +116,7 @@ def resolve(kind, value):
             except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
                 raise DispatchFailure('target_journal_changed') from exc
         else:
-            pending = journal.get('pending')
-            if (journal.get('state') != 'candidate_ready' or not isinstance(pending, dict)
-                    or journal.get('projectRoot') != str(project)):
-                raise DispatchFailure('target_journal_changed')
-            try:
-                proof = preflight_product_candidate(identity['journalPath'])
-            except (OSError, RuntimeError, ValueError) as exc:
-                raise DispatchFailure('target_journal_changed') from exc
-            if (proof['pendingRouteSha256'] != identity['routeSha256'] or
-                    proof['attestationSha256'] != identity['attestationSha256']):
-                raise DispatchFailure('target_journal_changed')
+            raise DispatchFailure('target_journal_changed')
         stable = {'installId': identity['installId'], 'scopeId': identity['scopeId'],
                   'storeIncarnation': identity['storeIncarnation'],
                   'storePath': identity['storePath'], 'journalPath': identity['journalPath']}

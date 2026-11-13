@@ -649,38 +649,13 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
                     'scopeId', 'installId', 'journalPath')):
                 return _decision('blocked', 'initial_preview_route_mismatch')
             return {**candidate, 'state': 'preview', 'reason': 'initial_build_preview'}
-        if build['phase'] not in ('registered', 'building', 'sealed'):
-            return _decision('blocked', 'initial_preview_build_unavailable')
-        state = Path(identity['stateRoot'])
-        route_path = state / 'reviewed-route.json'
-        if (identity['routeFile'] != str(route_path)
-                or identity['journalPath'] != str(state / 'journal.sqlite')
-                or identity['projectRoot'] != str(root)):
-            return _decision('blocked', 'initial_preview_identity_mismatch')
-        raw = _read_regular(route_path, MAX_RECORD_BYTES)
-        if hashlib.sha256(raw).hexdigest() != identity['routeSha256']:
-            return _decision('blocked', 'initial_preview_route_changed')
-        candidate = _classify_record(root, project_dir.folder(root), route_path, current)
-        if candidate['state'] != 'candidate':
-            return candidate
-        expected = {'projectRoot': identity['projectRoot'],
-                    'dbPath': identity['candidateDb'], 'queuePath': identity['queueDb'],
-                    'dbIncarnation': identity['dbIncarnation'],
-                    'scopeId': identity['scopeId'], 'installId': identity['installId'],
-                    'journalPath': identity['journalPath'],
-                    'collections': identity['collections']}
-        if (any(candidate.get(key) != value for key, value in expected.items())
-                or candidate['vectorProfile']['profileId'] != identity['vectorProfileId']):
-            return _decision('blocked', 'initial_preview_route_mismatch')
-        return {**candidate, 'state': 'preview', 'reason': 'initial_build_preview',
-                'previewStateRoot': str(state),
-                'previewRouteSha256': identity['routeSha256']}
+        return _decision('blocked', 'initial_preview_build_unavailable')
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
         return _decision('blocked', 'initial_preview_proof_unavailable')
 
 
 def verify_preview_route(decision: dict) -> dict:
-    """Reprove a pending build and the currently executing sealed bundle."""
+    """Reprove a pending v1 build and its provider identity."""
     if not isinstance(decision, dict) or decision.get('state') != 'preview':
         raise ValueError('initial_preview_unselected')
     live = select_route(decision.get('projectRoot', ''), action='recall')
@@ -699,31 +674,7 @@ def verify_preview_route(decision: dict) -> dict:
             raise ValueError('initial_preview_changed')
         return {'journalEpoch': journal['epoch'], 'vectorProfile': journal['vectorProfile'],
                 'providerManifest': manifest}
-    from memvane.install import initial_build as laya_initial_build
-    build = laya_initial_build.lookup(decision['projectRoot'])
-    if (build is None or build['identity']['stateRoot'] != decision['previewStateRoot']
-            or build['phase'] not in ('registered', 'building', 'sealed')):
-        raise ValueError('initial_preview_build_changed')
-    from memvane.journal.install_journal import inspect_journal, preflight_product_candidate
-    journal = inspect_journal(decision['journalPath'])
-    proof = preflight_product_candidate(decision['journalPath'],
-                                        require_executing=True)
-    pending = journal['pending']
-    if (journal['state'] != 'candidate_ready' or journal['selected'] is not None
-            or journal['newWriteSeen'] is not False
-            or Path(decision['journalPath']).parent != Path(decision['previewStateRoot'])
-            or journal['pendingRouteSha256'] != decision['previewRouteSha256']
-            or proof['pendingRouteSha256'] != decision['previewRouteSha256']
-            or journal['scopeId'] != decision['scopeId']
-            or journal['projectRoot'] != decision['projectRoot']
-            or not isinstance(pending, dict)
-            or any(pending.get(key) != decision.get(key) for key in
-                   ('pluginRoot', 'installId', 'generation',
-                    'bundleManifestSha256', 'ownershipManifestSha256'))
-            or pending.get('vectorProfile') != decision['vectorProfile']):
-        raise ValueError('initial_preview_journal_mismatch')
-    return {'journalEpoch': journal['epoch'], 'buildPhase': build['phase'], **proof,
-            'vectorProfile': decision['vectorProfile']}
+    raise ValueError('initial_preview_unselected')
 
 
 def select_route(cwd: str, *, action: str = "recall") -> dict:
