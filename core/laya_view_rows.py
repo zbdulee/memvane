@@ -241,8 +241,13 @@ def _sorted_paths(paths):
 
 
 def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items, spec=None,
-                 sources=(), source_items=(), card_sources=(), card_source_items=()):
-    """Every committed stage input; the generation id derives from it at prepare."""
+                 sources=(), source_items=(), card_sources=(), card_source_items=(), legacy=False):
+    """Every committed stage input; the generation id derives from it at prepare.
+
+    ``legacy`` marks a legacy import stage, so its generation id is never
+    an ordinary stage's: a publication without the legacy proof cannot
+    re-derive it (``s_stage_jobs`` keeps no kind column).
+    """
     value = dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
                  view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
                  scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
@@ -255,6 +260,8 @@ def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, f
                                                      list(card_source_items))
     if spec is not None:
         value['vector_spec'] = spec
+    if legacy:
+        value['legacy'] = True
     return value
 
 
@@ -708,7 +715,7 @@ class RowsMixin:
             v.identifier(job_id, v.UUID)
             scan_digest = _legacy_scan(manifest, skips, legacy, _legacy_corpus_rows(legacy))
         stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items,
-                             spec, source_rows, source_items, card_rows, card_items)
+                             spec, source_rows, source_items, card_rows, card_items, legacy=legacy is not None)
         gen_id = vals.gen_id(job_id, v.digest(ROW_STAGE_SCHEMA, stage))
         self._observe(entry, deadline=deadline)
         _expired(deadline)
@@ -832,6 +839,9 @@ class RowsMixin:
             stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items,
                                  spec, final_sources, source_items, final_card_sources, card_items)
             if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id:
+                if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, dict(stage, legacy=True))) == gen_id:
+                    # A legacy import stage (even with no card) publishes only with its proof.
+                    v.fail('migration_publish_proof_required')
                 v.fail('stage_identity_changed')
             if any('fts_path' in v.parse_canonical(row['metadata_json']) for row in final):
                 v.fail('migration_publish_proof_required')
@@ -2248,15 +2258,20 @@ class RowsMixin:
             deadline = time.monotonic() + migration._STEP_SECONDS
         saved = self._observe(entry, deadline=deadline)
         skips = _skip_patterns(saved)
+        replayed = None
         with self._session() as db:
             head = self._rows_head_row(db, handle.view_id)
-            published = db.execute('SELECT view_id,epoch FROM s_generations WHERE gen_id=?', (gen_id,)).fetchone()
+            published = db.execute('SELECT view_id,epoch,kind,legacy_json FROM s_generations WHERE gen_id=?',
+                                   (gen_id,)).fetchone()
             if published is not None:
-                if (tuple(published) == (handle.view_id, base['epoch'] + 1) and head.gen_id == gen_id
-                        and head.epoch == base['epoch'] + 1):
-                    return self._rows_head(db, handle)  # exact replay of this publication only
-                v.fail('view_head_conflict')
-            if (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
+                if (tuple(published[:2]) != (handle.view_id, base['epoch'] + 1) or head.gen_id != gen_id
+                        or head.epoch != base['epoch'] + 1):
+                    v.fail('view_head_conflict')
+                if published[2] != 'legacy':
+                    v.fail('migration_publish_proof_invalid')  # as the generation format: no legacy stage
+                # An exact replay of this publication still proves the fresh snapshot below.
+                replayed = published[3]
+            elif (head.gen_id, head.epoch) != (base['gen_id'], base['epoch']):
                 v.fail('view_head_conflict')
         with readers.inspect_warm_snapshot(endpoint, deadline=deadline) as fresh:
             observed = migration.capture_effective(fresh, endpoint=endpoint, decision=decision, after=None,
@@ -2270,6 +2285,22 @@ class RowsMixin:
             handle, None, dict(observation=observed['observation'], endpoint=endpoint, decision=decision,
                                provenance_scan=legacy_snapshot['provenance_scan']), None, True, deadline)
         legacy_rows = _legacy_corpus_rows(legacy)
+        if replayed is not None:
+            # The published generation sealed its v6 observation and scan; the
+            # re-derived one must match, then the cut identity is rechecked.
+            if v.canonical(_legacy_observation(legacy)) != replayed:
+                v.fail('migration_snapshot_changed')
+            store_module._current_capture(saved, self._repository, self._policy, entry['capture'],
+                                          deadline=deadline)
+            cut_deadline = min(deadline, time.monotonic() + _CUT_SECONDS)
+            with readers.reader_publish_cut(endpoint, deadline=cut_deadline):
+                if migration.current_cut_identity(endpoint, decision=decision, deadline=cut_deadline) != pinned:
+                    v.fail('migration_snapshot_changed')
+                with self._session() as db:
+                    head = self._rows_head_row(db, handle.view_id)
+                    if (head.gen_id, head.epoch) != (gen_id, base['epoch'] + 1):
+                        v.fail('view_head_conflict')
+                    return self._rows_head(db, handle)
         with self._session() as db:
             plan = self._derive(handle, manifest, skips, deadline=deadline, legacy_paths=legacy['paths'])
             spans = {}
@@ -2285,7 +2316,8 @@ class RowsMixin:
                  if current.get(path) != wanted.get(path)]
         final = [wanted[path] for path in _sorted_paths(wanted)]
         scan_digest = _legacy_scan(manifest, skips, legacy, legacy_rows)
-        stage = _stage_value(self._incarnation, handle, saved, base, job[0], scan_digest, skips, final, items)
+        stage = _stage_value(self._incarnation, handle, saved, base, job[0], scan_digest, skips, final, items,
+                             legacy=True)
         if (tuple(job[1:7]) != (self._incarnation, base['gen_id'], base['epoch'], v.canonical(entry['capture']),
                                 handle.policy_digest, scan_digest)
                 or vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id):
