@@ -6,16 +6,13 @@ The older QMD installation and project settings are left in place.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 import re
-import sqlite3
 import stat
 
 import project_dir
-from laya_install_journal import inspect_journal
-from laya_ledger_common import _private_file, _read_json
+from laya_ledger_common import _read_json
 
 SCHEMA = 'laya-fresh-wiki-cutover-v1'
 MARKER_SCHEMA = 'laya-fresh-wiki-selection-marker-v1'
@@ -42,10 +39,6 @@ class FreshWikiBlocked(RuntimeError):
 
 def _fail(reason):
     raise FreshWikiBlocked(reason)
-
-
-def _sha(raw):
-    return hashlib.sha256(raw).hexdigest()
 
 
 def _paths(project_root, journal_path):
@@ -126,43 +119,3 @@ def _marker(row):
 def _check_marker(row, marker_path):
     if _read_json(marker_path) != _marker(row):
         _fail('fresh_wiki_marker_changed')
-
-
-def classify_marker(project_root, marker_path, route_path):
-    """Read-only fail-closed selection classification for this ledger."""
-    try:
-        marker = _read_json(marker_path)
-        if (not isinstance(marker, dict) or marker.get('schema') != MARKER_SCHEMA or
-                set(marker) != {'schema', 'projectRoot', 'journalPath',
-                                'ledgerPath', 'routeSha256'} or
-                marker['projectRoot'] != str(project_root)):
-            return 'blocked'
-        ledger, expected_marker, expected_route = _paths(project_root,
-                                                           marker['journalPath'])
-        if (str(ledger) != marker['ledgerPath'] or
-                expected_marker != Path(marker_path) or
-                expected_route != Path(route_path)):
-            return 'blocked'
-        row = _load(ledger)
-        _check_marker(row, marker_path)
-        journal = inspect_journal(row['journalPath'])
-        present = route_path.exists() or route_path.is_symlink()
-        if present:
-            if route_path.is_symlink() or _sha(_private_file(route_path, 8192)) != row['routeSha256']:
-                return 'blocked'
-            if (row['phase'] == 'active' and journal['state'] in ('active', 'restored_old') and
-                    journal['selectedRouteSha256'] == row['routeSha256'] and
-                    journal['providerAttestationSha256'] == row['attestationSha256'] and
-                    journal['providerFileIdentitySha256'] == row['providerFileIdentitySha256']):
-                return 'candidate'
-            return 'blocked'
-        if (row['phase'] in ('prepared', 'retired') and
-                journal['state'] == 'candidate_ready' and
-                journal['pendingRouteSha256'] == row['routeSha256'] and
-                not journal['newWriteSeen']):
-            return 'legacy'
-        if row['phase'] == 'restored' and journal['state'] == 'restored_origin':
-            return 'legacy'
-        return 'blocked'
-    except (OSError, RuntimeError, ValueError, TypeError, KeyError, sqlite3.Error):
-        return 'blocked'

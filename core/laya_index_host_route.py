@@ -881,19 +881,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
                 return _classify_record(*records[0], current)
             except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
                 return _decision('blocked', 'selection_marker_invalid')
-        from laya_fresh_wiki_origin import (MARKER_SCHEMA as FRESH_MARKER_SCHEMA,
-                                            classify_marker as classify_fresh)
-        selection = (classify_fresh(marker_root, marker_path, marker_path.parent / RECORD)
-                     if schema == FRESH_MARKER_SCHEMA else 'blocked')
-        if selection == 'blocked':
-            return _decision("blocked", "qmd_selection_uncertain")
-        if selection == 'legacy':
-            if records:
-                return _decision("blocked", "qmd_route_unexpected")
-            return _decision("legacy", "qmd_selection_verified")
-        if (selection != 'candidate' or len(records) != 1 or
-                records[0][0] != marker_root):
-            return _decision("blocked", "qmd_route_unverified")
+        return _decision('blocked', 'selection_marker_invalid')
     elif not records:
         preview = _preview_route(current, requested, action)
         return preview if preview is not None else _decision("legacy", "no_route_record")
