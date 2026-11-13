@@ -438,7 +438,7 @@ def selector_projects(home=None):
     import memvane_paths
     import laya_initial_build as build
     found = []
-    for base in (memvane_paths.state_base(home),):
+    for base in (memvane_paths.installs_base(home),):
         try:
             names = sorted(os.listdir(base))
         except FileNotFoundError:

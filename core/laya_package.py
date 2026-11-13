@@ -21,7 +21,7 @@ def sync_owner_directory(*, create=False):
         if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
             raise ValueError('journal_test_root_missing')
         start = Path(pwd.getpwuid(os.getuid()).pw_dir)
-        parts = ('.local', 'state', 'memvane', 'sync-owner-locks')
+        parts = ('.local', 'state', 'memvane', 'v1', 'sync-owner-locks')
         private_at = len(parts)
     else:
         root = Path(raw)

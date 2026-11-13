@@ -65,7 +65,7 @@ def _private_parent(path):
 def _state_bases():
     """State base an existing install may live under."""
     import memvane_paths
-    return (memvane_paths.state_base(),)
+    return (memvane_paths.installs_base(),)
 
 
 def _prepare_state_root(path, install_id):
@@ -74,13 +74,13 @@ def _prepare_state_root(path, install_id):
     if root.exists() or root.is_symlink():
         return _private_parent(root)
     import memvane_paths
-    base = memvane_paths.state_base()
+    base = memvane_paths.installs_base()
     if (not root.is_absolute() or root.parent != base or
             type(install_id) is not str or not re.fullmatch(r'[0-9a-f]{32}', install_id) or
             root.name != install_id):
         _fail('unsupported_state_root_creation')
     cursor = Path.home()
-    for name in (*memvane_paths.STATE_PARTS, install_id):
+    for name in (*memvane_paths.STATE_PARTS, 'installs', install_id):
         cursor = cursor / name
         if not cursor.exists() and not cursor.is_symlink():
             os.mkdir(cursor, 0o700)
@@ -291,10 +291,10 @@ def review_local_provider(*, source_root, plugin_root, state_root, commit_id,
             str(state.resolve(strict=False)) != str(state) or
             len(str(state / 'runtime' / 'laya-embed.sock').encode()) > 100):
         _fail('provider_review_paths_invalid')
-    # prepare creates only ~/.local/state/memvane/<install id>; refuse before a digest.
+    # Only the v1 install namespace may be created by prepare.
     import memvane_paths
     if (not state.exists() and not state.is_symlink() and
-            (state.parent != memvane_paths.state_base() or
+            (state.parent != memvane_paths.installs_base() or
              not re.fullmatch(r'[0-9a-f]{32}', state.name))):
         _fail('unsupported_state_root_creation')
     if (_git(source, 'rev-parse', 'HEAD').decode().strip() != commit_id or

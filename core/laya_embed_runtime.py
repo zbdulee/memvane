@@ -3,7 +3,7 @@
 The provider review reads its executable inventory from here. Layout, all
 owner-only (0700 directories, 0600/0700 files), no symlinks::
 
-    ~/.local/state/memvane/embed-runtime/
+    ~/.local/state/memvane/v1/embed-runtime/
       .lock                  provisioning lock
       active.json            {"schema", "generation"}
       previous.json          the generation active.json named before the last switch
@@ -1082,7 +1082,7 @@ def _referenced_generations(home):
     named = set()
     installs = []
     try:
-        installs.extend(path for path in memvane_paths.state_base(home or Path.home()).iterdir()
+        installs.extend(path for path in memvane_paths.installs_base(home or Path.home()).iterdir()
                         if path.is_dir())
     except FileNotFoundError:
         pass

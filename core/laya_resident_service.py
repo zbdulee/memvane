@@ -109,7 +109,7 @@ def _account_home():
 
 
 def service_dir(*, create=False, home=None):
-    """``<account home>/.local/state/memvane/service``: private, same owner."""
+    """``<account home>/.local/state/memvane/v1/service``: private, same owner."""
     import memvane_paths
     cursor = Path(home).resolve() if home is not None else _account_home()
     for name in (*memvane_paths.STATE_PARTS, 'service'):

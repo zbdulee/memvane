@@ -6,7 +6,7 @@ or decline it for the project; an explicit onboarding request turns it back on.
 
 The answer lives outside the repository, in the per-user state base::
 
-    ~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json
+    ~/.local/state/memvane/v1/onboarding/<sha256(canonical project root)>.json
 
 The canonical root is the resolved path with the file system's own spelling
 (``F_GETPATH`` on macOS), so case aliases such as ``/users`` and ``/Users``

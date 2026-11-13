@@ -3,7 +3,7 @@
 Every per-user directory the plugin owns hangs off one of these roots. Each
 helper takes an optional ``home`` so tests run against a temporary HOME::
 
-    state    ~/.local/state/memvane            installs, embed runtime, service
+    state    ~/.local/state/memvane/v1         installs, embed runtime, service
     support  ~/Library/Application Support/memvane   (macOS)
              ~/.local/share/memvane                  (other platforms)
     config   ~/.config/memvane
@@ -22,7 +22,7 @@ PLUGIN_ID = 'memvane'
 MARKETPLACE = 'memvane-marketplace'
 REPOSITORY = 'zbdulee/memvane'
 
-STATE_PARTS = ('.local', 'state', NAME)
+STATE_PARTS = ('.local', 'state', NAME, 'v1')
 
 
 def _home(home=None):
@@ -46,8 +46,12 @@ def support_root(home=None):
 
 
 def install_root(install_id, home=None):
-    """``~/.local/state/memvane/<install id>``: where every install lives."""
-    return state_base(home) / install_id
+    """``~/.local/state/memvane/v1/installs/<install id>``."""
+    return installs_base(home) / install_id
+
+
+def installs_base(home=None):
+    return state_base(home) / 'installs'
 
 
 
