@@ -754,8 +754,7 @@ class Reconcile(Base):
         found = registry().lookup(str(worktree / 'note.md'))
         self.assertEqual(found['row']['kind'], 'worktree')
         self.assertNotIn(str(worktree), [r['targetRoot'] for r in registry().routing_rows()['rows']])
-        with patch('git_branch_safety.run_git', side_effect=__import__(
-                'memvane.wiki.lifecycle.git_branch_safety').GitUnavailable('git_call_failed')):
+        with patch('memvane.kernel.paths.run_git', side_effect=RuntimeError('git_call_failed')):
             registry().reconcile(now=2000.0, backfill_page=0)
         self.assertEqual(self.row(self.b, worktree)['status'], 'active')
         calls = []

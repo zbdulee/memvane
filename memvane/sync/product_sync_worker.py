@@ -635,7 +635,7 @@ def _schema3_linked_projects(decision, deadline):
     this main project (same common Git dir, no route of its own, same derived
     settings identity: ``laya_index_host_route._worktree_route``).
     """
-    from memvane.wiki.lifecycle import git_branch_safety
+    from memvane.kernel import paths as git_branch_safety
     project = Path(decision['projectRoot'])
     try:
         facts = git_branch_safety.repo_facts(project, deadline=deadline)
@@ -1239,7 +1239,7 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
     sha256}``, the discovery snapshot shape); a scan over its bounds leaves
     none, so discovery scans (and blocks) on its own.
     """
-    from memvane.wiki.lifecycle import git_branch_safety
+    from memvane.kernel import paths as git_branch_safety
     from memvane.sync.source_scan import scan_collections
     from memvane.wiki.intake.wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
     project = Path(decision['projectRoot'])

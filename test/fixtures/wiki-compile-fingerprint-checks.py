@@ -36,6 +36,7 @@ for _key in [key for key in os.environ if key.startswith('GIT_')]:
 os.environ.update(GIT_ENV)
 
 from memvane.wiki.lifecycle import git_branch_safety  # noqa: E402
+from memvane.kernel import paths as git_paths  # noqa: E402
 from memvane.store.blob import blob_values as laya_blob_values  # noqa: E402
 from memvane.store.checkout import checkout_view as view  # noqa: E402
 from memvane.wiki.compile import wiki_compile_worker as worker  # noqa: E402
@@ -216,7 +217,8 @@ class FingerprintChecks(unittest.TestCase):
     def test_non_git_project(self):
         project = Project(self.base, 'plain', git_repo=False)
         with mock.patch.object(git_branch_safety, 'run_git',
-                               side_effect=AssertionError('non-git runs no git')):
+                               side_effect=AssertionError('non-git runs no git')) as run_mock, \
+             mock.patch.object(git_paths, 'run_git', new=run_mock):
             row = self.spec_of(project, project.binding())
         self.assertEqual((row['branch_key'], row['head_oid'], row['tracked_state']),
                          ('non-git', None, 'untracked'))
@@ -227,7 +229,8 @@ class FingerprintChecks(unittest.TestCase):
         git(project.root, 'add', SOURCE)
         git(project.root, 'commit', '-q', '-m', 'source')
         with mock.patch.object(git_branch_safety, 'run_git',
-                               side_effect=git_branch_safety.GitUnavailable('git_exit_128')):
+                               side_effect=git_branch_safety.GitUnavailable('git_exit_128')) as run_mock, \
+             mock.patch.object(git_paths, 'run_git', new=run_mock):
             row = self.spec_of(project, project.binding())
         self.assertEqual(row['tracked_state'], 'unknown')
         self.assertEqual(self.extractor_calls, 1)
@@ -243,7 +246,8 @@ class FingerprintChecks(unittest.TestCase):
             kwargs['timeout'] = 1e-9
             kwargs['deadline'] = None
             return REAL_RUN_GIT(args, cwd, **kwargs)
-        with mock.patch.object(git_branch_safety, 'run_git', side_effect=slow):
+        with mock.patch.object(git_branch_safety, 'run_git', side_effect=slow) as run_mock, \
+             mock.patch.object(git_paths, 'run_git', new=run_mock):
             row = self.spec_of(project, project.binding())
         self.assertEqual(row['tracked_state'], 'unknown')
         self.assertEqual(len(calls), 1, 'the first timed-out call ends the lookup')
@@ -260,7 +264,8 @@ class FingerprintChecks(unittest.TestCase):
         def counted(args, cwd, **kwargs):
             calls.append(args[0])
             return REAL_RUN_GIT(args, cwd, **kwargs)
-        with mock.patch.object(git_branch_safety, 'run_git', side_effect=counted):
+        with mock.patch.object(git_branch_safety, 'run_git', side_effect=counted) as run_mock, \
+             mock.patch.object(git_paths, 'run_git', new=run_mock):
             states = git_branch_safety.tracked_states(project.root, paths, head)
         self.assertEqual(states[SOURCE], 'tracked')
         self.assertEqual({states[path] for path in paths[1:]}, {'untracked'})
@@ -270,7 +275,8 @@ class FingerprintChecks(unittest.TestCase):
         # Two paths over one chunk: two index calls; the HEAD tree is asked only
         # for the paths the index did not answer (201 here), so also two calls.
         more = paths + ['docs/one-more.md', 'docs/two-more.md']
-        with mock.patch.object(git_branch_safety, 'run_git', side_effect=counted):
+        with mock.patch.object(git_branch_safety, 'run_git', side_effect=counted) as run_mock, \
+             mock.patch.object(git_paths, 'run_git', new=run_mock):
             git_branch_safety.tracked_states(project.root, more, head)
         self.assertEqual(calls, ['rev-parse', 'ls-files', 'ls-files', 'ls-tree', 'ls-tree'])
 

@@ -29,6 +29,7 @@ HERE = Path(__file__).resolve().parent
 CORE = HERE.parents[1] / 'core'
 sys.path.insert(0, str(CORE))
 from memvane.wiki.lifecycle import git_branch_safety as gbs  # noqa: E402
+from memvane.kernel import paths as git_paths  # noqa: E402
 
 GIT_ENV = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_AUTHOR_NAME': 'fixture',
@@ -121,7 +122,8 @@ class Repo(unittest.TestCase):
             scan or self.scan(root=root), view_id='view-1', base_gen='gen-1', **kwargs)
 
     def counted(self, fn):
-        with mock.patch.object(gbs, 'run_git', wraps=gbs.run_git) as spy:
+        with mock.patch.object(gbs, 'run_git', wraps=gbs.run_git) as spy, \
+             mock.patch.object(git_paths, 'run_git', new=spy):
             value = fn()
         return value, spy.call_count
 
@@ -493,7 +495,8 @@ class RecheckAndEnvironment(Repo):
                 git(self.root, 'commit', '-qm', 'late')
                 return result
             return real(args, cwd, **kwargs)
-        with mock.patch.object(gbs, 'run_git', side_effect=moving):
+        with mock.patch.object(gbs, 'run_git', side_effect=moving) as run_mock, \
+             mock.patch.object(git_paths, 'run_git', new=run_mock):
             spec = self.prove(fp)
         self.assert_hold(spec, 'recheck_failed')
         self.assertEqual(json.loads(spec['proof_json'])['recheck'], 'failed')

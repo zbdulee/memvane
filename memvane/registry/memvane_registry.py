@@ -423,7 +423,7 @@ def _linked(project, deadline, clock=time.monotonic):
     the deadline is checked before every one; running out returns None and
     nothing is registered or released.
     """
-    from memvane.wiki.lifecycle import git_branch_safety as git
+    from memvane.kernel import paths as git
     from memvane.route import index_host_route as routes
     try:
         facts = git.repo_facts(project, deadline=deadline)
