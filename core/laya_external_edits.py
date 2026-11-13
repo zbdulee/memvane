@@ -165,10 +165,9 @@ def _revision(path):
             hashlib.sha256(data).hexdigest())
 
 
-def _targets(origin, deadline):
-    import laya_index_host_route as routes
-    import laya_install_journal as journal
-    targets, seen, scanned = [], set(), 0
+def _scanned_states(deadline):
+    """Install state roots listed from both state bases (bounded)."""
+    states = []
     for base in _state_bases():
         try:
             entries = []
@@ -183,34 +182,113 @@ def _targets(origin, deadline):
         for state in entries:
             if time.monotonic() >= deadline:
                 raise ValueError('external_edit_discovery_incomplete')
-            if not _HEX32.fullmatch(state.name):
+            if _HEX32.fullmatch(state.name):
+                states.append(state)
+    return states
+
+
+def _targets(origin, deadline):
+    """Selected owners other than ``origin``, from the selected project registry.
+
+    A complete registry names the candidate state roots and no state base is
+    listed; a row counts only for an install root directly under a HOME state
+    base whose name, journal project and route install id match the row.
+    While its backfill is incomplete the bounded scan runs. In both modes the
+    registry's tombstones, conflicts and inactive rows hold a candidate out. A
+    registry that cannot be read (absent, corrupt, busy, unsafe, unsupported
+    schema) raises: its tombstones are unknown, so nothing routes. Either way
+    each candidate passes the same journal and route proof; a registry row
+    grants nothing.
+    """
+    import laya_index_host_route as routes
+    import laya_install_journal as journal
+    import memvane_registry
+    view = memvane_registry.routing_rows()
+    if view['complete']:
+        candidates = [(Path(row['stateRoot']), row) for row in view['rows']]
+    else:
+        candidates = [(state, None) for state in _scanned_states(deadline)]
+    targets, seen, scanned = [], set(), 0
+    for state, row in candidates:
+        if time.monotonic() >= deadline:
+            raise ValueError('external_edit_discovery_incomplete')
+        if not _HEX32.fullmatch(state.name):
+            continue
+        if scanned >= MAX_INSTALLS:
+            raise ValueError('external_edit_discovery_incomplete')
+        scanned += 1
+        if row is not None and (row['installId'] != state.name or
+                                not memvane_registry.is_home_install(state)):
+            continue
+        try:
+            info = state.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077):
                 continue
-            if scanned >= MAX_INSTALLS:
-                raise ValueError('external_edit_discovery_incomplete')
-            scanned += 1
-            try:
-                info = state.lstat()
-                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                        or info.st_mode & 0o077):
-                    continue
-                pointer = state / 'install-journal.sqlite'
-                metadata = journal.inspect_journal(pointer)
-                project = metadata.get('projectRoot')
-                if (metadata.get('state') not in ('active', 'restored_old')
-                        or project == origin or project in seen or not isinstance(project, str)):
-                    continue
-                decision = routes.select_route(project, action='index')
-                if (decision.get('state') != 'candidate' or decision.get('projectRoot') != project
-                        or decision.get('journalPath') != str(pointer)):
-                    continue
-                seen.add(project)
-                for collection in decision.get('collections', []):
-                    if collection.get('role') == 'raw':
-                        targets.append({'projectRoot': project, 'rawRoot': collection['sourceRoot'],
-                                        'decision': decision})
-            except (OSError, ValueError, RuntimeError):
+            pointer = state / 'install-journal.sqlite'
+            metadata = journal.inspect_journal(pointer)
+            project = metadata.get('projectRoot')
+            if (metadata.get('state') not in ('active', 'restored_old')
+                    or project == origin or project in seen or not isinstance(project, str)):
                 continue
+            if row is not None and project != row['projectRoot']:
+                continue
+            if memvane_registry.excluded(view, state.name, project):
+                continue
+            decision = routes.select_route(project, action='index')
+            if (decision.get('state') != 'candidate' or decision.get('projectRoot') != project
+                    or decision.get('journalPath') != str(pointer)):
+                continue
+            if row is not None and decision.get('installId') != row['installId']:
+                continue
+            seen.add(project)
+            for collection in decision.get('collections', []):
+                if collection.get('role') == 'raw':
+                    target = {'projectRoot': project, 'rawRoot': collection['sourceRoot'],
+                              'decision': decision}
+                    if row is not None:
+                        target['registered'] = True
+                    targets.append(target)
+        except (OSError, ValueError, RuntimeError):
+            continue
     return targets
+
+
+def _nested_project(path, project, deadline):
+    """A project settings folder between the edited file and its owner root.
+
+    Registry lookup only: it lists registered owners, while the bounded scan
+    sees every install (a nested one, or the cap refuses). An unregistered
+    nested project is therefore never routed to its registered parent.
+
+    Bounded: at most the source tree depth (``laya_index_source_port.
+    MAX_DEPTH``) parent folders, two stats each, checked against the hook
+    deadline before each one. A deeper path or a spent deadline holds the
+    edit back (True), never routes it unchecked, including a deadline that
+    passes during the last stat.
+    """
+    import project_dir
+    from laya_index_source_port import MAX_DEPTH
+    try:
+        between = len(path.relative_to(project).parts) - 1
+    except ValueError:
+        return True
+    if between > MAX_DEPTH:
+        return True
+    for parent in list(path.parents)[:max(between, 0)]:
+        if time.monotonic() >= deadline:
+            return True
+        for name in project_dir.NAMES:
+            try:
+                if stat.S_ISREG(os.stat(parent / name / project_dir.SETTINGS).st_mode):
+                    return True
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+    # The last stat may end past the deadline: no unchecked edit is routed.
+    return time.monotonic() >= deadline
+
 
 
 def notify(paths, *, cwd, host, origin):
@@ -236,6 +314,9 @@ def notify(paths, *, cwd, host, origin):
             path = _safe_path(raw, cwd)
             owner = owner_for(path, targets) if path is not None else None
             if owner is None or not _eligible(path, owner['decision']):
+                continue
+            if owner.get('registered') and _nested_project(path, owner['projectRoot'],
+                                                           deadline):
                 continue
             decision = owner['decision']
             proof = journal.verify_notification_target(decision)

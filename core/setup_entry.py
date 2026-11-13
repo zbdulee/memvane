@@ -361,6 +361,13 @@ def main(argv=None):
                     # Only the exact retired build's own pointer is named.
                     result['nextAction'] = pending['nextAction']
                     result['retireStateRoot'] = pending['stateRoot']
+    try:
+        # The selected project registry is a lookup index: it reflects a
+        # finished activation or release and never changes this result.
+        import memvane_registry
+        memvane_registry.after_setup(args.action, args.project, args.state_root, result)
+    except Exception:
+        pass
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     if result.get('status')=='deferred':return 75
     return 1 if result.get('status') in ('rejected', 'blocked', 'failed_preparing', 'partial',
