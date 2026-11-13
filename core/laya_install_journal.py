@@ -301,6 +301,37 @@ def _route(raw, journal_path):
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise JournalEvidenceError('invalid_route_bytes') from exc
     schema = route.get('schema') if isinstance(route, dict) else None
+    from laya_index_host_route import FIELDS_V4, SCHEMA_V4
+    if schema == SCHEMA_V4:
+        state = Path(journal_path).parent
+        if (set(route) != FIELDS_V4 or route.get('status') != 'active'
+                or route.get('stateRoot') != str(state)
+                or route.get('storePath') != str(state / 'store.sqlite')
+                or type(route.get('stateFormat')) is not int or route['stateFormat'] < 1
+                or any(type(route.get(key)) is not str or not ID.fullmatch(route[key])
+                       for key in ('installId', 'scopeId', 'storeIncarnation'))
+                or type(route.get('settingsSha256')) is not str
+                or not SHA.fullmatch(route['settingsSha256'])
+                or not isinstance(route.get('projectRoot'), str)
+                or not Path(route['projectRoot']).is_absolute()
+                or not isinstance(route.get('collections'), list)
+                or any(not isinstance(route.get(key), list) or len(route[key]) != 2
+                       or any(type(n) is not int or n < 0 for n in route[key])
+                       for key in ('stateNode', 'storeNode'))):
+            _fail('route_contract_mismatch')
+        try:
+            from laya_index_host_route import settings_identity_digest, wiki_index_roots
+            wiki_index_roots(route['collections'])
+            if (len({item['name'] for item in route['collections']}) != 2
+                    or next(item['sourceRoot'] for item in route['collections']
+                            if item['role'] == 'raw') != route['projectRoot']
+                    or settings_identity_digest(route['projectRoot'], route['collections'])
+                    != route['settingsSha256']):
+                _fail('route_contract_mismatch')
+        except (KeyError, TypeError, ValueError, StopIteration) as exc:
+            raise JournalEvidenceError('route_contract_mismatch') from exc
+        _strict_vector_profile(route.get('vectorProfile'))
+        return route, hashlib.sha256(raw).hexdigest()
     expected_fields = (ROUTE_FIELDS if schema == ROUTE_SCHEMA else
                        ROUTE_FIELDS_V2 if schema in (ROUTE_SCHEMA_V2, ROUTE_SCHEMA_V3)
                        else None)
