@@ -4,6 +4,7 @@ The selector proves only route/settings syntax. An installer-owned journal must
 prove the complete installed plugin before this module opens the runtime.
 """
 from __future__ import annotations
+from memvane.host.types import VectorUnavailable as _VectorUnavailable
 
 from contextlib import contextmanager, ExitStack
 import contextvars
@@ -93,11 +94,6 @@ def _fail(code: str):
     raise HostResponseError(code)
 
 
-class _VectorUnavailable(Exception):
-    """No query vector for this prompt; serve the published lexical lists."""
-    # ``laya_incremental_docs_query`` recognizes this marker, not the class:
-    # the hook runs this file as __main__, a second copy of every class here.
-    no_query_vector = True
 
 
 class _SealedManifestMismatch(Exception):

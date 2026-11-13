@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 
-from memvane.host.onboarding_choice import canonical
+from memvane.host.api import canonical
 from memvane.kernel.package import NO_LAZY_FETCH_PATCHES, supports_no_lazy_fetch
 
 CAPTURE_SECONDS = 3.0

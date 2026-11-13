@@ -124,6 +124,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/host/api.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/host/hook_main.py": {
       "context": "host",
       "layer": "adapter",
@@ -142,6 +147,11 @@
     "memvane/host/onboarding_choice.py": {
       "context": "host",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/types.py": {
+      "context": "host",
+      "layer": "domain",
       "pinned": false
     },
     "memvane/install/__init__.py": {

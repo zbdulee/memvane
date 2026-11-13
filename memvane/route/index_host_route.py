@@ -926,7 +926,7 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
         # A build the user started is progress, not a question.
         return BUILD_NOTICE.format(root=root)
     try:
-        from memvane.host import onboarding_choice
+        from memvane.host import api as onboarding_choice
         session = onboarding_choice.valid_session(session)
         if onboarding_choice.suppressed(root, session):
             return None

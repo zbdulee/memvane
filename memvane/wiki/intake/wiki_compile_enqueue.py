@@ -446,5 +446,5 @@ def main():
 
 
 if __name__ == "__main__":
-    from memvane.host import hook_main
+    from memvane.host import api as hook_main
     sys.exit(hook_main.run(main))

@@ -390,7 +390,7 @@ def overlay_paths(db, text, deadline, exclusions, name):
 
 def query_provider(bound):
     """Only ask an already warm reviewed provider; no model is started here."""
-    from memvane.host import host_response as response
+    from memvane.host.types import VectorUnavailable
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     from memvane.resident.api import admit_query
@@ -400,7 +400,7 @@ def query_provider(bound):
     except Exception:
         # As in host recall, refused query admission means lexical only.
         def unavailable(*_args):
-            raise response._VectorUnavailable('compile_provider_unavailable')
+            raise VectorUnavailable('compile_provider_unavailable')
         return unavailable
 
     def query(text, profile):
@@ -412,7 +412,7 @@ def query_provider(bound):
         except IndexContractError as exc:
             if str(exc) != 'provider_unavailable':
                 raise
-            raise response._VectorUnavailable('provider_unavailable') from exc
+            raise VectorUnavailable('provider_unavailable') from exc
     return query
 
 
@@ -475,7 +475,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     approved one, the warm provider does not answer, or the head moved from
     ``generation`` (the lexical rows' generation).
     """
-    from memvane.host import host_response as response
+    from memvane.host.types import VectorUnavailable
     from memvane.journal import journal_reader as reader
     from memvane.recall.api import approved_profile_matches
     from memvane.store.view.view_vectors import DEFERRED
@@ -495,7 +495,7 @@ def _schema3_cosines(bound, record, current, text, generation):
         from memvane.kernel.errors import IndexContractError
         try:
             answer = query_provider(bound)(text, current['vectorProfile'])
-        except (response._VectorUnavailable, IndexContractError):
+        except (VectorUnavailable, IndexContractError):
             return {}  # no warm reviewed provider: lexical candidates only
         try:
             rows = store.search_exact(pin, answer['vector'], CANDIDATES, profile_id=vector['profile_id'],
