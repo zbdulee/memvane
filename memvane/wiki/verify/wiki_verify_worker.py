@@ -65,6 +65,7 @@ from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import wiki_source_missing as wsm
 from memvane.wiki.card import source_spans
+from memvane.wiki.card.api import card_sources_allowed
 from memvane.wiki.card import yaml_scalars
 from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
 
@@ -1057,7 +1058,7 @@ def process_verify_job(
         # Old verify jobs may outlive a newly selected source-folder policy.
         # Do not send an excluded raw source or a mixed-source card to a host
         # model; keep its generated file recoverable and unverified.
-        from memvane.settings.api import card_sources_allowed, excluded_source
+        from memvane.settings.api import excluded_source
         skips = selected_route[0]['recallSettings']['skipPaths']
         if skips:
             job_revisions = job.get('sourceRevisions')

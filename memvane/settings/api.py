@@ -103,9 +103,6 @@ def excluded_source(*args, **kwargs):
 
 
 
-def card_sources_allowed(*args, **kwargs):
-    from memvane.settings.source_exclusion import card_sources_allowed as implementation
-    return implementation(*args, **kwargs)
 
 
 

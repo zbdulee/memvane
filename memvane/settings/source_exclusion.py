@@ -18,21 +18,3 @@ def excluded_source(path: str, skip_paths) -> bool:
     directory = '/'.join(parts[:-1]) + '/'
     return any(isinstance(skip, str) and skip and skip in directory
                for skip in skip_paths)
-
-
-def card_sources_allowed(body: str, skip_paths) -> bool:
-    """Fail closed for a selected wiki card's complete compiler provenance."""
-    if not skip_paths:
-        return True
-    if not isinstance(body, str):
-        return False
-    from memvane.wiki.card import wiki_card
-    from memvane.wiki.card import yaml_scalars
-    normalized_body = body.replace('\r\n', '\n').replace('\r', '\n')
-    end = normalized_body.find('\n---\n', 4) if normalized_body.startswith('---\n') else -1
-    revisions = (wiki_card.frontmatter_source_revisions(normalized_body[4:end])
-                 if end > 0 else [])
-    normalized = [yaml_scalars.normalize_source_revision(item) for item in revisions]
-    return bool(normalized) and all(
-        item is not None and not excluded_source(item['path'], skip_paths)
-        for item in normalized)

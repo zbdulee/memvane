@@ -1565,7 +1565,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     identity_index = build_identity_index(wiki_root)
     target, target_reason, target_matches = resolve_target(root, wiki_root, candidate, suggested_type, identity_index)
     if selected is not None and target is not None and target.exists():
-        from memvane.settings.api import card_sources_allowed
+        from memvane.wiki.card.api import card_sources_allowed
         try:
             allowed_target = card_sources_allowed(
                 target.read_text(encoding='utf-8'), selected[0]['recallSettings']['skipPaths'])

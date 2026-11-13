@@ -20,3 +20,8 @@ def archive_card(*args, **kwargs):
 def frontmatter_sections(*args, **kwargs):
     from memvane.wiki.card.yaml_scalars import frontmatter_sections as implementation
     return implementation(*args, **kwargs)
+
+
+def card_sources_allowed(*args, **kwargs):
+    from memvane.wiki.card.trust import card_sources_allowed as implementation
+    return implementation(*args, **kwargs)
