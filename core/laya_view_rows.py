@@ -241,13 +241,8 @@ def _sorted_paths(paths):
 
 
 def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, final, items, spec=None,
-                 sources=(), source_items=(), card_sources=(), card_source_items=(), legacy=False):
-    """Every committed stage input; the generation id derives from it at prepare.
-
-    ``legacy`` marks a legacy import stage, so its generation id is never
-    an ordinary stage's: a publication without the legacy proof cannot
-    re-derive it (``s_stage_jobs`` keeps no kind column).
-    """
+                 sources=(), source_items=(), card_sources=(), card_source_items=()):
+    """Every committed stage input; the generation id derives from it at prepare."""
     value = dict(schema=ROW_STAGE_SCHEMA, job_id=job_id, incarnation=incarnation,
                  view=vals.view_fields(handle), worktree_binding=saved['binding_digest'], base=base,
                  scan_digest=scan_digest, skip_digest=v.digest('memvane-row-skip-v1', skips),
@@ -260,8 +255,6 @@ def _stage_value(incarnation, handle, saved, base, job_id, scan_digest, skips, f
                                                      list(card_source_items))
     if spec is not None:
         value['vector_spec'] = spec
-    if legacy:
-        value['legacy'] = True
     return value
 
 
@@ -275,9 +268,6 @@ LEGACY_OBSERVATION_FIELDS = ('observation', 'corpus_observation', 'sidecar_obser
                              'scan')
 
 
-def _legacy_observation(legacy):
-    """The v6 observation values a legacy generation keeps in ``legacy_json``."""
-    return {key: legacy.get(key) for key in LEGACY_OBSERVATION_FIELDS}
 
 
 def _pin_seal_value(generation):
@@ -306,38 +296,10 @@ def _locators(spans):
     return [source_spans.locator(span) for span in ordered]
 
 
-def _legacy_corpus_rows(legacy):
-    """Corpus rows (base and sidecar, with active flags) of one legacy evidence mapping."""
-    sidecar = 'sidecar_corpus' in legacy
-    rows = [dict(origin='base', path_key=row['path'], blob_sha=row['hash'], title=None, position=None,
-                 active=int(legacy['active_fts']['base'].get(row['path']) == row['hash']))
-            for row in legacy['corpus']]
-    if sidecar:
-        rows.extend(dict(origin='sidecar', path_key=row['path'], blob_sha=row['hash'], title=row['title'],
-                         position=row['rowid'],
-                         active=int(legacy['active_fts']['sidecar'].get(row['path']) == row['hash']))
-                    for row in legacy['sidecar_corpus'])
-    rows.sort(key=lambda row: (row['origin'], row['path_key'].encode('utf8')))
-    return rows
 
 
-def _legacy_card_rows(legacy, members, spans):
-    """Card rows of a legacy import: FTS path, origin and line spans in each row's metadata."""
-    sidecar = 'sidecar_corpus' in legacy
-    cards = []
-    for member in members:
-        origin = legacy['fts_sources'][member['path']] if sidecar else 'base'
-        meta = dict(fts_path=legacy['fts_paths'][member['path']], origin=origin,
-                    spans=spans.get(member['path'], []))
-        cards.append(dict(_card_row(member), metadata_json=v.canonical(meta)))
-    return cards
 
 
-def _legacy_scan(manifest, skips, legacy, legacy_rows):
-    return v.digest('memvane-row-stage-scan-v1', dict(
-        manifest=vals.manifest_digest(manifest), skip_paths=skips, files=[],
-        legacy=dict(observation=_legacy_observation(legacy),
-                    corpus=v.digest('memvane-row-legacy-corpus-v1', [_legacy_value(r) for r in legacy_rows]))))
 
 
 @dataclass(frozen=True)
@@ -690,7 +652,7 @@ class RowsMixin:
             manifest=vals.manifest_digest(manifest), skip_paths=skips,
             files=sorted([path, node] for path, node in files.items())))
         stage = _stage_value(self._incarnation, handle, saved, base, job_id, scan_digest, skips, final, items,
-                             spec, source_rows, source_items, card_rows, card_items, legacy=False)
+                             spec, source_rows, source_items, card_rows, card_items)
         gen_id = vals.gen_id(job_id, v.digest(ROW_STAGE_SCHEMA, stage))
         self._observe(entry, deadline=deadline)
         _expired(deadline)
@@ -812,9 +774,6 @@ class RowsMixin:
             stage = _stage_value(self._incarnation, handle, saved, base, job[0], job[6], skips, final, items,
                                  spec, final_sources, source_items, final_card_sources, card_items)
             if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, stage)) != gen_id:
-                if vals.gen_id(job[0], v.digest(ROW_STAGE_SCHEMA, dict(stage, legacy=True))) == gen_id:
-                    # A legacy import stage (even with no card) publishes only with its proof.
-                    v.fail('migration_publish_proof_required')
                 v.fail('stage_identity_changed')
             if any('fts_path' in v.parse_canonical(row['metadata_json']) for row in final):
                 v.fail('migration_publish_proof_required')
@@ -1821,23 +1780,6 @@ class RowsMixin:
                              (view_id, ordinal, ordinal, after)).fetchone()
             return None if row is None else tuple(row)
 
-    def _prepared_stage(self, gen_id, handle):
-        """The base head (and legacy marker) of a prepared or published generation, either format."""
-        with self._joined_session() as db:
-            published = db.execute('SELECT g.view_id,g.epoch,p.gen_id FROM s_generations g LEFT JOIN s_generations p '
-                                   'ON p.view_id=g.view_id AND p.ordinal=g.prior_ordinal WHERE g.gen_id=?',
-                                   (gen_id,)).fetchone()
-            if published is not None:
-                base = dict(view_id=published[0], gen_id=published[2], epoch=published[1] - 1,
-                            incarnation=self._incarnation)
-            else:
-                job = db.execute("SELECT base_gen_id,base_epoch FROM s_stage_jobs WHERE view_id=? AND job_id=? "
-                                 "AND state='ready'", (handle.view_id, gen_id[2:34])).fetchone()
-                if job is None:
-                    v.fail('generation_missing')
-                base = dict(view_id=handle.view_id, gen_id=job[0], epoch=job[1], incarnation=self._incarnation)
-            # Row stages keep only their scan digest; the legacy publication re-derives and compares it.
-            return dict(base=base, legacy=dict(observation=None))
 
     def _rows_preverify(self, handle, deadline):
         self._check(handle)
