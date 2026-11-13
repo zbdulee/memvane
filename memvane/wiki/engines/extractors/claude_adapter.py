@@ -12,10 +12,15 @@ def build_command(b, p, effort=None):
     return args + [p]
 
 
-sys.exit(lib.run_adapter(
-    "claude",
-    "QMD_EXTRACTOR_CLAUDE_BIN",
-    build_command,
-    engine="claude",
-    supports_effort=True,
-))
+def main():
+    return lib.run_adapter(
+        "claude",
+        "QMD_EXTRACTOR_CLAUDE_BIN",
+        build_command,
+        engine="claude",
+        supports_effort=True,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

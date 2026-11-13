@@ -12,10 +12,15 @@ def build_command(b, p, effort=None):
     return [b, "-z", p, "--safe-mode", "--ignore-user-config", "--ignore-rules", "-t", ""]
 
 
-sys.exit(lib.run_adapter(
-    "hermes",
-    "QMD_EXTRACTOR_HERMES_BIN",
-    build_command,
-    engine="hermes",
-    supports_effort=False,
-))
+def main():
+    return lib.run_adapter(
+        "hermes",
+        "QMD_EXTRACTOR_HERMES_BIN",
+        build_command,
+        engine="hermes",
+        supports_effort=False,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

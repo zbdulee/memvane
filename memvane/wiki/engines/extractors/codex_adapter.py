@@ -12,10 +12,15 @@ def build_command(b, p, effort=None):
     return args + [p]
 
 
-sys.exit(lib.run_adapter(
-    "codex",
-    "QMD_EXTRACTOR_CODEX_BIN",
-    build_command,
-    engine="codex",
-    supports_effort=True,
-))
+def main():
+    return lib.run_adapter(
+        "codex",
+        "QMD_EXTRACTOR_CODEX_BIN",
+        build_command,
+        engine="codex",
+        supports_effort=True,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

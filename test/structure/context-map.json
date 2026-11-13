@@ -69,6 +69,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/app/entry_commands.py": {
+      "context": "app",
+      "layer": "entry",
+      "pinned": false
+    },
     "memvane/app/runtime_dispatch.py": {
       "context": "app",
       "layer": "adapter",
