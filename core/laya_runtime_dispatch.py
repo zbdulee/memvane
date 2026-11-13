@@ -357,7 +357,7 @@ def _event(target, kind, started, *, outcome, reason=None, result=None, extra=No
         common = {'state_root': state_root, 'install': target.get('installId'),
                   'host': 'worker', 'session': None}
         event_log.emit('wake.' + kind.removeprefix('laya-'), outcome=outcome, reason=reason,
-                       ms=event_log.elapsed_ms(started), bundle=target.get('sourceCommit'),
+                       ms=event_log.elapsed_ms(started),
                        generation=result.get('generation'),
                        previousGeneration=target.get('generation'),
                        detail=result.get('detail'), path=result.get('path'),

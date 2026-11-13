@@ -910,8 +910,7 @@ class Service:
             return
         self.draining.set()
         self.drain_targets = self._event_targets()
-        _event(self.drain_targets, 'resident.drain', 'started',
-               bundle=(self.bundle or {}).get('version'))
+        _event(self.drain_targets, 'resident.drain', 'started')
         with self.lock:
             for binding in list(self.bindings.values()):
                 self._close_listener(binding)

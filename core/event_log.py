@@ -507,8 +507,13 @@ def emit(event: str, *, outcome=None, reason=None, ms=None, state_root=_UNRESOLV
                   'outcome': code(outcome), 'reason': code(reason),
                   'ms': (round(ms) if isinstance(ms, (int, float)) and not isinstance(ms, bool)
                          and ms == ms and ms >= 0 and ms != float('inf') else None)}
+        from memvane_version import plugin_version
+        try:
+            record['pluginVersion'] = plugin_version()
+        except (OSError, ValueError, KeyError, TypeError):
+            record['pluginVersion'] = 'unknown'
         for key, value in fields.items():
-            if key in record or _SECRET_KEY.search(key) or value is None:
+            if key == 'bundle' or key in record or _SECRET_KEY.search(key) or value is None:
                 continue
             record[key] = _clean(value)
         if _DROPPED:
