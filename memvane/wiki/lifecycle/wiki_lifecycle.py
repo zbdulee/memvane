@@ -101,7 +101,7 @@ from memvane.wiki.workspace import scan_state
 from memvane.settings import source_text
 import wiki_compile as wc
 from memvane.wiki.card import wiki_source_missing as wsm
-import wiki_source_retire
+from memvane.wiki.lifecycle import wiki_source_retire
 
 DEFAULT_MAX_CARDS = 300
 # frontmatter만 보는 ineligible 집계의 읽기 창(실코퍼스 frontmatter는 수백 바이트).
@@ -429,7 +429,7 @@ def guard_verdict(infos: dict) -> dict:
 
 def git_facts(root: Path) -> tuple[dict | None, str | None]:
     """``(facts|None, hold_reason|None)`` of the git checkout holding ``root``."""
-    import git_branch_safety
+    from memvane.wiki.lifecycle import git_branch_safety
     try:
         return git_branch_safety.repo_facts(root), None
     except git_branch_safety.GitUnavailable as exc:
@@ -443,7 +443,7 @@ def hold_invisible_sources(infos: dict, wiki_root: Path, root: Path,
     Returns the run's ``LineageJudge`` (None outside git or when git failed).
     Every source of a card must judge ``retire`` for the card to stay deletable.
     """
-    import git_branch_safety
+    from memvane.wiki.lifecycle import git_branch_safety
     pending = {rel: info for rel, info in infos.items()
                if info is not None and info["state"] in (MISSING, LEGACY_MISSING)}
     if facts is None and git_hold is None:
@@ -542,7 +542,7 @@ def run(cwd: str) -> dict:
 
     facts, git_hold = git_facts(root)
     if facts is not None:
-        import git_branch_safety
+        from memvane.wiki.lifecycle import git_branch_safety
         if facts["linked"]:
             log("SKIP: linked git worktree; the wiki lifecycle runs only from the main checkout")
             result["route"] = "worktree"
@@ -778,7 +778,7 @@ def dry_run(cwd: str) -> dict:
     infos = {page: inspect_card(page, root, allow_roots, known, label) for page in pages}
     facts, git_hold = git_facts(root)
     if facts is not None:
-        import git_branch_safety
+        from memvane.wiki.lifecycle import git_branch_safety
         if facts["linked"]:
             report["gitSkip"] = "linked_worktree"
         elif git_branch_safety.operation_in_progress(facts) is not None:

@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import wiki_verify_worker as verify
+from memvane.wiki.verify import wiki_verify_worker as verify
 import wiki_selected_laya
 
 class PendingRecovery(unittest.TestCase):

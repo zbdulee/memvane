@@ -94,7 +94,7 @@ def claim(root) -> dict | None:
 
 def run_lifecycle(project: Path) -> dict:
     """One bounded lifecycle child for this project; fail-open."""
-    import wiki_lifecycle
+    from memvane.wiki.lifecycle import wiki_lifecycle
     argv = [sys.executable, "-B", str(Path(__file__).with_name("wiki_lifecycle.py")),
             "--cwd", str(project)]
     try:

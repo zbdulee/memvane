@@ -23,7 +23,7 @@ spec.loader.exec_module(seed)
 
 class IntentAckChecks(unittest.TestCase):
     def test_replay_rejects_symlinked_card_before_intent_ack(self):
-        verify = importlib.import_module('wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         reader = importlib.import_module('laya_journal_reader')
         ledger = importlib.import_module('laya_ledger_common')
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
@@ -48,7 +48,7 @@ class IntentAckChecks(unittest.TestCase):
             self.assertFalse(path.with_name(path.stem + '.superseded.json').exists())
 
     def test_existing_ack_is_never_overwritten(self):
-        verify = importlib.import_module('wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             path = Path(directory) / 'compile-a.json'
             ack = path.with_name('compile-a.superseded.json')
@@ -60,7 +60,7 @@ class IntentAckChecks(unittest.TestCase):
             self.assertEqual(ack.read_text(encoding='utf8'), 'old')
 
     def test_replaced_source_path_is_never_acknowledged(self):
-        verify = importlib.import_module('wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             path = Path(directory) / 'compile-a.json'
             old = path.with_name('original.json')
@@ -173,7 +173,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                         initial_sqlite=False):
         checkout = importlib.import_module('memvane.store.checkout_view')
         compiler = importlib.import_module('wiki_compile_worker')
-        verify = importlib.import_module('wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         selected = importlib.import_module('wiki_selected_laya')
         worker = importlib.import_module('laya_product_sync_worker')
         locks = importlib.import_module('memvane.wiki.workspace.compile_paths')
@@ -323,14 +323,14 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
     def run_pending_replay(self, mode):
         checkout_module = importlib.import_module('memvane.store.checkout_view')
         compiler = importlib.import_module('wiki_compile_worker')
-        verify = importlib.import_module('wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         selected = importlib.import_module('wiki_selected_laya')
         worker = importlib.import_module('laya_product_sync_worker')
         freshness = importlib.import_module('memvane.wiki.card.wiki_freshness')
         yaml = importlib.import_module('memvane.wiki.card.yaml_scalars')
         locks = importlib.import_module('memvane.wiki.workspace.compile_paths')
         mutations = importlib.import_module('memvane.wiki.workspace.wiki_mutation_lock')
-        retire = importlib.import_module('wiki_source_retire')
+        retire = importlib.import_module('memvane.wiki.lifecycle.wiki_source_retire')
         project = self.case.project
         source = project / 'notes' / 'replay-source.md'
         source.parent.mkdir(parents=True, exist_ok=True)

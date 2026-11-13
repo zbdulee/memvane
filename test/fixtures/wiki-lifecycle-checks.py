@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import wiki_lifecycle as lifecycle
+from memvane.wiki.lifecycle import wiki_lifecycle as lifecycle
 import wiki_selected_laya
 from memvane.wiki.card import yaml_scalars
 
@@ -390,7 +390,7 @@ class WikiLifecycle(unittest.TestCase):
         self.assertTrue(all(self.frontmatter_revisions(card) for card in cards))
 
     def test_backfill_refuses_bytes_changed_after_judgement(self):
-        import wiki_source_retire
+        from memvane.wiki.lifecycle import wiki_source_retire
         self.source('a.md', b'a')
         card = self.card('raced.md', provenance=False, sources=[('docs/a.md', 'proj-docs')])
         judged = card.read_text(encoding='utf-8')
@@ -496,7 +496,7 @@ class WikiLifecycle(unittest.TestCase):
         self.assertTrue(card.exists())
 
     def test_card_caps_match_the_retire_helper(self):
-        import wiki_source_retire
+        from memvane.wiki.lifecycle import wiki_source_retire
         self.assertEqual((lifecycle.MAX_CARDS, lifecycle.MAX_CARD_BYTES, lifecycle.MAX_TOTAL_BYTES),
                          (wiki_source_retire.MAX_CARDS, wiki_source_retire.MAX_CARD_BYTES,
                           wiki_source_retire.MAX_TOTAL_BYTES))

@@ -86,7 +86,7 @@ def _lineage_for(root: Path):
     keeps its HEAD tree and branch-tip lookups bounded across those rows.
     """
     import time
-    import git_branch_safety
+    from memvane.wiki.lifecycle import git_branch_safety
     cached = _LINEAGE_CACHE.get(str(root))
     if (cached is not None and time.monotonic() - cached[1] < LINEAGE_CACHE_SECONDS
             and cached[0].still_valid()):

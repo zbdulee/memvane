@@ -788,7 +788,7 @@ def _worktree_route(cwd: str, action: str) -> dict | None:
         current = requested.resolve(strict=False)
         if not current.is_dir():
             return None
-        import git_branch_safety
+        from memvane.wiki.lifecycle import git_branch_safety
         linked = git_branch_safety.linked_worktree(current)
         if linked is None:
             return None

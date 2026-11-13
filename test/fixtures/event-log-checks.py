@@ -159,7 +159,7 @@ class WriterChecks(Base):
 
     def test_wiki_card_writes_and_retirement(self):
         from memvane.wiki.workspace import wiki_activity_log
-        import wiki_source_retire
+        from memvane.wiki.lifecycle import wiki_source_retire
         bound = (self.decision, {})
         wiki_activity_log.append('/p', 'created', 'concepts/a.md', 'A', bound, reason='compile')
         wiki_activity_log.append('/p', 'deleted', 'concepts/b.md', 'B', bound, reason='dedup')

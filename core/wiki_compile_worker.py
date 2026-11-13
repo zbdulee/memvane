@@ -425,7 +425,7 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
     if not vcfg.get("enabled", True):
         return None
     try:
-        import wiki_verify_worker
+        from memvane.wiki.verify import wiki_verify_worker
         path = wiki_verify_worker.verify_skipped_path(root, vcfg)
         return wiki_verify_worker.load_verify_suppressions(path).get(rel)
     except Exception:
@@ -1013,7 +1013,7 @@ def source_fingerprints(root: Path, checkout, capture: dict, revisions: list[dic
     against the captured HEAD; a non-git checkout has no tracking (untracked)
     and a git failure or timeout answers ``unknown`` per path.
     """
-    import git_branch_safety
+    from memvane.wiki.lifecycle import git_branch_safety
     paths = [revision["path"] for revision in revisions]
     if capture["branchKey"] == "non-git":
         tracked = {path: git_branch_safety.UNTRACKED for path in paths}
@@ -1126,7 +1126,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if job.get('sourceDelete') is True:
-        import wiki_source_retire
+        from memvane.wiki.lifecycle import wiki_source_retire
         revision = job.get('contentRevision')
         if (selected_route is None or not isinstance(revision, str)
                 or not re.fullmatch(r'[0-9a-f]{64}', revision)):
@@ -1740,7 +1740,7 @@ def _run_verify_pass(
     run's own cards stayed `generated` and invisible to recall.
     """
     try:
-        import wiki_verify_worker
+        from memvane.wiki.verify import wiki_verify_worker
         wiki_verify_worker.run(root, config, compile_cfg, produced_targets=produced_targets or [])
     except Exception as exc:
         # Exception class and failing frame only; the message may name paths.

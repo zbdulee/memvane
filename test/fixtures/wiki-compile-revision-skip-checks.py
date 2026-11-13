@@ -544,7 +544,7 @@ class RevisionSkipChecks(unittest.TestCase):
         self.assertEqual(len(self.extractor_calls), 2)
 
     def test_shared_delete_schedules_survivor_once_and_retains_wait_marker(self):
-        import wiki_source_retire
+        from memvane.wiki.lifecycle import wiki_source_retire
         gone = self.docs / 'gone.md'
         gone.write_text('old deleted bytes', encoding='utf-8')
         old_hash = wiki_freshness.snapshot_bytes(gone)[0]['sha256']

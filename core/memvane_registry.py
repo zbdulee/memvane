@@ -426,7 +426,7 @@ def _linked(project, deadline, clock=time.monotonic):
     the deadline is checked before every one; running out returns None and
     nothing is registered or released.
     """
-    import git_branch_safety as git
+    from memvane.wiki.lifecycle import git_branch_safety as git
     import laya_index_host_route as routes
     try:
         facts = git.repo_facts(project, deadline=deadline)

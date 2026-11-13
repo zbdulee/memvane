@@ -35,7 +35,7 @@ for _key in [key for key in os.environ if key.startswith('GIT_')]:
     del os.environ[_key]
 os.environ.update(GIT_ENV)
 
-import git_branch_safety  # noqa: E402
+from memvane.wiki.lifecycle import git_branch_safety  # noqa: E402
 from memvane.store import blob_values as laya_blob_values  # noqa: E402
 from memvane.store import checkout_view as view  # noqa: E402
 import wiki_compile_worker as worker  # noqa: E402

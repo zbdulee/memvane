@@ -256,7 +256,7 @@ class Checks(unittest.TestCase):
         self.assertFalse(project.queue.exists())
 
     def test_lifecycle_child_runs_the_scan_without_changing_its_result(self):
-        import wiki_lifecycle
+        from memvane.wiki.lifecycle import wiki_lifecycle
         calls = []
         with patch.object(wiki_lifecycle, 'run', side_effect=RuntimeError('lifecycle failed')), \
                 patch.object(scan, 'run', side_effect=calls.append), \

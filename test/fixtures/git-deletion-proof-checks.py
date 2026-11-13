@@ -28,7 +28,7 @@ import uuid
 HERE = Path(__file__).resolve().parent
 CORE = HERE.parents[1] / 'core'
 sys.path.insert(0, str(CORE))
-import git_branch_safety as gbs  # noqa: E402
+from memvane.wiki.lifecycle import git_branch_safety as gbs  # noqa: E402
 
 GIT_ENV = {'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_SYSTEM': os.devnull,
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_AUTHOR_NAME': 'fixture',

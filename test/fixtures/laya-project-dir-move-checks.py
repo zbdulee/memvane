@@ -324,7 +324,7 @@ class MigrationTests(MoveCase):
         self.assertEqual(again[0]['status'], 'current', again)
 
     def test_queued_verify_jobs_follow_the_folder(self):
-        import wiki_verify_worker as verify
+        from memvane.wiki.verify import wiki_verify_worker as verify
         self.move()
         tag = 'a' * 16
         job = {'targetPath': '.auto-context/wiki/concepts/otter-ledger.md',

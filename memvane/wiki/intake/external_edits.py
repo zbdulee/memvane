@@ -460,7 +460,7 @@ def drain(decision, *, recheck, owner=None):
             else:
                 wiki_selected_laya.request_compile(project, (decision, proof), owner=owner)
         if deleted:
-            import wiki_lifecycle_request
+            from memvane.wiki.lifecycle import wiki_lifecycle_request
             checked()
             wiki_lifecycle_request.request(decision, 'source_edit')
         checked()

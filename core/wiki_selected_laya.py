@@ -273,7 +273,7 @@ def _run(project: Path):
     verify = _safe_queue_path(project, cp.rel(cp.VERIFY_QUEUE))
     if source is None or verify is None:
         return {'state': 'deferred', 'reason': 'unsafe_compile_queues'}
-    import wiki_lifecycle_request
+    from memvane.wiki.lifecycle import wiki_lifecycle_request
     try:
         lifecycle = wiki_lifecycle_request.claim(project)
     except (OSError, ValueError):

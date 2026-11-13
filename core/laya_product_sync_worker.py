@@ -634,7 +634,7 @@ def _schema3_linked_projects(decision, deadline):
     this main project (same common Git dir, no route of its own, same derived
     settings identity: ``laya_index_host_route._worktree_route``).
     """
-    import git_branch_safety
+    from memvane.wiki.lifecycle import git_branch_safety
     project = Path(decision['projectRoot'])
     try:
         facts = git_branch_safety.repo_facts(project, deadline=deadline)
@@ -804,7 +804,7 @@ def _consume_compile_intents(store, writer, proof, marks, decision, handle, memb
     import laya_writer_scope as normal
     from memvane.wiki.card import source_spans
     from memvane.wiki.card import wiki_card
-    import wiki_verify_worker
+    from memvane.wiki.verify import wiki_verify_worker
 
     result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0}
     state = reader._state(Path(decision['journalPath']).parent)
@@ -966,7 +966,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     """
     from memvane.store import blob_values as v
     import laya_writer_scope as normal
-    import wiki_lifecycle
+    from memvane.wiki.lifecycle import wiki_lifecycle
     from memvane.store.blob_store import _regular
     from memvane.store import view_values as view_values
     from memvane.store.view_store import _skip_patterns
@@ -1253,7 +1253,7 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
     sha256}``, the discovery snapshot shape); a scan over its bounds leaves
     none, so discovery scans (and blocks) on its own.
     """
-    import git_branch_safety
+    from memvane.wiki.lifecycle import git_branch_safety
     from source_scan import scan_collections
     from memvane.wiki.intake.wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
     project = Path(decision['projectRoot'])
