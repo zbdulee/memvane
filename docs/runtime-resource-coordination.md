@@ -257,10 +257,7 @@ private `runtime-wake-drops.json` beside the queue (newest 64), and a
 A request whose wake cannot start a worker because another one holds the lease
 starts one handoff contender (`runtime-worker-handoff.lock`, at most 180
 seconds). The contender releases that lock as soon as it holds the worker
-lease. A learning-state move writes `runtime-worker-yield.json` (an expiry
-within its attempt budget) before it waits for both locks: a draining worker
-claims no further wake, and no worker or contender is spawned, while it
-stands. A child already running is not interrupted.
+lease. A child already running is not interrupted.
 
 Learning retries recheck `laya_learning.ready` and retain the existing history
 worker fence. The runtime dispatcher starts at most one owned learning child
@@ -652,8 +649,7 @@ from injected analytical tests; the shared OS reporter always attaches it.
   command; an idle learning-only service of an earlier bundle is retired.
 - Embedding runtime: the embedding worker runs the Laya embedding runtime under
   `~/.local/state/memvane/embed-runtime` (`active.json`, `previous.json`,
-  content-addressed `generations/g-<id>/`). The bundle upgrade worker fills it
-  from an install's sealed provider attestation. On a new machine the owner
+  content-addressed `generations/g-<id>/`). On a new machine the owner
   runs `core/setup_entry.py provision-index-runtime
   --approve-index-runtime-download [--provider-model-file <local gguf>]`
   (network: npm registry and model host); `index-runtime-status` re-hashes the

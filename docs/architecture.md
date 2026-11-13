@@ -523,8 +523,7 @@ Hooks never load a model.
 The embedding runtime lives in `~/.local/state/memvane/embed-runtime`
 (`core/laya_embed_runtime.py`): `active.json`, `previous.json` and immutable
 generations holding Node, node-llama-cpp, the native build and the GGUF model.
-A generation comes from an install attestation written by the bundle upgrade
-worker or, on a new machine, from an explicit provisioning action. Maintainer
+A generation comes from an explicit provisioning action. Maintainer
 commands (`ROOT` is the installed plugin root):
 
 ```bash
@@ -749,14 +748,13 @@ Reading (`skills/logs/scripts/logs.py`):
 | Selected recall hook | Exception chain, or origin stack for the instrumented selector and vector fallback warnings |
 | Sync/compile dispatcher | Dispatcher exception; a failed child has at most its stderr tail and a `trace_unavailable` marker |
 | Compile verify pass | Exception chain when the selected route still matches the bound install |
-| Bundle upgrade | Exception chain when the current selected route still proves the same state root; otherwise `trace_unavailable` |
 | Hermes selected recall adapter | Exception chain if the core has not already logged it and a selected route is available |
-| Migration and resident service internals | Existing fixed event codes only when an exception has already been swallowed; no reconstructed cause stack |
+| Resident service internals | Existing fixed event codes only when an exception has already been swallowed; no reconstructed cause stack |
 | Other hook and adapter boundaries | Existing event codes where available; detailed exception capture is not guaranteed |
 
 | Event | Written by | Outcome / fields |
 |---|---|---|
-| `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`core/laya_host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` or `bundle_upgrade_pending` |
+| `recall`, `gate`, `posttool`, `update`, `update-queued`, `index`, `compile`, `file-change-event` | selected-route hook actions (`core/laya_host_response.py`) | `ok` / `refused` (`recall`: `served` / `empty` / `refused`); `reason` is a fixed refusal code or a final code such as `sync_requested` |
 | `hook.error` | `core/hook_main.py` | exception class and `file:line`, never the message |
 | `learning.capture` | context learning capture | capture status |
 | `wiki` | compile, verify, dedup, pending publish, lifecycle, source retirement | `created` / `updated` / `deleted` / `retired`; `reason` (`compile`, `pending_publish`, `verify_retire`, `dedup`, `lifecycle:<code>`, `source_deleted`), `path`, `title` |
@@ -778,8 +776,7 @@ carries `cards` (`[{path, sha}]`, exactly the injected cards), `count`,
 `filtered_count`/`filtered_reasons` and `prompt` (`{sha256, chars}`).
 
 The only code path that reads the log back is the compile worker's
-`wiki.logTail`, which renders `wiki` events alone. The bundle upgrade status
-file `bundle-auto-upgrade.json` sits beside the log.
+`wiki.logTail`, which renders `wiki` events alone.
 
 ### Log Files
 

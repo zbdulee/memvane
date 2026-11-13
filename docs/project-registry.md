@@ -75,8 +75,7 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
   backfill)도 저장된 inode와 다른 root를 만나면 덮어쓰지 않고 같은 규칙을 따른다.
   프로젝트 root 이동은 자동으로 경로를 바꾸지 않는다.
 - route 증명이 실패하면 해제가 증명된 경우에만 `detached`(`released`)이고, 그 밖의
-  실패는 상태를 두고 `proof`에 `unproved:<사유>`를 남긴다. 같은 install의 route가
-  다른 state root를 가리키면(state move 완료) state root를 갱신한다.
+  실패는 상태를 두고 `proof`에 `unproved:<사유>`를 남긴다.
 - main checkout은 자기 route 기록으로만 분류한다(`_select_route`). 연결 worktree
   분류는 git을 쓰므로 main 증명에 쓰지 않는다.
 - setup·`snapshot()` 경로에서 main 행을 확인하거나 등록할 때 유계 `git worktree list`와
@@ -86,11 +85,7 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
   worktree 행을 바꾸지 않는다. main이 `detached`가 되면 그 install의 worktree 행도
   같은 사유로 `detached`다. worktree 행의 schema3 view ID와 view 준비 상태는 아직
   기록하지 않는다.
-- backfill은 현재 state base와 이전 state base(`~/.local/state/laya`)를 각자의
-  커서로 페이지 단위로 훑고, journal이 선택 상태인 install을 route 증명 뒤 암묵
-  등록한다. 열거가 끝까지 성공한 base만 완료 시각을 얻는다. 열거 실패·중단은 완료가
-  아니다. 완료 뒤에도 `RESCAN_SECONDS`(600초)마다 다시 훑어 구 번들이 만든 설치를
-  찾는다. 두 base에 같은 install이 있으면 route가 가리키는 state root만 등록된다.
+- backfill은 현재 state base를 페이지 단위로 훑고, journal이 선택한 install을 route 증명 뒤 등록한다. 열거 실패나 중단은 완료가 아니다.
 
 ## 소비자
 
@@ -125,12 +120,6 @@ SessionStart 경로는 hook 시간 예산 안에서 fail-open이다. reconcile �
 - 레지스트리의 journal 읽기는 `read_only_journals()` 안에서 한다. 중단된 v3/v4
   journal의 rollback 복구를 하지 않고 그 설치를 이번 pass에서 건너뛴다. journal
   busy 대기는 `laya_install_journal.reader_deadline`으로 그 pass의 예산에 묶인다.
-- 레지스트리는 state base의 기존 `auto-context/` 항목 아래에 있다. 구 번들은 이름
-  필터 전에 state base 항목을 512개(`laya_external_edits.MAX_STATE_ENTRIES`)까지만
-  센다. `auto-context/`가 없고 state base 항목이 이미 512개면 레지스트리를 만들지
-  않는다(`registry_state_base_full`).
-- 구 번들은 레지스트리를 읽지 않는다. 구 번들의 설치·해제는 다음 backfill·reconcile이
-  반영한다. tombstone은 구 번들 동작을 막지 않는다.
 - 같은 프로젝트의 직접 세션은 레지스트리와 무관하게 기존 route 증명으로 동작한다.
 
 ## 진단

@@ -84,7 +84,6 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
 - **먼저 정할 계약.**
   - 권한: 레지스트리는 조회 색인일 뿐 권한을 주지 않는다. 조회한 뒤 기존 selected route 증명(journal·route·attestation)을 그대로 통과해야 한다. 항목과 증명이 어긋나면 그 항목을 건너뛰고 백그라운드 reconcile이 고친다.
   - uninstall의 정의와 단일 진입점: 지금은 `restore-index-origin`, `retire-index-origin`, `abandon-*`로 흩어져 있다. 진입점을 하나로 모을지, uninstall이 지우는 범위(route 파일, state 디렉터리, wiki 카드, 학습 상태)와 owner 승인 단계도 정한다.
-  - 동시성과 호환: Claude·Codex·Hermes의 서로 다른 번들 버전이 같은 레지스트리를 읽고 쓴다. schema 버전, 잠금, 구 번들이 레지스트리 없이 동작할 때의 fallback(지금의 훑기)을 정한다.
   - 기존 설치 이전: 첫 실행 때 state base를 한 번 훑어 레지스트리를 채운다(backfill).
   - 오래된 항목: 경로 소실, inode 변경, journal 미선택을 판정하는 규칙, 일시적 소실의 유예 기간, 서비스 시작·주기 reconcile의 예산을 정한다.
   - 연결 worktree: 등록 단위와 main 항목과의 관계를 정한다. 「연결 git worktree의 카드 수명 주기」의 계약과 맞춘다.
@@ -105,13 +104,12 @@ S v1은 view 행·FTS·stage/delta·세대만 GC한다. 여러 view가 공유하
 활성화 후보는 다음 R1~R6을 모두 검증한다.
 
 - **R1:** 선택 sync의 issued owner·writer scope 안에서 모든 게시·fill이 정상 반환된 뒤 같은 프로세스·스레드에서만 실행하고, 이후 기존 메모리 blob ID·fill target을 재사용하지 않는다. 실패·defer pass에서는 실행하지 않는다.
-- **R2:** journal이 선택한 S 형식 schema3 store만 대상으로 하고 inode·incarnation·writer proof를 대조한다. shadow 후보, 선택 해제 store, 연결 worktree route는 제외한다.
+- **R2:** journal이 선택한 S 형식 schema3 store만 대상으로 하고 inode·incarnation·writer proof를 대조한다. 선택 해제 store와 연결 worktree route는 제외한다.
 - **R3:** 각 유계 `BEGIN IMMEDIATE`에서 모든 참조를 다시 확인하고 vector→embedding set→chunk→chunk set→attestation source→attestation→admission→blob 순으로 삭제한다. FK 위반·busy는 전체 rollback 후 defer한다.
-- **R4:** set 단위 FK 부재만 보지 않는다. 모든 view의 head·직전, stage, delta, 진행/완료 fill 대상, parity 및 외부 record, trust chain과 `coverage=complete`의 암묵 참조에 도달하는 blob을 보호한다. 살아 있는 blob의 모든 recipe/profile set을 보존한다.
+- **R4:** set 단위 FK 부재만 보지 않는다. 모든 view의 head·직전, stage, delta, 진행/완료 fill 대상, 외부 record, trust chain과 `coverage=complete`의 암묵 참조에 도달하는 blob을 보호한다. 살아 있는 blob의 모든 recipe/profile set을 보존한다.
 - **R5:** orphan prepared/stage만 head/epoch를 transaction에서 재확인한 뒤 유계 batch로 정리하고 crash 뒤 재개를 검증한다.
-- **R6:** 남아 있는 모든 구 번들이 실제 S 형식의 매 transaction에서 fail-closed하고 쓰지 않는지 양 Python 교차 시험한 뒤에만 활성화한다. 새 lock·소유 계약 변경이 필요하다고 확인되면 사용자에게 결정받는다.
 
-실제 활성화 전 합성 RED/GREEN: (1) chunk set commit과 embedding callback 사이의 GC, (2) lexical head의 complete/partial fill set과 `coverage=complete`의 묵시 참조, (3) journal CAS 뒤 switched 기록 전 crash 및 stale shadow vector/prepare 핸들. 구 bundle RW 핸들의 형식 fence도 교차 시험한다. head 관측과 게시 순서에 따른 결과를 각각 기록하고, 예상 오류·고착은 재현 전 사실로 취급하지 않는다. 현재+직전 view 행 GC와 그 자체의 RED는 S v1 범위다.
+실제 활성화 전 합성 RED/GREEN: (1) chunk set commit과 embedding callback 사이의 GC, (2) lexical head의 complete/partial fill set과 `coverage=complete`의 묵시 참조, (3) 진행 중 prepare 및 fill 핸들. head 관측과 게시 순서에 따른 결과를 각각 기록하고, 예상 오류·고착은 재현 전 사실로 취급하지 않는다. 현재+직전 view 행 GC와 그 자체의 RED는 S v1 범위다.
 
 ## 연결 git worktree의 카드 수명 주기
 
