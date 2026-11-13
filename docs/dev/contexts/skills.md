@@ -1,0 +1,15 @@
+# Skill
+
+### skills (`skills/`)
+- `query` — 프롬프트와 같은 Laya recall hook을 선택된 route에 수동 실행한다(선택된 main checkout의 연결 워크트리는 host route의 `worktree` 규칙을 따른다). 미온보딩 프로젝트는 온보딩 안내와 함께 exit 1, 증명이 실패한 선택 route는 exit 3이다. 다른 경로로 검색하지 않는다.
+- `update` — 선택된 MemVane 색인의 full-scan sync wake를 큐잉한다(생성·변경·삭제 파일 reconcile, 수동 sync·resync 요청도 이 skill). wake는 queued로 보고하고 실행은 hook 밖 durable worker가 한다. 미온보딩 프로젝트는 exit 1, 증명 실패는 exit 3이다.
+- `setup` — MemVane 색인 온보딩(minimal settings → `plan-fresh-wiki-origin` → `review-index-provider` → `prepare-fresh-wiki-origin` → `finalize-index-origin` → `activate-index-origin`, 되돌리기는 `restore-index-origin`), Laya embed runtime 준비·GC, 명시적 학습 프로필, index reader 상태 조회·읽기 전용 전환 리허설·명시 rollback·migration 재개(`index-reader-status --rehearse-switch`, `index-reader-status`·`rollback-index-reader`·`resume-index-reader-migration`), owner의 은퇴 QMD 백엔드 1회 정리 진입점. 모든 동작은 `core/setup_entry.py`로 하고 적용은 명시 요청 시에만 한다. SessionStart 온보딩 안내가 가리키는 skill이다.
+- `wiki-compile` — compact durable summary/candidate JSON을 `core/wiki_extract.py` → `core/wiki_compile.py`로 수동 실행한다. raw transcript를 입력하지 않으며 query-time hook에서는 쓰지 않는다.
+- `merge-needed.jsonl` — write-time semantic collision을 기록하는 passive, non-trusted diagnostic. 자동 merge·승격·SessionStart scan/notice/resolver가 없고 manual skill surface도 제공하지 않는다.
+- `wiki-dedup` — `dedup-needed.jsonl`에 쌓인 **이미 존재하는** wiki 카드 쌍을 정리하는 user-facing 진입점. 큐는 retroactive scan(`wiki_dedup_scan.py`)이 채운다. `agents/wiki-dedup-resolver.md` 에이전트를 스폰해 자율 판단한다(WORKFLOW는 에이전트가 SSOT — skill은 재복제하지 않음). 자동 스폰 경로는 없고 skill 경유(명시적 사용자 요청) 스폰이 요약을 반환한다. **병합으로 지운 카드는 `dedup-deleted.jsonl`(`wiki_dedup_resolve.py`)에 본문 전체와 함께 남고 이 원장은 `trim_jsonl` 대상이다** — `verify-deleted.jsonl`이 트림되지 않는 것과 **의도적으로 다르다**: 후자는 경로·사유만 담아 행당 유계지만 이쪽은 삭제된 카드 본문(KB 단위)을 담아 무제한이면 디스크가 자란다. 즉 판단 기준은 "감사 원장이냐"가 아니라 "행 크기가 유계냐"다. 본문을 담는 대가로 복구 가능성을 얻고, 트림되는 대가로 오래된 병합의 원본은 사라진다(사람이 승인한 삭제라 기계 삭제와 등급이 다르다).
+- **wiki 카드에 보존할 내용을 접어 넣을 때는 항상 `<!-- qmd:auto:end -->` 밖에 둔다.** auto 블록은 소스 변경 시 `AUTO_BLOCK_RE.sub`로 통째 재생성되고 `verified`는 `is_auto_writable_page` 보호 집합에 없어(의도적) 갱신 대상이다 — 블록 안의 고유 사실은 다음 소스 편집에 소실된다. 블록 밖은 frontmatter 포함 보존되므로 dedup consolidation의 alias·canonicalKey·sources 이식은 안전하다 — **단 이 보장의 범위는 "소스 변경에 의한 auto 블록 재생성"까지다.** 카드가 **삭제**되면(기계 검수 `fail`·`inconclusive`, 둘 다 기본값) 블록 밖 내용도 함께 사라지고 `verify-deleted.jsonl`에 본문이 없어 **복구 수단이 없다**. 따라서 고유 사실은 계속 블록 밖에 두되 **카드를 "소스에서 재생성할 수 없는 것의 유일한 사본"으로 쓰지 않는다.** `maxAutoPageLines`는 candidate summary 줄 수만 보므로 보존 섹션은 lint에 영향이 없다.
+  - **한 경로의 보장을 전 경로의 보장으로 서술하지 말 것.** 보존·안전을 약속하는 문장을 쓸 때는 **어느 연산에 대해 참인지**를 함께 적는다(재생성 / 갱신 / 삭제 / 병합).
+- `hint`에 해당하는 skill은 만들지 않는다. 선택된 route의 PostToolUse `posttool`은 힌트를 주입하지 않는 observer이고 durable sync는 `index`가 맡는다.
+- `gate`에 해당하는 skill은 만들지 않는다. gate는 선택된 route에서 편집 이벤트의 route 증명을 확인하는 내부 hook이고, 증명이 유지되면 allow를 낸다.
+
+> **dogfooding**: 이 저장소 자체의 `.memvane/settings.json`은 minimal settings(`{"name": "qmd-auto-context", "skipPaths": []}`)다. 온보딩해 Laya route가 선택된 체크아웃에서는 raw 컬렉션 `qmd-auto-context`(프로젝트 루트)와 wiki 컬렉션 `qmd-auto-context-wiki`(`.memvane/wiki`)를 쓴다. 컬렉션 이름은 프로젝트 데이터라 플러그인 이름과 별개다.

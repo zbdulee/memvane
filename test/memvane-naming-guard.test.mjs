@@ -37,9 +37,9 @@ const ALLOWED = {
   'README.md': [/qmd-auto-context@qmd-auto-context-marketplace/, /remove qmd-auto-context-marketplace/,
                 /^hermes plugins remove qmd-auto-context$/,
                 /^### `qmd-auto-context` 플러그인에서 옮기기$/, /이전 플러그인 이름 `qmd-auto-context`/],
-  'AGENTS.md': [/CREATED_BY_NAMES/, /"name": "qmd-auto-context"/, /managed-by: qmd-auto-context/,
-                /이전 이름과의 호환 shim/, /\.\.\.\/qmd-auto-context/, /CACHE_IDENTITIES/],
-  'CLAUDE.md': [/CREATED_BY_NAMES/, /"name": "qmd-auto-context"/, /managed-by: qmd-auto-context/,
+  'docs/dev/contexts/wiki-verify.md': [/CREATED_BY_NAMES/],
+  'docs/dev/contexts/skills.md': [/"name": "qmd-auto-context"/],
+  'docs/dev/contexts/installation-naming.md': [/CREATED_BY_NAMES/, /managed-by: qmd-auto-context/,
                 /이전 이름과의 호환 shim/, /\.\.\.\/qmd-auto-context/, /CACHE_IDENTITIES/],
   // CI fetches the immutable 0.40.3 compatibility fixture by pinned commit
   // from the predecessor repository; that historical source keeps its name.

@@ -85,7 +85,9 @@ test("active operator docs expose automatic trust and no removed review lifecycl
     assert.equal(existsSync(surface), false, `removed review surface is back: ${surface}`);
   }
 
-  const files = ["CLAUDE.md", "docs/settings.md"];
+  const files = ["CLAUDE.md", "AGENTS.md", "docs/settings.md",
+    ...readdirSync("docs/dev/contexts").filter((name) => name.endsWith(".md"))
+      .map((name) => `docs/dev/contexts/${name}`)];
   for (const file of files) {
     assert.doesNotMatch(readFileSync(file, "utf8"), REVIEW_SURFACE_POINTER, file);
   }
