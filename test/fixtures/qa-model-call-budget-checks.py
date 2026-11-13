@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, 'core')
 from memvane.runtime.runtime_admission import PreSendDeferred, provider_run
-import qa_model_budget
+from memvane.wiki.engines import qa_model_budget
 
 with tempfile.TemporaryDirectory() as tmp:
     ledger = Path(tmp) / 'calls.log'

@@ -39,7 +39,7 @@ def _compile_proof(decision, *, owner=None):
     if 'journalPath' not in decision:
         return verify_selected_route_for_write(decision,'compile')
     import laya_install_journal as journal
-    from sync_owner_lock import sync_owner
+    from memvane.sync.sync_owner_lock import sync_owner
     from memvane.kernel.resource_deferred import ResourceDeferred
     with sync_owner(Path(decision['storePath'])) as acquired:
         if acquired is None:
@@ -223,7 +223,7 @@ def wiki_matches(root: Path, wiki_root: Path, text: str, top_k: int,
     if (type(top_k) is not int or not 1 <= top_k <= 20 or
             type(cap_chars) is not int or not 1 <= cap_chars <= 12000):
         raise ValueError('selected_wiki_retrieval_budget')
-    import wiki_compile_retrieval
+    from memvane.wiki.compile import wiki_compile_retrieval
     matches = wiki_compile_retrieval.matches(root, wiki_root, text, top_k,
                                              cap_chars, bound)
     recheck(bound)

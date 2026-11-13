@@ -1414,7 +1414,7 @@ def _verify_v1_selected(decision):
     """Reprove the selected v1 journal, route, ledger and provider."""
     from memvane.settings import project_dir
     from laya_initial_build import read_v1
-    from laya_ledger_common import _private_file, _read_json
+    from memvane.install.ledger_common import _private_file, _read_json
     from memvane_version import same_major
     if not isinstance(decision, dict) or decision.get('state') != 'candidate':
         _fail('unselected_host_route')
@@ -1506,7 +1506,7 @@ def verify_notification_target(decision):
     from memvane.settings import project_dir
     from laya_index_host_route import select_notification_route
     from laya_initial_build import read_v1
-    from laya_ledger_common import _private_file, _read_json
+    from memvane.install.ledger_common import _private_file, _read_json
     from memvane_version import same_major, writer_floor_allows
     if not isinstance(decision, dict) or decision.get('routeSchema') != 'memvane-route-v4':
         _fail('unselected_host_route')

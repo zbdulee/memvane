@@ -432,7 +432,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.assertIn(('concepts/egret-one.md', 'concepts/egret-two.md'),
                       [tuple(sorted((row['pageA'], row['pageB']))) for row in pairs])
         # Compile retrieval: a vector-only candidate carries its exact cosine.
-        retrieval = importlib.import_module('wiki_compile_retrieval')
+        retrieval = importlib.import_module('memvane.wiki.compile.wiki_compile_retrieval')
         target = 'concepts/egret-one.md'
         vector = self.card_vector(result['generation'], target)
         captured = []
@@ -505,7 +505,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.raw_file('scanned-once.md', 'A raw note the pass scans once.\n')
         grant = self.D.record_grant(self.decision, 'sync', engine='codex')
         self.assertTrue(self.D.activate_grant(self.decision, 'sync', grant))
-        port = importlib.import_module('source_scan')
+        port = importlib.import_module('memvane.sync.source_scan')
         real, scans = port.scan_collections, []
 
         def counted(*args, **kwargs):

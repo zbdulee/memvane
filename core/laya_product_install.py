@@ -568,10 +568,10 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
     from memvane.store.blob_store import _regular
-    from laya_ledger_common import _read_json, _write
+    from memvane.install.ledger_common import _read_json, _write
     from memvane.store.view_store import ViewStore, _skip_patterns
     from laya_view_vectors import provider_spec
-    from sync_owner_lock import sync_owner
+    from memvane.sync.sync_owner_lock import sync_owner
     state = _private_parent(state_root)
     project = _checked_project(project_root)
     with _install_lock(state), build.owner(state) as owned:
@@ -722,9 +722,9 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.wiki.workspace import wiki_mutation_lock
     from contextlib import closing
     from laya_index_host_route import _classify_v4, SELECTION_SCHEMA_V1
-    from laya_ledger_common import _read_json, _write
+    from memvane.install.ledger_common import _read_json, _write
     from memvane.journal.reader_lease import reader_lifetime
-    from sync_owner_lock import sync_owner
+    from memvane.sync.sync_owner_lock import sync_owner
     project = _checked_project(project_root)
     journal = Path(journal_path)
     state = _private_parent(journal.parent)
@@ -826,7 +826,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
     """Finish the same partially published or withdrawn v1 selection."""
-    from laya_ledger_common import _read_json
+    from memvane.install.ledger_common import _read_json
     state = Path(journal_path).parent
     ledger = _read_json(state / 'ledger.json')
     if ledger.get('phase') in ('restoring', 'restored'):
@@ -847,9 +847,9 @@ def _restore_v1_locked(project, state):
     import laya_install_journal as journal
     from contextlib import closing
     from laya_index_host_route import SELECTION_SCHEMA_V1
-    from laya_ledger_common import _read_json, _write, _fsync_dir
+    from memvane.install.ledger_common import _read_json, _write, _fsync_dir
     from memvane.journal.reader_lease import reader_lifetime
-    from sync_owner_lock import sync_owner
+    from memvane.sync.sync_owner_lock import sync_owner
     from memvane.wiki.workspace import wiki_mutation_lock
     with build.owner(state) as owned:
         if not owned:

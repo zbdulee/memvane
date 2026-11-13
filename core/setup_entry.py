@@ -103,7 +103,7 @@ def main(argv=None):
         if args.action.startswith('onboarding-'):
             # The user's answer to the SessionStart onboarding notice. It
             # hides or shows that notice only; it never selects a route.
-            import onboarding_choice as choice
+            from memvane.host import onboarding_choice as choice
             if args.action == 'onboarding-skip':
                 result = choice.skip(args.project, args.session)
             elif args.action == 'onboarding-never':

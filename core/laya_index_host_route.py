@@ -431,7 +431,7 @@ def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True
 
 def select_notification_route(project):
     """Classify an external-edit hint without opening the recipient store."""
-    from laya_ledger_common import _read_json
+    from memvane.install.ledger_common import _read_json
     try:
         root = Path(project)
         if not root.is_absolute() or root.resolve(strict=True) != root:
@@ -846,7 +846,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if markers:
         # The marker stays through restoration. Only its durable ledger can
         # classify an absent route as legacy.
-        from laya_ledger_common import _read_json
+        from memvane.install.ledger_common import _read_json
         marker_root, marker_path = markers[0]
         try:
             marker_record = _read_json(marker_path)
@@ -975,7 +975,7 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
         # A build the user started is progress, not a question.
         return BUILD_NOTICE.format(root=root)
     try:
-        import onboarding_choice
+        from memvane.host import onboarding_choice
         session = onboarding_choice.valid_session(session)
         if onboarding_choice.suppressed(root, session):
             return None

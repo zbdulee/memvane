@@ -16,7 +16,7 @@ from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'core'))
-import sync_owner_lock as sync
+from memvane.sync import sync_owner_lock as sync
 
 PROBE=r'''
 import fcntl,json,os,signal,sys

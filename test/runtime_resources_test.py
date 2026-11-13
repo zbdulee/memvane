@@ -119,7 +119,7 @@ class RuntimeChecks(unittest.TestCase):
         self.assertEqual(p.returncode,0)
 
     def test_hook_completion_wakes_persistent_work_without_changing_exit(self):
-        import hook_main
+        from memvane.host import hook_main
         runtime=self.runtime()
         with patch.object(runtime,'hook_wake') as wake:
             self.assertEqual(hook_main.run(lambda:None),0)

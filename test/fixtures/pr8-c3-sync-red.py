@@ -17,7 +17,7 @@ spec.loader.exec_module(rows)
 class Contract:
     def prepare_intent(self):
         from memvane.store import blob_values as values
-        import laya_ledger_common as ledger
+        from memvane.install import ledger_common as ledger
         from memvane.wiki.verify import wiki_verify_worker
         self.select_schema3()
         self.card('cards/c3.md', 'c3source')
@@ -79,7 +79,7 @@ class Contract:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0], before + 1)
 
     def test_tampered_parity_is_rejected_without_store_write(self):
-        import laya_ledger_common as ledger
+        from memvane.install import ledger_common as ledger
         head, trust, data, intent, path, before = self.prepare_intent()
         intent['sourceFingerprints']['fingerprints'][0]['source_sha'] = 'b' * 64
         ledger._write(path, intent, replace=True)
@@ -91,7 +91,7 @@ class Contract:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0], before)
 
     def test_intent_with_absent_card_waits_without_write(self):
-        import laya_ledger_common as ledger
+        from memvane.install import ledger_common as ledger
         from memvane.wiki.verify import wiki_verify_worker
         head, trust, data, intent, path, before = self.prepare_intent()
         path.unlink()
@@ -106,7 +106,7 @@ class Contract:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM card_attestations WHERE verification_kind='compiled'").fetchone()[0], before)
 
     def test_newer_consumed_supersedes_older_waiting(self):
-        import laya_ledger_common as ledger
+        from memvane.install import ledger_common as ledger
         from memvane.store import blob_values as values
         from memvane.wiki.verify import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
@@ -126,7 +126,7 @@ class Contract:
         self.assertFalse(old_path.exists())
 
     def test_waiting_queue_rotates_to_valid_intent(self):
-        import laya_ledger_common as ledger
+        from memvane.install import ledger_common as ledger
         from memvane.wiki.verify import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
         n = 0
@@ -160,7 +160,7 @@ class Contract:
         self.assertTrue(broken.exists())
 
     def test_forged_consumed_marker_cannot_supersede_waiting(self):
-        import laya_ledger_common as ledger
+        from memvane.install import ledger_common as ledger
         from memvane.store import blob_values as values
         from memvane.wiki.verify import wiki_verify_worker
         head, trust, data, current, path, before = self.prepare_intent()
@@ -179,7 +179,7 @@ class Contract:
         self.assertTrue(old_path.exists())
 
     def test_swapped_intent_is_never_acknowledged(self):
-        import laya_ledger_common as ledger
+        from memvane.install import ledger_common as ledger
         from laya_index_a import IndexContractError
         head, trust, data, intent, path, before = self.prepare_intent()
         real = self.views.ViewStore.put_compiled_attestation

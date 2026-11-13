@@ -14,7 +14,7 @@ matches ``event_log.code`` so the log keeps it verbatim.
 from __future__ import annotations
 
 from memvane.diagnostics import event_log
-import wiki_card_budget
+from memvane.wiki.compile import wiki_card_budget
 
 TAIL_CHARS = event_log.WIKI_TAIL_CHARS
 _UNRESOLVED = event_log._UNRESOLVED

@@ -134,7 +134,7 @@ def provider_popen(argv,*,before_launch=None,launch_failed=None,defer_launch=Non
                 # QA-only cumulative ceiling: count a launch attempt before
                 # Popen, including uncertain/crashed sends. All wiki extractor,
                 # dedup and verifier calls share this provider entry point.
-                from qa_model_budget import reserve_from_env
+                from memvane.wiki.engines.qa_model_budget import reserve_from_env
                 reserve_from_env()
             except ResourceDeferred as exc:
                 if defer_launch is not None:defer_launch()

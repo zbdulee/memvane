@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import wiki_compile_retrieval as retrieval
+from memvane.wiki.compile import wiki_compile_retrieval as retrieval
 import wiki_selected_laya as selected
 
 

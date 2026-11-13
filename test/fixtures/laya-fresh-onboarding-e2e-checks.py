@@ -256,7 +256,7 @@ class FreshOnboarding(BUILD['BuildCase']):
         self.settings.write_bytes(settings_before)
 
     def test_qmd_origin_marker_is_refused_with_a_clear_reason(self):
-        from laya_ledger_common import _write
+        from memvane.install.ledger_common import _write
         _write(self.auto / fresh.MARKER, {'schema': 'laya-qmd-selection-marker-v1',
                                           'projectRoot': str(self.project)},
                replace=False)

@@ -38,7 +38,7 @@ CORE = Path(__file__).resolve().parents[3] / 'core'
 sys.path.insert(0, str(CORE))
 
 from memvane.diagnostics import event_log  # noqa: E402
-import log_targets  # noqa: E402
+from memvane.registry import log_targets  # noqa: E402
 
 ALL_READ_LIMIT = 16 * 1024 * 1024
 MAX_ALL_TARGETS = 128

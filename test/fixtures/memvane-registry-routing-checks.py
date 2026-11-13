@@ -211,7 +211,7 @@ class RegistryTargets(Routing):
         return counted
 
     def test_nested_check_is_bounded_by_depth_and_holds_deeper_edits(self):
-        from source_scan import MAX_DEPTH
+        from memvane.sync.source_scan import MAX_DEPTH
         self.backfill()
         shallow = self.b.project / 'a' / 'b' / 'note.md'
         shallow.parent.mkdir(parents=True)

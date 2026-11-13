@@ -93,7 +93,7 @@ class Schema3ConsumerChecks(seed_module.Schema3SyncPublishChecks):
         self.card('concepts/osprey-perch.md', 'ospreyprobe')
         first, _calls = self.run_pass()
         self.assertEqual(first['state'], 'indexed', first)
-        retrieval = importlib.import_module('wiki_compile_retrieval')
+        retrieval = importlib.import_module('memvane.wiki.compile.wiki_compile_retrieval')
         selected = importlib.import_module('wiki_selected_laya')
         dispatch = importlib.import_module('laya_reader_dispatch')
         captured, queries = [], []

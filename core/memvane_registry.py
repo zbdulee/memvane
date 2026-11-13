@@ -356,7 +356,7 @@ def _home_install(state, home):
 
 def _canonical(path):
     """``path`` in the file system's spelling, through its nearest existing directory."""
-    import onboarding_choice
+    from memvane.host import onboarding_choice
     current = Path(os.path.abspath(path))
     rest = []
     while not current.is_dir() and current.parent != current:

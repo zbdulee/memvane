@@ -36,7 +36,7 @@ def load(name, filename):
 
 
 HERMES = load('hermes_fixture_for_review_regressions', 'hermes-route-recovery-checks.py')
-import onboarding_choice as choice
+from memvane.host import onboarding_choice as choice
 import laya_initial_build as build
 import laya_install_journal as journal
 from hermes_adapter import plugin

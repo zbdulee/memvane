@@ -587,13 +587,13 @@ def main(argv):
     if argv==['wake']:hook_wake();return 0
     if argv[:1]==['cancel-build-wake'] and len(argv)==7 and argv[1::2]==['--project','--revision','--backup-dir']:
         # Official per-UID queue only; ownership is proven from private build state.
-        import runtime_wake_cancel
+        from memvane.runtime import runtime_wake_cancel
         try:revision=int(argv[4])
         except ValueError:revision=None
         result=runtime_wake_cancel.cancel(argv[2],revision,argv[6])
         print(json.dumps(result,sort_keys=True,default=str));return 0 if result['status']!='refused' else 3
     if argv[:1]==['build-wake-status'] and len(argv)==3 and argv[1]=='--project':
-        import runtime_wake_cancel
+        from memvane.runtime import runtime_wake_cancel
         print(json.dumps(runtime_wake_cancel.status(argv[2]),sort_keys=True,default=str));return 0
     if argv[:1]==['worker'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()

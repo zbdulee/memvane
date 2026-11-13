@@ -268,7 +268,7 @@ def _nested_project(path, project, deadline):
     passes during the last stat.
     """
     from memvane.settings import project_dir
-    from source_scan import MAX_DEPTH
+    from memvane.sync.source_scan import MAX_DEPTH
     try:
         between = len(path.relative_to(project).parts) - 1
     except ValueError:

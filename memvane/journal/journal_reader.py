@@ -322,7 +322,7 @@ def _revoke_reader(endpoint):
 
 def _v1_reader_evidence(state, project, saved, *, allow_settings_change=False):
     """Reprove a selected v1 reader without opening a writable component."""
-    from laya_ledger_common import _private_file
+    from memvane.install.ledger_common import _private_file
     decision = journal.select_route(str(project), action='recall')
     proof = journal.verify_selected_route(decision)
     row = journal.inspect_journal(Path(state) / _JOURNAL)
@@ -525,7 +525,7 @@ def _adopted_vector_spec(record, proof, *, deadline):
 def resettle_selection(decision, owner):
     """Re-seal the selected reader under the existing sync owner and lifetime."""
     from contextlib import closing
-    from sync_owner_lock import validate_sync_owner
+    from memvane.sync.sync_owner_lock import validate_sync_owner
     from memvane.journal.reader_windows import _Lifetime
     from laya_view_vectors import provider_spec
     import time

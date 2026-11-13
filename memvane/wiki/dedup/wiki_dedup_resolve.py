@@ -139,7 +139,7 @@ def record_recovery(compile_dir: Path, delete_rel: str, paired_with: str, conten
 
 def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
     """The keeper's budget measurement when its body is over the card budget, else None."""
-    import wiki_card_budget
+    from memvane.wiki.compile import wiki_card_budget
     if not isinstance(keeper_rel, str):
         return None
     keeper = (wiki_root / keeper_rel).resolve()
@@ -220,7 +220,7 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
             # A keeper the local selector cannot score keeps the pair as two
             # cards: the loser stays, and the pair is recorded as skipped.
             recorded = record_skip(root, wiki_root, compile_dir, entry)
-            import wiki_card_budget
+            from memvane.wiki.compile import wiki_card_budget
             wiki_card_budget.emit(root, "merge_kept_separate", bound=laya_bound,
                                   path=paired_with, reason=refused["reason"],
                                   size=refused["size"], budget=refused["budget"],

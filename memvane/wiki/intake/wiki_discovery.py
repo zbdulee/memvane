@@ -494,7 +494,7 @@ class _PendingOverflow(Exception):
 def _raw_snapshot(decision, raw):
     """Scan bounded raw roots without opening an index or retaining bodies."""
     from laya_store_primitives import IndexContractError
-    from source_scan import scan_collections
+    from memvane.sync.source_scan import scan_collections
     roots = {name: decision['collectionRoots'][name] for name in raw}
     try:
         scan = scan_collections(roots, decision['scopeId'], None,

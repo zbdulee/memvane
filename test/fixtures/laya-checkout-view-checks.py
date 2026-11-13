@@ -29,7 +29,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO / 'core'))
-import onboarding_choice  # noqa: E402
+from memvane.host import onboarding_choice  # noqa: E402
 
 MODULES_BEFORE = set(sys.modules)
 try:

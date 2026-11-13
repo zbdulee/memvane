@@ -726,7 +726,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertTrue(any(call.args[0]=='laya-compile' for call in request.call_args_list))
 
     def test_full_selected_compile_retrieval_rechecks_with_owned_connections(self):
-        import wiki_compile_retrieval as retrieval
+        from memvane.wiki.compile import wiki_compile_retrieval as retrieval
         import wiki_selected_laya as selected
         import laya_host_response as response
         with self._compile_warm(),self.seed.authority():
@@ -738,7 +738,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertTrue(all(call['managed'] for call in calls),calls)
 
     def test_selected_compile_retrieval_uses_owned_runtime_and_balanced_pin(self):
-        import wiki_compile_retrieval as retrieval
+        from memvane.wiki.compile import wiki_compile_retrieval as retrieval
         import laya_host_response as response
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected();calls=[]
@@ -754,7 +754,7 @@ class SyncFirstProofChecks(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT count(*) FROM pins').fetchone()[0],before)
 
     def test_selected_compile_retrieval_refuses_busy_sync_owner_before_db_open(self):
-        import wiki_compile_retrieval as retrieval
+        from memvane.wiki.compile import wiki_compile_retrieval as retrieval
         from memvane.kernel.resource_deferred import ResourceDeferred
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected();calls=[]
@@ -768,7 +768,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertEqual(calls,[])
 
     def test_selected_compile_retrieval_close_failure_keeps_owner_until_drain(self):
-        import wiki_compile_retrieval as retrieval
+        from memvane.wiki.compile import wiki_compile_retrieval as retrieval
         import laya_host_response as response
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected();state={'armed':False,'blocked':True,'failed':0}

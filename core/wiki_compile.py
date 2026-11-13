@@ -1433,7 +1433,7 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
     ``attempts`` and ``failure`` codes, and a card that fits logs
     ``measured_after_failure`` (nothing is logged for a fitting card otherwise).
     """
-    import wiki_card_budget as budget
+    from memvane.wiki.compile import wiki_card_budget as budget
     tokenizer = budget.selector_tokenizers(config, root)
     measured = budget.measure_card(card_text, tokenizer)
     rel = target.relative_to(wiki_root).as_posix()

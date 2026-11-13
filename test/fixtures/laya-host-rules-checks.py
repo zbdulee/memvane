@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
-import laya_host_rules as rules
+from memvane.host import host_rules as rules
 
 class RecallRulesChecks(unittest.TestCase):
     def test_pool_preserves_first_fifteen(self):

@@ -36,7 +36,7 @@ from memvane.settings.collection_match import select_collections
 from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as append_source_jobs
 from memvane.wiki.intake.wiki_compile_enqueue import _queue_lock_path, _safe_queue_path, _source_record
 import wiki_compile as wc
-import wiki_card_budget
+from memvane.wiki.compile import wiki_card_budget
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.card import yaml_scalars
 

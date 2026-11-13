@@ -20,7 +20,7 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
 sys.path.insert(0, str(REPO / 'core' / 'extractors'))
-import wiki_card_budget as budget  # noqa: E402
+from memvane.wiki.compile import wiki_card_budget as budget  # noqa: E402
 from context_learning.compact_input import derive  # noqa: E402
 from context_learning.contracts import digest  # noqa: E402
 

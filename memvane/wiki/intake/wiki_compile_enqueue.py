@@ -483,5 +483,5 @@ def main():
 
 
 if __name__ == "__main__":
-    import hook_main
+    from memvane.host import hook_main
     sys.exit(hook_main.run(main))

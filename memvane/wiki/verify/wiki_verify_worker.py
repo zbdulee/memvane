@@ -779,7 +779,7 @@ def _compile_intent_id(result):
 
 def _write_compile_intent(checkout, result, verdict_digest, result_digest):
     from memvane.journal import journal_reader as reader
-    import laya_ledger_common as ledger
+    from memvane.install import ledger_common as ledger
     state = reader._state(Path(checkout.decision['journalPath']).parent)
     directory = state / 'provenance-intents'
     try:
@@ -809,7 +809,7 @@ def _supersede_job_intent(root, config, job, target, decision):
     if decision is None or not isinstance(spec, dict):
         return
     from memvane.journal import journal_reader as reader
-    import laya_ledger_common as ledger
+    from memvane.install import ledger_common as ledger
     try:
         wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
         from memvane.store.blob_store import _regular

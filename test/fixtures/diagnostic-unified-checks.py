@@ -32,7 +32,7 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / 'core'))
 from memvane.diagnostics import event_log  # noqa: E402
-import log_targets  # noqa: E402
+from memvane.registry import log_targets  # noqa: E402
 
 BUDGET = 16 * 1024 * 1024
 HOSTS = ('claude', 'codex', 'hermes')

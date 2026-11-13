@@ -372,7 +372,7 @@ def _log_selection(decision: dict, chosen: list, fallback: str | None = None,
     extra = {key: value for key, value in (('selection_fallback', fallback),
                                            ('vector_fallback', vector)) if value}
     trace['fields'].update(extra, cards=cards, count=len(cards))
-    from laya_host_rules import selection_final
+    from memvane.host.host_rules import selection_final
     trace['final'] = selection_final(cards)
 
 
@@ -505,7 +505,7 @@ def _emit_trace(action, host, decision, payload, trace, started) -> None:
             prompt = payload.get('prompt') if isinstance(payload, dict) else None
             fields['prompt'] = event_log.prompt_fields(prompt)
             fields.setdefault('count', 0)
-        from laya_host_rules import trace_result
+        from memvane.host.host_rules import trace_result
         outcome, reason = trace_result(action, fields.get('count'), outcome, reason,
                                        trace['final'], notes)
         event_log.emit(action, outcome=outcome, reason=reason,
@@ -541,7 +541,7 @@ def _select_verified_cards(decision, settings, prompt, rows):
     if not names:
         _fail('selected_wiki_required')
     project = decision['projectRoot']
-    from laya_host_rules import selector_action, verified_pool
+    from memvane.host.host_rules import selector_action, verified_pool
     pool = verified_pool(rows)
     if not pool:
         return [], 'no_candidates', None
@@ -1042,7 +1042,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     # preexisting request(kind, root) call shape.
     defer = {} if start else {'start': False}
     result = runtime_work.request("laya-sync", decision["projectRoot"], **defer)
-    from laya_host_rules import check_compile_queue
+    from memvane.host.host_rules import check_compile_queue
     if check_compile_queue('collections' in decision, action):
         from memvane.wiki.workspace import compile_paths
         from memvane.wiki.card import wiki_freshness
@@ -1226,7 +1226,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
                 endpoint = stack.enter_context(lease.resolve_endpoint(project,action='recall',host_root=root))
                 break
             except ValueError as exc:
-                from laya_host_rules import reader_reseal_candidate
+                from memvane.host.host_rules import reader_reseal_candidate
                 if (reader_reseal_candidate(str(exc), route_decision is not None) and
                         _settings_resettle_pending(route_decision, project, root)):
                     # Only the project's recall settings moved (skipPaths and
@@ -1614,7 +1614,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         from memvane.kernel.resource_deferred import ResourceDeferred
         try:
             if 'journalPath' in decision:
-                from sync_owner_lock import sync_owner
+                from memvane.sync.sync_owner_lock import sync_owner
                 from wiki_selected_laya import _owner_scope
                 with sync_owner(Path(decision['storePath'])) as owner:
                     if owner is None:
@@ -1648,7 +1648,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
         if action == "gate":
-            from laya_host_rules import gate_response
+            from memvane.host.host_rules import gate_response
             return gate_response(host)
         return {}  # Explicit observer/no-hint PostToolUse; index owns durable sync.
     if action in ("update", "update-queued", "index", "file-change-event"):
@@ -1676,7 +1676,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         # Loading a model or building a vector batch here would occupy the
         # prompt/SessionStart deadline and leave an unowned child on timeout.
         import runtime_work
-        from laya_host_rules import discovery_grant_kind
+        from memvane.host.host_rules import discovery_grant_kind
         move_notice = None
         if verify_selected_route(decision) != proof:
             _fail("selected_proof_changed")
@@ -1850,7 +1850,7 @@ def _major_mismatch_response(action, host):
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
                                        'additionalContext': notice}}
     if action == 'gate':
-        from laya_host_rules import gate_response
+        from memvane.host.host_rules import gate_response
         return gate_response(host)
     return {}
 
@@ -1865,7 +1865,7 @@ def _provider_mismatch_response(action, host):
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
                                        'additionalContext': notice}}
     if action == 'gate':
-        from laya_host_rules import gate_response
+        from memvane.host.host_rules import gate_response
         return gate_response(host)
     return {}
 
@@ -1949,7 +1949,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         _request_worktree_sync(main, proof, recheck)
         return {}
     if action == 'gate':
-        from laya_host_rules import gate_response
+        from memvane.host.host_rules import gate_response
         return gate_response(host)
     # posttool/compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.
@@ -1983,7 +1983,7 @@ def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top
     """
     chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
     _trace_fields(selection=reason, candidates=len(rows), generation=generation)
-    from laya_host_rules import limit_selected, selection_action
+    from memvane.host.host_rules import limit_selected, selection_action
     chosen, answer_limit = limit_selected(chosen, top_n)
     # Capture sees the verified pool and what was served: the selector's
     # choice, or the ranked rows when no prepared selector answered.

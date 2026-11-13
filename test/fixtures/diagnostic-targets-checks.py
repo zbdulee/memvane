@@ -43,7 +43,7 @@ REFUSALS = {'missing', 'not_onboarded', 'stale_route', 'limit_exceeded',
 
 
 def lt():
-    import log_targets
+    from memvane.registry import log_targets
     return log_targets
 
 

@@ -23,8 +23,8 @@ from context_learning.shared import resource_report
 from laya_store_primitives import IndexContractError
 from laya_index_host_route import (select_route, selected_collection_roots,
                                    wiki_index_roots)
-from source_scan import _collection_roots
-from sync_owner_lock import sync_owner
+from memvane.sync.source_scan import _collection_roots
+from memvane.sync.sync_owner_lock import sync_owner
 from laya_install_journal import (JournalEvidenceError, cas_mark_new_write, inspect_journal,
                                   preflight_product_candidate,
                                   verify_selected_route_for_write as verify_selected_route,
@@ -159,7 +159,7 @@ def _writer_executing_root():
 
 def _owned_selected_proof(decision, owner):
     """Reprove the selected route while the sync owner is held."""
-    from sync_owner_lock import validate_sync_owner
+    from memvane.sync.sync_owner_lock import validate_sync_owner
     from laya_install_journal import verify_selected_route_for_write
     validate_sync_owner(owner, Path(decision['storePath']))
     proof = verify_selected_route_for_write(decision)
@@ -730,7 +730,7 @@ def _mark_schema3_write(writer, proof, marks):
 
 def _read_compile_intent(fd):
     """Read one canonical private intent from the descriptor that will be acknowledged."""
-    import laya_ledger_common as ledger
+    from memvane.install import ledger_common as ledger
     info = os.fstat(fd)
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
             or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 65536):
@@ -799,7 +799,7 @@ def _compiled_intent_is_stored(store, handle, intent):
 def _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current):
     """Consume bounded compile intents without changing the view's member trust."""
     from memvane.store import blob_values as values
-    import laya_ledger_common as ledger
+    from memvane.install import ledger_common as ledger
     from memvane.journal import journal_reader as reader
     from memvane.journal import writer_scope as normal
     from memvane.wiki.card import source_spans
@@ -1254,7 +1254,7 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
     none, so discovery scans (and blocks) on its own.
     """
     from memvane.wiki.lifecycle import git_branch_safety
-    from source_scan import scan_collections
+    from memvane.sync.source_scan import scan_collections
     from memvane.wiki.intake.wiki_discovery import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
     project = Path(decision['projectRoot'])
     roots = {item['name']: item['sourceRoot'] for item in decision['collections'] if item.get('role') == 'raw'}

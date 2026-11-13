@@ -41,7 +41,7 @@ class WriterProofWindowsChecks(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups);self.fixture.setUp()
         self.seed,self.case,self.W=self.fixture.seed,self.fixture.case,self.fixture.W
         self.plan_module=importlib.import_module('laya_writer_open_plan')
-        self.sync=importlib.import_module('sync_owner_lock')
+        self.sync=importlib.import_module('memvane.sync.sync_owner_lock')
         # Leave every mover scope before SyncLease acquisition. No ambient owner
         # or installer capability is passed to the new proof-window issuer.
         with self.seed.prepared():

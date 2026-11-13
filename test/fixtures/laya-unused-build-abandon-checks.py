@@ -26,7 +26,7 @@ import laya_install_journal
 from laya_index_a import IndexContractError, LayaIndexA
 import laya_product_install as product
 import laya_product_sync_worker as worker
-import runtime_wake_cancel as wake_cancel
+from memvane.runtime import runtime_wake_cancel as wake_cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
 import runtime_work
 
