@@ -121,3 +121,10 @@ def run_selector_maintenance(*args, **kwargs):
 def run_automatic_learning(*args, **kwargs):
     from memvane.learning.context_learning_auto import run as implementation
     return implementation(*args, **kwargs)
+
+
+class _CardBudgetOperations:
+    def __getattr__(self, name):
+        return getattr(_import_module('memvane.learning.wiki_card_budget'), name)
+
+_card_budget = _CardBudgetOperations()

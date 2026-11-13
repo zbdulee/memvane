@@ -77,9 +77,9 @@
       "memvane/sync/product_sync_worker.py": 1740,
       "memvane/wiki/compile/wiki_compile.py": 1961,
       "memvane/wiki/compile/wiki_compile_worker.py": 2006,
+      "memvane/wiki/compile/wiki_verify_worker.py": 1745,
       "memvane/wiki/lifecycle/git_branch_safety.py": 871,
-      "memvane/wiki/lifecycle/wiki_lifecycle.py": 853,
-      "memvane/wiki/verify/wiki_verify_worker.py": 1745
+      "memvane/wiki/lifecycle/wiki_lifecycle.py": 853
     },
     "function_sizes": {
       "memvane/app/setup_entry.py:main#1": 159,
@@ -96,9 +96,9 @@
       "memvane/wiki/compile/wiki_compile.py:_compile_locked#1": 398,
       "memvane/wiki/compile/wiki_compile_worker.py:process_job#1": 542,
       "memvane/wiki/compile/wiki_init.py:init_wiki#1": 151,
-      "memvane/wiki/lifecycle/wiki_lifecycle.py:run#1": 231,
-      "memvane/wiki/verify/wiki_verify_worker.py:process_verify_job#1": 294,
-      "memvane/wiki/verify/wiki_verify_worker.py:run#1": 173
+      "memvane/wiki/compile/wiki_verify_worker.py:process_verify_job#1": 294,
+      "memvane/wiki/compile/wiki_verify_worker.py:run#1": 173,
+      "memvane/wiki/lifecycle/wiki_lifecycle.py:run#1": 231
     }
   }
 }

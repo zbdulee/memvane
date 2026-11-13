@@ -134,7 +134,7 @@ class _BuildWriterContext:
 
     def __enter__(self):
         from memvane.journal import initial_build as build
-        from memvane.app.api import _runtime_dispatch as dispatch
+        from memvane.journal.api import verify_dispatch_target
         from memvane.journal.install_journal import _attestation, _v1_provider_manifest, inspect_journal
         from memvane.store.api import view_store_class
         ViewStore = view_store_class()
@@ -151,7 +151,7 @@ class _BuildWriterContext:
                 raise ValueError('initial_build_busy')
             self.lifetime = W._Lifetime(self.decision['installId'])
             self.stack.callback(self.lifetime.close)
-            self.target = dispatch.resolve('laya-sync', self.decision['projectRoot'])
+            self.target = verify_dispatch_target(self.decision)
             self.record = build.lookup(self.decision['projectRoot'])
             R._need(self.record is not None and self.record['phase'] in ('registered', 'building'),
                     'initial_build_unavailable')
@@ -221,7 +221,7 @@ def validate_normal_writer(writer, *, deadline=None):
         return
     if type(writer) is BuildWriter:
         from memvane.journal import initial_build as build
-        from memvane.app.api import _runtime_dispatch as dispatch
+        from memvane.journal.api import verify_dispatch_target
         context = _build_record(writer)
         if deadline is not None:
             W._deadline(deadline)
@@ -229,7 +229,7 @@ def validate_normal_writer(writer, *, deadline=None):
         validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
         context.lifetime.check()
         R._need(build.lookup(context.decision['projectRoot']) == context.record
-                and dispatch.resolve('laya-sync', context.decision['projectRoot']) == context.target,
+                and verify_dispatch_target(context.decision) == context.target,
                 'normal_writer_changed')
         validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
         return

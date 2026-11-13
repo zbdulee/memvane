@@ -205,3 +205,8 @@ def parse_frontmatter_scalars(*args, **kwargs):
 def resolve_existing_source(*args, **kwargs):
     from memvane.wiki.card.wiki_card import resolve_existing_source as implementation
     return implementation(*args, **kwargs)
+
+
+def _insert_source_revisions(*args, **kwargs):
+    from memvane.wiki.card.source_revisions import insert_source_revisions as implementation
+    return implementation(*args, **kwargs)

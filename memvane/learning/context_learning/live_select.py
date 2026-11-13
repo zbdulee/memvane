@@ -27,7 +27,7 @@ def _file_hash(path):
 
 
 def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
-           pointer_name='active-checkpoint.json'):
+           pointer_name='active-checkpoint.json', ensure_service=None):
     """Return (selected IDs or None, reason, bounded resource observation).
 
     A real 0-card prediction is []. None means use the preexisting QMD topN.
@@ -136,7 +136,7 @@ def choose(state_dir, prompt, rows, *, corpus_fingerprint, deadline=None,
             time.monotonic() + policy['timeoutSeconds'])
         result, resources = service_predict(state, policy, request,
             active['artifact_sha256'], deadline=service_deadline,
-            pointer_name=pointer_name)
+            pointer_name=pointer_name, ensure_service=ensure_service)
         expected = {'schema_version': 1, 'predictions': [{
             'request_id': case['request_id'], 'input_sha256': case['input_sha256'],
             'selected_ids': result.get('predictions', [{}])[0].get('selected_ids')}]}

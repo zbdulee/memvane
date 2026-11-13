@@ -30,3 +30,10 @@ def _supersede_compile_intent(path):
             os.close(fd)
     finally:
         os.close(parent_fd)
+
+
+def _compile_intent_id(result):
+    from memvane.store import api as values
+    return values.digest('memvane-compile-intent-id-v1', [
+        'compile', result['viewId'], result['targetPath'], result['cardSha'],
+        result['sourceFingerprints']['scanId']])

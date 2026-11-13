@@ -442,7 +442,7 @@ def _hosted_ready(root, python, deadline, *, reject_mismatch=False):
             and answer.get('python', python) == python)
 
 
-def _ensure(root, python, deadline, *, spawn=None):
+def _ensure(root, python, deadline, *, spawn=None, ensure_service=None):
     """Reach the current bundle's service under ``python``; never steal a lease.
 
     The product path asks the per-user Laya resident service, which hosts
@@ -451,12 +451,13 @@ def _ensure(root, python, deadline, *, spawn=None):
     """
     if spawn is not None:
         return _ensure_direct(root, python, deadline, spawn=spawn)
+    if ensure_service is None:
+        raise ServiceFailure('starting')
     root = resident._private_state(root)
     if _hosted_ready(root, python, deadline):
         return
-    from memvane.resident import api as host
     try:
-        state = host.ensure_service(python=python, learning_root=root)
+        state = ensure_service(python=python, learning_root=root)
     except Exception as exc:
         from memvane.kernel.resource_deferred import ResourceDeferred
         if isinstance(exc, ResourceDeferred) and str(exc) == 'laya_service_protocol_mismatch':
@@ -684,7 +685,8 @@ def _validate_request(envelope):
             'peak_mib': resident.load_footprint(state, argv[2], view)}
 
 
-def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='active-checkpoint.json'):
+def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='active-checkpoint.json',
+            ensure_service=None):
     """Called after choose's read-only proof admission; worker rechecks scope."""
     envelope = _make_envelope(state, request, artifact_sha, deadline, pointer_name)
     root = service_root(create=True)
@@ -692,7 +694,7 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
     try:
         from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
         with Coordinator(root).inference(deadline,envelope['namespace']):
-            _ensure(root, policy['trainerArgv'][0], deadline)
+            _ensure(root, policy['trainerArgv'][0], deadline, ensure_service=ensure_service)
             response = _exchange(root, envelope, deadline)
     except PermissionError as exc:
         raise ServiceFailure('permission_denied') from exc

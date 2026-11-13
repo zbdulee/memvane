@@ -10,10 +10,10 @@
     "store": 3,
     "wiki/engines": 3,
     "journal": 4,
-    "resident": 5,
+    "resident": 6,
     "registry": 5,
     "wiki/workspace": 5,
-    "learning": 6,
+    "learning": 5,
     "wiki/intake": 6,
     "wiki/verify": 6,
     "wiki/dedup": 6,
@@ -1259,11 +1259,6 @@
       "layer": "domain",
       "pinned": false
     },
-    "memvane/wiki/compile/wiki_card_budget.py": {
-      "context": "wiki/compile",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/wiki/compile/wiki_compile.py": {
       "context": "wiki/compile",
       "layer": "adapter",
@@ -1479,11 +1474,6 @@
       "layer": "domain",
       "pinned": false
     },
-    "memvane/wiki/verify/wiki_verify_worker.py": {
-      "context": "wiki/verify",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/wiki/workspace/__init__.py": {
       "context": "wiki/workspace",
       "layer": "adapter",
@@ -1562,6 +1552,21 @@
     "memvane/install/locks.py": {
       "context": "install",
       "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/wiki_card_budget.py": {
+      "context": "learning",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/card/source_revisions.py": {
+      "context": "wiki/card",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/compile/wiki_verify_worker.py": {
+      "context": "wiki/compile",
+      "layer": "application",
       "pinned": false
     }
   },

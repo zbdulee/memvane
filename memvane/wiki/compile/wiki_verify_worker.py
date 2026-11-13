@@ -54,7 +54,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
-from memvane.wiki.verify.intent_ack import _supersede_compile_intent
+from memvane.wiki.verify.api import _supersede_compile_intent
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
@@ -772,12 +772,6 @@ def _provenance_gate(job, checkout):
         return None, 'provenance_checkout_changed'
     return capture, None
 
-
-def _compile_intent_id(result):
-    from memvane.store import api as values
-    return values.digest('memvane-compile-intent-id-v1', [
-        'compile', result['viewId'], result['targetPath'], result['cardSha'],
-        result['sourceFingerprints']['scanId']])
 
 
 def _write_compile_intent(checkout, result, verdict_digest, result_digest):

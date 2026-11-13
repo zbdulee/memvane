@@ -558,9 +558,11 @@ def _select_verified_cards(decision, settings, prompt, rows):
     if prepared:
         if result is None:
             try:
+                from memvane.resident.api import ensure_service
                 result = select_published(
                     pool, prompt=prompt, config=settings, project_root=project,
-                    wiki_names=names, scope_id=decision['scopeId'])
+                    wiki_names=names, scope_id=decision['scopeId'],
+                    ensure_service=ensure_service)
             except Exception:
                 result = {'reason': 'selector_unavailable', 'final_results': []}
         reason = result['reason']

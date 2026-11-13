@@ -9,17 +9,28 @@ from memvane.wiki.card.api import archive_card
 from memvane.wiki.workspace import api as cp
 from memvane.settings import api as project_dir
 from memvane.wiki.card import api as wiki_card
-from memvane.wiki.compile.api import _operations as wc
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.workspace import api as wiki_selected_laya
 from memvane.wiki.card import api as yaml_scalars
 from memvane.settings.api import is_wiki_meta_page
 
-from memvane.wiki.card.types import MAX_CARDS
+from memvane.wiki.card.types import AUTO_START_RE, FRONTMATTER_RE, MAX_CARDS
 MAX_CARD_BYTES = 5_000_000
 MAX_TOTAL_BYTES = 24_000_000
 
 
+
+
+def _is_auto_writable_page(path: Path):
+    try:
+        return wiki_card.auto_writable_text(path.read_text(encoding="utf-8"))
+    except OSError:
+        return False, ["unreadable_target"]
+
+
+@workspace_files.mutation_lock.guard_path
+def _insert_source_revisions(path: Path, revisions: list) -> bool:
+    return wiki_card._insert_source_revisions(path, revisions)
 
 
 _LINEAGE_CACHE: dict = {}
@@ -113,7 +124,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             if info.st_size > MAX_CARD_BYTES or total > MAX_TOTAL_BYTES:
                 return {'state': 'blocked', 'survivors': []}
             text = card.read_text(encoding='utf-8')
-            match = wc.FRONTMATTER_RE.match(text)
+            match = FRONTMATTER_RE.match(text)
             if match is None:
                 continue
             revisions = wiki_card.frontmatter_source_revisions(match.group(1))
@@ -125,7 +136,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             if not any(item is not None and key(item) == deleted
                        for item in normalized):
                 continue
-            writable, findings = wc.is_auto_writable_page(card)
+            writable, findings = _is_auto_writable_page(card)
             if not writable and 'non_qmd_created_by' in findings:
                 # A human-maintained page is not owned by this retirement flow.
                 continue
@@ -229,7 +240,7 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
             return 'blocked'
         if text != expected:
             return 'changed'
-        if not wc.auto_writable_text(text)[0]:
+        if not wiki_card.auto_writable_text(text)[0]:
             return 'blocked'
         if not archive_card(root, card, text, proof_hash):
             return 'blocked'
@@ -254,7 +265,7 @@ def _record_retired(root, config, selected, card, text, reason, *, wiki_root=Non
             wiki_root = (root / (config or {}).get('wikiPath',
                                                    project_dir.wiki_rel(root))).resolve()
         rel = Path(card).relative_to(wiki_root).as_posix()
-        meta, _ = wc.parse_frontmatter(text)
+        meta, _ = wiki_card.parse_frontmatter(text)
         title = str(meta.get('title') or Path(card).stem)
         workspace_files.activity_log.append(root, 'retired', rel, title, bound=selected, reason=reason)
     except Exception:
@@ -267,7 +278,7 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
 
     This is the single write seam for "card X was generated from these source
     revisions". Today the proof lives in the card's ``sourceRevisions``
-    frontmatter block (``wiki_compile.insert_source_revisions``, which refuses
+    frontmatter block (``wiki_card.insert_source_revisions``, which refuses
     a card that already declares the key or has no ``sources``); moving the
     proof to another store replaces only this function. The same card and wiki
     locks, path checks, byte comparison and ownership recheck as
@@ -305,8 +316,8 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
             return 'blocked'
         if text != expected:
             return 'changed'
-        if not wc.auto_writable_text(text)[0]:
+        if not wiki_card.auto_writable_text(text)[0]:
             return 'blocked'
-        if not wc.insert_source_revisions(card, revisions):
+        if not _insert_source_revisions(card, revisions):
             return 'blocked'
     return 'recorded'

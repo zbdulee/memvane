@@ -367,7 +367,7 @@ equivalent persistence-off flag.
 - writes generated wiki files under `.memvane/wiki`;
 - writes new or auto-updated cards as `status: generated` by default;
 - refuses a card whose body does not fit the local selector budget
-  (`memvane/wiki/compile/wiki_card_budget.py`, below) and reports `split-required`;
+  (`memvane/learning/wiki_card_budget.py`, below) and reports `split-required`;
 - enqueues successful generated writes to the auto-verify queue;
 - logs merge-needed or rejected candidates under `.memvane/compile`.
 
@@ -422,7 +422,7 @@ legacy input view, `max_len` 1024 tokens. It reads a card through
 `context_learning.compact_input`: everything after the frontmatter (banner,
 auto-block markers, summary, hand-written sections). The title and other
 frontmatter never enter the pair. A longer pair does not fit the model whole.
-`memvane/wiki/compile/wiki_card_budget.py` measures the complete, untruncated body that `derive`
+`memvane/learning/wiki_card_budget.py` measures the complete, untruncated body that `derive`
 returns, so a card the compiler writes is scored whole:
 
 | Part | Tokens |

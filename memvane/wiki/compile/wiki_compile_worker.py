@@ -40,7 +40,7 @@ from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
                                         requeue_lines, append_jsonl, read_queue, claim_queue)
 from memvane.wiki.compile import wiki_compile as wc
-from memvane.wiki.compile import wiki_card_budget
+from memvane.learning.api import _card_budget as wiki_card_budget
 from memvane.wiki.card.api import card_support
 wiki_freshness = card_support.freshness
 from memvane.wiki.card import api as yaml_scalars
@@ -223,7 +223,7 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
     if not vcfg.get("enabled", True):
         return None
     try:
-        from memvane.wiki.verify import api as wiki_verify_worker
+        from memvane.wiki.compile import wiki_verify_worker
         path = wiki_verify_worker.verify_skipped_path(root, vcfg)
         return wiki_verify_worker.load_verify_suppressions(path).get(rel)
     except Exception:
@@ -1358,7 +1358,7 @@ def _run_verify_pass(
     run's own cards stayed `generated` and invisible to recall.
     """
     try:
-        from memvane.wiki.verify import api as wiki_verify_worker
+        from memvane.wiki.compile import wiki_verify_worker
         wiki_verify_worker.run(root, config, compile_cfg, produced_targets=produced_targets or [])
     except Exception as exc:
         # Exception class and failing frame only; the message may name paths.
