@@ -45,11 +45,13 @@ test('the free-name check flags unbound names and missing module attributes', t 
   writeFileSync(sample, 'from memvane.kernel import bundle_paths\n\n' +
     'def a():\n    from pathlib import Path\n    return Path, bundle_paths.entry_path\n\n' +
     'def b(config):\n    return Path(1), json, config.get, bundle_paths.removed_name\n\n' +
-    'def c():\n    bundle_paths = {}\n    return bundle_paths.get\n');
+    'def c():\n    bundle_paths = {}\n    return bundle_paths.get\n\n' +
+    'def d():\n    from memvane.journal.api import build\n    return build.read_v1, build.removed_op\n\n' +
+    'def e():\n    import os\n    from memvane.runtime.api import resource as os\n    return os.getcwd\n');
   const {result} = run(t, 'free_names.py', [sample]);
   assert.equal(result.status, 1, result.stdout);
   const names = JSON.parse(result.stdout).findings.map(x => x.split(':').pop()).sort();
-  assert.deepEqual(names, ['Path', 'bundle_paths.removed_name', 'json']);
+  assert.deepEqual(names, ['Path', 'build.removed_op', 'bundle_paths.removed_name', 'json', 'os.getcwd']);
 });
 
 test('product modules satisfy structure rules G1 to G7', t => {

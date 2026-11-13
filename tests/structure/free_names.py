@@ -101,6 +101,41 @@ def _symbols(path):
     return _SYMBOLS[path]
 
 
+_PROXIES = {}
+
+
+def _proxies(dotted):
+    """Top-level ``NAME = Class(...)`` operation proxies of a module and the names they answer.
+
+    A class with ``__getattr__`` called with one string forwards to the sibling
+    module of that name; any other class answers its own attributes.
+    """
+    if dotted not in _PROXIES:
+        found = {}
+        path = _module_file(dotted)
+        tree = ast.parse(path.read_text(encoding='utf8'), str(path)) if path else ast.Module(body=[])
+        classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+        package = dotted if path and path.name == '__init__.py' else dotted.rpartition('.')[0]
+        for node in tree.body:
+            if not (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                    and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+                    and node.value.func.id in classes):
+                continue
+            cls = classes[node.value.func.id]
+            members = {n.name for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            members |= {t.id for n in cls.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+            args = node.value.args
+            if '__getattr__' in members:
+                target = (_module_file(package + '.' + args[0].value)
+                          if len(args) == 1 and isinstance(args[0], ast.Constant) and isinstance(args[0].value, str)
+                          else None)
+                found[node.targets[0].id] = _symbols(target) if target else None
+            else:
+                found[node.targets[0].id] = members
+        _PROXIES[dotted] = found
+    return _PROXIES[dotted]
+
+
 def check_attributes(source, filename):
     """``alias.name`` where ``alias`` is a product module that binds no ``name``."""
     tree = ast.parse(source, filename)
@@ -116,7 +151,16 @@ def check_attributes(source, filename):
             for item in node.names:
                 if _module_file(node.module + '.' + item.name):
                     found[item.asname or item.name] = node.module + '.' + item.name
+                elif _module_file(node.module) and item.name in _proxies(node.module):
+                    found[item.asname or item.name] = (node.module, item.name)
         return found
+
+    def answers(target, attr):
+        if isinstance(target, tuple):
+            names = _proxies(target[0])[target[1]]
+        else:
+            names = _symbols(_module_file(target))
+        return names is None or attr in names
 
     scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
@@ -139,9 +183,20 @@ def check_attributes(source, filename):
     def visit(scope, aliases):
         own, nested = split(scope)
         aliases = dict(aliases)
-        for node in own:
-            aliases.update(aliases_of(node))
-        shadow = {n.id for n in own if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        # The last binding of a name in source order is what later reads see.
+        shadow = set()
+        for node in sorted((n for n in own if hasattr(n, 'lineno')), key=lambda n: (n.lineno, n.col_offset)):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                bound = aliases_of(node)
+                for name in ((a.asname or a.name).split('.')[0] for a in node.names):
+                    if name in bound:
+                        aliases[name] = bound[name]
+                        shadow.discard(name)
+                    else:
+                        aliases.pop(name, None)
+                        shadow.add(name)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                shadow.add(node.id)
         if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             args = scope.args
             shadow.update(a.arg for a in args.args + args.kwonlyargs + getattr(args, 'posonlyargs', []))
@@ -149,10 +204,17 @@ def check_attributes(source, filename):
         for name in shadow:
             aliases.pop(name, None)
         for node in own:
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
-                names = _symbols(_module_file(aliases[node.value.id]))
-                if names is not None and node.attr not in names:
+            if not isinstance(node, ast.Attribute):
+                continue
+            if isinstance(node.value, ast.Name) and node.value.id in aliases:
+                if not answers(aliases[node.value.id], node.attr):
                     findings.add(f'{filename}:{node.lineno}:{node.value.id}.{node.attr}')
+            elif (isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name)
+                    and isinstance(aliases.get(node.value.value.id), str)
+                    and node.value.attr in _proxies(aliases[node.value.value.id])):
+                target = (aliases[node.value.value.id], node.value.attr)
+                if not answers(target, node.attr):
+                    findings.add(f'{filename}:{node.lineno}:{node.value.value.id}.{node.value.attr}.{node.attr}')
         for child in nested:
             visit(child, aliases if not isinstance(scope, ast.ClassDef) else {k: v for k, v in aliases.items()})
 
