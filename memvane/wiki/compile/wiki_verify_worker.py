@@ -54,7 +54,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
-from memvane.wiki.verify.api import _supersede_compile_intent
+from memvane.wiki.verify.api import _supersede_compile_intent, compile_intent_id as _compile_intent_id
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct

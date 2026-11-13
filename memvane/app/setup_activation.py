@@ -1,6 +1,13 @@
 """Finalize, activate, recover and restore a 1.0 install selection."""
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+from pathlib import Path
+import sqlite3
+import time
+
 from memvane.app import setup_workflow as _workflow
 
 _checked_project = _workflow._checked_project
