@@ -170,13 +170,13 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
         return
     token = None
     try:
-        from memvane.diagnostics import event_log
-        from memvane.diagnostics import diagnostic_trace
+        from memvane.diagnostics import api as event_log
+        from memvane.diagnostics import api as diagnostic_trace
         token = event_log.bind(decision=decision, host="hermes")
         reason = None
         try:
-            from memvane.host.host_response import _refusal_code
-            reason = _refusal_code(exc)
+            from memvane.host.api import refusal_code
+            reason = refusal_code(exc)
         except Exception:
             reason = "unexpected_exception"
         try:
@@ -196,7 +196,7 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
     finally:
         if token is not None:
             try:
-                from memvane.diagnostics import event_log
+                from memvane.diagnostics import api as event_log
                 event_log.unbind(token)
             except Exception:
                 pass
@@ -220,8 +220,8 @@ def recall_context(
             selected_route = True
             # The installed core rechecks the route and the installer-owned
             # journal before opening the selected DB. Never start QMD here.
-            from memvane.route.index_host_route import select_route
-            from memvane.host.host_response import serve_selected, serve_preview
+            from memvane.route.api import select_route
+            from memvane.host.api import serve_selected, serve_preview
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") != route_state:
@@ -252,8 +252,8 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
         route_state = _laya_route_state("update", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            from memvane.route.index_host_route import select_route
-            from memvane.host.host_response import serve_selected
+            from memvane.route.api import select_route
+            from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             answer = serve_selected("update-queued", "hermes",
                                     select_route(selected_cwd, action="update-queued"),
@@ -287,8 +287,8 @@ def pre_edit_gate(
         route_state = _laya_route_state("gate", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            from memvane.route.index_host_route import select_route
-            from memvane.host.host_response import serve_selected
+            from memvane.route.api import select_route
+            from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
             decision = select_route(selected_cwd, action="gate")
@@ -331,8 +331,8 @@ def post_edit_sync(
         route_state = _laya_route_state("posttool", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            from memvane.route.index_host_route import select_route
-            from memvane.host.host_response import serve_selected
+            from memvane.route.api import select_route
+            from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
             serve_selected("posttool", "hermes",
