@@ -583,8 +583,8 @@ def _raw_snapshot(decision, raw, *, coordination=None, schema3=False):
     A schema3 selection opens no v6 database: its view store has no
     exclusion table, so the scan runs without one.
     """
-    from laya_index_a import IndexContractError, LayaIndexA
-    from laya_index_source_port import scan_collections
+    from laya_store_primitives import IndexContractError
+    from source_scan import scan_collections
     if schema3:
         roots = {name: decision['collectionRoots'][name] for name in raw}
         try:
@@ -594,6 +594,7 @@ def _raw_snapshot(decision, raw, *, coordination=None, schema3=False):
         except IndexContractError as exc:
             raise DiscoveryBlocked('raw_source_stale') from exc
         return {file.path: file.sha256 for file in scan.files if file.eligible}
+    from laya_index_a import LayaIndexA
     index = LayaIndexA(decision['dbPath'], **({'coordination': coordination} if coordination is not None else {}))
     try:
         if index.incarnation() != decision['dbIncarnation']:
