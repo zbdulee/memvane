@@ -1,18 +1,16 @@
 # View candidate 세대와 lexical·vector reader 계약
 
 `laya_view_store.ViewStore`는 `BlobStore`를 확장하는 schema3 view store API다.
-형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
-candidate v1/v2와 운영 v6 파일은 읽기 전용 preflight에서 바이트 변경 없이 거절한다.
-v6 reader가 선택된 설치에서는 shadow migration이 후보 store를 만들 때만 이 API를 쓰고 recall은
-쓰지 않는다. schema3 reader가 선택된 뒤에는 recall pin, sync 게시와 vector fill, dedup retrieval이
-이 API를 쓴다.
+형식은 `memvane-git-blob-candidate-v4`, application id는 `0x4d564231`, schema는 `4`다.
+지원하지 않는 형식은 읽기 전용 preflight에서 거절한다. recall pin, sync 게시, vector fill과
+dedup retrieval이 이 API를 쓴다.
 `ViewStore`는 provider를 직접 부르거나 query embedding을 만들지 않는다. chunk·embedding은
 호출자 callback으로 받고, 운영 sync owner가 resident provider를 callback으로 넘긴다.
 
 내용 admission·recipe·profile·provenance 계약은
 [`development-blob-candidate.md`](development-blob-candidate.md), checkout 등록·capture는
 [`development-checkout-capture.md`](development-checkout-capture.md)에 있다.
-원문 body API는 없다. reader 선택·전환·rollback은 `laya_journal_reader`·`laya_shadow_migration`,
+원문 body API는 없다. reader 선택은 `laya_journal_reader`,
 운영 게시 순서는 `laya_product_sync_worker`가 소유한다. lifecycle, frontmatter 변경,
 retention·GC는 이 API에 없다.
 
@@ -150,22 +148,22 @@ epoch는 같은 head 값으로 돌아오는 ABA를 구분한다. 다른 view의 
 
 ## FTS와 봉인의 범위
 
-각 세대는 자신의 ordinal에 속하는 FTS5와 shadow tables를 가진다.
-tokenizer는 `porter unicode61`, CJK spacing은 v6 helper를 사용한다.
+각 view는 head FTS5와 그에 따른 SQLite shadow tables를 가진다.
+tokenizer는 `porter unicode61`, CJK spacing은 공통 텍스트 helper를 사용한다.
 BM25의 path/title/body 가중치는 `1.5/4.0/1.0`이며 같은 점수는
 binary path 오름차순으로 정렬한다. FTS title과 결과의 `display_title`은
 해당 세대 manifest의 `display_title`을 사용한다. owner가 실제 경로·카드에서
 표시 제목을 정하며, 같은 path/title/body 입력의 CJK·BM25 동등성을 검증한다.
 
-고정 schema manifest와 등록 ordinal별 FTS DDL·shadow 구성을 검사한다.
+고정 schema manifest와 view별 head FTS DDL·shadow 구성을 검사한다.
 봉인 전 FTS `integrity-check`를 실행하며 logical rows와 opaque physical shadow
 commitment를 함께 봉인한다. shadow 값은 SQLite 저장 바이트의 commitment이고
 FTS 내부 형식의 해석이나 외부 신뢰 attestation이 아니다.
 
 candidate 쓰기 연결은 SQL statement cache 없이 범위가 제한된 authorizer를 설치한다.
-FTS 변경 capability는 같은 connection·generation·thread의 building 구간과
+FTS 변경 capability는 같은 connection·view·thread의 head 게시와
 commit 중 FTS sync에만 유효하다. shadow 직접 쓰기와 shadow trigger는 지원하지 않는다.
-prepared·published FTS 변경은 거절하고 reader는 physical commitment를
+범위 밖 FTS 변경은 거절하고 reader는 physical commitment를
 가상 테이블 조회보다 먼저 확인한다. 내부 connection·직접 SQL은 지원 API가 아니다.
 
 ## Pin 검색과 snapshot 상태
@@ -274,7 +272,7 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 `fts_deadline_exceeded`, `vector_coverage_incomplete`, `vector_rows_mismatch`,
 `vector_coverage_absent`, `vector_profile_mismatch`, `vector_query_invalid`,
 `vector_work_exceeded`, `vector_deadline_exceeded`다.
-거절 뒤 다른 view·운영 v6로 우회하는 API는 없다.
+거절 뒤 다른 view로 우회하는 API는 없다.
 
 검증 성공은 store의 구조·일관성에 한정된다. `pin_view`는 고정한 세대의 구조·FTS commitment를
 검증하고, 검색은 그 뒤 store에 commit이 있었을 때 같은 검증을 다시 한다. SQLite commit 없이 파일
@@ -288,4 +286,4 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 호스트 실행 비용에 따라 기본 2초 제한으로 `fts_deadline_exceeded`를 반환할 수 있다.
 규모 fixture는 완료 비용 측정을 위해 명시적 30초 제한을 사용하며,
 기본 제한의 거절·복구 검사는 별도로 유지한다.
-모델 품질과 v6 대비 parity는 이 검증의 범위 밖이다. parity는 shadow migration의 receipt가 봉인한다.
+모델 품질은 이 구조 검증의 범위 밖이다.

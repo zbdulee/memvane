@@ -2,23 +2,20 @@
 
 `laya_blob_store.BlobStore`는 명시적인 private SQLite 파일에 위키 카드와
 recipe/profile, 완전한 chunk/vector set, 원문 지문과 카드 attestation을 저장한다.
-형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
-candidate v1/v2와 운영 v6 파일은 자동 변환하지 않고 읽기 전용 preflight에서 거절한다.
+형식은 `memvane-git-blob-candidate-v4`, application id는 `0x4d564231`, schema는 `4`다.
+다른 형식의 파일은 읽기 전용 preflight에서 거절한다.
 `BlobStore`는 내용·provenance API를 소유하고 `laya_view_store.ViewStore`가 같은 형식의
 view generation·FTS·lexical reader를 제공한다. 세대 API는
 [`development-view-candidate.md`](development-view-candidate.md)에 있다.
-`BlobStore`에는 hook·route·reader 선택·migration·activation·GC API가 없다. 운영 연결은
-호출자가 소유한다: v6 reader가 선택된 설치에서는 shadow migration 후보(`laya_shadow_migration`),
-schema3 reader가 선택된 설치에서는 sync 게시(`laya_product_sync_worker`)와 recall·dedup retrieval
-(`laya_journal_reader`·`laya_reader_dispatch`·`wiki_compile_retrieval`). 어느 store를
-읽고 쓸 권한은 설치 journal의 schema3 endpoint record와 writer scope가 정한다.
+`BlobStore`에는 hook·route·reader 선택·GC API가 없다. sync 게시와 recall·dedup
+retrieval은 설치 journal의 endpoint record와 writer scope에 따라 store를 사용한다.
 
 ## 소유권과 위키 소속
 
 호출자는 `laya_checkout_view`의 repository/worktree 등록 JSON과 scope UUID를 제공한다.
 저장소는 common Git dir의 경로·dev/ino와 프로젝트 상대 위치에 묶이며,
 worktree는 checkout·Git admin 정체성, settings 정체성, wiki root 디렉터리 노드를 묶는다.
-settings 정체성은 v6 route의 `settings_identity_digest`와 같은 범위다: 프로젝트 root와
+settings 정체성은 `settings_identity_digest`와 같은 범위다: 프로젝트 root와
 도출한 collection마다 `{name, role, sourceRoot}`. 저장소 policy는 같은 행을 프로젝트
 상대 경로(두 설정 폴더 이름은 정규화)로 다이제스트하므로 등록 worktree들의 policy는 같아야 한다.
 settings 바이트, `skipPaths`와 그 밖의 옵션은 묶지 않는다. `skipPaths`는 쓰는 시점의
@@ -36,7 +33,7 @@ wiki root의 `SCHEMA.md`·`index.md`·`log.md`는 제외하고 하위 디렉터�
 `ingest_attested_card(worktree_id, path, *, decision, provenance_scan)`는 같은 admission에
 카드 신뢰 판정을 더한다. `decision`은 호출자의 선택 route 결정이며 그 `projectRoot`·`scopeId`와
 wiki collection이 이 store의 worktree·scope와 맞아야 한다. 저장소는 읽은 카드 바이트의
-frontmatter를 recall의 신뢰 규칙(`legacy_card_evidence`, shadow migration import와 같은 함수)으로
+frontmatter를 recall의 신뢰 규칙(`legacy_card_evidence`)으로
 직접 판정한다. 통과한 카드에는 각 `sourceRevisions` 항목을 `binding_state='legacy_unbound'`·
 HEAD 없음·`tracked_state='unknown'` 지문으로 기록하고 `legacy_verified` attestation을 붙인다.
 통과하지 못한 카드는 trust 없이 admission만 한다. 현재 HEAD를 과거 compile commit으로 쓰지 않으며
@@ -50,7 +47,7 @@ admission 이력은 view membership이나 다른 checkout의 신뢰 승계를 �
 
 DB의 leaf directory는 현재 UID의 `0700`, DB는 `0600`인 single-link 정규 파일이다.
 경로 구성 요소의 symlink와 unsafe sidecar를 거절한다. 생성은 no-clobber이고
-candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인에서 바이트 변경 없이 거절한다.
+지원하지 않는 형식과 알 수 없는 파일은 읽기 전용 header 확인에서 바이트 변경 없이 거절한다.
 열린 handle은 DB 파일 정체성·incarnation·scope·settings policy가 바뀌면 실패한다.
 
 ## 내부 API
@@ -74,7 +71,6 @@ candidate v1/v2·기존 v6·알 수 없는 파일은 읽기 전용 header 확인
 | `counts()` / `close()` | 테이블별 행 수 / 연결 종료 |
 
 `BlobStoreError.reason`은 원문을 포함하지 않는 거절 코드다.
-shadow migration의 vector page는 내부 `_vector_page(write=...)`로 store transaction 하나를 쓴다. 안의 store 호출은 그 transaction을 쓰고 header·blob admission·recipe·profile·chunk set·입력 목록을 page당 한 번 증명하며, member마다 savepoint를 둔다. 공개 API가 아니다.
 원문 body를 삽입하거나 읽는 공개 API는 없다. `document`가 반환하는 body는
 위의 wiki admission을 통과한 카드다. 전체 `verify`는 관리 작업이며 검색 경로의 API가 아니다.
 
