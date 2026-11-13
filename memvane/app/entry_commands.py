@@ -18,8 +18,8 @@ def runtime_work_main(argv):
         from memvane.install.api import wake_status
         print(json.dumps(wake_status(argv[2]),sort_keys=True,default=str));return 0
     from memvane.runtime.api import runtime_main as main
-    from memvane.app.wiring import dispatch
-    return main(argv, execute=dispatch)
+    from memvane.app.wiring import dispatch, drop_event, stall_event
+    return main(argv, execute=dispatch, on_drop=drop_event, on_stall=stall_event)
 
 
 def runtime_work():

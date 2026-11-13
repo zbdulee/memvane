@@ -229,7 +229,7 @@ def _promote_overflow(db,now):
         db.execute('DELETE FROM wake_overflow WHERE id=?',(row['id'],))
 
 
-def drain(queue,*,execute,ready=None,clock=time.monotonic,wall=time.time,
+def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monotonic,wall=time.time,
           sleep=time.sleep,max_seconds=60,max_runs=8,lease_fd=None):
     if not 0<max_seconds<=60 or not 1<=max_runs<=8:raise ValueError('invalid_runtime_budget')
     fd=_lock(queue.root/'runtime-worker.lock') if lease_fd is None else lease_fd
@@ -281,10 +281,10 @@ def drain(queue,*,execute,ready=None,clock=time.monotonic,wall=time.time,
                 step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
                                         missing=streak,preparing=waiting and waiting[:2],
                                         reported=bool(waiting and waiting[2]))
-                if step.get('drop'):_record_drop(queue.root,row,step,error,wall())
+                if step.get('drop'):_record_drop(queue.root,row,step,error,wall(),on_drop=on_drop)
                 if not missing or step['ack']:_clear_missing(queue.root,row['id'])
                 if not preparing or step['ack']:_clear_missing(queue.root,row['id'],PREPARING_FILE)
-                if step.get('stalled'):_record_stall(queue.root,row,waiting,step,wall())
+                if step.get('stalled'):_record_stall(queue.root,row,waiting,step,wall(),on_stall=on_stall)
                 if step['ack']:
                     # Revision-scoped ACK: a wake re-put while running survives, re-pended.
                     db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
@@ -318,7 +318,7 @@ def _record_failure_detail(root,row,error,now):
         'detail':detail.encode('utf-8','replace')[-FAILURE_DETAIL_MAX_BYTES:].decode('utf-8','replace')})
 
 
-def _record_drop(root,row,step,error,now):
+def _record_drop(root,row,step,error,now,*,on_drop=None):
     """Record one dropped wake (``wake.drop``) beside the queue and, when the
     project is still routed, in its install event log."""
     reason=step['drop']
@@ -326,10 +326,9 @@ def _record_drop(root,row,step,error,now):
         'target':row['target'],'at':now,'reason':reason,'attempts':row['attempts']+step['count'],
         'lastFailure':wake_policy.failure_reason(error) if error is not None else None},
         limit=DROP_DETAIL_MAX_ROWS)
-    if row['kind'] in ('laya-sync','laya-compile'):
+    if on_drop is not None and row['kind'] in ('laya-sync','laya-compile'):
         try:
-            from memvane.app.runtime_dispatch import drop_event
-            drop_event(row['kind'],row['target'],reason=reason,attempts=row['attempts']+step['count'])
+            on_drop(row['kind'],row['target'],reason=reason,attempts=row['attempts']+step['count'])
         except Exception:
             pass
 
@@ -360,15 +359,14 @@ def _observe_preparing(root,row,now):
     return first,seen,reported
 
 
-def _record_stall(root,row,waiting,step,now):
+def _record_stall(root,row,waiting,step,now,*,on_stall=None):
     """Report one preparing streak that outlived ``PREPARING_STALL_SECS``, once."""
     first,seen,_reported=waiting
     _record_tail(root/PREPARING_FILE,row['id'],{'at':first,'seen':seen,'target':row['target'],
                  'reported':True},limit=MAX_WAKES)
-    if row['kind'] in ('laya-sync','laya-compile'):
+    if on_stall is not None and row['kind'] in ('laya-sync','laya-compile'):
         try:
-            from memvane.app.runtime_dispatch import stall_event
-            stall_event(row['kind'],row['target'],since=first,observations=seen,
+            on_stall(row['kind'],row['target'],since=first,observations=seen,
                         retry_in=round(step['due']-now))
         except Exception:
             pass
@@ -519,7 +517,7 @@ def _handoff():
     finally:os.close(fd)
 
 
-def _handoff_worker(queue,handoff_fd,*,execute):
+def _handoff_worker(queue,handoff_fd,*,execute,on_drop=None,on_stall=None):
     """Wait as the one handoff contender, then drain as an ordinary worker.
 
     The handoff lock only limits waiting contenders to one; it is released as
@@ -542,7 +540,7 @@ def _handoff_worker(queue,handoff_fd,*,execute):
         os.close(handoff_fd);handoff_fd=None
         # A queued kernel waiter gets the old owner's released lease before
         # that owner can self-rewake. drain preserves the shared revision ACK.
-        _drain_and_rewake(queue,lease,execute=execute)
+        _drain_and_rewake(queue,lease,execute=execute,on_drop=on_drop,on_stall=on_stall)
     finally:
         if lease is not None:
             try:os.close(lease)
@@ -566,7 +564,7 @@ def request(kind,target='',*,start=True,pull_due=False,delay=0):
                       'dropped':'deferred_queue_capacity'}[offered]}
 
 
-def _drain_and_rewake(queue,fd,*,execute):
+def _drain_and_rewake(queue,fd,*,execute,on_drop=None,on_stall=None):
     """Keep a pending durable wake live after this bounded owner exits.
 
     drain closes its passed lease before returning. The successor is spawned
@@ -574,7 +572,7 @@ def _drain_and_rewake(queue,fd,*,execute):
     another owner or a concurrent request can win safely. Checking even after
     a drained result closes the enqueue-versus-last-read race.
     """
-    try:return drain(queue,lease_fd=fd,execute=execute)
+    try:return drain(queue,lease_fd=fd,execute=execute,on_drop=on_drop,on_stall=on_stall)
     finally:wake()
 
 
@@ -583,12 +581,12 @@ def hook_wake():
     wake()
 
 
-def main(argv, *, execute):
+def main(argv, *, execute, on_drop=None, on_stall=None):
     if argv==['wake']:hook_wake();return 0
     if argv[:1]==['worker'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd);expected=(queue.root/'runtime-worker.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):raise ValueError('runtime_lease_changed')
-        _drain_and_rewake(queue,fd,execute=execute);return 0
+        _drain_and_rewake(queue,fd,execute=execute,on_drop=on_drop,on_stall=on_stall);return 0
     if argv[:1]==['timer'] and len(argv)==2:
         queue=WakeQueue();fd=int(argv[1]);info=os.fstat(fd)
         expected=(queue.root/TIMER_LOCK).stat()
@@ -602,5 +600,5 @@ def main(argv, *, execute):
         expected=(queue.root/'runtime-worker-handoff.lock').stat()
         if (info.st_dev,info.st_ino)!=(expected.st_dev,expected.st_ino):
             raise ValueError('runtime_handoff_lease_changed')
-        _handoff_worker(queue,fd,execute=execute);return 0
+        _handoff_worker(queue,fd,execute=execute,on_drop=on_drop,on_stall=on_stall);return 0
     return 2

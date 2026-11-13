@@ -90,6 +90,16 @@ def auto(row):
     return handler_done(result['status'])
 
 
+def drop_event(*args, **kwargs):
+    from memvane.app.runtime_dispatch import drop_event as implementation
+    return implementation(*args, **kwargs)
+
+
+def stall_event(*args, **kwargs):
+    from memvane.app.runtime_dispatch import stall_event as implementation
+    return implementation(*args, **kwargs)
+
+
 HANDLERS={'index':'retired','update':'retired','cleanup':'retired',
           'laya-sync':'laya_sync','laya-compile':'laya_compile','learning':'learning','auto':'auto'}
 
