@@ -6,10 +6,8 @@ resident service runs from host copy Y. Both copies carry the same sealed
 bundle (same commit, manifest and profile), as after ``companion_sealed``.
 The v5 install, journal, route, ledger, build record and stores are actual
 (the published-v5 fixture of the reader suites). Synthetic authority is the
-same as there: bundle inspection and the executing-root comparison. The real
-companion comparison is proven on real sealed copies by
-``laya-l1-qa-checks.py``; here ``_verified_executing_root`` accepts Y only
-where that comparison would, and refuses Y as an unequal copy otherwise.
+same as there: bundle inspection and the executing-root comparison. ``_verified_executing_root`` accepts Y only where the companion comparison
+would and refuses Y as an unequal copy otherwise.
 """
 from __future__ import annotations
 
@@ -473,7 +471,7 @@ class SplitInstallsRecoveryChecks(unittest.TestCase):
     sync wake uses. Replaced, and why:
     - bundle inspection and ``_verified_executing_root``: the fixture copies
       are not sealed plugins; the replacement compares the two proofs on the
-      same keys as the real check (real copies: ``laya-l1-qa-checks.py``);
+      same keys as the real check;
     - this process's executing root is set to Y;
     - provider record validation and runtime-file rehash in the attestation
       (the fixture has no model or node runtime); the journal re-proofs
