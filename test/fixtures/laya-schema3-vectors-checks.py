@@ -505,7 +505,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.raw_file('scanned-once.md', 'A raw note the pass scans once.\n')
         grant = self.D.record_grant(self.decision, 'sync', engine='codex')
         self.assertTrue(self.D.activate_grant(self.decision, 'sync', grant))
-        port = importlib.import_module('laya_index_source_port')
+        port = importlib.import_module('source_scan')
         real, scans = port.scan_collections, []
 
         def counted(*args, **kwargs):

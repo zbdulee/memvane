@@ -211,7 +211,7 @@ class RegistryTargets(Routing):
         return counted
 
     def test_nested_check_is_bounded_by_depth_and_holds_deeper_edits(self):
-        from laya_index_source_port import MAX_DEPTH
+        from source_scan import MAX_DEPTH
         self.backfill()
         shallow = self.b.project / 'a' / 'b' / 'note.md'
         shallow.parent.mkdir(parents=True)
