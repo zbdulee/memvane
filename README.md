@@ -24,8 +24,7 @@ MemVane은 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
 MemVane injects relevant project wiki context into Claude Code, Codex,
 and Hermes Agent sessions. Install this plugin for your host, then ask the
 `setup` skill to onboard the project onto its memvane-db index. Onboarding reads a
-minimal `.memvane/settings.json` (`{name, skipPaths}`; a project that only has
-`.auto-context/` is read from there), shows reviewed plans, and applies only on
+minimal `.memvane/settings.json` (`{name, skipPaths}`), shows reviewed plans, and applies only on
 explicit request. Projects that are not onboarded get no indexing, recall,
 compile or learning work; their SessionStart shows one short onboarding notice
 (plus one line of answer commands for the agent) when they have `.memvane/settings.json`. The user can skip that notice for the
@@ -104,13 +103,6 @@ Codex는 `codex plugin marketplace upgrade memvane-marketplace` 후
 `/plugins`에서 설치본을 확인하고 호스트가 제공하는 갱신 절차를 따릅니다.
 새 실행 코드의 훅 신뢰를 다시 검토하세요.
 
-호스트 플러그인이 갱신되면 SessionStart의 백그라운드 작업이 선택된 프로젝트의
-설치를 새 번들로 옮깁니다. 옮기는 동안 검색은 마지막으로 게시된 색인을 읽기
-전용으로 쓰고, 동기화·wiki compile은 업그레이드가 끝날 때까지 기다립니다.
-임베딩 provider가 바뀌어 다시 빌드해야 하면 SessionStart 안내가 그 사유를
-보여 줍니다. 이때는 에이전트에게 안내 내용을 설명하고 다음 단계를 제안해
-달라고 요청하세요.
-
 플러그인 자체를 제거할 때는 호스트의 공식 명령인
 `claude plugin uninstall memvane@memvane-marketplace --scope project`
 또는 `codex plugin remove memvane@memvane-marketplace`를
@@ -118,95 +110,10 @@ Codex는 `codex plugin marketplace upgrade memvane-marketplace` 후
 Codex 설치는 다른 프로젝트에도 영향을 줄 수 있으므로 제거 전에 사용 범위를
 확인하세요.
 
-### `qmd-auto-context` 플러그인에서 옮기기
-
-`qmd-auto-context@qmd-auto-context-marketplace`가 설치된 호스트는 새 플러그인
-`memvane@memvane-marketplace`를 설치하고, 프로젝트를 한 번 연 뒤 이전 플러그인을
-제거합니다. 새 번들은 SessionStart에서 이전 플러그인 id의 번들에 묶인 설치를 일반
-플러그인 업데이트와 같은 경로로 넘겨받습니다. 넘겨받은 route는 이전 번들이 읽지 않는
-형식이라 이전 번들은 그 설치를 되가져가지 못합니다. 대신 제거 전까지 이전 플러그인의
-훅이 그 프로젝트에서 exit 3으로 끝나 훅 오류가 표시됩니다(작업을 막지는 않습니다).
-그래서 넘겨받기를 확인한 직후 이전 플러그인을 제거합니다. 이전 플러그인을 먼저 제거하고
-새 플러그인을 설치해도 됩니다. 그때는 오류 표시가 없고, 새 플러그인이 설치되기 전까지
-그 프로젝트에 recall이 들어가지 않습니다.
-
-```bash
-# Claude Code (프로젝트 범위 설치 예시. 사용자 범위면 --scope를 뺍니다)
-claude plugin marketplace add zbdulee/memvane --scope project
-claude plugin install memvane@memvane-marketplace --scope project
-#   → 대상 프로젝트를 열어 SessionStart 안내로 넘겨받기를 확인합니다
-claude plugin uninstall qmd-auto-context@qmd-auto-context-marketplace --scope project
-claude plugin marketplace remove qmd-auto-context-marketplace
-
-# Codex
-codex plugin marketplace add zbdulee/memvane --sparse .agents/plugins
-codex plugin add memvane@memvane-marketplace
-#   → 대상 프로젝트를 열어 넘겨받기를 확인합니다
-codex plugin remove qmd-auto-context@qmd-auto-context-marketplace
-codex plugin marketplace remove qmd-auto-context-marketplace
-```
-
-Hermes Agent를 쓰면 이전 플러그인부터 제거합니다. 이전 Hermes 플러그인은 새 route를
-읽지 못하고 그 프로젝트의 편집을 막습니다(Claude·Codex의 이전 훅은 오류만 표시하고 막지
-않습니다). 그래서 이전 Hermes 플러그인이 설치돼 있는 동안 새 플러그인은 설치를 넘겨받지
-않고 마지막 색인을 읽기 전용으로 씁니다. SessionStart 안내가 그 사유를 보여 줍니다.
-비활성화만으로는 부족하고 제거해야 합니다.
-
-```bash
-hermes plugins remove qmd-auto-context
-hermes plugins install zbdulee/memvane
-hermes plugins enable memvane
-```
-
-모든 설치의 상태 디렉터리는 `~/.local/state/memvane/<install id>`입니다. 이전
-플러그인이 `~/.local/state/laya/<install id>`에 만든 설치는 그 프로젝트의 다음
-SessionStart 뒤 백그라운드 워커가 같은 볼륨 안에서 `~/.local/state/memvane`으로
-옮깁니다. 옮기는 동안 SessionStart가 안내 한 줄을 보여 주고 검색은 계속 결과를
-돌려줍니다. 공유 디렉터리(`embed-runtime`, `service`, `auto-context`,
-`initial-builds`)는 마지막 설치가 옮겨지고 아무것도 참조하지 않을 때 정리되며, 그때
-`~/.local/state/laya`도 사라집니다. 업데이트 직후 sync가 돌고 있으면 이동은 다음
-세션으로 미뤄집니다.
-
-학습 상태(이전 플러그인 지원 디렉터리의 `live-selection`, `laya-inference`)도
-같은 워커가 한 번 `~/Library/Application Support/memvane`으로 옮깁니다. 옮기는 동안
-resident service가 잠시 멈추고 검색은 lexical 결과를 돌려줍니다. 준비된 local
-selector는 업데이트 뒤 워커가 어댑터 앵커·synthetic attestation·inference 준비를
-다시 돌려 스스로 복구합니다(각 120초 이내). 학습 profile을 승인한 프로젝트는
-앵커가 바뀌면 다시 승인해야 합니다.
-
 ### 프로젝트 폴더 `.memvane/`
 
 프로젝트별 설정·위키 카드·런타임 파일은 프로젝트 루트의 `.memvane/`에 있습니다.
-`.auto-context/`만 있는 선택된 프로젝트는 다음 SessionStart 뒤 백그라운드 워커가
-폴더 이름을 `.memvane/`로 한 번 바꾸고(색인은 다시 임베딩하지 않습니다), 그동안
-검색은 계속 결과를 돌려줍니다. 옮긴 뒤 SessionStart 안내가 보여 주는 대로 이름
-변경을 커밋합니다.
-
-```bash
-git add -A .memvane .auto-context
-```
-
-프로젝트 `.gitignore`에 `.auto-context` 줄이 있으면 같은 안내가 대응하는
-`.memvane/...` 줄을 보여 줍니다. 플러그인은 `.gitignore`를 고치지 않으므로 그 줄을
-직접 추가합니다. 폴더를 옮기기 전 브랜치를 체크아웃하거나 병합해 두 폴더가 함께
-있으면 MemVane은 `.memvane/`를 쓰고, SessionStart 안내가 정리 방법을 알려 줍니다.
-
-### 예전 QMD backend 정리
-
-이전 버전이 설치한 QMD daemon, managed LaunchAgent, 플러그인 QMD runtime과
-공유 store는 소유자가 한 번 정리합니다. Claude와 Codex 호스트 캐시가 모두 이
-버전을 읽고, 모든 설치가 이 번들로 옮겨져 MemVane 임베딩 런타임으로 재증명된 뒤에
-요청하세요.
-
-```text
-예전 QMD backend 정리 계획 보여줘.
-계획대로 정리해줘.
-```
-
-계획은 읽기 전용이며 대상 프로세스·LaunchAgent·폴더와 크기, 정리를 막는
-사유를 보여 줍니다. `~/.cache/qmd`와 `~/.config/qmd`에는 사용자가 직접 쓰는
-QMD 색인·설정·모델 캐시도 들어 있으므로, 이 둘은 별도로 포함을 승인한 경우에만
-지웁니다.
+`.auto-context/`만 있는 프로젝트는 온보딩 전에 사용자가 폴더를 `.memvane/`으로 직접 옮깁니다.
 
 ## 프로젝트에서 켜기
 
@@ -214,8 +121,7 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 프로젝트는 아무 것도 색인하지 않습니다.
 
 온보딩은 `.memvane/settings.json`의 minimal 형식만 읽습니다
-([minimal settings](docs/settings.md#minimal-settings)). `.auto-context/`만 있는
-프로젝트는 그 폴더의 같은 파일을 읽습니다.
+([minimal settings](docs/settings.md#minimal-settings)).
 
 ```json
 {
