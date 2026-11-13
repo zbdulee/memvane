@@ -84,6 +84,7 @@ wiki-dedup resolver from the selected route's stored vectors.
 Fail-open: always exit 0, no stdout without `--json`, exceptions go to the log.
 """
 from __future__ import annotations
+from memvane.wiki.lifecycle.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
 
 import argparse
 import json
@@ -113,8 +114,6 @@ MAX_RETIRE_PER_RUN = 25
 # 레거시 카드 백필은 카드당 원문 해시 + 카드 원자 쓰기 1회다. 창(maxCardsPerScan)보다
 # 작게 잡아 한 SessionStart worker의 쓰기 폭을 묶고, 커서가 다음 회차로 넘긴다.
 MAX_BACKFILL_PER_RUN = 200
-MASS_DELETE_FRACTION = 0.25
-MASS_DELETE_MIN = 3
 REFRESH_RETRY_SECONDS = 7 * 86400
 MAX_REFRESH_STATE = 4096
 STATE_VERSION = 1

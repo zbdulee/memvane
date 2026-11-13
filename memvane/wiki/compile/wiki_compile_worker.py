@@ -810,7 +810,7 @@ def source_fingerprints(root: Path, checkout, capture: dict, revisions: list[dic
     against the captured HEAD; a non-git checkout has no tracking (untracked)
     and a git failure or timeout answers ``unknown`` per path.
     """
-    from memvane.wiki.lifecycle import git_branch_safety
+    from memvane.wiki.lifecycle import api as git_branch_safety
     paths = [revision["path"] for revision in revisions]
     if capture["branchKey"] == "non-git":
         tracked = {path: git_branch_safety.UNTRACKED for path in paths}
@@ -923,7 +923,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if job.get('sourceDelete') is True:
-        from memvane.wiki.lifecycle import wiki_source_retire
+        from memvane.wiki.lifecycle import api as wiki_source_retire
         revision = job.get('contentRevision')
         if (selected_route is None or not isinstance(revision, str)
                 or not re.fullmatch(r'[0-9a-f]{64}', revision)):

@@ -1041,7 +1041,7 @@ def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, 
     """
     from memvane.settings import config
     from memvane.journal import journal_reader as reader
-    from memvane.recall import reader_dispatch as dispatch
+    from memvane.recall import api as dispatch
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     degraded = main_proof is None

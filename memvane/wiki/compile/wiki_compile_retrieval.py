@@ -169,7 +169,8 @@ def terms(text: str) -> set[str]:
 
 def lexical_atoms(text: str) -> list[str]:
     """Bounded query atoms shared by overlay retrieval and live-body evidence."""
-    from memvane.recall.keywords import EN_STOPWORDS, KO_STOPWORDS, strip_ko_suffix
+    from memvane.recall.types import EN_STOPWORDS, KO_STOPWORDS
+    from memvane.recall.api import strip_ko_suffix
     from memvane.recall.api import fts_atom
     words = list(dict.fromkeys(strip_ko_suffix(word) for word in
                                re.findall(r'\w+', text.casefold())))
@@ -429,7 +430,7 @@ def _schema3_search(bound, text):
     vector-only relevance rule needs; otherwise the list is lexical only.
     """
     from memvane.journal import journal_reader as reader
-    from memvane.recall import reader_dispatch as dispatch
+    from memvane.recall import api as dispatch
     from memvane.journal import reader_lease as lease
     from memvane.settings import api as project_dir
     from memvane.route.api import wiki_index_roots
@@ -476,7 +477,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     """
     from memvane.host import host_response as response
     from memvane.journal import journal_reader as reader
-    from memvane.recall.reader_dispatch import _approved_profile_matches
+    from memvane.recall.api import approved_profile_matches
     from memvane.store.view.view_vectors import DEFERRED
     from memvane.store.blob.blob_values import BlobStoreError
     decision, _proof = bound
@@ -489,7 +490,7 @@ def _schema3_cosines(bound, record, current, text, generation):
             return {}
         with store._session():
             profile = store._profile(vector['profile_id'])
-        if not _approved_profile_matches(profile, current):
+        if not approved_profile_matches(profile, current):
             return {}
         from memvane.kernel.errors import IndexContractError
         try:
@@ -520,7 +521,7 @@ def matches(root, wiki, text, top_k, cap_chars, bound):
     if not query_terms:
         return []
     deadline = time.monotonic() + QUERY_SECONDS
-    from memvane.recall.keywords import EN_STOPWORDS, KO_STOPWORDS
+    from memvane.recall.types import EN_STOPWORDS, KO_STOPWORDS
     with selected_search(bound, text) as (published, exclusions, name, mode), \
             opened_directory(wiki) as wiki_fd, lexical_probe(text, deadline) as supported:
         with overlay(root, bound) as db:

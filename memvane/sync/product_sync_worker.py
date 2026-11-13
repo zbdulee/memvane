@@ -869,7 +869,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     """
     from memvane.store.blob import blob_values as v
     from memvane.journal import writer_scope as normal
-    from memvane.wiki.lifecycle import wiki_lifecycle
+    from memvane.wiki.lifecycle import api as wiki_lifecycle
     from memvane.store.blob.blob_store import _regular
     from memvane.store.view import view_values as view_values
     from memvane.store.view.view_store import _skip_patterns

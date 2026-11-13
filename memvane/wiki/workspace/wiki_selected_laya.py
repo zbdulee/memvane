@@ -273,7 +273,7 @@ def _run(project: Path):
     verify = _safe_queue_path(project, cp.rel(cp.VERIFY_QUEUE))
     if source is None or verify is None:
         return {'state': 'deferred', 'reason': 'unsafe_compile_queues'}
-    from memvane.wiki.lifecycle import wiki_lifecycle_request
+    from memvane.wiki.lifecycle import api as wiki_lifecycle_request
     from memvane.wiki.workspace.lifecycle_requests import claim as claim_lifecycle
     try:
         lifecycle = claim_lifecycle(project)

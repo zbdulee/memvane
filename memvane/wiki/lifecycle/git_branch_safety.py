@@ -21,6 +21,7 @@ fingerprint (not a card commit) and returns a ``delete_receipts`` row spec.
 The v6 path keeps ``LineageJudge.judge``.
 """
 from __future__ import annotations
+from memvane.wiki.lifecycle.types import UNTRACKED
 
 import hashlib
 import json
@@ -103,7 +104,6 @@ def _index_paths(top: Path, paths, deadline: float | None) -> set[str]:
 
 
 TRACKED = 'tracked'
-UNTRACKED = 'untracked'
 UNKNOWN = 'unknown'
 
 
