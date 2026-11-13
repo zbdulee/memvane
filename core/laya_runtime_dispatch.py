@@ -1,4 +1,4 @@
-"""Route one UID-shared Laya wake into its sealed installed bundle.
+"""Route one UID-shared Laya wake into the executing plugin.
 
 This is only a dispatcher. The target process repeats the full owner proof
 before any model or store work; host/query authorization remains unchanged.
@@ -20,7 +20,6 @@ from runtime_wake_policy import DispatchFailure
 
 
 KINDS = frozenset(('laya-sync', 'laya-compile'))
-HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 MAX_RESULT = 65536
 # Last bytes of a failed child's stderr kept for the wake's failure record.
 STDERR_TAIL = 4096
@@ -31,8 +30,7 @@ SYNC_SECONDS = 86400
 QA_BARRIER_SECONDS = 600
 COMPILE_SECONDS = 86400
 STOP_GRACE_SECONDS = 2
-STABLE_TARGET_FIELDS = ('project', 'root', 'sourceCommit',
-                        'bundleManifestSha256', 'ownershipManifestSha256',
+STABLE_TARGET_FIELDS = ('project',
                         'installId', 'scopeId', 'dbIncarnation',
                         'dbPath', 'queuePath', 'journalPath')
 
@@ -50,9 +48,9 @@ def _project(value):
     return path
 
 
-def _bootstrap(root):
-    """The target bundle's own one-wake bootstrap, sealed with its manifest."""
-    return Path(root) / 'core' / 'laya_wake_entry.py'
+def _bootstrap():
+    """The executing plugin's one-wake bootstrap."""
+    return Path(__file__).resolve().with_name('laya_wake_entry.py')
 
 
 def resolve(kind, value):
@@ -68,9 +66,6 @@ def resolve(kind, value):
             proof = verify_dispatch_target(route)
         except (OSError, RuntimeError, ValueError) as exc:
             raise DispatchFailure('target_journal_changed') from exc
-        root, commit, bundle_sha = (proof['pluginRoot'], proof['sourceCommit'],
-                                    proof['bundleManifestSha256'])
-        owner_sha = proof['ownershipManifestSha256']
         stable = {key: proof[key] for key in ('installId', 'scopeId',
                                              'dbIncarnation', 'journalPath')}
         stable.update(dbPath=route['dbPath'], queuePath=route['queuePath'])
@@ -103,9 +98,6 @@ def resolve(kind, value):
         if (proof['pendingRouteSha256'] != identity['routeSha256'] or
                 proof['attestationSha256'] != identity['attestationSha256']):
             raise DispatchFailure('target_journal_changed')
-        root, commit, bundle_sha = (pending['pluginRoot'], pending['sourceCommit'],
-                                    pending['bundleManifestSha256'])
-        owner_sha = pending['ownershipManifestSha256']
         stable = {'installId': identity['installId'], 'scopeId': identity['scopeId'],
                   'dbIncarnation': identity['dbIncarnation'],
                   'dbPath': identity['candidateDb'], 'queuePath': identity['queueDb'],
@@ -115,34 +107,28 @@ def resolve(kind, value):
                     if isinstance(record.get('sealed'), dict) else None}
     else:
         raise DispatchFailure('target_unavailable')
-    if (any(not isinstance(value, str) or not value for value in stable.values())
-            or not isinstance(commit, str) or not HEX40.fullmatch(commit)
-            or not isinstance(bundle_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', bundle_sha)
-            or not isinstance(owner_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', owner_sha)):
+    if any(not isinstance(value, str) or not value for value in stable.values()):
         raise DispatchFailure('target_identity_invalid')
-    root = Path(root)
+    root = Path(__file__).resolve().parent.parent
     worker = root / 'core' / ('laya_product_sync_worker.py' if kind == 'laya-sync'
                             else 'wiki_selected_laya.py')
-    for entry in (_bootstrap(root), worker):
+    for entry in (_bootstrap(), worker):
         try:
             info = entry.lstat()
         except OSError as exc:
-            raise DispatchFailure('target_entry_unavailable', commit, bundle_sha) from exc
+            raise DispatchFailure('target_entry_unavailable') from exc
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_mode & 0o022):
-            raise DispatchFailure('target_entry_invalid', commit, bundle_sha)
-    return {'terminal': False, 'project': str(project), 'root': str(root),
-            'sourceCommit': commit, 'bundleManifestSha256': bundle_sha,
-            'ownershipManifestSha256': owner_sha, **stable, **progress}
+            raise DispatchFailure('target_entry_invalid')
+    return {'terminal': False, 'project': str(project), **stable, **progress}
 
 
 def _child_env():
-    # Do not pass a foreign host plugin root to the target bundle. Keep only
-    # the already authorized local runtime, QA ceiling and guard envelope.
+    # Keep only the authorized local runtime, QA ceiling and guard envelope.
     keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'QMD_QA_CALL_LEDGER',
             'QMD_QA_CALL_LIMIT', 'QMD_DEVELOPMENT_GUARD_RUN',
             'QMD_DEVELOPMENT_GUARD_NONCE', 'LAYA_QA_SYNC_BARRIER',
-            'MEMVANE_TEST_RUNTIME_ROOT',
+            'MEMVANE_TEST_RUNTIME_ROOT', 'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT',
             # The shadow migration kill switch (laya_product_sync_worker).
             'MEMVANE_SHADOW_MIGRATION')
     env = {key: os.environ[key] for key in keys if key in os.environ}
@@ -441,15 +427,7 @@ def run(kind, value, *, owner_fd=None):
 
 
 def _run_target(kind, value, target, owner_fd):
-    commit = target['sourceCommit']
-    bundle_sha = target['bundleManifestSha256']
-    # The UID queue is shared by every installed bundle. A bootstrap from this
-    # (dispatcher) bundle would leave its own modules loaded in the target
-    # child, whose executing-root proof then refuses the mix. resolve() has
-    # already re-inspected the target's sealed bytes, this file included.
-    argv = [sys.executable, '-B', str(_bootstrap(target['root'])),
-            kind, target['project'], target['root'], commit,
-            target['bundleManifestSha256'], target['ownershipManifestSha256']]
+    argv = [sys.executable, '-B', str(_bootstrap()), kind, target['project']]
     try:
         options = {'owner_fd': owner_fd} if owner_fd is not None else {}
         child = _run_child(argv, target['project'],
@@ -457,30 +435,30 @@ def _run_target(kind, value, target, owner_fd):
                                             if os.environ.get('LAYA_QA_SYNC_BARRIER') else 0)
                             if kind == 'laya-sync' else COMPILE_SECONDS), **options)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise DispatchFailure('target_launch_failed', commit, bundle_sha) from exc
+        raise DispatchFailure('target_launch_failed') from exc
     except ValueError as exc:
-        raise DispatchFailure('target_child_failed', commit, bundle_sha,
+        raise DispatchFailure('target_child_failed',
                               detail=str(exc) or type(exc).__name__) from exc
     if child.returncode != 0:
-        failure = DispatchFailure('target_child_failed', commit, bundle_sha,
+        failure = DispatchFailure('target_child_failed',
                                   detail=_failure_detail(child))
         failure.child_stderr_available = True
         raise failure
     try:
         result = json.loads(child.stdout.decode('utf-8'))
     except (TypeError, ValueError) as exc:
-        raise DispatchFailure('target_result_invalid', commit, bundle_sha) from exc
+        raise DispatchFailure('target_result_invalid') from exc
     if not isinstance(result, dict) or result.get('state') not in (
             'indexed', 'unchanged', 'drained', 'pending', 'deferred', 'blocked'):
-        raise DispatchFailure('target_result_invalid', commit, bundle_sha)
+        raise DispatchFailure('target_result_invalid')
     if result['state'] not in (('drained',) if kind == 'laya-compile' else
                               ('indexed', 'unchanged')):
         if (kind == 'laya-sync' and result['state'] == 'deferred'
                 and result.get('reason') == 'laya_service_preparing'):
             # The target just started (or is still loading) its detached
             # embedding owner. Waiting on that owner is not a failed attempt.
-            raise DispatchFailure('target_preparing', commit, bundle_sha)
-        failure = DispatchFailure('target_deferred', commit, bundle_sha,
+            raise DispatchFailure('target_preparing')
+        failure = DispatchFailure('target_deferred',
                                   detail=_deferred_detail(result))
         # The fixed-code detail cannot carry a (non-ASCII) card path; the
         # install log names the member the fill stopped at separately.
@@ -493,5 +471,5 @@ def _run_target(kind, value, target, owner_fd):
                                    for field in STABLE_TARGET_FIELDS)):
         # A successful sync may advance its journal epoch and indexed
         # generation. It cannot ACK a different install, scope or DB.
-        raise DispatchFailure('target_journal_changed', commit, bundle_sha)
+        raise DispatchFailure('target_journal_changed')
     return result

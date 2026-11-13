@@ -1,4 +1,4 @@
-"""Fixed one-work-item bootstrap of the sealed target bundle it belongs to."""
+"""Fixed one-work-item bootstrap of the executing plugin."""
 from __future__ import annotations
 
 import json
@@ -25,17 +25,14 @@ def _watch_owner_pipe():
 
 
 def main(argv):
-    if len(argv) != 6 or argv[0] not in ('laya-sync', 'laya-compile'):
+    if len(argv) != 2 or argv[0] not in ('laya-sync', 'laya-compile'):
         return 2
-    kind, project, root, commit, bundle_sha, owner_sha = argv
-    target = Path(root)
+    kind, project = argv
     project_path = Path(project)
-    if (not target.is_absolute() or target.is_symlink()
-            or str(target.resolve(strict=False)) != root
-            or not project_path.is_absolute() or project_path.is_symlink()
+    if (not project_path.is_absolute() or project_path.is_symlink()
             or str(project_path.resolve(strict=False)) != project):
         return 3
-    for path in (target, project_path):
+    for path in (project_path,):
         try:
             info = path.stat()
         except OSError:
@@ -46,20 +43,6 @@ def main(argv):
         if os.getpgrp() != os.getpid() or not stat.S_ISFIFO(os.fstat(0).st_mode):
             return 3
         threading.Thread(target=_watch_owner_pipe, daemon=True).start()
-    # The dispatcher started the target bundle's own copy of this file after
-    # its inspector proved the sealed bytes. Repeat that proof against the
-    # argv identity before importing any worker.
-    from laya_product_bundle import inspect_full_plugin_candidate
-    proof = inspect_full_plugin_candidate(target)
-    if (proof['sourceCommit'] != commit or
-            proof['bundleManifestSha256'] != bundle_sha or
-            proof['ownershipManifestSha256'] != owner_sha or
-            proof['pluginRoot'] != root):
-        return 3
-    # The inspector has only stdlib dependencies. Remove its cached module so
-    # the target worker's strict executing-root check sees target-owned code.
-    del sys.modules['laya_product_bundle']
-    sys.path[0] = str(target / 'core')
     if kind == 'laya-sync':
         from laya_product_sync_worker import run
         result = run(Path(project))
