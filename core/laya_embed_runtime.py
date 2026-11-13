@@ -59,7 +59,7 @@ import shutil
 import stat
 import uuid
 
-import safe_rmtree
+from memvane.kernel import safe_rmtree
 
 SCHEMA = 'laya-embed-runtime-v1'
 RUNTIME_ID = 'qmd-2.5.3-node-llama-cpp-3.18.1'

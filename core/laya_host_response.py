@@ -1215,7 +1215,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
     if (project.resolve(strict=True) != project or
             (requested != project and project not in requested.parents)):
         _fail('reader_selection_unproved')
-    import hook_budget
+    from memvane.kernel import hook_budget
     import laya_reader_lease as lease
     import laya_journal_reader as reader
     deadline = time.monotonic() + hook_budget.remaining()
@@ -1489,7 +1489,7 @@ def _retry_time_left(started: float) -> float:
     An in-process host (Hermes) never arms it, so the budget then counts
     from this recall's own start.
     """
-    import hook_budget
+    from memvane.kernel import hook_budget
     try:
         if hook_budget.deadline() == float('inf'):
             return hook_budget.remaining() - (time.monotonic() - started)
@@ -1757,7 +1757,7 @@ def _reconcile_registry(decision: dict) -> None:
     """
     if decision.get('state') != 'candidate' or not isinstance(decision.get('journalPath'), str):
         return
-    import hook_budget
+    from memvane.kernel import hook_budget
     try:
         import memvane_registry
         # Keep a second of the hook's own deadline for the rest of this response.
@@ -2024,7 +2024,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     # The hook budget counts from this entry, before route selection; the
     # recall retry reads what is left of it. No watchdog, no env export.
-    import hook_budget
+    from memvane.kernel import hook_budget
     try:
         hook_budget.arm(watchdog=False, export=False)
     except hook_budget.HookDeadlineExceeded:

@@ -854,7 +854,7 @@ def _supersede_compile_intent(path):
                     or (before.st_dev, before.st_ino) != (current.st_dev, current.st_ino)
                     or not os.path.samestat(parent, path.parent.lstat())):
                 raise ValueError('provenance_intent_changed')
-            from atomic_rename import rename_noreplace
+            from memvane.kernel.atomic_rename import rename_noreplace
             rename_noreplace(parent_fd, path.name, path.stem + '.superseded.json')
             os.fsync(parent_fd)
         finally:

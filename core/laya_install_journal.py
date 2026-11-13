@@ -531,14 +531,14 @@ def _verified_executing_root(selected, owner_proof):
 
 
 def _project_matches(route, row):
-    from persistent_identity import persistent_identity_equal
+    from memvane.kernel.persistent_identity import persistent_identity_equal
     return persistent_identity_equal(
         (row['project_root'], row['project_dev'], row['project_ino']),
         _project(route), device_index=1)
 
 
 def _provider_identity_equal(stored, live):
-    from persistent_identity import persistent_provider_equal
+    from memvane.kernel.persistent_identity import persistent_provider_equal
     return persistent_provider_equal(stored, live)
 
 

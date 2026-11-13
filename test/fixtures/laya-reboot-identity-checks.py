@@ -22,7 +22,7 @@ import laya_host_response as response
 
 class PersistentIdentityChecks(unittest.TestCase):
     def test_only_device_is_ignored_and_inputs_are_unchanged(self):
-        from persistent_identity import (persistent_identity_equal as equal,
+        from memvane.kernel.persistent_identity import (persistent_identity_equal as equal,
                                          persistent_node_equal as node,
                                          persistent_provider_equal as provider)
         old = {'path': '/fixture', 'dev': 4, 'ino': 8, 'size': 3,

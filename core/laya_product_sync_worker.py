@@ -752,7 +752,7 @@ def _read_compile_intent(fd):
 
 def _ack_compile_intent(path, fd, initial, outcome):
     """Rename only the exact private file read by this process, without replacement."""
-    from atomic_rename import rename_noreplace
+    from memvane.kernel.atomic_rename import rename_noreplace
     directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, 'O_NOFOLLOW', 0))
     try:
         parent = os.fstat(directory_fd)

@@ -20,7 +20,7 @@ import subprocess
 import unicodedata
 
 from laya_package import require_no_lazy_fetch
-from persistent_identity import persistent_identity_equal
+from memvane.kernel.persistent_identity import persistent_identity_equal
 
 _seal_writes = contextvars.ContextVar('laya_seal_writes', default=None)
 

@@ -237,7 +237,7 @@ class _Preparation:
         self.controller=Coordinator();self.borrowed=self.controller.owned_compute()
         self.foreground=self.controller.owned_inference() is not None
         if self.foreground:
-            import hook_budget
+            from memvane.kernel import hook_budget
             self.deadline=min(self.deadline,clock()+1,hook_budget.deadline())
         if self.borrowed and self.borrowed['deadline'] is not None:
             self.deadline=min(self.deadline,self.borrowed['deadline'])

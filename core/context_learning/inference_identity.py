@@ -160,7 +160,7 @@ def _stamps(manifest):
 
 
 def _persistent_snapshot_equal(stored, live):
-    from persistent_identity import persistent_identity_equal
+    from memvane.kernel.persistent_identity import persistent_identity_equal
     return (stored.keys() == live.keys()
             and all(persistent_identity_equal(stored[path][0], live[path][0], device_index=0)
                     and stored[path][1] == live[path][1] for path in stored))

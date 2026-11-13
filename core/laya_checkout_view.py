@@ -442,7 +442,7 @@ def _repository_fields(facts):
 
 
 def _persistent_directory_equal(stored, live):
-    from persistent_identity import persistent_identity_equal
+    from memvane.kernel.persistent_identity import persistent_identity_equal
     return stored is None and live is None or persistent_identity_equal(stored, live)
 
 

@@ -27,7 +27,7 @@ import os
 import sys
 import traceback
 import event_log
-import hook_budget
+from memvane.kernel import hook_budget
 
 
 def run(main) -> int:

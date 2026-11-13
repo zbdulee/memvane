@@ -863,7 +863,7 @@ class SessionStart(Base):
                     directory.unlink()
 
     def test_session_start_reconciles_only_inside_the_hook_budget(self):
-        import hook_budget
+        from memvane.kernel import hook_budget
         baseline = self.session_start(self.a)
         calls = []
         with patch.object(registry(), 'reconcile',
@@ -912,7 +912,7 @@ class SessionStart(Base):
         self.assertIsNone(self.row(self.b, worktree))
 
     def test_session_start_with_an_exhausted_budget_keeps_the_response(self):
-        import hook_budget
+        from memvane.kernel import hook_budget
         baseline = self.session_start(self.a)
         with patch.object(hook_budget, 'remaining',
                           side_effect=hook_budget.HookDeadlineExceeded()):

@@ -314,7 +314,7 @@ BINDING_FIELDS = ('project_root', *BINDING_COLUMNS, 'collections', 'record')
 def _worktree_row(project_root, repository, worktree, *, deadline=None, saved=None):
     observation = _observation(project_root, repository, worktree, deadline=deadline)
     if saved is not None:
-        from persistent_identity import persistent_identity_equal
+        from memvane.kernel.persistent_identity import persistent_identity_equal
         if not persistent_identity_equal(
                 {'path': saved['wiki_root'], 'dev': saved['wiki_dev'], 'ino': saved['wiki_ino']},
                 {'path': observation['wiki_root'], 'dev': observation['wiki_dev'], 'ino': observation['wiki_ino']}):

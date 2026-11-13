@@ -1920,7 +1920,7 @@ class ProofRetryChecks(unittest.TestCase):
 
     def setUp(self):
         import sqlite3
-        import hook_budget
+        from memvane.kernel import hook_budget
         import laya_embed_resident
         for patcher in (patch.object(laya_embed_resident, 'admit_query'),
                         patch.object(hook_budget, '_deadline', None)):
@@ -2238,7 +2238,7 @@ class ProofRetryChecks(unittest.TestCase):
         self.assertEqual(calls['wake'].call_args.kwargs, {'pull_due': True})
 
     def test_retry_uses_the_armed_hook_budget(self):
-        import hook_budget
+        from memvane.kernel import hook_budget
         with self.subTest('budget nearly spent'):
             self.setUp()
             hook_budget._deadline = time.monotonic() + 0.5
@@ -2273,7 +2273,7 @@ class ProofRetryChecks(unittest.TestCase):
     def test_main_arms_the_hook_budget_before_route_selection(self):
         import contextlib
         import io
-        import hook_budget
+        from memvane.kernel import hook_budget
         seen = {}
 
         def select(*_args):

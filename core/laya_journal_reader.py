@@ -17,7 +17,7 @@ import weakref
 
 import laya_install_journal as journal
 from laya_product_install import _install_lock, _read_private
-from persistent_identity import persistent_node_equal
+from memvane.kernel.persistent_identity import persistent_node_equal
 
 _JOURNAL = 'journal.sqlite'
 _MAX_IMAGE = 16 * 1024 * 1024

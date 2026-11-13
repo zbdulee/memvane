@@ -222,6 +222,6 @@ class SelectionPortTests(unittest.TestCase):
             self.assertNotIn(token, body, token)
 
 # ── selection_read: the coordinator recall calls for live selection ─────────
-import hook_budget
+from memvane.kernel import hook_budget
 if __name__ == '__main__':
     unittest.main(verbosity=2)

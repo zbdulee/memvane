@@ -30,7 +30,7 @@ from resource_deferred import ResourceDeferred
 import compile_paths as cp
 import project_dir
 import config as qmd_config
-import cooldown as qmd_cooldown
+from memvane.kernel import cooldown as qmd_cooldown
 import source_text
 from collection_match import select_collections
 from wiki_compile_enqueue import _append_jsonl as append_source_jobs

@@ -30,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 import compile_paths as cp
 import config as qmd_config
-import cooldown as qmd_cooldown
+from memvane.kernel import cooldown as qmd_cooldown
 
 VERDICT_VALUES = {"duplicate", "distinct", "unclear"}
 
