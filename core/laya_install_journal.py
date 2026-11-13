@@ -64,7 +64,7 @@ READ_VERSIONS = (3, 4, 5)
 ID = re.compile(r'[0-9a-f]{32}\Z')
 GEN = re.compile(r'g-[0-9a-f]{32}\Z')
 SHA = re.compile(r'[0-9a-f]{64}\Z')
-PRODUCTION_ATTESTATION = 'production-provider-attestation.json'
+PRODUCTION_ATTESTATION = 'provider-attestation.json'
 _CREATE_V3 = '''CREATE TABLE selection(
   id INTEGER PRIMARY KEY CHECK(id=1), schema TEXT NOT NULL,
   epoch INTEGER NOT NULL, state TEXT NOT NULL,

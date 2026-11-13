@@ -1090,7 +1090,7 @@ def _referenced_generations(home):
         return named, []
     unreadable = []
     for install in installs:
-        path = install / 'production-provider-attestation.json'
+        path = install / 'provider-attestation.json'
         if not path.is_file():
             continue
         try:

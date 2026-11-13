@@ -151,7 +151,7 @@ python3 -B "$ROOT/core/setup_entry.py" gc-index-runtime [--approve-index-runtime
   `--provider-model-file`은 같은 GGUF의 로컬 사본을 씁니다. npm registry·모델 호스트 접근이라
   `--approve-index-runtime-download` 없이는 거부합니다(`laya_embed_runtime_download_approval_required`).
 - **`gc-index-runtime`** — 세대 목록을 보여 주고, `--approve-index-runtime-gc`가 있으면 active·previous가
-  아니고 `~/.local/state/memvane/*/production-provider-attestation.json`도 가리키지 않는 세대를 지웁니다.
+  아니고 `~/.local/state/memvane/v1/installs/*/provider-attestation.json`도 가리키지 않는 세대를 지웁니다.
   attestation의 `profileDependencyClosure` 기록은 참조로 세지 않습니다. 읽을 수 없는 attestation이
   있으면 `attestation_unreadable`로 막힙니다.
 ## 기본 예시

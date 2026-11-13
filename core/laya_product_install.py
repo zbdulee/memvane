@@ -597,7 +597,7 @@ DONOR_ATTESTATION_LIMIT = 1024 * 1024
 
 def _donor_attestation(install):
     """Another install's attestation, read only when owner-private; else None."""
-    path = install / 'production-provider-attestation.json'
+    path = install / 'provider-attestation.json'
     try:
         info = install.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or

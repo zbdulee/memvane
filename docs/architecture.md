@@ -540,7 +540,7 @@ accepted only with sha256
 `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`.
 `--provider-model-file` uses a local copy of that exact file instead. GC lists
 generations and, with approval, removes those that are neither active, previous,
-nor named by any `production-provider-attestation.json` under `~/.local/state/memvane/*/` or the pre-rename `~/.local/state/laya/*/`
+nor named by any `provider-attestation.json` under `~/.local/state/memvane/v1/installs/*/`
 (historical `profileDependencyClosure` rows are ignored). `generations` must be a
 real private directory of the user inside the runtime, and GC enumerates and
 deletes through its directory descriptor without following links. A generation
