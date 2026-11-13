@@ -1,13 +1,13 @@
 ---
 name: logs
-description: Use when the user asks why MemVane recall was empty or degraded, what the plugin did recently, whether a bundle upgrade or index publish happened, or wants MemVane errors/diagnostics — e.g. "memvane 로그 보여줘", "왜 recall 이 비었어", "최근 업그레이드 됐어?", "memvane 에러 확인", "show memvane logs", "모든 프로젝트 로그 합쳐서 보여줘", "에러 상세 보여줘", "show unified logs", "show detailed errors". Reads the current project's install event log (events.jsonl), or every registered project's log together. Viewing is read-only; the only write is registering a project for the unified view, and only when the user asks for it.
+description: Use when the user asks why MemVane recall was empty or degraded, what the plugin did recently, whether an index publish happened, or wants MemVane errors/diagnostics — e.g. "memvane 로그 보여줘", "왜 recall 이 비었어", "최근 업그레이드 됐어?", "memvane 에러 확인", "show memvane logs", "모든 프로젝트 로그 합쳐서 보여줘", "에러 상세 보여줘", "show unified logs", "show detailed errors". Reads the current project's install event log (events.jsonl), or every registered project's log together. Viewing is read-only; the only write is registering a project for the unified view, and only when the user asks for it.
 ---
 
 # Logs
 
 Summarize the MemVane install event log for the current project.
 
-The log is `<install state root>/events.jsonl` (the selected route's install journal directory, owner-only `0700`), rotated past 4 MiB to `.1` and `.2`. One JSON line per hook action, recall, wiki card write, off-hook wake, index publish, resident service transition and bundle upgrade. Prompts are recorded as `sha256` and length.
+The log is `<install state root>/events.jsonl` (the selected route's install journal directory, owner-only `0700`), rotated past 4 MiB to `.1` and `.2`. One JSON line per hook action, recall, wiki card write, off-hook wake, index publish, resident service transition and bundle changes. Prompts are recorded as `sha256` and length.
 
 ## Workflow
 
@@ -23,7 +23,6 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD"                      # summary of the last 24h
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" recalls --limit 10   # recent recalls and why they were empty/degraded
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" errors --hours 6     # refusals and failures
-   python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" upgrades             # bundle upgrade / journal conversion
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki  # one event kind; add --json for raw lines
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.backfill  # finite initial-pass progress
    python3 -B "$ROOT/skills/logs/scripts/logs.py" --cwd "$PWD" events --event wiki.card  # cards refused or split for the selector budget
@@ -36,7 +35,6 @@ The log is `<install state root>/events.jsonl` (the selected route's install jou
 
 3. Report what the lines say. For a recall, `reason` is the final outcome (`selected`, `no_results_after_filter`, `no_candidates`, a refusal code) and `notes` lists the diagnostics on the way (`laya_vector_*` = no query vector, `laya_selector_*` = local selection fell back to hybrid rank, `laya_recall_proof_retry`, `laya_wiki_rows_filtered`). `degraded` is `bundle_drift` (read-only after a plugin update), `worktree` or `reader_endpoint` (the new-format reader answered during an upgrade fence or bundle mismatch). A recall served by the new index format carries `store_format: schema3`; its `reason` `view_preparing` means this checkout's view has no published generation yet (a linked worktree's first use or a branch just switched to), and `checkout_changed` that the checkout kept moving during the read. Both give no context until the next sync publishes the view. `reader_settings_resealing` means the project's recall settings (such as `skipPaths`) changed and the index reader is re-sealed by the next sync, which this recall requested; it gives no context until then.
 
-Upgrade lines can include an opaque `operation` and `attempt`; matching start and final lines describe one execution. A bridge failure can include its fixed `stage` and `bridgeHost`. Between them, stage lines with the same `operation` show the steps: `backup.start`/`backup.done` (`copies`, `pins`, `bytes`), `verify.start`/`verify.done`, `store_check.done`, `activate.done`, `backup.deleted`/`backup.kept`, and `backup.progress`/`verify.progress` (`bytesDone` of `bytesTotal`) every 30 seconds of a long copy or hash. The summary's `last upgrade` is the final line, never a stage line.
 
 For `wiki.backfill`, `pending` and `dispatched` are unfinished source revisions;
 `settled` means the compile worker finished a terminal attempt (including no-card

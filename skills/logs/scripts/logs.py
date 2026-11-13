@@ -3,7 +3,7 @@
 
 usage: logs.py [--cwd DIR | --state-root DIR | --all] [--hours N] [--limit N]
                [--json] [--details] [--register PROJECT ...]
-               [summary|recalls|errors|upgrades|events] [--event NAME]
+               [summary|recalls|errors|events] [--event NAME]
 
 The state root comes from the project's selected route (the install
 journal's directory); ``--state-root`` names one directly. ``--all`` merges
@@ -208,23 +208,6 @@ def _detail_lines(result):
         yield '    | ' + _esc(line)
 
 FAILED = frozenset(('refused', 'failed', 'error', 'interrupted', 'exited'))
-# bundle.upgrade progress rows (laya_inactive_upgrade._stage); the started row
-# and the final result row carry no dot in their outcome.
-UPGRADE_STAGES = ('backup.', 'verify.', 'activate.', 'store_check.')
-UPGRADE_FIELDS = ('kind', 'copies', 'pins', 'files', 'bytes', 'bytesDone', 'bytesTotal')
-
-
-def _upgrade_stage(row):
-    outcome = row.get('outcome')
-    return (row.get('event') == 'bundle.upgrade' and isinstance(outcome, str) and
-            outcome.startswith(UPGRADE_STAGES))
-
-
-def _moves(row):
-    if row.get('event') != 'bundle.upgrade' or _upgrade_stage(row):
-        return ''
-    return f" {row.get('from')} -> {row.get('to')}"
-
 
 def _state_root(args):
     if args.state_root:
@@ -267,26 +250,7 @@ def _short(row):
         parts.append('severity=warning')
     if row.get('ms') is not None:
         parts.append(f"{row['ms']}ms")
-    if row.get('event') == 'bundle.upgrade':
-        operation = row.get('operation')
-        if isinstance(operation, str) and re.fullmatch(r'[0-9a-f]{32}', operation):
-            parts.append(f'operation={operation}')
-        attempt = row.get('attempt')
-        if type(attempt) is int and 0 < attempt <= 1000000000:
-            parts.append(f'attempt={attempt}')
-        stage = row.get('stage')
-        if stage in ('reuse', 'host_support', 'challenge', 'observe_host', 'validate_receipts'):
-            parts.append(f'stage={stage}')
-        bridge_host = row.get('bridgeHost')
-        if bridge_host in ('claude', 'codex'):
-            parts.append(f'bridgeHost={bridge_host}')
-        if _upgrade_stage(row):
-            for key in UPGRADE_FIELDS:
-                value = row.get(key)
-                if (type(value) is int and 0 <= value) or (
-                        key == 'kind' and value in ('inactive', 'bound', 'active')):
-                    parts.append(f'{key}={value}')
-    elif row.get('event') == HEADER_EVENT:
+    if row.get('event') == HEADER_EVENT:
         if row.get('kind') in _KINDS:
             parts.append(f"kind={row['kind']}")
         if _count(row.get('parts')):
@@ -395,18 +359,14 @@ def summary(rows, args):
         if degraded:
             print('degraded recalls: ' + ', '.join(f'{_esc(k)} {v}'
                                                    for k, v in degraded.items()))
-    for name, test in (('last upgrade', lambda row: row.get('event') == 'bundle.upgrade'
-                        and row.get('outcome') != 'started' and not _upgrade_stage(row)),
-                       ('last publish', lambda row: row.get('event') == 'index.publish'),
+    for name, test in (('last publish', lambda row: row.get('event') == 'index.publish'),
                        ('last error', lambda row: row.get('severity') != 'warning' and
                         (row.get('outcome') in FAILED or row.get('event') == 'hook.error'))):
         found = [row for row in rows if test(row)]
         if found:
             row = _display(found[-1])
             detail = ''
-            if row.get('event') == 'bundle.upgrade':
-                detail = f" {row.get('from')} -> {row.get('to')}"
-            elif row.get('event') == 'index.publish':
+            if row.get('event') == 'index.publish':
                 detail = f" generation={row.get('generation')}"
             print(f'{name}: {_short(row)}{detail}')
     dropped = sum(row.get('dropped', 0) for row in window if type(row.get('dropped')) is int)
@@ -428,9 +388,6 @@ def _show(rows, args, view):
         _print([row for row in rows if row.get('severity') != 'warning' and
                 (row.get('outcome') in FAILED or row.get('event') == 'hook.error')],
                args, _short, view)
-    elif args.view == 'upgrades':
-        _print([row for row in rows if row.get('event') in ('bundle.upgrade', 'journal.v4')],
-               args, lambda row: _short(row) + _moves(row), view)
     else:
         _print([row for row in rows if not args.event or row.get('event') == args.event],
                args, _short, view)
@@ -585,7 +542,7 @@ def _main_all(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('view', nargs='?', default=None,
-                        choices=('summary', 'recalls', 'errors', 'upgrades', 'events'))
+                        choices=('summary', 'recalls', 'errors', 'events'))
     parser.add_argument('--cwd', default=os.getcwd())
     parser.add_argument('--state-root')
     parser.add_argument('--all', action='store_true',

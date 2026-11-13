@@ -316,22 +316,6 @@ class StorageChecks(Base):
 
 
 class SkillChecks(Base):
-    def test_upgrade_view_shows_safe_bridge_stage_and_operation(self):
-        event_log.emit('bundle.upgrade', state_root=self.state, outcome='deferred',
-                       reason='reader_hosts_pending', operation='a'*32, attempt=2,
-                       stage='observe_host', bridgeHost='codex')
-        output = self.run_skill('upgrades')
-        self.assertIn('stage=observe_host', output)
-        self.assertIn('bridgeHost=codex', output)
-        self.assertIn('operation='+'a'*32, output)
-        self.assertIn('attempt=2', output)
-        event_log.emit('bundle.upgrade', state_root=self.state, outcome='failed',
-                       stage='PRIVATE_SOURCE', bridgeHost='FAKE_CREDENTIAL',
-                       operation='PRIVATE_SOURCE', attempt=-1)
-        output = self.run_skill('upgrades')
-        self.assertNotIn('PRIVATE_SOURCE', output)
-        self.assertNotIn('FAKE_CREDENTIAL', output)
-        self.assertNotIn('attempt=-1', output)
 
     def write_fixture(self):
         rows = [
@@ -370,8 +354,6 @@ class SkillChecks(Base):
         summary = self.run_skill()
         self.assertIn('recalls: 3 served=2 empty/refused=1 (no_candidates 1)', summary)
         self.assertIn('degraded recalls: selected_provider_preparing 1, bundle_drift 1', summary)
-        self.assertRegex(summary, r'last upgrade: .* bundle\.upgrade refused '
-                                  r'reason=older_host_bundle 0\.41\.5 -> 0\.41\.6')
         self.assertIn('last publish:', summary)
         self.assertIn('generation=g9', summary)
         self.assertRegex(summary, r'last error: .* gate refused reason=selected_proof_changed')
@@ -381,9 +363,6 @@ class SkillChecks(Base):
         self.assertIn('degraded=bundle_drift', recalls)
         errors = self.run_skill('errors', '--hours', '1')
         self.assertEqual(len(errors.strip().splitlines()), 4)  # 2 header lines + 2 rows
-        upgrades = self.run_skill('upgrades', '--json')
-        self.assertEqual([json.loads(line)['outcome'] for line in upgrades.splitlines()],
-                         ['started', 'refused'])
 
     def test_unsafe_or_refused_log_is_reported(self):
         os.symlink(self.base / 'nowhere', self.state / event_log.NAME)
