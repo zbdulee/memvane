@@ -17,8 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.paths import safe_managed_dir, read_jsonl
 from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl
-from memvane.wiki.workspace import wiki_mutation_lock
-from memvane.wiki.workspace import wiki_activity_log
+from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
@@ -815,7 +814,7 @@ def markdown_page(candidate: dict, summary: str, status: str, redactions: list[s
 
 
 
-@wiki_mutation_lock.guard_path
+@workspace_files.mutation_lock.guard_path
 def rewrite_generated_card(path: Path, old_text: str, generated_page: str) -> bool:
     """Atomically refresh trusted frontmatter and the managed block together.
 
@@ -910,7 +909,7 @@ def write_pending_card(path: Path, text: str) -> bool:
             os.unlink(name)
 
 
-@wiki_mutation_lock.guard_path
+@workspace_files.mutation_lock.guard_path
 def insert_source_revisions(path: Path, revisions: list) -> bool:
     """Add the compiler-owned ``sourceRevisions`` block to a card that has none.
 
@@ -962,7 +961,7 @@ def insert_source_revisions(path: Path, revisions: list) -> bool:
     return write_text_atomic(path, patched)
 
 
-@wiki_mutation_lock.guard_path
+@workspace_files.mutation_lock.guard_path
 def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = None,
                              expected_text: str | None = None) -> bool:
     """Rewrite only the named top-level scalar frontmatter keys in place.
@@ -1035,7 +1034,7 @@ def _render_frontmatter_fields(text: str, updates: dict, blocks: dict | None = N
     return text[: match.start(1)] + new_frontmatter + text[match.end(1) :]
 
 
-@wiki_mutation_lock.guard_path
+@workspace_files.mutation_lock.guard_path
 def stamp_verification(path: Path, status: str, engine: str, mode: str,
                        body_hash: str | None, source_spans: list | None = None) -> bool:
     """Write a machine-review outcome — status AND all three proof fields together.
@@ -1375,7 +1374,7 @@ def main() -> int:
         return 1
 
     try:
-        with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+        with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
             return _compile_locked(
                 root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate,
                 budget_final=args.budget_final)
@@ -1723,7 +1722,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     compact_manifest(manifest_path)
     # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
     if pending_path is None:
-        wiki_activity_log.append(root, action, target.relative_to(wiki_root).as_posix(),
+        workspace_files.activity_log.append(root, action, target.relative_to(wiki_root).as_posix(),
                                  title, bound=selected, reason='compile')
 
     collection, collection_path = find_wiki_collection(config)

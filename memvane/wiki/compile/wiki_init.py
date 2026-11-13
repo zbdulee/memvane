@@ -17,14 +17,14 @@ import tempfile
 
 from memvane.settings import config as qmd_config
 from memvane.settings import api as project_dir, types as project_types
-from memvane.wiki.workspace import wiki_mutation_lock
+from memvane.wiki.workspace.api import file_coordination as workspace_files
 
 
 def init_wiki(target, preset="default", *, quiet=False, initial_config=None):
     target = Path(target).resolve()
     settings_dir = project_dir.folder(target)
     settings = settings_dir / "settings.json"
-    with wiki_mutation_lock.lock(target):
+    with workspace_files.mutation_lock.lock(target):
 
         def ensure_settings_dir() -> None:
             if settings_dir.exists():

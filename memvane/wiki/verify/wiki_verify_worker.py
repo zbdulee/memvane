@@ -55,9 +55,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.wiki.verify.intent_ack import _supersede_compile_intent
-from memvane.wiki.workspace import wiki_activity_log
+from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.card import types as wiki_markers
-from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import config as qmd_config
@@ -517,7 +516,7 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
     except OSError:
         return 'retry'
     wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
-    wiki_activity_log.append(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
+    workspace_files.activity_log.append(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
                              str(pending_meta.get('title') or live_target.stem),
                              reason='pending_publish')
     reindex_wiki(root, config)
@@ -1002,7 +1001,7 @@ def process_verify_job(
                         yaml_scalars.card_body_hash(live_text)):
                 if checkout is not None:
                     try:
-                        with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+                        with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
                             current_text, _, _, _ = card_state(live_target)
                             if current_text == live_text:
                                 _, gate_reason = _provenance_gate(job, checkout)
@@ -1024,7 +1023,7 @@ def process_verify_job(
         staged_text, _, staged_status, staged_hash = card_state(target)
         if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
             try:
-                with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+                with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
                     _, gate_reason = _provenance_gate(job, checkout)
                     if gate_reason == 'provenance_checkout_changed':
                         _supersede_job_intent(root, config, job, target, selected_route[0])
@@ -1231,7 +1230,7 @@ def process_verify_job(
     spans = source_spans.derive_spans(claims, span_evidence) if verdict == "pass" else []
     wiki_selected_laya.recheck(selected_route)
     try:
-        with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+        with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
             return apply_verify_verdict_locked(
                 root, config, compile_cfg, vcfg, job, target, job_hash,
                 # payload 로 보낸 파일 전문. 잠금 아래 다시 읽은 전문과 축자 대조해
@@ -1339,7 +1338,7 @@ def apply_negative_verdict(
                                    'suppressedSources': suppressed})
             return True
         wiki_root = (root / config.get("wikiPath", project_dir.wiki_rel(root))).resolve()
-        wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
+        workspace_files.activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  dead_title, reason='verify_retire')
         record_machine_delete(root, compile_cfg, record, verdict)
         reindex_wiki(root, config)

@@ -1,5 +1,5 @@
 """Public wiki workspace operations."""
-from __future__ import annotations
+from __future__ import annotations as _annotations
 
 
 def card_write_lock(*args, **kwargs):
@@ -152,3 +152,29 @@ def write_state_atomic(*args, **kwargs):
 def trim_jsonl(*args, **kwargs):
     from memvane.wiki.workspace.atomic_io import trim_jsonl as implementation
     return implementation(*args, **kwargs)
+
+
+class file_coordination:
+    """Public workspace mutation locking and activity-log operations."""
+
+    class mutation_lock:
+        @staticmethod
+        def lock(*args, **kwargs):
+            from memvane.wiki.workspace.wiki_mutation_lock import lock as implementation
+            return implementation(*args, **kwargs)
+
+        @staticmethod
+        def guard_path(*args, **kwargs):
+            from memvane.wiki.workspace.wiki_mutation_lock import guard_path as implementation
+            return implementation(*args, **kwargs)
+
+    class activity_log:
+        @staticmethod
+        def append(*args, **kwargs):
+            from memvane.wiki.workspace.wiki_activity_log import append as implementation
+            return implementation(*args, **kwargs)
+
+        @staticmethod
+        def tail(*args, **kwargs):
+            from memvane.wiki.workspace.wiki_activity_log import tail as implementation
+            return implementation(*args, **kwargs)

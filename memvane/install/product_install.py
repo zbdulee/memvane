@@ -565,7 +565,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.sync import api as sync
     from memvane.store import api as values
     from memvane.store import api as view_values, types as store_types
-    from memvane.wiki.workspace import wiki_mutation_lock
+    from memvane.wiki.workspace.api import file_coordination as workspace_files
     from contextlib import closing
     from memvane.store.api import regular as _regular
     from memvane.install.ledger_common import _read_json, _write
@@ -587,7 +587,7 @@ def finalize_initial_build(*, project_root, state_root):
         with sync_owner(Path(identity['storePath']), wait=False) as owner:
             if owner is None:
                 _fail('owner_busy')
-            with wiki_mutation_lock.lock(project):
+            with workspace_files.mutation_lock.lock(project):
                 dispatch.resolve('laya-sync', str(project))
                 row = journal.inspect_journal(identity['journalPath'])
                 attestation, digest = journal._attestation(Path(identity['journalPath']))
@@ -720,7 +720,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.sync import api as sync
     from memvane.wiki.intake import api as discovery
     from memvane.settings import api as project_dir
-    from memvane.wiki.workspace import wiki_mutation_lock
+    from memvane.wiki.workspace.api import file_coordination as workspace_files
     from contextlib import closing
     from memvane.route.api import classify_v4 as _classify_v4
     from memvane.route.types import SELECTION_SCHEMA_V1
@@ -747,7 +747,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
         with sync_owner(Path(identity['storePath']), wait=False) as owner:
             if owner is None:
                 _fail('owner_busy')
-            with wiki_mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=False):
+            with workspace_files.mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=False):
                 row = journal_module.inspect_journal(journal)
                 ledger_path = state / 'ledger.json'
                 ledger = _read_json(ledger_path)
@@ -850,7 +850,7 @@ def _restore_v1_locked(project, state):
     from memvane.install.ledger_common import _read_json, _write, _fsync_dir
     from memvane.journal.reader_lease import reader_lifetime
     from memvane.runtime.api import sync_owner
-    from memvane.wiki.workspace import wiki_mutation_lock
+    from memvane.wiki.workspace.api import file_coordination as workspace_files
     with build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
@@ -872,7 +872,7 @@ def _restore_v1_locked(project, state):
         with sync_owner(Path(identity['storePath']), wait=False) as owner:
             if owner is None:
                 _fail('owner_busy')
-            with wiki_mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=True):
+            with workspace_files.mutation_lock.lock(project), reader_lifetime(identity['installId'], exclusive=True):
                 row = journal.inspect_journal(path)
                 if (row['routeSha256'] != identity['routeSha256']
                         or row['attestationSha256'] != identity['attestationSha256']

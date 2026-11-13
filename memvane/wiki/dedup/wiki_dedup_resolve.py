@@ -21,8 +21,7 @@ from pathlib import Path
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
 from memvane.settings import api as qmd_config
-from memvane.wiki.workspace import wiki_activity_log
-from memvane.wiki.workspace import wiki_mutation_lock
+from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.kernel.paths import safe_managed_dir
 from memvane.wiki.card.api import parse_frontmatter
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
@@ -177,7 +176,7 @@ def pair_missing(wiki_root: Path, entry: dict) -> bool:
 def resolve_entry(root: Path, wiki_root: Path, compile_dir: Path, entry: dict, action: str, delete_rel: str | None, *, laya_bound=None) -> dict:
     # Match compiler/verifier/retirement lock order. Queueing a wake performs
     # journal proof checks, so do it only after both card locks are released.
-    with cp.card_write_lock(root), wiki_mutation_lock.lock(root):
+    with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
         if laya_bound is not None:
             wiki_selected_laya.recheck(laya_bound)
         result = _resolve_entry_locked(root, wiki_root, compile_dir, entry, action,
@@ -246,7 +245,7 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         target.unlink()
         meta, _ = parse_frontmatter(content)
         title = str(meta.get("title") or Path(delete_rel).stem)
-        wiki_activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
+        workspace_files.activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  title, bound=laya_bound, reason='dedup')
         # The caller requests sync after releasing the card locks but before
         # ACKing the dedup queue. A failure requeues this row for stale retry.

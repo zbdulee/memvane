@@ -492,10 +492,10 @@ def orientation(root: Path, wiki_root: Path, config: dict, bound) -> dict:
     Nothing here reads the project wiki's root files; the card catalog is the
     selected memvane-db index (`similarPages`).
     """
-    from memvane.wiki.workspace import wiki_activity_log
+    from memvane.wiki.workspace.api import file_coordination as workspace_files
     return {
         "schema": card_rules(card_rules_preset(root, wiki_root, config)),
-        "logTail": wiki_activity_log.tail(root, bound),
+        "logTail": workspace_files.activity_log.tail(root, bound),
     }
 
 
