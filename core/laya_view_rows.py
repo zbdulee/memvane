@@ -39,8 +39,7 @@ def _expired(deadline):
 
 
 _CARD_DOMAIN = 'memvane-row-card-v1'
-_FTS_DOMAINS = {'normal': 'memvane-row-fts-v1', 'base': 'memvane-row-fts-base-v1',
-                'sidecar': 'memvane-row-fts-sidecar-v1'}
+_FTS_DOMAIN = 'memvane-row-fts-v1'
 EMPTY_ACC = dict(bytes=0, count=0, sum='0' * 64)
 
 
@@ -164,11 +163,10 @@ def source_digest(sources=(), card_sources=()):
     return members_source_digest(member_acc((), sources, card_sources))
 
 
-def fts_acc(rows, origin='normal', positions=None):
+def fts_acc(rows):
     acc = EMPTY_ACC
-    for index, row in enumerate(rows):
-        value = dict(row) if positions is None else dict(row, position=positions[index])
-        acc = acc_update(acc, _FTS_DOMAINS[origin], value)
+    for row in rows:
+        acc = acc_update(acc, _FTS_DOMAIN, dict(row))
     return acc
 
 
@@ -182,10 +180,10 @@ def seal_digest(fields):
 
 
 def _seal_fields(incarnation, generation):
-    keys = ('ordinal', 'gen_id', 'view_id', 'epoch', 'prior_ordinal', 'kind', 'sidecar_present',
+    keys = ('ordinal', 'gen_id', 'view_id', 'epoch', 'prior_ordinal', 'kind',
             'capture_json', 'policy_digest', 'skip_digest', 'recipe_id', 'profile_id', 'coverage',
             'member_digest', 'source_digest', 'logical_fts_digest', 'physical_fts_digest',
-            'member_acc', 'fts_acc', 'legacy_json')
+            'member_acc', 'fts_acc')
     return dict(incarnation=incarnation, **{k: generation[k] for k in keys})
 
 
@@ -765,10 +763,10 @@ class RowsMixin:
                 _live(db, saved, files)
 
             generation = dict(gen_id=gen_id, view_id=handle.view_id, epoch=base['epoch'] + 1,
-                              prior_ordinal=head.ordinal, kind='normal', sidecar_present=0,
+                              prior_ordinal=head.ordinal, kind='normal',
                               capture_json=v.canonical(entry['capture']), policy_digest=handle.policy_digest,
                               skip_digest=stage['skip_digest'], **_coverage_fields(spec),
-                              expected_member_digest=stage['member_digest'], legacy_json=None,
+                              expected_member_digest=stage['member_digest'],
                               expected_source_digest=stage['source_digest'])
             source_deltas = self._source_diff(self._rows_open_sources(db, handle.view_id), final_sources)
             card_source_deltas = self._card_source_diff(self._rows_open_card_sources(db, handle.view_id),
@@ -815,7 +813,7 @@ class RowsMixin:
             old_fts, new_fts = self._card_fts_row(old, deadline), self._card_fts_row(new, deadline)
             if old_fts != new_fts:
                 changes.append(dict(old=old_fts, new=new_fts))
-                text_changes += [('normal', row, sign) for row, sign in ((old_fts, -1), (new_fts, 1)) if row]
+                text_changes += [(row, sign) for row, sign in ((old_fts, -1), (new_fts, 1)) if row]
         with self._fts_guard.view_head(view_id):
             if head.ordinal is None:
                 fts.create_head(db, view_id)
@@ -838,8 +836,8 @@ class RowsMixin:
                             members = members_update(members, domain, value(old), -1)
                         if new is not None:
                             members = members_update(members, domain, value(new))
-                for origin, row, sign in text_changes:
-                    text_acc = acc_update(text_acc, _FTS_DOMAINS[origin], row, sign)
+                for row, sign in text_changes:
+                    text_acc = acc_update(text_acc, _FTS_DOMAIN, row, sign)
                 if (members, text_acc) != (members_value(prior['member_acc']), acc_value(prior['fts_acc'])):
                     v.fail('rollback_fts_mismatch')
                 physical = deferred_physical(current['physical_fts_digest'], generation['gen_id'])
@@ -939,10 +937,10 @@ class RowsMixin:
             generation = dict(gen_id=vals.gen_id(uuid.uuid4().hex, v.digest('memvane-row-rollback-v1', dict(
                                   view_id=handle.view_id, head=head.gen_id, prior=prior['gen_id']))),
                               view_id=handle.view_id, epoch=head.epoch + 1, prior_ordinal=head.ordinal,
-                              kind='rollback', sidecar_present=prior['sidecar_present'],
+                              kind='rollback',
                               capture_json=prior['capture_json'], policy_digest=prior['policy_digest'],
                               skip_digest=prior['skip_digest'], recipe_id=prior['recipe_id'],
-                              profile_id=prior['profile_id'], coverage=prior['coverage'], legacy_json=None)
+                              profile_id=prior['profile_id'], coverage=prior['coverage'])
 
             def before_commit(db):
                 job = db.execute("SELECT job_id FROM s_stage_jobs WHERE view_id=? AND state<>'abandon'",
@@ -1008,7 +1006,6 @@ class RowsMixin:
                 'WHERE g.view_id=? AND g.ordinal<>? AND g.ordinal IS NOT ? '
                 'AND NOT EXISTS(SELECT 1 FROM s_deltas d WHERE d.view_id=g.view_id AND d.ordinal=g.ordinal) '
                 'AND NOT EXISTS(SELECT 1 FROM s_stage_jobs j WHERE j.base_gen_id=g.gen_id) '
-                'AND NOT EXISTS(SELECT 1 FROM s_parity_anchor a WHERE a.gen_id=g.gen_id) '
                 'AND NOT EXISTS(SELECT 1 FROM delete_receipts r WHERE r.base_gen=g.gen_id) '
                 'ORDER BY g.ordinal LIMIT ?)', (handle.view_id, head.ordinal, prior, limit)).rowcount
             _expired(deadline)
@@ -1042,7 +1039,7 @@ class RowsMixin:
                 or members_digest(members) != generation['member_digest']
                 or members_source_digest(members) != generation['source_digest']):
             v.fail('generation_rows_mismatch')
-        if generation['sidecar_present'] or generation['kind'] not in ('normal', 'rollback'):
+        if generation['kind'] not in ('normal', 'rollback'):
             v.fail('generation_rows_mismatch')
         if generation['coverage'] == 'complete':
             self._rows_coverage(db, rows, generation, full=False, deadline=deadline)

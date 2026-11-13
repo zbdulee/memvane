@@ -329,16 +329,16 @@ def head_schema_rows(db):
     """Validate the exact dynamic FTS schema selected by all view heads."""
     actual=[r for r in _schema(db) if r[1].startswith(PREFIX) or r[2].startswith(PREFIX)]
     try:
-        heads=_execute(db,'SELECT h.view_id,g.sidecar_present FROM s_heads h JOIN s_generations g '
+        heads=_execute(db,'SELECT h.view_id FROM s_heads h JOIN s_generations g '
                           'ON g.view_id=h.view_id AND g.ordinal=h.ordinal ORDER BY h.view_id')
         count=_execute(db,'SELECT COUNT(*) FROM s_heads')[0][0]
     except sqlite3.Error:
         v.fail('fts_generation_ownership_invalid')
     if len(heads)!=count:v.fail('fts_generation_ownership_invalid')
     expected=[];seen=set()
-    for view_id,sidecar in heads:
+    for (view_id,) in heads:
         v.identifier(view_id)
-        if view_id in seen or type(sidecar) is not int or sidecar != 0:
+        if view_id in seen:
             v.fail('fts_generation_ownership_invalid')
         seen.add(view_id)
         expected.extend(_expected_head_schema(view_id))

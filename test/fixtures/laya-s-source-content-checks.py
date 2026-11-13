@@ -275,18 +275,18 @@ class ContentIdentityTests(unittest.TestCase):
         path = str(pathlib.Path(temporary.name) / 'fts.sqlite')
         db = sqlite3.connect(path, cached_statements=0)
         self.addCleanup(db.close)
-        db.execute('CREATE TABLE s_generations(view_id TEXT,ordinal INTEGER,sidecar_present INTEGER)')
+        db.execute('CREATE TABLE s_generations(view_id TEXT,ordinal INTEGER)')
         db.execute('CREATE TABLE s_heads(view_id TEXT PRIMARY KEY,ordinal INTEGER)')
         guard = view_fts.ConnectionGuard(db)
         view = 'a' * 64
         db.execute('BEGIN')
         with guard.view_head(view):
             db.execute(view_fts.head_ddl(view))
-            db.execute('INSERT INTO s_generations VALUES (?,?,?)', (view, 1, 0))
+            db.execute('INSERT INTO s_generations VALUES (?,?)', (view, 1))
             db.execute('INSERT INTO s_heads VALUES (?,?)', (view, 1))
             db.commit()
         self.assertTrue(view_fts.head_schema_rows(db))
-        db.execute('UPDATE s_generations SET sidecar_present=1')
+        db.execute('DELETE FROM s_generations')
         with self.assertRaises(v.BlobStoreError):
             view_fts.head_schema_rows(db)
         db.rollback()

@@ -118,7 +118,6 @@ def row_generation_statements():
         ordinal INTEGER PRIMARY KEY AUTOINCREMENT, gen_id TEXT NOT NULL UNIQUE,
         view_id TEXT NOT NULL REFERENCES views(view_id), epoch INTEGER NOT NULL CHECK(epoch>0),
         prior_ordinal INTEGER, kind TEXT NOT NULL CHECK(kind IN ('normal','rollback')),
-        sidecar_present INTEGER NOT NULL DEFAULT 0 CHECK(sidecar_present=0),
         capture_json TEXT NOT NULL CHECK(json_valid(capture_json)), policy_digest TEXT NOT NULL,
         skip_digest TEXT NOT NULL, recipe_id TEXT REFERENCES chunk_recipes(recipe_id),
         profile_id TEXT REFERENCES vector_profiles(profile_id),
@@ -126,7 +125,6 @@ def row_generation_statements():
         member_digest TEXT NOT NULL, source_digest TEXT NOT NULL, logical_fts_digest TEXT NOT NULL,
         physical_fts_digest TEXT NOT NULL,
         member_acc TEXT NOT NULL CHECK(json_valid(member_acc)), fts_acc TEXT NOT NULL CHECK(json_valid(fts_acc)),
-        legacy_json TEXT CHECK(legacy_json IS NULL),
         seal_digest TEXT NOT NULL, UNIQUE(view_id,epoch), UNIQUE(view_id,ordinal), UNIQUE(gen_id,view_id),
         CHECK((recipe_id IS NULL)=(profile_id IS NULL)),
         CHECK(coverage='lexical' OR recipe_id IS NOT NULL))''',
@@ -232,7 +230,7 @@ _IN_FLIGHT = """(SELECT g.ordinal FROM s_generations g WHERE g.view_id={view}
 
 
 def row_tables(text,sha,uuid,integer):
-    """Row-format relations kept from the generation format plus the parity anchor."""
+    """View registrations and reserved deletion receipts."""
     return {
       'views':tables(text,sha,uuid,integer)['views'],
       # Reserved deletion/hold proof per view path; metadata only, no writer yet.
@@ -244,16 +242,11 @@ def row_tables(text,sha,uuid,integer):
         {text('proof_json')} CHECK(json_valid(proof_json)),
         {text('decision')} CHECK(decision IN ('hold','retire')), {text('reason')}, {integer('created_ns')},
         FOREIGN KEY(base_gen,view_id) REFERENCES s_generations(gen_id,view_id))''',
-      's_parity_anchor':f'''CREATE TABLE s_parity_anchor(
-        {sha('view_id')} REFERENCES views(view_id), {text('gen_id')},
-        {integer('ordinal',1)}, {uuid('incarnation')}, {sha('receipt_digest')},
-        {sha('proof_digest')}, PRIMARY KEY(view_id,gen_id))''',
     }
 
 
 def row_immutable_keys():
-    return {'views':(('view_id',),('worktree_id','branch_key')), 'delete_receipts':(('receipt_id',),),
-            's_parity_anchor':(('view_id','gen_id'),)}
+    return {'views':(('view_id',),('worktree_id','branch_key')), 'delete_receipts':(('receipt_id',),)}
 
 
 def row_statements():
