@@ -1808,11 +1808,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
         _fail('reader_selection_unproved')
     import hook_budget
     import laya_reader_lease as lease
-    import laya_reader_open as opens
-    import laya_reader_dispatch as dispatch
     import laya_journal_reader as reader
-    from laya_index_a import IndexContractError
-    from laya_local_embed_provider import ReviewedLocalQmdProvider
     deadline = time.monotonic() + hook_budget.remaining()
     root = Path(__file__).resolve().parents[1]
     if drift_decision is None:
@@ -1854,45 +1850,9 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, drift_decision
                   proof.get('journalPath') != str(journal_path) or
                   proof.get('projectRoot') != str(project)))):
             _fail('reader_selection_unproved')
-        if endpoint.record.get('store_format') == 'schema3':
-            return _serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
-                                         decision=decision, project=project, prompt=prompt,
-                                         deadline=deadline, main_proof=main_proof, linked=linked)
-        if main_proof is not None:
-            # The selection moved back to v6 after this recall read it.
-            raise ValueError('reader_selection_changed')
-        provider = None
-        manifest = proof.get('providerManifest')
-        if isinstance(manifest,dict):
-            try:
-                warm = ReviewedLocalQmdProvider(manifest)
-            except IndexContractError:
-                warm = None
-            if warm is not None:
-                def provider(text, profile):
-                    left = min(2.0, deadline-time.monotonic())
-                    if left <= 0:
-                        raise IndexContractError('provider_unavailable')
-                    vector = dispatch._provider_vector(warm,text,left)
-                    return {'profileId':profile['profileId'],
-                            'approvedProviderId':manifest['approvedProviderId'],
-                            'providerArtifactSha256':manifest['providerArtifactSha256'], 'vector':vector}
-        with opens.inspect_warm_snapshot(endpoint,deadline=deadline) as snapshot:
-            result=dispatch.query_endpoint(endpoint,checkout=project,prompt=prompt,query_vector=None,
-                deadline=deadline,snapshot=snapshot,decision=decision,provider=provider)
-            from context_learning.selection_port import published_candidate_rows
-            from laya_index_host_route import wiki_index_roots
-            rows=result.rows[:15]
-            published_candidate_rows(rows,tuple(sorted(wiki_index_roots(decision['collections']))),decision['scopeId'])
-            limit=min(decision['recallSettings']['topN'],3)
-            selected=rows[:limit]
-            chosen_paths={row['path'] for row in selected}
-            context=render_context(decision,selected,limit=limit,ranking='hybrid_rrf',
-                title_only_paths=result.title_only.intersection(chosen_paths),
-                source_locations={path:spans for path,spans in result.source_locations.items()
-                                  if path in chosen_paths},
-                allow_mixed_generation=True) if selected else ''
-            return host_payload(host,context)
+        return _serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
+                                     decision=decision, project=project, prompt=prompt,
+                                     deadline=deadline, main_proof=main_proof, linked=linked)
 
 
 def _serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, prompt,
@@ -2452,20 +2412,17 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
                     else {"status": "queued"})
         return {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                        "additionalContext": notice}}
-    if _selected_store_format(decision) == 'schema3':
-        try:
-            return serve_endpoint_recall(host, payload,
-                                         cwd=payload.get('cwd', decision['projectRoot']),
-                                         drift_decision=decision, main_proof=proof)
-        except Exception as exc:
-            # A reader CAS or a store replacement under this recall may be
-            # retried once from a fresh route; any other reader refusal must
-            # not be retried again through the fence-hint reader.
-            if _retry_code(exc) not in _RETRYABLE_READER_CODES:
-                exc._memvane_reader_attempted = True
-            raise
-    return _serve_recall(host, decision, payload, proof, verify_selected_route)
-
+    try:
+        return serve_endpoint_recall(host, payload,
+                                     cwd=payload.get('cwd', decision['projectRoot']),
+                                     drift_decision=decision, main_proof=proof)
+    except Exception as exc:
+        # A reader CAS or a store replacement under this recall may be
+        # retried once from a fresh route; any other reader refusal must
+        # not be retried again through the fence-hint reader.
+        if _retry_code(exc) not in _RETRYABLE_READER_CODES:
+            exc._memvane_reader_attempted = True
+        raise
 
 def _reconcile_registry(decision: dict) -> None:
     """Bounded opportunistic reconcile of the selected project registry.
@@ -2623,19 +2580,12 @@ def _serve_bundle_drift(action: str, host: str, decision: dict, payload: dict,
     from laya_host_rules import drift_action, codex_seal_notice, gate_response
     policy = drift_action(action)
     if policy == 'recall':
-        import laya_journal_reader as reader
-        journal_path = reader._journal(Path(decision['journalPath']))
-        with reader._readonly(journal_path, journal_path.parent) as db:
-            version = reader.journal._schema_version_read(db)
-        if version == 5:
-            try:
-                return serve_endpoint_recall(host,payload,cwd=payload.get('cwd',decision['projectRoot']),
-                                             drift_decision=decision)
-            except Exception as exc:
-                exc._memvane_reader_attempted = True
-                raise
-        return _serve_recall(host, decision, payload, proof,
-                             verify_selected_route_read_only, degraded=True)
+        try:
+            return serve_endpoint_recall(host, payload, cwd=payload.get('cwd', decision['projectRoot']),
+                                         drift_decision=decision)
+        except Exception as exc:
+            exc._memvane_reader_attempted = True
+            raise
     if policy == 'session':
         if payload.get('hook_event_name') != 'SessionStart':
             _fail('invalid_session_event')
@@ -2734,37 +2684,27 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
             _fail('worktree_read_only_unapproved')
     _trace_fields(degraded='worktree')
     if action == 'recall':
-        version = 5 if main.get('state') == 'reader' else None
-        if version is None:
-            import laya_journal_reader as reader
-            journal_path = reader._journal(Path(main['journalPath']))
-            with reader._readonly(journal_path, journal_path.parent) as db:
-                version = reader.journal._schema_version_read(db)
-        if version == 5:
-            try:
-                main_payload = {**payload, 'cwd': main['projectRoot']}
-                state = _RECALL_STATE.get()
-                if state is not None:
-                    state.pop('ownView', None)
-                response = serve_endpoint_recall(host,main_payload,cwd=main['projectRoot'],
-                    drift_decision=main if main.get('state') == 'candidate' else None,
-                    linked=decision)
-                cwd = payload.get('cwd', decision.get('worktreeProjectRoot'))
-                current = select_route(cwd, action='recall') if isinstance(cwd,str) else {}
-                fenced_after_pin = (main.get('state') == 'candidate' and
-                    current.get('state') == 'worktree' and
-                    all(current.get(key) == decision.get(key) for key in _WORKTREE_IDENTITY) and
-                    isinstance(current.get('mainRoute'),dict) and
-                    current['mainRoute'].get('state') == 'reader' and
-                    current['mainRoute'].get('projectRoot') == main.get('projectRoot'))
-                if current != decision and not fenced_after_pin:
-                    _fail('selected_route_changed')
-            except Exception as exc:
-                exc._memvane_reader_attempted = True
-                raise
-        else:
-            response = _serve_recall(host, main, payload, proof, recheck, degraded=True,
-                                     read_only_label='worktree')
+        try:
+            main_payload = {**payload, 'cwd': main['projectRoot']}
+            state = _RECALL_STATE.get()
+            if state is not None:
+                state.pop('ownView', None)
+            response = serve_endpoint_recall(host,main_payload,cwd=main['projectRoot'],
+                drift_decision=main if main.get('state') == 'candidate' else None,
+                linked=decision)
+            cwd = payload.get('cwd', decision.get('worktreeProjectRoot'))
+            current = select_route(cwd, action='recall') if isinstance(cwd,str) else {}
+            fenced_after_pin = (main.get('state') == 'candidate' and
+                current.get('state') == 'worktree' and
+                all(current.get(key) == decision.get(key) for key in _WORKTREE_IDENTITY) and
+                isinstance(current.get('mainRoute'),dict) and
+                current['mainRoute'].get('state') == 'reader' and
+                current['mainRoute'].get('projectRoot') == main.get('projectRoot'))
+            if current != decision and not fenced_after_pin:
+                _fail('selected_route_changed')
+        except Exception as exc:
+            exc._memvane_reader_attempted = True
+            raise
         # Learning belongs to the main checkout's own sessions.
         _set_learning_capture(None)
         key = 'context' if host == 'hermes' else None
@@ -2823,205 +2763,6 @@ def _proof_still_current(refreshed: dict, proof: dict) -> bool:
                           if key != 'selectionEpoch'}
     return (isinstance(refreshed, dict) and stable(refreshed) == stable(proof) and
             refreshed.get('selectionEpoch', -1) >= proof.get('selectionEpoch', 0))
-
-
-def _serve_recall(host: str, decision: dict, payload: dict, proof: dict,
-                  recheck, *, degraded: bool = False,
-                  read_only_label: str = 'bundle_drift') -> dict:
-    with _event_scope('recall', host, decision, payload):
-        if degraded:
-            _trace_fields(degraded=read_only_label)
-        return _serve_recall_traced(host, decision, payload, proof, recheck,
-                                    degraded=degraded, read_only_label=read_only_label)
-
-
-def _serve_recall_traced(host: str, decision: dict, payload: dict, proof: dict,
-                         recheck, *, degraded: bool = False,
-                         read_only_label: str = 'bundle_drift') -> dict:
-    # The approved provider only connects to an already warm owner process.
-    # The hook never starts a model or derives paths from the event or env.
-    from laya_index_runtime import LayaIndexRuntime
-    from laya_local_embed_provider import ReviewedLocalQmdProvider
-    import config
-    _recall_epoch(proof)
-    prompt = payload.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        _fail("invalid_query_prompt")
-    manifest = proof.get("providerManifest")
-    if not isinstance(manifest, dict):
-        _fail("vector_provider_missing")
-    embedded = {}
-    # Why this prompt has no query vector. Set once; later calls never touch
-    # the socket again and the searches serve their lexical lists (#57 path).
-    vector_off: list[str] = []
-    from laya_index_a import IndexContractError as _ProviderRefused
-    try:
-        provider = ReviewedLocalQmdProvider(manifest)
-    except _ProviderRefused as exc:
-        # A sealed manifest this provider cannot use (a socket path past its
-        # limit, a changed recipe): no query vector, the lexical lists serve.
-        provider = None
-        vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(
-            r'[a-z0-9_]{1,60}', str(exc)) else 'invalid'))
-
-    def query_provider(text, profile):
-        # The incremental and pinned searches ask the same warm service for
-        # one query vector. Never charge the hook twice for the same prompt.
-        if vector_off:
-            raise _VectorUnavailable(vector_off[0])
-        key = (text, profile['profileId'])
-        if key not in embedded:
-            if not degraded:
-                from laya_index_a import IndexContractError
-                try:
-                    embedded[key] = provider(text, profile)
-                except IndexContractError as exc:
-                    if str(exc) != 'provider_unavailable':
-                        raise
-                    # Cold/preparing owner: wake it after the lexical search.
-                    vector_off.append('provider_unavailable')
-                    raise _VectorUnavailable(str(exc)) from exc
-            else:
-                # A warm owner of the same sealed recipe may still answer; a
-                # cold or changed one is never started from a drifted bundle.
-                from laya_index_a import IndexContractError
-                try:
-                    embedded[key] = provider(text, profile)
-                except IndexContractError as exc:
-                    if str(exc) not in ('provider_unavailable', 'provider_identity_mismatch',
-                                        'provider_result_invalid', 'provider_socket_invalid',
-                                        'provider_socket_changed'):
-                        raise
-                    vector_off.append(str(exc))
-                    raise _VectorUnavailable(str(exc)) from exc
-        return embedded[key]
-    from laya_embed_resident import admit_query
-    try:
-        admit_query()
-    except Exception:
-        # Query admission refused under pressure, or its learning-side lane
-        # unreachable: no vector for this prompt, the verified published
-        # generation is still searched lexically.
-        vector_off.append('resource_deferred')
-    settings = config.load_project_config(decision["projectRoot"])
-    v2 = "collections" in decision
-    selected_settings = decision.get('recallSettings', settings)
-    if v2 and any(settings.get(key) != value
-                  for key, value in selected_settings.items()):
-        _fail('selected_recall_settings_changed')
-    top_n = selected_settings.get("topN")
-    patterns = selected_settings.get("lexicalPatterns")
-    if (type(top_n) is not int or not 1 <= top_n <= MAX_ROWS
-            or patterns not in ([], ["ep"])):
-        _fail("selected_recall_settings_unsupported")
-    if not v2:
-        _write_selection_log(decision['projectRoot'], 'laya_selector_wiki_route_required', [])
-        return host_payload(host, '')
-    from laya_index_runtime import capacity_store_paths
-    from laya_index_host_route import wiki_index_roots
-    capacity = capacity_store_paths(decision["dbPath"]) if v2 else None
-    if capacity is not None:
-        source_root = wiki_index_roots(decision['collections'])
-        stores = {'catalog_path': capacity[0], 'binding_store_path': capacity[1]}
-    else:
-        source_root = (next(iter(wiki_index_roots(decision['collections']).values())) if v2
-                       else decision['sourceRoot'])
-        stores = {}
-    locations: dict[str, tuple[str, ...]] = {}
-    incremental_rows, incremental_locations, shadow_paths, base_generation = [], {}, (), None
-    incremental_title_only = frozenset()
-    pinned_generation = []
-    try:
-        if v2:
-            from laya_incremental_docs_query import query_incremental
-            # Without a query vector (bundle drift, cold or deferred provider)
-            # completed incremental cards serve from their lexical lists and
-            # keep shadowing the older heads of the base generation.
-            try:
-                incremental_rows, incremental_title_only, incremental_locations, \
-                    shadow_paths, base_generation = query_incremental(
-                        prompt, decision, proof, query_provider)
-            except _VectorUnavailable:
-                # Defensive: query_incremental serves its lexical lists itself.
-                # Should a vector failure still escape, the base generation
-                # alone answers rather than the whole recall failing.
-                incremental_rows, incremental_title_only = [], frozenset()
-                incremental_locations, shadow_paths, base_generation = {}, (), None
-        from laya_index_vector import seal_reuse
-        with LayaIndexRuntime(source_root=source_root,
-                              scope=decision["scopeId"], db_path=decision["dbPath"],
-                              queue_path=decision["queuePath"],
-                              db_incarnation=decision["dbIncarnation"],
-                              wiki_only=v2 and not isinstance(source_root, str),
-                              **stores) as runtime, seal_reuse():
-            if v2:
-                rows, title_only = query_selected_v2(
-                    runtime, prompt, decision["vectorProfile"],
-                    proof["vectorProfile"], query_provider, decision,
-                    source_locations=locations, excluded_paths=shadow_paths or None,
-                    expected_generation=base_generation,
-                    pinned_generation=pinned_generation)
-            else:
-                rows = query_selected_hybrid(runtime, prompt, decision["vectorProfile"],
-                                             proof["vectorProfile"],
-                                             query_provider if degraded or provider is None
-                                             else provider,
-                                             lexical_patterns=tuple(patterns))
-                title_only = frozenset()
-    except Exception as exc:
-        # A pull/checkout outside any hook is first seen here. Wake the owner
-        # only for a verified content mismatch; every other failure is unchanged.
-        from laya_source_catalog import CatalogPending, ReturnedCandidateDiverged
-        from laya_index_a import IndexContractError
-        if (not degraded and type(exc) is IndexContractError and str(exc) in (
-                'provider_unavailable', 'provider_identity_mismatch')):
-            _request_provider_start(decision, proof,
-                                    transition=str(exc) == 'provider_identity_mismatch')
-        if (type(exc) is CatalogPending and exc.reason == 'returned_unverified'):
-            _fail('source_unavailable')
-        returned_stale = (type(exc) is IndexContractError and
-                          str(exc) == 'index_stale' and
-                          type(exc.__cause__) is ReturnedCandidateDiverged)
-        if not v2 or not (_is_sealed_manifest_stale(exc) or returned_stale):
-            raise
-        if degraded:
-            # No sync may be recorded until the bundle upgrade completes, and
-            # never from a linked worktree.
-            _fail('selected_worktree_index_stale' if read_only_label == 'worktree'
-                  else 'selected_bundle_upgrade_index_stale')
-        _request_stale_sync(decision, proof)
-    vector_fallback = None
-    if provider is None:
-        # Nothing to wake: the manifest itself is unusable.
-        vector_fallback = 'selected_' + vector_off[0]
-    elif vector_off and degraded:
-        # A drifted bundle never wakes or starts a provider. Still name why
-        # this answer has no vector list.
-        vector_fallback = 'selected_' + read_only_label + '_' + vector_off[0]
-    elif vector_off:
-        # Still request the owner wake; its vector-side state never empties
-        # this answer. Proof/integrity/terminal/transition outcomes raise.
-        code = _wake_provider(decision, proof)
-        vector_fallback = ('selected_provider_resource_deferred'
-                           if vector_off[0] == 'resource_deferred' else code)
-    if vector_fallback is not None:
-        _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
-        print(f'[memvane] {vector_fallback}; serving lexical results', file=sys.stderr)
-    if not _proof_still_current(recheck(decision), proof):
-        _fail("selected_proof_changed")
-    if base_generation is not None and pinned_generation != [base_generation]:
-        _fail('incremental_base_changed')
-    if incremental_rows:
-        locations.update(incremental_locations)
-        title_only = title_only | incremental_title_only
-        rows = merge_incremental_rows(incremental_rows, rows)
-    generation = pinned_generation[0] if pinned_generation else None
-    return _serve_verified_rows(
-        host, decision, payload, settings, prompt, rows, top_n=top_n,
-        title_only=title_only, locations=locations, generation=generation,
-        still_current=lambda chosen: (_proof_still_current(recheck(decision), proof) and
-                                      _selection_view_unchanged(decision, chosen, generation)),
-        vector_fallback=vector_fallback, allow_mixed_generation=bool(incremental_rows))
 
 
 def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top_n,
