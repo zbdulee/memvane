@@ -636,10 +636,10 @@ def recover(project,root):
     root=Path(root)
     previous=read_private_json(_path(root/NAME,private=True))
     project,root=_namespace(project,root,mode=previous.get('plan',{}).get('mode','default'))
-    from memvane.settings import settings_lock
+    from memvane.settings.api import settings_lock
     # Match activation's lock order: namespace first, then the shared project
     # writer lock. Keep both through verification and every restoration write.
-    with _locked(root), settings_lock.locked(project):
+    with _locked(root), settings_lock(project):
         journal=read_private_json(_path(root/NAME,private=True))
         if journal.get('schema')!=SCHEMA or journal.get('plan',{}).get('projectRoot')!=str(project) or journal['plan'].get('namespaceRoot')!=str(root):
             raise ValueError('setup_recovery_invalid')

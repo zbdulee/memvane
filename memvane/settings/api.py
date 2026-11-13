@@ -1,6 +1,7 @@
 """Public project settings operations."""
-from __future__ import annotations
+from __future__ import annotations as _annotations
 
+from contextlib import contextmanager as _contextmanager
 
 
 def diagnostic_enabled(*args, **kwargs):
@@ -164,3 +165,10 @@ def is_minimal_settings(*args, **kwargs):
 def compile_active(*args, **kwargs):
     from memvane.settings.config import compile_active as implementation
     return implementation(*args, **kwargs)
+
+
+@_contextmanager
+def settings_lock(root, *, folder=None):
+    from memvane.settings.settings_lock import locked
+    with locked(root, folder=folder) as directory:
+        yield directory
