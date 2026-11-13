@@ -974,6 +974,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/sync/intent_ack.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/sync/product_sync_worker.py": {
       "context": "sync",
       "layer": "adapter",
@@ -1200,6 +1205,11 @@
       "pinned": false
     },
     "memvane/wiki/verify/__init__.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/intent_ack.py": {
       "context": "wiki/verify",
       "layer": "adapter",
       "pinned": false
