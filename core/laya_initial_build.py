@@ -242,6 +242,80 @@ def record_path(state_root):
     return Path(state_root) / RECORD
 
 
+V1_BUILD_SCHEMA = 'memvane-initial-build-v1'
+V1_BUILD_FILE = 'build.json'
+V1_BUILD_IDENTITY = frozenset(('projectRoot', 'stateRoot', 'installId', 'scopeId',
+                               'storePath', 'storeNode', 'storeIncarnation', 'journalPath',
+                               'routeSha256', 'attestationSha256'))
+
+
+def read_v1(state_root):
+    """Read a v1 build record without opening its store."""
+    state = _private_dir(state_root)
+    record = _read_json(state / V1_BUILD_FILE)
+    if record is None:
+        return None
+    if (not isinstance(record, dict)
+            or set(record) != {'schema', 'epoch', 'phase', 'identity', 'reason', 'updatedNs'}
+            or record['schema'] != V1_BUILD_SCHEMA
+            or type(record['epoch']) is not int or record['epoch'] < 1
+            or record['phase'] not in ('registered', 'building', 'ready')
+            or (record['reason'] is not None and
+                (type(record['reason']) is not str or len(record['reason']) > 256))
+            or type(record['updatedNs']) is not int or record['updatedNs'] < 1):
+        _fail('initial_build_invalid')
+    identity = record['identity']
+    if (not isinstance(identity, dict) or set(identity) != V1_BUILD_IDENTITY
+            or identity['stateRoot'] != str(state)
+            or identity['storePath'] != str(state / 'store.sqlite')
+            or identity['journalPath'] != str(state / 'journal.sqlite')
+            or any(type(identity[k]) is not str or not re.fullmatch(r'[0-9a-f]{32}', identity[k])
+                   for k in ('installId', 'scopeId', 'storeIncarnation'))
+            or any(type(identity[k]) is not str or not re.fullmatch(r'[0-9a-f]{64}', identity[k])
+                   for k in ('routeSha256', 'attestationSha256'))
+            or type(identity['projectRoot']) is not str or not Path(identity['projectRoot']).is_absolute()
+            or not isinstance(identity['storeNode'], list) or len(identity['storeNode']) != 2
+            or any(type(n) is not int or n < 0 for n in identity['storeNode'])):
+        _fail('initial_build_identity_invalid')
+    return record
+
+
+def create_v1(identity):
+    """Register a proved v1 build; the caller holds the existing build owner."""
+    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from laya_install_journal import _route, inspect_journal
+    if not isinstance(identity, dict) or set(identity) != V1_BUILD_IDENTITY:
+        _fail('initial_build_identity_invalid')
+    state = _private_dir(identity['stateRoot'])
+    require_cached_plugin_for_live_write(state)
+    if identity['journalPath'] != str(state / 'journal.sqlite'):
+        _fail('initial_build_identity_invalid')
+    existing = read_v1(state)
+    if existing is not None:
+        if existing['identity'] != identity:
+            _fail('initial_build_identity_changed')
+        return existing
+    journal = inspect_journal(state / 'journal.sqlite')
+    route_record = _read_json(state / 'route.json')
+    if route_record is None:
+        _fail('initial_build_route_missing')
+    route, digest = _route(_canon(route_record), state / 'journal.sqlite')
+    if (journal['state'] != 'prepared' or digest != identity['routeSha256']
+            or journal['routeSha256'] != digest
+            or journal['attestationSha256'] != identity['attestationSha256']
+            or any(journal[k] != identity[k] for k in
+                   ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))
+            or journal['storeInode'] != identity['storeNode'][1]
+            or any(route[k] != identity[k] for k in
+                   ('projectRoot', 'stateRoot', 'installId', 'scopeId', 'storePath',
+                    'storeNode', 'storeIncarnation'))):
+        _fail('initial_build_identity_changed')
+    record = {'schema': V1_BUILD_SCHEMA, 'epoch': 1, 'phase': 'registered',
+              'identity': identity, 'reason': None, 'updatedNs': time.time_ns()}
+    _write_json(state / V1_BUILD_FILE, record, replace=False)
+    return read_v1(state)
+
+
 def read(state_root):
     """The validated record, or None when no build was registered here."""
     record = _read_json(record_path(_private_dir(state_root)))
