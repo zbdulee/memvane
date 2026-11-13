@@ -27,3 +27,6 @@ class CheckoutUnavailable(RuntimeError):
 
 MAX_MEMBERS = 20000
 STAGE_ITEM_FIELDS = ('path', 'action', 'input_sha', 'blob_sha', 'trust_digest', 'metadata_json')
+
+
+MAX_FILES = 64

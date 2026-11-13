@@ -18,7 +18,7 @@ sys.dont_write_bytecode = True
 
 
 def learning_plan(args):
-    from memvane.learning.context_learning import learning_profile as profile
+    from memvane.learning.api import _profile as profile
     if args.learning_choice=='preserve' or not args.learning_namespace:
         raise ValueError('explicit_learning_profile_and_namespace_required')
     root=Path(args.learning_namespace)
@@ -37,7 +37,7 @@ def learning_plan(args):
 
 
 def select_learning(args):
-    from memvane.learning.context_learning import learning_profile as profile
+    from memvane.learning.api import _profile as profile
     if not args.accepted_learning_profile:raise ValueError('profile_acceptance_required')
     return profile.activate(Path(args.project),Path(args.learning_namespace),
         accepted_sha256=args.accepted_learning_profile,choice=args.learning_choice,

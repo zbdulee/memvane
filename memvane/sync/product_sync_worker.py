@@ -1482,7 +1482,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     (``SCHEMA3_PROVIDER_DEFECTS``); the wake ends ``blocked``.
     """
     from memvane.store import api as v
-    from memvane.store.view.view_fill import MAX_FILES
+    from memvane.store.types import MAX_FILES
     spec = vectors.get('spec')
     if spec is None:
         return {'state': 'off'}

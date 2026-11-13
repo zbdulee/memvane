@@ -18,11 +18,11 @@ from memvane.store.blob import blob_values as v
 from memvane.store.blob.blob_values import BlobStoreError
 from memvane.store.blob.blob_fill import ContentFiller
 from memvane.store.blob.blob_store import _insert
+from memvane.store.types import MAX_FILES
 from memvane.store.view import fill_schema as fill_schema
 from memvane.store.view import view_values as vals
 
 MAX_DEADLINE = 300
-MAX_FILES = 64
 MAX_BYTES = 64 * 1024 * 1024
 JOB_SCHEMA = 'memvane-fill-job-v1'
 BUSY = 'content_claim_busy'

@@ -1,5 +1,14 @@
 """Public learning operations."""
 from __future__ import annotations
+from importlib import import_module as _import_module
+
+
+class _ProfileOperations:
+    def __getattr__(self, name):
+        return getattr(_import_module('memvane.learning.context_learning.learning_profile'), name)
+
+
+_profile = _ProfileOperations()
 
 
 def resource_report(*args, **kwargs):
