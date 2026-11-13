@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 필수 문서
 
+@docs/dev/contexts/working-rules.md
+
 작업 시작 시 [공통 개발 규칙](docs/dev/contexts/working-rules.md)을 반드시 읽는다. 해당 작업에 적용되는 아래 context 문서도 수정 전에 직접 읽는다. 링크 자체가 문서를 자동으로 불러오지는 않는다.
 
 | 작업 경로·주제 | 읽을 문서 |
