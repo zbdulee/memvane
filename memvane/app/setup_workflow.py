@@ -390,6 +390,7 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
         plan = plan_fresh_wiki_origin(project_root)
         if plan['proposalSha256'] != expected_proposal_sha256:
             _fail('reviewed_origin_plan_changed')
+        _require_raw_scan_within_bounds(plan)
         review = review_local_provider(
             plugin_root=plugin_root, state_root=state,
             model_path=model_path, dimension=dimension)
@@ -400,6 +401,27 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
             state=state, journal=journal,
             install_id=install_id)
         return result
+
+
+def _require_raw_scan_within_bounds(plan):
+    """Refuse before any build a raw tree the sync's bounded raw scan cannot read.
+
+    The initial build and every later sync scan the raw roots with the same
+    file and byte bounds; over them a generation names no sources and
+    finalize could never prove the raw snapshot.
+    """
+    from memvane.kernel.errors import IndexContractError
+    from memvane.wiki.intake.api import scan_collections
+    from memvane.wiki.intake.types import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
+    roots = {item['name']: item['sourceRoot'] for item in plan['collections']
+             if item['role'] == 'raw'}
+    try:
+        scan_collections(roots, plan['scopeId'], None, max_files=RAW_SCAN_MAX_FILES,
+                         max_bytes=RAW_SCAN_MAX_BYTES)
+    except (IndexContractError, ValueError, OSError) as exc:
+        detail = str(exc.__cause__ or exc)
+        bounded = detail in ('too many files', 'too many entries', 'too deep') or detail.startswith('oversize:')
+        raise InstallBlocked('raw_scan_limit_exceeded' if bounded else 'raw_scan_unavailable') from exc
 
 
 def _request_build_wake(project_root):
@@ -454,9 +476,34 @@ def _create_v1_store(project_root, state_root, scope_id):
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
             or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
         _fail('initial_store_unsafe')
-    return {'storePath': str(path), 'storeNode': [info.st_dev, info.st_ino],
+    return {'storePath': str(path), 'storeNode': _live_node(path),
             'storeIncarnation': incarnation, 'repository': repository,
             'worktree': worktree, 'settingsPolicyDigest': policy}
+def _live_node(path):
+    info = Path(path).lstat()
+    return [info.st_dev, info.st_ino]
+
+
+def _keep_recorded_devices(route, path):
+    """Reuse a staged route's ``[st_dev, st_ino]`` where the inode still matches.
+
+    APFS may renumber devices at boot, so a rerun compares the recorded nodes
+    by inode and keeps the recorded bytes; any other difference still refuses.
+    """
+    from memvane.kernel.persistent_identity import persistent_node_equal
+    if not os.path.lexists(path):
+        return
+    try:
+        staged = json.loads(_read_private(path, 8192).decode('utf-8'), object_pairs_hook=_unique)
+    except (UnicodeError, ValueError):
+        return  # A torn route keeps refusing in ``_write_or_verify_private``.
+    if not isinstance(staged, dict):
+        return
+    for field in ('stateNode', 'storeNode'):
+        if persistent_node_equal(staged.get(field), route[field]):
+            route[field] = list(staged[field])
+
+
 def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     """Stage a route bound to a validated local store and project settings."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
@@ -472,14 +519,14 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     settings = project_dir.settings_path(project)
     if settings is None:
         _fail('origin_settings_unavailable')
-    state_info = state.lstat()
     route = {'schema': SCHEMA_V4, 'status': 'active', 'projectRoot': str(project),
              'settingsSha256': _settings_identity(plan), 'stateRoot': str(state),
-             'stateNode': [state_info.st_dev, state_info.st_ino],
+             'stateNode': _live_node(state),
              'storePath': store['storePath'], 'storeNode': store['storeNode'],
              'storeIncarnation': store['storeIncarnation'], 'installId': install_id,
              'scopeId': plan['scopeId'], 'stateFormat': 1,
              'collections': plan['collections'], 'vectorProfile': vector_profile}
+    _keep_recorded_devices(route, state / 'route.json')
     raw = json.dumps(route, sort_keys=True, ensure_ascii=False,
                      separators=(',', ':')).encode('utf-8')
     _route(raw, state / 'journal.sqlite')
@@ -506,6 +553,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
     else:
         row = create_v1_journal(journal, route_raw, staged['attestationSha256'])
     route_sha = hashlib.sha256(route_raw).hexdigest()
+    store = {**store, 'storeNode': json.loads(route_raw.decode('utf-8'))['storeNode']}
     if (row['state'] != 'prepared' or row['routeSha256'] != route_sha
             or row['attestationSha256'] != staged['attestationSha256']
             or row['installId'] != install_id or row['scopeId'] != plan['scopeId']
@@ -547,7 +595,12 @@ def initial_build_status(state_root):
 
 
 def request_initial_build_rescan(state_root):
-    """Request another bounded build pass through the existing sync wake."""
+    """Request another bounded build pass through the existing sync wake.
+
+    Only a build that was never selected rescans: once the project pointers
+    or a selected journal exist, refreshing the index belongs to the sync
+    owner, and a ``building`` record would fail every selected proof.
+    """
     from memvane.install.api import _initial_build as initial_build
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
@@ -556,9 +609,23 @@ def request_initial_build_rescan(state_root):
         record = initial_build.read_v1(state)
         if record is None:
             _fail('initial_build_missing')
+        _require_unselected(record['identity'])
         record = initial_build.advance_v1(record, phase='building')
     return {'status': 'rescan_requested', 'phase': record['phase'],
             'wake': _request_build_wake(record['identity']['projectRoot'])}
+
+
+def _project_pointers_present(project_root):
+    return any(os.path.lexists(project_dir.runtime_file(Path(project_root), name))
+               for name in ('route.json', 'selection.json'))
+
+
+def _require_unselected(identity):
+    """Refuse once activation began: journal past ``prepared`` or a project pointer."""
+    row = inspect_journal(identity['journalPath'])
+    if row['state'] != 'prepared' or _project_pointers_present(identity['projectRoot']):
+        _fail('initial_build_already_selected')
+    return row
 
 
 def finalize_initial_build(*args, **kwargs):

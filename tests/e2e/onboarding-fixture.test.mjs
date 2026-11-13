@@ -13,6 +13,15 @@ const SCRIPT = join(ROOT, 'tests', 'e2e', 'onboarding_fixture.py');
 const METHODS = [
   'test_project_without_cards_onboards_and_recall_adds_no_card',
   'test_project_with_thirty_cards_recalls_the_matching_card',
+  'test_hot_store_journal_rolls_back_at_classification',
+  'test_abandon_releases_unselected_installs_for_a_new_prepare',
+  'test_source_change_between_finalize_and_activate_reseals',
+  'test_rescan_after_selection_is_refused',
+  'test_provider_change_releases_a_written_selection',
+  'test_provider_change_release_reports_released',
+  'test_reruns_compare_recorded_nodes_by_inode',
+  'test_recall_in_interrupted_windows_exits_zero_without_context',
+  'test_prepare_refuses_a_raw_tree_over_the_scan_bounds',
 ];
 
 for (const method of METHODS) {

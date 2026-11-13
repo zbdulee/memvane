@@ -104,14 +104,17 @@ def finalize_initial_build(*, project_root, state_root):
                         for path in paths:
                             raw, _node, _root = _regular(tree['wiki_root'], path, store_types.MAX_BODY)
                             current[path] = values.hash_bytes(raw)
-                        if current != {p: member['blob_sha'] for p, member in baseline['old'].items()}:
-                            _fail('initial_build_out_of_date')
+                        stale = current != {p: member['blob_sha'] for p, member in baseline['old'].items()}
                         scan = {}
                         observed = sync.schema3_sources(decision, handle, time.monotonic() + 45,
                                                          raw_scan=scan)
-                        if 'snapshot' not in scan or not sync.schema3_head_same(
-                                store, head, baseline, observed, handle):
-                            _fail('initial_build_out_of_date')
+                        if 'snapshot' not in scan:
+                            _fail('raw_scan_unavailable')
+                        stale = stale or not sync.schema3_head_same(store, head, baseline, observed, handle)
+                        if stale:
+                            # Sources moved after the published head: one more
+                            # build pass, then this finalize reseals its floor.
+                            return _rescan_stale_build(record, project)
                         if store.head(handle) != head:
                             _fail('initial_build_head_changed')
                         store_evidence = reader._schema3_store(state, project,
@@ -135,27 +138,7 @@ def finalize_initial_build(*, project_root, state_root):
                         store.release(pin)
                 finally:
                     store.close()
-                path, db = journal._open(identity['journalPath'], write=True)
-                with closing(db):
-                    db.execute('BEGIN IMMEDIATE')
-                    try:
-                        current_row = journal._inspect_v1_row(db)
-                        if current_row != {k: v for k, v in row.items() if k != 'journalPath'}:
-                            _fail('initial_build_journal_changed')
-                        if current_row['reader'] is None:
-                            db.execute('INSERT INTO reader(id,record) VALUES(1,?)', (journal._canon(sealed),))
-                            changed = db.execute("UPDATE selection SET epoch=epoch+1,vector_recipe=? "
-                                "WHERE id=1 AND epoch=? AND state='prepared'",
-                                (spec['recipe_id'], row['epoch'])).rowcount
-                            if changed != 1:
-                                _fail('initial_build_journal_changed')
-                        elif current_row['reader'] != sealed:
-                            _fail('initial_build_reader_changed')
-                        journal._inspect_v1_row(db)
-                        db.commit()
-                    except BaseException:
-                        db.rollback()
-                        raise
+                path = _seal_reader(journal, reader, identity['journalPath'], row, sealed, spec)
                 ledger_path = state / 'ledger.json'
                 ledger = {'schema': 'memvane-install-ledger-v1', 'epoch': 1,
                           'phase': 'prepared', 'identity': identity}
@@ -167,6 +150,51 @@ def finalize_initial_build(*, project_root, state_root):
                 return {'status': 'initial_build_finalized', 'phase': 'prepared',
                         'journalPath': str(path), 'routeFile': str(state / 'route.json'),
                         'generation': head['gen_id']}
+
+
+def _seal_reader(journal, reader, journal_path, row, sealed, spec):
+    """Insert or reseal the unselected reader record in one journal CAS."""
+    from contextlib import closing
+    path, db = journal._open(journal_path, write=True)
+    with closing(db):
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            current_row = journal._inspect_v1_row(db)
+            if current_row != {k: v for k, v in row.items() if k != 'journalPath'}:
+                _fail('initial_build_journal_changed')
+            stored = current_row['reader']
+            if stored is not None:
+                # Record nodes compare by inode: a reboot may renumber st_dev.
+                sealed = reader._preserve_node_devices(stored, sealed)
+            if stored != sealed:
+                # Unselected (the CAS below): a newer ready head reseals the floor.
+                if stored is None:
+                    db.execute('INSERT INTO reader(id,record) VALUES(1,?)', (journal._canon(sealed),))
+                elif db.execute('UPDATE reader SET record=? WHERE id=1',
+                                (journal._canon(sealed),)).rowcount != 1:
+                    _fail('initial_build_journal_changed')
+                changed = db.execute("UPDATE selection SET epoch=epoch+1,vector_recipe=? "
+                    "WHERE id=1 AND epoch=? AND state='prepared'",
+                    (spec['recipe_id'], row['epoch'])).rowcount
+                if changed != 1:
+                    _fail('initial_build_journal_changed')
+            journal._inspect_v1_row(db)
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+    return path
+
+
+def _rescan_stale_build(record, project):
+    """Move a ready but outdated unselected build back to ``building``; one wake."""
+    from memvane.install.api import _initial_build as build
+    if _workflow._project_pointers_present(project):
+        _fail('initial_build_already_selected')
+    record = build.advance_v1(record, phase='building', reason='initial_build_out_of_date')
+    return {'status': 'initial_build_pending', 'phase': record['phase'],
+            'reason': 'initial_build_out_of_date', 'changesApplied': 1,
+            'wake': _request_build_wake(str(project))}
 
 
 def activate_origin_selection(project_root, journal_path, route_bytes):
@@ -243,7 +271,10 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                     if 'snapshot' not in scan or not sync.schema3_head_same(
                             store, head, baseline, observed, handle):
                         _fail('initial_build_out_of_date')
-                    discovery.seed_source_snapshot(decision, scan['snapshot'], generation=head['gen_id'])
+                    # Unselected and no pointer yet: an older inert snapshot gives way.
+                    inert = row['state'] == 'prepared' and not _workflow._project_pointers_present(project)
+                    discovery.seed_source_snapshot(decision, scan['snapshot'], generation=head['gen_id'],
+                                                   replace_inert=inert)
                     if store.head(handle) != head:
                         _fail('initial_build_head_changed')
                 marker = {'schema': SELECTION_SCHEMA_V1, 'projectRoot': str(project),
@@ -287,18 +318,53 @@ def recover_origin_selection(project_root, journal_path, route_bytes):
     """Finish the same partially published or withdrawn v1 selection."""
     _read_json = _ledger._read_json
     state = Path(journal_path).parent
-    ledger = _read_json(state / 'ledger.json')
-    if ledger.get('phase') in ('restoring', 'restored'):
+    ledger_path = state / 'ledger.json'
+    ledger = _read_json(ledger_path) if os.path.lexists(ledger_path) else None
+    if not isinstance(ledger, dict) or ledger.get('phase') in ('restoring', 'restored'):
         return _restore_v1_locked(_checked_project(project_root), state)
     return activate_origin_selection(project_root, journal_path, route_bytes)
 
 
 def restore_origin_selection(*, project_root, state_root):
-    """Withdraw the selected route only before its first selected write."""
+    """Withdraw the v1 selection, or abandon an install that was never selected.
+
+    Before activation this abandons the install: the build pointer and build
+    record go, so a new prepare can start. After activation it withdraws the
+    project pointers before the first selected write; after that write it
+    releases the selection only when the attested provider no longer matches
+    this host (re-onboarding is then the supported path). The state root,
+    store, journal and ledger stay in place.
+    """
     project = _checked_project(project_root)
     state = _private_parent(state_root)
     with _install_lock(state):
         return _restore_v1_locked(project, state)
+
+
+def _provider_changed(journal, path, row):
+    """True when this host's provider, model or runtime differs from the attestation."""
+    from memvane.journal.types import JournalEvidenceError
+    attestation, digest = journal._attestation(path)
+    if digest != row['attestationSha256']:
+        _fail('worker_attestation_changed')
+    try:
+        _manifest, available = journal._v1_provider_manifest(
+            attestation, row['vectorProfile'], allow_local_unavailable=True)
+    except JournalEvidenceError as exc:
+        if str(exc) != 'provider_identity_changed':
+            raise
+        return True
+    return not available
+
+
+def _restored_without_build(journal, project, state):
+    """A rerun after the build record went: the journal already says restored."""
+    row = journal.inspect_journal(state / 'journal.sqlite')
+    if row['projectRoot'] != str(project):
+        _fail('initial_build_project_mismatch')
+    if row['state'] != 'restored':
+        _fail('initial_build_missing')
+    return {'status': 'restored', 'changesApplied': 0}
 
 
 def _restore_v1_locked(project, state):
@@ -314,16 +380,21 @@ def _restore_v1_locked(project, state):
         if not owned:
             _fail('initial_build_busy')
         record = build.read_v1(state)
-        if record is None or record['identity']['projectRoot'] != str(project):
+        if record is None:
+            return _restored_without_build(journal, project, state)
+        if record['identity']['projectRoot'] != str(project):
             _fail('initial_build_project_mismatch')
         identity = record['identity']
         ledger_path = state / 'ledger.json'
-        ledger = _read_json(ledger_path)
-        if (not isinstance(ledger, dict) or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
+        # Finalize writes the ledger; an install abandoned before it has none.
+        ledger = _read_json(ledger_path) if os.path.lexists(ledger_path) else None
+        if ledger is not None and (
+                not isinstance(ledger, dict) or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
                 or ledger['schema'] != 'memvane-install-ledger-v1' or ledger['identity'] != identity
                 or type(ledger['epoch']) is not int or ledger['epoch'] < 1
                 or ledger['phase'] not in ('prepared', 'selected', 'restoring', 'restored')):
             _fail('initial_build_ledger_changed')
+        phase = None if ledger is None else ledger['phase']
         path = state / 'journal.sqlite'
         route_raw = _read_private(state / 'route.json', 8192)
         if hashlib.sha256(route_raw).hexdigest() != identity['routeSha256']:
@@ -338,18 +409,20 @@ def _restore_v1_locked(project, state):
                         or any(row[k] != identity[k] for k in
                                ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))):
                     _fail('initial_build_journal_changed')
-                if row['newWriteSeen']:
-                    _fail('rollback_forward_only')
-                project_paths = [project_dir.runtime_file(project, name)
-                                 for name in ('route.json', 'selection.json')]
-                present = any(item.exists() or item.is_symlink() for item in project_paths)
-                if ledger['phase'] == 'prepared' and row['state'] == 'prepared' and not present:
-                    return {'status': 'not_selected', 'changesApplied': 0}
-                if ((ledger['phase'] == 'selected' and row['state'] != 'selected')
-                        or (ledger['phase'] == 'restored' and row['state'] != 'restored')
-                        or (ledger['phase'] == 'restoring' and row['state'] not in ('prepared', 'selected', 'restored'))):
+                if ((phase is None and row['state'] == 'selected')
+                        or (phase == 'prepared' and row['state'] == 'restored')
+                        or (phase == 'selected' and row['state'] != 'selected')
+                        or (phase == 'restored' and row['state'] != 'restored')):
                     _fail('restore_state_invalid')
-                if ledger['phase'] in ('prepared', 'selected'):
+                released = False
+                if (row['newWriteSeen'] and row['state'] != 'restored'
+                        and phase not in ('restoring', 'restored')):
+                    # After the first selected write only a provider that no
+                    # longer matches releases the selection (re-onboard).
+                    if not _provider_changed(journal, path, row):
+                        _fail('rollback_forward_only')
+                    released = True
+                if phase in ('prepared', 'selected'):
                     ledger = {**ledger, 'phase': 'restoring', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)
                 if row['state'] in ('prepared', 'selected'):
@@ -361,8 +434,8 @@ def _restore_v1_locked(project, state):
                             if current != {k: v for k, v in row.items() if k != 'journalPath'}:
                                 _fail('initial_build_journal_changed')
                             if db.execute("UPDATE selection SET state='restored',epoch=epoch+1 "
-                                          "WHERE id=1 AND state=? AND new_write_seen=0 AND epoch=?",
-                                          (row['state'], row['epoch'])).rowcount != 1:
+                                          "WHERE id=1 AND state=? AND new_write_seen=? AND epoch=?",
+                                          (row['state'], int(row['newWriteSeen']), row['epoch'])).rowcount != 1:
                                 _fail('restore_state_invalid')
                             journal._inspect_v1_row(db)
                             db.commit()
@@ -383,7 +456,10 @@ def _restore_v1_locked(project, state):
                     target.unlink()
                     _fsync_dir(target.parent)
                 build.retire_project_pointer(identity)
-                if ledger['phase'] != 'restored':
+                if ledger is not None and ledger['phase'] != 'restored':
                     ledger = {**ledger, 'phase': 'restored', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)
-    return {'status': 'restored', 'changesApplied': 1}
+                # Last: a rerun without the record reads the restored journal.
+                os.unlink(state / build.V1_BUILD_FILE)
+                _fsync_dir(state)
+    return {'status': 'released' if released else 'restored', 'changesApplied': 1}

@@ -500,12 +500,15 @@ def _raw_snapshot(decision, raw):
     return {file.path: file.sha256 for file in scan.files if file.eligible}
 
 
-def seed_source_snapshot(decision, baseline, *, generation):
+def seed_source_snapshot(decision, baseline, *, generation, replace_inert=False):
     """Pre-activation baseline for the published initial view.
 
     Cutover calls this before publishing its route and rechecks source proof
-    afterward. A failed activation retains the inert snapshot; another
-    activation with changed source must re-plan instead of silently reseeding.
+    afterward. A failed activation retains the inert snapshot. Another
+    activation with changed source refuses as ``baseline_changed`` unless the
+    caller proves the snapshot is still inert (``replace_inert``: no project
+    pointer published, journal not selected) and its new baseline was proved
+    against a newer published head; then the inert snapshot is replaced.
     """
     state_path, _grants, lock = _paths(decision)
     _scope, _inc, _queue, _roots, raw = _binding(decision)
@@ -523,9 +526,10 @@ def seed_source_snapshot(decision, baseline, *, generation):
         existing = _read(state_path)
         if existing is not None:
             _validate_state(existing, decision)
-            if existing['rawSnapshot'] != baseline:
+            if existing['rawSnapshot'] == baseline:
+                return existing['rawSnapshot']
+            if not replace_inert:
                 raise DiscoveryBlocked('baseline_changed')
-            return existing['rawSnapshot']
         _write(state_path, _state_doc(decision, generation, baseline, {}))
         return baseline
 

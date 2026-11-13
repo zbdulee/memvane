@@ -31,6 +31,8 @@ Onboarding is a reviewed setup operation for the requested project. Confirm the 
 
 Tell the user that the per-machine pointers `.memvane/route.json` and `.memvane/selection.json` should be ignored by Git. Suggest adding those two lines to the project's `.gitignore`; do not edit that file for them.
 
+An interrupted onboarding step converges when the same step runs again. A raw tree over the sync scan bounds (4,096 files or 64 MB) refuses at prepare as `raw_scan_limit_exceeded`; report it before any build starts. When activation refuses as `initial_build_out_of_date` or `initial_build_head_changed`, run finalize again: it requests one more build pass (`initial_build_pending`) and, once the build is ready again, reseals the install so activation can proceed. Restore before activation abandons the prepared install so a new prepare with a new install id can start; after activation it withdraws the selection before the first selected write, and after that write only when the embedding provider, model or runtime changed (`released`), which is the path to re-onboard. Restore never deletes the old install directory or its database. A build rescan is for an install that was never selected; a selected project refreshes through `update`.
+
 Each linked git worktree reads its own published view of its wiki cards. The main checkout's sync publishes these views. Until a view is published, recall adds no context and reports `view_preparing`.
 
 ## Explicit local learning profile

@@ -312,11 +312,41 @@ def _candidate_paths(cwd: Path):
         yield directory, path.parent, path
 
 
+_READONLY_ROLLBACK = 776
+
+
+def _store_identity(store: Path):
+    """``(incarnation, scope_id)`` of the store, read with ``query_only``.
+
+    The read opens ``mode=ro`` (``mode=rw`` on Apple's libsqlite3). A writer killed mid-commit leaves a hot
+    rollback journal that a ``mode=ro`` connection refuses
+    (``SQLITE_READONLY_ROLLBACK``); only then the read reopens ``mode=rw`` so
+    SQLite rolls that journal back, the same rollback any writer's open would
+    perform. ``query_only`` stays on, so that rollback is the only write.
+    """
+    import sqlite3
+    from contextlib import closing
+    from memvane.kernel.errors import _query_only_uri
+    query = 'SELECT incarnation,scope_id FROM store_meta WHERE singleton=1'
+    try:
+        # rw + query_only on Apple's libsqlite3 (cannot read a WAL left without -wal/-shm in mode=ro)
+        with closing(sqlite3.connect(_query_only_uri(store), uri=True, timeout=2)) as db:
+            db.execute('PRAGMA query_only=ON')
+            return db.execute(query).fetchone()
+    except sqlite3.Error as exc:
+        code = getattr(exc, 'sqlite_errorcode', None)  # absent before Python 3.11
+        if (code not in (None, _READONLY_ROLLBACK)
+                or not os.path.lexists(str(store) + '-journal')):
+            raise
+    with closing(sqlite3.connect(store.as_uri() + '?mode=rw', uri=True, timeout=2)) as db:
+        db.execute('PRAGMA query_only=ON')
+        return db.execute(query).fetchone()
+
+
 def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True) -> dict:
     """Classify a local single-store route without granting runtime authority."""
     from memvane.kernel import memvane_paths
     import sqlite3
-    from contextlib import closing
     from memvane.kernel.memvane_version import same_major
 
     if (set(record) != FIELDS_V4 or record['status'] != 'active'
@@ -356,9 +386,7 @@ def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True
     matching_major = same_major(record['stateFormat'])
     if matching_major and inspect_store:
         try:
-            with closing(sqlite3.connect(store.as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
-                db.execute('PRAGMA query_only=ON')
-                identity = db.execute('SELECT incarnation,scope_id FROM store_meta WHERE singleton=1').fetchone()
+            identity = _store_identity(store)
         except sqlite3.Error as exc:
             raise ValueError('route_store_unavailable') from exc
     for path, field in ((state, 'stateNode'), (store, 'storeNode')):

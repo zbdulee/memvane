@@ -976,6 +976,10 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                 return _serve_selected_once(action, host, decision, payload)
             return _serve_selected_recall(action, host, decision, payload)
         except JournalEvidenceError as exc:
+            if str(exc) == 'selection_transition_pending' and action == 'recall':
+                # An interrupted activate/restore: no context, exit 0.
+                _trace_final('selection_transition_pending')
+                return host_payload(host, '')
             if str(exc) != 'provider_identity_changed':
                 raise
             return _provider_mismatch_response(action, host)

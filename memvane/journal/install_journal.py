@@ -616,6 +616,12 @@ def _executing_root():
     return Path(__file__).resolve().parents[2]
 
 
+# (ledger phase, journal state) pairs an interrupted activate or restore leaves.
+_SELECTION_TRANSITIONS = frozenset((
+    ('prepared', 'prepared'), ('prepared', 'selected'), ('restoring', 'prepared'),
+    ('restoring', 'selected'), ('restoring', 'restored'), ('restored', 'restored')))
+
+
 def _verify_v1_selected(decision):
     """Reprove the selected v1 journal, route, ledger and provider."""
     from memvane.settings import api as project_dir
@@ -640,6 +646,12 @@ def _verify_v1_selected(decision):
         _fail('initial_build_missing')
     identity = build['identity']
     ledger = _read_json(path.parent / 'ledger.json')
+    if (isinstance(ledger, dict) and ledger.get('identity') == identity
+            and digest == row['routeSha256'] == identity['routeSha256']
+            and (ledger.get('phase'), row['state']) in _SELECTION_TRANSITIONS):
+        # An activation or restore stopped between its durable steps; its
+        # rerun converges. Recall answers without context meanwhile.
+        _fail('selection_transition_pending')
     if (not isinstance(ledger, dict)
             or set(ledger) != {'schema', 'epoch', 'phase', 'identity'}
             or ledger['schema'] != 'memvane-install-ledger-v1'

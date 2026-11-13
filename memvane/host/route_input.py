@@ -55,5 +55,10 @@ def main(argv: list[str] | None = None) -> int:
         decision = select_hook_route(args[1], args[2], args[3])
     else:
         return 2
+    if decision["state"] == "blocked" and decision.get("recallQuiet") is True and args[1] == "recall":
+        # An onboarding or activation step stopped midway: the hook dispatcher
+        # treats the recall like an unselected project, exit 0 without context.
+        print("legacy")
+        return 0
     print(decision["state"])
     return 0

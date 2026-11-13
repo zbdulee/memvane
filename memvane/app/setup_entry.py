@@ -178,7 +178,8 @@ def main(argv=None):
                     result = product.finalize_initial_build(
                         project_root=args.project, state_root=state)
                 elif args.action == 'restore-index-origin':
-                    # Withdraws the route before its first selected write; deletes no DB.
+                    # Abandons an unselected install, withdraws a selection before its
+                    # first selected write, or releases one whose provider changed; deletes no DB.
                     if not args.approve_index_origin_restore:
                         raise ValueError('index_origin_restore_approval_required')
                     result = product.restore_origin_selection(

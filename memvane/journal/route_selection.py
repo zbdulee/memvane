@@ -45,9 +45,14 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
 
 
 def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
-    """Recognize only an installer-owned, inactive fresh-wiki build."""
+    """Recognize only an installer-owned, inactive fresh-wiki build.
+
+    A registered build whose preview proof fails is ``blocked`` with
+    ``recallQuiet``: before its first head recall adds no context and exits 0.
+    """
     if action != 'recall':
         return None
+    build = None
     try:
         found = config.find_project_config(str(current))
         if found.get('configFormat') != 'auto-context-dir':
@@ -65,11 +70,11 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
         identity = build['identity']
         if build.get('schema') == laya_initial_build.V1_BUILD_SCHEMA:
             if build['phase'] not in ('registered', 'building', 'ready'):
-                return _decision('blocked', 'initial_preview_build_unavailable')
+                return _quiet('initial_preview_build_unavailable')
             state = Path(identity['stateRoot'])
             raw = _read_regular(state / 'route.json', MAX_RECORD_BYTES)
             if hashlib.sha256(raw).hexdigest() != identity['routeSha256']:
-                return _decision('blocked', 'initial_preview_route_changed')
+                return _quiet('initial_preview_route_changed')
             route = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
             candidate = _classify_v4(root, project_dir.settings_path(root), route)
             if candidate['state'] != 'candidate':
@@ -77,11 +82,18 @@ def _preview_route(current: Path, requested: Path, action: str) -> dict | None:
             if any(candidate.get(key) != identity[key] for key in
                    ('projectRoot', 'stateRoot', 'storePath', 'storeIncarnation',
                     'scopeId', 'installId', 'journalPath')):
-                return _decision('blocked', 'initial_preview_route_mismatch')
+                return _quiet('initial_preview_route_mismatch')
             return {**candidate, 'state': 'preview', 'reason': 'initial_build_preview'}
-        return _decision('blocked', 'initial_preview_build_unavailable')
+        return _quiet('initial_preview_build_unavailable')
     except (OSError, RuntimeError, ValueError, TypeError, UnicodeError, KeyError):
+        if build is not None:
+            return _quiet('initial_preview_proof_unavailable')
         return _decision('blocked', 'initial_preview_proof_unavailable')
+
+
+def _quiet(reason: str) -> dict:
+    """Blocked for every caller; a recall hook exits 0 without context."""
+    return _decision('blocked', reason, recallQuiet=True)
 
 
 def select_route(cwd: str, *, action: str = "recall", linked: bool = True) -> dict:
@@ -226,7 +238,9 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
                         memvane_paths.install_root(marker_record['installId']).lstat()
                     except FileNotFoundError:
                         return _decision('legacy', 'foreign_install')
-                    raise ValueError('selection_route_missing')
+                    # Activate writes the marker first and restore removes it
+                    # last: an interrupted step whose rerun converges.
+                    return _quiet('selection_route_missing')
                 if len(records) != 1 or records[0][0] != marker_root:
                     raise ValueError('selection_marker_invalid')
                 route_bytes = _read_regular(records[0][2], MAX_RECORD_BYTES)
