@@ -181,51 +181,6 @@ def _readonly(path, state, *, recover=False):
         raise journal.JournalEvidenceError('reader_store_invalid') from exc
 
 
-def _selected_proof(state, project, executing_root):
-    import laya_fresh_wiki_origin as fresh
-    state = _state(state)
-    project = Path(project)
-    decision = journal.select_route(str(project), action='recall')
-    proof = journal.verify_selected_route(decision)
-    _need(proof.get('productRouteAllowed') is True
-          and proof['projectRoot'] == str(project) and proof['journalPath'] == str(state / _JOURNAL),
-          'reader_installer_unproved')
-    proof = {**proof, 'readerDecision': decision}
-    ledger = fresh._load(state / fresh.LEDGER)
-    info = journal.inspect_journal(state / _JOURNAL)
-    return state, project, decision, proof, ledger, info
-
-
-def _install_checks(state, project, decision, proof, ledger, info):
-    """Selection, ledger and build identity; no index store is opened."""
-    import laya_initial_build as build
-    _need(ledger['phase'] == 'active' and info['pending'] is None
-          and info['state'] in ('active', 'restored_old')
-          and ledger['attestationSha256'] == info['providerAttestationSha256']
-          and ledger['providerFileIdentitySha256'] == info['providerFileIdentitySha256']
-          and ledger['routeSha256'] == info['selectedRouteSha256']
-          and ledger['scope'] == proof['scopeId'] and ledger['candidateIncarnation'] == proof['dbIncarnation'],
-          'reader_selection_unproved')
-    build_record = build.read(state)
-    _need(build_record is not None, 'reader_build_missing')
-    identity = build_record['identity']
-    for k, expected in (('projectRoot', str(project)), ('stateRoot', str(state)),
-                        ('scopeId', proof['scopeId']), ('installId', proof['installId']),
-                        ('candidateDb', decision['dbPath']), ('dbIncarnation', proof['dbIncarnation']),
-                        ('vectorProfileId', proof['vectorProfile']['profileId']),
-                        ('catalogDb', ledger['catalogDb']), ('bindingStore', ledger['bindingStore'])):
-        _need(identity[k] == expected, 'reader_build_changed')
-    return identity
-
-
-def _attestation(state, ledger, sealed_attestation=None):
-    raw = (_read_private(state / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
-           if sealed_attestation is None else sealed_attestation)
-    _need(type(raw) is bytes, 'reader_attestation_changed')
-    _need(_sha(raw) == ledger['attestationSha256'], 'reader_attestation_changed')
-    return raw
-
-
 def _plain(value):
     return dict(value) if isinstance(value, (dict, MappingProxyType)) else value
 
@@ -277,31 +232,6 @@ def _schema3_store(state, project, proof, decision, db_path, worktree_id):
     return dict(db_path=str(path), db_node=node, incarnation=meta[0],
                 repository_digest=_repository_digest(meta[2]), worktree_id=worktree_id,
                 worktree_binding=tree[1], settings_policy_digest=meta[3])
-
-
-def _schema3_evidence(state, project, root, stored):
-    """Reprove installation identity and the schema3 store; no v6 store is opened.
-
-    CAS-time facts (head_floor and vector profile) are copied from the
-    stored record; the floor is checked against the live head at query/CAS.
-    """
-    state, project, decision, proof, ledger, info = _selected_proof(state, project, root)
-    return _schema3_record(state, project, decision, proof, ledger, info, stored)
-
-
-def _schema3_record(state, project, decision, proof, ledger, info, stored, *, sealed_attestation=None):
-    """Schema3 record after the caller proves the selection."""
-    _install_checks(state, project, decision, proof, ledger, info)
-    raw = _attestation(state, ledger, sealed_attestation)
-    store = _schema3_store(state, project, proof, decision, stored['db_path'], stored['worktree_id'])
-    record = dict(install_id=proof['installId'], project=str(project), project_node=_node(project),
-                  state=str(state), state_node=_node(state), scope=proof['scopeId'],
-                  profile=proof['vectorProfile']['profileId'], attestation_sha256=_sha(raw),
-                  settings=_sha(_raw(decision['recallSettings'])), roots=decision['collections'],
-                  store_format='schema3', capability=SCHEMA3_CAPABILITY, checkout_policy=SCHEMA3_POLICY,
-                  vector_profile=stored['vector_profile'], vector_recipe=stored['vector_recipe'],
-                  head_floor=_plain(stored['head_floor']), **store)
-    return _preserve_node_devices(stored, record), raw, proof
 
 
 @contextmanager
@@ -384,45 +314,13 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
         store.close()
 
 
-def _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof):
-    _preserve_node_devices(stored, current)
-    if 'legacy_sidecar_baseline' in stored:
-        current['legacy_sidecar_baseline'] = stored['legacy_sidecar_baseline']
-    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
-    current['creation_epoch'] = stored['creation_epoch']
-    _need(raw == attestation, 'reader_endpoint_changed')
-    packed = _raw(current)
-    _need(packed == _raw(stored) and _sha(attestation) == stored['attestation_sha256'] and
-          endpoint_id == _sha(b'memvane-reader-endpoint-v1\0' + packed), 'reader_endpoint_changed')
-    return packed
-
-
-def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
-    """Reissue a persisted reader after current full proof, without CAS authority."""
-    from laya_reader_lease import _require_reader_scope, _bind_reader_scope
-    scope = _require_reader_scope(stored.get('install_id'))
-    _need(isinstance(stored, dict) and type(stored.get('creation_epoch')) is int
-          and stored['creation_epoch'] >= 1 and stored.get('store_format') == 'schema3',
-          'reader_endpoint_invalid')
-    options = {}
-    current, raw, proof = _schema3_evidence(state, project, root, stored)
-    packed = _match_persisted(state, endpoint_id, stored, attestation, current, raw, proof)
-    token = object.__new__(VerifiedEndpoint)
-    object.__setattr__(token, 'endpoint_id', endpoint_id)
-    object.__setattr__(token, 'record', _freeze(current))
-    _issued[token] = (Path(state), Path(project), Path(root), options, packed, attestation)
-    _read_only.add(token)
-    _bind_reader_scope(token, scope)
-    return token
-
-
 def _revoke_reader(endpoint):
     _issued.pop(endpoint, None)
     _read_only.discard(endpoint)
     _v1_readers.discard(endpoint)
 
 
-def _v1_reader_evidence(state, project, saved):
+def _v1_reader_evidence(state, project, saved, *, allow_settings_change=False):
     """Reprove a selected v1 reader without opening a writable component."""
     from laya_ledger_common import _private_file
     decision = journal.select_route(str(project), action='recall')
@@ -435,7 +333,7 @@ def _v1_reader_evidence(state, project, saved):
           and saved['project'] == str(project) and saved['state'] == str(state)
           and saved['install_id'] == proof['installId'] and saved['scope'] == proof['scopeId']
           and saved['profile'] == proof['vectorProfile']['profileId']
-          and saved['settings'] == _sha(_raw(decision['recallSettings']))
+          and (allow_settings_change or saved['settings'] == _sha(_raw(decision['recallSettings'])))
           and saved['roots'] == decision['collections']
           and persistent_node_equal(saved['project_node'], _node(project))
           and persistent_node_equal(saved['state_node'], _node(state)),
@@ -470,14 +368,10 @@ def _recheck(endpoint):
     _check_reader_scope(endpoint)
     state, project, root, options, packed, raw = _issued[endpoint]
     saved = json.loads(packed)
-    if endpoint in _v1_readers:
-        current_raw, proof = _v1_reader_evidence(state, project, saved)
-        _need(current_raw == raw and endpoint.endpoint_id ==
-              _sha(b'memvane-reader-endpoint-v1\0' + packed), 'reader_endpoint_changed')
-        return saved, raw, proof
-    record, attestation, proof = _schema3_evidence(state, project, root, saved)
-    _need(_match_persisted(state, endpoint.endpoint_id, saved, raw, record, attestation, proof) == packed,
-          'reader_endpoint_changed')
+    _need(endpoint in _v1_readers, 'reader_endpoint_not_issued')
+    current_raw, proof = _v1_reader_evidence(state, project, saved)
+    _need(current_raw == raw and endpoint.endpoint_id ==
+          _sha(b'memvane-reader-endpoint-v1\0' + packed), 'reader_endpoint_changed')
     return saved, raw, proof
 
 
@@ -631,89 +525,17 @@ def _adopted_vector_spec(record, proof, *, deadline):
     return expected
 
 
-def _resettle_inputs(state, project, executing_root):
-    """The selected schema3 record and the same record proved again now, or None for v6.
-
-    Read-only; ``resettle_selection`` and ``settings_resettle_pending`` share it.
-    """
-    path = _journal(Path(state) / _JOURNAL)
-    with _readonly(path, path.parent) as db:
-        selected, stored = _selection(db)
-        (attestation,) = db.execute('SELECT attestation FROM read_endpoints WHERE endpoint_id=?',
-                                    (selected.preferred_endpoint,)).fetchone()
-    if stored.get('store_format') != 'schema3':
-        return None
-    current, raw, proof = _schema3_evidence(path.parent, project, executing_root, stored)
-    _need(proof['selectionEpoch'] >= stored['creation_epoch'], 'reader_endpoint_changed')
-    current['creation_epoch'] = stored['creation_epoch']
-    return path, selected, stored, attestation, current, raw, proof
-
-
 def settings_resettle_pending(state, project, executing_root) -> bool:
-    """The selected schema3 record differs from the install only in its recall settings.
-
-    Read-only and authority-free: a recall uses it only to answer without
-    context instead of with an error. Any other difference, or a failed
-    proof, is False.
-    """
+    """Recognize only a proved v1 reader with changed recall settings."""
     try:
-        found = _resettle_inputs(state, project, executing_root)
-        if found is None:
-            return False
-        path, selected, stored, attestation, current, raw, _proof = found
-        if not (stored['settings'] != current['settings'] and resettled_pair(stored, current)
-                and {k for k in stored if stored[k] != current[k]} - _RESETTLED_WITH == {'settings'}):
-            return False
-        if raw != attestation:
-            return False
-        return True
+        state, project = Path(state), Path(project)
+        row = journal.inspect_journal(state / _JOURNAL)
+        saved = row['reader']
+        _need(row['state'] == 'selected' and isinstance(saved, dict), 'reader_endpoint_changed')
+        _raw_attestation, proof = _v1_reader_evidence(state, project, saved, allow_settings_change=True)
+        return saved['settings'] != _sha(_raw(proof['readerDecision']['recallSettings']))
     except Exception:
         return False
-
-
-def resettle_selection(state, project, executing_root):
-    """Owner re-seal of the selected schema3 endpoint (recall settings or vector spec).
-
-    The selected record is proved again from the current install. The owner
-    adopts the main head's spec once it has published a vector generation
-    matching the install provider, including when replacing an older spec. When the
-    result differs from the stored record only as ``resettled_pair`` allows,
-    one journal image transaction selects the re-sealed record. The selected
-    attestation must match. Returns ``'resealed'`` or ``'unchanged'``.
-    Recall itself never re-seals.
-    """
-    import time
-    found = _resettle_inputs(state, project, executing_root)
-    if found is None:
-        return 'unchanged'
-    path, selected, stored, attestation, current, raw, proof = found
-    adopted = _adopted_vector_spec(current, proof, deadline=time.monotonic() + 10)
-    if adopted is not None:
-        current['vector_profile'], current['vector_recipe'] = adopted['profile_id'], adopted['recipe_id']
-    if _raw(current) == _raw(stored) or not resettled_pair(stored, current):
-        return 'unchanged'
-    packed = _raw(current)
-    endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
-
-    def reseal(db):
-        now, record = _selection(db)
-        _need(now.preferred_endpoint == selected.preferred_endpoint and now.epoch == selected.epoch
-              and record == stored, 'stale_reader_cas')
-        _need(raw == attestation, 'reader_endpoint_changed')
-        transition = _sha(b'memvane-reader-resettle-v1\0' + endpoint_id.encode('ascii')
-                          + str(now.epoch).encode('ascii'))[:32]
-        _need(not db.execute('SELECT 1 FROM reader_transitions WHERE transition_id=?',
-                             (transition,)).fetchone(), 'reader_transition_reused')
-        if not db.execute('SELECT 1 FROM read_endpoints WHERE endpoint_id=?', (endpoint_id,)).fetchone():
-            db.execute('INSERT INTO read_endpoints VALUES(?,?,?)', (endpoint_id, packed.decode('utf8'), raw))
-        epoch = now.epoch + 1
-        db.execute('INSERT INTO reader_transitions VALUES(?,?,?,?)',
-                   (transition, epoch, endpoint_id, now.preferred_endpoint))
-        db.execute('UPDATE reader_selection SET epoch=?,preferred_endpoint=?,previous_endpoint=?,'
-                   'transition_id=? WHERE id=1', (epoch, endpoint_id, now.preferred_endpoint, transition))
-        return True
-    mutate_image(path, reseal)
-    return 'resealed'
 
 
 def _discard_staging(lockfd, path):
