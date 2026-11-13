@@ -370,9 +370,13 @@ def _owned_route(project):
 
 def _owner_identity(decision, proof):
     """Fields unchanged when this same pending installation is selected."""
-    keys = ('projectRoot', 'pluginRoot', 'installId', 'journalPath', 'scopeId',
-            'dbPath', 'dbIncarnation', 'bundleManifestSha256',
-            'ownershipManifestSha256', 'vectorProfile')
+    if decision.get('routeSchema') == 'memvane-route-v4':
+        keys = ('projectRoot', 'installId', 'journalPath', 'scopeId',
+                'storePath', 'storeIncarnation', 'vectorProfile')
+    else:
+        keys = ('projectRoot', 'pluginRoot', 'installId', 'journalPath', 'scopeId',
+                'dbPath', 'dbIncarnation', 'bundleManifestSha256',
+                'ownershipManifestSha256', 'vectorProfile')
     if any(decision.get(key) is None for key in keys):
         raise IndexContractError('provider_owner_identity_invalid')
     return tuple(decision[key] for key in keys) + (proof['providerManifest'],)

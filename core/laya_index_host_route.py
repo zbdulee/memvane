@@ -663,6 +663,19 @@ def verify_preview_route(decision: dict) -> dict:
     live = select_route(decision.get('projectRoot', ''), action='recall')
     if live != decision:
         raise ValueError('initial_preview_changed')
+    if decision.get('routeSchema') == SCHEMA_V4:
+        import laya_runtime_dispatch as dispatch
+        from laya_install_journal import inspect_journal, _attestation, _v1_provider_manifest
+        dispatch.resolve('laya-sync', decision['projectRoot'])
+        journal = inspect_journal(decision['journalPath'])
+        attestation, digest = _attestation(Path(decision['journalPath']))
+        if journal['state'] != 'prepared' or digest != journal['attestationSha256']:
+            raise ValueError('initial_preview_journal_mismatch')
+        manifest = _v1_provider_manifest(attestation, journal['vectorProfile'])
+        if select_route(decision['projectRoot'], action='recall') != decision:
+            raise ValueError('initial_preview_changed')
+        return {'journalEpoch': journal['epoch'], 'vectorProfile': journal['vectorProfile'],
+                'providerManifest': manifest}
     import laya_initial_build
     build = laya_initial_build.lookup(decision['projectRoot'])
     if (build is None or build['identity']['stateRoot'] != decision['previewStateRoot']

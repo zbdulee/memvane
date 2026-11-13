@@ -27,6 +27,7 @@ from sync_owner_lock import validate_sync_owner
 # Keep abandoned admissions strongly owned. Only explicit creator exit can
 # release their lifetime and queue pin; no generator/finalizer does cleanup.
 _issued = {}
+_build_issued = {}
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -41,6 +42,106 @@ class NormalWriter:
 
     def __reduce__(self):
         raise TypeError('normal_writer_not_serializable')
+
+
+class BuildWriter:
+    """A same-thread initial-build writer held under the existing owners."""
+    __slots__ = ()
+
+    def __new__(cls):
+        raise ValueError('normal_writer_not_issued')
+
+    def __reduce__(self):
+        raise TypeError('normal_writer_not_serializable')
+
+
+def _build_record(writer):
+    R._need(type(writer) is BuildWriter and writer in _build_issued,
+            'normal_writer_not_issued')
+    context = _build_issued[writer]
+    R._need(context.pid == os.getpid() and context.thread is threading.current_thread()
+            and context.entered and not context.finished, 'normal_writer_expired')
+    return context
+
+
+class _BuildWriterContext:
+    def __init__(self, decision, queue_owner):
+        self.decision, self.queue_owner = decision, queue_owner
+        self.pid, self.thread = os.getpid(), threading.current_thread()
+        self.entered = self.finished = False
+        self.stack = ExitStack()
+
+    def __enter__(self):
+        import laya_initial_build as build
+        import laya_runtime_dispatch as dispatch
+        from laya_install_journal import _attestation, _v1_provider_manifest, inspect_journal
+        from laya_view_store import ViewStore
+        from laya_store_primitives import _query_only_uri
+        import sqlite3
+        from contextlib import closing
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread()
+                and not self.entered and not self.finished, 'normal_writer_reentered')
+        state = Path(self.decision['stateRoot'])
+        try:
+            validate_sync_owner(self.queue_owner, Path(self.decision['storePath']))
+            self.stack.callback(self.queue_owner.pin().close)
+            if not self.stack.enter_context(build.owner(state)):
+                raise ValueError('initial_build_busy')
+            self.lifetime = W._Lifetime(self.decision['installId'])
+            self.stack.callback(self.lifetime.close)
+            self.target = dispatch.resolve('laya-sync', self.decision['projectRoot'])
+            self.record = build.lookup(self.decision['projectRoot'])
+            R._need(self.record is not None and self.record['phase'] in ('registered', 'building'),
+                    'initial_build_unavailable')
+            identity = self.record['identity']
+            row = inspect_journal(identity['journalPath'])
+            attestation, digest = _attestation(Path(identity['journalPath']))
+            R._need(digest == identity['attestationSha256'], 'worker_attestation_changed')
+            manifest = _v1_provider_manifest(attestation, row['vectorProfile'])
+            self.proof = {'productRouteAllowed': True, 'buildPending': True,
+                          'journalPath': identity['journalPath'], 'selectionEpoch': row['epoch'],
+                          'vectorProfile': row['vectorProfile'], 'providerManifest': manifest}
+            path = Path(identity['storePath'])
+            with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
+                db.execute('PRAGMA query_only=ON')
+                meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+                rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
+                                  (identity['projectRoot'],)).fetchall()
+            R._need(meta is not None and len(rows) == 1, 'writer_plan_store_changed')
+            repository = json.loads(meta[0])
+            store = ViewStore.open(path, repository=repository, scope_id=identity['scopeId'])
+            try:
+                saved, _capture = store._observe_worktree(rows[0][0])
+                R._need(store._incarnation == identity['storeIncarnation'], 'writer_plan_store_changed')
+                self.store = {'path': str(path), 'incarnation': store._incarnation,
+                              'worktree_id': rows[0][0], 'repository': repository,
+                              'worktree_binding': saved['binding_digest'], 'policy_digest': store._policy}
+            finally:
+                store.close()
+            self.entered = True
+            token = object.__new__(BuildWriter)
+            self.writer = token
+            _build_issued[token] = self
+            validate_normal_writer(token)
+            return token
+        except BaseException:
+            self.finished = True
+            if hasattr(self, 'writer'):
+                _build_issued.pop(self.writer, None)
+            self.stack.close()
+            raise
+
+    def __exit__(self, exc_type, exc, traceback):
+        R._need(self.pid == os.getpid() and self.thread is threading.current_thread(),
+                'normal_writer_owner_changed')
+        self.finished = True
+        _build_issued.pop(self.writer, None)
+        self.stack.close()
+        return False
+
+
+def build_writer_scope(decision, *, queue_owner):
+    return _BuildWriterContext(decision, queue_owner)
 
 
 def _record(writer):
@@ -60,6 +161,20 @@ def _record(writer):
 
 def validate_normal_writer(writer, *, deadline=None):
     """Validate current admission metadata, not a continuing content snapshot."""
+    if type(writer) is BuildWriter:
+        import laya_initial_build as build
+        import laya_runtime_dispatch as dispatch
+        context = _build_record(writer)
+        if deadline is not None:
+            W._deadline(deadline)
+            R._need(time.monotonic() < deadline, 'normal_writer_deadline')
+        validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
+        context.lifetime.check()
+        R._need(build.lookup(context.decision['projectRoot']) == context.record
+                and dispatch.resolve('laya-sync', context.decision['projectRoot']) == context.target,
+                'normal_writer_changed')
+        validate_sync_owner(context.queue_owner, Path(context.decision['storePath']))
+        return
     record = _record(writer)
     context = record['context']
     if deadline is None:
@@ -109,6 +224,8 @@ def writer_store(writer):
     Same keys as ``laya_writer_open_plan.plan_store``.
     """
     validate_normal_writer(writer)
+    if type(writer) is BuildWriter:
+        return json.loads(R._raw(_build_record(writer).store))
     store = _record(writer)['snapshot'].get('store')
     return None if store is None else json.loads(R._raw(store))
 
@@ -295,6 +412,8 @@ def worker_writer_scope(plan, *, queue_owner, operation_timeout):
 def admission_proof(writer):
     """Return the owned admission proof after validating the live writer."""
     validate_normal_writer(writer)
+    if type(writer) is BuildWriter:
+        return json.loads(R._raw(_build_record(writer).proof))
     return json.loads(R._raw(_record(writer)['proof']))
 
 
@@ -352,6 +471,8 @@ def mark_new_write(writer):
     failure carries ``mark_timings`` (ms per stage; ``p1``/``p2`` split into
     proof-window wait and the reads inside).
     """
+    if type(writer) is BuildWriter:
+        return admission_proof(writer)
     record = _record(writer)
     context = record['context']
     timings, image_started = {}, None

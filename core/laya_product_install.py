@@ -554,6 +554,8 @@ def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256
                 'storePath': store['storePath'], 'storeNode': store['storeNode'],
                 'storeIncarnation': store['storeIncarnation'], 'journalPath': str(journal),
                 'routeSha256': route_sha, 'attestationSha256': staged['attestationSha256']}
+    from laya_reader_lease import _prepare_lifetime
+    _prepare_lifetime(install_id)
     with initial_build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')

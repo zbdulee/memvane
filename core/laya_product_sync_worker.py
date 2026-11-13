@@ -424,7 +424,65 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     """Run one selected sync; call only from the durable runtime wake worker.
 
     """
+    import laya_initial_build as build
+    record = build.lookup(str(project))
+    if record is not None and record.get('schema') == build.V1_BUILD_SCHEMA:
+        decision = select_route(str(project), action='recall')
+        if decision.get('state') == 'preview':
+            if record['phase'] == 'ready':
+                return {'state': 'unchanged', 'buildPhase': 'ready'}
+            return _run_cold_build(decision, coordinator=coordinator, report=report,
+                                   start_service=start_service)
     return _run_sync(project, coordinator=coordinator, report=report, start_service=start_service)
+
+
+def _run_cold_build(decision, *, coordinator=None, report=None,
+                    start_service=start_owned_embed_service):
+    """Publish the registered main view under the existing build and sync owners."""
+    from contextlib import ExitStack
+    import laya_initial_build as build
+    import laya_writer_scope as normal
+    from laya_view_store import ViewStore
+    state = Path(decision['stateRoot'])
+    try:
+        with sync_owner(Path(decision['storePath']), wait=True) as owner:
+            if owner is None:
+                return {'state': 'deferred', 'reason': 'owner_busy'}
+            with ExitStack() as lane, normal.build_writer_scope(decision, queue_owner=owner) as writer:
+                proof = normal.admission_proof(writer)
+                expected_build = build.lookup(decision['projectRoot'])
+                info = normal.writer_store(writer)
+                vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
+                                                   report=report, start_service=start_service)
+                store = ViewStore.open(info['path'], repository=info['repository'],
+                                       scope_id=decision['scopeId'])
+                try:
+                    if (store._incarnation, store._policy) != (info['incarnation'], info['policy_digest']):
+                        raise IndexContractError('schema3_store_changed')
+                    result = _publish_schema3_view(store, writer, decision, proof,
+                        info['worktree_id'], info['worktree_binding'],
+                        time.monotonic() + SCHEMA3_PASS_SECONDS, {}, vectors, window=True)
+                finally:
+                    store.close()
+            vector = result.get('vector') or {}
+            complete = (result.get('state') in ('indexed', 'unchanged')
+                        and vector.get('state') in ('published', 'current'))
+            with build.owner(state) as owned:
+                if not owned:
+                    raise ResourceDeferred('owner_busy')
+                record = build.read_v1(state)
+                if record != expected_build:
+                    raise IndexContractError('initial_build_identity_changed')
+                build.advance_v1(record, phase='ready' if complete else 'building',
+                                 reason=None if complete else result.get('reason'))
+            if complete:
+                return {**result, 'buildPhase': 'ready'}
+            if result.get('state') in ('indexed', 'unchanged'):
+                return {**result, 'state': 'pending',
+                        'reason': vector.get('reason', 'initial_build_vectors_pending')}
+            return result
+    except ResourceDeferred as exc:
+        return _deferred(exc)
 
 
 def _run_sync(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
@@ -815,7 +873,8 @@ def _mark_schema3_write(writer, proof, marks):
     """
     import laya_writer_scope as normal
     fresh = normal.mark_new_write(writer)
-    if (fresh.get('selectionEpoch') != proof['selectionEpoch'] + 1
+    expected_epoch = proof['selectionEpoch'] + (0 if proof.get('buildPending') else 1)
+    if (fresh.get('selectionEpoch') != expected_epoch
             or fresh.get('productRouteAllowed') is not True):
         raise IndexContractError('new_write_proof_unconfirmed')
     marks['proof'] = fresh
@@ -1519,7 +1578,15 @@ def _schema3_worker_manifest(decision, proof):
     """The worker attestation's provider manifest for the current proof (closure rehash)."""
     import laya_install_journal as journal
     with journal.read_only_journals():
-        if journal.journal_version(decision['journalPath']) != 5:
+        if proof.get('buildPending'):
+            import laya_runtime_dispatch as dispatch
+            dispatch.resolve('laya-sync', decision['projectRoot'])
+            row = journal.inspect_journal(decision['journalPath'])
+            attestation, digest = journal._attestation(Path(decision['journalPath']))
+            if row['state'] != 'prepared' or digest != row['attestationSha256']:
+                raise IndexContractError('worker_attestation_changed')
+            return journal._v1_provider_manifest(attestation, row['vectorProfile'])
+        if journal.journal_version(decision['journalPath']) not in (1, 5):
             raise IndexContractError('writer_plan_v5_required')
         return journal._worker_attestation_manifest(proof)
 
