@@ -26,7 +26,7 @@ class PendingRecovery(unittest.TestCase):
         claim=self.claim('empty');raw=json.dumps(self.job)
         def read(path):
             self.assertEqual(path,claim);claim.write_text(raw+'\n');return []
-        with mock.patch.object(verify.wcw,'claim_queue',return_value=claim), mock.patch.object(verify.wcw,'read_queue',side_effect=read):
+        with mock.patch.object(verify,'claim_queue',return_value=claim), mock.patch.object(verify,'read_queue',side_effect=read):
             verify.run(self.root,self.cfg,self.compile)
         self.assertTrue(self.pending.exists())
         self.assertTrue(raw in self.queue.read_text() or (claim.exists() and raw in claim.read_text()))
@@ -35,7 +35,7 @@ class PendingRecovery(unittest.TestCase):
         def read(path,*args,**kwargs):
             if path == claim:raise PermissionError('synthetic')
             return real(path,*args,**kwargs)
-        with mock.patch.object(verify.wcw,'claim_queue',return_value=claim), mock.patch.object(verify.wcw,'read_queue',return_value=[]), mock.patch.object(Path,'read_text',read):
+        with mock.patch.object(verify,'claim_queue',return_value=claim), mock.patch.object(verify,'read_queue',return_value=[]), mock.patch.object(Path,'read_text',read):
             verify.run(self.root,self.cfg,self.compile)
         self.assertTrue(claim.exists())
     def test_recovered_old_job_cannot_override_saved_fingerprint(self):

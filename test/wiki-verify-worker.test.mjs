@@ -256,14 +256,14 @@ test('an append to an already claimed queue remains queued and preserves its pen
       'import json,sys', 'from pathlib import Path', 'from unittest import mock',
       'sys.path.insert(0,"core")', 'import wiki_verify_worker as v,config',
       'root=Path(sys.argv[1]).resolve(); job=json.loads(sys.argv[2]); content=sys.argv[3]',
-      'cfg=config.find_project_config(str(root))["config"]; orig=v.wcw.read_queue; fired=[False]',
+      'cfg=config.find_project_config(str(root))["config"]; orig=v.read_queue; fired=[False]',
       'def read(path):',
       ' rows=orig(path)',
       ' if ".claimed." in path.name and not fired[0]:',
       '  fired[0]=True; (root/job["pendingPath"]).write_text(content)',
       '  with path.open("a") as f: f.write(json.dumps(job)+"\\n")',
       ' return rows',
-      'with mock.patch.object(v.wcw,"read_queue",side_effect=read): v.run(root,cfg,cfg["compile"])',
+      'with mock.patch.object(v,"read_queue",side_effect=read): v.run(root,cfg,cfg["compile"])',
     ].join('\n');
     execFileSync('python3',['-B','-c',script,project,JSON.stringify(second),cardText('generated').replaceAll(HASH,b)],
       {cwd:process.cwd(),encoding:'utf8',env:{...process.env,QMD_DIRTY_QUEUE:join(project,'dirty-queue')}});

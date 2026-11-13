@@ -366,7 +366,7 @@ class BackfillChecks(unittest.TestCase):
         job = self.jobs()[0]
         if markerless:
             job.pop('initialBackfill')
-        job['_requeue_count'] = worker.MAX_REQUEUE_COUNT
+        job['_requeue_count'] = __import__('memvane.wiki.workspace.types', fromlist=['MAX_REQUEUE_COUNT']).MAX_REQUEUE_COUNT
         queue = self.project / '.memvane/compile/source-queue.jsonl'
         queue.write_text('')
         orphan = queue.with_name(queue.name + '.claimed.99999999.dead')
@@ -375,7 +375,7 @@ class BackfillChecks(unittest.TestCase):
 
     def test_orphan_retry_cap_receipt_settles_skipped_and_next_batch_proceeds(self):
         queue, orphan, job = self.orphan_first_batch()
-        with patch.object(worker, '_is_pid_alive', return_value=False), \
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False), \
              patch.object(worker, '_run_verify_pass'), \
              patch.object(worker, 'run_extractor', side_effect=AssertionError('terminal job must not pay')), \
              patch.object(selected, 'request_sync') as wake:
@@ -394,7 +394,7 @@ class BackfillChecks(unittest.TestCase):
 
     def test_discard_before_ack_crash_is_reconciled_by_next_sync(self):
         queue, orphan, job = self.orphan_first_batch(markerless=True)
-        with patch.object(worker, '_is_pid_alive', return_value=False):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False):
             claimed = worker.claim_queue(queue)
         self.assertEqual(worker.read_queue(claimed), [])
         self.assertFalse(orphan.exists())
@@ -411,13 +411,13 @@ class BackfillChecks(unittest.TestCase):
 
     def test_discard_fsync_failure_retains_orphan_and_recovery_is_idempotent(self):
         queue, orphan, _job = self.orphan_first_batch()
-        with patch.object(worker, '_is_pid_alive', return_value=False), \
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False), \
              patch.object(worker.os, 'fsync', side_effect=OSError('disk failure')):
             with self.assertRaises(OSError):
                 worker.claim_queue(queue)
         self.assertTrue(orphan.exists())
         self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
-        with patch.object(worker, '_is_pid_alive', return_value=False):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False):
             worker.claim_queue(queue)
         backfill.reconcile_discards(self.bound)
         row = backfill._load(self.decision)
@@ -434,14 +434,14 @@ class BackfillChecks(unittest.TestCase):
             if len(calls) == 1:
                 return real_write(fd, data[:7])
             raise OSError('ENOSPC after prefix')
-        with patch.object(worker, '_is_pid_alive', return_value=False), \
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False), \
              patch.object(discovery.os, 'write', side_effect=partial):
             with self.assertRaises(OSError):
                 worker.claim_queue(queue)
         self.assertTrue(orphan.exists())
         path = backfill._receipt_path(self.decision, row, 'docs/one.md')
         self.assertFalse(path.exists())
-        with patch.object(worker, '_is_pid_alive', return_value=False):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False):
             worker.claim_queue(queue)
         self.assertFalse(orphan.exists())
         self.assertEqual(discovery._read(path)['contentRevision'], job['contentRevision'])
@@ -450,12 +450,12 @@ class BackfillChecks(unittest.TestCase):
 
     def test_atomic_replace_failure_retains_claim(self):
         queue, orphan, _job = self.orphan_first_batch()
-        with patch.object(worker, '_is_pid_alive', return_value=False), \
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False), \
              patch.object(discovery.os, 'replace', side_effect=OSError('replace failed')):
             with self.assertRaises(OSError):
                 worker.claim_queue(queue)
         self.assertTrue(orphan.exists())
-        with patch.object(worker, '_is_pid_alive', return_value=False):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False):
             worker.claim_queue(queue)
         backfill.reconcile_discards(self.bound)
         self.assertEqual(backfill.summary(backfill._load(self.decision))['skipped'], 1)
@@ -470,7 +470,7 @@ class BackfillChecks(unittest.TestCase):
             if stat.S_ISDIR(info.st_mode) and info.st_ino == path.parent.stat().st_ino:
                 raise OSError('receipt directory fsync failed')
             return real_fsync(fd)
-        with patch.object(worker, '_is_pid_alive', return_value=False), \
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False), \
              patch.object(discovery.os, 'fsync', side_effect=fail_receipt_directory):
             for _retry in range(2):
                 with self.assertRaises(OSError):
@@ -482,7 +482,7 @@ class BackfillChecks(unittest.TestCase):
             with self.assertRaises(OSError):
                 backfill.reconcile_discards(self.bound)
         self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
-        with patch.object(worker, '_is_pid_alive', return_value=False):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False):
             worker.claim_queue(queue)
         backfill.reconcile_discards(self.bound)
         self.assertEqual(backfill.summary(backfill._load(self.decision))['skipped'], 1)
@@ -493,12 +493,12 @@ class BackfillChecks(unittest.TestCase):
             with path.open('ab') as handle:
                 handle.write(b'{"timestamp":')
             raise OSError('audit ENOSPC')
-        with patch.object(worker, '_is_pid_alive', return_value=False), \
-             patch.object(worker, 'append_jsonl', side_effect=torn_audit):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False), \
+             patch('memvane.wiki.workspace.queue.append_jsonl', side_effect=torn_audit):
             with self.assertRaises(OSError):
                 worker.claim_queue(queue)
         self.assertTrue(orphan.exists())
-        with patch.object(worker, '_is_pid_alive', return_value=False):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False):
             worker.claim_queue(queue)
         self.assertFalse(orphan.exists())
         # Concatenated audit JSON is intentionally ignored by reconciliation.
@@ -507,7 +507,7 @@ class BackfillChecks(unittest.TestCase):
 
     def test_invalid_or_symlink_atomic_receipt_fails_closed(self):
         queue, orphan, job = self.orphan_first_batch()
-        with patch.object(worker, '_is_pid_alive', return_value=False):
+        with patch('memvane.wiki.workspace.queue._is_pid_alive', return_value=False):
             worker.claim_queue(queue)
         row = backfill._load(self.decision)
         path = backfill._receipt_path(self.decision, row, 'docs/one.md')

@@ -327,7 +327,7 @@ def _queue_busy(queue: Path):
         return False
     import fcntl
     from memvane.wiki.workspace.queue_paths import _queue_lock_path
-    from memvane.wiki.compile.wiki_compile_worker import reclaim_orphaned_claimed
+    from memvane.wiki.workspace.queue import reclaim_orphaned_claimed
     prefix = queue.name + '.claimed.'
     with open(_queue_lock_path(queue), 'a', encoding='utf-8') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
