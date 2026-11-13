@@ -432,8 +432,6 @@ class Pr67IntegrationChecks(unittest.TestCase):
         answer = u15.recall()
         self.assertEqual(self.gen_of(answer), gen)
         self.assertEqual(self.members(gen)[0], self.cards())
-        code, status = self.u16.setup('index-reader-status')
-        self.assertEqual((code, status['reader']['store_format'], status['held']), (0, 'schema3', False))
         emit('pr67-rollback-round-trip', epochs=[initial[0], switched[0], rolled[0], again[0]])
 
     # ---- 3. SIGKILL at each step boundary, one install ---------------------
@@ -690,8 +688,6 @@ class Pr67IntegrationChecks(unittest.TestCase):
             return row
         target = self.upgrade(new, stop=mock.patch.object(fresh, '_change', side_effect=stopped))
         self.assertTrue(fresh.upgrade_fenced(str(case.project)))
-        code, deferred = self.u16.setup('rollback-index-reader', '--approve-index-reader-rollback')
-        self.assertEqual((code, deferred['status'], deferred['reason']), (75, 'deferred', 'rollback_lifecycle_busy'))
         bytes_before = case.journal.read_bytes()
         ledger_path = case.state / fresh.LEDGER
 

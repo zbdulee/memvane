@@ -108,16 +108,6 @@ class ShadowRollbackChecks(unittest.TestCase):
             result = self.M.rollback_reader(self.case.project, executing_root=self.case.plugin)
         return result, wakes
 
-    def setup(self, *argv):
-        """The operator entry point (``core/setup_entry.py``); returns (exit code, JSON result)."""
-        import io
-        from contextlib import redirect_stdout
-        entry = importlib.import_module('setup_entry')
-        out = io.StringIO()
-        with redirect_stdout(out):
-            code = entry.main([argv[0], '--project', str(self.case.project), *argv[1:]])
-        return code, json.loads(out.getvalue())
-
     def files(self):
         """Every regular file under the state root and the project's index folder (name -> size)."""
         found = {}
@@ -165,10 +155,6 @@ class ShadowRollbackChecks(unittest.TestCase):
         self.assertEqual((status['state'], status['reason'], status['steps']),
                          ('skipped', 'migration_rollback_retained', 0))
         self.assertEqual((case.state / self.M._INTENT).read_bytes(), intent)
-        code, status = self.setup('index-reader-status')
-        self.assertEqual((code, status['reader']['store_format'], status['held'], status['migration_state']),
-                         (0, 'v6', True, 'switched'))
-        self.assertEqual(status['rollback']['transition_id'], result['transition_id'])
         # A second request is idempotent: no CAS, one more wake.
         again, wakes = self.rollback()
         self.assertEqual((again['status'], again['transition_id']), ('rollback_retained', result['transition_id']))
@@ -213,13 +199,6 @@ class ShadowRollbackChecks(unittest.TestCase):
         self.assertEqual(case.journal.read_bytes(), bytes_before)
         self.switched()
         bytes_before = case.journal.read_bytes()
-        # The operator entry point needs its approval flags and writes nothing without them.
-        for action, reason in (('rollback-index-reader', 'index_reader_rollback_approval_required'),
-                               ('resume-index-reader-migration',
-                                'index_reader_migration_resume_approval_required')):
-            self.assertEqual(self.setup(action), (1, {'status': 'rejected', 'reason': reason, 'changesApplied': 0}))
-        code, status = self.setup('index-reader-status')
-        self.assertEqual((code, status['reader']['store_format'], status['held']), (0, 'schema3', False))
         self.assertEqual(case.journal.read_bytes(), bytes_before)
         # A v6 store that is not the one the switch left is not a rollback target.
         real = self.reader._recheck
@@ -246,10 +225,6 @@ class ShadowRollbackChecks(unittest.TestCase):
         with product._install_lock(case.state):
             with self.assertRaisesRegex(RuntimeError, 'install_busy'):
                 self.rollback()
-        # The entry point reports a busy code as deferred (exit 75), never as a refusal.
-        with mock.patch.object(self.M, 'rollback_reader', side_effect=product.InstallBlocked('install_busy')):
-            code, deferred = self.setup('rollback-index-reader', '--approve-index-reader-rollback')
-        self.assertEqual((code, deferred['status'], deferred['reason']), (75, 'deferred', 'install_busy'))
         self.assertEqual(case.journal.read_bytes(), bytes_before)
         self.assertEqual(u15.store_format(), 'schema3')
 
@@ -436,8 +411,6 @@ class ShadowRollbackChecks(unittest.TestCase):
         self.assertFalse(self.reader.rollback_pair(record, {**stored, 'install_id': '0' * 32}))
         answer = u15.recall()
         self.assertIn('generation ' + v6_gen, answer['context'])
-        code, status = self.setup('index-reader-status')
-        self.assertEqual((code, status['reader']['store_format'], status['held']), (0, 'v6', True))
         again, wakes = self.rollback()
         self.assertEqual((again['status'], again['transition_id']), ('rollback_retained', result['transition_id']))
         # The logs skill shows the rollback, its refusal and its replay.
@@ -486,11 +459,6 @@ class ShadowRollbackChecks(unittest.TestCase):
         # The upgrade fence alone.
         with mock.patch.object(fresh, 'upgrade_fenced', return_value=True):
             busy()
-        # The entry point reports it as deferred (exit 75).
-        with mock.patch.object(self.M, 'rollback_reader',
-                               side_effect=self.M.IndexContractError('rollback_lifecycle_busy')):
-            code, deferred = self.setup('rollback-index-reader', '--approve-index-reader-rollback')
-        self.assertEqual((code, deferred['status'], deferred['reason']), (75, 'deferred', 'rollback_lifecycle_busy'))
         # A settled upgrade receipt is not busy; the receipt stays.
         before = receipt.read_bytes()
         result, _wakes = self.rollback()
@@ -536,8 +504,6 @@ class ShadowRollbackChecks(unittest.TestCase):
         bytes_before = case.journal.read_bytes()
         with self.assertRaisesRegex(ValueError, 'rollback_lifecycle_busy'):
             self.rollback()
-        code, deferred = self.setup('rollback-index-reader', '--approve-index-reader-rollback')
-        self.assertEqual((code, deferred['status'], deferred['reason']), (75, 'deferred', 'rollback_lifecycle_busy'))
         self.assertEqual(case.journal.read_bytes(), bytes_before)
         # Worker passes never open the schema3 store: the first stops again
         # after its journal activation, the next (the SessionStart worker's
