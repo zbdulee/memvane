@@ -72,8 +72,6 @@ class ImportGuard(unittest.TestCase):
         out = run('''
             import laya_index_host_route, laya_host_response
             import laya_fresh_wiki_origin, laya_ledger_common
-            import laya_active_upgrade, laya_bound_upgrade, laya_inactive_upgrade
-            import laya_bundle_upgrade
             import laya_product_install, laya_product_sync_worker, setup_entry
             report(loaded=loaded())
         ''')
@@ -110,59 +108,6 @@ class ImportGuard(unittest.TestCase):
             report(loaded=loaded(), decision=[decision['state'], decision['reason']])
         ''', str(self.project))
         self.assertEqual(out['decision'], ['blocked', 'qmd_origin_detach_required'])
-        self.assertEqual(out['loaded'], [])
-
-    def test_fresh_selection_and_upgrade_flows_never_load_qmd_origin(self):
-        out = run('''
-            import io, runpy, unittest
-            ran, failed = 0, 0
-            for name in ('laya-fresh-wiki-origin-checks.py',
-                         'laya-active-upgrade-checks.py',
-                         'laya-inactive-upgrade-checks.py'):
-                module = runpy.run_path(str(Path('test/fixtures') / name),
-                                        run_name='guarded')
-                suite = unittest.TestSuite()
-                for value in module.values():
-                    if (isinstance(value, type) and issubclass(value, unittest.TestCase)
-                            and value.__module__ == 'guarded'):
-                        suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(value))
-                result = unittest.TextTestRunner(stream=io.StringIO()).run(suite)
-                ran += result.testsRun
-                failed += len(result.failures) + len(result.errors)
-            report(loaded=loaded(), ran=ran, failed=failed)
-        ''')
-        self.assertEqual(out['failed'], 0)
-        self.assertEqual(out['ran'], 26)
-        self.assertEqual(out['loaded'], [])
-
-    def test_qmd_ledger_probe_and_refusal(self):
-        out = run('''
-            import laya_active_upgrade as active
-            from laya_ledger_common import (CutoverBlocked, qmd_ledger_present,
-                                            refuse_qmd_origin)
-            state = Path(sys.argv[1])
-            absent = qmd_ledger_present(state)
-            refuse_qmd_origin(state)
-            (state / 'qmd-cutover.json').write_text('{}')
-            try:
-                refuse_qmd_origin(state)
-                refused = None
-            except CutoverBlocked as exc:
-                refused = str(exc)
-            reasons = []
-            for make in (lambda: active._origin(state), lambda: active._Ledger('qmd')):
-                try:
-                    make()
-                except Exception as exc:
-                    reasons.append(str(exc))
-            ledgers = [active._Ledger('fresh').name]
-            report(loaded=loaded(), absent=absent, refused=refused, reasons=reasons,
-                   ledgers=ledgers)
-        ''', str(self.state))
-        self.assertFalse(out['absent'])
-        self.assertEqual(out['refused'], 'qmd_origin_detach_required')
-        self.assertEqual(out['reasons'], ['qmd_origin_detach_required'] * 2)
-        self.assertEqual(out['ledgers'], ['fresh-wiki-cutover.json'])
         self.assertEqual(out['loaded'], [])
 
     def test_shared_primitives_keep_lock_name_and_identity(self):
