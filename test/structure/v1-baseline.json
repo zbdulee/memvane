@@ -67,7 +67,7 @@
       "memvane/learning/project_learning_setup.py": 923,
       "memvane/provider/embed_runtime.py": 1210,
       "memvane/registry/memvane_registry.py": 1000,
-      "memvane/resident/resident_service.py": 1629,
+      "memvane/resident/resident_service.py": 1645,
       "memvane/route/index_host_route.py": 1024,
       "memvane/settings/config.py": 1421,
       "memvane/store/blob/blob_store.py": 1118,

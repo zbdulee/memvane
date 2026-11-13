@@ -31,8 +31,10 @@ def scope_files(root):
     for folder in ('core', 'memvane', 'entry', 'hermes_adapter'):
         base = root / folder
         if base.is_dir():
+            # A domain's tests/ folder is test code, outside the product scope.
             paths.extend(p.relative_to(root).as_posix() for p in base.rglob('*.py')
-                         if '__pycache__' not in p.parts and not p.is_symlink())
+                         if '__pycache__' not in p.parts and 'tests' not in p.parts
+                         and not p.is_symlink())
     if (root / '__init__.py').is_file():
         paths.append('__init__.py')
     return sorted(paths)

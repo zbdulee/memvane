@@ -8,7 +8,8 @@ vector profile; only the process behind the socket is shared. The same
 process hosts the learning inference service on its existing socket.
 
 Lifecycle: started by the first sync wake (SessionStart) or learning request,
-never idle-exits. A client from a newer bundle asks the running service to
+never idle-exits; it drains and exits when its service root or lease file is
+gone or replaced (checked every tick by path, device and inode). A client from a newer bundle asks the running service to
 drain: listeners close (clients see an absent socket and serve lexical
 results), in-flight requests finish, owner leases are released, then the
 successor takes the service lease. An older client attaches to a newer
@@ -789,6 +790,7 @@ class Service:
         self.owner_recheck_seconds = OWNER_RECHECK_SECONDS
         self.attested = set()
         self.lease = None
+        self.home = None
         self.control = None
         self.control_inode = None
         self.threads = []
@@ -808,6 +810,8 @@ class Service:
                     return False
                 time.sleep(.1)
         self.lease = fd
+        root, lease = os.lstat(self.root), os.fstat(fd)
+        self.home = ((root.st_dev, root.st_ino), (lease.st_dev, lease.st_ino))
         if successor_fd is not None:
             os.close(successor_fd)
         path = self.root / CONTROL
@@ -922,12 +926,21 @@ class Service:
             return list({binding.events for binding in self.bindings.values()
                          if binding.events is not None})
 
-    def begin_drain(self):
+    def home_intact(self):
+        """Whether the service root and lease file are the acquired ones (path, device, inode)."""
+        try:
+            root, lease = os.lstat(self.root), os.lstat(self.root / LEASE)
+        except OSError:
+            return self.home is None
+        return self.home is None or (stat.S_ISDIR(root.st_mode) and stat.S_ISREG(lease.st_mode) and (
+            (root.st_dev, root.st_ino), (lease.st_dev, lease.st_ino)) == self.home)
+
+    def begin_drain(self, reason=None):
         if self.draining.is_set():
             return
         self.draining.set()
         self.drain_targets = self._event_targets()
-        _event(self.drain_targets, 'resident.drain', 'started')
+        _event(self.drain_targets, 'resident.drain', 'started', reason)
         with self.lock:
             for binding in list(self.bindings.values()):
                 self._close_listener(binding)
@@ -1028,6 +1041,9 @@ class Service:
 
     def _tick_loop(self):
         while not self.stopped.is_set() and not self.draining.is_set():
+            if not self.home_intact():  # unreachable now: stop the workers and exit
+                self.begin_drain('service_root_changed')
+                return
             try:
                 self.tick()
             except Exception:
