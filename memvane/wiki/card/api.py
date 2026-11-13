@@ -1,7 +1,12 @@
 """Public wiki card admission operations."""
 from __future__ import annotations
 
-from memvane.wiki.card.types import (SAFE_KEY_RE, SOURCE_SPANS_KEY, MAX_SOURCE_SPANS, FRONTMATTER_RE,
+
+def bounded_snapshot(*args, **kwargs):
+    from memvane.wiki.card.snapshot import bounded_snapshot as implementation
+    return implementation(*args, **kwargs)
+
+from memvane.wiki.card.types import (SOURCE_SPANS_KEY, MAX_SOURCE_SPANS, FRONTMATTER_RE,
                                      SOURCE_KIND_FILE, SUMMARY_TRUNCATION_MARK)
 
 

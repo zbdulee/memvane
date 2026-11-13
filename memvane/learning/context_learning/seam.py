@@ -5,27 +5,12 @@ import uuid
 
 from .contracts import digest, request
 from .store import capture
-import hashlib
-import stat
+from memvane.wiki.card.api import bounded_snapshot as _snapshot
 
 _SHARED_FAILURE_CODES = frozenset({'preparation_budget', 'invalid_preparation_budget',
     'learning_deferred_resource', 'learning_compute_busy', 'learning_deferred_inference',
     'project_scope_code_changed', 'project_scope_binding_changed', 'project_scope_model_changed',
     'project_scope_installation_invalid', 'project_scope_installation_changed'})
-
-def _snapshot(path):
-    # Bound bytes before decoding or hashing, including concurrent growth.
-    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as handle:
-        before = os.fstat(handle.fileno())
-        if not stat.S_ISREG(before.st_mode):
-            return None
-        content = handle.read(65537)
-        after = os.fstat(handle.fileno())
-    if len(content) > 65536 or (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
-        return None
-    return {"sha256": hashlib.sha256(content).hexdigest()}, content
-
 
 def _private_state(config, root, *, create=True):
     options = config.get('contextLearning', {})

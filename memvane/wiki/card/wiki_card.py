@@ -76,7 +76,7 @@ def read_card_text_full(path: Path, *, bounded_shadow=False) -> str | None:
     """
     try:
         if bounded_shadow:
-            from memvane.learning.context_learning.seam import _snapshot
+            from memvane.wiki.card.snapshot import bounded_snapshot as _snapshot
             snapshot = _snapshot(path)
             return normalize_newlines(snapshot[1].decode('utf-8', errors='replace')) if snapshot else None
         with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:

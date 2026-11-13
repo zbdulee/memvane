@@ -1114,6 +1114,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/card/snapshot.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/wiki/card/source_spans.py": {
       "context": "wiki/card",
       "layer": "adapter",

@@ -58,7 +58,7 @@ ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 # frontmatter flow mapping의 키로 허용할 형태. 모델이 준 키가 개행·구두점을 담으면
 # 매핑을 벗어나 새 줄을 만들 수 있다. 정의는 yaml_scalars(emit/parse 쌍의 SSOT)에 있다 —
 # 읽는 쪽(recall.parse_frontmatter_sources)이 같은 화이트리스트를 써야 한다.
-SAFE_YAML_KEY_RE = yaml_scalars.SAFE_KEY_RE
+from memvane.wiki.card.types import SAFE_KEY_RE as SAFE_YAML_KEY_RE
 SECRET_LITERAL_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
 ]
