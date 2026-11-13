@@ -74,20 +74,13 @@ def _persisted_schema3(endpoint):
 
 
 def _vector_proof(authority,snapshot,decision,provider,deadline):
-    import laya_reader_open as readers
     import laya_reader_lease as leases
     from laya_local_embed_provider import ReviewedLocalQmdProvider
-    # A persisted schema3 authority has no v6 snapshot; its authority is the
-    # journal-selected endpoint's current installer proof alone.
-    schema3=_persisted_schema3(authority)
-    if (type(deadline) not in (int,float) or not math.isfinite(deadline) or time.monotonic()>=deadline
-            or type(authority) is not journal.VerifiedEndpoint or authority not in journal._issued
-            or type(provider) is not ReviewedLocalQmdProvider
-            or (schema3 and snapshot is not None)
-            or (not schema3 and not any(item is snapshot and bound is authority and saved == decision
-                                        for item,bound,saved in readers._observations.get()))):
+    if (type(deadline) not in (int, float) or not math.isfinite(deadline)
+            or time.monotonic() >= deadline or not _persisted_schema3(authority)
+            or type(provider) is not ReviewedLocalQmdProvider or snapshot is not None):
         raise ValueError('reader_vector_caller_unproved')
-    readers._bound(authority,capability=journal.SCHEMA3_CAPABILITY if schema3 else 'v6-ro-v1')
+    leases._bound(authority, capability=journal.SCHEMA3_CAPABILITY)
     selected=leases._reader_selections.get(authority)
     if selected is None or selected.preferred_endpoint!=authority.endpoint_id:
         raise ValueError('reader_vector_caller_unproved')
@@ -197,7 +190,6 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     lists only (``lexical_only``).
     """
     import laya_reader_lease as leases
-    import laya_reader_open as readers
     selected=leases._reader_selections.get(endpoint)
     if (not _persisted_schema3(endpoint) or selected is None
             or selected.preferred_endpoint!=endpoint.endpoint_id):
@@ -205,7 +197,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     if (snapshot is not None or type(deadline) not in (int,float) or not math.isfinite(deadline)
             or Path(checkout)!=Path(endpoint.record['project']) or time.monotonic()>=deadline):
         raise ValueError('reader_endpoint_invalid')
-    readers._bound(endpoint,capability=journal.SCHEMA3_CAPABILITY)
+    leases._bound(endpoint,capability=journal.SCHEMA3_CAPABILITY)
     record,_raw,_proof=journal._recheck(endpoint)
     if (not isinstance(decision,dict) or decision.get('scopeId')!=record['scope']
             or decision.get('projectRoot')!=record['project']

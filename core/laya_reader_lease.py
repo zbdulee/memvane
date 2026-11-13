@@ -47,6 +47,20 @@ def _bind_reader_scope(endpoint, scope):
     _scoped_readers[endpoint] = scope
 
 
+def _bound(endpoint, *, capability):
+    """Require the issued read-only endpoint and its live reader scope."""
+    _need(capability == reader.SCHEMA3_CAPABILITY, 'reader_endpoint_unsupported')
+    _need(type(endpoint) is reader.VerifiedEndpoint and endpoint in reader._issued
+          and endpoint in reader._read_only and endpoint in _scoped_readers,
+          'reader_endpoint_not_issued')
+    scope = _scoped_readers[endpoint]
+    _check_shared_scope(scope)
+    _need(scope in _shared_stack.get() and endpoint.record['install_id'] == scope.install_id,
+          'reader_lifetime_invalid')
+    _need(endpoint.record['capability'] == capability, 'reader_endpoint_unsupported')
+    return scope
+
+
 def _check_reader_scope(endpoint):
     scope = _scoped_readers.get(endpoint)
     if scope is not None:
