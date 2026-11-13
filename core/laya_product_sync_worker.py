@@ -318,16 +318,16 @@ def service_worker_attestation(decision, expected):
     return manifest
 
 
-# Route fields that name one selected installation and its bundle.
-_SELECTION_KEYS = ('state', 'projectRoot', 'pluginRoot', 'installId', 'generation',
-                   'journalPath', 'dbPath', 'queuePath', 'dbIncarnation', 'scopeId',
-                   'bundleManifestSha256', 'ownershipManifestSha256', 'vectorProfile')
-# Bundle journal fields a sync's write changes without moving the selection.
+# Route fields that name one selected installation and its single store.
+_SELECTION_KEYS = ('state', 'routeSchema', 'projectRoot', 'stateRoot', 'installId',
+                   'journalPath', 'storePath', 'storeIncarnation', 'scopeId',
+                   'stateFormat', 'collections', 'vectorProfile')
+# Journal fields a sync's write changes without moving the selection.
 _JOURNAL_EPOCH_FIELDS = ('epoch', 'newWriteSeen')
 
 
 def _journal_view(decision):
-    """The bundle journal row as a selection, epoch aside; None if unreadable."""
+    """The journal row as a selection, epoch aside; None if unreadable."""
     import laya_install_journal as journal
     try:
         with journal.read_only_journals():
@@ -340,9 +340,9 @@ def _journal_view(decision):
 def _selection_moved(decision, view):
     """Whether the route or journal moved away from the accepted selection.
 
-    Read-only: the route classification and the bundle journal row (never a
+    Read-only: the route classification and the journal row (never a
     content store). The route must still name ``decision``'s installation,
-    bundle and stores in the same state; the journal row, epoch aside, must
+    store and profile in the same state; the journal row, epoch aside, must
     equal ``view``. A read that fails is not evidence of a move: the failure
     stays what it was.
     """
