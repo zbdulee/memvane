@@ -1129,6 +1129,16 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/wiki/dedup/api.py": {
+      "context": "wiki/dedup",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/dedup/types.py": {
+      "context": "wiki/dedup",
+      "layer": "domain",
+      "pinned": false
+    },
     "memvane/wiki/dedup/wiki_dedup_judge.py": {
       "context": "wiki/dedup",
       "layer": "adapter",

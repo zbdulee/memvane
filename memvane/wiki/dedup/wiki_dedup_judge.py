@@ -39,8 +39,7 @@ VERDICT_VALUES = {"duplicate", "distinct", "unclear"}
 #                    legacy score-threshold behavior instead of stalling.
 #   "transient"   -> timeout / crash / cooldown. Callers must preserve work for a
 #                    later run rather than deciding without a judgment.
-OUTCOME_OK = "ok"
-OUTCOME_UNAVAILABLE = "unavailable"
+from memvane.wiki.dedup.types import OUTCOME_OK, OUTCOME_UNAVAILABLE
 OUTCOME_TRANSIENT = "transient"
 
 # 유료 호출은 났는데 **쓸 수 있는 출력이 아니었던** 사유. `wiki_verify_worker`의 동명 집합과
