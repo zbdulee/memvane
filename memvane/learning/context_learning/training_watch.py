@@ -2,9 +2,7 @@
 import math
 import os
 import select
-import signal
 import stat
-import subprocess
 import time
 
 from .resource_coordination import observation_fresh
@@ -13,7 +11,6 @@ YIELD_GRACE=2.
 PROBE_INTERVAL=1.
 PROBE_BUDGET=.5
 STATS_BUDGET=.25
-STOP_WAIT=.5
 
 
 class Watch:
@@ -80,30 +77,3 @@ def poll_stop(fd):
     except OSError:raise ValueError('learning_yield') from None
 
 
-def stop_owned(process,*,emergency=False):
-    """Reap the owned leader AND prove its new process group is absent.
-
-    Exited leaders can leave descendants behind. Denied identity or a lingering
-    group is unknown, never successful cleanup. No foreign PID discovery.
-    """
-    if type(process.pid)is not int or process.pid<=1:raise ValueError('invalid_owned_trainer')
-    try:
-        try:os.killpg(process.pid,signal.SIGKILL if emergency else signal.SIGTERM)
-        except ProcessLookupError:
-            process.wait(timeout=STOP_WAIT);return True
-        try:process.wait(timeout=STOP_WAIT)
-        except subprocess.TimeoutExpired:
-            if emergency: return False
-        # Leader exit alone says nothing about the remaining group members.
-        if not emergency:
-            try:os.killpg(process.pid,signal.SIGKILL)
-            except ProcessLookupError:
-                process.wait(timeout=STOP_WAIT);return True
-        process.wait(timeout=STOP_WAIT)
-        deadline=time.monotonic()+STOP_WAIT
-        while True:
-            try:os.killpg(process.pid,0)
-            except ProcessLookupError:return True
-            if time.monotonic()>=deadline:return False
-            time.sleep(.01)
-    except (OSError,subprocess.TimeoutExpired):return False

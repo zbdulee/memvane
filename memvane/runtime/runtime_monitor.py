@@ -56,7 +56,7 @@ class Handle:
         if self.write is not None:os.close(self.write);self.write=None
         try:self.process.wait(timeout=2.5)
         except subprocess.TimeoutExpired:
-            from memvane.learning.context_learning.training_watch import stop_owned
+            from memvane.kernel.process import stop_owned_checked as stop_owned
             stop_owned(self.process)
 
 

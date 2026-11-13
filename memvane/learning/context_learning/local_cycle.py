@@ -21,6 +21,7 @@ from .cycle_policy import promotion_decision, selection_score
 from .dataset import read_private_json
 from .selection_queue import build_queue
 from .store import canonical, database
+from memvane.kernel.process import stop_owned_checked as stop_owned
 from memvane.kernel.resource_deferred import ResourceDeferred  # re-exported for existing callers
 # Re-exported: the same object and output budget as runtime_lease.
 from memvane.kernel.atomic_rename import MAX_FILE, atomic_json as _atomic_json
@@ -162,7 +163,7 @@ class LocalTrainer:
         inherited = tuple(getattr(self, 'inherited_fds', ()))+extra_fds
         coordination_fd = getattr(self, 'coordination_fd', None)
         if coordination_fd is not None:env['QMD_TRAINER_COORD_FD']=str(coordination_fd)
-        from .training_watch import Watch,PROBE_INTERVAL,PROBE_BUDGET,STATS_BUDGET,stop_owned
+        from .training_watch import Watch,PROBE_INTERVAL,PROBE_BUDGET,STATS_BUDGET
         from .resource_coordination import Coordinator
         from memvane.runtime.api import lease,environment
         cpu_scope=lease();cpu_budget=cpu_scope.__enter__()
