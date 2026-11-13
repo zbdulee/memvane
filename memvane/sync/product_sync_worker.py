@@ -27,8 +27,8 @@ from memvane.route.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.runtime.api import sync_owner
-from memvane.journal.types import JournalEvidenceError
-from memvane.journal.api import cas_mark_new_write, inspect_journal, selected_project_proof as _selected
+from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
+from memvane.journal.api import cas_mark_new_write, inspect_journal, read_v1_build, selected_project_proof as _selected
 from memvane.provider.api import reviewed_provider_class
 ReviewedLocalQmdProvider = reviewed_provider_class()
 from memvane.provider.api import start_owned_embed_service
@@ -120,7 +120,7 @@ def _initial_build_waiting(controller, project):
     whichever row is due next. Selected syncs only, between rounds: initial
     builds never yield to each other.
     """
-    from memvane.install import initial_build as initial_build
+    from memvane.install import api as initial_build
     from memvane.runtime.api import wake_queue as WakeQueue
     try:
         queue = WakeQueue(controller.root)
@@ -136,7 +136,7 @@ def _initial_build_waiting(controller, project):
                 not isinstance(target, str) or not target or target == str(project)):
             continue
         try:
-            record = initial_build.lookup(target)
+            record = initial_build.build_lookup(target)
         except Exception:  # An unreadable pointer is no reason to yield.
             continue
         if not isinstance(record, dict) or record.get('phase') not in INITIAL_BUILD_YIELD_PHASES:
@@ -212,9 +212,9 @@ def run(project, *, coordinator=None, report=None, start_service=start_owned_emb
     """Run one selected sync; call only from the durable runtime wake worker.
 
     """
-    from memvane.install import initial_build as build
-    record = build.lookup(str(project))
-    if record is not None and record.get('schema') == build.V1_BUILD_SCHEMA:
+    from memvane.install import api as build
+    record = build.build_lookup(str(project))
+    if record is not None and record.get('schema') == V1_BUILD_SCHEMA:
         decision = select_route(str(project), action='recall')
         if decision.get('state') == 'preview':
             if record['phase'] == 'ready':
@@ -228,7 +228,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                     start_service=start_owned_embed_service):
     """Publish the registered main view under the existing build and sync owners."""
     from contextlib import ExitStack
-    from memvane.install import initial_build as build
+    from memvane.install import api as build
     from memvane.journal import writer_scope as normal
     from memvane.store.api import view_store_class
     ViewStore = view_store_class()
@@ -239,7 +239,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                 return {'state': 'deferred', 'reason': 'owner_busy'}
             with ExitStack() as lane, normal.build_writer_scope(decision, queue_owner=owner) as writer:
                 proof = normal.admission_proof(writer)
-                expected_build = build.lookup(decision['projectRoot'])
+                expected_build = build.build_lookup(decision['projectRoot'])
                 info = normal.writer_store(writer)
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
                                                    report=report, start_service=start_service)
@@ -256,13 +256,13 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
             vector = result.get('vector') or {}
             complete = (result.get('state') in ('indexed', 'unchanged')
                         and vector.get('state') in ('published', 'current'))
-            with build.owner(state) as owned:
+            with build.build_owner(state) as owned:
                 if not owned:
                     raise ResourceDeferred('owner_busy')
-                record = build.read_v1(state)
+                record = read_v1_build(state)
                 if record != expected_build:
                     raise IndexContractError('initial_build_identity_changed')
-                build.advance_v1(record, phase='ready' if complete else 'building',
+                build.build_advance_v1(record, phase='ready' if complete else 'building',
                                  reason=None if complete else result.get('reason'))
             if complete:
                 return {**result, 'buildPhase': 'ready'}

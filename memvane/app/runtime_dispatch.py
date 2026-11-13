@@ -72,7 +72,7 @@ def resolve(kind, value):
         progress = {'selectionEpoch': proof['selectionEpoch'],
                     'generation': proof.get('headGeneration')}
     elif kind == 'laya-sync' and route.get('state') == 'legacy':
-        from memvane.install.initial_build import lookup
+        from memvane.install.api import build_lookup as lookup
         try:
             record = lookup(project)
         except (OSError, RuntimeError, ValueError) as exc:

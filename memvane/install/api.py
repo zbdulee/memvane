@@ -70,3 +70,18 @@ def activate_origin_selection(*args, **kwargs):
 def recover_origin_selection(*args, **kwargs):
     from memvane.install.product_install import recover_origin_selection as implementation
     return implementation(*args, **kwargs)
+
+
+def build_lookup(*args, **kwargs):
+    from memvane.install.initial_build import lookup as implementation
+    return implementation(*args, **kwargs)
+
+
+def build_owner(*args, **kwargs):
+    from memvane.install.initial_build import owner as implementation
+    return implementation(*args, **kwargs)
+
+
+def build_advance_v1(*args, **kwargs):
+    from memvane.install.initial_build import advance_v1 as implementation
+    return implementation(*args, **kwargs)
