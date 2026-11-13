@@ -15,6 +15,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from memvane.kernel.paths import safe_managed_dir, read_jsonl
 from memvane.wiki.workspace.api import write_text_atomic
 from memvane.wiki.workspace import wiki_mutation_lock
 from memvane.wiki.workspace import wiki_activity_log
@@ -141,16 +142,6 @@ def existing_managed_dir(root: Path, rel: str) -> Path | None:
     return path
 
 
-def safe_managed_dir(root: Path, rel: str) -> Path | None:
-    path = (root / rel).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return None
-    if path.exists() and (path.is_symlink() or not path.is_dir()):
-        return None
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def normalize_identity(value: object) -> str:
@@ -505,28 +496,6 @@ def ledger_writable(path: Path) -> bool:
         return False
 
 
-def read_jsonl(path: Path) -> list[dict]:
-    """append-only 로그/큐 읽기. 못 읽는 줄은 **건너뛴다**(fail-open).
-
-    `errors="replace"`인 이유: 이 파일들은 여러 프로세스가 append하는 운영 파일이라 한
-    바이트만 깨져도 전체 읽기가 UnicodeDecodeError로 죽는다. 대체 문자는 그 줄의 JSON
-    파싱만 실패시키고 아래 루프가 그 줄을 건너뛰므로, 손상은 손상된 줄에만 국한된다.
-    """
-    if not path.exists():
-        return []
-    rows = []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return []
-    for line in text.splitlines():
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            rows.append(parsed)
-    return rows
 
 
 LOG_MAX_BYTES = 256 * 1024
