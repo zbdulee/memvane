@@ -181,7 +181,7 @@ def main(argv=None):
                     result = product.restore_origin_selection(
                         project_root=args.project, state_root=state)
                 else:
-                    route = product._read_private(state / 'reviewed-route.json', 8192)
+                    route = product._read_private(state / 'route.json', 8192)
                     with product._install_lock(state):
                         if args.action == 'activate-index-origin':
                             if not args.approve_index_origin_activation:
