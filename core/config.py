@@ -8,7 +8,7 @@ from pathlib import Path
 import project_dir
 
 
-# The project folder: `.memvane/`, read fallback `.auto-context/` (project_dir).
+# The project folder is `.memvane/` (project_dir).
 CONFIG_DIR_NAME = project_dir.CURRENT
 SETTINGS_FILE_NAME = "settings.json"
 
@@ -1299,7 +1299,7 @@ def project_identity_root(cwd):
 
 
 def _candidate_configs(directory):
-    # `.memvane/settings.json` first, then the `.auto-context/` read fallback.
+    # Read `.memvane/settings.json`.
     return [(path, "auto-context-dir", directory)
             for path in project_dir.settings_candidates(directory)]
 
@@ -1410,8 +1410,7 @@ def _read_json_object(path):
 
 
 def load_project_config(cwd):
-    """Load the effective config from the nearest `.memvane/settings.json`
-    (read fallback `.auto-context/settings.json`).
+    """Load the effective config from the nearest `.memvane/settings.json`.
     indexing:false means collections=[] (검색/인덱싱 skip). 못 찾으면 빈 설정(collections=[])."""
     return find_project_config(cwd)["config"]
 

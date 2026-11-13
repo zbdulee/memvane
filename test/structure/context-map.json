@@ -26,6 +26,11 @@
       "layer": "entry",
       "pinned": true
     },
+    "core/atomic_rename.py": {
+      "context": "shared",
+      "layer": "adapter",
+      "pinned": false
+    },
     "core/collection_match.py": {
       "context": "host",
       "layer": "application",
@@ -326,11 +331,6 @@
       "layer": "application",
       "pinned": false
     },
-    "core/context_learning/state_move.py": {
-      "context": "learning",
-      "layer": "application",
-      "pinned": false
-    },
     "core/context_learning/storage_layout.py": {
       "context": "learning",
       "layer": "application",
@@ -451,11 +451,6 @@
       "layer": "application",
       "pinned": false
     },
-    "core/laya_active_upgrade.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": false
-    },
     "core/laya_blob_fill.py": {
       "context": "store",
       "layer": "adapter",
@@ -480,31 +475,6 @@
       "context": "store",
       "layer": "adapter",
       "pinned": false
-    },
-    "core/laya_bound_upgrade.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": false
-    },
-    "core/laya_bridge_observer.py": {
-      "context": "migration",
-      "layer": "application",
-      "pinned": false
-    },
-    "core/laya_bridge_process.py": {
-      "context": "migration",
-      "layer": "application",
-      "pinned": false
-    },
-    "core/laya_bridge_readiness.py": {
-      "context": "migration",
-      "layer": "application",
-      "pinned": false
-    },
-    "core/laya_bundle_upgrade.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": true
     },
     "core/laya_checkout_view.py": {
       "context": "store",
@@ -546,19 +516,9 @@
       "layer": "domain",
       "pinned": false
     },
-    "core/laya_inactive_upgrade.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": false
-    },
     "core/laya_index_host_route.py": {
       "context": "host",
       "layer": "application",
-      "pinned": true
-    },
-    "core/laya_index_source_port.py": {
-      "context": "v6",
-      "layer": "adapter",
       "pinned": true
     },
     "core/laya_initial_build.py": {
@@ -581,25 +541,10 @@
       "layer": "adapter",
       "pinned": false
     },
-    "core/laya_journal_recovery.py": {
-      "context": "journal",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "core/laya_journal_v4.py": {
-      "context": "journal",
-      "layer": "adapter",
-      "pinned": false
-    },
     "core/laya_ledger_common.py": {
       "context": "install",
       "layer": "adapter",
       "pinned": false
-    },
-    "core/laya_legacy_journal_probe.py": {
-      "context": "journal",
-      "layer": "adapter",
-      "pinned": true
     },
     "core/laya_local_embed_provider.py": {
       "context": "runtime",
@@ -610,21 +555,6 @@
       "context": "runtime",
       "layer": "adapter",
       "pinned": true
-    },
-    "core/laya_move_read_seal.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": false
-    },
-    "core/laya_move_reader_journal.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": false
-    },
-    "core/laya_move_reader_prefix.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": false
     },
     "core/laya_package.py": {
       "context": "install",
@@ -645,11 +575,6 @@
       "context": "sync",
       "layer": "application",
       "pinned": true
-    },
-    "core/laya_project_dir_move.py": {
-      "context": "upgrade",
-      "layer": "application",
-      "pinned": false
     },
     "core/laya_provider_reproof.py": {
       "context": "install",
@@ -681,19 +606,19 @@
       "layer": "application",
       "pinned": false
     },
-    "core/laya_shadow_migration.py": {
-      "context": "migration",
-      "layer": "application",
-      "pinned": false
-    },
     "core/laya_source_exclusion.py": {
       "context": "host",
       "layer": "domain",
       "pinned": false
     },
-    "core/laya_state_move.py": {
-      "context": "upgrade",
-      "layer": "application",
+    "core/laya_store_primitives.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "core/laya_vector_primitives.py": {
+      "context": "runtime",
+      "layer": "adapter",
       "pinned": false
     },
     "core/laya_view_fill.py": {
@@ -769,11 +694,6 @@
     "core/laya_writer_scope.py": {
       "context": "v6",
       "layer": "adapter",
-      "pinned": false
-    },
-    "core/legacy_cleanup.py": {
-      "context": "upgrade",
-      "layer": "application",
       "pinned": false
     },
     "core/log_targets.py": {
@@ -911,6 +831,11 @@
       "layer": "application",
       "pinned": false
     },
+    "core/source_scan.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
+    },
     "core/source_spans.py": {
       "context": "wiki",
       "layer": "application",
@@ -920,6 +845,11 @@
       "context": "host",
       "layer": "application",
       "pinned": true
+    },
+    "core/sync_owner_lock.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
     },
     "core/wiki_activity_log.py": {
       "context": "wiki",
@@ -1078,13 +1008,10 @@
     "core/extractors/claude_adapter.py",
     "core/extractors/codex_adapter.py",
     "core/extractors/hermes_adapter.py",
-    "core/laya_bundle_upgrade.py",
     "core/laya_host_response.py",
     "core/laya_index_host_route.py",
-    "core/laya_index_source_port.py",
     "core/laya_initial_build.py",
     "core/laya_install_journal.py",
-    "core/laya_legacy_journal_probe.py",
     "core/laya_local_embed_provider.py",
     "core/laya_local_embed_service.py",
     "core/laya_local_embed_worker.mjs",
