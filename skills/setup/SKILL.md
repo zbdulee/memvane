@@ -7,7 +7,7 @@ description: Use for an explicit MemVane onboarding of a project onto memvane-db
 
 Users can ask “이 프로젝트 MemVane 온보딩해줘”, “MemVane 색인 준비 상태 보여줘”, “인덱스 활성화해줘”. Always name the project root and show the result of each phase.
 
-Install this host plugin through its marketplace before using this skill. Plugin registration and hook trust are separate host actions; this skill never changes them. Resolve `ROOT` from a verified host plugin-root variable (`CLAUDE_PLUGIN_ROOT` or `PLUGIN_ROOT`), or from the absolute path of this `SKILL.md` by ascending two directories, and verify `ROOT/core/setup_entry.py` exists. Never infer the plugin root from the target project git root. Run every action through `python3 "$ROOT/core/setup_entry.py" <action> --project "$PROJECT_ROOT" ...` (it disables bytecode).
+Install this host plugin through its marketplace before using this skill. Plugin registration and hook trust are separate host actions; this skill never changes them. Resolve `ROOT` from a verified host plugin-root variable (`CLAUDE_PLUGIN_ROOT` or `PLUGIN_ROOT`), or from the absolute path of this `SKILL.md` by ascending two directories, and verify `ROOT/entry/setup.py` exists. Never infer the plugin root from the target project git root. Run every action through `python3 "$ROOT/entry/setup.py" <action> --project "$PROJECT_ROOT" ...` (it disables bytecode).
 
 A project without a selected MemVane route gets no recall, indexing, compile or learning work. Its SessionStart shows one short notice line, plus one answer-command line for the agent, when it has `.memvane/settings.json`; this skill is the onboarding path the notice names.
 

@@ -1,12 +1,12 @@
 ---
 name: wiki-dedup-resolver
-description: Cleanup agent spawned by the wiki-dedup skill to drain the candidate wiki page pairs that core/wiki_dedup_scan.py queued to .memvane/compile/dedup-needed.jsonl. Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through core/wiki_dedup_resolve.py, and reports a short summary.
+description: Cleanup agent spawned by the wiki-dedup skill to drain the candidate wiki page pairs that memvane/wiki/dedup/wiki_dedup_scan.py queued to .memvane/compile/dedup-needed.jsonl. Not triggered by user request phrases -- judges each queued pair, folds any unique content into the page it keeps via its own edits, then deletes the duplicate through memvane/wiki/dedup/wiki_dedup_resolve.py, and reports a short summary.
 ---
 
 # Wiki Dedup Resolver
 
 Resolves every pending pair in `.memvane/compile/dedup-needed.jsonl` — pairs of
-ALREADY-EXISTING wiki pages that `core/wiki_dedup_scan.py`'s retroactive scan found similar enough
+ALREADY-EXISTING wiki pages that `memvane/wiki/dedup/wiki_dedup_scan.py`'s retroactive scan found similar enough
 (cosine similarity of 0.9 or more between the cards' stored memvane-db vectors) to be worth checking
 for consolidation. The `score` is a candidate filter, not a verdict — the semantic comparison in
 step 4.b decides merge vs. skip. This resolver handles only pairs where every page involved is
@@ -28,7 +28,7 @@ short summary at the end (step 5).
    `ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"`.
    Every CLI call below uses `"$ROOT"` — never a bare relative path.
 2. Before reading the queue, run
-   `python3 "$ROOT/core/wiki_dedup_resolve.py" --cwd <cwd> --recover-queue`.
+   `python3 "$ROOT/entry/run.py" wiki-dedup-resolve --cwd <cwd> --recover-queue`.
    It reclaims dead-owner `dedup-needed.jsonl.claimed.*` files under the queue
    lock. Then read `.memvane/compile/dedup-needed.jsonl` in the target
    project (`.auto-context/compile/dedup-needed.jsonl` when it has no `.memvane/`). Empty or missing → release the run-lock and stop; nothing to do.
@@ -102,7 +102,7 @@ short summary at the end (step 5).
       re-read the keeper to confirm every listed fact is now present. Apply step 3.c's budget
       check before and after the fold. Only then proceed. (For a
       pair whose cluster you already folded in step 3.c, do not re-fold — go straight to 4.d.)
-   d. Run: `python3 "$ROOT/core/wiki_dedup_resolve.py" --cwd <cwd> --index <n> --action merge
+   d. Run: `python3 "$ROOT/entry/run.py" wiki-dedup-resolve --cwd <cwd> --index <n> --action merge
       --delete <wiki-root-relative path of the page being deleted>`
       (or `--action skip` with no `--delete` for non-duplicates).
    e. Record the CLI's JSON stdout for your own tracking.
@@ -126,7 +126,7 @@ short summary at the end (step 5).
 
 ## Notes
 
-- Never edit `core/wiki_dedup_resolve.py`, `core/wiki_dedup_scan.py`, or the queue file directly —
+- Never edit `memvane/wiki/dedup/wiki_dedup_resolve.py`, `memvane/wiki/dedup/wiki_dedup_scan.py`, or the queue file directly —
   every mutation goes through step 4.d's CLI call.
 - The auto-block placement rule in step 3.c is not stylistic. Two resolver runs on the same day
   reached opposite conclusions about it (one folded merged facts into the auto block, one added a
