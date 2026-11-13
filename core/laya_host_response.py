@@ -1891,26 +1891,6 @@ def _reconcile_registry(decision: dict) -> None:
         pass
 
 
-def _selected_store_format(decision: dict) -> str:
-    """Store format of the journal-preferred reader endpoint of a v5 journal.
-
-    A journal below v5 has no reader selection and keeps the v6 recall.
-    """
-    if not isinstance(decision.get('journalPath'), str):
-        return 'v6'
-    if not os.path.lexists(decision['journalPath']):
-        # The full route proof just read this journal. A journal gone since
-        # then is a concurrent move: the v6 path's own recheck refuses or
-        # retries it, exactly as before reader selection existed.
-        return 'v6'
-    from laya_install_journal import journal_version
-    if journal_version(decision['journalPath']) != 5:
-        return 'v6'
-    import laya_journal_reader as reader
-    path = reader._journal(Path(decision['journalPath']))
-    with reader._readonly(path, path.parent) as db:
-        _selected, record = reader._selection(db)
-    return record['store_format']
 
 
 
@@ -2101,21 +2081,15 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
             _fail('invalid_session_event')
         if recheck(main) != proof:
             _fail('selected_proof_changed')
-        if _selected_store_format(main) == 'schema3':
-            _request_worktree_sync(main, proof, recheck)
-            if host == 'hermes':
-                return {'status': 'worktree_view', 'notice': WORKTREE_VIEW_NOTICE}
-            return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
-                                           'additionalContext': WORKTREE_VIEW_NOTICE}}
+        _request_worktree_sync(main, proof, recheck)
         if host == 'hermes':
-            return {'status': 'worktree_read_only', 'notice': WORKTREE_NOTICE}
+            return {'status': 'worktree_view', 'notice': WORKTREE_VIEW_NOTICE}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
-                                       'additionalContext': WORKTREE_NOTICE}}
+                                       'additionalContext': WORKTREE_VIEW_NOTICE}}
     if recheck(main) != proof:
         _fail('selected_proof_changed')
     if (action in ('index', 'file-change-event')
-            and (_successful_edit(payload) if action == 'index' else _successful_bash(payload))
-            and _selected_store_format(main) == 'schema3'):
+            and (_successful_edit(payload) if action == 'index' else _successful_bash(payload))):
         _request_worktree_sync(main, proof, recheck)
         return {}
     if action == 'gate':
