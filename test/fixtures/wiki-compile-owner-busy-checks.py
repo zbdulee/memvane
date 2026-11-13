@@ -148,7 +148,7 @@ class CompileOwnerBusyChecks(unittest.TestCase):
             self.assertFalse(list(root.glob('queue.jsonl.claimed.*')))
 
     def test_compile_owner_busy_does_not_consume_attempt(self):
-        failure = policy.DispatchFailure('target_deferred', 'a' * 40, 'b' * 64,
+        failure = policy.DispatchFailure('target_deferred',
                                          detail='deferred:deferred:owner_busy')
         step = policy.settle(policy.RETRY_CAP_ATTEMPTS - 1, done=False, now=100,
                              error=failure, kind='laya-compile')

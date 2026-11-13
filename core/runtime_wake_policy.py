@@ -55,13 +55,11 @@ DISPATCH_REASONS = frozenset((
 # A target that has just started (or is still loading) its detached owner is
 # waiting on that owner, not failing. Its wake returns after a fixed delay and
 # does not grow the failure backoff. The query path starts the owner itself,
-# so this retry only has to run the sync once the owner is up; each retry
-# re-verifies the full sealed bundle, so it does not poll at the base delay.
+# so this retry only has to run the sync once the owner is up.
 UNCOUNTED_DISPATCH_REASONS = frozenset(('target_preparing',))
 PREPARING_RETRY_SECS = 15
 # An owner that is still not ready after this long is not loading; something
-# refuses to adopt the install (a newer service holding it read-only, for
-# example). The wake keeps waiting without counting, but at the capped backoff,
+# refuses to adopt the install. The wake keeps waiting without counting, but at the capped backoff,
 # and the streak is reported once (``runtime_work`` keeps its first sighting).
 PREPARING_STALL_SECS = 300
 
@@ -69,20 +67,12 @@ PREPARING_STALL_SECS = 300
 class DispatchFailure(ValueError):
     """A bounded, non-sensitive Laya wake failure for the durable ACK ledger."""
 
-    def __init__(self, code, commit=None, bundle=None, *, detail=None):
+    def __init__(self, code, *, detail=None):
         if code not in DISPATCH_REASONS:
             raise ValueError('invalid_dispatch_reason')
-        if commit is not None and (not isinstance(commit, str) or len(commit) != 40
-                                   or any(c not in '0123456789abcdef' for c in commit)):
-            raise ValueError('invalid_dispatch_identity')
-        if bundle is not None and (not isinstance(bundle, str) or len(bundle) != 64
-                                   or any(c not in '0123456789abcdef' for c in bundle)):
-            raise ValueError('invalid_dispatch_identity')
         if detail is not None and not isinstance(detail, str):
             raise ValueError('invalid_dispatch_detail')
         self.code = code
-        self.commit = commit
-        self.bundle = bundle
         # Bounded local diagnostics (child stderr tail); never in the ledger
         # reason, which stays a fixed non-sensitive shape.
         self.detail = detail
@@ -195,7 +185,7 @@ def failure_reason(error):
     if isinstance(error, TargetMissing):
         return 'target_missing'
     if isinstance(error, DispatchFailure):
-        return 'dispatch:' + error.code + ':' + (error.commit or 'none') + ':' + (error.bundle or 'none')
+        return 'dispatch:' + error.code
     return NOT_DONE_REASON if error is None else type(error).__name__
 
 

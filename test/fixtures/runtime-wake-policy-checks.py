@@ -48,7 +48,7 @@ class PolicyPurity(unittest.TestCase):
 class PolicyDecisions(unittest.TestCase):
     def test_sync_durable_progress_retries_without_counting_only_new_details(self):
         for reason in ('schema3_progress_ingest', 'schema3_progress_vector'):
-            failure = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64,
+            failure = policy.DispatchFailure('target_deferred',
                                              detail='deferred:pending:' + reason)
             attempts = 7
             for _ in range(5):
@@ -59,10 +59,10 @@ class PolicyDecisions(unittest.TestCase):
         for detail in ('deferred:pending:schema3_ingest_backlog',
                        'deferred:pending:schema3_vector_fill',
                        'deferred:pending:schema3_progress_ingest_extra'):
-            failure = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64, detail=detail)
+            failure = policy.DispatchFailure('target_deferred', detail=detail)
             step = policy.settle(7, done=False, error=failure, now=100, kind='laya-sync')
             self.assertEqual((step['ack'], step['count'], step['due']), (False, 1, 400))
-        failure = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64,
+        failure = policy.DispatchFailure('target_deferred',
                                          detail='deferred:pending:schema3_progress_ingest')
         self.assertEqual(policy.settle(0, done=False, error=failure, now=100,
                                        kind='laya-compile')['count'], 1)
@@ -133,16 +133,16 @@ class PolicyDecisions(unittest.TestCase):
                          {'ack': False, 'due': 30, 'reason': 'pending', 'count': 1})
         self.assertEqual(policy.settle(0, done=False, error=RuntimeError('x'), now=10),
                          {'ack': False, 'due': 15, 'reason': 'RuntimeError', 'count': 1})
-        deferred = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64)
+        deferred = policy.DispatchFailure('target_deferred')
         self.assertEqual(policy.settle(0, done=False, error=deferred, now=10),
                          {'ack': False, 'due': 15, 'count': 1,
-                          'reason': 'dispatch:target_deferred:' + 'a' * 40 + ':' + 'c' * 64})
+                          'reason': 'dispatch:target_deferred'})
         with self.assertRaises(ValueError):
-            policy.DispatchFailure('private/path', 'a' * 40)
+            policy.DispatchFailure('private/path')
 
     def test_laya_retry_cap_drops_instead_of_retrying_forever(self):
         cap = policy.RETRY_CAP_ATTEMPTS
-        deferred = policy.DispatchFailure('target_deferred', 'a' * 40, 'c' * 64)
+        deferred = policy.DispatchFailure('target_deferred')
         for kind in ('laya-sync', 'laya-compile'):
             below = policy.settle(cap - 2, done=False, error=deferred, now=10, kind=kind)
             self.assertEqual((below['ack'], below.get('drop')), (False, None))
@@ -150,7 +150,7 @@ class PolicyDecisions(unittest.TestCase):
             self.assertEqual((at['ack'], at['drop'], at['count']), (True, 'retry_cap', 1))
             self.assertEqual(at['reason'], policy.failure_reason(deferred))
         # Waiting on a starting owner is not a failure and never reaches the cap.
-        preparing = policy.DispatchFailure('target_preparing', 'a' * 40, 'c' * 64)
+        preparing = policy.DispatchFailure('target_preparing')
         self.assertFalse(policy.settle(cap * 3, done=False, error=preparing, now=10,
                                        kind='laya-sync')['ack'])
         # Other kinds keep their own retry semantics.
@@ -295,12 +295,12 @@ runtime._handoff_worker(queue,fd)
         self.queue.put('laya-sync', '/synthetic/a', now=0)
         original = self.rows()[0]['revision']
         def failed(_row):
-            raise policy.DispatchFailure('target_child_failed', 'b' * 40, 'd' * 64)
+            raise policy.DispatchFailure('target_child_failed')
         self.drain(failed)
         retained = self.rows()[0]
         self.assertEqual(retained['revision'], original)
         self.assertEqual(retained['attempts'], 1)
-        self.assertEqual(retained['reason'], 'dispatch:target_child_failed:' + 'b' * 40 + ':' + 'd' * 64)
+        self.assertEqual(retained['reason'], 'dispatch:target_child_failed')
 
     def test_laya_handler_receives_existing_uid_lease_for_owned_child(self):
         self.queue.put('laya-sync', '/synthetic/a', now=0)
@@ -469,7 +469,7 @@ runtime._handoff_worker(queue,fd)
         def execute(row):
             attempts.append(wall[0])
             if len(attempts) == 1:
-                raise policy.DispatchFailure('target_child_failed', 'a' * 40, 'c' * 64)
+                raise policy.DispatchFailure('target_child_failed')
             return True
         self.queue.put('laya-sync', '/synthetic/a', now=wall[0])
         lease = runtime._lock(self.root / 'runtime-worker.lock')
@@ -588,7 +588,7 @@ runtime._handoff_worker(queue,fd)
             # another reason: a counted attempt, and the streak restarts.
             target.mkdir(parents=True)
             with patch.object(laya_runtime_dispatch, 'run', side_effect=policy.DispatchFailure(
-                    'target_child_failed', 'a' * 40, 'c' * 64)):
+                    'target_child_failed')):
                 run(row['due'])
             row, = self.rows()
             self.assertEqual(row['attempts'], 1)
@@ -619,7 +619,7 @@ runtime._handoff_worker(queue,fd)
         entry, = self.drops().values()
         self.assertEqual((entry['reason'], entry['attempts'], entry['kind']),
                          ('retry_cap', policy.RETRY_CAP_ATTEMPTS, 'laya-compile'))
-        self.assertTrue(entry['lastFailure'].startswith('dispatch:target_deferred:'))
+        self.assertTrue(entry['lastFailure'].startswith('dispatch:target_deferred'))
         # A later request starts a fresh history.
         self.queue.put('laya-compile', '/synthetic/a', now=200)
         self.assertEqual(self.rows()[0]['attempts'], 0)
@@ -646,7 +646,7 @@ runtime._handoff_worker(queue,fd)
 
     def failing(self, code, *, detail=None):
         def execute(_row):
-            raise policy.DispatchFailure(code, 'a' * 40, 'c' * 64, detail=detail)
+            raise policy.DispatchFailure(code, detail=detail)
         return execute
 
     def test_preparing_owner_wait_does_not_grow_the_backoff(self):
@@ -654,7 +654,7 @@ runtime._handoff_worker(queue,fd)
         self.drain(self.failing('target_preparing'), wall=100)
         row, = self.rows()
         self.assertEqual((row['attempts'], row['due']), (0, 100 + policy.PREPARING_RETRY_SECS))
-        self.assertTrue(row['reason'].startswith('dispatch:target_preparing:'))
+        self.assertTrue(row['reason'].startswith('dispatch:target_preparing'))
         for wall in (200, 300, 400):
             self.drain(self.failing('target_child_failed'), wall=wall)
         self.assertEqual(self.rows()[0]['attempts'], 3)
@@ -667,10 +667,9 @@ runtime._handoff_worker(queue,fd)
         self.assertEqual(self.rows()[0]['attempts'], 4)
 
     def test_preparing_that_never_ends_backs_off_and_is_reported_once(self):
-        # A service that never adopts the install (a newer bundle in read-only
-        # mode) used to be polled every 15 s for days without any report.
+        # A service that never adopts the install is reported after a bounded wait.
         stall = policy.PREPARING_STALL_SECS
-        preparing = policy.DispatchFailure('target_preparing', 'a' * 40, 'c' * 64)
+        preparing = policy.DispatchFailure('target_preparing')
         early = policy.settle(0, done=False, error=preparing, now=100, kind='laya-sync',
                               preparing=(100 - stall + 1, 20))
         self.assertEqual((early['ack'], early['count'], early['due'], early.get('stalled')),
@@ -809,7 +808,7 @@ runtime._handoff_worker(queue,fd)
         detail = 'exit 1\n' + 'x' * 9000 + 'IndexContractError: provider_unavailable'
         self.drain(self.failing('target_child_failed', detail=detail), wall=100)
         row, = self.rows()
-        self.assertEqual(row['reason'], 'dispatch:target_child_failed:' + 'a' * 40 + ':' + 'c' * 64)
+        self.assertEqual(row['reason'], 'dispatch:target_child_failed')
         path = self.root / runtime.FAILURE_DETAIL_FILE
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         import json
