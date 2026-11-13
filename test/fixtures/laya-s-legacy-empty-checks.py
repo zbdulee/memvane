@@ -119,6 +119,26 @@ class EmptyLegacyChecks(journal.Schema3EndpointChecks):
                 self.assertEqual(view.head(handle), published)
 
 
+    def test_replayed_legacy_publication_after_a_new_commit_refuses_like_the_generation_format(self):
+        """A crash after the commit and before the receipt, then a commit on the same branch: the
+        replay with a fresh handle no longer names the published checkout."""
+        import os
+        import subprocess
+        git = ['git', '-C', str(self.case.project), '-c', 'commit.gpgsign=false', '-c',
+               'core.hooksPath=' + os.devnull, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']
+        for name, path, worktree_id in self.formats():
+            with self.subTest(format=name), self.legacy_stage(path, worktree_id) as (view, handle, head, gen, proof):
+                published = view.publish_generation(handle, gen, expected_head=head, legacy_snapshot=proof)
+                subprocess.run(git + ['commit', '--allow-empty', '-qm', 'after ' + name],
+                               check=True, capture_output=True, timeout=10)
+                time.sleep(1.1)
+                moved = view.capture_view(worktree_id)
+                self.assertNotEqual(moved.head_oid, handle.head_oid)
+                self.refused('generation_binding_mismatch', view.publish_generation, moved, gen,
+                             expected_head=head, legacy_snapshot=proof)
+                self.assertEqual(view.head(moved), published)
+
+
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for name in loader.getTestCaseNames(EmptyLegacyChecks):
