@@ -26,6 +26,7 @@ MARKETPLACE = 'memvane-marketplace'
 REPOSITORY = 'zbdulee/memvane'
 
 STATE_PARTS = ('.local', 'state', NAME, 'v1')
+STATE_FORMAT = 1
 
 
 def _home(home=None):
@@ -59,6 +60,9 @@ def installs_base(home=None):
 
 def ensure_state_layout(home=None):
     """Create or validate the private v1 format marker without replacing it."""
+    from memvane_version import same_major
+    if not same_major(STATE_FORMAT):
+        raise ValueError('state_format_mismatch')
     base = state_base(home)
     info = base.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
