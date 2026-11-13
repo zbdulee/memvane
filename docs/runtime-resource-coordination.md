@@ -70,8 +70,7 @@ development execution guard is separate; see
   and never holds the provider lane. The service-wide load lock is held from
   that check until the worker is ready, so two loads never pass one check.
   Every new worker start (a restart included) first proves the installation's
-  full attestation; a read-only proof (bundle drift) only attaches to a
-  running worker. A v5 installation's attestation re-proves its journal
+  full attestation. A v5 installation's attestation re-proves its journal
   before and after hashing the runtime files, each time under the queue
   owner and the v5 lifetime and physical windows of the journal-bound root
   (the hashing holds neither); a busy owner or window defers the start
@@ -99,8 +98,7 @@ development execution guard is separate; see
   observations inside the seven-second maximum gap; startup-failure backoff and
   cooldown remain separate. The service adopts an installation by holding its
   `.resident.lock`/`.lock`, binding its sealed `runtime/laya-embed.sock` and
-  writing its owner state; a route change (upgrade fence, restore,
-  withdrawal) releases that installation within one second. A dead worker
+  writing its owner state; a route change (restore or withdrawal) releases that installation within one second. A dead worker
   releases its installations as `worker_exited`; the service itself re-loads
   and re-adopts them from its registry without waiting for a hook. Three
   transient start failures enter a 300-second cooldown, then a fresh retry
@@ -620,25 +618,6 @@ from injected analytical tests; the shared OS reporter always attaches it.
   protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
   A learning client of the same version that needs its trainer interpreter
   replaces the service under that interpreter, which is then remembered.
-  Installs of one release can be bound to either host's copy: the bundle
-  upgrade binds each install to the host that ran it first and seals the
-  other host's copy as its companion. A service running from one copy proves
-  an install bound to the other copy under the same queue owner and v5
-  lifetime and physical windows as its own installs (the v5 plan captured
-  for the journal-bound root), with the hooks' full selected proof inside
-  them (the journal-bound owner copy and the executing copy proven as the
-  same sealed bundle). Writers keep the plan pinned to the root they
-  execute from. It then starts or shares that install's worker as for its
-  own installs.
-  A same-version service started from a cache the installations' journals do
-  not approve (an unsealed or unequal copy of one release) proves them only as
-  bundle drift: it attaches read-only and starts no model worker, so it
-  reports `readOnlyOnly` while no worker runs or loads and an installation
-  waits `read_only_no_worker`. A hook or wake whose own code proves that
-  installation `selected` (or `preview`) then asks it to drain
-  (`read_only_handover`; refused while any worker runs) and starts the
-  successor from its own cache. A caller that would itself attach read-only
-  never asks, so the two hosts' caches do not alternate.
 - An installation still owned by a per-project resident of an earlier bundle
   is adopted after the shared worker is ready: the service signals only the
   one Python process whose real argv (macOS `KERN_PROCARGS2`, Linux

@@ -50,7 +50,7 @@ owner 목표: MemVane은 사용자 전역 플러그인이다. hook이 도는 세
   - 격리: B 카드를 A 세션에 주입하는 것을 기본 허용할지 정한다. owner 목표는 허용이다. 프로젝트별 opt-out 설정 키가 필요한지도 정한다.
   - 작업 집합 저장 위치·수명: 세션 id, TTL, 호스트별(Claude·Codex·Hermes) 동일 동작, subagent 세션 처리(「recall 품질」의 subagent 주입 항목과 함께 정한다).
   - 선택 기준: cwd 프로젝트, 작업 집합, 프롬프트 언급 경로의 우선순위와 동률 처리.
-  - 연결 worktree·preview·blocked·bundle drift 대상의 처리. 지금 라우팅 제외 규칙과 맞춘다.
+  - 연결 worktree·preview·blocked 대상의 처리. 지금 라우팅 제외 규칙과 맞춘다.
   - 미온보딩 루트의 SessionStart 안내: 하위에 선택 프로젝트가 있으면 안내 문구를 바꿀지 정한다.
 - **검증 기준.**
   - 미온보딩 monorepo 루트 세션에서 하위 선택 프로젝트 원문을 고치면 그 프로젝트 카드가 생긴다. 다음 프롬프트에 그 카드가 주입된다.

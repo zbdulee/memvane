@@ -44,7 +44,7 @@ owner는 현재 blob이 같은 원문만 B의 편집 이벤트 compile 정책으
 편집 호스트를 compile 행에 보존한다. 삭제는 기존 위키 수명 주기에 요청한다.
 원문 소실 판정과 카드 퇴역에는 기존 Git 계보·대량 삭제 가드가 적용된다.
 
-미온보딩·preview·연결 worktree·blocked·bundle drift 대상은 알림을 받지 않는다.
+미온보딩·preview·연결 worktree·blocked 대상은 알림을 받지 않는다.
 숨김 경로·도구 메타데이터·wiki·`skipPaths` 경로·symlink 탈출도 제외한다.
 onboarding never/skip은 안내만 숨기므로 이미 선택된 프로젝트를 비활성화하지 않는다.
 

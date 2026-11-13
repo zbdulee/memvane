@@ -229,11 +229,9 @@ route proof and the selected store are bound to the installation state.
 
 Project settings, wiki cards and runtime files live under `.memvane/`.
 
-### Bundle trust boundary
+### Installation trust boundary
 
-A selected installation verifies the running plugin bundle and its attestation
-before opening the store. Bundle drift permits only a separately proved
-read-only route.
+A selected installation verifies its journal and selected store before opening the store.
 
 ### Hook Budget and Detached Jobs
 
@@ -771,8 +769,8 @@ the diagnostic codes on the way (`laya_vector_*`, `laya_selector_*`,
 `laya_selector_selected_zero`, `laya_exclusion_candidate_capped`, ...). It also
 carries `cards` (`[{path, sha}]`, exactly the injected cards), `count`,
 `candidates`, `selection`, `selection_fallback`, `vector_fallback`, `degraded`
-(`bundle_drift`, `worktree`, `reader_endpoint` or `preview`), `store_format` and
-`reader_endpoint` (a recall the schema3 reader served), `drift`, `retry`, `generation`,
+(`worktree`, `reader_endpoint` or `preview`), `store_format` and
+`reader_endpoint` (a recall the schema3 reader served), `retry`, `generation`,
 `filtered_count`/`filtered_reasons` and `prompt` (`{sha256, chars}`).
 
 The only code path that reads the log back is the compile worker's
