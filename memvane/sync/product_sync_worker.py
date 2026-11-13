@@ -475,7 +475,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     if vectors is None:
         vectors = {'spec': None}
     from memvane.store import api as v
-    from memvane.store.checkout import checkout_view as checkout
+    from memvane.store import api as checkout
     from memvane.journal import writer_scope as normal
     from memvane.store.view.view_store import ViewStore
     info = normal.writer_store(writer)
@@ -593,7 +593,7 @@ def _schema3_linked_worktree(store, writer, proof, info, project, deadline, mark
     The record is built by ``laya_checkout_view.register_worktree`` and bound
     by ``ViewStore.register_worktree`` (no rebinding of an existing row).
     """
-    from memvane.store.checkout import checkout_view as checkout
+    from memvane.store import api as checkout
     with store._session() as db:
         rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
                           (str(project),)).fetchall()

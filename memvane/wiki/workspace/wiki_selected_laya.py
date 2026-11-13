@@ -167,7 +167,7 @@ class _Schema3Checkout:
                     and reader.persistent_node_equal(current['db_node'], record['db_node']))
 
     def capture(self):
-        from memvane.store.checkout import checkout_view as checkout
+        from memvane.store import api as checkout
         if not self._selection_current():
             raise ValueError('reader_selection_changed')
         capture = checkout.capture_view(self.decision['projectRoot'], self.repository,
@@ -177,7 +177,7 @@ class _Schema3Checkout:
         return capture
 
     def matches(self, capture):
-        from memvane.store.checkout import checkout_view as checkout
+        from memvane.store import api as checkout
         return (self._selection_current()
                 and checkout.capture_matches(capture, self.repository, self.worktree, fresh=True)
                 and self._selection_current())

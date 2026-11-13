@@ -48,10 +48,7 @@ CAPTURE_FIELDS = {'schema', 'projectRoot', 'repoId', 'worktreeId', 'viewId',
                   'branchKey', 'headOid', 'gitObjectFormat', 'evidence', 'checkoutDigest'}
 
 
-class CheckoutUnavailable(RuntimeError):
-    def __init__(self, reason):
-        self.reason = reason
-        super().__init__(reason)
+from memvane.store.types import CheckoutUnavailable
 
 
 def _fail(reason):

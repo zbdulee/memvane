@@ -410,7 +410,7 @@ def _request_build_wake(project_root):
 def _create_v1_store(project_root, state_root, scope_id):
     """Create one new format-4 store under the installer's lock."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
-    from memvane.store.checkout import checkout_view as checkout
+    from memvane.store import api as checkout
     from memvane.store.view.view_store import ViewStore
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)

@@ -1,7 +1,27 @@
 """Public store value operations."""
 from __future__ import annotations
 
-from memvane.store.types import BlobStoreError, MAX_BODY, MAX_CHUNKS, SHA, UUID
+from memvane.store.types import BlobStoreError, CheckoutUnavailable, MAX_BODY, MAX_CHUNKS, SHA, UUID
+
+
+def capture_matches(*args, **kwargs):
+    from memvane.store.checkout.checkout_view import capture_matches as implementation
+    return implementation(*args, **kwargs)
+
+
+def capture_view(*args, **kwargs):
+    from memvane.store.checkout.checkout_view import capture_view as implementation
+    return implementation(*args, **kwargs)
+
+
+def register_repository(*args, **kwargs):
+    from memvane.store.checkout.checkout_view import register_repository as implementation
+    return implementation(*args, **kwargs)
+
+
+def register_worktree(*args, **kwargs):
+    from memvane.store.checkout.checkout_view import register_worktree as implementation
+    return implementation(*args, **kwargs)
 
 
 def attestation(*args, **kwargs):

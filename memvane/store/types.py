@@ -13,3 +13,9 @@ class BlobStoreError(ValueError):
     def __init__(self, reason):
         self.reason = reason
         super().__init__(reason)
+
+
+class CheckoutUnavailable(RuntimeError):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
