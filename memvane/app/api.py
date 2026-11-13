@@ -9,3 +9,10 @@ class _RuntimeDispatchOperations:
 
 
 _runtime_dispatch = _RuntimeDispatchOperations()
+
+
+class _SetupWorkflowOperations:
+    def __getattr__(self, name):
+        return getattr(_import_module('memvane.app.setup_workflow'), name)
+
+_setup_workflow = _SetupWorkflowOperations()

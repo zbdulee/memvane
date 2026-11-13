@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
-import fcntl
 import hashlib
 import json
 import os
@@ -16,12 +14,12 @@ import sys
 import time
 
 from memvane.settings import api as project_dir, types as project_types
+from memvane.install.types import InstallBlocked
+from memvane.install.api import install_lock as _install_lock
+from memvane.install.api import _initial_build as initial_build
+from memvane.install.api import _ledger
 
 from memvane.journal.api import inspect_journal
-
-
-class InstallBlocked(RuntimeError):
-    pass
 
 
 _REVIEWED_MODEL_BASENAMES = frozenset((
@@ -71,25 +69,6 @@ def _prepare_state_root(path, install_id):
             _fail('unsafe_state_root_ancestor')
     memvane_paths.ensure_state_layout()
     return _private_parent(root)
-
-
-@contextmanager
-def _install_lock(parent):
-    target = parent / 'laya-install.lock'
-    fd = os.open(target, os.O_RDWR | os.O_CREAT |
-                 getattr(os, 'O_NOFOLLOW', 0), 0o600)
-    try:
-        info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
-                info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
-            _fail('unsafe_install_lock')
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise InstallBlocked('install_busy') from exc
-        yield
-    finally:
-        os.close(fd)
 
 
 def _read_private(path, limit):
@@ -488,7 +467,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
 
 def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id):
     """Register the reviewed single-store build under the existing install lock."""
-    from memvane.install import initial_build as initial_build
+    from memvane.install.api import _initial_build as initial_build
     from memvane.journal.api import _api_stage_v1_attestation as stage_v1_attestation, _api_create_v1_journal as create_v1_journal
     existing = initial_build.lookup(plan['projectRoot'])
     if existing is not None and (existing['identity']['stateRoot'] != str(state)
@@ -534,7 +513,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
 
 def initial_build_status(state_root):
     """Read the single-store build's durable phase."""
-    from memvane.install import initial_build as initial_build
+    from memvane.install.api import _initial_build as initial_build
     state = _private_parent(state_root)
     record = initial_build.read_v1(state)
     if record is None:
@@ -545,7 +524,7 @@ def initial_build_status(state_root):
 
 def request_initial_build_rescan(state_root):
     """Request another bounded build pass through the existing sync wake."""
-    from memvane.install import initial_build as initial_build
+    from memvane.install.api import _initial_build as initial_build
     state = _private_parent(state_root)
     with _install_lock(state), initial_build.owner(state) as owned:
         if not owned:
@@ -560,7 +539,7 @@ def request_initial_build_rescan(state_root):
 
 def finalize_initial_build(*, project_root, state_root):
     """Seal the ready single-store head in the prepared journal and ledger."""
-    from memvane.install import initial_build as build
+    from memvane.install.api import _initial_build as build
     from memvane.journal.api import _install_journal as journal
     from memvane.journal.api import _reader as reader
     from memvane.app.api import _runtime_dispatch as dispatch
@@ -570,7 +549,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.wiki.workspace.api import file_coordination as workspace_files
     from contextlib import closing
     from memvane.store.api import regular as _regular
-    from memvane.install.ledger_common import _read_json, _write
+    _read_json, _write = _ledger._read_json, _ledger._write
     from memvane.store.api import view_store_class, skip_patterns as _skip_patterns
     ViewStore = view_store_class()
     from memvane.store.api import provider_spec
@@ -716,7 +695,7 @@ def _checked_project(project_root):
 
 def activate_origin_selection(project_root, journal_path, route_bytes):
     """Publish or recover the proved v1 selection under the install lock."""
-    from memvane.install import initial_build as build
+    from memvane.install.api import _initial_build as build
     from memvane.journal.api import _install_journal as journal_module
     from memvane.journal.api import _reader as reader
     from memvane.sync import api as sync
@@ -726,7 +705,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from contextlib import closing
     from memvane.route.api import classify_v4 as _classify_v4
     from memvane.route.types import SELECTION_SCHEMA_V1
-    from memvane.install.ledger_common import _read_json, _write
+    _read_json, _write = _ledger._read_json, _ledger._write
     from memvane.journal.api import _api_reader_lifetime as reader_lifetime
     from memvane.runtime.api import sync_owner
     project = _checked_project(project_root)
@@ -830,7 +809,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
     """Finish the same partially published or withdrawn v1 selection."""
-    from memvane.install.ledger_common import _read_json
+    _read_json = _ledger._read_json
     state = Path(journal_path).parent
     ledger = _read_json(state / 'ledger.json')
     if ledger.get('phase') in ('restoring', 'restored'):
@@ -845,11 +824,11 @@ def restore_origin_selection(*, project_root, state_root):
     with _install_lock(state):
         return _restore_v1_locked(project, state)
 def _restore_v1_locked(project, state):
-    from memvane.install import initial_build as build
+    from memvane.install.api import _initial_build as build
     from memvane.journal.api import _install_journal as journal
     from contextlib import closing
     from memvane.route.types import SELECTION_SCHEMA_V1
-    from memvane.install.ledger_common import _read_json, _write, _fsync_dir
+    _read_json, _write, _fsync_dir = _ledger._read_json, _ledger._write, _ledger._fsync_dir
     from memvane.journal.api import _api_reader_lifetime as reader_lifetime
     from memvane.runtime.api import sync_owner
     from memvane.wiki.workspace.api import file_coordination as workspace_files

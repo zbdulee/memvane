@@ -1057,7 +1057,7 @@ Scenarios respect domain ownership. Two rules apply:
 | `memvane/sync/sync_owner_lock.py`, `memvane/sync/product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
 | `memvane/wiki/**`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `memvane/learning/**` | RES-01, RES-02 |
-| `memvane/app/setup_entry.py`, `memvane/install/product_install.py`, `memvane/provider/embed_runtime.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
+| `memvane/app/setup_entry.py`, `memvane/app/setup_workflow.py`, `memvane/provider/embed_runtime.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
 | `memvane/runtime/runtime_work.py`, `memvane/runtime/runtime_wake_policy.py`, resource coordination modules | RES-01, RES-02, RACE-01 |
 | `memvane/settings/config.py`, `memvane/route/index_host_route.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
 | Version strings only | INST-01, INST-02 |

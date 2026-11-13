@@ -198,7 +198,8 @@ def _state_locks(state_root):
     """Repository order: install lock, then build owner; both non-blocking."""
     from contextlib import ExitStack
     from memvane.install import initial_build as initial_build
-    from memvane.install.product_install import InstallBlocked, _install_lock
+    from memvane.install.types import InstallBlocked
+    from memvane.install.api import install_lock as _install_lock
     stack = ExitStack()
     try:
         stack.enter_context(_install_lock(Path(state_root)))

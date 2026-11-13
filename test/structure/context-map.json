@@ -184,11 +184,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/install/product_install.py": {
-      "context": "install",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/install/runtime_wake_cancel.py": {
       "context": "install",
       "layer": "adapter",
@@ -1556,6 +1551,16 @@
     },
     "memvane/app/api.py": {
       "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/setup_workflow.py": {
+      "context": "app",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/locks.py": {
+      "context": "install",
       "layer": "adapter",
       "pinned": false
     }

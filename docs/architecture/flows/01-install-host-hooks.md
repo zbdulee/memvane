@@ -67,9 +67,9 @@ flowchart TD
 - [`hooks/run-hook`](../../../hooks/run-hook): `engine=gemini`를 받아들입니다. 하지만 공식 Antigravity의 자동 posttool·index·compile은 공식 payload adapter가 생길 때까지 비활성입니다.
 - Hermes: 별도 Python plugin으로, `post_tool_call`을 관찰만 합니다. 이 문서의 `run-hook` route·enqueue·compile 경로에는 속하지 않습니다.
 - [`memvane/app/setup_entry.py:56-106`](../../../memvane/app/setup_entry.py#L56-L106): 설치자 action 목록과 `--approve-*` 승인 플래그입니다. `index-runtime-status`·`provision-index-runtime`·`gc-index-runtime`은 `--project` 없이 실행합니다.
-- [`memvane/app/setup_entry.py:131-279`](../../../memvane/app/setup_entry.py#L131-L279): index-origin 계열 action을 `product_install`에 위임합니다.
-- `memvane/install/product_install.py` `plan_fresh_wiki_origin`: 프로젝트 활성 폴더(`.memvane`, 옮기기 전 프로젝트는 `.auto-context`) 아래에 route record나 selection marker가 이미 있으면 계획을 거부합니다.
-- [`memvane/install/product_install.py:565-566`](../../../memvane/install/product_install.py#L565-L566): 설치 state root 아래의 `journal.sqlite`와 `runtime/laya-embed.sock`입니다.
+- [`memvane/app/setup_entry.py:131-279`](../../../memvane/app/setup_entry.py#L131-L279): index-origin 계열 action을 `setup_workflow`에 위임합니다.
+- `memvane/app/setup_workflow.py` `plan_fresh_wiki_origin`: 프로젝트 활성 폴더(`.memvane`, 옮기기 전 프로젝트는 `.auto-context`) 아래에 route record나 selection marker가 이미 있으면 계획을 거부합니다.
+- [`memvane/app/setup_workflow.py:565-566`](../../../memvane/app/setup_workflow.py#L565-L566): 설치 state root 아래의 `journal.sqlite`와 `runtime/laya-embed.sock`입니다.
 
 ### QA 증거와 미검증
 
