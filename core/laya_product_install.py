@@ -776,6 +776,37 @@ def _create_v1_store(project_root, state_root, scope_id):
             'worktree': worktree, 'settingsPolicyDigest': policy}
 
 
+def _create_v1_route(plan, state_root, install_id, store, vector_profile):
+    """Stage a route bound to a validated local store and project settings."""
+    from memvane_execution_guard import require_cached_plugin_for_live_write
+    from memvane_version import same_major
+    from laya_index_host_route import SCHEMA_V4, _classify_v4
+    from laya_install_journal import _route
+    state = _private_parent(state_root)
+    require_cached_plugin_for_live_write(state)
+    if not same_major(1):
+        _fail('state_format_mismatch')
+    project = _checked_project(plan['projectRoot'])
+    settings = project_dir.settings_path(project)
+    if settings is None:
+        _fail('origin_settings_unavailable')
+    state_info = state.lstat()
+    route = {'schema': SCHEMA_V4, 'status': 'active', 'projectRoot': str(project),
+             'settingsSha256': _settings_identity(plan), 'stateRoot': str(state),
+             'stateNode': [state_info.st_dev, state_info.st_ino],
+             'storePath': store['storePath'], 'storeNode': store['storeNode'],
+             'storeIncarnation': store['storeIncarnation'], 'installId': install_id,
+             'scopeId': plan['scopeId'], 'stateFormat': 1,
+             'collections': plan['collections'], 'vectorProfile': vector_profile}
+    raw = json.dumps(route, sort_keys=True, ensure_ascii=False,
+                     separators=(',', ':')).encode('utf-8')
+    _route(raw, state / 'journal.sqlite')
+    if _classify_v4(project, settings, route).get('state') != 'candidate':
+        _fail('origin_route_unproved')
+    _write_or_verify_private(state / 'route.json', raw)
+    return raw
+
+
 def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256,
                             source_root, plugin_root, state, journal, socket,
                             commit_id, install_id):
