@@ -86,17 +86,46 @@ def resolve(kind, value):
             journal = inspect_journal(identity['journalPath'])
         except (OSError, RuntimeError, ValueError) as exc:
             raise DispatchFailure('target_journal_changed') from exc
-        pending = journal.get('pending')
-        if (journal.get('state') != 'candidate_ready' or not isinstance(pending, dict)
-                or journal.get('projectRoot') != str(project)):
-            raise DispatchFailure('target_journal_changed')
-        try:
-            proof = preflight_product_candidate(identity['journalPath'])
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise DispatchFailure('target_journal_changed') from exc
-        if (proof['pendingRouteSha256'] != identity['routeSha256'] or
-                proof['attestationSha256'] != identity['attestationSha256']):
-            raise DispatchFailure('target_journal_changed')
+        if record.get('schema') == 'memvane-initial-build-v1':
+            from laya_install_journal import _attestation, _route, _v1_provider_manifest
+            from laya_index_host_route import _classify_v4, _read_regular, MAX_RECORD_BYTES
+            import hashlib
+            import project_dir
+            try:
+                state = Path(identity['stateRoot'])
+                raw = _read_regular(state / 'route.json', MAX_RECORD_BYTES)
+                route_record, _ = _route(raw, Path(identity['journalPath']))
+                candidate = _classify_v4(project, project_dir.settings_path(project),
+                                         route_record)
+                attestation, digest = _attestation(Path(identity['journalPath']))
+                _v1_provider_manifest(attestation, journal['vectorProfile'])
+                if (candidate.get('state') != 'candidate'
+                        or hashlib.sha256(raw).hexdigest() != identity['routeSha256']
+                        or journal['state'] != 'prepared'
+                        or journal['routeSha256'] != identity['routeSha256']
+                        or digest != journal['attestationSha256']
+                        or digest != identity['attestationSha256']
+                        or candidate['vectorProfile'] != journal['vectorProfile']
+                        or any(journal[key] != identity[key] for key in
+                               ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))
+                        or any(candidate[key] != identity[key] for key in
+                               ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))):
+                    raise ValueError('initial_build_identity_changed')
+                proof = {'stateFormat': journal['stateFormat'], 'writerFloor': journal['writerFloor']}
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+                raise DispatchFailure('target_journal_changed') from exc
+        else:
+            pending = journal.get('pending')
+            if (journal.get('state') != 'candidate_ready' or not isinstance(pending, dict)
+                    or journal.get('projectRoot') != str(project)):
+                raise DispatchFailure('target_journal_changed')
+            try:
+                proof = preflight_product_candidate(identity['journalPath'])
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise DispatchFailure('target_journal_changed') from exc
+            if (proof['pendingRouteSha256'] != identity['routeSha256'] or
+                    proof['attestationSha256'] != identity['attestationSha256']):
+                raise DispatchFailure('target_journal_changed')
         stable = {'installId': identity['installId'], 'scopeId': identity['scopeId'],
                   'storeIncarnation': identity['storeIncarnation'],
                   'storePath': identity['storePath'], 'journalPath': identity['journalPath']}
