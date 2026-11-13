@@ -134,7 +134,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         ``_query_only_uri`` is ``mode=ro`` except on macOS Python 3.9, whose
         Apple SQLite cannot open a WAL database read-only without ``-wal``.
         """
-        from laya_index_a import _query_only_uri
+        from laya_store_primitives import _query_only_uri
         inside={index for start,end in spans for index in range(start,end)}
         sync=[call for index,call in enumerate(calls) if index not in inside]
         shadow=[call for index,call in enumerate(calls) if index in inside]

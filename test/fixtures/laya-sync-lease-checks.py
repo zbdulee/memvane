@@ -16,7 +16,7 @@ from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'core'))
-import laya_index_sync as sync
+import sync_owner_lock as sync
 
 PROBE=r'''
 import fcntl,json,os,signal,sys
@@ -35,7 +35,7 @@ from pathlib import Path
 signal.alarm(4)
 sys.path.insert(0,sys.argv[1])
 from laya_index_a import IndexContractError
-from laya_index_sync import sync_owner
+from sync_owner_lock import sync_owner
 try:
     with sync_owner(Path(sys.argv[2])) as owner:
         result=dict(acquired=owner is not None,error=None)
@@ -49,7 +49,7 @@ from pathlib import Path
 signal.alarm(8)
 sys.path.insert(0,sys.argv[1])
 try:
-    import laya_index_sync as sync
+    import sync_owner_lock as sync
     with sync._owner_lock(Path(sys.argv[2])) as owned:
         result=dict(owned=owned,exactBool=type(owned) is bool,error=None,module=sync.__file__)
 except Exception as exc:result=dict(owned=False,error=type(exc).__name__+': '+str(exc))

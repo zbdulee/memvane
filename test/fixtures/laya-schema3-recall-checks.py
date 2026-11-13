@@ -347,7 +347,7 @@ class Schema3RecallChecks(unittest.TestCase):
 
     # ---- hot rollback journal ----------------------------------------------
     def test_07_hot_journal_refuses_recall_with_recovery_reason_and_offers_sync(self):
-        from laya_index_a import _query_only_uri
+        from laya_store_primitives import _query_only_uri
         import runtime_work
         case = self.case
         self.u10.switched()
