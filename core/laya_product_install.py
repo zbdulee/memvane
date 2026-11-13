@@ -563,8 +563,6 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             not isinstance(accepted_provider_sha256, str) or
             not re.fullmatch(r'[0-9a-f]{64}', accepted_provider_sha256)):
         _fail('invalid_origin_preparation_request')
-    if Path(source_root).resolve(strict=True) == Path(plugin_root).resolve(strict=True):
-        _fail('source_checkout_cannot_be_installed_root')
     state = _prepare_state_root(state_root, install_id)
     journal = state / 'journal.sqlite'
     socket = state / 'runtime' / 'laya-embed.sock'
@@ -579,16 +577,12 @@ def prepare_fresh_wiki_origin(*, project_root, source_root, plugin_root, state_r
             model_path=model_path, dimension=dimension)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
-        provider, donor = _profile_donor(review['reviewedProvider'],
-                                         plugin_root=plugin_root, state=state)
         result = _register_initial_build(
-            plan=plan, reviewed_provider=provider,
+            plan=plan, reviewed_provider=review['reviewedProvider'],
             provider_proposal_sha256=accepted_provider_sha256,
             source_root=source_root, plugin_root=plugin_root, state=state,
             journal=journal, socket=socket, commit_id=commit_id,
             install_id=install_id)
-        if donor is not None:
-            result['profileDonor'] = donor
         return result
 
 
@@ -757,12 +751,29 @@ def _create_v1_store(project_root, state_root, scope_id):
     project = _checked_project(project_root)
     path = state / 'store.sqlite'
     if path.exists() or path.is_symlink():
-        _fail('initial_store_already_exists')
-    repository = checkout.register_repository(str(project))
-    worktree = checkout.register_worktree(str(project), repository)
-    store = ViewStore.create(path, project_root=str(project), repository=repository,
-                             worktree=worktree, scope_id=scope_id)
+        from contextlib import closing
+        from laya_store_primitives import _query_only_uri
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
+            _fail('initial_store_unsafe')
+        with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
+            db.execute('PRAGMA query_only=ON')
+            meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+            rows = db.execute('SELECT record_json FROM worktrees WHERE project_root=?',
+                              (str(project),)).fetchall()
+        if meta is None or len(rows) != 1:
+            _fail('initial_store_identity_changed')
+        repository = json.loads(meta[0], object_pairs_hook=_unique)
+        worktree = json.loads(rows[0][0], object_pairs_hook=_unique)
+        store = ViewStore.open(path, repository=repository, scope_id=scope_id)
+    else:
+        repository = checkout.register_repository(str(project))
+        worktree = checkout.register_worktree(str(project), repository)
+        store = ViewStore.create(path, project_root=str(project), repository=repository,
+                                 worktree=worktree, scope_id=scope_id)
     try:
+        store._observe_worktree(worktree['worktreeId'])
         incarnation = store._incarnation
         policy = store._policy
     finally:
@@ -810,91 +821,45 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
 def _register_initial_build(*, plan, reviewed_provider, provider_proposal_sha256,
                             source_root, plugin_root, state, journal, socket,
                             commit_id, install_id):
-    """Create every store of an inactive initial build and register it once.
-
-    Under the install lock, in order, each step verified-or-created so an
-    interrupted run is resumed by repeating it: exact bundle adoption and
-    attestation; an empty private A-int DB (no-clobber); its claim queue
-    (privately built, hard-linked); the source catalog and binding store
-    bound to that DB incarnation; the reviewed route bytes; the
-    ``candidate_ready`` journal; the build record; the project pointer; and
-    one ``laya-sync`` wake. Nothing reads source bytes, loads a model,
-    copies QMD or writes a project file. The route is published only by a
-    later explicit activation.
-    """
+    """Register the reviewed single-store build under the existing install lock."""
     import laya_initial_build as initial_build
-    from laya_index_a import LayaIndexA
-    from laya_index_host_route import SCHEMA_V3
-    roots = {item['name']: item['sourceRoot'] for item in plan['collections']}
-    proof, profile, _manifest = _adopt_and_attest(
-        source_root=source_root, plugin_root=plugin_root, commit_id=commit_id,
-        reviewed_provider=reviewed_provider,
-        state=state, journal=journal, socket=socket)
-    candidate = state / BUILD_CANDIDATE
-    queue = state / BUILD_QUEUE
-    if not candidate.exists() and not candidate.is_symlink():
-        LayaIndexA(candidate, create=True).close()
-    incarnation = _empty_or_bound_candidate(candidate, plan['scopeId'])
-    if queue.exists() or queue.is_symlink():
-        from contextlib import closing
-        from laya_index_claim_queue import ClaimQueue
-        _finish_interrupted_claim_queue_link(queue, incarnation)
-        with closing(ClaimQueue.open(queue)) as opened:
-            if opened.binding() != incarnation:
-                _fail('partial_queue_requires_recovery')
+    from laya_install_journal import stage_v1_attestation, create_v1_journal
+    existing = initial_build.lookup(plan['projectRoot'])
+    if existing is not None and (existing['identity']['stateRoot'] != str(state)
+                                 or existing['identity']['installId'] != install_id):
+        _fail('initial_build_already_registered')
+    store = _create_v1_store(plan['projectRoot'], state, plan['scopeId'])
+    route_raw = _create_v1_route(plan, state, install_id, store,
+                                 reviewed_provider['vectorProfile'])
+    staged = stage_v1_attestation(journal, reviewed_provider)
+    if journal.exists() or journal.is_symlink():
+        row = inspect_journal(journal)
     else:
-        _publish_claim_queue(queue, incarnation)
-    from laya_index_host_route import wiki_index_roots
-    catalog, store = prepare_capacity_stores(candidate, wiki_index_roots(plan['collections']),
-                                             plan['scopeId'], incarnation)
-    # The route's generation is the install identity token; the bound index
-    # generation it will serve is chosen by the build and bound at finalize.
-    generation = 'g-' + hashlib.sha256(
-        ('laya-origin-generation:' + install_id + ':' +
-         plan['proposalSha256']).encode()).hexdigest()[:32]
-    route = {'schema': SCHEMA_V3, 'status': 'active',
-             'projectRoot': plan['projectRoot'],
-             'settingsSha256': _settings_identity(plan),
-             'dbPath': str(candidate), 'queuePath': str(queue),
-             'dbIncarnation': incarnation, 'scopeId': plan['scopeId'],
-             'collections': plan['collections'],
-             'pluginRoot': str(plugin_root), 'journalPath': str(journal),
-             'installId': install_id, 'generation': generation,
-             'bundleManifestSha256': proof['bundleManifestSha256'],
-             'ownershipManifestSha256': proof['ownershipManifestSha256'],
-             'vectorProfile': profile}
-    route_bytes = json.dumps(route, sort_keys=True, ensure_ascii=False,
-                             separators=(',', ':')).encode('utf-8')
-    if len(route_bytes) > 8192:
-        _fail('origin_route_exceeds_limit')
-    route_file = state / 'reviewed-route.json'
-    _write_or_verify_private(route_file, route_bytes)
-    staged = stage_host_loaded_candidate(
-        source_root=source_root, plugin_root=plugin_root,
-        state_root=state, commit_id=commit_id, route_bytes=route_bytes,
-        reviewed_provider=reviewed_provider, _already_locked=True)
+        row = create_v1_journal(journal, route_raw, staged['attestationSha256'])
+    route_sha = hashlib.sha256(route_raw).hexdigest()
+    if (row['state'] != 'prepared' or row['routeSha256'] != route_sha
+            or row['attestationSha256'] != staged['attestationSha256']
+            or row['installId'] != install_id or row['scopeId'] != plan['scopeId']
+            or row['projectRoot'] != plan['projectRoot']
+            or row['storePath'] != store['storePath']
+            or row['storeInode'] != store['storeNode'][1]
+            or row['storeIncarnation'] != store['storeIncarnation']):
+        _fail('initial_build_journal_changed')
     identity = {'projectRoot': plan['projectRoot'], 'stateRoot': str(state),
                 'installId': install_id, 'scopeId': plan['scopeId'],
-                'collections': plan['collections'], 'candidateDb': str(candidate),
-                'queueDb': str(queue), 'catalogDb': catalog, 'bindingStore': store,
-                'dbIncarnation': incarnation, 'journalPath': str(journal),
-                'routeFile': str(route_file),
-                'routeSha256': hashlib.sha256(route_bytes).hexdigest(),
-                'attestationSha256': staged['attestationSha256'],
-                'vectorProfileId': profile['profileId'],
-                'proposalSha256': plan['proposalSha256'],
-                'providerProposalSha256': provider_proposal_sha256,
-                'originMode': 'fresh_wiki_only'}
-    if identity['routeSha256'] != staged['pendingRouteSha256']:
-        _fail('staged_route_changed')
-    record = initial_build.create_or_verify(identity)
-    pointer = initial_build.register_project(identity)
+                'storePath': store['storePath'], 'storeNode': store['storeNode'],
+                'storeIncarnation': store['storeIncarnation'], 'journalPath': str(journal),
+                'routeSha256': route_sha, 'attestationSha256': staged['attestationSha256']}
+    with initial_build.owner(state) as owned:
+        if not owned:
+            _fail('initial_build_busy')
+        record = initial_build.create_v1(identity)
+        pointer = initial_build.register_project(identity)
     return {'status': 'initial_build_registered',
-            'proposalSha256': plan['proposalSha256'],
-            'journalPath': str(journal),
-            'pendingRouteSha256': staged['pendingRouteSha256'],
-            'candidateDb': str(candidate), 'routeFile': str(route_file),
-            'buildRecord': str(initial_build.record_path(state)),
+            'proposalSha256': plan['proposalSha256'], 'journalPath': str(journal),
+            'pendingRouteSha256': route_sha, 'storePath': store['storePath'],
+            'routeFile': str(state / 'route.json'),
+            'buildRecord': str(state / initial_build.V1_BUILD_FILE),
             'buildPointer': pointer, 'buildPhase': record['phase'],
             'wake': _request_build_wake(plan['projectRoot'])}
 
