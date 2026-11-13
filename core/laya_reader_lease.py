@@ -236,6 +236,26 @@ def _resolve_endpoint(project, *, action, host_root):
     _need(first.get('state') == 'candidate' and first.get('projectRoot') == str(project),
           'reader_selection_unproved')
     path = reader._journal(first['journalPath'])
+    if first.get('routeSchema') == 'memvane-route-v4':
+        with reader_lifetime(first['installId'], exclusive=False):
+            row = journal.inspect_journal(path)
+            _need(row['state'] == 'selected' and isinstance(row['reader'], dict)
+                  and journal.select_route(str(project), action=action) == first,
+                  'reader_selection_unproved')
+            endpoint = reader._issue_v1_reader(path.parent, project, host_root, row['reader'])
+            selected = object.__new__(reader.ReaderSelection)
+            object.__setattr__(selected, 'epoch', row['epoch'])
+            object.__setattr__(selected, 'preferred_endpoint', endpoint.endpoint_id)
+            object.__setattr__(selected, 'previous_endpoint', None)
+            object.__setattr__(selected, 'transition_id', row['installId'])
+            _reader_selections[endpoint] = selected
+            try:
+                _need(journal.inspect_journal(path) == row, 'reader_selection_changed')
+                yield endpoint
+            finally:
+                _reader_selections.pop(endpoint, None)
+                reader._revoke_reader(endpoint)
+        return
     initial = _read_v5_bundle(path)
     _need(initial['state'] in ('active', 'restored_old') and initial['pending'] is None
           and isinstance(initial['selected'], dict), 'reader_selection_unproved')

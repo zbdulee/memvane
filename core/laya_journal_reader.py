@@ -23,6 +23,7 @@ _JOURNAL = 'journal.sqlite'
 _MAX_IMAGE = 16 * 1024 * 1024
 _issued = weakref.WeakKeyDictionary()
 _read_only = weakref.WeakSet()
+_v1_readers = weakref.WeakSet()
 _retained = weakref.WeakSet()
 _upgrade_readers = weakref.WeakSet()
 _bootstrap_endpoints = weakref.WeakSet()
@@ -418,6 +419,49 @@ def _persisted_endpoint(state, project, root, endpoint_id, stored, attestation):
 def _revoke_reader(endpoint):
     _issued.pop(endpoint, None)
     _read_only.discard(endpoint)
+    _v1_readers.discard(endpoint)
+
+
+def _v1_reader_evidence(state, project, saved):
+    """Reprove a selected v1 reader without opening a writable component."""
+    from laya_ledger_common import _private_file
+    decision = journal.select_route(str(project), action='recall')
+    proof = journal.verify_selected_route(decision)
+    row = journal.inspect_journal(Path(state) / _JOURNAL)
+    raw = _private_file(Path(state) / journal.PRODUCTION_ATTESTATION, 1024 * 1024)
+    _need(row['state'] == 'selected' and row['reader'] == saved
+          and _sha(raw) == saved['attestation_sha256']
+          and proof['selectionEpoch'] >= saved['creation_epoch']
+          and saved['project'] == str(project) and saved['state'] == str(state)
+          and saved['install_id'] == proof['installId'] and saved['scope'] == proof['scopeId']
+          and saved['profile'] == proof['vectorProfile']['profileId']
+          and saved['settings'] == _sha(_raw(decision['recallSettings']))
+          and saved['roots'] == decision['collections']
+          and persistent_node_equal(saved['project_node'], _node(project))
+          and persistent_node_equal(saved['state_node'], _node(state)),
+          'reader_endpoint_changed')
+    store = _schema3_store(state, project, proof, decision, saved['db_path'], saved['worktree_id'])
+    _need(records_agree(saved, store, tuple(store)), 'reader_store_changed')
+    _need(journal.inspect_journal(Path(state) / _JOURNAL) == row,
+          'reader_selection_changed')
+    return raw, {**proof, 'readerDecision': decision}
+
+
+def _issue_v1_reader(state, project, root, saved):
+    from laya_reader_lease import _require_reader_scope, _bind_reader_scope
+    scope = _require_reader_scope(saved.get('install_id'))
+    _need(_schema3_shape(saved), 'reader_endpoint_invalid')
+    raw, _proof = _v1_reader_evidence(state, project, saved)
+    packed = _raw(saved)
+    endpoint_id = _sha(b'memvane-reader-endpoint-v1\0' + packed)
+    token = object.__new__(VerifiedEndpoint)
+    object.__setattr__(token, 'endpoint_id', endpoint_id)
+    object.__setattr__(token, 'record', _freeze(saved))
+    _issued[token] = (Path(state), Path(project), Path(root), {}, packed, raw)
+    _read_only.add(token)
+    _v1_readers.add(token)
+    _bind_reader_scope(token, scope)
+    return token
 
 
 def _recheck(endpoint):
@@ -426,6 +470,11 @@ def _recheck(endpoint):
     _check_reader_scope(endpoint)
     state, project, root, options, packed, raw = _issued[endpoint]
     saved = json.loads(packed)
+    if endpoint in _v1_readers:
+        current_raw, proof = _v1_reader_evidence(state, project, saved)
+        _need(current_raw == raw and endpoint.endpoint_id ==
+              _sha(b'memvane-reader-endpoint-v1\0' + packed), 'reader_endpoint_changed')
+        return saved, raw, proof
     record, attestation, proof = _schema3_evidence(state, project, root, saved)
     _need(_match_persisted(state, endpoint.endpoint_id, saved, raw, record, attestation, proof) == packed,
           'reader_endpoint_changed')
