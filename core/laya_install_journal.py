@@ -43,8 +43,6 @@ SCHEMA_V3 = 'laya-installer-journal-v3'
 SCHEMA = 'laya-installer-journal-v4'
 DEVELOPMENT_APPROVAL_SCHEMA = 'laya-development-vector-approval-v1'
 APP_ID = 0x4c594a31
-_INITIAL_INTENT = '.reader-initial-v5'
-_initial_preimage = ContextVar('journal_initial_preimage', default=None)
 VERSION = 4
 # Every journal format this code reads and CAS-writes. A v3 journal still
 # carries the retired global-QMD inventory column; it is never re-checked.
@@ -535,7 +533,6 @@ def _schema_version_read(db):
 
 _reader_no_recovery = ContextVar('journal_reader_no_recovery', default=False)
 _legacy_identity_reads = ContextVar('journal_legacy_identity_reads', default=False)
-_legacy_worker_recovery = ContextVar('journal_legacy_worker_recovery', default=None)
 _writer_identity_reads = ContextVar('journal_writer_identity_reads', default=None)
 _reader_deadline = ContextVar('journal_reader_deadline', default=None)
 _CURRENT_IDENTITY_BINDING = object()
@@ -666,33 +663,6 @@ def legacy_identity_reads():
         _legacy_identity_reads.reset(token)
 
 
-def _recover_interrupted_transaction(path):
-    """Roll back a crashed writer's hot rollback journal, then nothing else.
-
-    A ``mode=ro`` connection cannot roll a hot journal back and fails, which
-    would stop every reader until the next writer. One read on a read-write
-    connection makes SQLite restore the last committed state under its own
-    exclusive lock. A live writer holds RESERVED, so its journal is not hot
-    and is left alone.
-    """
-    side = path.with_name(path.name + '-journal')
-    if os.path.lexists(path.parent / _INITIAL_INTENT):
-        return False
-    if not side.exists() or side.is_symlink():
-        return False
-    # Identify the recovered legacy schema with SQLite on the existing bounded
-    # private copy, before permitting recovery of the original journal.
-    from laya_worker_journal import _probe
-    recovered = _probe(path)
-    if recovered['row']['_version'] not in (3, 4):
-        return False
-    _probe(path, receipt=recovered['receipt'])
-    with closing(sqlite3.connect(path.as_uri() + '?mode=rw', uri=True, timeout=2,
-                                 isolation_level=None)) as db:
-        db.execute('PRAGMA application_id').fetchone()
-    return True
-
-
 def _check_rollback_file(path):
     """Check rollback file ownership and identity before SQLite opens it."""
     side = Path(str(path)+'-journal')
@@ -743,33 +713,11 @@ def _open(path, *, write):
         _fail('reader_journal_read_only')
     path = _private_parent(path)
     _check_rollback_file(path)
-    preimage = _initial_preimage.get()
-    if preimage is not None:
-        if write or path != preimage.logical_path:
-            _fail('initial_recovery_read_only')
-        return path, preimage.open_read()
     try:
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
                 info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077):
             _fail('unsafe_journal_file')
-        if write and os.path.lexists(str(path) + '-journal'):
-            try:
-                with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as check:
-                    check.execute('PRAGMA query_only=ON')
-                    version = _schema_version(check)
-            except sqlite3.OperationalError:
-                if os.path.lexists(path.parent / _INITIAL_INTENT):
-                    _fail('journal_unavailable')
-                from laya_worker_journal import _probe
-                try:
-                    recovered = _probe(path)
-                    _probe(path, receipt=recovered['receipt'])
-                    version = recovered['row']['_version']
-                except (ValueError, OSError, KeyError, subprocess.SubprocessError):
-                    _fail('journal_unavailable')
-            if version not in (3, 4):
-                _fail('journal_unavailable')
         uri = path.as_uri() + ('?mode=rw' if write else '?mode=ro')
         db = sqlite3.connect(uri, uri=True, timeout=2 if write else _reader_timeout(),
                              isolation_level=None)
@@ -779,22 +727,7 @@ def _open(path, *, write):
             version = _schema_version(db)
         except sqlite3.OperationalError:
             db.close()
-            if write:
-                raise
-            if _reader_no_recovery.get():
-                scope = _legacy_worker_recovery.get()
-                if scope is None:
-                    raise
-                from laya_worker_journal import recover_legacy
-                recovered = recover_legacy(scope, path)
-            else:
-                recovered = _recover_interrupted_transaction(path)
-            if not recovered:
-                raise
-            db = sqlite3.connect(uri, uri=True, timeout=_reader_timeout(),
-                                 isolation_level=None)
-            db.execute('PRAGMA query_only=ON')
-            version = _schema_version(db)
+            raise
         if version is None:
             db.close()
             _fail('journal_schema_unknown')
