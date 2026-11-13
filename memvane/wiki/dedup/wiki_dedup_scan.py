@@ -251,7 +251,7 @@ def run(cwd: str) -> dict:
     """One bounded scan for the project at ``cwd``; returns a summary."""
     from memvane.wiki.workspace import api as cp, types as ct
     from memvane.settings import api as project_dir
-    from memvane.settings import config as qmd_config
+    from memvane.settings import api as qmd_config, types as settings_types
     from memvane.wiki.workspace import api as scan_state
     from memvane.wiki.workspace import api as wiki_selected_laya
 
@@ -327,7 +327,7 @@ def run(cwd: str) -> dict:
     except (TypeError, ValueError):
         max_pairs = 10
     max_pairs = max(1, min(max_pairs, 100))
-    threshold = qmd_config.DEDUP_AUTO_MERGE_THRESHOLD
+    threshold = settings_types.DEDUP_AUTO_MERGE_THRESHOLD
     suppressions = load_skip_suppressions(skipped_path)
     # A resolver run holds its rows in `dedup-needed.jsonl.claimed.*` until it
     # requeues the unresolved ones; those pairs are queued too.
