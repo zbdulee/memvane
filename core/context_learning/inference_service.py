@@ -72,28 +72,9 @@ def service_root(*, create=False, home=None):
     home = Path(home).resolve()
     from .runtime_setup import learning_state_base
     root = learning_state_base(home) / 'laya-inference'
-    try:
-        _check_root(root, home)
-    except ServiceFailure:
-        # Resolved just before a learning-state move sealed the old tree
-        # (a regular file now stands there): resolve once more.
-        moved = learning_state_base(home) / 'laya-inference'
-        if moved == root:
-            raise
-        root = moved
-        _check_root(root, home)
+    _check_root(root, home)
     if create:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        moved = learning_state_base(home) / 'laya-inference'
-        if moved != root:
-            # The learning state moved while this resolved the old base:
-            # never leave (or use) a second lane directory there.
-            try:
-                root.rmdir()
-            except OSError:
-                pass
-            moved.mkdir(mode=0o700, parents=True, exist_ok=True)
-            root = moved
     return resident._private_state(root)
 
 
