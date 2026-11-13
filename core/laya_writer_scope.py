@@ -17,7 +17,6 @@ import os
 from pathlib import Path
 import threading
 import time
-from types import SimpleNamespace
 
 import laya_install_journal as J
 import laya_journal_reader as R
@@ -166,69 +165,9 @@ def _connection_image(writer, role, path):
 
 
 def _validate_identity(writer, role, db):
-    """Actual fixed header/identity proof; no caller callback can omit it."""
+    """The retired component windows cannot authorize a v1 store write."""
     validate_normal_writer(writer)
-    db.execute('BEGIN')
-    try:
-        if role == 'base':
-            from laya_index_a import LayaIndexA
-            LayaIndexA._check_header(db)
-            incarnation = db.execute("SELECT value FROM schema_meta WHERE key='incarnation'").fetchone()[0]
-        elif role == 'queue':
-            from laya_index_claim_queue import ClaimQueue
-            incarnation = ClaimQueue._check_database(db)
-        elif role == 'sidecar':
-            import laya_incremental_docs as incremental
-            record = _record(writer)
-            decision = record['snapshot']['decision']
-            identity = {'installId': writer.install_id, 'scopeId': writer.scope_id,
-                        'dbIncarnation': writer.incarnation,
-                        'vectorProfileId': decision['vectorProfile']['profileId'],
-                        'candidateDb': decision['dbPath'], 'projectRoot': decision['projectRoot']}
-            mode = db.execute('PRAGMA main.journal_mode').fetchone()
-            allowed_mode = ('wal', 'delete') if record.get('created_sidecar_node') is not None else ('wal',)
-            R._need(mode is not None and str(mode[0]).lower() in allowed_mode
-                    and db.execute('PRAGMA user_version').fetchone() == (1,)
-                    and db.execute('SELECT * FROM meta').fetchall() == [incremental._expected_meta(identity)],
-                    'normal_writer_sidecar_identity_changed')
-            actual_schema = incremental._schema_rows(db)
-            R._need(actual_schema in incremental._schema_variants(),
-                    'normal_writer_sidecar_schema_changed')
-            incarnation = writer.incarnation
-        elif role in ('catalog', 'binding'):
-            import laya_source_catalog as source
-            from laya_index_host_route import wiki_index_roots
-            record = _record(writer)
-            roots = source._check_roots(wiki_index_roots(record['snapshot']['decision']['collections']))
-            if role == 'catalog':
-                mode = db.execute('PRAGMA main.journal_mode').fetchone()
-                R._need(mode is not None and str(mode[0]).lower() == 'wal',
-                        'normal_writer_catalog_journal_mode_changed')
-                source.LayaSourceCatalog._check_identity(SimpleNamespace(
-                    db=db, binding=source._binding(writer.scope_id, roots)))
-                meta = dict(db.execute('SELECT key,value FROM meta'))
-                R._need(meta.get('scope') == writer.scope_id
-                        and json.loads(meta.get('roots', 'null')) == roots,
-                        'normal_writer_catalog_identity_changed')
-            else:
-                import laya_index_capacity as capacity
-                store = object.__new__(capacity.GenerationBindingStore)
-                component = record['snapshot']['components']['binding']
-                store.path, store.db = Path(component['path']), db
-                store.scope, store.db_incarnation, store.roots = writer.scope_id, writer.incarnation, roots
-                store._roots_value = capacity._canonical(list(roots.items())).decode('ascii')
-                store._node = tuple(component['node'])
-                store.store_id = record.get('binding_store_id')
-                store._check_file_node()
-                record['binding_store_id'] = store._check_store()
-            incarnation = writer.incarnation
-        else:
-            R._need(False, 'normal_writer_component_unsupported')
-        R._need(incarnation == writer.incarnation, 'normal_writer_incarnation_changed')
-        db.commit()
-    except BaseException:
-        db.rollback()
-        raise
+    R._need(False, 'normal_writer_component_unsupported')
 
 
 def _approved(proof, snapshot):
