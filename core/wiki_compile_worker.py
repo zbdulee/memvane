@@ -509,7 +509,7 @@ def selected_compiled_revision_card(root: Path, bound, source_revision: dict,
     if bound is None:
         return None
     try:
-        import laya_host_response
+        from memvane.host import host_response as laya_host_response
         from memvane.wiki.card import wiki_card
         decision = bound[0]
         pending = wiki_freshness.unresolved_pending_refreshes_strict(root)

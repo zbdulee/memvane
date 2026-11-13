@@ -369,7 +369,7 @@ class FingerprintChecks(unittest.TestCase):
     def test_schema3_writer_enqueues_observed_fingerprints(self):
         import contextlib
         import io
-        import laya_host_response
+        from memvane.host import host_response as laya_host_response
         from memvane.wiki.workspace import wiki_activity_log
         import wiki_compile
         project = Project(self.base, 'schema3-queue', git_repo=True)
@@ -398,7 +398,7 @@ class FingerprintChecks(unittest.TestCase):
     def test_writer_reader_error_preserves_verify_queue(self):
         import contextlib
         import io
-        import laya_host_response
+        from memvane.host import host_response as laya_host_response
         from memvane.wiki.workspace import wiki_activity_log
         import wiki_compile
         project = Project(self.base, 'writer-reader-busy', git_repo=True)

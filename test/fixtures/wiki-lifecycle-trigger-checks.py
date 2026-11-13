@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 CORE = REPO / 'core'
 sys.path.insert(0, str(CORE))
-import laya_host_response as response  # noqa: E402
+from memvane.host import host_response as response  # noqa: E402
 import laya_install_journal  # noqa: E402
 from memvane.runtime import runtime_work  # noqa: E402
 import wiki_selected_laya  # noqa: E402

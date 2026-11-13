@@ -725,7 +725,7 @@ class ActiveUpgradeTests(UpgradeCase):
 
     def test_a_fenced_recall_asks_for_recovery_and_a_stalled_fence_stays_quiet(self):
         import laya_bundle_upgrade
-        import laya_host_response as response
+        from memvane.host import host_response as response
         from memvane.route import index_host_route as host
         self.fence()
         project = str(self.project)
@@ -804,7 +804,7 @@ class ActiveUpgradeTests(UpgradeCase):
         # The hook classified the route before the upgrade published; core
         # re-selects after it. Within the upgrade window that is not an error.
         import laya_bundle_upgrade
-        import laya_host_response as response
+        from memvane.host import host_response as response
         self.bound()
         self.activate()
         project = str(self.project)
@@ -841,7 +841,7 @@ class ActiveUpgradeTests(UpgradeCase):
         from contextlib import redirect_stderr, redirect_stdout
         import subprocess
         import tempfile
-        import laya_host_response as response
+        from memvane.host import host_response as response
         from memvane.route import index_host_route as host
         self.bound()
         self.activate()

@@ -399,7 +399,7 @@ class Schema3SyncPublishChecks(seed_module.Schema3WriterPlanChecks):
         """
         import io
         from contextlib import redirect_stderr
-        host = importlib.import_module('laya_host_response')
+        host = importlib.import_module('memvane.host.host_response')
         runtime_work = importlib.import_module('memvane.runtime.runtime_work')
         event_log = importlib.import_module('event_log')
         decision = self.J.select_route(str(self.case.project), action='recall')

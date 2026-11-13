@@ -53,7 +53,7 @@ class RealProviderChecks(provider_fixture.Base):
             seed.setUp()
             case,reader=seed.case,seed.reader
             upgrade=importlib.import_module('laya_active_upgrade')
-            host=importlib.import_module('laya_host_response')
+            host=importlib.import_module('memvane.host.host_response')
             dispatch=importlib.import_module('laya_reader_dispatch')
             new=case.home/'warm-target';new.mkdir()
             target={**case.proof,'pluginRoot':str(new),'sourceCommit':'a'*40,

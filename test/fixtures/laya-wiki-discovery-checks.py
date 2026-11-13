@@ -27,7 +27,7 @@ V2 = _BASE['V2WorkerChecks']
 SCOPE = _BASE['SCOPE']
 PROFILE = _BASE['PROFILE']
 
-import laya_host_response as response
+from memvane.host import host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
 from memvane.route import index_host_route as host_route
 from laya_index_vector import profile_identity

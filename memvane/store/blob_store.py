@@ -32,7 +32,7 @@ LEGACY_RESULT_SCHEMA = 'memvane-legacy-card-evidence-v1'
 
 def legacy_card_evidence(row, decision):
     """Describe the existing reader's trust evidence, without granting authority."""
-    import laya_host_response
+    from memvane.host import host_response as laya_host_response
     from memvane.wiki.card import source_spans
     from memvane.wiki.card import wiki_card
 

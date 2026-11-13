@@ -16,7 +16,7 @@ TARGETS = {
     'hook-classify': ('memvane/route/index_host_route.py', 'classify-hook'),
     'classify': ('memvane/route/index_host_route.py', 'classify'),
     'onboarding-notice': ('memvane/route/index_host_route.py', 'onboarding-notice'),
-    'hook-serve': ('core/laya_host_response.py', 'serve-stdin'),
+    'hook-serve': ('memvane/host/host_response.py', 'serve-stdin'),
     'host-ack': ('core/context_learning_host_ack.py', None),
     'setup': ('core/setup_entry.py', None),
     'runtime-work': ('memvane/runtime/runtime_work.py', None),

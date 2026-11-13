@@ -2,7 +2,7 @@
 
 This module is intentionally thin: it adapts Hermes hook callback shapes to the
 same JSON payloads used by Claude/Codex dispatchers and hands them to
-core/laya_host_response.py. A project without a selected Laya route gets no
+memvane/host/host_response.py. A project without a selected Laya route gets no
 work; index, recall, compile and learning logic stays in core/.
 """
 
@@ -175,7 +175,7 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
         token = event_log.bind(decision=decision, host="hermes")
         reason = None
         try:
-            from laya_host_response import _refusal_code
+            from memvane.host.host_response import _refusal_code
             reason = _refusal_code(exc)
         except Exception:
             reason = "unexpected_exception"
@@ -224,7 +224,7 @@ def recall_context(
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
             from memvane.route.index_host_route import select_route
-            from laya_host_response import serve_selected, serve_preview
+            from memvane.host.host_response import serve_selected, serve_preview
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") != route_state:
@@ -259,7 +259,7 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
             from memvane.route.index_host_route import select_route
-            from laya_host_response import serve_selected
+            from memvane.host.host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             answer = serve_selected("update-queued", "hermes",
                                     select_route(selected_cwd, action="update-queued"),
@@ -297,7 +297,7 @@ def pre_edit_gate(
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
             from memvane.route.index_host_route import select_route
-            from laya_host_response import serve_selected
+            from memvane.host.host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
             decision = select_route(selected_cwd, action="gate")
@@ -344,7 +344,7 @@ def post_edit_sync(
             if str(core) not in sys.path:
                 sys.path.insert(0, str(core))
             from memvane.route.index_host_route import select_route
-            from laya_host_response import serve_selected
+            from memvane.host.host_response import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
             serve_selected("posttool", "hermes",

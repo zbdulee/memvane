@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO))
 from memvane.diagnostics import diagnostic_trace as diag
 from memvane.diagnostics import event_log
 import laya_bundle_upgrade as upgrade
-import laya_host_response as host_response
+from memvane.host import host_response as host_response
 from memvane.route import index_host_route as routes
 import laya_project_dir_move
 import laya_state_move

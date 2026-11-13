@@ -774,7 +774,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
         result, _ingests, _calls = self.run_vector_pass()
         self.assertEqual(result.get('readerResettle'), 'resealed', result)
-        host = importlib.import_module('laya_host_response')
+        host = importlib.import_module('memvane.host.host_response')
         event_log = importlib.import_module('event_log')
         asked, events = [], []
 
@@ -835,7 +835,7 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         self.card('concepts/kestrel-perch.md', 'kestrelprobe')
         # Lexical only (the provider lane refuses): recall notes a vector fallback.
         self.run_vector_pass(Coordinator(refuse='cpu_pressure'))
-        host = importlib.import_module('laya_host_response')
+        host = importlib.import_module('memvane.host.host_response')
         event_log = importlib.import_module('event_log')
         events = []
 

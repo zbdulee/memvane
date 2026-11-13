@@ -26,7 +26,7 @@ CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
 
 from memvane.settings import config
-import laya_host_response as response
+from memvane.host import host_response as response
 from memvane.route import index_host_route as laya_index_host_route
 import laya_install_journal
 from laya_index_a import LayaIndexA, _digest as manifest_digest

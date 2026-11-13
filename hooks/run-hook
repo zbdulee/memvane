@@ -5,7 +5,7 @@
 #   file-change-event
 #   engine: claude | codex | gemini
 # 모든 action은 이벤트 cwd의 Laya route를 먼저 분류한다. 선택된 route만
-# core/laya_host_response.py가 처리하고, route가 없는 프로젝트는 아무 색인
+# memvane/host/host_response.py가 처리하고, route가 없는 프로젝트는 아무 색인
 # 작업도 하지 않는다(SessionStart에서만 온보딩 안내 한 줄).
 set -u
 

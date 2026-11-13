@@ -131,7 +131,7 @@ class RecoveryChecks(unittest.TestCase):
                     self.assertTrue(lock.is_dir())
 
     def test_recall_preserves_lexical_during_cooldown_and_wakes_after_it(self):
-        import laya_host_response as host
+        from memvane.host import host_response as host
         import laya_install_journal as journal
         self.stamp('startup_failed')
         proof = {'providerManifest': self.manifest, 'selectionEpoch': 1}

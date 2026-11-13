@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'core'))
 E2E = runpy.run_path(str(HERE / 'laya-fresh-onboarding-e2e-checks.py'))
 import laya_fresh_wiki_origin as fresh
-import laya_host_response as response
+from memvane.host import host_response as response
 from memvane.route import index_host_route as route
 import laya_install_journal as journal
 import laya_product_install as product

@@ -20,7 +20,7 @@ import laya_product_sync_worker as worker
 from memvane.runtime import runtime_work
 from memvane.runtime import runtime_wake_policy
 from context_learning.local_cycle import ResourceDeferred
-import laya_host_response as response
+from memvane.host import host_response as response
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_claim_queue import ClaimQueue
 from memvane.route import index_host_route as host_route

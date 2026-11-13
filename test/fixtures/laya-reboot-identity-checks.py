@@ -17,7 +17,7 @@ spec = importlib.util.spec_from_file_location('reboot_seed', HERE / 'laya-journa
 seed = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(seed)
 import laya_install_journal as J
-import laya_host_response as response
+from memvane.host import host_response as response
 
 
 class PersistentIdentityChecks(unittest.TestCase):

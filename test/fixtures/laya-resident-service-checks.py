@@ -351,7 +351,7 @@ class ServiceChecks(Fixture):
             server.close()
 
     def test_query_hook_maps_protocol_mismatch_to_lexical_code(self):
-        import laya_host_response as host
+        from memvane.host import host_response as host
         import laya_install_journal as journal
         from memvane.runtime import runtime_work
         project, manifest = self.project('alpha')

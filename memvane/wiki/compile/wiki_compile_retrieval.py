@@ -170,7 +170,7 @@ def terms(text: str) -> set[str]:
 def lexical_atoms(text: str) -> list[str]:
     """Bounded query atoms shared by overlay retrieval and live-body evidence."""
     from memvane.recall.keywords import EN_STOPWORDS, KO_STOPWORDS, strip_ko_suffix
-    from laya_host_response import _fts_atom
+    from memvane.host.host_response import _fts_atom
     words = list(dict.fromkeys(strip_ko_suffix(word) for word in
                                re.findall(r'\w+', text.casefold())))
     words = [word for word in words if 2 <= len(word) <= 128
@@ -389,7 +389,7 @@ def overlay_paths(db, text, deadline, exclusions, name):
 
 def query_provider(bound):
     """Only ask an already warm reviewed provider; no model is started here."""
-    import laya_host_response as response
+    from memvane.host import host_response as response
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     from laya_embed_resident import admit_query
@@ -473,7 +473,7 @@ def _schema3_cosines(bound, record, current, text, generation):
     approved one, the warm provider does not answer, or the head moved from
     ``generation`` (the lexical rows' generation).
     """
-    import laya_host_response as response
+    from memvane.host import host_response as response
     from memvane.journal import journal_reader as reader
     from laya_reader_dispatch import _approved_profile_matches
     from laya_view_vectors import DEFERRED

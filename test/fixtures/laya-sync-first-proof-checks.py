@@ -639,7 +639,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             yield
 
     def test_compile_edit_is_durable_when_sync_owner_is_busy(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         from memvane.wiki.intake import wiki_discovery as discovery
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.workspace import compile_paths as cp
@@ -668,7 +668,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertTrue(any(row['source']['path']=='busy-edit.md' for row in rows))
 
     def test_compile_edit_owner_race_after_append_queues_once(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         from memvane.wiki.intake import wiki_discovery as discovery
         from memvane.wiki.intake import external_edits as laya_external_edits
         from memvane.wiki.intake import wiki_compile_enqueue as enqueue
@@ -707,7 +707,7 @@ class SyncFirstProofChecks(unittest.TestCase):
             self.assertEqual(sum(row['source']['path']=='raced-edit.md' for row in rows),1)
 
     def test_legacy_v4_compile_edit_with_owned_enqueue_wakes(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         from memvane.wiki.workspace import compile_paths as cp
         from memvane.runtime import runtime_work
         with self._compile_warm(),self.seed.authority():
@@ -728,7 +728,7 @@ class SyncFirstProofChecks(unittest.TestCase):
     def test_full_selected_compile_retrieval_rechecks_with_owned_connections(self):
         from memvane.wiki.compile import wiki_compile_retrieval as retrieval
         import wiki_selected_laya as selected
-        import laya_host_response as response
+        from memvane.host import host_response as response
         with self._compile_warm(),self.seed.authority():
             calls=[]
             def cold(*_args):raise response._VectorUnavailable('synthetic_no_query_vector')
@@ -739,7 +739,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_selected_compile_retrieval_uses_owned_runtime_and_balanced_pin(self):
         from memvane.wiki.compile import wiki_compile_retrieval as retrieval
-        import laya_host_response as response
+        from memvane.host import host_response as response
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected();calls=[]
             with closing(sqlite3.connect(self.case.db.as_uri()+'?mode=ro',uri=True)) as db:
@@ -758,7 +758,7 @@ class SyncFirstProofChecks(unittest.TestCase):
         from memvane.kernel.resource_deferred import ResourceDeferred
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected();calls=[]
-            import laya_host_response as response
+            from memvane.host import host_response as response
             def cold(*_args):raise response._VectorUnavailable('synthetic_no_query_vector')
             with self.sync.sync_owner(self.queue) as owner,self.trace(calls), \
                     mock.patch.object(retrieval,'query_provider',return_value=cold):
@@ -769,7 +769,7 @@ class SyncFirstProofChecks(unittest.TestCase):
 
     def test_selected_compile_retrieval_close_failure_keeps_owner_until_drain(self):
         from memvane.wiki.compile import wiki_compile_retrieval as retrieval
-        import laya_host_response as response
+        from memvane.host import host_response as response
         with self._compile_warm(),self.seed.authority():
             decision,proof=self.selected();state={'armed':False,'blocked':True,'failed':0}
             native=self.W._OwnedSQLite._native_close_locked

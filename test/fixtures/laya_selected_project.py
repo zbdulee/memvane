@@ -22,7 +22,7 @@ from unittest import mock
 CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
 import laya_fresh_wiki_origin as fresh  # noqa: E402
-import laya_host_response as response  # noqa: E402
+from memvane.host import host_response as response  # noqa: E402
 from memvane.route import index_host_route as host_route  # noqa: E402
 import laya_install_journal as journal_mod  # noqa: E402
 from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402

@@ -1842,7 +1842,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     wiki_selected_laya.recheck(selected)
     if selected is not None and action == "updated":
-        from laya_host_response import _verified_wiki_row
+        from memvane.host.host_response import _verified_wiki_row
         wiki_name = next((item['name'] for item in selected[0]['collections']
                           if item['role'] == 'wiki' and
                           Path(item['sourceRoot']).resolve() == wiki_root.resolve()), None)

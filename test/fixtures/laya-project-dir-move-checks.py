@@ -28,7 +28,7 @@ from laya_selected_project import SelectedProject, vector_profile  # noqa: E402
 from memvane.settings import config  # noqa: E402
 import laya_bundle_upgrade as upgrade  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
-import laya_host_response as response  # noqa: E402
+from memvane.host import host_response as response  # noqa: E402
 from memvane.route import index_host_route as host_route  # noqa: E402
 import laya_initial_build as build  # noqa: E402
 import laya_install_journal as journal_mod  # noqa: E402

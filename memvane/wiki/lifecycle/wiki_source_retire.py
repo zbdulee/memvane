@@ -195,7 +195,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             return {'state': 'held_branch', 'survivors': [], 'reason': hold}
         shared = set()
         if shared_cards:
-            from laya_host_response import _verified_wiki_row
+            from memvane.host.host_response import _verified_wiki_row
             wiki_name = next((item['name'] for item in selected[0]['collections']
                               if item['role'] == 'wiki'
                               and Path(item['sourceRoot']).resolve() == wiki_root), None)

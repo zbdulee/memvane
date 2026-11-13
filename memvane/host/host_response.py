@@ -1219,7 +1219,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
     from memvane.journal import reader_lease as lease
     from memvane.journal import journal_reader as reader
     deadline = time.monotonic() + hook_budget.remaining()
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     with ExitStack() as stack:
         for attempt in range(2):
             try:

@@ -52,7 +52,7 @@ class Base(unittest.TestCase):
 
 class WriterChecks(Base):
     def hook(self, action, *, raises=None, payload=None):
-        import laya_host_response as response
+        from memvane.host import host_response as response
 
         def once(*_args):
             if raises is not None:
@@ -67,7 +67,7 @@ class WriterChecks(Base):
                 pass
 
     def test_hook_actions_record_outcome_and_reason(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         for action in ('gate', 'posttool', 'update', 'update-queued', 'index', 'compile',
                        'file-change-event'):
             self.hook(action)
@@ -89,7 +89,7 @@ class WriterChecks(Base):
         self.assertNotIn('/secret/path', (self.state / event_log.NAME).read_text())
 
     def test_recall_event_carries_cards_notes_prompt_hash_and_latency(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         rows = [{'path': 'wiki/a.md', 'hash': 'a' * 64}, {'path': 'wiki/b.md', 'hash': 'b' * 64}]
         prompt = 'why is the cobalt cache stale?'
 
@@ -122,7 +122,7 @@ class WriterChecks(Base):
         self.assertNotIn('cobalt', (self.state / event_log.NAME).read_text())
 
     def test_retry_and_worktree_recalls_write_one_line(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         calls = []
 
         def once(_action, _host, decision, _payload):
@@ -146,7 +146,7 @@ class WriterChecks(Base):
         self.assertEqual((last['install'], last['degraded']), ('install-1', 'worktree'))
 
     def test_main_refusal_after_route_change_is_recorded_once(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         payload = json.dumps({'cwd': '/x', 'prompt': 'q', 'session_id': 's3'}).encode()
         stdin = SimpleNamespace(buffer=SimpleNamespace(read=lambda *_: payload))
         with patch.object(response, 'select_hook_payload', return_value={'state': 'candidate'}), \
@@ -566,7 +566,7 @@ class ReaderChecks(Base):
 
 class PreviewChecks(Base):
     def test_preview_recall_is_logged(self):
-        import laya_host_response as response
+        from memvane.host import host_response as response
         decision = {**self.decision, 'state': 'preview'}
         with patch('laya_index_host_route.verify_preview_route',
                    side_effect=response.HostResponseError('initial_preview_proof_changed')):

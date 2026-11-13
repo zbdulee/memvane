@@ -78,7 +78,7 @@ class Schema3RecallChecks(unittest.TestCase):
             self.u10.setUp()
         self.addCleanup(self.u10.doCleanups)
         self.case = self.u10.case
-        self.host = importlib.import_module('laya_host_response')
+        self.host = importlib.import_module('memvane.host.host_response')
         self.dispatch = importlib.import_module('laya_reader_dispatch')
         self.event_log = importlib.import_module('event_log')
         self.runtime = importlib.import_module('laya_index_runtime')

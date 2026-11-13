@@ -39,7 +39,7 @@ def emit(label, **values):
 class Schema3WorktreeViewChecks(seed_module.Schema3SyncPublishChecks):
     def setUp(self):
         super().setUp()
-        self.host = importlib.import_module('laya_host_response')
+        self.host = importlib.import_module('memvane.host.host_response')
         self.route = importlib.import_module('memvane.route.index_host_route')
         self.event_log = importlib.import_module('event_log')
         self.project_dir = importlib.import_module('memvane.settings.project_dir')

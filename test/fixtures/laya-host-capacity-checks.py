@@ -15,7 +15,7 @@ from unittest import mock
 
 CORE = Path(__file__).resolve().parents[2] / 'core'
 sys.path.insert(0, str(CORE))
-import laya_host_response as response
+from memvane.host import host_response as response
 import laya_index_source_port as source_port
 from laya_index_a import IndexContractError, LayaIndexA
 from laya_index_capacity import GenerationBindingStore, open_pinned_candidate_query

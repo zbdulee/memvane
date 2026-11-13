@@ -29,7 +29,7 @@ def recall_reasons(state):
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'core'))
 from memvane.settings import config
 from memvane.diagnostics import event_log
-import laya_host_response as response
+from memvane.host import host_response as response
 from context_learning import selection_port, selection_read
 
 SCOPE = '6' * 32
