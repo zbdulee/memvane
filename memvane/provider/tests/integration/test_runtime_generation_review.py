@@ -59,3 +59,35 @@ class NamedGeneration(Machine):
             with self.assertRaises(runtime.RuntimeUnavailable):
                 runtime.ensure_for_attestation(attestation, self.home)
         self.assertEqual(self.pointer.read_bytes(), self.before)
+
+    def test_attested_bytes_are_copied_once_and_sha_checked(self):
+        target_home = self.home / 'target'
+        target_home.mkdir(mode=0o700)
+        record = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
+                  runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
+        copied = runtime.ensure_for_attestation(record, target_home)
+        self.assertEqual(copied[runtime.FILES_SHA], self.first[runtime.FILES_SHA])
+        self.assertNotEqual(copied['generation'], self.first['generation'])
+        with patch.object(runtime, '_provision', side_effect=AssertionError('unexpected copy')):
+            self.assertEqual(runtime.ensure_for_attestation(record, target_home), copied)
+        for path in Path(copied['generation']).rglob('*'):
+            if path.is_file():
+                self.assertEqual(path.stat().st_nlink, 1)
+                self.assertFalse(path.stat().st_mode & 0o077)
+
+    def test_changed_or_missing_sources_refuse_without_activation(self):
+        target_home = self.home / 'target'
+        target_home.mkdir(mode=0o700)
+        record = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
+                  runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
+        model = Path(self.first['modelPath'])
+        model.write_bytes(model.read_bytes() + b'modified')
+        with self.assertRaisesRegex(runtime.RuntimeUnavailable,
+                                    '^laya_embed_runtime_source_changed$'):
+            runtime.ensure_for_attestation(record, target_home)
+        self.assertFalse((runtime.root(target_home) / 'active.json').exists())
+        model.unlink()
+        with self.assertRaisesRegex(runtime.RuntimeUnavailable,
+                                    '^laya_embed_runtime_source_unavailable$'):
+            runtime.ensure_for_attestation(record, target_home)
+        self.assertFalse((runtime.root(target_home) / 'active.json').exists())
