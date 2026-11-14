@@ -57,3 +57,41 @@ class LifecycleCompilePass(FixtureCase):
         self.assertTrue(seen.exists(), 'regeneration never reached the synthetic extractor')
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         self.assertFalse(queue.exists() and queue.read_text().strip())
+
+    def test_rebase_in_progress_retires_nothing_and_acks_the_pass(self):
+        from memvane.wiki.workspace import api as workspace
+        project = make_project(self.home)
+        source = project.write_note('docs/source.md', 'source\n')
+        marker = '<!-- qmd:auto:start id="main" sourceHash="a" -->\nfact\n<!-- qmd:auto:end -->\n'
+        card = project.write_card('concepts/card.md', title='Card', body=marker, sources=(source,),
+                                  status='generated', created_by='qmd-auto-context')
+        project.write_note('conflict.txt', 'base\n')
+        project.git('add', '--', '.memvane/settings.json', '.memvane/wiki/concepts/card.md',
+                    'docs/source.md', 'conflict.txt')
+        project.git('commit', '-qm', 'initial fixture')
+        install = build_install(self, project)
+        project.git('checkout', '-qb', 'topic')
+        project.write_note('conflict.txt', 'topic\n')
+        project.git('add', '--', 'conflict.txt')
+        project.git('commit', '-qm', 'topic edit')
+        project.git('checkout', '-q', 'main')
+        project.write_note('conflict.txt', 'main\n')
+        project.git('add', '--', 'conflict.txt')
+        project.git('rm', '-q', '--', 'docs/source.md')
+        project.git('commit', '-qm', 'main edit and deletion')
+        project.git('checkout', '-q', 'topic')
+        project.git('rebase', 'main', check=False)
+        try:
+            self.assertTrue((project.root / '.git/rebase-merge').exists()
+                            or (project.root / '.git/rebase-apply').exists())
+            env = {'QMD_SYNC_STATE_DIR': str(self.home / 'scan-state'),
+                   'QMD_WIKI_LIFECYCLE_LOG': str(self.home / 'lifecycle.log')}
+            with patch.dict(os.environ, env), patch.object(runtime, 'request', return_value={'status': 'queued'}):
+                self.assertEqual(workspace.request_lifecycle(install.select(), 'session_start'), 'recorded')
+                result = compile_api.run(project.root)
+                self.assertIsNone(workspace.claim_lifecycle(project.root))
+            self.assertEqual(result, {'state': 'drained', 'processed': 0})
+            self.assertTrue(card.exists())
+            self.assertIn('in progress', (self.home / 'lifecycle.log').read_text())
+        finally:
+            project.git('rebase', '--abort', check=False)
