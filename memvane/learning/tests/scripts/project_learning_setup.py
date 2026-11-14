@@ -37,7 +37,8 @@ def expect(reason,fn):
 with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as temp:
  base=Path(temp).resolve();home=Path(os.environ['QMD_SETUP_FIXTURE_PACKAGE']).parents[5]
  project=base/'project';project.mkdir(mode=0o700)
- settings={'indexing':True,'collections':['docs'],'collectionPaths':{'docs':'.'},'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':True}}
+ # Minimal project settings plus the learning profile block (decision 8 A1).
+ settings={'name':'setup','contextLearning':{'capture':False,'autoCycle':False}}
  save(project/'.memvane/settings.json',settings)
  (project/'.memvane').chmod(0o755)
  from memvane.learning.context_learning.runtime_setup import learning_state_base
@@ -104,7 +105,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   assert plan['policy']['goldModel']=='gpt-6-luna' and plan['policy']['baseArtifact']==str(artifact)
   expect('acceptance',lambda:setup.activate(plan,accepted_sha256='0'*64))
   # Exact review CAS protects concurrent session/user configuration edits.
-  save(project/'.memvane/settings.json',{**settings,'topN':4})
+  save(project/'.memvane/settings.json',{**settings,'skipPaths':['drafts']})
   expect('changed',lambda:setup.activate(plan,accepted_sha256=setup.proposal_sha256(plan)))
   (project/'.memvane/settings.json').write_bytes(original_settings)
   # Interrupted installation must keep hooks gated and leave recovery actionable.
@@ -139,13 +140,18 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
   cfg=json.loads((project/'.memvane/settings.json').read_text())
   assert cfg['contextLearning']['capture'] and cfg['contextLearning']['autoCycle']
   assert cfg['sharedLearning']['enabled'] and cfg['sharedLearning']['autoApply']
+  # The activated settings are still project settings: the effective config carries them.
+  from memvane.settings import api as settings_api
+  effective=settings_api.find_project_config(str(project))['config']
+  assert 'settingsNotes' not in effective and len(effective['collections'])==2,effective
+  assert effective['sharedLearning']['enabled'] and effective['sharedLearning']['root']==str(root)
   assert json.loads((root/setup.NAME).read_text())['phase']=='activated'
   policy=json.loads((root/'shared-policy.json').read_text())
   assert project_scope.require(root,policy,'local_train')['projectRoot']==str(project)
   assert learning_profile.require(root,policy,'apply')['autoApply']
   assert (root/'active-checkpoint.json').read_bytes()==original_pointer
   target_settings=(project/'.memvane/settings.json').read_bytes()
-  save(project/'.memvane/settings.json',{**cfg,'topN':3})
+  save(project/'.memvane/settings.json',{**cfg,'skipPaths':['drafts']})
   expect('settings_changed',lambda:setup.recover(project,root))
   (project/'.memvane/settings.json').write_bytes(target_settings)
   policy_bytes=(root/'shared-policy.json').read_bytes()
@@ -331,7 +337,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
     assert 'synthetic_training_budget_exhausted' in str(exc)
    else:raise AssertionError('synthetic deadline admitted a model')
   qa_settings=(qa_project/'.memvane/settings.json').read_bytes()
-  save(qa_project/'.memvane/settings.json',{**json.loads(qa_settings),'topN':3})
+  save(qa_project/'.memvane/settings.json',{**json.loads(qa_settings),'skipPaths':['drafts']})
   expect('settings_changed',lambda:setup.recover(qa_project,qa_root))
   (qa_project/'.memvane/settings.json').write_bytes(qa_settings)
   assert setup.recover(qa_project,qa_root)['status']=='recovered'

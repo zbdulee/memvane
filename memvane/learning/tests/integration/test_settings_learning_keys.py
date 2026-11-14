@@ -182,6 +182,26 @@ class SettingsLearningKeys(FixtureCase):
                                                       'profile': SCHEMA, 'autoApply': True})
         self.assertEqual(raw['contextLearning'], {'capture': False, 'stateRoot': '/elsewhere'})
 
+    def test_project_scope_binds_the_derived_settings(self):
+        from memvane.learning.context_learning import project_scope
+        raw, wiki = self.project.raw_name, self.project.wiki_name
+        self.write({**self.base, **self.learning()})
+        scope = project_scope._settings_scope(self.project.root)
+        self.assertEqual(scope, {'indexing': True, 'collectionPaths': {raw: '.', wiki: '.memvane/wiki'},
+                                 'collections': [raw, wiki], 'allowRoots': [], 'skipPaths': ['drafts/']})
+        self.write({**self.base, **self.learning(capture=False, enabled=False)})
+        self.assertEqual(project_scope._settings_scope(self.project.root), scope)
+        self.write({**self.base, 'skipPaths': ['drafts/', 'notes/']})
+        self.assertEqual(project_scope._settings_scope(self.project.root)['skipPaths'], ['drafts/', 'notes/'])
+        refused = 0
+        for value in ({**self.base, 'collectionPaths': {'docs': 'docs'}},
+                      {'indexing': True, 'collectionPaths': {'docs': 'docs'}}):
+            self.write(value)
+            with self.assertRaisesRegex(ValueError, 'project_scope_settings_invalid'):
+                project_scope._settings_scope(self.project.root)
+            refused += 1
+        self.assertEqual(refused, 2)
+
     def test_shared_learning_enabled_reaches_the_shared_queue(self):
         from memvane.learning.context_learning import shared
         from memvane.learning.context_learning.runtime_setup import learning_state_base

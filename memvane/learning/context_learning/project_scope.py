@@ -72,9 +72,11 @@ def owner(root):
 def _settings_scope(project):
     from memvane.settings import api as project_dir, types as project_types
     raw=read_private_json(_path(project_dir.settings_path(project) or project_dir.folder(project)/project_types.SETTINGS))
-    if not isinstance(raw,dict) or not isinstance(raw.get('collectionPaths'),dict):
+    # The project writes minimal settings; the scope binds the collections they derive to.
+    if not project_dir.is_minimal_settings(raw):
         raise ValueError('project_scope_settings_invalid')
-    result={key:raw.get(key) for key in ('indexing','collectionPaths','collections','allowRoots','skipPaths')}
+    cfg=project_dir.normalize_config(raw,project_dir.folder(project).name)
+    result={key:cfg.get(key) for key in ('indexing','collectionPaths','collections','allowRoots','skipPaths')}
     for name,path in result['collectionPaths'].items():
         if not isinstance(name,str) or not name or not isinstance(path,str):
             raise ValueError('project_scope_collections_invalid')
