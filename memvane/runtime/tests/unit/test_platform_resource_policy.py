@@ -157,6 +157,40 @@ class PlatformObservation(unittest.TestCase):
         from memvane.runtime import resource_platform
         return resource_platform
 
+    def test_common_wrapper_preserves_linux_psi_and_cpu_admission(self):
+        from memvane.runtime import api, resource_report
+        platform = self.module()
+        adapter = platform.adapter_for('linux', machine='x86_64', release='synthetic')
+        files = {'/proc/meminfo': 'MemTotal: 8388608 kB\nMemAvailable: 6291456 kB\n',
+                 '/proc/pressure/memory': 'full avg10=0.00 avg60=0.00\n'}
+        policy = {'minAvailableMib': 768, 'maxRssMib': 3584, 'maxLoadPerCpu': 1,
+                  'adaptiveMemory': {'device': 'cpu', 'fixedMib': 2897, 'perPairMib': 312,
+                                     'estimateSource': 'synthetic fixture', 'modelIdentitySha256': 'a' * 64,
+                                     'systemReserveMib': 1024, 'reserveSource': 'synthetic reserve'}}
+        with patch.object(platform, 'adapter_for', return_value=adapter), \
+             patch.object(resource_report, 'Path', side_effect=lambda name: FakeFile(name, files)), \
+             patch.object(resource_report.subprocess, 'run', side_effect=AssertionError('OS probe')), \
+             patch.object(resource_report.os, 'cpu_count', return_value=18), \
+             patch.object(resource_report.os, 'getloadavg', return_value=(.1, 0, 0)), \
+             patch.object(resource_report.time, 'monotonic', return_value=10.):
+            row = api.resource_report(policy)
+        self.assertTrue(row['ready'], row)
+        self.assertEqual(row['memory_admission']['required_additional_mib'], 3209)
+        self.assertNotIn('system_free_percent', row['memory_pressure'])
+
+    def test_common_wrapper_does_not_admit_unsupported_windows(self):
+        from memvane.runtime import api, resource_report
+        platform = self.module()
+        adapter = platform.adapter_for('win32', machine='AMD64', release='synthetic')
+        policy = {'minAvailableMib': 768, 'maxRssMib': 3584, 'maxLoadPerCpu': 1}
+        with patch.object(platform, 'adapter_for', return_value=adapter), \
+             patch.object(resource_report.subprocess, 'run', side_effect=AssertionError('OS probe')), \
+             patch.object(resource_report.time, 'monotonic', return_value=10.):
+            row = api.resource_report(policy)
+        self.assertFalse(row['ready'])
+        self.assertIsNone(row['load_per_cpu'])
+        self.assertEqual(row['platform']['support'], 'unsupported')
+
     def test_apple_silicon_capabilities_keep_gpu_and_thermal_unknown(self):
         adapter=self.module().adapter_for('darwin',machine='arm64',release='synthetic')
         row=adapter.describe()

@@ -45,6 +45,11 @@ class Calibration(FixtureCase):
     def test_explicit_stable_warning_can_fit_below_ratio(self):
         self.assertTrue(self.m.pressure_ready(self.row(17),self.scoped,now=17.))
 
+    def test_common_admission_consumes_the_scoped_calibration(self):
+        from memvane.runtime.resource_coordination import decision
+        row = decision(self.scoped, self.row(17), now=17.)
+        self.assertTrue(row['ready'], row)
+
 
     def test_critical_unknown_expired_or_small_reserve_refuse(self):
         for row in (self.row(17,memory_pressure={'level':'critical','system_free_percent':2}),

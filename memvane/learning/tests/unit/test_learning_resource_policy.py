@@ -35,6 +35,18 @@ class MemoryBudget(unittest.TestCase):
         self.assertEqual(watch.observe({**self.report,'total_mib':131072})['action'],'continue')
         self.assertEqual(watch.observe({**self.report,'available_mib':900})['action'],'yield')
 
+    def test_running_watch_passes_its_calibration_scope_to_runtime_verdict(self):
+        from memvane.learning.context_learning.training_watch import Watch
+        from memvane.runtime import api as runtime
+        report = {**self.report, 'observed_at_mono': 17., 'swap_used_mib': 1000.,
+                  'memory_pressure': {'level': 'warning', 'system_free_percent': 38}}
+        scoped = {'calibration': {'runId': 'synthetic-scope'}}
+        with patch.object(runtime, 'calibration_verdict', return_value={'ready': True}) as verdict:
+            self.assertEqual(Watch(clock=lambda:17., min_available_mib=1024,
+                                   policy=scoped).observe(report)['action'], 'continue')
+        verdict.assert_called_once_with(report, scoped, now=17.)
+        self.assertEqual(Watch(clock=lambda:17., min_available_mib=1024).observe(report)['action'], 'yield')
+
 
 if __name__ == '__main__':
     unittest.main()
