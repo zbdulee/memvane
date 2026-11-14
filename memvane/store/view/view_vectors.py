@@ -16,8 +16,8 @@ import math
 import operator
 import struct
 import time
-from pathlib import Path
 
+from memvane.kernel.bundle_paths import CHUNKER_RELATIVE_PATH, bundle_file
 from memvane.store.blob import blob_values as v
 from memvane.store.blob.blob_values import BlobStoreError
 from memvane.store.types import WORK_EXCEEDED, DEADLINE_EXCEEDED, DEFERRED, FALLBACK_CHARS
@@ -66,7 +66,7 @@ def chunker_sha(embedding_fingerprint):
     max_chars, overlap, window = FALLBACK_CHARS
     return v.digest('memvane-provider-chunker-v1', {
         'embedding_fingerprint': v.identifier(embedding_fingerprint),
-        'chunker_js_sha256': hashlib.sha256((Path(__file__).resolve().parents[3] / 'memvane/provider/adapters/laya_qmd_chunking.mjs').read_bytes()).hexdigest(),
+        'chunker_js_sha256': hashlib.sha256(bundle_file(CHUNKER_RELATIVE_PATH).read_bytes()).hexdigest(),
         'chunk_rules': CHUNK_RULES,
         'resplit_fallback': {'rule': 'qmd-first-pass', 'max_chars': max_chars, 'overlap_chars': overlap,
                              'window_chars': window, 'unit': 'utf16-code-unit'}})

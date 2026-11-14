@@ -21,7 +21,7 @@ the reviewed provider/worker bytes unchanged. Hooks never wait for a model.
 from __future__ import annotations
 
 from contextlib import suppress
-from memvane.kernel.bundle_paths import entry_argv
+from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH, bundle_file, entry_argv
 import fcntl
 import hashlib
 import json
@@ -720,8 +720,7 @@ def default_admit():
 def default_start_worker(manifest, admit):
     from memvane.provider.api import hash_file as _hash_file
     from memvane.provider.api import start_owned_embed_service
-    root = Path(__file__).resolve().parents[2] / 'memvane/provider/adapters'
-    provider, worker = root / 'local_embed_provider.py', root / 'laya_local_embed_worker.mjs'
+    provider, worker = bundle_file(PROVIDER_RELATIVE_PATH), bundle_file(WORKER_RELATIVE_PATH)
     if (_hash_file(str(provider)) != manifest['providerArtifactSha256']
             or _hash_file(str(worker)) != manifest['workerSha256']):
         _fail('provider_attestation_invalid')

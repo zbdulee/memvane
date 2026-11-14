@@ -9,6 +9,7 @@ import re
 import sqlite3
 import stat
 
+from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH
 from memvane.settings import api as project_dir, types as project_types
 from memvane.install.types import InstallBlocked
 from memvane.install.api import install_lock as _install_lock
@@ -264,8 +265,7 @@ def review_local_provider(*, plugin_root, state_root,
             (state.parent != memvane_paths.installs_base() or
              not re.fullmatch(r'[0-9a-f]{32}', state.name))):
         _fail('unsupported_state_root_creation')
-    provider_files = ('memvane/provider/adapters/local_embed_provider.py',
-                      'memvane/provider/adapters/laya_local_embed_worker.mjs')
+    provider_files = (PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH)
     artifacts = {}
     for name in provider_files:
         artifacts[name] = _provider_file_sha(root / name)
@@ -302,8 +302,8 @@ def review_local_provider(*, plugin_root, state_root,
     closure_sha = hashlib.sha256(json.dumps(
         closure, sort_keys=True, ensure_ascii=False, separators=(',', ':')
     ).encode('utf-8')).hexdigest()
-    provider_sha = artifacts['memvane/provider/adapters/local_embed_provider.py']
-    worker_sha = artifacts['memvane/provider/adapters/laya_local_embed_worker.mjs']
+    provider_sha = artifacts[PROVIDER_RELATIVE_PATH]
+    worker_sha = artifacts[WORKER_RELATIVE_PATH]
     model_id = DEFAULT_EMBED_MODEL_URI
     runtime_id = runtime['runtimeId']
     fingerprint = recipe_fingerprint(
@@ -320,12 +320,12 @@ def review_local_provider(*, plugin_root, state_root,
                'dimension': dimension, 'metric': 'cosine',
                'approvedProviderId': approved_id,
                'providerArtifactSha256': provider_sha,
-               'providerRelativePath': 'memvane/provider/adapters/local_embed_provider.py'}
+               'providerRelativePath': PROVIDER_RELATIVE_PATH}
     manifest = {'approvedProviderId': approved_id,
                 'providerArtifactSha256': provider_sha,
                 'providerRelativePath': profile['providerRelativePath'],
                 'providerPath': str(root / profile['providerRelativePath']),
-                'workerPath': str(root / 'memvane/provider/adapters/laya_local_embed_worker.mjs'),
+                'workerPath': str(root / WORKER_RELATIVE_PATH),
                 'workerSha256': worker_sha,
                 'serviceSocketPath': str(socket_path),
                 'nodePath': str(node), 'nodeSha256': node_sha,

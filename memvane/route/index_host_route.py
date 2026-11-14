@@ -184,6 +184,7 @@ def _read_regular(path: Path, limit: int) -> bytes:
 
 def _vector_profile(value: object) -> dict:
     """Validate a route's exact provider/profile identity, not its approval."""
+    from memvane.kernel.bundle_paths import PROVIDER_ADAPTERS_PREFIX
     if not isinstance(value, dict) or set(value) != VECTOR_PROFILE_FIELDS:
         raise ValueError("invalid_vector_profile")
     model = value["modelId"]
@@ -200,7 +201,7 @@ def _vector_profile(value: object) -> dict:
             or not PROVIDER_ID.fullmatch(value["approvedProviderId"])
             or not isinstance(value["providerArtifactSha256"], str)
             or not SHA256.fullmatch(value["providerArtifactSha256"])
-            or not isinstance(relative, str) or not relative.startswith("memvane/provider/adapters/")
+            or not isinstance(relative, str) or not relative.startswith(PROVIDER_ADAPTERS_PREFIX)
             or not relative.endswith(".py")
             or "\\" in relative or any(part in ("", ".", "..") for part in relative.split("/"))):
         raise ValueError("invalid_vector_profile")

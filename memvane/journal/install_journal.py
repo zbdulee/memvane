@@ -21,6 +21,8 @@ import threading
 import time
 import unicodedata
 
+from memvane.kernel.bundle_paths import (PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH, bundle_file,
+                                         is_provider_relative_path)
 from memvane.kernel.errors import IndexContractError
 from memvane.journal.types import JournalEvidenceError
 from memvane.journal.api import select_route
@@ -175,7 +177,7 @@ def _strict_vector_profile(value):
             or not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,127}', value['approvedProviderId'])
             or type(value['providerArtifactSha256']) is not str
             or not SHA.fullmatch(value['providerArtifactSha256'])
-            or type(relative) is not str or not relative.startswith('memvane/provider/adapters/')
+            or not is_provider_relative_path(relative)
             or not relative.endswith('.py') or Path(relative).is_absolute() or '\\' in relative
             or any(part in ('', '.', '..') for part in relative.split('/'))):
         _fail('invalid_vector_profile')
@@ -815,10 +817,9 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
             or type(record.get(RUNTIME_FILES_FIELD)) is not str
             or not SHA.fullmatch(record[RUNTIME_FILES_FIELD])):
         _fail('worker_attestation_invalid')
-    root = Path(__file__).resolve().parents[2] / 'memvane/provider/adapters'
     manifest = {**record['providerManifest'],
-                'providerPath': str(root / 'local_embed_provider.py'),
-                'workerPath': str(root / 'laya_local_embed_worker.mjs')}
+                'providerPath': str(bundle_file(PROVIDER_RELATIVE_PATH)),
+                'workerPath': str(bundle_file(WORKER_RELATIVE_PATH))}
     try:
         from memvane.kernel import memvane_paths
         if (hashlib.sha256(_canon(record['dependencyClosure']).encode('utf-8')).hexdigest()

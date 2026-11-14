@@ -706,12 +706,31 @@ def _g9_strict(trees, contexts):
     return findings, {table: sorted(domains) for table, domains in sorted(owners.items())}
 
 
+_PROVIDER_PATH_LITERAL = re.compile(r'provider[/.]adapters')
+
+
+def _provider_path_literals(trees, contexts):
+    """G1: the provider file locations are named only in kernel/bundle_paths.py and provider."""
+    findings = []
+    for path, tree in trees.items():
+        if (path == 'memvane/kernel/bundle_paths.py' or path.startswith('memvane/provider/')
+                or '/tests/' in path):
+            continue
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and _PROVIDER_PATH_LITERAL.search(node.value)):
+                findings.append(_finding('G1', 'provider_path_literal', path, node.lineno,
+                                         contexts[path], 'provider', node.value[:80]))
+    return findings
+
+
 def strict_checks(trees, contexts):
     """Return (findings, metrics) for the strict G1/G5/G9 rules over parsed modules."""
     apis = _api_modules(trees, contexts)
     g5, attributes = _g5_strict(trees, contexts)
     g9, owners = _g9_strict(trees, contexts)
-    findings = _g1_strict(trees, contexts, apis) + _handle_signatures(trees, contexts, apis) + g5 + g9
+    findings = (_g1_strict(trees, contexts, apis) + _handle_signatures(trees, contexts, apis)
+                + _provider_path_literals(trees, contexts) + g5 + g9)
     unique = {(f['rule'], f['kind'], f['file'], f['line'], f['name'], f['target']): f for f in findings}
     ordered = sorted(unique.values(), key=lambda f: (f['rule'], f['target'], f['file'], f['line'], f['kind'], f['name']))
     return ordered, {'api_attributes': attributes, 'table_owners': owners}

@@ -90,6 +90,13 @@ def is_reviewed_provider(value):
     return type(value) is ReviewedLocalQmdProvider
 
 
+def query_embed_child_argv():
+    """argv of the child embedding one query: ``{manifest, prompt, timeout, allowed}`` JSON on
+    stdin, ``{"vector": [...]}`` or ``{"error": code}`` JSON on stdout."""
+    from memvane.provider.query_embed_child import child_argv as implementation
+    return implementation()
+
+
 def default_embed_model_uri():
     from memvane.provider.adapters.local_embed_provider import DEFAULT_EMBED_MODEL_URI
     return DEFAULT_EMBED_MODEL_URI

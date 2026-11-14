@@ -7,7 +7,6 @@ import math
 import json
 from pathlib import Path
 import subprocess
-import sys
 import time
 
 from memvane.journal import api as journal
@@ -29,19 +28,6 @@ _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch',
     'provider_manifest_invalid','provider_closure_unapproved','provider_recipe_invalid','provider_recipe_mismatch',
     'provider_artifact_path_invalid','provider_artifact_missing','provider_artifact_changed',
     'provider_artifact_hash_mismatch','provider_model_not_gguf','vector_profile_mismatch'))
-_PROVIDER_CHILD='''
-import json,sys
-sys.path.insert(0,sys.argv[1])
-from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
-from memvane.kernel.errors import IndexContractError
-request=json.load(sys.stdin)
-try:
-    value=ReviewedLocalQmdProvider(request['manifest'])._embed('query',request['prompt'],timeout=request['timeout'])
-    print(json.dumps({'vector':value},allow_nan=False,separators=(',',':')))
-except IndexContractError as exc:
-    code=str(exc)
-    print(json.dumps({'error':code if code in request['allowed'] else 'provider_result_invalid'}))
-'''
 
 
 def reader_capabilities():
@@ -98,11 +84,12 @@ def _vector_proof(authority,snapshot,decision,provider,deadline):
 def _provider_vector(provider,prompt,budget):
     """Use the existing provider in a child with an absolute completion bound."""
     from memvane.kernel.errors import IndexContractError
+    from memvane.provider.api import query_embed_child_argv
     deadline=time.monotonic()+budget
     payload=json.dumps({'manifest':provider.manifest,'prompt':prompt,'timeout':budget,
                         'allowed':sorted(_PROVIDER_ERRORS)},
                        ensure_ascii=True,separators=(',',':'))
-    child=subprocess.Popen([sys.executable,'-B','-I','-c',_PROVIDER_CHILD,str(Path(__file__).resolve().parents[2])],
+    child=subprocess.Popen(query_embed_child_argv(),
                            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
         remaining=deadline-time.monotonic()
