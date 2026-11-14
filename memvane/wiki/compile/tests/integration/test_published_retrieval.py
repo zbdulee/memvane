@@ -40,6 +40,11 @@ class PublishedRetrieval(FixtureCase):
                                        body='Quasar observatory record.\n')
         self.assertIn(new, [row[0] for row in self.matches('quasar observatory')])
 
+    def test_admitted_fixture_provider_queries_published_vectors(self):
+        self.install.provider.admit_queries()
+        with patch.object(retrieval, 'overlay_paths', return_value=[]):
+            self.assertIn(self.card, [row[0] for row in self.matches('archive')])
+
     def test_warm_provider_uses_same_published_head(self):
         with patch.object(retrieval, 'overlay_paths', return_value=[]), \
              patch.object(retrieval, 'query_provider', return_value=lambda _text, _profile: {'vector': [1.0, 0.0]}) as query:

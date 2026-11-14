@@ -73,8 +73,12 @@ class FixturePortSeam(unittest.TestCase):
         with self.env(str(self.root)):
             port = provider.fixture_port()
             self.assertEqual((type(port).__name__, port.dimension), ('FixtureProvider', 3))
-            handle = provider.reviewed_provider({'k': 'v'})
-            self.assertEqual((handle.manifest, handle.embed_document('body')), ({'k': 'v'}, [1.0, 0.0, 0.0]))
+            manifest = {'approvedProviderId': 'fixture-provider', 'providerArtifactSha256': 'a' * 64}
+            handle = provider.reviewed_provider(manifest)
+            self.assertEqual((handle.manifest, handle.embed_document('body')), (manifest, [1.0, 0.0, 0.0]))
+            self.assertEqual(handle('query', {}), {'profileId': handle.profile['profile_id'],
+                         'approvedProviderId': 'fixture-provider', 'providerArtifactSha256': 'a' * 64,
+                         'vector': [1.0, 0.0, 0.0]})
             self.assertEqual(provider.sealed_files_sha256('/anything'), 'c' * 64)
 
     def test_an_unsafe_fixture_file_refuses(self):

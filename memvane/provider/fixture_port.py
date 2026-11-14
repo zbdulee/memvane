@@ -117,7 +117,10 @@ class _Handle:
         self._vector = vector
 
     def __call__(self, prompt, sealed_profile):
-        return list(self._vector)
+        return {'profileId': self.profile['profile_id'],
+                'approvedProviderId': self.manifest.get('approvedProviderId'),
+                'providerArtifactSha256': self.manifest.get('providerArtifactSha256'),
+                'vector': list(self._vector)}
 
     def embed_document(self, body, title=None):
         return list(self._vector)
