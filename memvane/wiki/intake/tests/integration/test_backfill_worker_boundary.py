@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 from memvane.wiki.intake import wiki_backfill as backfill
 from tests.support.case import FixtureCase
@@ -13,6 +14,45 @@ from tests.support.settings_fake import expanded
 
 
 class BackfillWorkerBoundary(FixtureCase):
+    def test_settled_job_does_not_extract_again_after_continuation_wake_failure(self):
+        import json
+        from memvane.wiki.intake import wiki_compile_enqueue as enqueue
+        from memvane.wiki.workspace import api as workspace
+
+        project = make_project(self.home)
+        sources = [project.write_note('docs/' + name + '.md', name + '\n')
+                   for name in ('one', 'two')]
+        project.git('add', '--', '.memvane/settings.json', 'docs')
+        project.git('commit', '-qm', 'fixture')
+        decision = build_install(self, project).select()
+        snapshot = {project.raw_name + '/docs/' + path.name:
+                    hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
+        config = expanded(project, compile={'mode': 'auto-wiki',
+                          'triggers': ['post_sync_source'], 'extractor': {'builtins': ['codex']}})
+        row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'codex'})
+        with patch.object(enqueue, 'compile_max_files', return_value=1):
+            backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        job = json.loads(queue.read_text().splitlines()[0])
+        bound = workspace.selected(project.root)
+        with patch.object(workspace, 'request_sync', side_effect=OSError('synthetic wake failure')):
+            with self.assertRaises(OSError):
+                backfill.settle_job(bound, {**job, '_processedContentRevision': job['contentRevision']})
+        self.assertTrue(backfill.settled_job(bound, job))
+        marker = self.home / 'extractor-was-called'
+        fake = self.home / 'fake-extractor'
+        fake.write_text('#!/usr/bin/env python3\nimport os\nopen(os.environ["FIXTURE_MARKER"], "w").write("called")\nprint("{}")\n')
+        fake.chmod(0o700)
+        root = Path(__file__).resolve().parents[5]
+        env = {**os.environ, 'QMD_ENGINE': 'codex', 'FIXTURE_MARKER': str(marker),
+               'QMD_EXTRACTOR_CODEX_BIN': str(fake)}
+        child = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'),
+                                'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all'],
+                               cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertFalse(marker.exists(), 'settled work reached the extractor')
+        self.assertEqual(backfill.summary(backfill._load(decision))['settled'], 1)
+
     def test_worker_does_not_extract_new_bytes_under_frozen_authority(self):
         project = make_project(self.home)
         source = project.write_note('docs/note.md', 'frozen source\n')
