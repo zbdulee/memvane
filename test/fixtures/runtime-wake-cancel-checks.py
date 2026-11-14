@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path.cwd()))
 from memvane.runtime import runtime_work
 from memvane.app.entry_commands import runtime_work_main
 from memvane.install import runtime_wake_cancel as cancel
+from memvane.runtime import wake_cancel as queue_cancel
 from memvane.runtime import runtime_wake_policy as wake_policy
 from memvane.journal import initial_build
 from memvane.journal import install_journal as laya_install_journal
@@ -116,7 +117,7 @@ with tempfile.TemporaryDirectory(prefix='wake-cancel-') as name, \
     assert revision() == rev and not list(backups.iterdir())
     results['failClosedNoMutation'] = True
 
-    real_backup = cancel._backup
+    real_backup = queue_cancel._backup
     def row_now():
         with queue.connect() as db:
             found = db.execute('SELECT revision,attempts,due,reason FROM wakes WHERE id=?', (key,)).fetchone()
@@ -130,14 +131,14 @@ with tempfile.TemporaryDirectory(prefix='wake-cancel-') as name, \
     before = row_now()
     def retry_then_backup(q, d, k, r):
         retry(q); return real_backup(q, d, k, r)
-    with patch.object(cancel, '_backup', retry_then_backup):
+    with patch.object(queue_cancel, '_backup', retry_then_backup):
         assert run(rev) == {'status': 'refused', 'reason': 'backup_unverified'}
     assert row_now()[0] == rev and row_now() != before and audits() == []
     # Same-revision retry after a verified backup: full-row CAS refuses, retried row survives.
     before = row_now()
     def backup_then_retry(q, d, k, r):
         out = real_backup(q, d, k, r); retry(q); return out
-    with patch.object(cancel, '_backup', backup_then_retry):
+    with patch.object(queue_cancel, '_backup', backup_then_retry):
         assert run(rev) == {'status': 'refused', 'reason': 'wake_changed_before_delete'}
     after_retry = row_now()
     assert after_retry[0] == rev and after_retry[1] == before[1] + 1 and audits() == []
@@ -149,7 +150,7 @@ with tempfile.TemporaryDirectory(prefix='wake-cancel-') as name, \
                             'project_route_not_original_qmd')):
         def transition(q, d, k, r, change=change):
             out = real_backup(q, d, k, r); live.update(change); return out
-        with patch.object(cancel, '_backup', transition):
+        with patch.object(queue_cancel, '_backup', transition):
             assert run(rev) == {'status': 'refused', 'reason': reason}, (change, reason)
         # The CAS DELETE inside that transaction was rolled back: row and audit unchanged.
         assert row_now() == after_retry and audits() == []
@@ -165,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix='wake-cancel-') as name, \
     # Race: a re-enqueue after backup bumps the revision; the newer wake survives.
     def racing(q, d, k, r):
         out = real_backup(q, d, k, r); q.offer('laya-sync', str(project)); return out
-    with patch.object(cancel, '_backup', racing):
+    with patch.object(queue_cancel, '_backup', racing):
         assert run(rev) == {'status': 'refused', 'reason': 'wake_changed_before_delete'}
     newer = revision(); assert newer > rev
     assert cancel.status(str(project), queue=queue)['cancellations'] == []

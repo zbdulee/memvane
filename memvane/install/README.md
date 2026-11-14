@@ -28,4 +28,4 @@ live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service�
 
 런타임 선택은 provider·worker 파일과 모델·런타임 정체성을 확인한다.
 
-`runtime_wake_cancel.py`는 설치의 초기 빌드 wake 취소를 처리한다.
+`runtime_wake_cancel.py`는 설치의 초기 빌드 wake 취소에서 소유 증명을 맡는다. 큐 백업, CAS 삭제와 감사 행 기록은 runtime api(`cancel_pending_wake`, `wake_cancel_status`)가 한 트랜잭션으로 처리한다.

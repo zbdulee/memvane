@@ -5,7 +5,7 @@ import select
 import stat
 import time
 
-from memvane.runtime.api import resource as runtime_resource; observation_fresh = runtime_resource.observation_fresh
+from memvane.runtime.api import observation_fresh
 
 YIELD_GRACE=2.
 PROBE_INTERVAL=1.
@@ -40,7 +40,7 @@ class Watch:
             return {'action':'kill','reason':'critical_memory_pressure'}
         calibrated='calibration' in self.policy
         if calibrated:
-            from memvane.runtime.api import resource as runtime_resource; verdict = runtime_resource.calibration_verdict
+            from memvane.runtime.api import calibration_verdict as verdict
             scoped=verdict(report,self.policy,now=now)
             if not scoped['ready']:return {'action':'kill','reason':scoped['reason']}
         reserve=self.min_available_mib

@@ -176,7 +176,7 @@ def _policy(root):
                 and not general_grant)):
         raise ValueError("invalid_shared_trainer")
     if 'adaptiveMemory' in value:
-        from memvane.runtime.api import resource as runtime_resource; validate = runtime_resource.memory_validate
+        from memvane.runtime.api import memory_validate as validate
         validate(value['adaptiveMemory'])
     if 'modelInputView' in value:
         from .adapter import EDIT_INPUT_VIEW, _read_json
@@ -803,8 +803,8 @@ def enqueue(config, project, sample, compact_sources):
 
 
 def resource_report(policy, *, detailed=False, admission=True, deadline=None):
-    from memvane.runtime.api import resource
-    return resource.report(policy, detailed=detailed, admission=admission, deadline=deadline)
+    from memvane.runtime.api import resource_report as report
+    return report(policy, detailed=detailed, admission=admission, deadline=deadline)
 
 def _meta(db, key, default):
     row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -2000,7 +2000,7 @@ def learning_worker_step(root, project, revision, *, spawn=None):
     per shared root. A full (teacher+trainer) request goes first; otherwise
     the wake is a training-only retry. ``running``/``started`` keep the wake.
     """
-    from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
+    from memvane.runtime.api import coordination_lock as _lock
     root, project = _validated_root(root), Path(project).resolve(strict=True)
     if type(revision) is not int or revision < 0:
         raise ValueError("invalid_runtime_revision")
@@ -2148,7 +2148,7 @@ def run_training_pending(root,project):
     """Retry local training only, never teacher/observation or enrollment."""
     from memvane.settings import api as config
     from .runtime_authorization import require_operation
-    from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
+    from memvane.runtime.api import coordination_lock as _lock
     root,project=Path(root),Path(project)
     cfg=config.find_project_config(str(project))['config']
     if _safe_root(cfg,project)!=root:return {'status':'disabled'}

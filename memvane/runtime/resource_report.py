@@ -7,8 +7,10 @@ import time
 
 
 def report(policy, *, detailed=False, admission=True, deadline=None):
-    from memvane.runtime.api import adapter_for, normal_pressure, number
-    from memvane.runtime.api import resource
+    from memvane.runtime.resource_platform import adapter_for, normal_pressure, number
+    from memvane.runtime.bounded_calibration import pressure_ready, verdict as calibration_verdict
+    from memvane.runtime.memory_policy import assess as memory_assess
+    from memvane.runtime.resource_coordination import observation_fresh
     started = time.monotonic()
     end = min(started + 2, deadline) if deadline is not None else started + 2
     result = adapter_for(sys.platform).observe(
@@ -18,15 +20,15 @@ def report(policy, *, detailed=False, admission=True, deadline=None):
     available, load = result['available_mib'], result['load_per_cpu']
     result['ready'] = (number(load) and load <= policy['maxLoadPerCpu']
         and number(available) and available >= policy['minAvailableMib']
-        and resource.pressure_ready(result, policy))
+        and pressure_ready(result, policy))
     if 'calibration' in policy:
-        result['calibration_admission'] = resource.calibration_verdict(result, policy)
+        result['calibration_admission'] = calibration_verdict(result, policy)
     if 'adaptiveMemory' in policy:
-        decision = resource.memory_assess(result, policy, admission=admission)
+        decision = memory_assess(result, policy, admission=admission)
         result.update(ready=decision['ready'], memory_admission=decision)
         if decision['training_limits'] is not None:
             result['training_limits'] = decision['training_limits']
-    result['observation_status'] = ('fresh' if resource.observation_fresh(result)
+    result['observation_status'] = ('fresh' if observation_fresh(result)
                                     else 'stale')
     result['ready'] = (result['ready'] and result['observation_status'] == 'fresh'
                        and time.monotonic() < end)

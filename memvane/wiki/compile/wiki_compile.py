@@ -1228,42 +1228,43 @@ def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: 
     ``attempts`` and ``failure`` codes, and a card that fits logs
     ``measured_after_failure`` (nothing is logged for a fitting card otherwise).
     """
-    from memvane.learning.api import _card_budget as budget
-    tokenizer = budget.selector_tokenizers(config, root)
-    measured = budget.measure_card(card_text, tokenizer)
+    from memvane.learning.api import (card_budget_failure_fields, emit_card_budget, measure_card,
+                                      selector_tokenizers)
+    tokenizer = selector_tokenizers(config, root)
+    measured = measure_card(card_text, tokenizer)
     rel = target.relative_to(wiki_root).as_posix()
     fields = {"size": measured["size"], "budget": measured["budget"],
               "method": measured["method"]}
     # A runtime that failed before another answered stays visible on every outcome.
-    failure = budget.failure_fields(measured)
+    failure = card_budget_failure_fields(measured)
     if measured["reason"] in ("measure_failed", "tokenizer_unavailable"):
         record["cardBudget"] = {**fields, "reason": measured["reason"], **failure}
-        budget.emit(root, "measure_failed" if measured["reason"] == "measure_failed"
-                    else "unmeasured", bound=selected, path=rel, title=record["title"],
-                    reason=measured["reason"], runtimes=len(tokenizer), **fields, **failure)
+        emit_card_budget(root, "measure_failed" if measured["reason"] == "measure_failed"
+                         else "unmeasured", bound=selected, path=rel, title=record["title"],
+                         reason=measured["reason"], runtimes=len(tokenizer), **fields, **failure)
         return False
     if measured["fits"]:
         if failure:
-            budget.emit(root, "measured_after_failure", bound=selected, path=rel,
-                        title=record["title"], reason="runtime_fallback",
-                        runtimes=len(tokenizer), **fields, **failure)
+            emit_card_budget(root, "measured_after_failure", bound=selected, path=rel,
+                             title=record["title"], reason="runtime_fallback",
+                             runtimes=len(tokenizer), **fields, **failure)
         return False
     reason = measured["reason"]
     if floor_text is not None and floor_text != card_text:
-        if budget.measure_card(floor_text, tokenizer)["reason"] == "over_budget":
+        if measure_card(floor_text, tokenizer)["reason"] == "over_budget":
             reason = "manual_section_over_budget"
     record["cardBudget"] = {**fields, "reason": reason, **failure}
     if final_reason is not None:
         record["cardBudget"]["written"] = final_reason
-        budget.emit(root, "over_budget_written", bound=selected, path=rel,
-                    title=record["title"], reason=final_reason, overflow=reason, **fields,
-                    **failure)
+        emit_card_budget(root, "over_budget_written", bound=selected, path=rel,
+                         title=record["title"], reason=final_reason, overflow=reason, **fields,
+                         **failure)
         return False
     record["action"] = "split-required"
     record["lint"] = {"verdict": "needs_split", "findings": [reason]}
     append_jsonl(candidate_path, record)
-    budget.emit(root, "over_budget", bound=selected, path=rel, title=record["title"],
-                reason=reason, **fields, **failure)
+    emit_card_budget(root, "over_budget", bound=selected, path=rel, title=record["title"],
+                     reason=reason, **fields, **failure)
     print(json.dumps({"action": "split-required", "reason": reason,
                       "targetPath": record["targetPath"], "title": record["title"],
                       "canonicalKey": record["canonicalKey"], **fields}, ensure_ascii=False))

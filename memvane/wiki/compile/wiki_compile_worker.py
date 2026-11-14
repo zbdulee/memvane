@@ -39,7 +39,7 @@ from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
                                         requeue_lines, append_jsonl, read_queue, claim_queue)
 from memvane.wiki.compile import wiki_compile as wc
-from memvane.learning.api import _card_budget as wiki_card_budget
+from memvane.learning.api import card_prompt_budget, emit_card_budget
 from memvane.wiki.card.api import card_support
 wiki_freshness = card_support.freshness
 from memvane.wiki.card import api as yaml_scalars
@@ -954,7 +954,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         # summary does not overshoot into too_many_lines.
         "maxLines": int(compile_cfg.get("maxAutoPageLines", 120) or 120),
         # The selector body budget the writer enforces (wiki_card_budget).
-        "cardBudget": wiki_card_budget.prompt_budget(),
+        "cardBudget": card_prompt_budget(),
         "_qmd": {"reasoningEffort": {
             "requested": qmd_config.resolve_reasoning_effort(compile_cfg, engine, "generation"),
         }},
@@ -1323,9 +1323,9 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
                              'splitParts': parts,
                              'writtenOriginals': [str(card.get('title') or '')[:120]
                                                   for card in splittable][:20]})
-    wiki_card_budget.emit(root, 'split' if split_reason is None else 'split_unavailable',
-                          bound=selected_route, path=rel, reason=split_reason,
-                          requested=len(splittable), parts=parts, written=written)
+    emit_card_budget(root, 'split' if split_reason is None else 'split_unavailable',
+                     bound=selected_route, path=rel, reason=split_reason,
+                     requested=len(splittable), parts=parts, written=written)
     return True
 
 

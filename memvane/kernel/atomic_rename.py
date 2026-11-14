@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import os
 import shutil
+import stat
 import sys
 
 
@@ -111,6 +112,26 @@ def atomic_json(path, value):
         os.replace(name, path)
     finally:
         if os.path.exists(name): os.unlink(name)
+
+
+# Owner-only state directory and lock file checks shared by runtime and learning.
+def private_state(state):
+    state = Path(state)
+    if not state.is_absolute() or state.is_symlink() or not state.is_dir():
+        raise ValueError('resident_state_unsafe')
+    info = state.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('resident_state_unsafe')
+    return state
+
+
+def private_lock(path):
+    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        os.close(fd)
+        raise ValueError('resident_lock_unsafe')
+    return fd
 
 
 def write_text_atomic(path: Path, text: str) -> bool:

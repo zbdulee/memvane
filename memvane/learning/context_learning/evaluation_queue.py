@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import fcntl,os,time
 from .learning_queue import LearningQueue
-from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
+from memvane.runtime.api import coordination_lock as _lock
 
 class EvaluationQueue:
     def __init__(self,root,*,connect=None):

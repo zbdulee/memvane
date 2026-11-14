@@ -490,7 +490,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
     consent={'schema':'qmd-shared-consent-v1','projectRoot':str(project),'sharedRoot':str(root),
              'capture':True,'localTraining':True,'externalTeacher':False}
     if mode==SYNTHETIC_STAGED:
-        from memvane.runtime.api import resource as runtime_resource; validate_memory = runtime_resource.memory_validate
+        from memvane.runtime.api import memory_validate as validate_memory
         identity=model_identity(model)
         try:profile=validate_memory(memory_profile)
         except (TypeError,ValueError,KeyError) as exc:

@@ -82,8 +82,8 @@ TIMER_MAX_SECONDS=3600
 
 
 def Coordinator(*args,**kwargs):
-    from memvane.runtime.api import resource
-    return resource.coordinator(*args,**kwargs)
+    from memvane.runtime.api import coordinator
+    return coordinator(*args,**kwargs)
 
 
 def default_root():
@@ -109,7 +109,7 @@ def yield_requested(root,*,now=None):
 
 
 def sample():
-    from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
+    from memvane.runtime.api import resource_report
     return resource_report(POLICY,detailed=True,admission=False)
 
 

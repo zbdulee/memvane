@@ -339,8 +339,7 @@ def _spawn(root, *, python=None, learning_root=None, spawn=None):
 
 def _learning_root():
     try:
-        from memvane.learning.api import _inference_service as inference_service
-        service_root = inference_service.service_root
+        from memvane.runtime.api import service_root
         return service_root(create=True)
     except Exception:
         return None
@@ -710,8 +709,8 @@ def _quiet_stop(handle):
 
 
 def default_admit():
-    from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
-    from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
+    from memvane.runtime.api import coordinator as Coordinator
+    from memvane.runtime.api import resource_report
     from memvane.resident.types import EMBED_POLICY
     # Memory/pressure admission and learning demand, under control.lock only.
     # The service never holds the provider lane: one cold load per service.
@@ -986,8 +985,8 @@ class Service:
 
     def _learning_busy(self):
         try:
-            from memvane.learning.api import _inference_service as learning
-            answer = learning._version(Path(self.learning_root), time.monotonic() + .5)
+            from memvane.learning.api import inference_version
+            answer = inference_version(Path(self.learning_root), time.monotonic() + .5)
         except Exception:
             return False
         return isinstance(answer, dict) and (answer.get('busy') is True
@@ -1573,20 +1572,20 @@ class Service:
 def _learning_host(learning_root):
     """Host the learning inference service in this process until stopped."""
     def host(stopped):
-        from memvane.learning.api import _inference_service as learning
+        from memvane.learning.api import retire_stale_inference, serve_inference
         root = Path(learning_root)
         from memvane.runtime.api import lease
         while not stopped.is_set():
             try:
                 # The CPU share gates learning only, never the embedding host.
                 with lease(root):
-                    learning._serve(root, stop=stopped, hosted=True)
+                    serve_inference(root, stop=stopped, hosted=True)
                 return
             except BlockingIOError:
                 # A learning-only service of an earlier bundle holds the lease;
                 # it stops only while idle (finished in-flight requests).
                 with suppress(Exception):
-                    learning._retire_stale(root, time.monotonic() + 1)
+                    retire_stale_inference(root, time.monotonic() + 1)
             except Exception:
                 pass
             stopped.wait(1)

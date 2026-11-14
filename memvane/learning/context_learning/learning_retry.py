@@ -3,7 +3,7 @@ import fcntl
 import os
 import time
 from .learning_queue import LearningQueue
-from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
+from memvane.runtime.api import coordination_lock as _lock
 
 
 def wait_pending(root,execute,*,max_seconds=60,max_runs=2,clock=time.monotonic,

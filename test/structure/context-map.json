@@ -999,6 +999,11 @@
       "layer": "domain",
       "pinned": false
     },
+    "memvane/runtime/wake_cancel.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/settings/__init__.py": {
       "context": "settings",
       "layer": "adapter",

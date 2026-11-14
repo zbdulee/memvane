@@ -54,7 +54,7 @@ def observation_fresh(report,*,now=None):
 
 
 def decision(policy,report,*,resident_credit=0,now=None):
-    from memvane.runtime.api import normal_pressure,number
+    from memvane.runtime.resource_platform import normal_pressure,number
     from .bounded_calibration import pressure_ready
     result={'ready':False,'reason':'resource_unknown','microbatch_size':None}
     if not observation_fresh(report,now=now):return {**result,'reason':'resource_observation_stale'}
@@ -68,7 +68,7 @@ def decision(policy,report,*,resident_credit=0,now=None):
     if not pressure_ready(report,policy,now=now):
         return {**result,'reason':'os_memory_pressure'}
     if 'adaptiveMemory' in policy:
-        from memvane.runtime.api import resource as runtime_resource; assess = runtime_resource.memory_assess
+        from memvane.runtime.memory_policy import assess
         admission=assess(report,policy,resident_credit=resident_credit,
             phase='loaded_self' if resident_credit>0 else 'cold',now=now)
         if not admission['ready']:return {**result,'reason':admission['reason'],'memory_admission':admission}

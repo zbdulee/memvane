@@ -21,8 +21,7 @@ import sys
 import time
 
 from .local_cycle import _safe_file
-from memvane.runtime.api import resource as runtime_resource
-_private_lock, _private_state = runtime_resource.private_lock, runtime_resource.private_state
+from memvane.kernel.atomic_rename import private_lock as _private_lock, private_state as _private_state
 
 MAX_WIRE_BYTES = 1024 * 1024
 IDLE_SECONDS = 90

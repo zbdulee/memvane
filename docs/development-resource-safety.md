@@ -47,7 +47,7 @@ resource limits.
 and `--max-seconds` of at most 30 (otherwise `calibration_requires_short_test`).
 The envelope is a one-shot synthetic trial that expires 30 seconds after issue
 and cannot be reused (`calibration_already_consumed`); its schema, fixed policy
-values and window rules are defined in `memvane/learning/context_learning/bounded_calibration.py`.
+values and window rules are defined in `memvane/runtime/bounded_calibration.py`.
 
 All kinds and all worktrees use `~/Library/Logs/qmd-development-guard/heavy.lock`
 on macOS (`~/.local/state/qmd-development-guard/heavy.lock` on Linux). The home

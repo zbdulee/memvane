@@ -137,7 +137,7 @@ def record_recovery(compile_dir: Path, delete_rel: str, paired_with: str, conten
 
 def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
     """The keeper's budget measurement when its body is over the card budget, else None."""
-    from memvane.learning.api import _card_budget as wiki_card_budget
+    from memvane.learning.api import measure_card, selector_tokenizers
     if not isinstance(keeper_rel, str):
         return None
     keeper = (wiki_root / keeper_rel).resolve()
@@ -149,10 +149,10 @@ def keeper_over_budget(root: Path, wiki_root: Path, keeper_rel) -> dict | None:
     tokenizer = None
     try:
         found = qmd_config.find_project_config(str(root))
-        tokenizer = wiki_card_budget.selector_tokenizers(found["config"], root)
+        tokenizer = selector_tokenizers(found["config"], root)
     except Exception:  # noqa: BLE001 - no tokenizer: measure_card reports unavailable
         tokenizer = None
-    measured = wiki_card_budget.measure_card(text, tokenizer)
+    measured = measure_card(text, tokenizer)
     # A page the selector does not read at all (no frontmatter) or one no runtime
     # could count is not refused: only a measured overflow keeps the pair apart.
     return measured if measured["reason"] == "over_budget" else None
@@ -218,11 +218,11 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
             # A keeper the local selector cannot score keeps the pair as two
             # cards: the loser stays, and the pair is recorded as skipped.
             recorded = record_skip(root, wiki_root, compile_dir, entry)
-            from memvane.learning.api import _card_budget as wiki_card_budget
-            wiki_card_budget.emit(root, "merge_kept_separate", bound=laya_bound,
-                                  path=paired_with, reason=refused["reason"],
-                                  size=refused["size"], budget=refused["budget"],
-                                  method=refused["method"], kept=delete_rel)
+            from memvane.learning.api import emit_card_budget
+            emit_card_budget(root, "merge_kept_separate", bound=laya_bound,
+                             path=paired_with, reason=refused["reason"],
+                             size=refused["size"], budget=refused["budget"],
+                             method=refused["method"], kept=delete_rel)
             return {"action": "kept_separate", "reason": "keeper_over_budget",
                     "keeper": paired_with, "kept": delete_rel, "recorded": recorded,
                     "size": refused["size"], "budget": refused["budget"],

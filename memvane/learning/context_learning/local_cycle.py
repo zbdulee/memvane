@@ -122,7 +122,7 @@ class LocalTrainer:
         if getattr(self,'learning_control',None) is not None or os.environ.get('QMD_SETUP_GUARD_FIXTURE')=='1':
             return self._call(mode,request,result_path,cwd=cwd)
         self._admission(cwd)
-        from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
+        from memvane.runtime.api import coordinator as Coordinator
         from .shared import resource_report
         policy={'maxRssMib':self.max_rss_mib,'minAvailableMib':768,'maxLoadPerCpu':1}
         try:
@@ -144,7 +144,7 @@ class LocalTrainer:
             request = {**request, 'learning_control':control}
         if control is not None and 'calibration' in control.get('policy',{}):
             if mode!='train':raise ValueError('calibration_scope_invalid')
-            from memvane.runtime.api import resource as runtime_resource; reserve_launch = runtime_resource.calibration_reserve_launch
+            from memvane.runtime.api import calibration_reserve_launch as reserve_launch
             reserve_launch(request)
         request_path = Path(cwd) / (mode+'-request.json')
         _atomic_json(request_path, request)
@@ -164,7 +164,7 @@ class LocalTrainer:
         coordination_fd = getattr(self, 'coordination_fd', None)
         if coordination_fd is not None:env['QMD_TRAINER_COORD_FD']=str(coordination_fd)
         from .training_watch import Watch,PROBE_INTERVAL,PROBE_BUDGET,STATS_BUDGET
-        from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
+        from memvane.runtime.api import coordinator as Coordinator
         from memvane.runtime.api import lease,environment
         cpu_scope=lease();cpu_budget=cpu_scope.__enter__()
         env=environment(env);inherited=(*inherited,*cpu_budget.fds)

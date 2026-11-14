@@ -167,7 +167,14 @@ _API_PARTS = ('api', 'types')
 # lookup/record in route_selection, install_journal x2, dispatch_target; build ->
 # install_journal and journal_reader in initial_build, writer_scope), and the
 # selection half alone needs 41 names, so splitting would not meet the limit.
-_API_NAME_LIMITS = {'journal': 51}
+# runtime excepted at its exact count: every name is one distinct implementation
+# function with another domain's caller (learning alone uses 30 of them: the
+# admission, provider, CPU-share, coordination and calibration primitives of the
+# trainer and inference service, plus load/sha behind the calibration adapter
+# that scripts/development_guard.py imports; wake queue/sync owner serve host,
+# app, sync, wiki, journal and install; the QA ledger trio serves the wiki CLI).
+# No two names forward to the same callee, so no merge keeps behavior.
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')
@@ -180,8 +187,18 @@ _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:ma
 _HANDLE_SOURCES = {
     'memvane.store.api.open_store': 'memvane.store.types.ViewStoreHandle',
     'memvane.journal.api.pin_schema3': ('memvane.store.types.ViewStoreHandle', None, None),
+    'memvane.runtime.api.coordinator': 'memvane.runtime.types.CoordinatorHandle',
+    'memvane.runtime.api.wake_queue': 'memvane.runtime.types.WakeQueueHandle',
+    'memvane.runtime.api.supervisor': 'memvane.runtime.types.SupervisorHandle',
+    'memvane.runtime.api.training_guard': 'memvane.runtime.types.TrainingGuardHandle',
 }
-_HANDLE_CLASSES = {'memvane.store.types.ViewStoreHandle': 'memvane.store.view.view_store.ViewStore'}
+_HANDLE_CLASSES = {
+    'memvane.store.types.ViewStoreHandle': 'memvane.store.view.view_store.ViewStore',
+    'memvane.runtime.types.CoordinatorHandle': 'memvane.runtime.resource_coordination.Coordinator',
+    'memvane.runtime.types.WakeQueueHandle': 'memvane.runtime.runtime_work.WakeQueue',
+    'memvane.runtime.types.SupervisorHandle': 'memvane.runtime.runtime_monitor.Supervisor',
+    'memvane.runtime.types.TrainingGuardHandle': 'memvane.runtime.resource_coordination.TrainingGuard',
+}
 # Direct reads of another domain's table that the layer order keeps off that
 # domain's api (S4b rule 3). Only a FROM/JOIN in a string that writes nothing
 # is excused; an exception that matches no string is itself a finding.

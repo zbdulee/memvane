@@ -46,8 +46,8 @@ test('the free-name check flags unbound names and missing module attributes', t 
     'def a():\n    from pathlib import Path\n    return Path, bundle_paths.entry_path\n\n' +
     'def b(config):\n    return Path(1), json, config.get, bundle_paths.removed_name\n\n' +
     'def c():\n    bundle_paths = {}\n    return bundle_paths.get\n\n' +
-    'def d():\n    from memvane.runtime.api import resource as build\n    return build.report, build.removed_op\n\n' +
-    'def e():\n    import os\n    from memvane.runtime.api import resource as os\n    return os.getcwd\n\n' +
+    'def d():\n    from memvane.runtime import api as build\n    return build.resource_report, build.removed_op\n\n' +
+    'def e():\n    import os\n    from memvane.runtime import api as os\n    return os.getcwd\n\n' +
     'def f():\n    from memvane.journal import journal_reader as reader\n' +
     '    return reader.journal.inspect_journal, reader.journal.removed_row\n');
   const {result} = run(t, 'free_names.py', [sample]);

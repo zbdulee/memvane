@@ -20,8 +20,8 @@ import stat
 import time
 
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
-from memvane.runtime.api import resource as runtime_resource; resource_report = runtime_resource.report
+from memvane.runtime.api import coordinator as Coordinator
+from memvane.runtime.api import resource_report
 from memvane.kernel.errors import IndexContractError
 from memvane.journal.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots

@@ -10,7 +10,9 @@ backup is taken and verified before the single transaction that CAS-deletes
 exactly (kind, target, revision, pending), removes a coalesced overflow row and
 appends an audit row. A running, changed or re-enqueued wake is refused, so a
 newer revision always survives. Replay never restores the same revision: the
-official recovery is a fresh request (``index-build-rescan``).
+official recovery is a fresh request (``index-build-rescan``). The queue half
+(backup, transaction, audit table) is ``runtime.wake_cancel`` behind the
+runtime api.
 """
 from __future__ import annotations
 
@@ -22,19 +24,10 @@ import sqlite3
 import stat
 import time
 
-from memvane.runtime import api as wake_policy
+from memvane.runtime.types import CANCEL_ROW_VERSION as ROW_VERSION, CancelRefused
 
 KIND = 'laya-sync'
 FIXTURE_SCHEMA = 'qmd-release-qa-fixture-v1'
-AUDIT_TABLE = ('CREATE TABLE IF NOT EXISTS wake_cancellations (seq INTEGER PRIMARY KEY AUTOINCREMENT,'
-               'at REAL NOT NULL,wake_id TEXT NOT NULL,kind TEXT NOT NULL,target TEXT NOT NULL,'
-               'revision INTEGER NOT NULL,attempts INTEGER NOT NULL,reason TEXT,due REAL NOT NULL,'
-               'overflow_removed INTEGER NOT NULL,proof_sha256 TEXT NOT NULL,'
-               'backup_path TEXT NOT NULL,backup_sha256 TEXT NOT NULL)')
-
-
-class CancelRefused(ValueError):
-    pass
 
 
 def _refuse(reason):
@@ -130,68 +123,10 @@ def ownership_proof(project_raw):
     return {**proof, 'sha256': hashlib.sha256(json.dumps(proof, sort_keys=True).encode()).hexdigest()}
 
 
-def _row(db, key):
-    found = db.execute('SELECT * FROM wakes WHERE id=?', (key,)).fetchone()
-    return dict(found) if found is not None else None
-
-
-ROW_VERSION = ('id', 'kind', 'target', 'revision', 'status', 'due', 'attempts', 'reason')
-
-
-def _backup(queue, backup_dir, key, expected):
-    """Online SQLite backup, verified to hold exactly the row about to be removed."""
-    revision = expected['revision']
-    directory = Path(backup_dir)
-    if (not directory.is_absolute() or any(p.is_symlink() for p in (directory, *directory.parents))
-            or not directory.is_dir()):
-        _refuse('unsafe_backup_dir')
-    info = directory.stat()
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        _refuse('unsafe_backup_dir')
-    target = directory / f'runtime-wakes-before-cancel-{revision}-{time.time_ns()}.sqlite3'
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    os.close(fd)
-    source = sqlite3.connect(queue.path.as_uri() + '?mode=ro', uri=True, timeout=.2)
-    try:
-        copy = sqlite3.connect(target)
-        try:
-            source.backup(copy)
-        finally:
-            copy.close()
-    finally:
-        source.close()
-    check = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)
-    try:
-        check.row_factory = sqlite3.Row
-        ok = check.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
-        row = _row(check, key)
-    finally:
-        check.close()
-    if not ok or row is None or any(row[name] != expected[name] for name in ROW_VERSION):
-        _refuse('backup_unverified')
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    return {'path': str(target), 'sha256': digest, 'quickCheck': 'ok', 'row': row}
-
-
 def status(project_raw, *, queue=None):
     """Read-only: the current wake row for this project and its cancel audit."""
-    from memvane.runtime.api import wake_queue as WakeQueue
-    queue = queue or WakeQueue()
-    key = wake_policy.wake_key(KIND, str(project_raw))
-    if not queue.path.exists():
-        return {'wake': None, 'cancellations': []}
-    db = sqlite3.connect(queue.path.as_uri() + '?mode=ro', uri=True, timeout=.2)
-    try:
-        db.row_factory = sqlite3.Row
-        audits = []
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name='wake_cancellations'").fetchone():
-            audits = [dict(r) for r in db.execute(
-                'SELECT * FROM wake_cancellations WHERE wake_id=? ORDER BY seq', (key,))]
-        overflow = bool(db.execute("SELECT 1 FROM sqlite_master WHERE name='wake_overflow'").fetchone()
-                        and db.execute('SELECT 1 FROM wake_overflow WHERE id=?', (key,)).fetchone())
-        return {'wake': _row(db, key), 'overflow': overflow, 'cancellations': audits}
-    finally:
-        db.close()
+    from memvane.runtime.api import wake_cancel_status
+    return wake_cancel_status(KIND, str(project_raw), queue=queue)
 
 
 def _state_locks(state_root):
@@ -247,39 +182,13 @@ def cancel_locked(project_raw, revision, backup_dir, proof, *, queue=None, clock
     them. It raises ``CancelRefused``/``sqlite3.OperationalError`` instead of
     answering, so a composing operation stops before its own first write.
     """
-    from memvane.runtime.api import wake_queue as WakeQueue
-    queue = queue or WakeQueue()
-    key = wake_policy.wake_key(KIND, proof['project'])
-    with queue.connect() as db:
-        current = _row(db, key)
-    if current is None:
+    from memvane.runtime.api import cancel_pending_wake
+    cancelled = cancel_pending_wake(
+        KIND, proof['project'], revision, backup_dir, proof['sha256'],
+        lambda: ownership_proof(project_raw)['sha256'] == proof['sha256'], queue=queue, clock=clock)
+    if cancelled is None:
         return {'status': 'unchanged', 'reason': 'wake_absent', 'proof': proof}
-    if current['kind'] != KIND or current['target'] != proof['project']:
-        _refuse('wake_identity_mismatch')
-    if current['revision'] != revision:
-        _refuse('revision_changed')
-    if current['status'] != 'pending':
-        _refuse('wake_not_pending')
-    backup = _backup(queue, backup_dir, key, current)
-    with queue.connect() as db:
-        db.execute('BEGIN IMMEDIATE')
-        db.execute(AUDIT_TABLE)
-        removed = db.execute(
-            "DELETE FROM wakes WHERE id=? AND kind=? AND target=? AND revision=? AND status='pending' "
-            "AND due=? AND attempts=? AND reason IS ?",
-            (key, KIND, proof['project'], revision, current['due'], current['attempts'],
-             current['reason'])).rowcount
-        if removed != 1:
-            db.rollback()
-            _refuse('wake_changed_before_delete')
-        if ownership_proof(project_raw)['sha256'] != proof['sha256']:
-            db.rollback()
-            _refuse('proof_changed')
-        overflow = db.execute('DELETE FROM wake_overflow WHERE id=?', (key,)).rowcount
-        db.execute('INSERT INTO wake_cancellations (at,wake_id,kind,target,revision,attempts,reason,due,'
-                   'overflow_removed,proof_sha256,backup_path,backup_sha256) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                   (clock(), key, KIND, proof['project'], revision, current['attempts'], current['reason'],
-                    current['due'], overflow, proof['sha256'], backup['path'], backup['sha256']))
+    current, backup, overflow = cancelled
     after = status(proof['project'], queue=queue)
     return {'status': 'applied', 'revision': revision, 'overflowRemoved': overflow,
             'removedRow': {name: current[name] for name in ROW_VERSION},

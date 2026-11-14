@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from memvane.runtime.api import normal_pressure,number
+from memvane.runtime.resource_platform import normal_pressure,number
 
 SCHEMA='qmd-one-shot-calibration-v1'
 _states={}
@@ -91,7 +91,7 @@ def _policy(policy):
             or profile.get('device')!='mps' or profile.get('fixedMib')!=2897 or profile.get('perPairMib')!=312
             or profile.get('systemReserveMib')!=1024 or profile.get('maxVerifiedMicrobatchSize')!=1
             or 'warmAdditionalMib' in profile):raise ValueError('calibration_policy_invalid')
-    from memvane.runtime.api import resource as runtime_resource; validate = runtime_resource.memory_validate
+    from memvane.runtime.api import memory_validate as validate
     validate(profile)
     return base
 

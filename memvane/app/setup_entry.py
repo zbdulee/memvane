@@ -18,12 +18,13 @@ sys.dont_write_bytecode = True
 
 
 def learning_plan(args):
-    from memvane.learning.api import _profile as profile
+    from memvane.learning.api import learning_profile_digest, propose_learning_profile
+    from memvane.learning.types import LEARNING_PROFILE_INSTALL
     if args.learning_choice=='preserve' or not args.learning_namespace:
         raise ValueError('explicit_learning_profile_and_namespace_required')
     root=Path(args.learning_namespace)
     # Exact accepted retry uses its original frozen proposal, never retimes it.
-    old=root/profile.INSTALL
+    old=root/LEARNING_PROFILE_INSTALL
     row=None
     if args.accepted_learning_profile and (old.exists() or old.is_symlink()):
         from memvane.learning.api import read_private_json
@@ -31,15 +32,15 @@ def learning_plan(args):
         if previous['acceptedSha256']==args.accepted_learning_profile:
             row=previous['proposal']
     if row is None:
-        row=profile.proposal(Path(args.project),root,choice=args.learning_choice,
+        row=propose_learning_profile(Path(args.project),root,choice=args.learning_choice,
             mode=args.learning_migration,expires_at_unix_ms=args.learning_expires_at_unix_ms)
-    return {'status':'learning_profile_proposed','proposal':row,'proposalSha256':profile.digest(row),'changesApplied':0}
+    return {'status':'learning_profile_proposed','proposal':row,'proposalSha256':learning_profile_digest(row),'changesApplied':0}
 
 
 def select_learning(args):
-    from memvane.learning.api import _profile as profile
+    from memvane.learning.api import activate_learning_profile
     if not args.accepted_learning_profile:raise ValueError('profile_acceptance_required')
-    return profile.activate(Path(args.project),Path(args.learning_namespace),
+    return activate_learning_profile(Path(args.project),Path(args.learning_namespace),
         accepted_sha256=args.accepted_learning_profile,choice=args.learning_choice,
         mode=args.learning_migration,expires_at_unix_ms=args.learning_expires_at_unix_ms)
 

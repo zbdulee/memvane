@@ -2,15 +2,15 @@
 
 Moved unchanged from ``context_learning`` so the runtime queue can use them
 without loading the learning package. ``resident``, ``resource_coordination``
-and ``local_cycle`` re-export these same function objects. No coordinator,
-admission policy, default root or service registration lives here.
+and ``local_cycle`` re-export these same function objects; ``private_state``,
+``private_lock`` and ``atomic_json`` are defined in ``kernel.atomic_rename``. No
+coordinator, admission policy, default root or service registration lives here.
 """
 import os
 from pathlib import Path
-import stat
 import sys
 
-from memvane.kernel.atomic_rename import MAX_FILE, atomic_json
+from memvane.kernel.atomic_rename import MAX_FILE, atomic_json, private_lock, private_state
 
 
 def platform_temp_roots():
@@ -70,25 +70,6 @@ def in_platform_temp(path):
     except (OSError, ValueError, TypeError):
         return False
     return any(real != root and real.is_relative_to(root) for root in platform_temp_roots())
-
-
-def private_state(state):
-    state = Path(state)
-    if not state.is_absolute() or state.is_symlink() or not state.is_dir():
-        raise ValueError('resident_state_unsafe')
-    info = state.stat()
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise ValueError('resident_state_unsafe')
-    return state
-
-
-def private_lock(path):
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        os.close(fd)
-        raise ValueError('resident_lock_unsafe')
-    return fd
 
 
 def coordination_lock(path):

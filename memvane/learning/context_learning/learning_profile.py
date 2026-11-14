@@ -7,11 +7,11 @@ from .store import canonical
 from .dataset import read_private_json,_json
 from .local_cycle import _atomic_json,_safe_file,_hash
 from .training_cursor import _sync
-from memvane.runtime.api import resource as runtime_resource; _lock = runtime_resource.coordination_lock
+from memvane.runtime.api import coordination_lock as _lock
 from . import resident
+from memvane.learning.types import LEARNING_PROFILE_INSTALL as INSTALL
 
 NAME='learning-profile.json'
-INSTALL='learning-profile-install.json'
 SCHEMA='qmd-local-learning-profile-v1'
 CHOICES=('local-auto-apply','local-staged','off')
 

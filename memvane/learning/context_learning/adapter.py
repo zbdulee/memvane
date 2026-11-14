@@ -424,8 +424,8 @@ def _training_limits(request, model_sha, device):
 def _check_mps_budget(torch, limits):
     if limits is None or limits['device'] != 'mps':
         return
-    from memvane.runtime.api import resource
-    resource.check_mps_memory(torch,limits)
+    from memvane.runtime.api import check_mps_memory
+    check_mps_memory(torch,limits)
 
 
 def _train_group(torch, F, model, tok, params, optimizer, current, microbatch,
@@ -470,12 +470,12 @@ def _training_guard(request):
     control=request.get('learning_control')
     if control is None:return None
     sys.path.insert(0,str(Path(__file__).resolve().parents[3]))
-    from memvane.runtime.api import resource as runtime_resource; TrainingGuard = runtime_resource.training_guard
+    from memvane.runtime.api import training_guard as TrainingGuard
     return TrainingGuard(control)
 
 
 def train(model_dir, request, *, max_updates=None, verification=False):
-    from memvane.runtime.api import resource as runtime_resource; validate_request = runtime_resource.validate_calibration_request
+    from memvane.runtime.api import validate_calibration_request as validate_request
     validate_request(request)
     guard = _training_guard(request)
     torch=_torch()

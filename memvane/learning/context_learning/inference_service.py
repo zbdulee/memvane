@@ -10,11 +10,10 @@ import time
 
 from . import resident
 from .inference_identity import IdentityCache, has_evidence
-from memvane.runtime.api import resource as runtime_resource
+from memvane.runtime.api import service_root
+from memvane.runtime.types import ServiceFailure
 
 _IDENTITY_CACHE = IdentityCache()
-ServiceFailure = runtime_resource.service_failure()
-service_root = runtime_resource.service_root
 
 
 def namespace(state):
@@ -706,7 +705,7 @@ def predict(state, policy, request, artifact_sha, *, deadline, pointer_name='act
     root = service_root(create=True)
     started = time.perf_counter()
     try:
-        from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
+        from memvane.runtime.api import coordinator as Coordinator
         with Coordinator(root).inference(deadline,envelope['namespace']):
             _ensure(root, policy['trainerArgv'][0], deadline, ensure_service=ensure_service)
             response = _exchange(root, envelope, deadline)
@@ -772,7 +771,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
     production_engine=engine is None
     engine = engine or GenerationEngine()
     validate = validate or _validate_request
-    from memvane.runtime.api import resource as runtime_resource; Coordinator = runtime_resource.coordinator
+    from memvane.runtime.api import coordinator as Coordinator
     coordinator=Coordinator(root)
     apply_validate=apply_validate or _validate_apply
     pending = queue.Queue(maxsize=capacity)
@@ -831,7 +830,7 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
                     if (envelope['command']=='apply_prepare' or reload_pending) and coordinator.demand():
                         raise ServiceFailure('resource_deferred')
                     try:
-                        with coordinator._gate('compute.lock'):
+                        with coordinator.inference_compute(None):  # nonblocking compute.lock
                             job=apply_validate(envelope)
                             token=engine.prepare(job,cancelled=lambda:resident._cancelled(conn,deadline),revalidate=lambda:apply_validate(envelope))
                             if envelope['command']=='apply_activate':
@@ -887,8 +886,8 @@ def _serve(root, *, engine=None, validate=None, ready=None, capacity=CAPACITY,ap
             server.listen(CAPACITY);server.settimeout(.1)
             if monitor_factory is not None:monitor=monitor_factory(root)
             elif production_engine:
-                from memvane.runtime.api import resource
-                monitor=resource.supervisor(root)
+                from memvane.runtime.api import supervisor
+                monitor=supervisor(root)
             if monitor is not None:monitor.tick()
             worker.start()
             if ready is not None:
