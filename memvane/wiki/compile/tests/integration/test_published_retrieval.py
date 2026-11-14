@@ -1,6 +1,8 @@
 """Selected format-4 retrieval combines published and live wiki candidates."""
 from unittest.mock import patch
 
+from memvane.learning import api as learning
+from memvane.store import api as store
 from memvane.wiki.compile import selected_execution as execution, wiki_compile_retrieval as retrieval
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
@@ -16,6 +18,8 @@ class PublishedRetrieval(FixtureCase):
         self.card = self.project.write_card('concepts/archive.md', title='Archive',
                                             body='Archives retain spacecraft records.\n',
                                             sources=[source])
+        self.korean = self.project.write_card('concepts/korean.md', title='기록',
+                                              body='검마의 기록.\n', sources=[source])
         self.project.git('add', '--', '.memvane/settings.json', '.memvane/wiki', 'docs')
         self.project.git('commit', '-qm', 'fixture')
         self.install = build_install(self, self.project)
@@ -40,3 +44,18 @@ class PublishedRetrieval(FixtureCase):
              patch.object(retrieval, 'query_provider', return_value=lambda _text, _profile: {'vector': [1.0, 0.0]}) as query:
             self.assertIn(self.card, [row[0] for row in self.matches('archive')])
         query.assert_called_once()
+
+    def test_korean_particle_and_english_stem_use_published_lexical_rows(self):
+        with patch.object(retrieval, 'overlay_paths', return_value=[]):
+            self.assertIn(self.korean, [row[0] for row in self.matches('검마는')])
+            self.assertIn(self.card, [row[0] for row in self.matches('archive')])
+
+    def test_query_does_not_enter_learning_and_failed_vector_read_releases_pin(self):
+        with patch.object(retrieval, 'overlay_paths', return_value=[]), \
+             patch.object(learning, 'select_published', side_effect=AssertionError('learning called')), \
+             patch.object(learning, 'capture_recall', side_effect=AssertionError('learning called')):
+            self.assertIn(self.card, [row[0] for row in self.matches('archive')])
+            with patch.object(store, 'pinned_vector', side_effect=RuntimeError('synthetic read failure')):
+                with self.assertRaisesRegex(RuntimeError, 'synthetic read failure'):
+                    self.matches('archive')
+            self.assertIn(self.card, [row[0] for row in self.matches('archive')])
