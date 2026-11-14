@@ -1379,6 +1379,12 @@ def main(argv: list[str] | None = None) -> int:
             # host that kills this process on timeout still has the answer.
             _capture_learning(capture, started)
         return 0
+    except hook_budget.HookDeadlineExceeded:
+        # The hook ran out of its own time budget. That is no answer, not a
+        # refusal of the selected route: hooks exit 0 and only a refused route
+        # exits 3. A traced call already logged it as ``interrupted``.
+        print("[memvane] hook_budget_exhausted; no context", file=sys.stderr)
+        return 0
     except Exception as exc:
         code = _refusal_code(exc)
         # Hook stderr is intentionally terse. No source body, path, or secrets.
