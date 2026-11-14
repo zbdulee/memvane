@@ -41,12 +41,8 @@ if str(ROOT) not in sys.path:
 
 INSTALL_ID = '4' * 32
 SETTINGS_NAME = 'provenance'
-MODEL = 'synthetic-precomputed-only'
-FINGERPRINT = 'f' * 64
 DIMENSION = 2
-PROVIDER_ID = 'synthetic-provider'
-PROVIDER_REL = 'memvane/provider/adapters/local_embed_provider.py'
-REVIEW_SHA = '9' * 64
+REVIEW_SHA = '9' * 64  # tests.support.fake_provider.REVIEW_SHA
 CARD_REL = 'concepts/heron-dawn.md'
 ANCHOR_REL = 'concepts/anchor.md'
 PROMPT = 'emerald heron'
@@ -69,47 +65,6 @@ class _Coordinator:
 
     def check(self, policy, report):
         return {'ready': True}
-
-
-class _Service:
-    def stop(self):
-        pass
-
-
-def _start_service(manifest, *, admit=None):
-    return _Service()
-
-
-def _profile():
-    from memvane.provider.api import profile_identity
-    return {'profileId': profile_identity(MODEL, FINGERPRINT, DIMENSION), 'modelId': MODEL,
-            'embeddingFingerprint': FINGERPRINT, 'dimension': DIMENSION, 'metric': 'cosine',
-            'approvedProviderId': PROVIDER_ID, 'providerArtifactSha256': 'b' * 64,
-            'providerRelativePath': PROVIDER_REL}
-
-
-class _FixtureProvider:
-    """Build/sync provider: the view recipe's own first-pass chunks, one fixed vector each."""
-
-    def __init__(self, manifest):
-        self.manifest = dict(manifest)
-        self.profile = {'profile_id': _profile()['profileId'], 'model_id': MODEL,
-                        'embedding_fingerprint': FINGERPRINT, 'dimension': DIMENSION,
-                        'metric': 'cosine'}
-
-    def embed_document_chunks(self, body, path, *, timeout=120):
-        from memvane.store.api import qmd_first_pass
-        return [{'seq': seq, 'pos': pos, 'vector': [1.0, 0.0]}
-                for seq, (pos, _text) in enumerate(qmd_first_pass(body))]
-
-    def embed_document(self, body, title):
-        return [1.0, 0.0]
-
-
-def _provider_proof(record, profile, *, allow_local_unavailable=False):
-    """The attested manifest as recorded; this host has no reviewed runtime files."""
-    manifest = dict(record['providerManifest'])
-    return (manifest, True) if allow_local_unavailable else manifest
 
 
 def _canonical(value):
@@ -195,28 +150,14 @@ class WikiDbProvenance(unittest.TestCase):
         (self.wiki / ANCHOR_REL).write_text(text, encoding='utf-8')
 
     def patch_host(self, stack):
-        from memvane.kernel.memvane_paths import install_socket
-        from memvane.kernel.resource_deferred import ResourceDeferred
-        manifest = {'approvedProviderId': PROVIDER_ID, 'providerArtifactSha256': 'b' * 64,
-                    'providerRelativePath': PROVIDER_REL,
-                    'recipeId': 'qmd-regex-token-chunks-candidate-v1', 'modelId': MODEL,
-                    'modelSha256': 'a' * 64, 'embeddingFingerprint': FINGERPRINT,
-                    'moduleEntryPath': str(self.home / 'fixture-module'),
-                    'serviceSocketPath': str(install_socket(self.state)), 'dimension': DIMENSION}
-        review = {'status': 'review_required', 'proposalSha256': REVIEW_SHA,
-                  'reviewedProvider': {'vectorProfile': _profile(), 'providerManifest': manifest,
-                                       'dependencyClosure': []}}
+        if getattr(self, 'fake', None) is None:
+            from tests.support.fake_provider import FixtureProvider
+            self.fake = FixtureProvider(DIMENSION).install(self)
         verdict = {'verdict': 'pass', 'claims': [{'claim': 'The emerald heron fishes at dawn.'}],
                    'reasons': []}
         attempt = {'engine': 'claude', 'argv': ['synthetic-verifier'], 'mode': 'cross-engine',
                    'key': 'claude'}
         for target, value in (
-                ('memvane.install.application.onboarding_workflow.review_local_provider', lambda **_kw: review),
-                ('memvane.provider.embed_runtime.sealed_files_sha256', lambda *_a, **_k: 'c' * 64),
-                ('memvane.journal.install_journal._v1_provider_manifest', _provider_proof),
-                ('memvane.sync.product_sync_worker.ReviewedLocalQmdProvider', _FixtureProvider),
-                ('memvane.sync.product_sync_worker._initial_build_waiting',
-                 lambda _controller, _project: False),
                 ('memvane.wiki.verify.wiki_verify_worker.plan_verify_attempts',
                  lambda *_a, **_k: ([attempt], 'prefer', None)),
                 ('memvane.wiki.engines.api.run_extractor', lambda *_a, **_k: (copy.deepcopy(verdict), None, 0)),
@@ -224,8 +165,6 @@ class WikiDbProvenance(unittest.TestCase):
                 ('memvane.wiki.verify.wiki_verify_worker.wake_pending_retirement',
                  lambda *_a, **_k: None)):
             stack.enter_context(mock.patch(target, value))
-        stack.enter_context(mock.patch('memvane.resident.embed_resident.admit_query',
-                                       side_effect=ResourceDeferred('fixture_lexical_recall')))
 
     def onboard(self):
         from memvane.install.application import onboarding_workflow as workflow
@@ -236,7 +175,7 @@ class WikiDbProvenance(unittest.TestCase):
         prepared = workflow.prepare_fresh_wiki_origin(
             project_root=str(self.project), plugin_root=str(ROOT), state_root=str(self.state),
             expected_proposal_sha256=plan['proposalSha256'], install_id=INSTALL_ID,
-            accepted_provider_sha256=REVIEW_SHA, dimension=DIMENSION)
+            accepted_provider_sha256=REVIEW_SHA, dimension=DIMENSION, provider=self.fake)
         self.assertEqual(prepared['status'], 'initial_build_registered', prepared)
         results = []
         for _ in range(BUILD_PASSES):
@@ -266,7 +205,7 @@ class WikiDbProvenance(unittest.TestCase):
     def run_worker(self):
         from memvane.sync import product_sync_worker as worker
         return worker.run(self.project, coordinator=_Coordinator(), report={},
-                          start_service=_start_service)
+                          start_service=self.fake.start_service)
 
     def epoch(self):
         from memvane.journal.api import inspect_journal

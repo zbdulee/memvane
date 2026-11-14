@@ -19,7 +19,10 @@ def provision_new(home=None, *, approve_download=False, model_file=None, node=No
                           path_env=path_env)
 
 
-def sealed_files_sha256(path):
+def sealed_files_sha256(path, *, port=None):
+    fixture = fixture_port(port)
+    if fixture is not None:
+        return fixture.sealed_files_sha256(path)
     from memvane.provider.embed_runtime import sealed_files_sha256 as implementation
     return implementation(path)
 
@@ -78,10 +81,19 @@ def profile_identity(model_id, embedding_fingerprint, dimension):
     return implementation(model_id, embedding_fingerprint, dimension)
 
 
-def reviewed_provider(manifest):
+def reviewed_provider(manifest, *, port=None):
     """A reviewed provider for ``manifest`` (a ``types.ReviewedProviderHandle``)."""
+    fixture = fixture_port(port)
+    if fixture is not None:
+        return fixture.reviewed_provider(manifest)
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     return ReviewedLocalQmdProvider(manifest)
+
+
+def fixture_port(port=None):
+    """``port``, else the test runtime root's fixture provider port, else None (``fixture_port``)."""
+    from memvane.provider.fixture_port import resolve as implementation
+    return implementation(port)
 
 
 def is_reviewed_provider(value):

@@ -233,7 +233,7 @@ def _provider_file_sha(path):
 
 
 def review_local_provider(*, plugin_root, state_root,
-                          model_path=None, dimension=None, runtime_generation=None):
+                          model_path=None, dimension=None, runtime_generation=None, provider=None):
     """Read-only exact local artifact proposal for human/release review.
 
     The executable inventory is the named Laya generation when supplied,
@@ -243,7 +243,13 @@ def review_local_provider(*, plugin_root, state_root,
     argument, when given, must name the runtime's own model file. Review
     neither asserts that native execution works nor issues approval: the
     caller must accept the returned digest, and prepare repeats every check.
+    A fixture provider port (``provider``, or the test runtime root's) reviews instead.
     """
+    from memvane.provider.api import fixture_port
+    port = fixture_port(provider)
+    if port is not None:
+        return port.review(plugin_root=plugin_root, state_root=state_root, model_path=model_path,
+                           dimension=dimension, runtime_generation=runtime_generation)
     import platform
     from memvane.provider import api as laya_embed_runtime
     from memvane.provider.api import profile_identity
@@ -361,11 +367,12 @@ def _read_private_or_package(path):
 def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
                               expected_proposal_sha256, install_id,
                               accepted_provider_sha256,
-                              model_path=None, dimension=None):
+                              model_path=None, dimension=None, provider=None):
     """Register an inactive wiki-only build; do not touch QMD or activate.
 
     The provider is the active Laya embedding runtime; ``model_path`` is
-    optional and, when given, must be that runtime's model file.
+    optional and, when given, must be that runtime's model file. ``provider``
+    is a fixture provider port for the review and the attestation proofs.
     """
     if dimension is None:
         _fail('fresh_wiki_model_proof_required')
@@ -394,14 +401,14 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
         _require_raw_scan_within_bounds(plan)
         review = review_local_provider(
             plugin_root=plugin_root, state_root=state,
-            model_path=model_path, dimension=dimension)
+            model_path=model_path, dimension=dimension, provider=provider)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
         from memvane.install.application.onboarding_restore import retire_foreign_pointers
         result = _register_initial_build(
             plan=plan, reviewed_provider=review['reviewedProvider'],
             state=state, journal=journal,
-            install_id=install_id)
+            install_id=install_id, provider=provider)
         # Only a registered build replaces the reviewed foreign pointers; a
         # refused registration leaves the committed pointer files in place.
         # The wake follows, so the build never classifies the old pointers.
@@ -528,7 +535,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     return raw
 
 
-def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id):
+def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id, provider=None):
     """Register the reviewed single-store build under the existing install lock."""
     from memvane.install import initial_build
     from memvane.journal.api import prepare_v1_journal
@@ -539,7 +546,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
     store = _create_v1_store(plan['projectRoot'], state, plan['scopeId'])
     route_raw = _create_v1_route(plan, state, install_id, store,
                                  reviewed_provider['vectorProfile'])
-    staged, row = prepare_v1_journal(journal, reviewed_provider, route_raw)
+    staged, row = prepare_v1_journal(journal, reviewed_provider, route_raw, provider=provider)
     route_sha = hashlib.sha256(route_raw).hexdigest()
     store = {**store, 'storeNode': json.loads(route_raw.decode('utf-8'))['storeNode']}
     if (row['state'] != 'prepared' or row['routeSha256'] != route_sha

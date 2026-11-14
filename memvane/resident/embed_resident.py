@@ -243,7 +243,12 @@ def admit_query(*, coordinator=None, report=None):
     The loaded model stays alive on refusal. A hook cannot wait out pressure
     beyond its two-second provider budget, so the caller reports deferral and
     the next prompt can retry; no prompt is persisted in a background queue.
+    A test runtime root's fixture provider port admits instead.
     """
+    from memvane.provider.api import fixture_port
+    port = fixture_port()
+    if port is not None:
+        return port.admit_query(coordinator=coordinator, report=report)
     from memvane.runtime.api import coordinator as Coordinator
     from memvane.runtime.api import resource_report
     from memvane.resident.types import EMBED_POLICY

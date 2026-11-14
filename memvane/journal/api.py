@@ -151,17 +151,18 @@ def route_record(raw, journal_path):
     from memvane.journal.install_journal import _route as implementation
     return implementation(raw, journal_path)
 
-def prepare_v1_journal(journal, reviewed_provider, route_raw):
+def prepare_v1_journal(journal, reviewed_provider, route_raw, *, provider=None):
     from memvane.journal.application.install_setup import prepare_v1_journal as implementation
-    return implementation(journal, reviewed_provider, route_raw)
+    return implementation(journal, reviewed_provider, route_raw, provider=provider)
 
 def journal_attestation(path):
     from memvane.journal.install_journal import _attestation as implementation
     return implementation(path)
 
-def provider_manifest(record, profile, *, allow_local_unavailable=False):
+def provider_manifest(record, profile, *, allow_local_unavailable=False, provider=None):
     from memvane.journal.install_journal import _v1_provider_manifest as implementation
-    return implementation(record, profile, allow_local_unavailable=allow_local_unavailable)
+    return implementation(record, profile, allow_local_unavailable=allow_local_unavailable,
+                          provider=provider)
 
 def prepare_reader_lifetime(install_id, *, create=True):
     from memvane.journal.reader_lease import _prepare_lifetime as implementation

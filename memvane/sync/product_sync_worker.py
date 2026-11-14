@@ -32,8 +32,8 @@ from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
 from memvane.journal.api import build_read_v1
 from memvane.journal.api import inspect_journal, selected_project_proof as _selected
-# ReviewedLocalQmdProvider(manifest) builds a reviewed provider handle; the
-# worker's tests patch this module name.
+# ReviewedLocalQmdProvider(manifest) builds a reviewed provider handle (a test
+# runtime root's fixture provider port answers through provider.api).
 from memvane.provider.api import reviewed_provider as ReviewedLocalQmdProvider
 from memvane.provider.api import start_owned_embed_service
 
@@ -198,11 +198,17 @@ def _route_source(decision):
     return _collection_roots(wiki)
 
 
-def run(project, *, coordinator=None, report=None, start_service=start_owned_embed_service):
+def run(project, *, coordinator=None, report=None, start_service=None):
     """Run one selected sync; call only from the durable runtime wake worker.
 
+    Without ``start_service`` the warm embedding service is the installed
+    one, or a test runtime root's fixture provider port's.
     """
     from memvane.install import api as build
+    if start_service is None:
+        from memvane.provider.api import fixture_port
+        port = fixture_port()
+        start_service = port.start_service if port is not None else start_owned_embed_service
     record = build.build_lookup(str(project))
     if record is not None and record.get('schema') == V1_BUILD_SCHEMA:
         decision = select_route(str(project), action='recall')

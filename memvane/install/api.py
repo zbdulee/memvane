@@ -34,22 +34,24 @@ def plan_fresh_wiki_origin(project_root):
 
 
 def review_local_provider(*, plugin_root, state_root, model_path=None, dimension=None,
-                          runtime_generation=None):
+                          runtime_generation=None, provider=None):
     from memvane.install.application.onboarding_workflow import review_local_provider as implementation
     return implementation(plugin_root=plugin_root, state_root=state_root, model_path=model_path,
-                          dimension=dimension, runtime_generation=runtime_generation)
+                          dimension=dimension, runtime_generation=runtime_generation,
+                          provider=provider)
 
 
 def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root, expected_proposal_sha256,
                               install_id, accepted_provider_sha256, model_path=None,
-                              dimension=None):
+                              dimension=None, provider=None):
+    """``provider``: a fixture provider port (``provider.api.fixture_port``) for review and proofs."""
     from memvane.install.application.onboarding_workflow import prepare_fresh_wiki_origin as implementation
     return implementation(project_root=project_root, plugin_root=plugin_root,
                           state_root=state_root,
                           expected_proposal_sha256=expected_proposal_sha256,
                           install_id=install_id,
                           accepted_provider_sha256=accepted_provider_sha256,
-                          model_path=model_path, dimension=dimension)
+                          model_path=model_path, dimension=dimension, provider=provider)
 
 
 def index_origin_status(state_root):

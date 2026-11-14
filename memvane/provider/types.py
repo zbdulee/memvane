@@ -13,6 +13,9 @@ LLAMA_VERSION = '3.18.1'
 
 FILES_SHA = 'runtimeFilesSha256'
 
+# The test runtime root's fixture provider port file (``fixture_port.resolve``).
+FIXTURE_FILE = 'provider-fixture.json'
+
 class RuntimeUnavailable(RuntimeError):
     pass
 

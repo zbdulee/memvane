@@ -107,8 +107,11 @@ def _attestation(path):
 
 
 
-def stage_v1_attestation(journal_path, reviewed_provider):
-    """Stage a reviewed provider under the install lock without bundle paths."""
+def stage_v1_attestation(journal_path, reviewed_provider, *, provider=None):
+    """Stage a reviewed provider under the install lock without bundle paths.
+
+    ``provider`` is a fixture provider port (``provider.api.fixture_port``).
+    """
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
     from memvane.provider.api import sealed_files_sha256
     from memvane.provider.types import RuntimeUnavailable
@@ -124,7 +127,7 @@ def stage_v1_attestation(journal_path, reviewed_provider):
     manifest.pop('providerPath', None)
     manifest.pop('workerPath', None)
     try:
-        runtime_sha = sealed_files_sha256(manifest.get('moduleEntryPath'))
+        runtime_sha = sealed_files_sha256(manifest.get('moduleEntryPath'), port=provider)
     except (RuntimeUnavailable, OSError) as exc:
         raise JournalEvidenceError('production_attestation_invalid') from exc
     if type(runtime_sha) is not str or not SHA.fullmatch(runtime_sha):
@@ -133,7 +136,7 @@ def stage_v1_attestation(journal_path, reviewed_provider):
               'vectorProfile': profile, 'providerManifest': manifest,
               'dependencyClosure': reviewed_provider['dependencyClosure'],
               RUNTIME_FILES_FIELD: runtime_sha}
-    _v1_provider_manifest(record, profile)
+    _v1_provider_manifest(record, profile, provider=provider)
     raw = _canon(record).encode('utf-8')
     if len(raw) > 1024 * 1024:
         _fail('production_attestation_too_large')
@@ -427,7 +430,7 @@ def journal_version(journal_path):
 
 
 
-def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
+def create_v1_journal(journal_path, route_raw, expected_attestation_sha256, *, provider=None):
     """Create an inactive journal under the installer's lock after review approval."""
     from memvane.settings import api as project_dir
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
@@ -448,7 +451,7 @@ def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
     if (type(expected_attestation_sha256) is not str or not SHA.fullmatch(expected_attestation_sha256)
             or digest != expected_attestation_sha256):
         _fail('production_attestation_changed')
-    _v1_provider_manifest(attestation, route['vectorProfile'])
+    _v1_provider_manifest(attestation, route['vectorProfile'], provider=provider)
     node = project.lstat()
     if not stat.S_ISDIR(node.st_mode) or node.st_uid != os.getuid():
         _fail('journal_project_unavailable')
@@ -804,9 +807,15 @@ def _worker_attestation_manifest(selected):
 
 
 
-def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
-    """Verify provider bytes and runtime identity using this plugin copy."""
-    from memvane.provider.api import reviewed_provider, hash_file as _hash_file
+def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, provider=None):
+    """Verify provider bytes and runtime identity using this plugin copy.
+
+    A fixture provider port (``provider``, or the test runtime root's) proves instead.
+    """
+    from memvane.provider.api import fixture_port, reviewed_provider, hash_file as _hash_file
+    port = fixture_port(provider)
+    if port is not None:
+        return port.provider_manifest(record, profile, allow_local_unavailable=allow_local_unavailable)
     if (not isinstance(record, dict)
             or set(record) != {'schema', 'journalPath', 'vectorProfile', 'providerManifest',
                                'dependencyClosure', RUNTIME_FILES_FIELD}

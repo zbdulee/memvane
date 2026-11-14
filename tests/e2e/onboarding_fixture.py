@@ -128,7 +128,7 @@ class FixtureOnboarding(unittest.TestCase):
         return workflow.prepare_fresh_wiki_origin(
             project_root=str(self.project), plugin_root=str(base.ROOT), state_root=str(self.state),
             expected_proposal_sha256=plan['proposalSha256'], install_id=self.install_id,
-            accepted_provider_sha256=base.REVIEW_SHA, dimension=base.DIMENSION)
+            accepted_provider_sha256=base.REVIEW_SHA, dimension=base.DIMENSION, provider=self.fake)
 
     def build(self):
         results = []
@@ -333,7 +333,6 @@ class FixtureOnboarding(unittest.TestCase):
         """F5: after the first selected write a changed provider still exits through restore."""
         from memvane.install.application import onboarding_workflow as workflow
         from memvane.install import initial_build
-        from memvane.journal.types import JournalEvidenceError
         self.install(1)
         self.write_card('lantern')
         for _ in range(base.SETTLE_PASSES):
@@ -343,15 +342,14 @@ class FixtureOnboarding(unittest.TestCase):
         self.assertTrue(self.journal_row()['newWriteSeen'])
         self.blocked('rollback_forward_only', self.restore)
 
-        def changed(*_args, **_kwargs):
-            raise JournalEvidenceError('provider_identity_changed')
-        with mock.patch('memvane.journal.install_journal._v1_provider_manifest', changed), \
-             mock.patch('memvane.install.initial_build.retire_project_pointer',
+        self.fake.change_identity()
+        with mock.patch('memvane.install.initial_build.retire_project_pointer',
                         _crash_once(initial_build.retire_project_pointer)):
             with self.assertRaises(_Crash):
                 self.restore()
         self.assertEqual(self.project_pointers(), [])
         # The provider matches again before the rerun: the begun release still finishes.
+        self.fake.change_identity(False)
         self.assertEqual(self.restore(), {'status': 'restored', 'changesApplied': 1})
         row = self.journal_row()
         self.assertEqual((row['state'], row['newWriteSeen']), ('restored', True))
@@ -361,7 +359,6 @@ class FixtureOnboarding(unittest.TestCase):
 
     def test_provider_change_release_reports_released(self):
         """F5: an uninterrupted release reports ``released``."""
-        from memvane.journal.types import JournalEvidenceError
         self.install(1)
         self.write_card('lantern')
         for _ in range(base.SETTLE_PASSES):
@@ -369,9 +366,9 @@ class FixtureOnboarding(unittest.TestCase):
             if self.journal_row()['newWriteSeen']:
                 break
         self.assertTrue(self.journal_row()['newWriteSeen'])
-        with mock.patch('memvane.journal.install_journal._v1_provider_manifest',
-                        side_effect=JournalEvidenceError('provider_identity_changed')):
-            self.assertEqual(self.restore(), {'status': 'released', 'changesApplied': 1})
+        self.fake.change_identity()
+        self.assertEqual(self.restore(), {'status': 'released', 'changesApplied': 1})
+        self.fake.change_identity(False)
         self.assertEqual((self.project_pointers(), self.journal_row()['state']), ([], 'restored'))
 
     def test_reruns_compare_recorded_nodes_by_inode(self):
@@ -469,7 +466,7 @@ class FixtureOnboarding(unittest.TestCase):
             project_root=str(self.project), plugin_root=str(base.ROOT), state_root=str(self.state),
             expected_proposal_sha256=install.plan_fresh_wiki_origin(self.project)['proposalSha256'],
             install_id=self.install_id, accepted_provider_sha256=base.REVIEW_SHA,
-            dimension=base.DIMENSION)['status'], 'initial_build_registered')
+            dimension=base.DIMENSION, provider=self.fake)['status'], 'initial_build_registered')
         self.build()
         before = self.journal_row()
         calls = []
