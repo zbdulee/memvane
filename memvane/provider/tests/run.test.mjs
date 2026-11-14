@@ -1,20 +1,4 @@
-// Runs the provider domain's Python tests (unit and integration) in one process.
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+// The provider domain's Python tests, one node test per tier (tests/support/runner.mjs).
+import { runDomain } from '../../../tests/support/runner.mjs';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
-
-test('provider domain python tests', () => {
-  const r = spawnSync('python3', ['-B', '-m', 'unittest', 'discover', '-s',
-    join('memvane', 'provider', 'tests'), '-t', '.', '-p', 'test_*.py', '-v'],
-  { cwd: ROOT, encoding: 'utf8', timeout: 600000,
-    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', QMD_SETUP_GUARD_FIXTURE: '1' } });
-  if (r.stderr) process.stderr.write(r.stderr.slice(-12000));
-  assert.ifError(r.error);
-  assert.equal(r.signal, null);
-  assert.equal(r.status, 0);
-  assert.match(r.stderr, /\nOK\b/);
-});
+runDomain({ domain: 'provider' });
