@@ -165,3 +165,37 @@ class BackfillWorkerBoundary(FixtureCase):
         self.assertEqual(backfill.summary(backfill._load(decision))['settled'], 1)
         card = project.wiki / 'concepts/synthetic.md'
         self.assertTrue(card.exists(), child.stdout + child.stderr)
+
+    def test_unknown_resource_deferral_preserves_job_without_other_host_attempt(self):
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'frozen source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        decision = install.select()
+        revision = hashlib.sha256(source.read_bytes()).hexdigest()
+        snapshot = {project.raw_name + '/docs/note.md': revision}
+        config = expanded(project, compile={'mode': 'auto-wiki',
+                          'triggers': ['post_sync_source'], 'extractor': {'builtins': ['codex']}})
+        row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'unknown'})
+        backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
+        calls = self.home / 'calls.txt'
+        scripts = {}
+        for engine in ('codex', 'claude', 'hermes'):
+            fake = self.home / ('fake-' + engine)
+            fake.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                            'open(os.environ["FIXTURE_CALLS"], "a").write(' + repr(engine + '\n') + ')\n'
+                            + ('sys.exit(75)\n' if engine == 'codex' else 'print("{}")\n'))
+            fake.chmod(0o700)
+            scripts[engine] = str(fake)
+        root = Path(__file__).resolve().parents[5]
+        env = {**os.environ, 'QMD_ENGINE': '', 'FIXTURE_CALLS': str(calls),
+               'QMD_EXTRACTOR_CODEX_BIN': scripts['codex'], 'QMD_EXTRACTOR_CLAUDE_BIN': scripts['claude'],
+               'QMD_EXTRACTOR_HERMES_BIN': scripts['hermes']}
+        child = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'),
+                                'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all'],
+                               cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(calls.read_text().splitlines(), ['codex'])
+        self.assertEqual(backfill.summary(backfill._load(decision))['dispatched'], 1)
+        self.assertTrue((project.root / '.memvane/compile/source-queue.jsonl').read_text().strip())
