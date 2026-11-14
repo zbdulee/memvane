@@ -1,5 +1,7 @@
 """Compile fingerprints describe the same source read and checkout observation."""
 import hashlib
+import json
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -7,6 +9,7 @@ from memvane.store import api as store
 from memvane.wiki.card import api as card
 from memvane.wiki.compile import wiki_compile_worker as worker
 from memvane.wiki.engines import api as engines
+from memvane.wiki.intake import api as intake
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
@@ -104,6 +107,46 @@ class CheckoutFingerprints(FixtureCase):
         row = self.candidates[0]['sourceFingerprints']['fingerprints'][0]
         self.assertEqual(row['tracked_state'], 'unknown')
         self.assertEqual(len(self.calls), 1)
+
+    def test_scan_id_changes_per_observation_of_the_same_bytes(self):
+        self.assertEqual(self.process(), (True, False, []))
+        self.assertEqual(self.process(), (True, False, []))
+        first, second = [candidate['sourceFingerprints']['fingerprints'][0]
+                         for candidate in self.candidates]
+        self.assertNotEqual(first['scan_id'], second['scan_id'])
+        self.assertEqual(first['source_sha'], second['source_sha'])
+
+    def test_model_fingerprints_are_dropped_without_checkout(self):
+        self.assertEqual(worker.process_job(self.project.root, self.config, self.config['compile'],
+                                            self.job(), checkout=None), (True, False, []))
+        self.assertNotIn('sourceFingerprints', self.candidates[0])
+
+    def test_batch_supplies_selected_checkout_to_real_job(self):
+        queue = self.project.root / '.memvane/compile/source-queue.jsonl'
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        queue.write_text(json.dumps(self.job()) + '\n')
+        with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
+             patch.object(intake, 'reconcile_discards'), patch.object(intake, 'settle_job'), \
+             patch.object(worker, 'recover_pending_refreshes'), patch.object(worker, '_run_verify_pass'):
+            self.assertEqual(worker._main_locked(SimpleNamespace(json=False, flush_all=True),
+                             self.project.root, self.config, self.config['compile'], queue, self.bound), 0)
+        row = self.candidates[0]['sourceFingerprints']['fingerprints'][0]
+        self.assertEqual((row['path'], row['source_sha']),
+                         ('docs/source.md', self.candidates[0]['sourceRevisions'][0]['sha256']))
+
+    def test_batch_reader_error_preserves_queue_without_extraction(self):
+        queue = self.project.root / '.memvane/compile/source-queue.jsonl'
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        queue.write_text(json.dumps(self.job()) + '\n')
+        with patch.object(workspace, 'schema3_checkout', side_effect=sqlite3.OperationalError('fixture busy')), \
+             patch.object(intake, 'reconcile_discards'), patch.object(worker, 'recover_pending_refreshes'), \
+             patch.object(worker, '_run_verify_pass'):
+            self.assertEqual(worker._main_locked(SimpleNamespace(json=False, flush_all=True),
+                             self.project.root, self.config, self.config['compile'], queue, self.bound), 0)
+        self.assertEqual(self.calls, [])
+        self.assertTrue(queue.read_text().strip())
+        audit = self.project.root / '.memvane/compile/candidates.jsonl'
+        self.assertEqual(json.loads(audit.read_text().splitlines()[-1])['reason'], 'checkout_unavailable')
 
     def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
         for case in ('non-git', 'unborn'):
