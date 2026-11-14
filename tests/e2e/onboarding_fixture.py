@@ -533,6 +533,40 @@ class FixtureOnboarding(unittest.TestCase):
         self.assertEqual(recover(), {'status': 'restored', 'changesApplied': 0})
         self.assertEqual((self.build_pointer(), self.build_record()), (None, None))
 
+    def test_other_major_route_is_released_by_restore_then_plans(self):
+        """Verify R2: the 'other' notice's path works: restore releases, plan passes."""
+        from memvane.host.onboarding_notice import MAJOR_NOTICES, onboarding_notice
+        from memvane.install import api as install
+        from memvane.install.application import onboarding_restore
+        from memvane.journal.api import select_route
+        self.install(1)
+        folder = self.project / '.memvane'
+        route = json.loads((folder / 'route.json').read_bytes())
+        newer = self.write_pointer('route.json', {**route, 'schema': 'memvane-route-v5'})
+        restore = lambda: install.restore_origin_selection(project_root=str(self.project),
+                                                           state_root=str(self.state))
+        # A newer major's pointers are never released here.
+        for _ in range(2):
+            self.assertIsNone(onboarding_restore._release_other_major(self.project))
+        self.assertEqual((folder / 'route.json').read_bytes(), newer)
+        self.write_pointer('route.json', {**route, 'schema': 'laya-index-route-v1'})
+        self.assertEqual(onboarding_notice(str(self.payload_file()), str(self.project)),
+                         MAJOR_NOTICES['other'])
+        self.assertNotIn('python3', MAJOR_NOTICES['other'])
+        self.blocked('project_selection_already_exists',
+                     lambda: install.plan_fresh_wiki_origin(self.project))
+        with mock.patch.object(onboarding_restore, '_retire_foreign_pointer',
+                               _crash_once(onboarding_restore._retire_foreign_pointer,
+                                           lambda path: path.name == 'route.json')):
+            with self.assertRaises(_Crash):
+                restore()
+        self.assertEqual(self.project_pointers(), ['route.json'], 'the mismatching route goes last')
+        self.assertEqual(restore(), {'status': 'released', 'changesApplied': 1})
+        self.assertEqual(self.project_pointers(), [])
+        self.assertNotIn('majorMismatch', select_route(str(self.project), action='update'))
+        self.assertEqual(install.plan_fresh_wiki_origin(self.project)['status'], 'review_required')
+        self.assertEqual(self.journal_row()['state'], 'selected', 'the state root is not read')
+
     # -- proof/state review --------------------------------------------------------------
     def write_pointer(self, name, record):
         """Replace one project pointer with ``record``'s canonical bytes; returns them."""

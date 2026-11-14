@@ -23,7 +23,8 @@ BUILD_NOTICE = ('[memvane] {root}: 초기 MemVane 색인을 준비 중입니다.
 # A route or selection marker of another plugin major (route ``majorMismatch``).
 MAJOR_NOTICES = {
     'newer': '[memvane] 이 프로젝트는 더 높은 MemVane 버전으로 설치되어 있습니다. 이 호스트의 플러그인을 올려 주세요.',
-    'other': '[memvane] 이 플러그인 버전에 맞게 다시 온보딩해 주세요.',
+    'other': ('[memvane] 이 프로젝트의 MemVane 설치 기록을 이 플러그인 버전이 읽지 못합니다. '
+              'setup skill로 기존 설치를 복원(restore)한 뒤 다시 온보딩해 주세요.'),
 }
 
 

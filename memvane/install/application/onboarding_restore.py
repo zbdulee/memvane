@@ -100,12 +100,50 @@ def restore_origin_selection(*, project_root, state_root):
     project pointers before the first selected write; after that write it
     releases the selection only when the attested provider no longer matches
     this host (re-onboarding is then the supported path). The state root,
-    store, journal and ledger stay in place.
+    store, journal and ledger stay in place. Project pointers of a lower or
+    unknown major are released without reading ``state_root``.
     """
     project = _checked_project(project_root)
+    released = _release_other_major(project)
+    if released is not None:
+        return released
     state = _private_parent(state_root)
     with _install_lock(state):
         return _restore_v1_locked(project, state)
+
+
+def _release_other_major(project):
+    """Remove project pointers of a lower or unknown major; None when there are none.
+
+    The hook classifies such a pointer ``blocked``/``route_major_mismatch``
+    with ``majorMismatch`` ``other`` and names no state root this major can
+    read, so the release removes only the project pointers (the one that
+    carries the mismatch last, so a rerun after a stop still finds it) and
+    the next plan starts a new onboarding. A pointer of a newer major is never
+    removed: that install is alive under a newer plugin.
+    """
+    from memvane.journal.api import select_route
+    from memvane.kernel.memvane_version import same_major
+    from memvane.route.types import SCHEMA_V4
+    from memvane.wiki.workspace import api as workspace_files
+    with workspace_files.mutation_lock(project):
+        if select_route(str(project), action='update').get('majorMismatch') != 'other':
+            return None
+        route_path = project_dir.runtime_file(project, 'route.json')
+        try:
+            route = json.loads(_read_private(route_path, 8192).decode('utf-8'))
+            readable = (isinstance(route, dict) and route.get('schema') == SCHEMA_V4
+                        and type(route.get('stateFormat')) is int and same_major(route['stateFormat']))
+        except (OSError, ValueError, UnicodeError, _workflow.InstallBlocked):
+            readable = False
+        order = ('route.json', 'selection.json') if readable else ('selection.json', 'route.json')
+        removed = 0
+        for name in order:
+            target = project_dir.runtime_file(project, name)
+            if os.path.lexists(target):
+                _retire_foreign_pointer(target)
+                removed += 1
+    return {'status': 'released', 'changesApplied': removed}
 
 
 def _provider_changed(journal, path, row):

@@ -27,6 +27,7 @@ const METHODS = [
   'test_interrupted_record_creation_reruns',
   'test_finalize_takes_the_sync_dispatch_check_as_a_port',
   'test_recover_without_ledger_never_abandons',
+  'test_other_major_route_is_released_by_restore_then_plans',
 ];
 
 for (const method of METHODS) {
