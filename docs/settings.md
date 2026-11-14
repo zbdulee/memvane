@@ -811,7 +811,7 @@ dedup judge 1회 + verify 1회가 붙으므로, 상한이 없으면 **모델이 
 > 세 항의 정의는 extractor = `budget.extractorPerRun`, dedup judge = 쓰인 카드 수 ×
 > `budget.dedupPairsPerCompile`(기본 1 → 카드당 1회),
 > verify = `max(budget.verifyPerRun, min(카드 수, 30)) + 1`입니다.
-> 이 문서의 숫자는 `test/cost-budget-docs.test.mjs`가 **코드 상수에서 다시 계산해 대조**하므로,
+> 이 문서의 숫자는 `tests/docs/cost-budget-docs.test.mjs`가 **코드 상수에서 다시 계산해 대조**하므로,
 > 기본값이나 클램프가 바뀌면 문서가 아니라 테스트가 먼저 실패합니다.
 >
 > **⚠ 고아 claim 회수(리퍼)의 재추출 승수.** 비정상 종료 등으로 중단된 `*.claimed.*` 잡을 회수(reclaim)할 때 재추출 억제가 없어 회수 1회당 배치 전량이 다시 extractor로 재호출됩니다. `MAX_REQUEUE_COUNT`(3) 제한으로 한 잡은 최초 실행 1회 + 최대 3회 회수 = 최대 **4배**까지 재추출 승수가 적용될 수 있습니다. `MAX_REQUEUE_COUNT` 초과분은 큐에서 폐기되고 원장(`discard-ledger.jsonl`) 기록으로 종료됩니다.

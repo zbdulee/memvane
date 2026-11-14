@@ -13,6 +13,12 @@ A test replaces all six through a *port*: an object with
     admit_query(*, coordinator, report) -> None (raises to refuse)
     start_service(manifest, *, admit) -> object with stop()
 
+Two product checks consult only the test runtime root's spec, through
+``active`` (the same gate as ``resolve``; an unsafe or invalid spec file
+counts as absent there, so their production path stays unchanged):
+``api.is_reviewed_provider`` also accepts exactly this module's handle, and
+the query embed child answers from ``FixtureProvider.query_result``.
+
 An in-process caller passes the port as the use case's ``provider=`` (or
 ``port=``) argument. A process the test cannot hand an argument to (a hook,
 a wake) finds it only while ``MEMVANE_TEST_RUNTIME_ROOT`` names an absolute
@@ -29,6 +35,9 @@ The spec (``schema`` ``memvane-test-provider-fixture-v1``)::
     runtimeFilesSha256 the sealed runtime files digest (default 'c' * 64)
     identityChanged    every identity proof refuses with provider_identity_changed
     queryAdmission     'refuse' (recall stays lexical, the default) or 'admit'
+    queryEmbedding     what the query embed child answers: 'vector' (the spec
+                       vector, the default) or 'provider_unavailable' (a cold
+                       provider)
 
 The fixture handle embeds one chunk per document: a body over the first
 chunking pass's single-chunk bound (2,700 UTF-16 units) is refused.
@@ -82,6 +91,18 @@ def resolve(port=None):
     return FixtureProvider(spec)
 
 
+def active():
+    """The test runtime root's fixture port, else None (also for an unsafe or invalid spec file).
+
+    For checks whose path without the seam must stay exactly production:
+    ``api.is_reviewed_provider`` and the query embed child.
+    """
+    try:
+        return resolve()
+    except (OSError, ValueError):
+        return None
+
+
 class _Service:
     def stop(self):
         pass
@@ -121,16 +142,19 @@ class FixtureProvider:
         proposal = spec.get('proposalSha256', '9' * 64)
         runtime = spec.get('runtimeFilesSha256', 'c' * 64)
         admission = spec.get('queryAdmission', 'refuse')
+        embedding = spec.get('queryEmbedding', 'vector')
         changed = spec.get('identityChanged', False)
         if (not isinstance(vector, list) or len(vector) != dimension
                 or not all(type(x) in (int, float) for x in vector)
                 or not all(isinstance(x, str) and _SHA.fullmatch(x) for x in (proposal, runtime))
-                or admission not in ('refuse', 'admit') or type(changed) is not bool):
+                or admission not in ('refuse', 'admit')
+                or embedding not in ('vector', 'provider_unavailable') or type(changed) is not bool):
             raise ValueError('provider_fixture_invalid')
         self.dimension = dimension
         self.vector = [float(x) for x in vector]
         self.proposal_sha256, self.runtime_files_sha256 = proposal, runtime
         self.query_admission, self.identity_changed = admission, changed
+        self.query_embedding = embedding
 
     def vector_profile(self):
         from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH
@@ -180,3 +204,15 @@ class FixtureProvider:
 
     def start_service(self, manifest, *, admit=None):
         return _Service()
+
+    # -- product checks (through ``active``) ---------------------------------------
+    def is_handle(self, value):
+        """True for exactly a handle this module's ``reviewed_provider`` returns."""
+        return type(value) is _Handle
+
+    def query_result(self, request):
+        """The query embed child's answer: ``{'vector': [...]}`` or ``{'error': code}``."""
+        if self.query_embedding == 'vector':
+            return {'vector': list(self.vector)}
+        code = self.query_embedding
+        return {'error': code if code in request['allowed'] else 'provider_result_invalid'}

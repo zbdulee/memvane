@@ -57,7 +57,6 @@ class ProductSyncWorker(SyncCase):
     # Product regression candidate (reported to the lead): a provider-lane refusal
     # keeps the coordinator's admission criterion (``report['reason']``) only for an
     # owner-level deferral (``_deferred``); the vector deferral drops it.
-    @unittest.expectedFailure
     def test_a_provider_lane_refusal_keeps_its_admission_criterion(self):
         from memvane.kernel.resource_deferred import ResourceDeferred
 

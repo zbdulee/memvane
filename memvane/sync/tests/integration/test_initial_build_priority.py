@@ -172,7 +172,6 @@ class BuildOwner(FixtureCase):
     # Product regression candidate (reported to the lead): the cold build shares
     # the selected sync's vector context, whose provider calls probe
     # ``_initial_build_waiting``; its docstring says initial builds never yield.
-    @unittest.expectedFailure
     def test_initial_builds_never_probe_for_other_builds(self):
         with mock.patch.object(worker, '_initial_build_waiting',
                                side_effect=AssertionError('an initial build probed')):

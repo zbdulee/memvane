@@ -141,7 +141,8 @@ class MeasureChecks(FixtureCase):
         not_exec.chmod(0o600)
         return {
             'runtime_spawn_failed': (str(not_exec), self.p.tokenizer[1]),
-            'runtime_timeout': script('timeout', '#!/bin/sh\nexec sleep 5\n'),
+            # Hangs far past the 0.5 s limit its case runs under.
+            'runtime_timeout': script('timeout', '#!/bin/sh\nexec sleep 30\n'),
             'runtime_exit': script('exit', f'#!/bin/sh\necho "{STDERR_MARKER}" >&2\nexit 3\n'),
             'output_undecodable': script('decode', "#!/bin/sh\nprintf '\\377\\376'\n"),
             'output_not_json': script('json', f'#!/bin/sh\necho "{STDERR_MARKER}"\n'),
@@ -153,14 +154,18 @@ class MeasureChecks(FixtureCase):
         runtimes = self.failing_runtimes()
         text = card_text('\nshort body\n')
         seen = {}
-        with patch.object(budget, 'EXACT_TIMEOUT_SECONDS', 0.5):
-            for expected, pair in runtimes.items():
+        for expected, pair in runtimes.items():
+            # Only the hanging runtime gets a short limit; every other runtime
+            # ends on its own and keeps the product limit, so machine load can
+            # never turn its own failure into runtime_timeout.
+            limit = 0.5 if expected == 'runtime_timeout' else budget.EXACT_TIMEOUT_SECONDS
+            with patch.object(budget, 'EXACT_TIMEOUT_SECONDS', limit):
                 measured = budget.measure_card(text, pair)
-                self.assertEqual((measured['method'], measured['reason']),
-                                 (budget.METHOD_FAILED, 'measure_failed'), expected)
-                self.assertEqual(measured['failure'], expected)
-                self.assertEqual([a['reason'] for a in measured['attempts']], [expected])
-                seen[expected] = measured['attempts'][0]
+            self.assertEqual((measured['method'], measured['reason']),
+                             (budget.METHOD_FAILED, 'measure_failed'), expected)
+            self.assertEqual(measured['failure'], expected)
+            self.assertEqual([a['reason'] for a in measured['attempts']], [expected])
+            seen[expected] = measured['attempts'][0]
         self.assertEqual(seen['runtime_exit']['exit'], 3)
         with patch.object(budget.subprocess, 'run', side_effect=subprocess.SubprocessError('x')):
             self.assertEqual(budget.measure_card(text, self.p.tokenizer)['failure'],

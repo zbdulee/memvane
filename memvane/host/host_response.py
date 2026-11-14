@@ -52,6 +52,18 @@ _DURABLE_WAKE_STATES = frozenset(('queued', 'busy',
                                   'deferred_queue_capacity_retained'))
 
 
+def _wake_recorded(result) -> bool:
+    """A durable wake, or the test fixture switch's skipped one.
+
+    ``runtime.api.request`` records no wake and returns None under
+    ``QMD_SETUP_GUARD_FIXTURE=1``; that is not queued and not an error.
+    Outside the switch a None answer stays a failed request.
+    """
+    if result is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
+        return True
+    return isinstance(result, dict) and result.get('status') in _DURABLE_WAKE_STATES
+
+
 # Inputs of one served recall for post-output learning capture. Only an
 # entry that runs capture after its answer (``main``) opens a slot, bound to
 # its own context; an in-process host (Hermes, possibly concurrent recalls)
@@ -655,8 +667,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
         if pending or any(path.exists() and path.stat().st_size > 0 for path in queues):
             compile_result = runtime_work.request('laya-compile', decision['projectRoot'],
                                                   **defer)
-            if (not isinstance(compile_result, dict) or
-                    compile_result.get('status') not in _DURABLE_WAKE_STATES):
+            if not _wake_recorded(compile_result):
                 _fail('selected_compile_enqueue_failed')
     refreshed = verify_selected_route(decision)
     # The owner may have started and advanced the journal epoch before
@@ -667,7 +678,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     if (stable(refreshed) != stable(proof)
             or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
         _fail("selected_proof_changed")
-    if not isinstance(result, dict) or result.get("status") not in _DURABLE_WAKE_STATES:
+    if not _wake_recorded(result):
         _fail("selected_sync_enqueue_failed")
 
 
@@ -732,7 +743,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
     except Exception:
         result = None
         _start_owner()
-    if isinstance(result, dict) and result.get('status') in _DURABLE_WAKE_STATES:
+    if _wake_recorded(result):
         return
     try:
         live = laya_wiki_discovery.revoke_grant(decision, grant)
@@ -745,15 +756,22 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
 
 
 def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
-    """Leave recall empty while the initial build has no selected head."""
-    if action != 'recall' or host not in ('claude', 'codex', 'hermes'):
-        _fail('initial_preview_action_unsupported')
-    if not isinstance(payload, dict):
-        _fail('invalid_hook_payload')
-    prompt = payload.get('prompt')
-    if not isinstance(prompt, str) or not prompt.strip():
-        _fail('invalid_query_prompt')
-    return host_payload(host, '')
+    """Leave recall empty while the initial build has no selected head.
+
+    Like every selected-route hook call it writes one event line: recall,
+    ``empty``/``initial_build_preview`` (or the refusal), ``degraded: preview``.
+    """
+    with _event_scope(action, host, decision, payload):
+        _trace_fields(degraded='preview')
+        if action != 'recall' or host not in ('claude', 'codex', 'hermes'):
+            _fail('initial_preview_action_unsupported')
+        if not isinstance(payload, dict):
+            _fail('invalid_hook_payload')
+        prompt = payload.get('prompt')
+        if not isinstance(prompt, str) or not prompt.strip():
+            _fail('invalid_query_prompt')
+        _trace_final('initial_build_preview')
+        return host_payload(host, '')
 
 
 class _EventTrace(RecallTrace):
@@ -1199,7 +1217,7 @@ def _request_worktree_sync(main: dict, proof: dict, recheck) -> None:
     if (stable(refreshed) != stable(proof)
             or refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
         _fail('selected_proof_changed')
-    if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
+    if not _wake_recorded(result):
         _fail('selected_sync_enqueue_failed')
 
 
@@ -1378,6 +1396,12 @@ def main(argv: list[str] | None = None) -> int:
             # Learning work starts only after the context is in the pipe; a
             # host that kills this process on timeout still has the answer.
             _capture_learning(capture, started)
+        return 0
+    except hook_budget.HookDeadlineExceeded:
+        # The hook ran out of its own time budget. That is no answer, not a
+        # refusal of the selected route: hooks exit 0 and only a refused route
+        # exits 3. A traced call already logged it as ``interrupted``.
+        print("[memvane] hook_budget_exhausted; no context", file=sys.stderr)
         return 0
     except Exception as exc:
         code = _refusal_code(exc)

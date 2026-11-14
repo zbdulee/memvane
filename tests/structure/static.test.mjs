@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join, resolve} from 'node:path';
+import {extname, join, resolve} from 'node:path';
 import {spawnSync} from 'node:child_process';
 
 const python = process.env.STRUCTURE_TEST_PYTHON || 'python3';
@@ -86,4 +86,94 @@ test('test files report G8 and test G1 counts (report only)', t => {
   for (const [folder, row] of Object.entries(folders).sort()) {
     t.diagnostic(`${folder}: G1 ${row.G1}, G8 ${row.G8}, unresolved ${row.unresolved_patch_targets}`);
   }
+});
+
+// No hook or product entry sets the test runtime root: only a test harness
+// does, so the fixture provider seam stays off for every installed run.
+// Reads (os.environ.get, membership, copying an inherited value into a child
+// env) are allowed. Line-based: a write that builds the name at run time is
+// not seen; a module-level alias of the literal name is followed by name.
+const TEST_ROOT = 'MEMVANE_TEST_RUNTIME_ROOT';
+const SCANNED = new Set(['', '.py', '.mjs', '.js', '.sh', '.json']);
+
+function productFiles() {
+  const files = [];
+  const walk = (dir, scripts) => {
+    for (const entry of readdirSync(dir, {withFileTypes: true})) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!['tests', '__pycache__', 'node_modules'].includes(entry.name)) walk(path, scripts);
+      } else if (entry.isFile() && SCANNED.has(extname(entry.name))
+                 && (!scripts || path.split('/').includes('scripts'))) {
+        files.push(path);
+      }
+    }
+  };
+  for (const dir of ['hooks', 'entry', 'hermes_adapter', 'memvane']) walk(dir, false);
+  walk('skills', true);
+  return files;
+}
+
+function testRootWrites(sources) {
+  const quoted = `['"]${TEST_ROOT}['"]`;
+  const aliases = new Set();
+  for (const text of Object.values(sources)) {
+    for (const m of text.matchAll(new RegExp(`^\\s*(\\w+)\\s*=\\s*${quoted}\\s*$`, 'gm'))) aliases.add(m[1]);
+  }
+  const keys = [quoted, ...[...aliases].map(name => `\\b${name}\\b`)];
+  const rules = [];
+  for (const key of keys) {
+    rules.push(new RegExp(`\\[\\s*${key}\\s*\\]\\s*=(?!=)`),          // environ[KEY] = / env[KEY] =
+               new RegExp(`\\b(?:setdefault|putenv)\\(\\s*${key}`),    // setdefault(KEY, ...) / putenv
+               new RegExp(`[{,(]\\s*${key}\\s*:`));                   // {KEY: ...} env dict literal
+  }
+  rules.push(new RegExp(`(?<![\\w.'"])${TEST_ROOT}\\s*=(?!=)`),        // VAR= prefix, export VAR=, kwarg, env.VAR =
+             new RegExp(`\\.${TEST_ROOT}\\s*=(?!=)`),                 // process.env.VAR =
+             new RegExp(`\\bexport\\s+${TEST_ROOT}\\b`),
+             new RegExp(`(?:^|[{,])\\s*${TEST_ROOT}\\s*:`));              // unquoted object key
+  const found = [];
+  for (const [file, text] of Object.entries(sources)) {
+    text.split('\n').forEach((line, index) => {
+      if (rules.some(rule => rule.test(line))) found.push(`${file}:${index + 1}: ${line.trim()}`);
+    });
+  }
+  return found;
+}
+
+test('no hook or product entry sets the test runtime root', () => {
+  const files = productFiles();
+  assert.ok(files.length > 300, `only ${files.length} files scanned`);
+  assert.ok(files.includes('hooks/run-hook') && files.some(f => f.startsWith('skills/')), 'scan roots');
+  const sources = Object.fromEntries(files.map(file => [file, readFileSync(file, 'utf8')]));
+  assert.deepEqual(testRootWrites(sources), []);
+});
+
+test('the test runtime root write check flags every write form and no read', () => {
+  const writes = [
+    "os.environ['MEMVANE_TEST_RUNTIME_ROOT'] = root",
+    'env["MEMVANE_TEST_RUNTIME_ROOT"]=str(root)',
+    "os.environ.setdefault('MEMVANE_TEST_RUNTIME_ROOT', root)",
+    "os.putenv('MEMVANE_TEST_RUNTIME_ROOT', root)",
+    "env = {'PATH': path, 'MEMVANE_TEST_RUNTIME_ROOT': root}",
+    'env.update(MEMVANE_TEST_RUNTIME_ROOT=root)',
+    'MEMVANE_TEST_RUNTIME_ROOT=/tmp/x python3 -B entry/run.py',
+    'export MEMVANE_TEST_RUNTIME_ROOT',
+    'process.env.MEMVANE_TEST_RUNTIME_ROOT = root;',
+    'const env = {...process.env, MEMVANE_TEST_RUNTIME_ROOT: root};',
+    '  MEMVANE_TEST_RUNTIME_ROOT: root,',
+    'os.environ[ROOT_ENV] = root',
+  ];
+  const reads = [
+    "raw = os.environ.get('MEMVANE_TEST_RUNTIME_ROOT')",
+    "if 'MEMVANE_TEST_RUNTIME_ROOT' in os.environ:",
+    "env = {key: os.environ[key] for key in ('HOME', 'MEMVANE_TEST_RUNTIME_ROOT') if key in os.environ}",
+    "if os.environ.get('MEMVANE_TEST_RUNTIME_ROOT') == root:",
+    'while ``MEMVANE_TEST_RUNTIME_ROOT`` names an absolute path',
+    'raw = os.environ.get(ROOT_ENV)',
+  ];
+  const sources = {'alias.py': "ROOT_ENV = 'MEMVANE_TEST_RUNTIME_ROOT'\n"};
+  writes.forEach((line, i) => { sources[`w${i}`] = line; });
+  reads.forEach((line, i) => { sources[`r${i}`] = line; });
+  const flagged = testRootWrites(sources).map(row => row.split(':')[0]).sort();
+  assert.deepEqual(flagged, writes.map((_line, i) => `w${i}`).sort());
 });

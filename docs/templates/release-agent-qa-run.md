@@ -40,7 +40,7 @@ Approvals recorded before the run (reference, date, scope, cap):
 | Candidate clean (`candidate-dirty.txt` empty) | yes / no |
 | `artifactManifestSha256` (`candidate-blobs.txt`) | |
 | `git archive` tar SHA-256 (informational) + `git --version` | |
-| Version consistency across all manifests + `test/plugin-manifest.test.mjs` | yes / no (list mismatches) |
+| Version consistency across all manifests + `tests/plugin-manifest.test.mjs` | yes / no (list mismatches) |
 | L0 source verification reference (command, commit, summary, log hash) | |
 
 ## 3. Installed identity (per host)

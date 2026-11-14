@@ -30,6 +30,9 @@ def arm(*, watchdog=True, export=True):
     """
     global _deadline
     if _deadline is None:
+        # time.monotonic() is not one clock across processes everywhere (macOS
+        # system Python 3.9 starts it near zero in each process), so an
+        # exported deadline is only meaningful to a child on a shared clock.
         try:
             inherited = float(os.environ.get('QMD_HOOK_DEADLINE_MONO', ''))
         except (TypeError, ValueError):

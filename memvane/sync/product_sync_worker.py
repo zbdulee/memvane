@@ -236,8 +236,10 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                 proof = writer.admission_proof()
                 expected_build = build.build_lookup(decision['projectRoot'])
                 info = writer.store()
+                # Initial builds never yield to each other (_initial_build_waiting).
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
-                                                   report=report, start_service=start_service)
+                                                   report=report, start_service=start_service,
+                                                   yield_to_builds=False)
                 store = store_api.open_store(info['path'], repository=info['repository'],
                                              scope_id=decision['scopeId'])
                 try:
@@ -820,8 +822,12 @@ SCHEMA3_PROVIDER_DEFECTS = frozenset(('provider_manifest_invalid', 'selected_pro
                                       'worker_runtime_files_invalid', 'worker_provider_unapproved'))
 
 
-def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start_service):
+def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start_service,
+                            yield_to_builds=True):
     """Per-pass vector state: the install provider's spec and a lazily admitted provider.
+
+    ``yield_to_builds`` is False for an initial build's own pass: only a
+    selected sync yields its provider calls to a waiting initial build.
 
     ``acquire()`` takes the provider lane (``controller.activity``) and the
     warm service on first use and keeps both in ``lane`` until the pass
@@ -838,7 +844,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
         if context['refused'] is not None:
             if context.get('blocked'):
                 raise _VectorProviderBlocked(context['refused'])
-            raise ResourceDeferred(context['refused'])
+            raise ResourceDeferred(context['refused'], context.get('refusedReport'))
         if context['provider'] is not None:
             return context['provider']
         try:
@@ -878,6 +884,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             raise ResourceDeferred(context['refused']) from exc
         except ResourceDeferred as exc:
             context['refused'] = str(exc)
+            context['refusedReport'] = exc.report
             raise
 
         def call(method, *args):
@@ -885,7 +892,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             # between rounds: another project's initial build waiting on the
             # owner this pass holds. Sets already committed stay (a pass that
             # added some reports progress and is re-offered).
-            if _initial_build_waiting(controller, Path(decision['projectRoot'])):
+            if yield_to_builds and _initial_build_waiting(controller, Path(decision['projectRoot'])):
                 raise ResourceDeferred('laya_sync_yield_priority')
             context['calls'] += 1
             try:
@@ -1024,7 +1031,7 @@ def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
 def _schema3_vector_detail(result):
     """The main view's vector progress as one fixed code for the wake event, or None.
 
-    ``vec_<state>[_<reason>]`` with ``rem`` (targets left), ``ord`` (first
+    ``vec_<state>[_<reason>]`` with a deferral's admission criterion, ``rem`` (targets left), ``ord`` (first
     missing target), ``pms`` (slowest provider call of the pass, ms), and for a
     published vector generation ``pub`` (its prepare+publish ms) and ``res_``
     (the reader reseal). No path or body.
@@ -1038,6 +1045,8 @@ def _schema3_vector_detail(result):
     for prefix in ('schema3_vector_', 'schema3_'):
         reason = reason[len(prefix):] if reason.startswith(prefix) else reason
     parts = ['vec_' + vector['state'] + ('_' + reason if reason else '')]
+    if isinstance(vector.get('detail'), str):
+        parts.append(vector['detail'])
     for key, label in (('remaining', 'rem'), ('ordinal', 'ord'), ('providerMs', 'pms'), ('publishMs', 'pub')):
         if type(vector.get(key)) is int:
             parts.append(label + str(vector[key]))
@@ -1163,7 +1172,12 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             stopped = pending(str(exc), status['cursor'])
             if stopped['progress'] > 0:
                 return stopped
-        return {'state': 'deferred', 'reason': str(exc)}
+        # Keeps the lane's admission criterion (memory_reserve, ...) as
+        # ``detail`` when it names more than the deferral reason itself.
+        refused = _deferred(exc)
+        if refused.get('detail') == refused['reason']:
+            del refused['detail']
+        return refused
     except _VectorMemberBlocked as exc:
         return {'state': 'blocked', 'reason': str(exc)}
     except _VectorProviderBlocked as exc:

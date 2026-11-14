@@ -77,8 +77,11 @@ skills/
 agents/
   Resolver prompt for wiki-dedup queue cleanup.
 
-test/
-  Deterministic node:test suites using fixtures and temporary projects.
+tests/
+  Repository-wide checks, end-to-end process tests, structure guard and the shared test support.
+
+memvane/<domain>/tests/
+  Each domain's unit and integration tests, run by its run.test.mjs.
 ```
 
 ## Runtime Components
@@ -603,7 +606,7 @@ aligned when changing release identity or marketplace behavior:
 - `.claude-plugin/marketplace.json`;
 - `.agents/plugins/marketplace.json`.
 
-`test/plugin-manifest.test.mjs` checks that manifests carry a description and a
+`tests/plugin-manifest.test.mjs` checks that manifests carry a description and a
 version; it does not pin the exact version. Before release, run `npm test`.
 
 ## Manual Skills
@@ -799,11 +802,11 @@ file concurrency 1. They use fixtures, temporary projects and route records,
 and sandbox env guards. Useful focused tests:
 
 ```bash
-npm run test:focused -- test/laya-index-host-route.test.mjs
-npm run test:focused -- test/laya-embed-runtime.test.mjs
-npm run test:focused -- test/laya-runtime-provision.test.mjs
-npm run test:focused -- test/wiki-compile-worker.test.mjs
-npm run test:focused -- test/hermes-plugin-adapter.test.mjs
+npm run test:focused -- memvane/host/tests/run.test.mjs
+npm run test:focused -- memvane/recall/tests/run.test.mjs
+npm run test:focused -- memvane/provider/tests/run.test.mjs
+npm run test:focused -- tests/e2e/recall-e2e.test.mjs
+npm run test:focused -- tests/structure/static.test.mjs
 ```
 
 ## Change Checklist
