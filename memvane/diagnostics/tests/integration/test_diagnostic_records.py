@@ -39,6 +39,27 @@ class DiagnosticRecordTests(FixtureCase):
         self.assertEqual(len(rows), len(set(rows)))
         self.assertEqual(set(rows), written)
 
+    def test_rotation_cannot_move_live_file_before_append(self):
+        import subprocess
+        import sys
+        self.assertTrue(api.emit('seed', state_root=self.state))
+        real_write = os.write
+        fired = []
+        command = ('import sys; from memvane.diagnostics import api,event_log; '
+                   'event_log.LOG_LIMIT=1; '
+                   '[api.emit("rotator",state_root=sys.argv[1]) for _ in range(3)]')
+        def write(fd, data):
+            if not fired:
+                fired.append(True)
+                result = subprocess.run([sys.executable, '-B', '-c', command, str(self.state)],
+                                        text=True, capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            return real_write(fd, data)
+        with patch.object(event_log.os, 'write', side_effect=write):
+            self.assertTrue(api.emit('marker', state_root=self.state))
+        self.assertTrue(fired)
+        self.assertIn('marker', [row['event'] for row in event_log.read(self.state)])
+
     def test_busy_rotation_lock_refuses_without_writing(self):
         import fcntl
         import subprocess
@@ -196,6 +217,23 @@ class DiagnosticRecordTests(FixtureCase):
         self.assertLessEqual(len(lines[0].split(' - ', 1)[1]), 200)
         self.assertNotIn('\x07', lines[0])
         self.assertNotIn('SYSTEM', lines[0])
+
+    def test_logs_reader_and_skill_ignore_malformed_rows(self):
+        import subprocess
+        import sys
+        self.assertTrue(api.emit('gate', outcome='ok', state_root=self.state))
+        malformed = [{'v': 1, 'ts': '2026-10-28T00:00:00', 'event': 'gate'},
+                     {'v': 1, 'ts': '2026-10-28T00:00:00.000Z', 'event': 7},
+                     {'v': 1, 'ts': '2026-10-28T00:00:00.000Z', 'event': 'x', 'outcome': ['a']}]
+        with (self.state / event_log.NAME).open('a', encoding='utf-8') as stream:
+            stream.write(''.join(json.dumps(row) + '\n' for row in malformed) + '{"v": 1, "ts":\nnot json\n')
+        self.assertEqual([r['event'] for r in event_log.read(self.state)], ['gate'])
+        root = Path(__file__).resolve().parents[4]
+        script = root / 'skills' / 'logs' / 'scripts' / 'logs.py'
+        result = subprocess.run([sys.executable, '-B', str(script), '--state-root', str(self.state)],
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('gate ok: 1', result.stdout)
 
     def test_prompt_fields_store_only_digest_and_character_count(self):
         result = api.prompt_fields('private prompt')
