@@ -10,7 +10,9 @@ describes. Defaults: review ``review_required`` with ``REVIEW_SHA``, a fixed
 sealed runtime digest, the recorded manifest as identity proof, vector
 ``[1, 0, ...]`` per document, query admission refused (lexical recall), a
 no-op warm service. ``change_identity()`` makes every identity proof refuse
-with ``provider_identity_changed``.
+with ``provider_identity_changed``; ``admit_queries()`` makes query admission
+admit (the provider is then never asked for a query vector by a view sealed
+without vectors; a sealed view's query vector path refuses under the fixture).
 """
 from __future__ import annotations
 
@@ -67,6 +69,12 @@ class FixtureProvider:
     def change_identity(self, changed=True):
         """From now on every identity proof refuses with ``provider_identity_changed``."""
         self.identity_changed = changed
+        if self._path is not None:
+            self._publish()
+
+    def admit_queries(self, admitted=True):
+        """From now on query admission admits (or, with ``False``, refuses as lexical recall)."""
+        self.query_admission = 'admit' if admitted else 'refuse'
         if self._path is not None:
             self._publish()
 

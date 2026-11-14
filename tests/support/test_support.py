@@ -120,6 +120,25 @@ class HotJournal(FixtureCase):
         self.assertGreater(journal.stat().st_size, 0)
 
 
+class Provider(FixtureCase):
+    def test_query_admission_follows_the_published_spec(self):
+        from memvane.kernel.resource_deferred import ResourceDeferred
+        from memvane.resident.api import admit_query
+        from tests.support.fake_provider import FixtureProvider
+        provider = FixtureProvider().install(self)
+        refused = []
+        for admitted in (False, True, False):
+            provider.admit_queries(admitted)
+            try:
+                admit_query()
+            except ResourceDeferred as exc:
+                refused.append(str(exc))
+            else:
+                refused.append(None)
+            self.assertEqual(provider.current().query_admission, 'admit' if admitted else 'refuse')
+        self.assertEqual(refused, ['fixture_lexical_recall', None, 'fixture_lexical_recall'])
+
+
 class Builders(FixtureCase):
     def project(self, name='delta'):
         from tests.support.project import make_project

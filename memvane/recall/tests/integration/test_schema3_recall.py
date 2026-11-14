@@ -4,8 +4,13 @@ Recall reads the published view only: no raw source file is opened, a branch
 without a published head answers ``view_preparing`` without context (never the
 main view's rows), a checkout that keeps moving answers ``checkout_changed``,
 and a hot store journal is a recovery refusal that asks for the sync owner.
+A reader sealed without a vector spec serves lexical rows without asking the
+provider.
 """
+from contextlib import closing
+import json
 import os
+import sqlite3
 import sys
 import threading
 import unittest
@@ -81,6 +86,39 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual(event['vector_fallback'], 'selected_provider_resource_deferred')
         self.assertEqual({(kind, target) for kind, target, _kwargs in self.wakes},
                          {('laya-sync', str(self.project))})
+
+    def forge_reader_without_vector_spec(self):
+        """The selected reader record as a lexical-first seal leaves it: no vector spec."""
+        from memvane.journal.api import inspect_journal
+        record = dict(inspect_journal(self.install.journal)['reader'],
+                      vector_profile=None, vector_recipe=None)
+        raw = json.dumps(record, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
+                         allow_nan=False)
+        with closing(sqlite3.connect(str(self.install.journal), isolation_level=None)) as db:
+            db.execute('UPDATE reader SET record=? WHERE id=1', (raw,))
+
+    def test_a_view_sealed_without_vectors_serves_lexical_rows_without_asking_the_provider(self):
+        self.install.provider.admit_queries()
+        self.forge_reader_without_vector_spec()
+        asked, reads = [], []
+        real = recall_api.query_endpoint
+
+        def observed(*args, **kwargs):
+            reads.append((kwargs['query_vector'], real(*args, **kwargs)))
+            return reads[-1][1]
+        with mock.patch('memvane.recall.api.query_endpoint', side_effect=observed), \
+                mock.patch('memvane.recall.api.approved_query_vector',
+                           side_effect=lambda **kwargs: asked.append(kwargs)):
+            context, err, event = self.recall(PROMPT)
+        self.assertIn('zqheronx', context)
+        self.assertEqual(asked, [])
+        self.assertEqual([(vector, result.semantic_status) for vector, result in reads],
+                         [(None, 'provider_absent')])
+        self.assertEqual((event['outcome'], event['vector_fallback']),
+                         ('served', 'selected_view_vectors_pending'))
+        self.assertEqual(event['notes'], ['laya_vector_selected_view_vectors_pending'])
+        self.assertIn('selected_view_vectors_pending; serving lexical results', err)
+        self.assertEqual(self.wakes, [])
 
     def test_the_learning_selector_receives_the_published_rows(self):
         seen = []
