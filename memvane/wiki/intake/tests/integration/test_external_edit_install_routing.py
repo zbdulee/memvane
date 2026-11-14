@@ -178,6 +178,76 @@ class ExternalInstallRouting(FixtureCase):
         wake.assert_not_called()
         self.assertFalse(external._inbox_path(self.b.select()).exists())
 
+    def test_ineligible_external_paths_cannot_consume_owner_inbox(self):
+        from memvane.host import api as host
+        b = self.b.project
+        hidden = b.write_note('.hidden.md', 'hidden\n')
+        denied = b.write_note('node_modules/pkg/note.md', 'dependency\n')
+        code = b.write_note('docs/tool.py', 'source code\n')
+        wiki = b.write_note('.memvane/wiki/concepts/card.md', 'wiki\n')
+        outside = self.home / 'loose.md'
+        outside.write_text('outside\n')
+        link = b.root / 'docs/escape.md'
+        link.symlink_to(outside)
+        decision = self.a.select()
+        inbox = external._inbox_path(self.b.select())
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            for path in (hidden, denied, code, wiki, link):
+                with self.subTest(path=str(path)):
+                    event = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write',
+                             'tool_input': {'file_path': str(path)}, 'cwd': str(self.a.project.root)}
+                    self.assertEqual(host.serve_selected('index', 'codex', decision, event), {})
+                    self.assertFalse(inbox.exists())
+            wake.assert_not_called()
+            valid = b.write_note('docs/note.md', 'eligible revision\n')
+            event['tool_input'] = {'file_path': str(valid)}
+            self.assertEqual(host.serve_selected('index', 'codex', decision, event), {})
+            wake.assert_called_once_with('laya-sync', str(b.root))
+        self.assertEqual([row['path'] for row in external._read_box(inbox, self.b.select())['edits']],
+                         ['docs/note.md'])
+
+    def test_onboarding_notice_choices_do_not_disable_selected_owner(self):
+        from memvane.host import api as host
+        project = self.b.project
+        source = project.write_note('docs/note.md', 'external edit\n')
+        host.never(str(project.root))
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            self.assertEqual(external.notify([source], cwd=self.a.project.root, host='codex',
+                                             origin=str(self.a.project.root))['owners'], 1)
+            wake.assert_called_once_with('laya-sync', str(project.root))
+            host.resume(str(project.root))
+            host.skip(str(project.root), 'fixture-session')
+            wake.reset_mock()
+            self.assertEqual(external.notify([source], cwd=self.a.project.root, host='codex',
+                                             origin=str(self.a.project.root))['owners'], 1)
+            wake.assert_called_once_with('laya-sync', str(project.root))
+
+    def test_deleted_external_source_notifies_its_owner(self):
+        project = self.b.project
+        source = project.root / 'docs/note.md'
+        source.unlink()
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            self.assertEqual(external.notify([source], cwd=self.a.project.root, host='codex',
+                                             origin=str(self.a.project.root))['owners'], 1)
+            wake.assert_called_once_with('laya-sync', str(project.root))
+        inbox = external._inbox_path(self.b.select())
+        self.assertEqual(external._read_box(inbox, self.b.select())['edits'],
+                         [{'path': 'docs/note.md', 'blob': 'deleted', 'host': 'codex'}])
+
+    def test_unregistered_nested_project_never_falls_back_to_parent(self):
+        b = self.b.project
+        nested = b.root / 'nested'
+        (nested / '.memvane').mkdir(parents=True)
+        (nested / '.memvane/settings.json').write_text('{"name":"nested","skipPaths":[]}')
+        source = nested / 'note.md'
+        source.write_text('nested project source\n')
+        with patch.object(runtime, 'request') as wake:
+            result = external.notify([source], cwd=self.a.project.root, host='codex',
+                                     origin=str(self.a.project.root))
+        self.assertEqual(result, {'owners': 0, 'failed': 0, 'overflow': 0})
+        wake.assert_not_called()
+        self.assertFalse(external._inbox_path(self.b.select()).exists())
+
     def test_notification_proof_rejects_unsafe_journal_parent(self):
         from memvane.journal import api as journal
         from memvane.journal.types import JournalEvidenceError
