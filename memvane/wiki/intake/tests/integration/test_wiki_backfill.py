@@ -227,6 +227,25 @@ class BackfillChecks(FixtureCase):
         backfill.reconcile_discards(self.bound)
         self.assertEqual(backfill.summary(backfill._load(self.decision)), before)
 
+    def test_torn_discard_audit_is_not_authoritative_backfill_evidence(self):
+        from pathlib import Path
+        queue, orphan, _job = self.orphan_first_batch()
+        real_open = Path.open
+        def torn_open(path, mode='r', *args, **kwargs):
+            if path.name == 'discard-ledger.jsonl' and mode == 'a':
+                with real_open(path, 'ab') as handle:
+                    handle.write(b'{"timestamp":')
+                raise OSError('synthetic audit ENOSPC')
+            return real_open(path, mode, *args, **kwargs)
+        with patch.object(Path, 'open', torn_open):
+            with self.assertRaisesRegex(OSError, 'audit ENOSPC'):
+                self.claim_orphan(queue)
+        self.assertTrue(orphan.exists())
+        self.claim_orphan(queue)
+        self.assertFalse(orphan.exists())
+        backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['skipped'], 1)
+
     def test_partial_atomic_receipt_write_keeps_claim_and_retry_recovers(self):
         import os
         queue, orphan, job = self.orphan_first_batch()
