@@ -78,6 +78,27 @@ class ExternalInstallRouting(FixtureCase):
                 journal.verify_notification_target(changed)
         self.assertEqual(opened, [])
 
+    def test_completed_owner_sync_drains_external_hint_without_discovery_grant(self):
+        import json
+        from tests.support.settings_fake import expanded, use_config
+        project = self.b.project
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_tool_source'],
+            'extractor': {'builtins': ['codex']}}))
+        self.b.settle()
+        source = project.write_note('docs/note.md', 'new external revision\n')
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+            self.assertEqual(external.notify([source], cwd=self.a.project.root, host='codex',
+                                             origin=str(self.a.project.root))['owners'], 1)
+        result = self.b.run_sync()
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        self.assertEqual([(job['source']['path'], job['engine']) for job in jobs],
+                         [('docs/note.md', 'codex')])
+        inbox = external._inbox_path(self.b.select())
+        self.assertEqual(external._read_box(inbox, self.b.select())['edits'], [])
+
     def test_hook_rejects_failed_edits_then_routes_mixed_and_multiedit_paths(self):
         from memvane.host import api as host
         import json
