@@ -86,12 +86,15 @@ class CheckoutFingerprints(FixtureCase):
 
     def test_changed_checkout_during_source_read_never_calls_extractor(self):
         original = card.snapshot_bytes
-        def snapshot(path):
-            result = original(path)
-            self.project.git('add', '--', 'docs/source.md')
-            return result
-        with patch.object(card, 'snapshot_bytes', side_effect=snapshot):
-            self.assertEqual(self.process(), (False, True, []))
+        for action in (('switch', '-qc', 'other-branch'),
+                       ('commit', '-qm', 'head-change', '--allow-empty'),
+                       ('add', '--', 'docs/source.md')):
+            def snapshot(path):
+                result = original(path)
+                self.project.git(*action)
+                return result
+            with self.subTest(action=action[0]), patch.object(card, 'snapshot_bytes', side_effect=snapshot):
+                self.assertEqual(self.process(), (False, True, []))
         self.assertEqual(self.calls, [])
         self.assertEqual(self.candidates, [])
 
