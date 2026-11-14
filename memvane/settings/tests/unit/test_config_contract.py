@@ -21,6 +21,12 @@ class ConfigContractTests(unittest.TestCase):
         cfg = api.normalize_config({'name': 'Demo', 'topN': '7', 'queryTimeout': 'bad'})
         self.assertEqual(cfg['topN'], 7)
         self.assertEqual(cfg['queryTimeout'], 5.0)
+        budget = api.normalize_config({'compile': {'budget': {'extractorPerRun': 999999}}})['compile']['budget']
+        self.assertEqual(budget['extractorPerRun'], 50)
+        for value in (True, False, 1.9, 2.5):
+            with self.subTest(value=value):
+                budget = api.normalize_config({'compile': {'budget': {'extractorPerRun': value}}})['compile']['budget']
+                self.assertEqual(budget['extractorPerRun'], 10)
 
     def test_diagnostics_requires_boolean_true(self):
         # Consent also requires a proved selected/preview route and an exact

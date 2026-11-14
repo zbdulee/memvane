@@ -5,9 +5,34 @@ from tests.support.case import FixtureCase
 from tests.support.install_builder import build_install
 from tests.support.project import make_project
 from memvane.route import api
+from memvane.journal import api as journal
 
 
 class SelectedRouteTests(FixtureCase):
+    def test_route_lookup_blocks_corrupt_nested_and_symlink_markers(self):
+        project = make_project(self.home, git=False)
+        nested = project.root / 'docs' / 'nested'
+        nested.mkdir(parents=True, exist_ok=True)
+        marker = project.root / '.memvane' / 'route.json'
+        self.assertEqual(journal.select_route(str(project.root), linked=False)['state'], 'legacy')
+        marker.write_text('{', encoding='utf-8')
+        self.assertEqual(journal.select_route(str(project.root), linked=False)['state'], 'blocked')
+        marker.write_text('{}', encoding='utf-8')
+        self.assertEqual(journal.select_route(str(project.root), linked=False)['state'], 'blocked')
+        marker.unlink()
+        target = self.tmp / 'target-route.json'
+        target.write_text('{}', encoding='utf-8')
+        marker.symlink_to(target)
+        self.assertEqual(journal.select_route(str(project.root), linked=False)['state'], 'blocked')
+        marker.unlink()
+        marker.write_text('{}', encoding='utf-8')
+        (nested / '.memvane').mkdir()
+        (nested / '.memvane' / 'route.json').write_text('{}', encoding='utf-8')
+        result = journal.select_route(str(nested), linked=False)
+        self.assertEqual((result['state'], result['reason']), ('blocked', 'ambiguous_route_records'))
+        self.assertEqual(journal.select_route(str(project.root), action='unsupported', linked=False)['reason'],
+                         'unsupported_route_action')
+
     def test_selected_install_record_classifies_from_its_current_proof(self):
         project = make_project(self.home, name='Route fixture')
         install = build_install(self, project)

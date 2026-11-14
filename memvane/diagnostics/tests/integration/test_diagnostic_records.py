@@ -18,6 +18,52 @@ class DiagnosticRecordTests(FixtureCase):
     def rows(self, path):
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
 
+    def test_busy_rotation_lock_refuses_without_writing(self):
+        import fcntl
+        import subprocess
+        import sys
+        fd = os.open(self.state / 'events.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            code = ('import sys; from memvane.diagnostics import api; '
+                    'print(api.emit("gate", state_root=sys.argv[1]))')
+            result = subprocess.run([sys.executable, '-B', '-c', code, str(self.state)],
+                                    text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'False')
+            self.assertFalse((self.state / 'events.jsonl').exists())
+        finally:
+            os.close(fd)
+
+    def test_fifo_generation_is_skipped_by_reader(self):
+        import subprocess
+        import sys
+        os.mkfifo(self.state / 'events.jsonl.1', 0o600)
+        self.assertTrue(api.emit('gate', state_root=self.state))
+        code = ('import json,sys; from memvane.diagnostics import event_log; '
+                'print(json.dumps([r["event"] for r in event_log.read(sys.argv[1])]))')
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(self.state)],
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), ['gate'])
+
+    def test_hard_cap_refuses_until_rotation_lock_is_released(self):
+        import fcntl
+        fd = os.open(self.state / 'events.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH)
+            with patch.object(event_log, 'LOG_LIMIT', 2000):
+                results = [api.emit('x', state_root=self.state, pad='z' * 100) for _ in range(200)]
+            self.assertIn(False, results)
+            self.assertLessEqual((self.state / 'events.jsonl').stat().st_size, 4000)
+            self.assertEqual(event_log.inspect(self.state)['lastRefusal']['reason'], 'events_over_hard_cap')
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            with patch.object(event_log, 'LOG_LIMIT', 2000):
+                self.assertTrue(api.emit('after', state_root=self.state))
+            self.assertTrue((self.state / 'events.jsonl.1').exists())
+        finally:
+            os.close(fd)
+
     def test_prompt_fields_store_only_digest_and_character_count(self):
         result = api.prompt_fields('private prompt')
         self.assertEqual(set(result), {'sha256', 'chars'})

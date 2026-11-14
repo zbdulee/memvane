@@ -85,6 +85,26 @@ class Capture(FixtureCase):
         self.assertGreaterEqual(len(calls), 2)
         self.assertEqual(self.rows(), [])
 
+    def test_child_stderr_tail_is_bounded_and_disabled_consent_suppresses_it(self):
+        sentinel = 'synthetic-child-tail-sentinel'
+        token = event_log.bind(decision=self.decision, host='worker')
+        try:
+            ident = diag.capture(self.decision, event='wake.sync', reason='target_child_failed',
+                                 child_stderr='가' * 3000 + sentinel,
+                                 consent=settings_api.diagnostic_enabled)
+            result = diag.reassemble(self.rows(), ident)
+            self.assertEqual(result['kind'], 'child_stderr_tail')
+            self.assertTrue(result['truncated'])
+            self.assertIn(sentinel, result['text'])
+            self.assertLessEqual(len(result['text'].encode('utf-8')), 4096)
+            self.opt_in(False)
+            self.assertIsNone(diag.capture(self.decision, event='wake.sync', reason='target_child_failed',
+                                          child_stderr='disabled-sentinel',
+                                          consent=settings_api.diagnostic_enabled))
+            self.assertNotIn('disabled-sentinel', json.dumps(self.rows()))
+        finally:
+            event_log.unbind(token)
+
     def test_limits_and_incomplete_fragments(self):
         diagnostic_id = self.capture(self.thrown('한' * 10000))
         rows = self.rows()
