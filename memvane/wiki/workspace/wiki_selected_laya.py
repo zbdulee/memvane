@@ -140,12 +140,20 @@ class _Schema3Checkout:
                 and self._selection_current())
 
 
+def _fixture_wake_skipped():
+    """True under the test fixture switch, where ``runtime.api.request`` records no wake and returns None."""
+    import os
+    return os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
+
+
 def request_compile(root: Path, bound, *, owner=None):
     if bound is None:
         return
     recheck(bound, owner=owner)
     from memvane.runtime.api import request
     result = request('laya-compile', str(Path(root).resolve()))
+    if result is None and _fixture_wake_skipped():
+        return
     if not isinstance(result, dict) or result.get('status') not in ('queued', 'busy'):
         raise ValueError('selected_compile_wake_enqueue_failed')
 
@@ -157,6 +165,8 @@ def request_sync(root: Path, bound=None):
     recheck(bound)
     from memvane.runtime.api import request
     result = request('laya-sync', str(Path(root).resolve()))
+    if result is None and _fixture_wake_skipped():
+        return False
     if not isinstance(result, dict) or result.get('status') not in ('queued', 'busy'):
         raise ValueError('selected_wiki_sync_enqueue_failed')
     return True
