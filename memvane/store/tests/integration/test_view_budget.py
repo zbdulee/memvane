@@ -191,7 +191,7 @@ class BudgetChecks(GenerationCase):
                                                   path_prefixes=[paths[-1]])
         self.assertEqual([row['path'] for row in rows], [paths[-1]])
         counts = {}
-        for table in ('s_cards', 's_sources'):
+        for table in ('s_cards', 's_sources', 's_card_sources'):
             counts[table] = store._db.execute(
                 f'SELECT COUNT(*) FROM {table} WHERE view_id=? AND gen_to IS NULL', (handle.view_id,)).fetchone()[0]
             self.assertEqual(counts[table], 2049)
