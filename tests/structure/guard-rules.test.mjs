@@ -1,0 +1,196 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {dirname, join, resolve} from 'node:path';
+import {spawnSync} from 'node:child_process';
+
+const python = process.env.STRUCTURE_TEST_PYTHON || 'python3';
+const helper = resolve('tests/structure/guard_rules.py');
+const guard = resolve('test/structure/v1_guard.py');
+
+function env(home) {
+  return {PATH: process.env.PATH, HOME: home, TMPDIR: home, PYTHONDONTWRITEBYTECODE: '1',
+    QMD_SETUP_GUARD_FIXTURE: '1'};
+}
+
+function scan(t, files) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mv-guard-rules-')));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), {recursive: true});
+    writeFileSync(join(root, path), text);
+  }
+  const result = spawnSync(python, ['-B', helper, root], {encoding: 'utf8', env: env(root), timeout: 60000});
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null, 'guard_rules.py timed out');
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+// "<rule>:<file>:<line>:<target>:<kind>:<name>" -> "<file>:<target>:<kind>:<name>" for one rule.
+function rows(report, rule) {
+  return report.findings.filter(x => x.startsWith(rule + ':'))
+    .map(x => x.split(':').slice(1)).map(([file, , target, kind, ...name]) => [file, target, kind, name.join(':')].join(':'))
+    .sort();
+}
+
+const journalApi = [
+  'from __future__ import annotations',
+  '',
+  'class _Ops:',
+  '    def __getattr__(self, name):',
+  '        return name',
+  '',
+  '_reader = _Ops()',
+  '',
+  'def open_store(path: str):',
+  '    return path',
+  '',
+  'def __getattr__(name):',
+  '    return name',
+  ''].join('\n');
+
+test('strict G1 flags private names, private attributes and proxies reached through another domain api', t => {
+  const report = scan(t, {
+    'memvane/journal/api.py': journalApi,
+    'memvane/journal/inner.py': 'from memvane.journal.api import _reader\nvalue = _reader._state\n',
+    'memvane/sync/worker.py': [
+      'from memvane.journal.api import _reader',
+      'from memvane.journal import api as journal_api',
+      'import memvane.journal.api as japi2',
+      'from memvane.journal.api import hidden_name',
+      '',
+      'def a():',
+      '    from memvane.journal.api import open_store',
+      '    store = open_store("p")',
+      '    with open_store("q") as handle:',
+      '        handle._lock',
+      '    return store._session, store.public, store._replace',
+      '',
+      'def b(store):',
+      '    return store._session',
+      '',
+      'def c():',
+      '    return journal_api._reader.anything, journal_api.missing, japi2.open_store',
+      '',
+      'class Holder:',
+      '    def __init__(self):',
+      '        from memvane.journal.api import open_store',
+      '        self._fn = open_store',
+      '        self._fn._bound',
+      '',
+      'def d():',
+      '    for row in journal_api.open_store("r"):',
+      '        row._raw',
+      '    first, second = journal_api.open_store("s")',
+      '    return second._tail',
+      ''].join('\n'),
+  });
+  const file = 'memvane/sync/worker.py';
+  assert.deepEqual(rows(report, 'G1'), [
+    `${file}:journal:getattr_forward:hidden_name`,
+    `${file}:journal:getattr_forward:missing`,
+    `${file}:journal:import_private:_reader`,
+    `${file}:journal:private_attr:_reader`,
+    `${file}:journal:private_attr:open_store()._lock`,
+    `${file}:journal:private_attr:open_store()._raw`,
+    `${file}:journal:private_attr:open_store()._session`,
+    `${file}:journal:private_attr:open_store()._tail`,
+    `${file}:journal:proxy_attr:_reader.anything`,
+  ].sort());
+});
+
+test('strict G5 counts private module names and rejects api passages', t => {
+  const filler = n => Array.from({length: n}, (_, i) => `_v${i} = ${i}`).join('\n') + '\n';
+  const report = scan(t, {
+    'memvane/journal/api.py': journalApi,
+    'memvane/store/api.py': [
+      'from __future__ import annotations',
+      'from importlib import import_module',
+      '',
+      'def explicit(path: str, *, mode: str = "r") -> str:',
+      '    return path',
+      '',
+      'def forward(*args, **kwargs):',
+      '    return explicit(*args, **kwargs)',
+      '',
+      'def only_kwargs(**kwargs):',
+      '    return kwargs',
+      '',
+      'class _Bundle:',
+      '    def method(self, *args, **kwargs):',
+      '        return args',
+      '    def named(self, value):',
+      '        return value',
+      '    lam = staticmethod(lambda *a, **k: a)',
+      '',
+      'bundle = _Bundle()',
+      '_private_one = 1',
+      ''].join('\n'),
+    'memvane/registry/api.py': filler(31),
+    'memvane/route/api.py': 'from __future__ import annotations\n__all__ = ()\n' + filler(30),
+  });
+  assert.deepEqual(rows(report, 'G5'), [
+    'memvane/journal/api.py:journal:module_getattr:__getattr__',
+    'memvane/journal/api.py:journal:proxy_class:_Ops',
+    'memvane/registry/api.py:registry:public_attributes:31',
+    'memvane/store/api.py:store:dynamic_import:import_module',
+    'memvane/store/api.py:store:varargs_forwarder:_Bundle.lam',
+    'memvane/store/api.py:store:varargs_forwarder:_Bundle.method',
+    'memvane/store/api.py:store:varargs_forwarder:forward',
+    'memvane/store/api.py:store:varargs_forwarder:only_kwargs',
+  ]);
+  assert.equal(report.metrics.api_attributes['memvane/store/api.py'], 10);
+  assert.equal(report.metrics.api_attributes['memvane/route/api.py'], 30);
+});
+
+test('strict G9 flags SQL naming a table created by another domain', t => {
+  const report = scan(t, {
+    'memvane/runtime/schema.py': "DDL = 'CREATE TABLE IF NOT EXISTS wakes (key TEXT)'\n" +
+      "OWN = 'DELETE FROM wakes WHERE key = ?'\n",
+    'memvane/store/schema.py': "DDL = ['CREATE TABLE store_meta (k TEXT)',\n" +
+      "       'CREATE VIRTUAL TABLE IF NOT EXISTS fts_x USING fts5(body)']\n",
+    'memvane/install/cancel.py': [
+      '"""Remove rows FROM wakes in a docstring is ignored."""',
+      'def run(db, table):',
+      "    db.execute('DELETE FROM wakes WHERE key = ?')",
+      "    db.execute('SELECT value FROM \"store_meta\" LIMIT 1')",
+      "    db.execute(f'SELECT * FROM {table}')",
+      "    db.execute('SELECT * FROM unknown_table')",
+      "    db.execute('UPDATE wakes SET key = 1')",
+      "    db.execute('SELECT a FROM x JOIN fts_x ON 1')",
+      "    db.execute('INSERT INTO wakes(key) VALUES (?)')",
+      "    message = 'copied from wakes into the log'",
+      ''].join('\n'),
+  });
+  const file = 'memvane/install/cancel.py';
+  assert.deepEqual(rows(report, 'G9'), [
+    `${file}:runtime:delete from:wakes`,
+    `${file}:runtime:into:wakes`,
+    `${file}:runtime:update:wakes`,
+    `${file}:store:from:store_meta`,
+    `${file}:store:join:fts_x`,
+  ]);
+  assert.deepEqual(report.metrics.table_owners, {fts_x: ['store'], store_meta: ['store'], wakes: ['runtime']});
+});
+
+test('the product guard reports strict rules separately and filters them by rule and domain', t => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'mv-guard-cli-')));
+  t.after(() => rmSync(home, {recursive: true, force: true}));
+  const run = (...args) => {
+    const result = spawnSync(python, ['-B', guard, ...args], {encoding: 'utf8', env: env(home), timeout: 300000});
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null, 'v1_guard.py timed out');
+    return {status: result.status, report: JSON.parse(result.stdout)};
+  };
+  const {status, report} = run('--rules', 'G9', '--domain', 'runtime');
+  assert.equal(status, 0, 'strict findings do not fail without --strict');
+  assert.deepEqual(Object.keys(report.counts), []);
+  assert.deepEqual(Object.keys(report.strict_counts), ['G9']);
+  assert.ok(Object.keys(report.strict_by_domain).every(d => d === 'runtime'));
+  assert.ok(report.strict_issues.G9.every(x => x.split(':')[2] === 'runtime'), report.strict_issues.G9.join('\n'));
+  assert.equal(report.strict_counts.G9, report.strict_issues.G9.length);
+  const strict = run('--rules', 'G9', '--domain', 'runtime', '--strict');
+  assert.equal(strict.status, report.strict_counts.G9 ? 1 : 0);
+});
