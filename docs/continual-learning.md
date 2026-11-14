@@ -226,12 +226,13 @@ operator. Second opinions are advisory and never become reviewed gold.
 
 ## Verification
 
-`test/context-learning-cycle.test.mjs` runs synthetic selection-gold,
+The `context_learning_cycle`, `context_learning_cycle_e2e` and `teacher_budget` rows of
+`memvane/learning/tests/integration/test_scripts.py` run synthetic selection-gold,
 cadence/promotion, teacher-budget and 200-question end-to-end fixtures.
 The mock trainer fails once, resumes, compares on validation, reports separate
 evaluation, promotes, rolls back, and rejects a stale source. No private data,
 Laya runtime, external model or operating index state is used by these tests.
-`test/context-learning-real-laya.test.mjs` is opt-in and runs an actual local
+`memvane/learning/tests/model/test_real_laya.py` is opt-in and runs an actual local
 Laya runtime and local multilingual checkpoint on synthetic cards only. It
 exercises runtime attestation, train/predict protocol, a head-only update,
 private temporary checkpoint save/reload and a >600-byte complete body.
