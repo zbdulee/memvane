@@ -81,6 +81,13 @@ class SelectedRouteTests(FixtureCase):
 
         original_settings = project.settings_path.read_bytes()
         try:
+            raw = json.loads(original_settings)
+            raw['diagnostics'] = {'enabled': True}
+            project.settings_path.write_text(json.dumps(raw), encoding='utf-8')
+            selected = journal.select_route(str(project.root), linked=False)
+            self.assertEqual(selected['state'], 'candidate', selected)
+            from memvane.settings import api as settings
+            self.assertTrue(settings.diagnostic_enabled(selected))
             project.settings_path.write_text('{"name":"changed"}', encoding='utf-8')
             with self.assertRaisesRegex(ValueError, 'route_settings_changed'):
                 api.classify_v4(project.root, project.settings_path, record)
