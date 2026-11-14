@@ -1023,13 +1023,33 @@ def _provider_path_literals(trees, contexts):
     return findings
 
 
+def _test_package(dotted):
+    """True when a dotted name is test code: the tests package or a memvane/**/tests module."""
+    parts = dotted.split('.')
+    return parts[0] == 'tests' or (parts[0] == 'memvane' and 'tests' in parts[1:])
+
+
+def _product_test_imports(trees, contexts):
+    """G1: product code never reaches test code, whether by a top-level, delayed or string import."""
+    findings = []
+    for path, tree in trees.items():
+        if path not in contexts or '/tests/' in path or path.startswith(('test/', 'tests/')):
+            continue
+        seen = set()
+        for line, kind, dotted in _python_references(tree, _module_name(path), path.endswith('/__init__.py')):
+            if _test_package(dotted) and (line, dotted) not in seen:
+                seen.add((line, dotted))
+                findings.append(_finding('G1', 'test_import', path, line, contexts[path], 'tests', dotted))
+    return findings
+
+
 def strict_checks(trees, contexts):
     """Return (findings, metrics) for the strict G1/G5/G9 rules over parsed modules."""
     apis = _api_modules(trees, contexts)
     g5, attributes = _g5_strict(trees, contexts)
     g9, owners = _g9_strict(trees, contexts)
     findings = (_g1_strict(trees, contexts, apis) + _handle_signatures(trees, contexts, apis)
-                + _provider_path_literals(trees, contexts) + g5 + g9)
+                + _provider_path_literals(trees, contexts) + _product_test_imports(trees, contexts) + g5 + g9)
     unique = {(f['rule'], f['kind'], f['file'], f['line'], f['name'], f['target']): f for f in findings}
     ordered = sorted(unique.values(), key=lambda f: (f['rule'], f['target'], f['file'], f['line'], f['kind'], f['name']))
     return ordered, {'api_attributes': attributes, 'api_name_limits': dict(_API_NAME_LIMITS),

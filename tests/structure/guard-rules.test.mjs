@@ -578,3 +578,34 @@ test('a test G1 exception excuses one named name in one file and reports itself 
     'tests/support/present.py:exception:memvane.sync.worker:unused_exception',
   ]);
 });
+
+test('strict G1 flags product code that imports test code, delayed or by string', t => {
+  const report = scan(t, {
+    'memvane/provider/port.py': [
+      '"""Mentions from tests.support import project in a docstring only."""',
+      'import importlib',
+      'import tests.support.fake',
+      'from . import tests as own_tests',
+      '',
+      'def build():',
+      '    """from tests.support import ignored"""',
+      '    from tests.support.fake import port_from_spec',
+      '    from .tests.unit import helper',
+      "    importlib.import_module('tests.support.fake')",
+      "    return port_from_spec, helper, 'from tests.e2e import harness\\n'",
+      ''].join('\n'),
+    'memvane/provider/tests/unit/test_port.py': 'from tests.support import fake\n',
+    'tests/support/fake.py': 'from tests.support import project\n',
+    'entry/run.py': 'def main():\n    from tests.e2e import harness\n    return harness\n',
+    'hermes_adapter/plugin.py': 'import json\n',
+  });
+  assert.deepEqual(rows(report, 'G1').filter(x => x.includes(':test_import:')), [
+    'entry/run.py:tests:test_import:tests.e2e.harness',
+    'memvane/provider/port.py:tests:test_import:memvane.provider.tests',
+    'memvane/provider/port.py:tests:test_import:memvane.provider.tests.unit.helper',
+    'memvane/provider/port.py:tests:test_import:tests.e2e.harness',
+    'memvane/provider/port.py:tests:test_import:tests.support.fake',  // import tests.support.fake
+    'memvane/provider/port.py:tests:test_import:tests.support.fake',  // import_module('tests.support.fake')
+    'memvane/provider/port.py:tests:test_import:tests.support.fake.port_from_spec',
+  ]);
+});
