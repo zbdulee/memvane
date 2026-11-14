@@ -49,12 +49,21 @@ def select_hook_route(action: str, payload_file: str, fallback_cwd: str) -> dict
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) == 3 and args[0] == "classify":
-        decision = select_route(args[2], action=args[1])
-    elif len(args) == 4 and args[0] == "classify-hook":
-        decision = select_hook_route(args[1], args[2], args[3])
-    else:
-        return 2
+    try:
+        if len(args) == 3 and args[0] == "classify":
+            decision = select_route(args[2], action=args[1])
+        elif len(args) == 4 and args[0] == "classify-hook":
+            decision = select_hook_route(args[1], args[2], args[3])
+        else:
+            return 2
+    except Exception:
+        # An unexpected classification fault proves no selected route, and
+        # only a refused selected route exits 3 (design 2.2 host rule). Answer
+        # like an unselected project: ``legacy`` (run-hook exits 0 without
+        # hook work), with the fault named on stderr; never exit 1.
+        print("[memvane] route_lookup_failed; no hook work", file=sys.stderr)
+        print("legacy")
+        return 0
     if decision["state"] == "blocked" and decision.get("recallQuiet") is True and args[1] == "recall":
         # An onboarding or activation step stopped midway: the hook dispatcher
         # treats the recall like an unselected project, exit 0 without context.
