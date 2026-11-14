@@ -162,6 +162,22 @@ class ExternalInstallRouting(FixtureCase):
         self.assertEqual(target.read_text(), '{}')
         self.assertIn(('laya-sync', str(self.a.project.root)), [call.args for call in wake.call_args_list])
 
+    def test_gate_and_observer_allow_external_paths_without_routing(self):
+        from memvane.host import api as host
+        path = self.b.project.root / 'docs/note.md'
+        decision = self.a.select()
+        with patch.object(runtime, 'request') as wake:
+            for engine in ('claude', 'codex', 'hermes'):
+                for action in ('gate', 'posttool'):
+                    with self.subTest(engine=engine, action=action):
+                        event = {'hook_event_name': 'PreToolUse' if action == 'gate' else 'PostToolUse',
+                                 'tool_name': 'Write', 'tool_input': {'file_path': str(path)},
+                                 'cwd': str(self.a.project.root)}
+                        result = host.serve_selected(action, engine, decision, event)
+                        self.assertIsInstance(result, dict)
+        wake.assert_not_called()
+        self.assertFalse(external._inbox_path(self.b.select()).exists())
+
     def test_notification_proof_rejects_unsafe_journal_parent(self):
         from memvane.journal import api as journal
         from memvane.journal.types import JournalEvidenceError

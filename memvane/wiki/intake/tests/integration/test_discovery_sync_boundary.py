@@ -13,6 +13,23 @@ from tests.support.settings_fake import expanded, use_config
 
 
 class DiscoverySyncBoundary(FixtureCase):
+    def test_failed_bash_does_not_record_a_discovery_grant(self):
+        project = make_project(self.home)
+        project.write_note('docs/note.md', 'source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        decision = install.select()
+        payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                   'tool_input': {'command': 'false'},
+                   'tool_response': {'exit_code': 1}, 'cwd': str(project.root)}
+        with patch.object(runtime, 'request') as wake:
+            self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, payload), {})
+        wake.assert_not_called()
+        grants = discovery.observe_grants(decision)
+        self.assertEqual(grants['grants']['sync'], [])
+        self.assertEqual(grants['provisional']['sync'], [])
+
     def test_selected_session_grant_backfills_existing_sources_once(self):
         from memvane.wiki.intake import wiki_backfill as backfill
         project = make_project(self.home)

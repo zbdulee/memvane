@@ -80,6 +80,7 @@ class DiscoveryCursor(FixtureCase):
         self.accept()
         result = self.drain('g3', {self.key: self.initial})
         self.assertEqual((result['state'], result['pending']), ('drained', 0))
+        self.assertTrue(result['cursorStarted'])
         state = discovery._read(discovery._paths(self.decision)[0])
         self.assertEqual((state['baseGen'], state['rawSnapshot'], state['pending']),
                          ('g3', {self.key: self.initial}, {}))
@@ -120,6 +121,25 @@ class DiscoveryCursor(FixtureCase):
         self.assertEqual(result['state'], 'drained')
         self.assertEqual(queue.read_bytes(), before)
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
+
+    def test_route_change_before_enqueue_preserves_cursor_and_grant(self):
+        from memvane.kernel.errors import IndexContractError
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        self.drain('g2', {self.key: changed})
+        grant = self.accept()
+        observed = discovery.observe_grants(self.decision)
+        cursor = discovery._paths(self.decision)[0]
+        before = cursor.read_bytes()
+        def rejected():
+            raise IndexContractError('selected_proof_changed')
+        with self.assertRaisesRegex(IndexContractError, 'selected_proof_changed'):
+            discovery.drain_after_sync(self.decision, observed, recheck=rejected,
+                                       view_generation='g2', raw_snapshot={self.key: changed})
+        self.assertEqual(cursor.read_bytes(), before)
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [grant])
+        self.assertFalse((self.root / workspace.rel(workspace_types.SOURCE_QUEUE)).exists())
 
     def test_grant_recorded_after_snapshot_survives_consumption(self):
         discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
