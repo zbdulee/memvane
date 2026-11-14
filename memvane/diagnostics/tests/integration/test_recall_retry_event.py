@@ -55,3 +55,37 @@ class RecallRetryEventTests(FixtureCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]['install'], install.install_id)
         self.assertEqual(rows[0]['degraded'], 'worktree')
+
+    def test_hook_route_change_before_response_records_one_refusal(self):
+        import json
+        import subprocess
+        import sys
+        project = make_project(self.home, git=False)
+        install = build_install(self, project)
+        before = len([r for r in install.events() if r.get('event') == 'recall'])
+        code = '''
+import sys
+from unittest.mock import patch
+from memvane.journal import api as journal
+real = journal.select_route
+calls = []
+def select(cwd, **kwargs):
+    decision = real(cwd, **kwargs)
+    calls.append(1)
+    return {**decision, 'reason': 'fixture_changed'} if len(calls) == 2 else decision
+with patch.object(journal, 'select_route', side_effect=select):
+    from entry import run
+    project = sys.argv[1]
+    sys.argv = ['entry/run.py', 'hook-serve', 'recall', 'claude', project]
+    raise SystemExit(run.main())
+'''
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(project.root)],
+                                input=json.dumps({'cwd': str(project.root), 'prompt': 'synthetic',
+                                                  'session_id': 'session-1'}),
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn('selected_route_changed', result.stderr)
+        rows = [r for r in install.events() if r.get('event') == 'recall'][before:]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]['outcome'], rows[0]['reason'], rows[0]['session']),
+                         ('refused', 'selected_route_changed', 'session-1'))
