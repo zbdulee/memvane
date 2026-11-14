@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { removeTemp } from '../../test/helpers/temp.mjs';
+import { removeTemp } from '../support/temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(ROOT, 'tests', 'e2e', 'onboarding_fixture.py');

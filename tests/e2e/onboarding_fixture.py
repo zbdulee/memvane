@@ -1,8 +1,9 @@
 """Onboarding -> recall with the fixture provider (model-free stand-in).
 
-Uses the same 1.0 setup use cases as the PR8 end-to-end checks (plan,
-prepare, initial build passes, finalize, activate) with a synthetic provider
-and lexical recall, for a project with no cards and one with thirty.
+Uses the 1.0 install use cases through ``tests.support.install_builder``
+(plan, prepare, initial build passes, finalize, activate) with the fixture
+provider (``tests.support.fake_provider``) and lexical recall, for a project
+with no cards and one with thirty.
 
 The lifecycle checks stop one step at an arbitrary durable point (a raised
 ``_Crash`` stands in for a killed process), rerun it and assert by journal
@@ -10,12 +11,11 @@ epochs, record phases, files and route states; none reads a wall clock.
 """
 from __future__ import annotations
 
-from contextlib import ExitStack, closing, redirect_stdout
+from contextlib import closing, redirect_stdout
 import io
 import json
 import os
 from pathlib import Path
-import pwd
 import shutil
 import sqlite3
 import subprocess
@@ -23,8 +23,19 @@ import sys
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import wiki_db_provenance as base  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tests.support.case import FixtureCase  # noqa: E402
+from tests.support.fake_provider import REVIEW_SHA  # noqa: E402
+from tests.support.install_builder import Install, build_install, fixture_provider  # noqa: E402
+from tests.support.install_builder import SETTLE_PASSES  # noqa: E402
+from tests.support.project import make_project  # noqa: E402
+
+INSTALL_ID = '4' * 32
+SETTINGS_NAME = 'provenance'
+DIMENSION = 2
 
 TOPICS = ['heron', 'lantern', 'glacier', 'violin', 'saffron', 'compass', 'orchard', 'quartz',
           'harbor', 'falcon', 'meadow', 'ember', 'cobalt', 'willow', 'canyon', 'pepper',
@@ -65,95 +76,52 @@ def _opened_for(name):
     return lambda fd, *_a, **_k: _fd_name(fd) in (name, '.' + name + '.partial')
 
 
-class FixtureOnboarding(unittest.TestCase):
-    git = base.WikiDbProvenance.git
-    revision = base.WikiDbProvenance.revision
-    patch_host = base.WikiDbProvenance.patch_host
-    onboard = base.WikiDbProvenance.onboard
-    run_worker = base.WikiDbProvenance.run_worker
-    db = base.WikiDbProvenance.db
-
+class FixtureOnboarding(FixtureCase):
     def install(self, cards, *, onboard=True):
-        home = Path(os.environ.get('HOME', '')).resolve()
-        account = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
-        if (home == account or account in home.parents
-                or os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1'
-                or not os.environ.get('MEMVANE_TEST_RUNTIME_ROOT')):
-            self.fail('run through onboarding-fixture.test.mjs: temporary HOME and fixture guards required')
-        from memvane.settings import config as settings_config
-        self.home = home
-        self.project = home / 'project'
-        self.project.mkdir(mode=0o700)
-        self.git('init', '-q')
-        self.raw_name, _ = settings_config.minimal_collection_names(base.SETTINGS_NAME)
-        folder = self.project / '.memvane'
-        self.wiki = folder / 'wiki' / 'concepts'
-        self.wiki.mkdir(parents=True)
-        self.settings = folder / 'settings.json'
-        self.settings.write_text(json.dumps({'name': base.SETTINGS_NAME}) + '\n')
-        self.note = self.project / 'notes.md'
-        self.note.write_text('Field notes: the emerald heron nests beside the reed pond.\n')
+        self.fixture = make_project(self.home, name=SETTINGS_NAME)
+        self.project, self.raw_name = self.fixture.root, self.fixture.raw_name
+        self.wiki = self.fixture.wiki / 'concepts'
+        self.settings = self.fixture.settings_path
+        self.note = self.fixture.write_note(
+            'notes.md', 'Field notes: the emerald heron nests beside the reed pond.\n')
         for topic in TOPICS[:cards]:
             self.write_card(topic)
-        self.git('add', '-A')
-        self.git('commit', '-qm', 'fixture')
-        self.use_install(base.INSTALL_ID)
+        self.fixture.commit('fixture')
         if onboard:
-            self.onboard()
+            self.target = build_install(self, self.fixture, install_id=INSTALL_ID)
+            self.use_install(INSTALL_ID, self.target)
+        else:
+            self.use_install(INSTALL_ID)
 
-    def use_install(self, install_id):
-        """Point the fixture host (review, provider manifest) at one install id."""
-        self.install_id = install_id
-        self.state = self.home.joinpath('.local', 'state', 'memvane', 'v1', 'installs', install_id)
-        stack = ExitStack()
-        self.addCleanup(stack.close)
-        self.patch_host(stack)
+    def use_install(self, install_id, target=None):
+        """Point the lifecycle steps at one install id (the fixture provider stays the same)."""
+        self.fake = fixture_provider(self, DIMENSION)
+        self.target = target or Install(self, self.fixture, install_id, self.fake)
+        self.install_id, self.state = install_id, self.target.state
 
     def write_card(self, topic):
-        from memvane.wiki.card import api as card
-        line = card.dump_source_revisions([self.revision(self.note)])[0]
         title = topic.title() + ' protocol'
-        text = (f'---\ntitle: "{title}"\nstatus: verified\ncreatedBy: memvane\n'
-                f'sourceRevisions:\n  - {line}\n---\n# {title}\n'
-                f'The {topic} protocol keeps marker token zq{topic}x for recall checks.\n')
-        text = text.replace('createdBy: memvane\n', 'createdBy: memvane\nverifiedBodyHash: '
-                            + card.card_body_hash(text) + '\n', 1)
-        (self.wiki / f'{topic}.md').write_text(text)
+        self.fixture.write_card(f'concepts/{topic}.md', title=title, sources=[self.note],
+                                body=f'The {topic} protocol keeps marker token zq{topic}x for recall checks.\n')
 
     # -- lifecycle steps ---------------------------------------------------------
     def prepare(self):
-        from memvane.install.application import onboarding_workflow as workflow
-        plan = workflow.plan_fresh_wiki_origin(self.project)
-        self.assertEqual(plan['status'], 'review_required', plan)
-        return workflow.prepare_fresh_wiki_origin(
-            project_root=str(self.project), plugin_root=str(base.ROOT), state_root=str(self.state),
-            expected_proposal_sha256=plan['proposalSha256'], install_id=self.install_id,
-            accepted_provider_sha256=base.REVIEW_SHA, dimension=base.DIMENSION, provider=self.fake)
+        return self.target.prepare()
 
     def build(self):
-        results = []
-        for _ in range(base.BUILD_PASSES):
-            results.append(self.run_worker())
-            if results[-1].get('buildPhase') == 'ready':
-                return results
-        self.fail('initial build not ready: %r' % results)
+        return self.target.build()
 
     def finalize(self):
-        from memvane.app import setup_activation as workflow
-        return workflow.finalize_initial_build(project_root=str(self.project),
-                                               state_root=str(self.state))
+        return self.target.finalize()
 
     def activate(self):
-        from memvane.install import api as install
-        route = (self.state / 'route.json').read_bytes()
-        with install.install_lock(self.state):
-            return install.activate_origin_selection(self.project, self.state / 'journal.sqlite',
-                                                     route)
+        return self.target.activate()
 
     def restore(self):
-        from memvane.install.application import onboarding_restore as workflow
-        return workflow.restore_origin_selection(project_root=str(self.project),
-                                                 state_root=str(self.state))
+        return self.target.restore()
+
+    def run_worker(self):
+        return self.target.run_sync()
 
     def blocked(self, reason, step):
         from memvane.install.types import InstallBlocked
@@ -170,8 +138,8 @@ class FixtureOnboarding(unittest.TestCase):
         return build_read_v1(self.state)
 
     def build_pointer(self):
-        from memvane.install import initial_build
-        return initial_build.registered_pointer_path(str(self.project))
+        from memvane.journal.api import build_registered_pointer_path
+        return build_registered_pointer_path(str(self.project))
 
     def project_pointers(self):
         return sorted(name for name in ('route.json', 'selection.json')
@@ -335,7 +303,7 @@ class FixtureOnboarding(unittest.TestCase):
         from memvane.install import initial_build
         self.install(1)
         self.write_card('lantern')
-        for _ in range(base.SETTLE_PASSES):
+        for _ in range(SETTLE_PASSES):
             self.run_worker()
             if self.journal_row()['newWriteSeen']:
                 break
@@ -361,7 +329,7 @@ class FixtureOnboarding(unittest.TestCase):
         """F5: an uninterrupted release reports ``released``."""
         self.install(1)
         self.write_card('lantern')
-        for _ in range(base.SETTLE_PASSES):
+        for _ in range(SETTLE_PASSES):
             self.run_worker()
             if self.journal_row()['newWriteSeen']:
                 break
@@ -409,7 +377,7 @@ class FixtureOnboarding(unittest.TestCase):
         preview = select_route(str(self.project), action='recall')
         self.assertEqual((preview['state'], preview.get('recallQuiet')), ('blocked', True))
         self.assertEqual(self.hook_state('recall'), 'legacy')
-        self.settings.write_text(json.dumps({'name': base.SETTINGS_NAME}) + '\n')
+        self.fixture.write_settings()
         self.build()
         self.assertEqual(self.finalize()['status'], 'initial_build_finalized')
         route_file = self.project / '.memvane' / 'route.json'
@@ -463,10 +431,10 @@ class FixtureOnboarding(unittest.TestCase):
         from memvane.install import api as install
         self.install(1, onboard=False)
         self.assertEqual(install.prepare_fresh_wiki_origin(
-            project_root=str(self.project), plugin_root=str(base.ROOT), state_root=str(self.state),
+            project_root=str(self.project), plugin_root=str(ROOT), state_root=str(self.state),
             expected_proposal_sha256=install.plan_fresh_wiki_origin(self.project)['proposalSha256'],
-            install_id=self.install_id, accepted_provider_sha256=base.REVIEW_SHA,
-            dimension=base.DIMENSION, provider=self.fake)['status'], 'initial_build_registered')
+            install_id=self.install_id, accepted_provider_sha256=REVIEW_SHA,
+            dimension=DIMENSION, provider=self.fake)['status'], 'initial_build_registered')
         self.build()
         before = self.journal_row()
         calls = []
@@ -491,11 +459,9 @@ class FixtureOnboarding(unittest.TestCase):
         self.assertIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
 
     def cli(self, entry, argv):
-        """Run one setup CLI ``main`` past the installed-plugin live-write check."""
+        """Run one setup CLI ``main`` past the installed-plugin live-write check (B4 test bypass)."""
         out = io.StringIO()
-        with redirect_stdout(out), mock.patch(
-                'memvane.kernel.memvane_execution_guard.require_cached_plugin_for_live_write',
-                lambda *_a, **_k: None):
+        with redirect_stdout(out), mock.patch.dict(os.environ, {'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT': '1'}):
             code = entry.main(argv)
         return code, json.loads(out.getvalue()) if out.getvalue().strip() else None
 
@@ -659,9 +625,9 @@ class FixtureOnboarding(unittest.TestCase):
         self.assertEqual(reviewed['replacesForeignPointers'],
                          {name: hashlib.sha256(raw).hexdigest() for name, raw in saved.items()})
         self.use_install(THIRD_INSTALL)
-        from memvane.install.application import onboarding_restore as activation
-        with mock.patch.object(activation, '_retire_foreign_pointer',
-                               _crash_once(activation._retire_foreign_pointer,
+        from memvane.install.application import onboarding_restore
+        with mock.patch.object(onboarding_restore, '_retire_foreign_pointer',
+                               _crash_once(onboarding_restore._retire_foreign_pointer,
                                            lambda path: path.name == 'selection.json')):
             with self.assertRaises(_Crash):
                 self.prepare()

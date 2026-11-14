@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
 """DB provenance end to end on a selected 1.0 install (store format 4).
 
-A temporary HOME holds one project onboarded through the 1.0 setup use cases
-(plan, prepare, initial build, finalize, activate). A raw note is compiled
-into a generated card with observed source fingerprints, the verify worker
-judges it (synthetic engine), leaves one compile intent and stamps the card,
-and the selected sync pass consumes the intent into a ``compiled``
-attestation. Every check counts store rows, journal epochs and intent files;
-none reads a wall clock.
+A temporary HOME holds one project onboarded through the 1.0 install use cases
+(``tests.support.install_builder``: plan, prepare, initial build, finalize,
+activate). A raw note is compiled into a generated card with observed source
+fingerprints, the verify worker judges it (synthetic engine), leaves one
+compile intent and stamps the card, and the selected sync pass consumes the
+intent into a ``compiled`` attestation. Every check counts store rows, journal
+epochs and intent files; none reads a wall clock.
 
-Replaced only where a host install or a model is needed: the provider review,
-the runtime file seal, the per-file provider identity proof, the build/sync
-provider (one fixed vector per chunk), the warm-service start, the priority
-probes that read the account wake queue, the query admission (recall stays
-lexical), and the verifier engine plan and extractor call. Nothing outside
-the temporary HOME is written.
+Replaced only where a host install or a model is needed: the provider
+(``tests.support.fake_provider``: review, runtime seal, identity proof, one
+fixed vector per chunk, no warm service, lexical recall) and the verifier
+extractor call (``tests.support.engines_fake``). Nothing outside the
+temporary HOME is written.
 
 Run one method per process through ``wiki-db-provenance.test.mjs``.
 """
 from __future__ import annotations
 
-from contextlib import ExitStack, closing, contextmanager
 import copy
 import hashlib
 import json
 import os
 from pathlib import Path
-import pwd
-import sqlite3
-import subprocess
 import sys
 import time
 import unittest
@@ -39,32 +34,22 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from tests.support.case import FixtureCase  # noqa: E402
+from tests.support.engines_fake import FakeEngines  # noqa: E402
+from tests.support.install_builder import build_install  # noqa: E402
+from tests.support.project import make_project  # noqa: E402
+
 INSTALL_ID = '4' * 32
 SETTINGS_NAME = 'provenance'
-DIMENSION = 2
-REVIEW_SHA = '9' * 64  # tests.support.fake_provider.REVIEW_SHA
 CARD_REL = 'concepts/heron-dawn.md'
 ANCHOR_REL = 'concepts/anchor.md'
 PROMPT = 'emerald heron'
 NO_PROVENANCE = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0, 'unsafe': 0}
-# Initial build and settle passes are bounded; each is a full sync pass.
-BUILD_PASSES = 8
-SETTLE_PASSES = 6
+VERDICT = {'verdict': 'pass', 'claims': [{'claim': 'The emerald heron fishes at dawn.'}], 'reasons': []}
 
 
 class _Crash(BaseException):
     """Stands in for a process killed between the intent write and the stamp."""
-
-
-class _Coordinator:
-    root = None
-
-    @contextmanager
-    def activity(self, lane, policy, report):
-        yield 1
-
-    def check(self, policy, report):
-        return {'ready': True}
 
 
 def _canonical(value):
@@ -87,129 +72,46 @@ def _write_private(path, raw):
     os.replace(temporary, path)
 
 
-class WikiDbProvenance(unittest.TestCase):
+class WikiDbProvenance(FixtureCase):
     # -- install -----------------------------------------------------------------
     def setUp(self):
-        home = Path(os.environ.get('HOME', '')).resolve()
-        account = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
-        if (home == account or account in home.parents
-                or os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1'
-                or not os.environ.get('MEMVANE_TEST_RUNTIME_ROOT')):
-            self.fail('run through wiki-db-provenance.test.mjs: temporary HOME and fixture guards required')
-        from memvane.settings import config as settings_config
-        self.home = home
-        self.project = home / 'project'
-        self.project.mkdir(mode=0o700)
-        self.git('init', '-q')
-        self.git('commit', '--allow-empty', '-qm', 'fixture')
-        time.sleep(1.1)  # Git racy-index window before the first checkout capture.
-        self.raw_name, _wiki_name = settings_config.minimal_collection_names(SETTINGS_NAME)
-        folder = self.project / '.memvane'
-        self.wiki = folder / 'wiki'
-        (self.wiki / 'concepts').mkdir(parents=True)
-        (folder / 'settings.json').write_text(
-            json.dumps({'name': SETTINGS_NAME, 'skipPaths': []}) + '\n', encoding='utf-8')
-        notes = self.project / 'notes'
-        notes.mkdir()
-        anchor_note = notes / 'anchor.md'
-        anchor_note.write_text('The emerald heron nests beside the north pond.\n', encoding='utf-8')
-        self.source = notes / 'heron-source.md'
-        self.source.write_text('At dawn the emerald heron fishes in the shallow reeds.\n',
-                               encoding='utf-8')
-        self.write_anchor(anchor_note)
+        super().setUp()
+        self.fixture = make_project(self.home, name=SETTINGS_NAME)
+        self.fixture.commit('fixture', everything=False)  # an empty commit: nothing tracked
+        self.project, self.wiki, self.raw_name = self.fixture.root, self.fixture.wiki, self.fixture.raw_name
+        anchor_note = self.fixture.write_note(
+            'notes/anchor.md', 'The emerald heron nests beside the north pond.\n')
+        self.source = self.fixture.write_note(
+            'notes/heron-source.md', 'At dawn the emerald heron fishes in the shallow reeds.\n')
+        self.fixture.write_card(ANCHOR_REL, title='Emerald heron', sources=[anchor_note],
+                                body='The emerald heron nests beside the north pond.\n')
         self.card = self.wiki / CARD_REL
-        self.state = home.joinpath('.local', 'state', 'memvane', 'v1', 'installs', INSTALL_ID)
-        self.log = home / 'verify-log.jsonl'
-        stack = ExitStack()
-        self.addCleanup(stack.close)
-        self.patch_host(stack)
-        self.onboard()
-        self.settle()
-
-    def git(self, *args):
-        base = ['git', '-C', str(self.project), '-c', 'init.defaultBranch=main',
-                '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=' + os.devnull,
-                '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid']
-        subprocess.run(base + list(args), check=True, capture_output=True, timeout=30)
-
-    def revision(self, path):
-        from memvane.wiki.card import api as card
-        snapshot = card.snapshot_bytes(path)
-        self.assertIsNotNone(snapshot)
-        return {'kind': 'file', 'path': path.relative_to(self.project).as_posix(),
-                'collection': self.raw_name, **snapshot[0]}
-
-    def write_anchor(self, note):
-        from memvane.wiki.card import api as card
-        line = card.dump_source_revisions([self.revision(note)])[0]
-        text = ('---\ntitle: "Emerald heron"\nstatus: verified\ncreatedBy: memvane\n'
-                'sourceRevisions:\n  - ' + line + '\n---\n# Emerald heron\n'
-                'The emerald heron nests beside the north pond.\n')
-        text = text.replace('createdBy: memvane\n', 'createdBy: memvane\nverifiedBodyHash: '
-                            + card.card_body_hash(text) + '\n', 1)
-        (self.wiki / ANCHOR_REL).write_text(text, encoding='utf-8')
-
-    def patch_host(self, stack):
-        if getattr(self, 'fake', None) is None:
-            from tests.support.fake_provider import FixtureProvider
-            self.fake = FixtureProvider(DIMENSION).install(self)
-        verdict = {'verdict': 'pass', 'claims': [{'claim': 'The emerald heron fishes at dawn.'}],
-                   'reasons': []}
-        attempt = {'engine': 'claude', 'argv': ['synthetic-verifier'], 'mode': 'cross-engine',
-                   'key': 'claude'}
-        for target, value in (
-                ('memvane.wiki.verify.wiki_verify_worker.plan_verify_attempts',
-                 lambda *_a, **_k: ([attempt], 'prefer', None)),
-                ('memvane.wiki.engines.api.run_extractor', lambda *_a, **_k: (copy.deepcopy(verdict), None, 0)),
-                ('memvane.wiki.verify.wiki_verify_worker.reindex_wiki', lambda *_a, **_k: None),
-                ('memvane.wiki.verify.wiki_verify_worker.wake_pending_retirement',
-                 lambda *_a, **_k: None)):
-            stack.enter_context(mock.patch(target, value))
-
-    def onboard(self):
-        from memvane.install.application import onboarding_workflow as workflow
-        from memvane.app import setup_activation as activation
-        from memvane.journal.api import select_route
-        plan = workflow.plan_fresh_wiki_origin(self.project)
-        self.assertEqual(plan['status'], 'review_required', plan)
-        prepared = workflow.prepare_fresh_wiki_origin(
-            project_root=str(self.project), plugin_root=str(ROOT), state_root=str(self.state),
-            expected_proposal_sha256=plan['proposalSha256'], install_id=INSTALL_ID,
-            accepted_provider_sha256=REVIEW_SHA, dimension=DIMENSION, provider=self.fake)
-        self.assertEqual(prepared['status'], 'initial_build_registered', prepared)
-        results = []
-        for _ in range(BUILD_PASSES):
-            results.append(self.run_worker())
-            if results[-1].get('buildPhase') == 'ready':
-                break
-        else:
-            self.fail('initial build not ready: %r' % results)
-        finalized = activation.finalize_initial_build(project_root=str(self.project),
-                                                    state_root=str(self.state))
-        self.assertEqual(finalized['status'], 'initial_build_finalized', finalized)
-        from memvane.install import api as install
-        route = (self.state / 'route.json').read_bytes()
-        with install.install_lock(self.state):
-            selected = install.activate_origin_selection(self.project, self.state / 'journal.sqlite',
-                                                         route)
-        self.assertEqual(selected['status'], 'selected', selected)
-        self.decision = select_route(str(self.project), action='recall')
-        self.assertEqual(self.decision.get('state'), 'candidate', self.decision)
-        self.journal = Path(self.decision['journalPath'])
-        self.store_path = Path(self.decision['storePath'])
+        self.log = self.home / 'verify-log.jsonl'
+        self.engines = FakeEngines({'verify': VERDICT}).install(self)
+        # Fixture runs queue no runtime wake (``runtime.api.request`` answers None there);
+        # the verify worker's selected sync wake is recorded instead.
+        self.wakes = []
+        wake = mock.patch('memvane.runtime.api.request',
+                          lambda kind, target='', **_kw: self.wakes.append((kind, target)) or {'status': 'queued'})
+        wake.start()
+        self.addCleanup(wake.stop)
+        self.target = build_install(self, self.fixture, install_id=INSTALL_ID)
+        self.state, self.decision = self.target.state, self.target.decision
+        self.journal, self.store_path = self.target.journal, self.target.store_path
         self.intents = self.journal.parent / 'provenance-intents'
         with self.db() as db:
             self.assertEqual(db.execute('SELECT schema_version FROM store_meta').fetchone()[0], 4)
+        self.settle()
+
+    def revision(self, path):
+        return self.fixture.revision(path)
 
     # -- passes ------------------------------------------------------------------
     def run_worker(self):
-        from memvane.sync import product_sync_worker as worker
-        return worker.run(self.project, coordinator=_Coordinator(), report={},
-                          start_service=self.fake.start_service)
+        return self.target.run_sync()
 
     def epoch(self):
-        from memvane.journal.api import inspect_journal
-        return inspect_journal(self.journal)['epoch']
+        return self.target.epoch()
 
     def sync(self):
         result = self.run_worker()
@@ -218,18 +120,14 @@ class WikiDbProvenance(unittest.TestCase):
 
     def settle(self):
         """Run passes until one changes nothing: no journal fence, unchanged view."""
-        results = []
-        for _ in range(SETTLE_PASSES):
-            before = self.epoch()
-            results.append(self.run_worker())
-            if results[-1].get('state') == 'unchanged' and self.epoch() == before:
-                return results[-1]
-        self.fail('sync passes did not settle: %r' % results)
+        return self.target.settle()
+
+    def db(self):
+        return self.target.db()
 
     # -- compile and verify ----------------------------------------------------------
     def compile_card(self):
         """The compile step's outputs: a generated card and the job's observed fingerprints."""
-        from memvane.wiki.card import api as card
         from memvane.wiki.compile import wiki_compile_worker as compiler
         from memvane.wiki.workspace import api as workspace
         checkout = workspace.schema3_checkout(workspace.selected(self.project))
@@ -239,11 +137,8 @@ class WikiDbProvenance(unittest.TestCase):
         observed = compiler.source_fingerprints(self.project, checkout, capture, [revision], time.time_ns())
         first = observed['fingerprints'][0]
         fingerprints = dict(observed, scanId=first['scan_id'], observedNs=first['observed_ns'])
-        line = card.dump_source_revisions([revision])[0]
-        self.card.write_text(
-            '---\ntitle: "Heron at dawn"\nstatus: generated\ncreatedBy: memvane\n'
-            'sourceRevisions:\n  - ' + line + '\n---\n# Heron at dawn\n'
-            'At dawn the emerald heron fishes in the shallow reeds.\n', encoding='utf-8')
+        self.fixture.write_card(CARD_REL, title='Heron at dawn', sources=[self.source], status='generated',
+                                body='At dawn the emerald heron fishes in the shallow reeds.\n')
         self.job = {'targetPath': self.card.relative_to(self.project).as_posix(), 'engine': 'codex',
                     'sources': [{'kind': 'file', 'path': revision['path'], 'collection': self.raw_name}],
                     'sourceRevisions': [revision], 'sourceFingerprints': fingerprints,
@@ -256,7 +151,9 @@ class WikiDbProvenance(unittest.TestCase):
         from memvane.settings import api as settings
         from memvane.wiki.verify import wiki_verify_worker as verifier
         config = settings.load_project_config(str(self.project))
-        return verifier.process_verify_job(self.project, config, {}, {}, copy.deepcopy(self.job), self.log)
+        compile_cfg = config['compile']  # the verify worker's own inputs (``wiki_verify_worker.main``)
+        return verifier.process_verify_job(self.project, config, compile_cfg, compile_cfg.get('verify', {}),
+                                           copy.deepcopy(self.job), self.log)
 
     def verify_log(self):
         return self.log.read_text(encoding='utf-8') if self.log.exists() else ''
@@ -297,12 +194,6 @@ class WikiDbProvenance(unittest.TestCase):
         return result
 
     # -- store observation -----------------------------------------------------------
-    def db(self):
-        from memvane.kernel.errors import _query_only_uri
-        connection = sqlite3.connect(_query_only_uri(self.store_path), uri=True)
-        connection.execute('PRAGMA query_only=ON')
-        return closing(connection)
-
     def observe(self):
         with self.db() as db:
             heads = db.execute('SELECT g.gen_id,h.epoch FROM s_heads h JOIN s_generations g '
