@@ -36,7 +36,7 @@ test("wiki-dedup-resolver agent: workflow block has the run-lock, plugin-root re
   const block = workflowBlock(agent, "agents/wiki-dedup-resolver.md");
   assert.match(block, /dedup-resolve-lock/);
   assert.match(block, /CLAUDE_PLUGIN_ROOT/);
-  assert.match(block, /wiki_dedup_resolve\.py/);
+  assert.match(block, /entry\/run\.py" wiki-dedup-resolve/);
   assert.match(block, /STOP the whole run/);
   assert.match(block, /--delete/);
 });

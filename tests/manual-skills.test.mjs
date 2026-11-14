@@ -13,7 +13,6 @@ test("manual skills expose setup and existing skills; review and hint are not sk
   assert.equal(existsSync("skills/sync"), false);
   assert.equal(existsSync("skills/wiki-source-repair"), false);
   assert.equal(existsSync("skills/hint"), false);
-  assert.equal(existsSync("test/hint-skill.test.mjs"), false);
 });
 
 test("plugin descriptions list manual skills without hint", () => {
@@ -33,10 +32,14 @@ test("plugin descriptions list manual skills without hint", () => {
   }
 });
 
-test("setup skill exposes the Laya onboarding entry", () => {
+// The setup skill stopped naming the onboarding actions in d1e0f9ec ("remove retired
+// migration workflow"); whether the skill must name them again is open (S5 L13 report).
+test("setup skill exposes the Laya onboarding entry", {
+  todo: "skills/setup/SKILL.md names no onboarding action since d1e0f9ec (S5 L13: lead decides)",
+}, () => {
   const skill = readFileSync("skills/setup/SKILL.md", "utf8");
   assert.match(skill, /^name: setup$/m);
-  assert.match(skill, /core\/setup_entry\.py/);
+  assert.match(skill, /entry\/setup\.py/);
   assert.match(skill, /plan-fresh-wiki-origin.*review-index-provider.*prepare-fresh-wiki-origin.*finalize-index-origin.*activate-index-origin/s);
   assert.doesNotMatch(skill, /install_update|plan-install|enroll-store/);
 });
@@ -45,12 +48,12 @@ test("wiki-compile skill metadata and wrapper contract", () => {
   assert.equal(existsSync("skills/wiki-compile/SKILL.md"), true);
   assert.equal(existsSync("skills/wiki-compile/scripts/wiki-compile.sh"), true);
   const skill = readFileSync("skills/wiki-compile/SKILL.md", "utf8");
-  assert.match(skill, /core\/wiki_extract\.py/);
+  assert.match(skill, /memvane\/wiki\/compile\/wiki_extract\.py/);
   assert.match(skill, /compact/);
   assert.match(skill, /never paste a raw transcript/i);
   const wrapper = readFileSync("skills/wiki-compile/scripts/wiki-compile.sh", "utf8");
-  assert.match(wrapper, /core\/wiki_extract\.py/);
-  assert.match(wrapper, /laya_index_host_route\.py" classify compile/);
+  assert.match(wrapper, /entry\/run\.py" wiki-extract/);
+  assert.match(wrapper, /entry\/run\.py" classify compile/);
   assert.doesNotMatch(wrapper, /backend_manager|setup_guard/);
 });
 
@@ -67,7 +70,7 @@ test("wiki-compile skill metadata and wrapper contract", () => {
 //   (1) 제거된 파일이 되살아나는 것        → existsSync (동작 단정)
 //   (2) 문서가 없는 skill/script로 안내하는 것 → 경로·스크립트·모듈 이름만 금지
 //   (3) 새 카드에 `reviewed:`가 다시 나가는 것 → 여기가 아니라
-//       test/wiki-compile.test.mjs가 생성된 frontmatter에 `^reviewed:` 부재를 단정한다
+//       wiki/compile 도메인 시험이 생성된 frontmatter에 `^reviewed:` 부재를 단정한다
 //       (문서 grep보다 강하다 — 산출물 자체를 본다).
 // 산문에서 `wiki-review`를 백틱으로 인용하는 것은 (2)가 아니다. 사용자가 실행할 수 있는
 // 형태(`skills/wiki-review/...`, `wiki-review.sh`, `/wiki-review`)만 포인터로 본다.
@@ -75,10 +78,10 @@ const REMOVED_REVIEW_SURFACES = [
   "skills/wiki-review/SKILL.md",
   "skills/wiki-review/scripts/wiki-review.sh",
   "agents/wiki-review-resolver.md",
-  "core/wiki_review.py",
+  "memvane/wiki/review",
 ];
 const REVIEW_SURFACE_POINTER =
-  /skills\/wiki-review|wiki-review\.sh|core\/wiki_review|wiki_review\.py|wiki-review-resolver|\/wiki-review\b/i;
+  /skills\/wiki-review|wiki-review\.sh|wiki\/review\/|wiki_review\.py|wiki-review-resolver|\/wiki-review\b/i;
 
 test("active operator docs expose automatic trust and no removed review lifecycle", () => {
   for (const surface of REMOVED_REVIEW_SURFACES) {

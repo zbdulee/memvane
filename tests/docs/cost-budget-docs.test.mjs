@@ -9,16 +9,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const DOC = readFileSync('docs/settings.md', 'utf8');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const DOC = readFileSync(join(ROOT, 'docs', 'settings.md'), 'utf8');
 
+// `python3 -c` puts its cwd (the repository root) first on sys.path.
 function pyJson(expr) {
-  const out = execFileSync('python3', ['-c', `import sys, json
-sys.path.insert(0, ${JSON.stringify(resolve('.'))})
-import memvane.settings.config as c
+  const out = execFileSync('python3', ['-B', '-c', `import json
+import memvane.settings.types as c
 print(json.dumps(${expr}))
-`], { cwd: process.cwd(), encoding: 'utf8' });
+`], { cwd: ROOT, encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
   return JSON.parse(out.trim());
 }
 
