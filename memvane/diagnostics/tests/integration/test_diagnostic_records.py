@@ -18,6 +18,24 @@ class DiagnosticRecordTests(FixtureCase):
     def rows(self, path):
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
 
+    def test_strict_read_propagates_state_and_io_failures_but_allows_absence(self):
+        self.assertTrue(api.emit('gate', state_root=self.state, outcome='ok'))
+        with patch.object(event_log, 'open_state_dir', side_effect=PermissionError('denied')):
+            with self.assertRaises(PermissionError):
+                event_log.read(self.state, strict=True)
+        for syscall in ('lseek', 'read'):
+            with self.subTest(syscall=syscall), \
+                 patch.object(event_log.os, syscall, side_effect=OSError('synthetic I/O')):
+                with self.assertRaises(OSError):
+                    event_log.read(self.state, strict=True)
+        empty = self.tmp / 'empty-state'
+        empty.mkdir(mode=0o700)
+        self.assertEqual(event_log.read(empty, strict=True), [])
+        rotated = empty / (event_log.NAME + '.1')
+        rotated.write_bytes((self.state / event_log.NAME).read_bytes())
+        rotated.chmod(0o600)
+        self.assertEqual([row['event'] for row in event_log.read(empty, strict=True)], ['gate'])
+
     def test_concurrent_successful_appends_survive_rotation(self):
         import subprocess
         import sys
