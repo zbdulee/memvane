@@ -43,3 +43,43 @@ class BackfillWorkerBoundary(FixtureCase):
         self.assertFalse(marker.exists(), 'changed bytes reached the extractor')
         progress = backfill.summary(backfill._load(decision))
         self.assertEqual((progress['state'], progress['skipped']), ('complete_with_skips', 1))
+
+    def test_changed_install_scope_or_incarnation_never_invokes_extractor(self):
+        import copy
+        import json
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'frozen source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        decision = install.select()
+        revision = hashlib.sha256(source.read_bytes()).hexdigest()
+        snapshot = {project.raw_name + '/docs/note.md': revision}
+        config = expanded(project, compile={'mode': 'auto-wiki',
+                          'triggers': ['post_sync_source'], 'extractor': {'builtins': ['codex']}})
+        row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'codex'})
+        backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        job = json.loads(queue.read_text().splitlines()[0])
+        job.pop('initialBackfill')
+        marker = self.home / 'extractor-was-called'
+        fake = self.home / 'fake-extractor'
+        fake.write_text('#!/usr/bin/env python3\nimport os\nopen(os.environ["FIXTURE_MARKER"], "w").write("called")\nprint("{}")\n')
+        fake.chmod(0o700)
+        root = Path(__file__).resolve().parents[5]
+        env = {**os.environ, 'QMD_ENGINE': 'codex', 'FIXTURE_MARKER': str(marker),
+               'QMD_EXTRACTOR_CODEX_BIN': str(fake), 'QMD_EXTRACTOR_CLAUDE_BIN': str(fake),
+               'QMD_EXTRACTOR_HERMES_BIN': str(fake)}
+        for field in ('installId', 'scopeId', 'storeIncarnation'):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(job)
+                changed['selectedRoute'][field] = 'f' * 32
+                queue.write_text(json.dumps(changed) + '\n')
+                child = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'),
+                                        'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all'],
+                                       cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
+                self.assertEqual(child.returncode, 0, child.stderr)
+                self.assertFalse(marker.exists(), 'mismatched route reached the extractor')
+                candidates = project.root / '.memvane/compile/candidates.jsonl'
+                self.assertIn('selected_route_identity_changed', candidates.read_text())
+        self.assertEqual(backfill.summary(backfill._load(decision))['dispatched'], 1)
