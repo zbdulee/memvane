@@ -57,16 +57,3 @@ def is_denied_source_path(rel_path: str) -> bool:
     """True when any path segment is a denied directory name."""
     return any(part in DENIED_SOURCE_SEGMENTS for part in PurePosixPath(rel_path).parts)
 
-
-def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
-    """Search-time filter: every wiki-root meta page, whatever it holds.
-
-    A nested ``log.md``/``index.md``/``SCHEMA.md`` is an ordinary wiki card.
-    ``body`` is unused; the index stage alone keeps its header test (a root
-    ``log.md`` without the generated header stays indexed, so the generation
-    digest does not change).
-    """
-    if len(wiki_roots) != 1:
-        return False
-    name = next(iter(wiki_roots))
-    return path.startswith(name + '/') and is_wiki_meta_page(path[len(name) + 1:])

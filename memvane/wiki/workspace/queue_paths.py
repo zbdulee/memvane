@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import fcntl
 from pathlib import Path
-from memvane.settings import api as project_dir
+from memvane.settings import types as project_types
 from memvane.wiki.workspace import compile_paths as cp
 
 
@@ -14,7 +14,7 @@ def _safe_queue_path(project_root, configured_path=None):
     rel = Path(configured_path)
     if rel.is_absolute() or ".." in rel.parts:
         return None
-    if (len(rel.parts) < 3 or not project_dir.is_folder_name(rel.parts[0])
+    if (len(rel.parts) < 3 or rel.parts[0] != project_types.CURRENT
             or rel.parts[1] != "compile"):
         return None
     root = Path(project_root).resolve()

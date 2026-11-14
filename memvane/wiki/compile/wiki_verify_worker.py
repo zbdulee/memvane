@@ -59,8 +59,7 @@ from memvane.wiki.verify.api import _supersede_compile_intent, compile_intent_id
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
-from memvane.settings import api as project_dir
-from memvane.settings.api import _config as qmd_config
+from memvane.settings import api as qmd_config, types as settings_types
 from memvane.wiki.compile.api import _operations as wc
 from memvane.wiki.compile.api import _operations as wcw
 from memvane.wiki.engines import api as engines
@@ -150,7 +149,7 @@ def plan_verify_attempts(
     """
     pool = verify_engine_pool(compile_cfg, vcfg)
     mode = vcfg.get("crossEngine", "off")
-    if mode not in qmd_config.VERIFY_CROSS_ENGINE:
+    if mode not in settings_types.VERIFY_CROSS_ENGINE:
         mode = "off"
     cooled = set(cooled)
 
@@ -160,7 +159,7 @@ def plan_verify_attempts(
     if producing and producing in extractor_builtins(compile_cfg) and producing not in resolve_builtins:
         resolve_builtins.append(producing)
     producing_attributable = bool(
-        producing and producing != qmd_config.UNKNOWN_ENGINE
+        producing and producing != settings_types.UNKNOWN_ENGINE
         and engines.resolve_extractor_argv(compile_cfg, producing, builtins=resolve_builtins) is not None
     )
     if mode == "off" and not producing_attributable:
@@ -185,11 +184,11 @@ def plan_verify_attempts(
             skipped_cooling += 1
             continue
         if not producing_attributable:
-            attempt_mode = qmd_config.VERIFIED_MODE_UNKNOWN
+            attempt_mode = settings_types.VERIFIED_MODE_UNKNOWN
         elif engine == producing:
-            attempt_mode = qmd_config.VERIFIED_MODE_SELF
+            attempt_mode = settings_types.VERIFIED_MODE_SELF
         else:
-            attempt_mode = qmd_config.VERIFIED_MODE_CROSS
+            attempt_mode = settings_types.VERIFIED_MODE_CROSS
         attempts.append({"engine": engine, "argv": primary, "mode": attempt_mode, "key": engine})
     if attempts:
         return attempts, mode, ""
@@ -518,7 +517,7 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
             os.close(directory)
     except OSError:
         return 'retry'
-    wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
+    wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
     workspace_files.activity_log.append(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
                              str(pending_meta.get('title') or live_target.stem),
                              reason='pending_publish')
@@ -808,7 +807,7 @@ def _supersede_job_intent(root, config, job, target, decision):
         return
     from memvane.journal import api as ledger
     try:
-        wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
+        wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
         from memvane.store.api import regular as _regular
         from memvane.store.types import MAX_BODY
         card, _, _ = _regular(wiki_root, target.relative_to(wiki_root).as_posix(), MAX_BODY)
@@ -888,7 +887,7 @@ def apply_verify_verdict_locked(
                 capture, gate_reason = _provenance_gate(job, checkout)
                 if capture is not None:
                     from memvane.store import api as values
-                    wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
+                    wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
                     live_target = (root / job['targetPath']).resolve()
                     result = dict(cardSha=hashlib.sha256(rendered.encode('utf8')).hexdigest(),
                                   viewId=capture['viewId'],
@@ -967,7 +966,7 @@ def process_verify_job(
     if not isinstance(rel, str) or not rel:
         log_verdict(log_path, {**base_record(job), "result": "skipped", "reason": "missing_target_path"})
         return True, False
-    wiki_root = (root / config.get("wikiPath", project_dir.wiki_rel(root))).resolve()
+    wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
     live_target = root / rel
     if live_target.is_symlink():
         log_verdict(log_path, {**base_record(job), 'result': 'skipped',
@@ -1174,7 +1173,7 @@ def process_verify_job(
         # 식힘 중인 후보를 판정 줄에도 남긴다 — `self` 통과가 "다른 엔진이 없어서"인지
         # "다른 엔진이 실패해서 degrade한 것"인지 이 필드 없이는 구분되지 않는다.
         "enginesCooling": sorted(cooled),
-        "_qmd": {"reasoningEffort": qmd_config.reasoning_effort_audit(
+        "_qmd": {"reasoningEffort": engines.reasoning_effort_audit(
             parsed.get("_qmd", {}).get("reasoningEffort") if isinstance(parsed, dict) and isinstance(parsed.get("_qmd"), dict) else {},
             payload.get("_qmd", {}).get("reasoningEffort", {}).get("requested"),
             capability_declared=payload.get("_qmd", {}).get("reasoningEffort", {}).get("capabilityDeclared") is True,
@@ -1334,7 +1333,7 @@ def apply_negative_verdict(
             log_verdict(log_path, {**record, 'result': 'pending_deleted',
                                    'suppressedSources': suppressed})
             return True
-        wiki_root = (root / config.get("wikiPath", project_dir.wiki_rel(root))).resolve()
+        wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
         workspace_files.activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  dead_title, reason='verify_retire')
         record_machine_delete(root, compile_cfg, record, verdict)
@@ -1410,7 +1409,7 @@ def _valid_cleanup_marker(job: dict) -> bool:
 def _pending_snapshots(root: Path, config: dict, rows: list) -> tuple[dict, dict]:
     """Snapshot only explicitly queued pending files while card writers are excluded."""
     root = root.resolve()
-    wiki = root / config.get('wikiPath', project_dir.wiki_rel(root))
+    wiki = root / config.get('wikiPath', settings_types.WIKI_REL)
     if not wiki.is_absolute() or wiki.resolve() != wiki or not wiki.is_relative_to(root):
         return {}, {}
     found, jobs, saved, conflicts = {}, {}, {}, set()
@@ -1612,10 +1611,10 @@ def run(
     kept = _dedup_by_target([(raw, job) for raw, job in rows
                               if not isinstance(job, dict) or '_pendingCleanup' not in job], root)
     max_per_run = max(1, min(
-        int(wcw.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), qmd_config.MAX_VERIFY_PER_RUN
+        int(wcw.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), settings_types.MAX_VERIFY_PER_RUN
     ))
     produced = {t for t in (produced_targets or []) if isinstance(t, str) and t}
-    budget = max(max_per_run, min(len(produced), qmd_config.VERIFY_PRODUCED_HARD_CAP))
+    budget = max(max_per_run, min(len(produced), settings_types.VERIFY_PRODUCED_HARD_CAP))
     # 이 run이 만든 카드 먼저, 그 다음 backlog. 큐 순서를 바꾸는 것이 아니라 **처리 순서**만
     # 정한다(`kept`는 이미 `_dedup_by_target`가 targetPath별 latest-wins로 재구성한 목록이고
     # FIFO는 계약이 아니다). 처리되지 않은 줄은 전부 `remaining`으로 되돌아가므로 유실이 없다.
@@ -1692,7 +1691,7 @@ def run(
     result["backlogProcessed"] = len(take_backlog)
     # 모델 출력이 예산을 밀어올리려다 상한에 걸린 사실은 관측 가능해야 한다 — 이 줄이 없으면
     # "카드를 40장 만들었는데 30장만 검수됐다"가 조용한 상태로 남는다.
-    if len(produced) > qmd_config.VERIFY_PRODUCED_HARD_CAP:
+    if len(produced) > settings_types.VERIFY_PRODUCED_HARD_CAP:
         result["producedCapped"] = len(produced)
     return result
 

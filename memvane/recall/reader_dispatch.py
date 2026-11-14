@@ -174,6 +174,21 @@ def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline,
         decision=decision, provider=provider, authority=authority, linked=linked)
 
 
+def auxiliary_wiki_row(path: str, body: str, wiki_roots) -> bool:
+    """Search-time filter: every wiki-root meta page, whatever it holds.
+
+    A nested ``log.md``/``index.md``/``SCHEMA.md`` is an ordinary wiki card.
+    ``body`` is unused; the index stage alone keeps its header test (a root
+    ``log.md`` without the generated header stays indexed, so the generation
+    digest does not change).
+    """
+    from memvane.settings.api import is_wiki_meta_page
+    if len(wiki_roots) != 1:
+        return False
+    name = next(iter(wiki_roots))
+    return path.startswith(name + '/') and is_wiki_meta_page(path[len(name) + 1:])
+
+
 def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,snapshot,decision,
                              provider,authority,linked=None):
     """Read the journal-selected schema3 endpoint at its current view head.
@@ -216,7 +231,6 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     from memvane.recall.types import HYBRID_LIST_LIMIT
     from memvane.recall.domain.rules import _fuse_verified_lists, _hybrid_fts_queries, _fail
     from memvane.route.api import wiki_index_roots
-    from memvane.settings.api import auxiliary_wiki_row
     from memvane.store.types import BlobStoreError
     from memvane.store.types import DEFERRED
     from memvane.store import api as store_api

@@ -278,7 +278,7 @@ def run(cwd: str) -> dict:
         log("SKIP: no selected memvane-db route")
         return result
     decision = bound[0]
-    wiki_root = safe_managed_dir(root, config.get("wikiPath", project_dir.wiki_rel(root)))
+    wiki_root = safe_managed_dir(root, config.get("wikiPath", settings_types.WIKI_REL))
     selected_wiki = next(item["sourceRoot"] for item in decision["collections"]
                          if item["role"] == "wiki")
     if wiki_root is None or str(wiki_root.resolve()) != selected_wiki:

@@ -8,68 +8,24 @@ from pathlib import Path
 from memvane.settings import project_dir
 from memvane.settings.types import (DEFAULT_CONFIG, DEDUP_AUTO_MERGE_THRESHOLD,
                                     VERIFIED_MODE_CROSS, VERIFIED_MODE_SELF,
-                                    VERIFIED_MODE_UNKNOWN, VERIFIED_MODES)
+                                    VERIFIED_MODE_UNKNOWN, VERIFIED_MODES,
+                                    COLLECTION_ROLE_RAW, COLLECTION_ROLE_WIKI,
+                                    COLLECTION_ROLE_SESSION, COLLECTION_ROLE_SOURCE,
+                                    COLLECTION_ROLES, COLLECTION_ROLE_INVALID,
+                                    DEFAULT_COLLECTION_ROLE, INDEXED_ROLES,
+                                    RECALL_RAW_ROLES, COMPILE_SOURCE_ROLES,
+                                    MAX_COMPILE_PER_RUN, MAX_CARDS_PER_SOURCE,
+                                    MAX_VERIFY_PER_RUN, VERIFY_PRODUCED_HARD_CAP,
+                                    WIKI_STATUSES, DEDUP_SCORE_THRESHOLD, DEDUP_TOP_K,
+                                    DEDUP_SIMILAR_PAGE_MAX_CHARS,
+                                    DEDUP_GROUNDING_MAX_CHARS, VERIFY_CROSS_ENGINE,
+                                    CROSS_ENGINE_MODES, VERIFY_PROOF_FIELDS,
+                                    UNKNOWN_ENGINE, REASONING_EFFORTS)
 
 
 # The project folder is `.memvane/` (project_dir).
 CONFIG_DIR_NAME = project_dir.CURRENT
 SETTINGS_FILE_NAME = "settings.json"
-
-# ---------------------------------------------------------------------------
-# Collection roles (SSOT)
-#
-# 네 role은 **두 축의 조합**이다: qmd 인덱스에 등록되는가(=recall 대상), wiki compile의
-# 입력이 되는가. `source`는 "compile 입력이지만 인덱싱·recall 대상 아님"을 표현하기 위해
-# 도입됐다(로드맵 7단계) — raw를 인덱스에서 빼면서도 그 문서로 카드를 계속 만들기 위한
-# 선행 작업이다.
-#
-#   role      | qmd 등록/인덱싱/recall | compile 입력 | hierarchical raw backfill
-#   ----------|------------------------|--------------|--------------------------
-#   raw       | O                      | O            | O
-#   session   | O                      | O            | O
-#   wiki      | O                      | X            | X (wiki phase에서 먼저 질의)
-#   source    | X                      | O            | X
-#   (미지 값) | X                      | X            | X  ← fail-closed, 아래 참고
-#
-# 판정을 `roles.get(c) != "wiki"` 같은 **여집합**으로 쓰지 말 것. 세 번째 값이 들어오는
-# 순간 그 지점 전부가 오분류한다. 아래 집합과 헬퍼(`collection_role` 외)를 쓴다.
-COLLECTION_ROLE_RAW = "raw"
-COLLECTION_ROLE_WIKI = "wiki"
-COLLECTION_ROLE_SESSION = "session"
-COLLECTION_ROLE_SOURCE = "source"
-COLLECTION_ROLES = frozenset({
-    COLLECTION_ROLE_RAW,
-    COLLECTION_ROLE_WIKI,
-    COLLECTION_ROLE_SESSION,
-    COLLECTION_ROLE_SOURCE,
-})
-# **키 없음과 값 미지를 구분한다.**
-#   키 없음  → `raw`(role 도입 전 동작). 하위호환이므로 fail-open이 맞다.
-#   값 미지  → `invalid` 센티널. 어떤 집합에도 속하지 않아 인덱싱·recall·compile에서
-#              전부 빠진다(fail-closed).
-# 구분하는 이유: 키가 있다는 것은 **사용자가 무언가를 의도했는데 우리가 못 읽었다**는
-# 뜻이다. 거기서 `raw`로 fail-open하면 `"sourse"` 오타 하나가 "색인 제외"를 실제 색인으로
-# 뒤집어 사용자 데이터가 의도치 않게 인덱싱된다(실측: `collection add`가 그대로 실행됐다).
-# 이 센티널은 **설정 값이 아니다** — `COLLECTION_ROLES`에 넣지 말 것. 대신
-# `collection_role_map`이 미지 값을 이 값으로 정규화해 raw settings와 normalize된
-# config가 **같은 판정**을 내게 한다(예전엔 normalize가 미지 항목을 통째로 버려
-# "키 없음"으로 보였고, 그래서 recall/index_enqueue 같은 정규화 소비자에서만 fail-open이
-# 되살아났다). fail-closed는 조용하면 안 되므로 종점은 `invalid_role_collections` →
-# `update.sh`의 SessionStart notice다.
-COLLECTION_ROLE_INVALID = "invalid"
-DEFAULT_COLLECTION_ROLE = COLLECTION_ROLE_RAW
-# qmd `collection add`/`update`/`embed`, dirty queue, recall 질의 대상.
-INDEXED_ROLES = frozenset({COLLECTION_ROLE_RAW, COLLECTION_ROLE_WIKI, COLLECTION_ROLE_SESSION})
-# hierarchical raw backfill / flat recall의 non-wiki 대상(= 인덱싱되는 non-wiki).
-RECALL_RAW_ROLES = frozenset({COLLECTION_ROLE_RAW, COLLECTION_ROLE_SESSION})
-# wiki compile source가 될 수 있는 role.
-COMPILE_SOURCE_ROLES = frozenset({
-    COLLECTION_ROLE_RAW,
-    COLLECTION_ROLE_SESSION,
-    COLLECTION_ROLE_SOURCE,
-})
-# ---------------------------------------------------------------------------
-
 
 # injectSummaryMaxChars 상한. 이 값은 카드 파일 읽기 창까지 키우므로(recall의
 # wiki_card_read_limit) 상한 없이 두면 사용자 설정이 blocking hook의 I/O·CPU 예산을
@@ -87,82 +43,17 @@ MAX_INJECT_SOURCE_PATHS_PER_CARD = 10
 # 코퍼스보다 크면 `rotate`가 전량을 돌려주므로 이 상한은 "전량 스캔"을 막지 않는다.
 MAX_SOURCE_SCAN_CARDS = 5000
 
-# 유료 host CLI 호출 수를 정하는 값들의 **상한 클램프**. 이 값들은 "설정 오류나 모델 출력이
-# 과금 규모를 정하지 못한다"를 보장하는 자리이므로 설정으로 다시 열지 않는다.
-#   - MAX_COMPILE_PER_RUN: `compile.batch.maxPerRun`(= run당 extractor 호출 수). 예전에는
-#     `99999999`도 그대로 통과해 한 run이 수만 회 호출을 시도할 수 있었다.
-#   - MAX_CARDS_PER_SOURCE: `compile.maxCardsPerSource`(= 소스당 카드 수, 모델 출력 상한).
-#   - MAX_VERIFY_PER_RUN: `compile.verify.maxPerRun`(사람이 명시한 검수 예산).
-#   - VERIFY_PRODUCED_HARD_CAP: **모델 출력에서 유도된** 검수 예산의 상한. verify 예산은
-#     `max(verify.maxPerRun, min(생산량, 이 값))`이라 사람이 적은 값은 언제나 존중되고
-#     모델이 만든 카드 수는 이 상한을 넘겨 과금을 늘릴 수 없다. 30은 기본 배치
-#     (maxPerRun 10 × 실측 카드 증폭 2.68 ≈ 27)를 덮어 정상 흐름의 즉시 검수를 유지하면서
-#     퇴화한 run(카드 200장)의 호출 폭발을 막는 값이다.
-MAX_COMPILE_PER_RUN = 50
-MAX_CARDS_PER_SOURCE = 50
-MAX_VERIFY_PER_RUN = 50
-VERIFY_PRODUCED_HARD_CAP = 30
-
 COMPILE_MODES = {"off", "candidates", "guarded", "auto-wiki"}
-WIKI_STATUSES = {"generated", "verified", "tentative", "contested", "discarded", "superseded"}
 # `compile.defaultStatus`가 받는 값. `WIKI_STATUSES` 전체가 아니다 — `verified`를
 # 넣으면 기계 검수를 거치지 않은 신규 카드가 `recallVerifiedOnly` 기본값 아래에서 곧바로
 # 캐논 근거로 인용된다(검수 파이프라인 전체를 설정 한 줄로 우회하는 구멍이었다).
 COMPILE_DEFAULT_STATUSES = {"generated", "tentative"}
 
-# --- dedup score 레버 (설정에서 상수로) ---------------------------------------
-# write-time gate의 retrieval 점수는 유사도가 아니라 순위 hint라 판정은 LLM judge가 하고
-# score는 후보 retrieval floor(`semanticDedup.candidateMinScore`)로만 남는다.
-# `DEDUP_AUTO_MERGE_THRESHOLD`는 retroactive scan(`wiki_dedup_scan`)의 후보 임계다 — 두 카드의
-# 저장된 memvane-db chunk 벡터 중심점 사이 cosine이라 실제 유사도이고, 판정은 resolver 에이전트가
-# 한다. 넷 모두 설정으로 다시 열지 않는다(`DEPRECATED_REMOVED_KEYS`의 레버 4종).
-DEDUP_SCORE_THRESHOLD = 0.82        # ← semanticDedup.threshold (write-time 레거시 게이트)
-DEDUP_TOP_K = 20                    # 관련 후보의 상한. 유료 judge 호출 예산과 독립이다.
-DEDUP_SIMILAR_PAGE_MAX_CHARS = 12000  # ← semanticDedup.similarPageMaxChars
-DEDUP_GROUNDING_MAX_CHARS = 36000    # 렌더된 기존 카드 문맥 전체(헤더/생략 표식 포함)
 # onFail과 onInconclusive가 공유하는 값 집합. "none"이 유일한 "현행 유지"(카드를
 # generated로 남김) 표현이므로, 기본값을 delete로 올려도 기존 동작을 명시 선택할 수 있다.
 VERIFY_ON_FAIL = {"delete", "contested", "none"}
-# 기계 검수 엔진 선택 정책. 기본은 현재 host의 독립 호출이며 교차 엔진은 명시 선택이다.
-#   prefer  — 다른 엔진을 먼저 시도하고, 없으면 같은 엔진으로 검증(자기검증으로 기록)
-#   require — 다른 엔진만 허용. 없으면 검증하지 않고 큐를 보존한다(카드는 generated로
-#             남아 recallVerifiedOnly 기본값 아래 recall에서 빠진다 — 단일 CLI 머신에서는
-#             wiki가 통째로 사라지므로 명시 선택만 허용한다)
-#   off     — 기본값. 카드를 만든 엔진으로 검증, host 불명확하면 다른 CLI로 폴백하지 않음
-VERIFY_CROSS_ENGINE = {"prefer", "require", "off"}
-# dedup judge(`compile.semanticDedup.judge.crossEngine`)가 **같은 어휘**를 쓴다. 값 집합을
-# 따로 두면 두 파이프라인의 정책 이름이 갈려 사용자가 한쪽만 끄게 된다. 뜻도 같다 —
-# 다만 dedup에서 `require`가 만족되지 않으면 잡 보존이 아니라 `unavailable`(레거시 score
-# 게이트로 degrade)이다: 판정 대상이 큐가 아니라 지금 쓰려는 카드이므로 보류할 자리가 없다.
-CROSS_ENGINE_MODES = VERIFY_CROSS_ENGINE
-# 카드 frontmatter `verifiedMode` = 검수 엔진과 생성 엔진의 관계. 값 집합은 코드가 정하고
-# 모델 입력이 아니다. 이 필드가 **없는** 카드는 4단계 이전에 검수된 카드로, 자기검증일
-# 가능성이 높다(실측 655/688) — 없음은 cross-engine을 뜻하지 않는다.
-# status: verified/contested와 **함께** 써야 하는 증명 필드. 리셋 시 함께 제거된다.
-# 검증 증명 필드. 리셋 경로(`wiki_compile` frontmatter merge)가 이 튜플을 보고
-# **키째 제거**하므로, 취소된 검증의
-# 잔재가 남지 않는다. `verifiedBodyHash` 도 증명이다 — 남으면 새 본문에 옛
-# 지문이 붙어 영구 불일치가 된다.
-VERIFY_PROOF_FIELDS = ("verifiedBy", "verifiedAt", "verifiedMode", "verifiedBodyHash")
-# 생성 엔진을 알 수 없을 때 큐/레코드에 쓰는 sentinel. **리터럴을 각자 들고 있으면 안 된다** —
-# `wiki_verify_worker`가 "귀속 불가"를 이 값으로 판정하므로(교차검증 주장 금지) 생산 측
-# (`wiki_compile_enqueue`·`sync`·`wiki_compile_worker`)과 같은 문자열이어야 한다. 갈려 있던
-# 동안 planner의 빈 문자열 가드가 사실상 죽은 분기였다.
-UNKNOWN_ENGINE = "unknown"
 
 
-def generation_engine_order(engine):
-    """Bounded extraction plan; a known host never falls back to another CLI.
-
-    The caller uses each entry for the real extraction itself, not a separate
-    model probe. CLI availability/authentication is decided by that actual
-    attempt. Successful provenance is recorded by the worker, never inferred
-    from this plan or the installed CLI order.
-    """
-    host = engine.strip() if isinstance(engine, str) else ""
-    if not host or host == UNKNOWN_ENGINE:
-        return ("codex", "claude", "hermes")
-    return (host,)
 COMPILE_TRIGGERS = {
     "explicit_user_approval",
     "post_session_summary",
@@ -177,7 +68,6 @@ COMPILE_TRIGGERS = {
     "manual",
 }
 BUILTIN_EXTRACTOR_ENGINES = {"claude", "codex", "hermes"}
-REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh"})
 REASONING_EFFORT_PHASES = ("generation", "verify", "semanticDedup")
 DEFAULT_REASONING_EFFORT = {
     "generation": "low",
@@ -461,21 +351,6 @@ def resolve_reasoning_effort(compile_cfg, engine, phase):
     if isinstance(engine_policy, dict) and engine_policy.get(phase) in REASONING_EFFORTS:
         return engine_policy[phase]
     return normalized[phase]
-
-
-def reasoning_effort_audit(raw, requested=None, reason="capability_not_declared", capability_declared=True):
-    """Return bounded, source-free effort audit metadata for persisted records."""
-    requested = requested if requested in REASONING_EFFORTS else None
-    if not capability_declared:
-        return {"requested": requested, "applied": None, "status": "unsupported", "reason": str(reason)[:120]}
-    value = raw if isinstance(raw, dict) else {}
-    if value.get("requested") in REASONING_EFFORTS:
-        requested = value["requested"]
-    applied = value.get("applied") if value.get("applied") in REASONING_EFFORTS else None
-    status = value.get("status") if value.get("status") in {"applied", "unsupported", "retried_without_effort"} else "unsupported"
-    if value.get("reason"):
-        reason = str(value["reason"])[:120]
-    return {"requested": requested, "applied": applied, "status": status, "reason": str(reason)[:120]}
 
 
 def collection_role_map(value, collections):

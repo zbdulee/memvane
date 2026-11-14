@@ -19,8 +19,7 @@ from memvane.kernel.paths import safe_managed_dir, read_jsonl
 from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.workspace import api as cp, types as ct
-from memvane.settings import api as project_dir
-from memvane.settings.api import _config as qmd_config
+from memvane.settings import api as qmd_config, types as settings_types
 from memvane.settings import api as source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import types as wiki_markers
@@ -460,7 +459,8 @@ def append_jsonl(path: Path, payload: dict) -> None:
 def effort_audit(candidate: dict) -> dict:
     raw = candidate.get("_qmd") if isinstance(candidate.get("_qmd"), dict) else {}
     effort = raw.get("reasoningEffort") if isinstance(raw.get("reasoningEffort"), dict) else {}
-    return {"reasoningEffort": qmd_config.reasoning_effort_audit(effort)}
+    from memvane.wiki.engines import api as engines
+    return {"reasoningEffort": engines.reasoning_effort_audit(effort)}
 
 
 def ledger_writable(path: Path) -> bool:
@@ -645,7 +645,7 @@ def yaml_scalar(value) -> str:
 
 def frontmatter_patch_scalar(key: str, value) -> str:
     text = str(value)
-    if key == "status" and text in qmd_config.WIKI_STATUSES and re.fullmatch(r"[A-Za-z0-9_-]+", text):
+    if key == "status" and text in settings_types.WIKI_STATUSES and re.fullmatch(r"[A-Za-z0-9_-]+", text):
         return text
     return yaml_scalar(value)
 
@@ -747,7 +747,7 @@ def markdown_page(candidate: dict, summary: str, status: str, redactions: list[s
     # frontmatter_patch_scalar의 status 표기 정책이 그 형태를 전제한다).
     suggested_type = candidate.get("suggestedType") if candidate.get("suggestedType") in ALLOWED_TYPES else "concept"
     confidence = candidate.get("confidence") if candidate.get("confidence") in ALLOWED_CONFIDENCE else "medium"
-    status = status if status in qmd_config.WIKI_STATUSES else "generated"
+    status = status if status in settings_types.WIKI_STATUSES else "generated"
     sources = candidate.get("sources") if isinstance(candidate.get("sources"), list) else []
     triggers = [candidate.get("trigger")] if isinstance(candidate.get("trigger"), str) else []
     canonical_key = clean_canonical_key(candidate.get("canonicalKey"))
@@ -845,7 +845,7 @@ def compose_generated_card(old_text: str, generated_page: str) -> str | None:
 
     replaced: set[str] = set()
     merged: list[str] = []
-    proof_keys = set(qmd_config.VERIFY_PROOF_FIELDS)
+    proof_keys = set(settings_types.VERIFY_PROOF_FIELDS)
     replace_sources = new_by_key["sources"] != ["sources:", "  - {kind: unknown}"]
     for key, lines in old_sections:
         # 줄 span 은 옛 본문을 검수한 verifier 인용의 위치다 — 재생성된 본문에 남기면 안 된다.
@@ -1061,7 +1061,7 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
         # card from a sibling written during an unfinished event.
         "verifiedAt": now.isoformat(
             timespec="microseconds").replace("+00:00", "Z"),
-        "verifiedMode": mode if mode in qmd_config.VERIFIED_MODES else qmd_config.VERIFIED_MODE_UNKNOWN,
+        "verifiedMode": mode if mode in settings_types.VERIFIED_MODES else settings_types.VERIFIED_MODE_UNKNOWN,
         # 검증기가 실제로 읽은 본문의 지문. **호출자가 넘긴다** — 여기서 파일을 다시 읽어
         # 계산하면 검수 중에 본문이 바뀐 경우 "검증되지 않은 새 본문"에 verified 가 찍힌다.
         # 호출자 값이면 그 경우 디스크와 불일치해 recall 이 fail-closed 로 거른다.
@@ -1085,8 +1085,8 @@ def find_wiki_collection(config: dict) -> tuple[str | None, str | None]:
     roles = qmd_config.role_map(config)
     paths = config.get("collectionPaths") if isinstance(config.get("collectionPaths"), dict) else {}
     for name in config.get("collections", []):
-        if qmd_config.is_wiki_collection(roles, name):
-            return name, paths.get(name, config.get("wikiPath", project_dir.wiki_rel()))
+        if qmd_config.collection_role(roles, name) == settings_types.COLLECTION_ROLE_WIKI:
+            return name, paths.get(name, config.get("wikiPath", settings_types.WIKI_REL))
     return None, None
 
 
@@ -1125,8 +1125,8 @@ def query_wiki_candidates(
     if selected is not None:
         return [(path, score) for path, score, _ in
                 compile_execution.wiki_matches(root, wiki_root, text,
-                    qmd_config.DEDUP_TOP_K,
-                    qmd_config.DEDUP_SIMILAR_PAGE_MAX_CHARS, bound=selected)
+                    settings_types.DEDUP_TOP_K,
+                    settings_types.DEDUP_SIMILAR_PAGE_MAX_CHARS, bound=selected)
                 if score >= min_score]
     # Only a selected memvane-db index answers similarity; anything else has none.
     return []
@@ -1140,7 +1140,7 @@ def find_wiki_semantic_match(
     is available on this machine. 임계는 상수다 — daemon score가 순위 기반이라
     설정으로 조정할 의미가 없었고(wiki_dedup_judge 참조) judge-less 폴백의 동작을
     예전 기본값 그대로 동결하는 것이 목적이다."""
-    threshold = qmd_config.DEDUP_SCORE_THRESHOLD
+    threshold = settings_types.DEDUP_SCORE_THRESHOLD
     hits = query_wiki_candidates(root, wiki_root, config, candidate, summary, threshold)
     if not hits:
         return None, None
@@ -1314,7 +1314,7 @@ def main() -> int:
     if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):
         return 0
     mode = qmd_config.compile_mode(compile_cfg)
-    wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
+    wiki_rel = config.get("wikiPath", settings_types.WIKI_REL)
     if args.check:
         # Side-effect free: no directory, lock or ledger is created or touched,
         # so a read-only project can be checked.
@@ -1324,7 +1324,7 @@ def main() -> int:
         return _compile_locked(root, config, compile_cfg, mode, wiki_root, candidate,
                                args.regenerate, check=True)
     wiki_root = safe_managed_dir(root, wiki_rel)
-    compile_dir = safe_managed_dir(root, project_dir.compile_rel(root))
+    compile_dir = safe_managed_dir(root, settings_types.COMPILE_REL)
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1

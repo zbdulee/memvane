@@ -9,11 +9,27 @@ import subprocess
 
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.kernel.resource_deferred import ResourceDeferred
-from memvane.settings.api import _config as qmd_config
+from memvane.settings.types import REASONING_EFFORTS
 
 BUILTIN_EXTRACTOR_ENGINES = {"claude", "codex", "hermes"}
 MAX_ENGINE_COOLDOWN_SECS = qmd_cooldown.MAX_COOLDOWN_SECS
 UNATTRIBUTED_KEY = "(unattributed)"
+
+
+def reasoning_effort_audit(raw, requested=None, reason="capability_not_declared", capability_declared=True):
+    """Return bounded, source-free effort audit metadata for persisted records."""
+    requested = requested if requested in REASONING_EFFORTS else None
+    if not capability_declared:
+        return {"requested": requested, "applied": None, "status": "unsupported", "reason": str(reason)[:120]}
+    value = raw if isinstance(raw, dict) else {}
+    if value.get("requested") in REASONING_EFFORTS:
+        requested = value["requested"]
+    applied = value.get("applied") if value.get("applied") in REASONING_EFFORTS else None
+    status = value.get("status") if value.get("status") in {"applied", "unsupported", "retried_without_effort"} else "unsupported"
+    if value.get("reason"):
+        reason = str(value["reason"])[:120]
+    return {"requested": requested, "applied": applied, "status": status, "reason": str(reason)[:120]}
+
 
 def _argv_list(value) -> list[str] | None:
     if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
@@ -198,7 +214,7 @@ def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> t
     effort = payload.get("_qmd", {}).get("reasoningEffort", {}) if isinstance(payload.get("_qmd"), dict) else {}
     capability_declared = effort.get("capabilityDeclared") is True if isinstance(effort, dict) else False
     parsed["_qmd"] = {
-        "reasoningEffort": qmd_config.reasoning_effort_audit(
+        "reasoningEffort": reasoning_effort_audit(
             parsed.get("_qmd", {}).get("reasoningEffort") if isinstance(parsed.get("_qmd"), dict) else {},
             effort.get("requested") if isinstance(effort, dict) else None,
             capability_declared=capability_declared,

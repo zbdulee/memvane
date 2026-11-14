@@ -66,7 +66,7 @@ def _preflight_multi_settings(route, project_root):
     parsed = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
     if not isinstance(parsed, dict):
         _fail('cutover_settings_unsupported')
-    folder = project_dir.active_name(project_root)
+    folder = project_types.CURRENT
     parsed = config.expand_minimal_settings(parsed, folder)
     cfg = config.normalize_config(parsed, folder)
     declared = route['collections']

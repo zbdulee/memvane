@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from memvane.settings import api as project_dir, types as project_types
-from memvane.settings.api import compile_rel, compile_dir, ledger
+from memvane.settings.api import compile_dir, ledger
 from memvane.wiki.workspace.types import (COMPILE_DIR, CANDIDATES, SOURCE_QUEUE,
     TOMBSTONES, MANIFEST, MERGE_NEEDED, VERIFY_QUEUE, VERIFY_LOG, VERIFY_SKIPPED,
     VERIFY_DELETED, DEDUP_NEEDED, DEDUP_SKIPPED, DEDUP_DELETED, DISCARD_LEDGER,
@@ -42,12 +42,12 @@ from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
 
 def rel(name: str, root=None) -> str:
     """프로젝트 루트 기준 POSIX 상대 경로(bash·문서·사용자 메시지용)."""
-    return "{}/{}".format(compile_rel(root), name)
+    return "{}/{}".format(project_types.COMPILE_REL, name)
 
 
 def under(root, name: str) -> Path:
     """`<root>/<활성 폴더>/compile/<name>` (검증 없음: 쓰기 전 `ledger`를 쓴다)."""
-    return Path(root) / compile_rel(root) / name
+    return Path(root) / project_types.COMPILE_REL / name
 
 
 

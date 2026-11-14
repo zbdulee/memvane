@@ -315,7 +315,7 @@ def _derived_collections(record: dict, root: Path, settings_bytes: bytes) -> lis
     raw = json.loads(settings_bytes.decode("utf-8"), object_pairs_hook=_pairs)
     if not config.is_minimal_settings(raw):
         raise ValueError("invalid_route_settings")
-    folder = project_dir.active_name(root)
+    folder = project_types.CURRENT
     cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
     names, mappings = cfg.get("collections"), cfg.get("collectionPaths")
     if (not isinstance(names, list) or not isinstance(mappings, dict) or
@@ -440,7 +440,7 @@ def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True
         raise ValueError('route_settings_changed')
     selected_collection_roots(root, derived)
     raw = json.loads(settings_bytes.decode('utf-8'), object_pairs_hook=_pairs)
-    folder = project_dir.active_name(root)
+    folder = project_types.CURRENT
     cfg = config.normalize_config(config.expand_minimal_settings(raw, folder), folder)
     vector_profile = _vector_profile(record['vectorProfile'])
     return _decision('candidate', 'route_record_valid', routeSchema=SCHEMA_V4, projectRoot=str(root),

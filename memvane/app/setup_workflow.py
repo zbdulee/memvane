@@ -155,7 +155,7 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     # A new selection starts only from minimal ``{name, skipPaths}`` settings.
     if not config.is_minimal_settings(parsed):
         _fail('minimal_settings_required')
-    source_settings = config.expand_minimal_settings(parsed, project_dir.active_name(project))
+    source_settings = config.expand_minimal_settings(parsed, project_types.CURRENT)
     cfg = config.load_project_config(str(project))
     names = tuple(sorted(cfg.get('collections', ())))
     roles = config.role_map(cfg)

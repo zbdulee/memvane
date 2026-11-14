@@ -77,9 +77,9 @@ test('dogfood project pins the wiki extractor reasoning-effort policy', () => {
 
 test('generation host plan tries unknown hosts once in a fixed order and preserves a known host', () => {
   const plan = JSON.parse(execFileSync('python3', ['-c', `
-import json,sys; sys.path.insert(0, '.'); import memvane.settings.config as config
+import json,sys; sys.path.insert(0, '.'); import memvane.wiki.compile.wiki_compile_worker as worker
 values = ['unknown', '', None, 'codex', 'claude', 'hermes', 'gemini', 'custom-engine', ' codex ']
-print(json.dumps([config.generation_engine_order(value) for value in values]))
+print(json.dumps([worker.generation_engine_order(value) for value in values]))
 `], { cwd: process.cwd(), encoding: 'utf8' }));
   for (const unknown of plan.slice(0, 3)) {
     assert.deepEqual(unknown, ['codex', 'claude', 'hermes']);

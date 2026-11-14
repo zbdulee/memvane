@@ -10,7 +10,7 @@
 from __future__ import annotations
 import sys
 from pathlib import Path
-from memvane.settings import api as project_dir
+from memvane.settings import types as project_types
 from memvane.wiki.card import wiki_card
 from memvane.settings import api as qmd_resolve_paths
 from memvane.wiki.card import yaml_scalars
@@ -30,9 +30,9 @@ def wiki_root_of(root: Path, config: dict) -> Path | None:
     넘기지 않는다** — wiki는 관리 대상 디렉터리라 프로젝트 밖으로 나갈 수 없다
     (`safe_managed_dir`와 같은 강도).
     """
-    rel = config.get("wikiPath", project_dir.wiki_rel(root))
+    rel = config.get("wikiPath", project_types.WIKI_REL)
     if not isinstance(rel, str) or not rel:
-        rel = project_dir.wiki_rel(root)
+        rel = project_types.WIKI_REL
     return qmd_resolve_paths.contained_path(root, rel, [])
 
 

@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace import api as cp, types as ct
-from memvane.settings import api as project_dir
+from memvane.settings import api as project_dir, types as project_types
 from memvane.settings import api as qmd_config
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.kernel.paths import safe_managed_dir
@@ -269,7 +269,7 @@ def main() -> int:
     found = qmd_config.find_project_config(args.cwd)
     root = Path(found["projectRoot"]).resolve()
     config = found["config"]
-    wiki_rel = config.get("wikiPath", project_dir.wiki_rel(root))
+    wiki_rel = config.get("wikiPath", project_types.WIKI_REL)
     wiki_root = safe_managed_dir(root, wiki_rel)
     compile_dir = project_dir.compile_dir(root, create=True)
     if wiki_root is None or compile_dir is None:

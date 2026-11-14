@@ -16,16 +16,16 @@ from pathlib import Path
 from memvane.wiki.workspace.api import safe_queue_path as _safe_queue_path, queue_lock_path as _queue_lock_path
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir
-from memvane.settings.api import _config as qmd_config
+from memvane.settings import api as qmd_config
 from memvane.wiki.intake import posttool
 from memvane.wiki.card import api as wiki_freshness
 from memvane.wiki.intake import wiki_source_intent as intent
 from memvane.settings.api import select_collections
 from memvane.settings import api as source_text
-from memvane.settings.types import DENIED_SOURCE_SEGMENTS
+from memvane.settings.types import COMPILE_SOURCE_ROLES, DENIED_SOURCE_SEGMENTS, UNKNOWN_ENGINE
 
 
-DEFAULT_ENGINE = qmd_config.UNKNOWN_ENGINE
+DEFAULT_ENGINE = UNKNOWN_ENGINE
 
 # 편집 훅 경로의 trigger 라벨. 수동 sync 경로는 `post_sync_source`를 쓴다(core/sync.py).
 # 라벨 리터럴의 SSOT는 wiki_source_intent다(이 모듈의 이름은 기존 import 호환용 별칭).
@@ -67,7 +67,7 @@ def compile_max_files():
 def compile_engine(compile_cfg):
     """Explicit caller host only; installed CLI order is never provenance."""
     env_engine = os.environ.get("QMD_ENGINE")
-    return env_engine if env_engine in ('claude', 'codex', 'hermes', 'gemini') else qmd_config.UNKNOWN_ENGINE
+    return env_engine if env_engine in ('claude', 'codex', 'hermes', 'gemini') else UNKNOWN_ENGINE
 
 
 def compile_candidates(project_root, config, compile_cfg, changed_files, *, trigger=COMPILE_TRIGGER, engine=None):
@@ -207,7 +207,7 @@ def _is_denied_source_path(rel_path: str) -> bool:
 
 def _engine(payload):
     value = payload.get("engine") or os.environ.get("QMD_ENGINE")
-    return value if value in ('claude', 'codex', 'hermes', 'gemini') else qmd_config.UNKNOWN_ENGINE
+    return value if value in ('claude', 'codex', 'hermes', 'gemini') else UNKNOWN_ENGINE
 
 
 
@@ -331,7 +331,7 @@ def _source_record(path_value, cwd, project_root, config, engine, trigger=POST_T
     # 되지 않는) 컬렉션이지만 카드의 원천으로는 그대로 산다 — 그것이 role의 존재 이유다.
     # 판정은 config.COMPILE_SOURCE_ROLES 한 곳에서만 나온다(여집합 금지).
     roles = qmd_config.role_map(config)
-    if not qmd_config.is_compile_source_collection(roles, collection):
+    if qmd_config.collection_role(roles, collection) not in COMPILE_SOURCE_ROLES:
         return None
     try:
         rel_path = resolved.relative_to(Path(project_root).resolve()).as_posix()

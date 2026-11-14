@@ -27,7 +27,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.wiki.workspace import api as cp, types as ct
-from memvane.settings.api import _config as qmd_config
+from memvane.settings import api as qmd_config, types as settings_types
 from memvane.kernel import cooldown as qmd_cooldown
 
 VERDICT_VALUES = {"duplicate", "distinct", "unclear"}
@@ -108,7 +108,7 @@ def _int(value, fallback: int) -> int:
 
 def cross_engine_mode(compile_cfg: dict) -> str:
     mode = judge_cfg_of(compile_cfg).get("crossEngine", "off")
-    return mode if mode in qmd_config.CROSS_ENGINE_MODES else "off"
+    return mode if mode in settings_types.CROSS_ENGINE_MODES else "off"
 
 
 def require_waived(compile_cfg: dict, attribution: str) -> bool:
@@ -260,7 +260,7 @@ def plan_judge_attempts(
     # 여기와 `plan_verify_attempts`에 각각 있었다. 이제 모든 argv는 이름 있는 엔진에서 온다.
     pool = judge_engine_pool(compile_cfg)
     attributable = bool(
-        producing and producing != qmd_config.UNKNOWN_ENGINE
+        producing and producing != settings_types.UNKNOWN_ENGINE
         and wcw.resolve_extractor_argv(compile_cfg, producing) is not None
     )
     if mode == "off" and not attributable:
@@ -288,11 +288,11 @@ def plan_judge_attempts(
             skipped_cooling += 1
             continue
         if not attributable:
-            attempt_mode = qmd_config.VERIFIED_MODE_UNKNOWN
+            attempt_mode = settings_types.VERIFIED_MODE_UNKNOWN
         elif engine == producing:
-            attempt_mode = qmd_config.VERIFIED_MODE_SELF
+            attempt_mode = settings_types.VERIFIED_MODE_SELF
         else:
-            attempt_mode = qmd_config.VERIFIED_MODE_CROSS
+            attempt_mode = settings_types.VERIFIED_MODE_CROSS
         attempts.append({"engine": engine, "argv": primary, "mode": attempt_mode, "key": engine})
     if attempts:
         return attempts, mode, ""
@@ -363,7 +363,7 @@ def judge_pair(
         compile_cfg, producing, cooled, attribution=attribution
     )
     provenance = {
-        "engine": "", "mode": qmd_config.VERIFIED_MODE_UNKNOWN, "producedBy": producing,
+        "engine": "", "mode": settings_types.VERIFIED_MODE_UNKNOWN, "producedBy": producing,
         # `crossEngine`은 **설정된 값**이다. 그 값이 이 경로에 적용되지 않았다면 그 사실을
         # 별도 필드로 남긴다 — 설정을 조용히 다른 값으로 보고하면(`off`) 무엇이 설정이고 무엇이
         # 코드 판단인지 사후에 구분할 수 없다.
@@ -417,7 +417,7 @@ def judge_pair(
     provenance = {
         **provenance,
         "engine": attempt["engine"], "mode": attempt["mode"], "enginesAttempted": attempted,
-        "_qmd": {"reasoningEffort": qmd_config.reasoning_effort_audit(
+        "_qmd": {"reasoningEffort": wcw.reasoning_effort_audit(
             parsed.get("_qmd", {}).get("reasoningEffort") if isinstance(parsed, dict) and isinstance(parsed.get("_qmd"), dict) else {},
             payload.get("_qmd", {}).get("reasoningEffort", {}).get("requested"),
             capability_declared=payload.get("_qmd", {}).get("reasoningEffort", {}).get("capabilityDeclared") is True,

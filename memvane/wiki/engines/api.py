@@ -27,6 +27,11 @@ def load_engine_cooldowns(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
+def reasoning_effort_audit(raw, requested=None, reason="capability_not_declared", capability_declared=True):
+    from memvane.wiki.engines.execution import reasoning_effort_audit as implementation
+    return implementation(raw, requested, reason, capability_declared)
+
+
 def plan_engine_order(*args, **kwargs):
     from memvane.wiki.engines.execution import plan_engine_order as implementation
     return implementation(*args, **kwargs)

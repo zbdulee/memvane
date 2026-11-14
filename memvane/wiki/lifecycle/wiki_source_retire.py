@@ -7,7 +7,7 @@ from pathlib import Path
 
 from memvane.wiki.card.api import archive_card
 from memvane.wiki.workspace import api as cp
-from memvane.settings import api as project_dir
+from memvane.settings import types as project_types
 from memvane.wiki.card import api as wiki_card
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.workspace import api as wiki_selected_laya
@@ -93,7 +93,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
             return {'state': 'held_branch', 'survivors': [], 'reason': hold}
     elif not lineage.still_valid():
         return {'state': 'held_branch', 'survivors': [], 'reason': 'git_state_changed'}
-    wiki_root = (root / config.get('wikiPath', project_dir.wiki_rel(root))).resolve()
+    wiki_root = (root / config.get('wikiPath', project_types.WIKI_REL)).resolve()
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return {'state': 'blocked', 'survivors': []}
     from memvane.settings import api as source_label
@@ -263,7 +263,7 @@ def _record_retired(root, config, selected, card, text, reason, *, wiki_root=Non
     try:
         if wiki_root is None:
             wiki_root = (root / (config or {}).get('wikiPath',
-                                                   project_dir.wiki_rel(root))).resolve()
+                                                   project_types.WIKI_REL)).resolve()
         rel = Path(card).relative_to(wiki_root).as_posix()
         meta, _ = wiki_card.parse_frontmatter(text)
         title = str(meta.get('title') or Path(card).stem)

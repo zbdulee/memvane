@@ -29,9 +29,8 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_argv, extractor_engine_pool,
     plan_engine_order, load_engine_cooldowns, cooling_engines,
-    resolve_extractor_argv, run_extractor)
-from memvane.settings import api as project_dir
-from memvane.settings.api import _config as qmd_config
+    reasoning_effort_audit, resolve_extractor_argv, run_extractor)
+from memvane.settings import api as qmd_config, types as settings_types
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import api as source_text
 from memvane.settings.api import select_collections
@@ -155,7 +154,7 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     from memvane.wiki.card import api as wiki_card
     from memvane.wiki.engines.api import render_existing_context_section
     cards = []
-    for path, score, raw in rows[:qmd_config.DEDUP_TOP_K]:
+    for path, score, raw in rows[:settings_types.DEDUP_TOP_K]:
         text = wiki_card.normalize_newlines(raw)
         end = text.find('\n---\n', 4) if text.startswith('---\n') else -1
         if text.startswith('---\n') and end < 0:
@@ -178,7 +177,7 @@ def compact_similar_pages(root: Path, rows: list, cap_chars: int) -> list[dict]:
     # the same content allowance regardless of retrieval rank or body length.
     while cards:
         overhead = len(render_existing_context_section({'similarPages': [c[0] for c in cards]}))
-        share = min(cap_chars, max(0, (qmd_config.DEDUP_GROUNDING_MAX_CHARS - overhead) // len(cards)))
+        share = min(cap_chars, max(0, (settings_types.DEDUP_GROUNDING_MAX_CHARS - overhead) // len(cards)))
         fitting = [card for card in cards if len(card[1]) + len(marker) < share]
         if len(fitting) == len(cards):
             break
@@ -198,7 +197,7 @@ def bounded_failure(action: str, job: dict, reason: str) -> dict:
     return {
         "ts": now_iso(),
         "trigger": job.get("trigger", "post_tool_source"),
-        "engine": job.get("engine", qmd_config.UNKNOWN_ENGINE),
+        "engine": job.get("engine", settings_types.UNKNOWN_ENGINE),
         "action": action,
         "reason": reason,
         "source": {
@@ -671,6 +670,20 @@ def is_same_file_source(item, rel: str) -> bool:
     return item.get("path") == rel
 
 
+def generation_engine_order(engine):
+    """Bounded extraction plan; a known host never falls back to another CLI.
+
+    The caller uses each entry for the real extraction itself, not a separate
+    model probe. CLI availability/authentication is decided by that actual
+    attempt. Successful provenance is recorded by the worker, never inferred
+    from this plan or the installed CLI order.
+    """
+    host = engine.strip() if isinstance(engine, str) else ""
+    if not host or host == settings_types.UNKNOWN_ENGINE:
+        return ("codex", "claude", "hermes")
+    return (host,)
+
+
 def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
                 checkout=None) -> tuple[bool, bool, list[str]]:
     """Return (processed, preserve_job, verify_target_paths).
@@ -740,7 +753,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     # 들어가는데 worker가 매번 invalid_source_scope로 버리는 무한 왕복이 된다.
     # role `source`는 인덱싱되지 않을 뿐 compile 입력으로는 정상이다.
     roles = qmd_config.role_map(config)
-    if not qmd_config.is_compile_source_collection(roles, collection):
+    if qmd_config.collection_role(roles, collection) not in settings_types.COMPILE_SOURCE_ROLES:
         append_jsonl(cpath, bounded_failure("extractor_failed", job, "invalid_source_scope"))
         return True, False, []
     if job.get('sourceDelete') is True:
@@ -762,7 +775,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             for survivor_collection, survivor_path in outcome['survivors']:
                 record = enqueue.source_record(
                     str(root / survivor_path), str(root), str(root), config,
-                    job.get('engine', qmd_config.UNKNOWN_ENGINE),
+                    job.get('engine', settings_types.UNKNOWN_ENGINE),
                     trigger=job.get('trigger', 'post_sync_source'))
                 if record is None or record['source']['collection'] != survivor_collection:
                     return False, True, []
@@ -880,11 +893,11 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             return True, False, []
 
     extractor = compile_cfg.get("extractor") if isinstance(compile_cfg.get("extractor"), dict) else {}
-    # 폴백은 qmd_config.DEFAULT_CONFIG["compile"]["extractor"]["timeout"]와 같아야 한다.
-    _default_timeout = qmd_config.DEFAULT_CONFIG["compile"]["extractor"]["timeout"]
+    # 폴백은 settings_types.DEFAULT_CONFIG["compile"]["extractor"]["timeout"]와 같아야 한다.
+    _default_timeout = settings_types.DEFAULT_CONFIG["compile"]["extractor"]["timeout"]
     timeout = int(extractor.get("timeout", _default_timeout) or _default_timeout)
-    engine = job.get("engine", qmd_config.UNKNOWN_ENGINE)
-    engines = qmd_config.generation_engine_order(engine)
+    engine = job.get("engine", settings_types.UNKNOWN_ENGINE)
+    engines = generation_engine_order(engine)
     prior_attempts = []
     receipt = job.get('_fallbackAttempts')
     if len(engines) > 1 and receipt is not None:
@@ -914,20 +927,20 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
         append_jsonl(cpath, bounded_failure("needs_extractor", job, "cooldown_active"))
         return False, True, []
 
-    wiki_root = (root / config.get("wikiPath", project_dir.wiki_rel(root))).resolve()
+    wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
     wiki_ctx = orientation(root, wiki_root, config, selected_route)
-    # topK·similarPageMaxChars는 설정이 아니라 상수다(qmd_config) — daemon score가 순위
+    # topK·similarPageMaxChars는 설정이 아니라 상수다(settings types) — daemon score가 순위
     # 기반이라 사용자가 조정할 의미가 없었다.
     similar_pages = gather_similar_pages(
         root, wiki_root, config, compile_cfg, content,
-        qmd_config.DEDUP_TOP_K,
-        qmd_config.DEDUP_SIMILAR_PAGE_MAX_CHARS,
+        settings_types.DEDUP_TOP_K,
+        settings_types.DEDUP_SIMILAR_PAGE_MAX_CHARS,
     )
     if similar_pages:
         wiki_ctx["similarPages"] = similar_pages
     payload = {
         "cwd": str(root),
-        "engine": job.get("engine", qmd_config.UNKNOWN_ENGINE),
+        "engine": job.get("engine", settings_types.UNKNOWN_ENGINE),
         "trigger": job.get("trigger", "post_tool_source"),
         "source": {
             "kind": "file",
@@ -1034,7 +1047,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     # 되돌리지는 않는다 — 재처리는 extractor를 다시 부르는 것이고 그것은 같은 소스에 대한
     # 이중 과금이다. 소스를 쪼개는 것이 올바른 해법이고 이 레코드가 그 신호다.
     max_cards = max(1, min(
-        int(budget_of(compile_cfg).get("cardsPerSource", 10) or 10), qmd_config.MAX_CARDS_PER_SOURCE
+        int(budget_of(compile_cfg).get("cardsPerSource", 10) or 10), settings_types.MAX_CARDS_PER_SOURCE
     ))
     if len(candidates) > max_cards:
         overflow = [
@@ -1128,7 +1141,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             if fingerprint_spec is not None:
                 candidate[SOURCE_FINGERPRINTS_KEY] = json.loads(json.dumps(fingerprint_spec))
             candidate["_qmd"] = {
-                "reasoningEffort": qmd_config.reasoning_effort_audit(
+                "reasoningEffort": reasoning_effort_audit(
                     extracted_qmd.get("reasoningEffort") if isinstance(extracted_qmd, dict) else {},
                     payload["_qmd"]["reasoningEffort"].get("requested"),
                     capability_declared=payload["_qmd"]["reasoningEffort"].get("capabilityDeclared") is True,
@@ -1322,7 +1335,7 @@ def recover_pending_refreshes(root: Path, config: dict, queue: Path) -> int:
     for pending in wiki_freshness.unresolved_pending_refreshes(root):
         record = _source_record(
             pending.get("sourcePath"), str(root), str(root), config,
-            pending.get("engine", qmd_config.UNKNOWN_ENGINE),
+            pending.get("engine", settings_types.UNKNOWN_ENGINE),
         )
         if record is None:
             continue
@@ -1560,7 +1573,7 @@ def _main_locked(args, root: Path, config: dict, compile_cfg: dict, queue: Path,
     # 이 함수는 raw compile_cfg를 받는 호출자(테스트·직접 호출)에도 노출돼 있고, 이 값은
     # 유료 호출 수를 정하므로 상한이 한 층에만 있으면 안 된다.
     max_per_run = max(1, min(
-        int(budget_of(compile_cfg).get("extractorPerRun", 10) or 10), qmd_config.MAX_COMPILE_PER_RUN
+        int(budget_of(compile_cfg).get("extractorPerRun", 10) or 10), settings_types.MAX_COMPILE_PER_RUN
     ))
     rows = [(raw, job) for raw, job in kept]
     overflow = [raw for raw, _ in rows[max_per_run:]]
