@@ -103,3 +103,18 @@ class NamedGeneration(Machine):
         dependency.write_text('changed')
         with self.assertRaises(runtime.RuntimeUnavailable):
             runtime.verify_attested_files(self.first, self.first[runtime.FILES_SHA])
+
+    def test_changed_js_dependency_is_new_content_not_equivalent(self):
+        self.model_bytes = Path(self.first['modelPath']).read_bytes()
+        dep = self.registry / 'lifecycle-utils' / 'dist' / 'index.js'
+        dep.write_text('different synthetic dependency')
+        changed = self.provision()
+        self.assertNotEqual(changed['generation'], self.first['generation'])
+        for name in ('nodeSha256', 'moduleEntrySha256', 'modelSha256'):
+            self.assertEqual(changed[name], self.first[name])
+        self.assertNotEqual(changed[runtime.FILES_SHA], self.first[runtime.FILES_SHA])
+        self.assertFalse(runtime.matches(changed, self.first, self.first['dependencyClosure'],
+                                         self.first[runtime.FILES_SHA]))
+        record = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
+                  runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
+        self.assertEqual(runtime.ensure_for_attestation(record, self.home), self.first)
