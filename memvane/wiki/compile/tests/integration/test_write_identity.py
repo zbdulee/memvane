@@ -81,3 +81,25 @@ class WriteIdentity(FixtureCase):
         self.assertNotIn('sourceSpans:', new)
         self.assertNotIn('reviewed:', new)
         self.assertIn('Preserve these notes.', new)
+
+    def test_existing_identity_never_calls_new_page_duplicate_judge(self):
+        with patch.object(compiler, 'judge_new_page_duplicate', side_effect=AssertionError('unexpected judge')):
+            self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md')['action'], 'updated')
+
+    def test_superseded_and_malformed_cards_are_preserved_for_review(self):
+        original = self.card.read_text()
+        for content in (original.replace('status: generated', 'status: superseded'),
+                        '---\ntitle: malformed\nOriginal text remains without closing frontmatter.\n'):
+            with self.subTest(content=content[:30]):
+                self.card.write_text(content)
+                result = self.compile('Renamed A', 'existing-a', 'docs/a.md')
+                self.assertEqual(result['action'], 'merge-needed')
+                self.assertEqual(self.card.read_text(), content)
+
+    def test_old_manual_status_is_refreshed_as_generated(self):
+        self.card.write_text(self.card.read_text().replace('status: generated', 'status: manual\nreviewed: true'))
+        self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md')['action'], 'updated')
+        result = self.card.read_text()
+        self.assertIn('status: generated', result)
+        self.assertNotIn('reviewed:', result)
+        self.assertIn('Revised synthetic fact.', result)

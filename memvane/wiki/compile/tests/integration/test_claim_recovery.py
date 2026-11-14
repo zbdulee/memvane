@@ -80,3 +80,30 @@ class ClaimRecovery(FixtureCase):
         with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}):
             claimed = workspace.claim_queue(self.queue)
         self.assertEqual(json.loads(claimed.read_text())['path'], 'docs/retry.md')
+
+    def test_unreadable_orphan_does_not_block_a_separate_backlog(self):
+        orphan = self.orphan('unreadable', {'path': 'docs/orphan.md'})
+        self.queue.write_text(json.dumps({'path': 'docs/backlog.md'}) + '\n')
+        real_read = Path.read_text
+        def guarded_read(path, *args, **kwargs):
+            if path == orphan:
+                raise OSError('synthetic read failure')
+            return real_read(path, *args, **kwargs)
+        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}), \
+             patch.object(Path, 'read_text', guarded_read):
+            claimed = workspace.claim_queue(self.queue)
+        self.assertTrue(orphan.exists())
+        self.assertEqual(json.loads(claimed.read_text())['path'], 'docs/backlog.md')
+
+    def test_discard_ledger_extracts_targets_from_each_queue_shape(self):
+        cases = [('source-queue.jsonl', {'source': {'path': 'docs/source.md'}}, 'docs/source.md'),
+                 ('verify-queue.jsonl', {'card': {'targetPath': 'docs/card.md'}}, 'docs/card.md'),
+                 ('merge-needed.jsonl', {'candidate': {'targetPath': 'docs/candidate.md'}}, 'docs/candidate.md'),
+                 ('dedup-needed.jsonl', {'pageA': 'a.md', 'pageB': 'b.md'}, 'a.md <-> b.md')]
+        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}):
+            for name, job, _ in cases:
+                self.queue = self.queue.parent / name
+                self.orphan('poison', {**job, '_requeue_count': 3})
+                self.assertIsNone(workspace.claim_queue(self.queue, receipt_writer=lambda _job: None))
+        rows = [json.loads(line) for line in (self.queue.parent / 'discard-ledger.jsonl').read_text().splitlines()]
+        self.assertEqual([row['targetPath'] for row in rows], [expected for _, _, expected in cases])

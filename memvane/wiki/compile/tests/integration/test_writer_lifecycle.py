@@ -2,9 +2,11 @@
 from contextlib import redirect_stdout
 import io
 import json
+import hashlib
 from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_compile as compiler
+from memvane.wiki.card import api as card
 from memvane.settings import api as settings
 from memvane.wiki.workspace import api as workspace
 from memvane.wiki.workspace import types as workspace_types
@@ -38,7 +40,8 @@ class WriterLifecycle(FixtureCase):
              patch.object(workspace, 'append_activity'), redirect_stdout(output):
             compiler._compile_locked(self.project.root, self.config, self.config['compile'],
                                      'auto-wiki', self.project.wiki, candidate, False)
-        return json.loads(output.getvalue())
+        text = output.getvalue().strip()
+        return json.loads(text) if text else {}
 
     def audit(self, name):
         path = self.project.root / '.memvane/compile' / name
@@ -89,3 +92,26 @@ class WriterLifecycle(FixtureCase):
         self.assertEqual(settings.ledger(self.project.root, workspace_types.VERIFY_SKIPPED),
                          directory / workspace_types.VERIFY_SKIPPED)
         self.assertEqual(outside.read_text(), 'unchanged')
+
+    def test_selected_verified_replacement_is_staged_for_review(self):
+        self.config['compile']['verify']['enabled'] = True
+        first = self.compile(summary='Original published fact.')
+        target = self.project.root / first['targetPath']
+        original = target.read_bytes()
+        with patch.object(card, 'verified_wiki_row', return_value=True):
+            result = self.compile(summary='Replacement fact for review.')
+        self.assertEqual(result['action'], 'updated')
+        self.assertEqual(target.read_bytes(), original)
+        job = self.audit('verify-queue.jsonl')[-1]
+        self.assertEqual(job['expectedTargetHash'], hashlib.sha256(original).hexdigest())
+        self.assertTrue(job['pendingPath'].endswith('.pending-' + job['sourceHash']))
+        self.assertIn('Replacement fact for review.', (self.project.root / job['pendingPath']).read_text())
+
+    def test_selected_replacement_refuses_unmatched_wiki_collection(self):
+        first = self.compile()
+        target = self.project.root / first['targetPath']
+        original = target.read_bytes()
+        self.bound[0]['collections'] = []
+        self.assertEqual(self.compile(summary='Replacement fact.'), {})
+        self.assertEqual(target.read_bytes(), original)
+        self.assertEqual(self.audit('candidates.jsonl')[-1]['lint']['findings'], ['selected_wiki_unresolved'])

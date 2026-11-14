@@ -12,6 +12,7 @@ from memvane.wiki.card import api as card
 from memvane.wiki.compile import wiki_compile as compiler, wiki_compile_worker as worker
 from memvane.wiki.engines import api as engines
 from memvane.wiki.intake import api as intake
+from memvane.wiki.verify import api as verify
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
@@ -239,6 +240,106 @@ class CheckoutFingerprints(FixtureCase):
         self.assertEqual(second['schema'], worker.card_rules('novel'))
         self.assertNotEqual(second['schema'], first['schema'])
         self.assertNotIn('PRIVATE_ROOT_SENTINEL', repr(second))
+
+    def test_worker_binds_latest_pending_event_and_preserves_job_if_resolution_fails(self):
+        old = card.record_pending_refresh(self.project.root, 'docs/source.md', 'claude')
+        latest = card.record_pending_refresh(self.project.root, 'docs/source.md', 'codex')
+        job = self.job()
+        job['pendingRefresh'] = {key: old[key] for key in ('eventId', 'ts', 'engine')}
+        def write(root, candidate):
+            self.candidates.append(candidate)
+            return {'action': 'created', 'sourceRevisions': candidate['sourceRevisions'],
+                    'sourceRefreshEventId': candidate['sourceRefreshEventId']}
+        with patch.object(card, 'resolve_pending_refresh', return_value=False) as resolve, \
+             patch.object(worker, 'compile_candidate', side_effect=write):
+            result = worker.process_job(self.project.root, self.config, self.config['compile'], job,
+                                        checkout=self.checkout)
+        self.assertEqual(result[:2], (True, True))
+        self.assertEqual(self.candidates[-1]['sourceRefreshEventId'], latest['eventId'])
+        self.assertEqual(resolve.call_args.args[1]['eventId'], latest['eventId'])
+
+    def test_worker_uses_one_snapshot_despite_aba_source_change(self):
+        original = self.source.read_text()
+        transient = 'different transient source\n'
+        real_snapshot = card.snapshot_bytes
+        changed = []
+        def snapshot(path):
+            result = real_snapshot(path)
+            if path == self.source and not changed:
+                self.source.write_text(transient)
+                changed.append(True)
+            return result
+        skipped = self.project.root / '.memvane/compile/verify-skipped.jsonl'
+        skipped.parent.mkdir(parents=True, exist_ok=True)
+        skipped.write_text(json.dumps({'sourcePath': 'docs/source.md',
+                                       'sourceBodyHash': verify.source_body_hash(transient)}) + '\n')
+        payloads = []
+        def extract(argv, payload, timeout, root):
+            payloads.append(payload)
+            self.source.write_text(original)
+            return {'candidates': [{'title': 'Source', 'summary': 'Synthetic fact'}]}, None, 0
+        with patch.object(card, 'snapshot_bytes', side_effect=snapshot), \
+             patch.object(engines, 'run_extractor', side_effect=extract):
+            self.assertEqual(self.process()[:2], (True, False))
+        self.assertEqual(payloads[0]['source']['content'], original)
+        self.assertEqual(self.candidates[0]['sourceRevisions'][0]['sha256'],
+                         hashlib.sha256(original.encode()).hexdigest())
+
+    def test_writer_rejection_preserves_job_and_active_cooldown_skips_extractor(self):
+        job = self.job()
+        with patch.object(worker, 'compile_candidate', return_value={'action': 'rejected'}):
+            self.assertEqual(worker.process_job(self.project.root, self.config, self.config['compile'], job)[:2],
+                             (False, True))
+        self.assertTrue(job['partialCompile'])
+        self.calls.clear()
+        worker.set_cooldown(self.project.root, 600)
+        self.assertEqual(self.process()[:2], (False, True))
+        self.assertEqual(self.calls, [])
+
+    def test_text_source_is_accepted_and_empty_similar_pages_are_omitted(self):
+        self.project.write_note('docs/note.txt', 'A synthetic text source.\n')
+        job = self.job()
+        job['source']['path'] = 'docs/note.txt'
+        self.assertEqual(worker.process_job(self.project.root, self.config, self.config['compile'], job)[:2],
+                         (True, False))
+        self.assertNotIn('similarPages', self.calls[-1]['wiki'])
+        self.assertEqual(self.calls[-1]['source']['path'], 'docs/note.txt')
+
+    def test_truncated_model_input_keeps_full_file_revision_hash(self):
+        self.source.write_text('synthetic-' * 2000)
+        raw = self.source.read_bytes()
+        self.assertEqual(self.process()[:2], (True, False))
+        payload = self.calls[-1]['source']
+        self.assertTrue(payload['truncated'])
+        self.assertEqual(len(payload['content']), 12000)
+        self.assertEqual(self.candidates[-1]['sourceRevisions'][0]['sha256'], hashlib.sha256(raw).hexdigest())
+
+    def test_worker_exception_restores_the_claimed_job(self):
+        queue = self.project.root / '.memvane/compile/source-queue.jsonl'
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        queue.write_text(json.dumps(self.job()) + '\n')
+        with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
+             patch.object(intake, 'reconcile_discards'), patch.object(worker, 'recover_pending_refreshes'), \
+             patch.object(worker, 'process_job', side_effect=RuntimeError('synthetic failure')):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic failure'):
+                worker._main_locked(SimpleNamespace(json=False, flush_all=True), self.project.root,
+                                    self.config, self.config['compile'], queue, self.bound)
+        self.assertEqual(json.loads(queue.read_text())['source']['path'], 'docs/source.md')
+
+    def test_failed_requeue_preserves_claim_for_later_recovery(self):
+        queue = self.project.root / '.memvane/compile/source-queue.jsonl'
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        queue.write_text(json.dumps(self.job()) + '\n')
+        with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
+             patch.object(intake, 'reconcile_discards'), patch.object(worker, 'recover_pending_refreshes'), \
+             patch.object(worker, 'process_job', return_value=(False, True, [])), \
+             patch.object(worker, 'requeue_lines', side_effect=OSError('synthetic full disk')):
+            with self.assertRaisesRegex(OSError, 'synthetic full disk'):
+                worker._main_locked(SimpleNamespace(json=False, flush_all=True), self.project.root,
+                                    self.config, self.config['compile'], queue, self.bound)
+        claims = list(queue.parent.glob('source-queue.jsonl.claimed.*'))
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(json.loads(claims[0].read_text())['source']['path'], 'docs/source.md')
 
     def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
         for case in ('non-git', 'unborn'):
