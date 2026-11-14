@@ -88,39 +88,23 @@ def schema3_checkout(bound):
         return None
     decision = bound[0]
     from memvane.journal import api as journal
-    from memvane.journal.api import _reader as reader
+    from memvane.journal.types import JournalEvidenceError
     path = decision.get('journalPath')
     if not isinstance(path, str) or journal.journal_version(path) != 1:
         return None
     with journal.read_only_journals():
-        journal_path = reader._journal(path)
-        endpoint, epoch, record = reader.selected_reader(journal_path)
+        journal_path, endpoint, epoch, record = journal.selected_journal_reader(path)
         if record.get('store_format') != 'schema3':
             return None
         recheck(bound)
-        reader._need(record['install_id'] == decision['installId']
-                     and record['scope'] == decision['scopeId']
-                     and record['project'] == decision['projectRoot']
-                     and record['state'] == str(journal_path.parent), 'reader_install_changed')
-        state = Path(record['state'])
-        actual = reader._schema3_store(state, Path(record['project']),
-                                       {'scopeId': record['scope']}, decision,
-                                       record['db_path'], record['worktree_id'])
-        for key in ('db_path', 'incarnation', 'repository_digest', 'worktree_id',
-                    'worktree_binding', 'settings_policy_digest'):
-            reader._need(actual[key] == record[key], 'reader_store_changed')
-        reader._need(reader.persistent_node_equal(actual['db_node'], record['db_node']),
-                     'reader_store_changed')
-        with reader._readonly(Path(record['db_path']), state) as db:
-            row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
-        reader._need(row is not None and reader._repository_digest(row[0]) == record['repository_digest'],
-                     'reader_store_changed')
+        row = journal.schema3_reader_repository(decision, record, journal_path)
         from memvane.store.api import view_store_class
         ViewStore = view_store_class()
         store = ViewStore.open_reader(record['db_path'], repository=json.loads(row[0]), scope_id=record['scope'])
         try:
             saved, _capture = store._observe_worktree(record['worktree_id'])
-            reader._need(saved['binding_digest'] == record['worktree_binding'], 'reader_store_changed')
+            if not saved['binding_digest'] == record['worktree_binding']:
+                raise JournalEvidenceError('reader_store_changed')
             from memvane.store.api import worktree_record as _worktree_record
             repository = store._repository
             worktree = _worktree_record(saved, repository, store._policy)
@@ -141,23 +125,8 @@ class _Schema3Checkout:
         self.worktree = worktree
 
     def _selection_current(self):
-        from memvane.journal import api as journal
-        from memvane.journal.api import _reader as reader
-        from memvane.journal.api import select_route
-        if select_route(self.decision['projectRoot'], action='compile') != self.decision:
-            return False
-        with journal.read_only_journals():
-            endpoint, epoch, record = reader.selected_reader(self.decision['journalPath'])
-            if (endpoint != self.endpoint or epoch != self.epoch
-                    or record.get('store_format') != 'schema3'):
-                return False
-            current = reader._schema3_store(Path(record['state']), Path(record['project']),
-                                            {'scopeId': record['scope']}, self.decision,
-                                            record['db_path'], record['worktree_id'])
-            return (all(current[key] == record[key] for key in
-                        ('db_path', 'incarnation', 'repository_digest', 'worktree_id',
-                         'worktree_binding', 'settings_policy_digest'))
-                    and reader.persistent_node_equal(current['db_node'], record['db_node']))
+        from memvane.journal.api import schema3_selection_current
+        return schema3_selection_current(self.decision, self.endpoint, self.epoch)
 
     def capture(self):
         from memvane.store import api as checkout

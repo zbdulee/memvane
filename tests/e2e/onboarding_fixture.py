@@ -166,8 +166,8 @@ class FixtureOnboarding(unittest.TestCase):
         return inspect_journal(self.state / 'journal.sqlite')
 
     def build_record(self):
-        from memvane.journal.api import build
-        return build.read_v1(self.state)
+        from memvane.journal.api import build_read_v1
+        return build_read_v1(self.state)
 
     def build_pointer(self):
         from memvane.install.api import _initial_build as initial_build

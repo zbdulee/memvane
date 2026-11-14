@@ -517,7 +517,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     from memvane.kernel.memvane_version import same_major
     from memvane.route.types import SCHEMA_V4
     from memvane.route.api import classify_v4 as _classify_v4
-    from memvane.journal.api import _api_route as _route
+    from memvane.journal.api import route_record
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
     if not same_major(1):
@@ -536,7 +536,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
     _keep_recorded_devices(route, state / 'route.json')
     raw = json.dumps(route, sort_keys=True, ensure_ascii=False,
                      separators=(',', ':')).encode('utf-8')
-    _route(raw, state / 'journal.sqlite')
+    route_record(raw, state / 'journal.sqlite')
     if _classify_v4(project, settings, route).get('state') != 'candidate':
         _fail('origin_route_unproved')
     _write_or_verify_private(state / 'route.json', raw)
@@ -546,7 +546,7 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
 def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id):
     """Register the reviewed single-store build under the existing install lock."""
     from memvane.install.api import _initial_build as initial_build
-    from memvane.journal.api import _api_stage_v1_attestation as stage_v1_attestation, _api_create_v1_journal as create_v1_journal
+    from memvane.journal.api import prepare_v1_journal
     existing = initial_build.lookup(plan['projectRoot'])
     if existing is not None and (existing['identity']['stateRoot'] != str(state)
                                  or existing['identity']['installId'] != install_id):
@@ -554,11 +554,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
     store = _create_v1_store(plan['projectRoot'], state, plan['scopeId'])
     route_raw = _create_v1_route(plan, state, install_id, store,
                                  reviewed_provider['vectorProfile'])
-    staged = stage_v1_attestation(journal, reviewed_provider)
-    if journal.exists() or journal.is_symlink():
-        row = inspect_journal(journal)
-    else:
-        row = create_v1_journal(journal, route_raw, staged['attestationSha256'])
+    staged, row = prepare_v1_journal(journal, reviewed_provider, route_raw)
     route_sha = hashlib.sha256(route_raw).hexdigest()
     store = {**store, 'storeNode': json.loads(route_raw.decode('utf-8'))['storeNode']}
     if (row['state'] != 'prepared' or row['routeSha256'] != route_sha
@@ -574,8 +570,8 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
                 'storePath': store['storePath'], 'storeNode': store['storeNode'],
                 'storeIncarnation': store['storeIncarnation'], 'journalPath': str(journal),
                 'routeSha256': route_sha, 'attestationSha256': staged['attestationSha256']}
-    from memvane.journal.api import _api_prepare_lifetime as _prepare_lifetime
-    _prepare_lifetime(install_id)
+    from memvane.journal.api import prepare_reader_lifetime
+    prepare_reader_lifetime(install_id)
     with initial_build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')

@@ -114,7 +114,7 @@ def service_dir(*, create=False, home=None):
     """``<account home>/.local/state/memvane/v1/service``: private, same owner."""
     from memvane.kernel import memvane_paths
     if home is None and 'MEMVANE_TEST_RUNTIME_ROOT' in os.environ:
-        from memvane.journal.api import _api_journal_directory as journal_directory
+        from memvane.journal.api import journal_directory
         try:
             return journal_directory('resident-service', create=create)
         except FileNotFoundError:

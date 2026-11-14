@@ -28,7 +28,7 @@ from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
 from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
-from memvane.journal.api import build as build_record
+from memvane.journal.api import build_read_v1
 from memvane.journal.api import inspect_journal, selected_project_proof as _selected
 from memvane.provider.api import reviewed_provider_class
 ReviewedLocalQmdProvider = reviewed_provider_class()
@@ -261,7 +261,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
             with build.build_owner(state) as owned:
                 if not owned:
                     raise ResourceDeferred('owner_busy')
-                record = build_record.read_v1(state)
+                record = build_read_v1(state)
                 if record != expected_build:
                     raise IndexContractError('initial_build_identity_changed')
                 build.build_advance_v1(record, phase='ready' if complete else 'building',

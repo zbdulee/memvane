@@ -98,9 +98,8 @@ def retire_foreign_pointers(plan):
 def finalize_initial_build(*, project_root, state_root):
     """Seal the ready single-store head in the prepared journal and ledger."""
     from memvane.install.api import _initial_build as build
-    from memvane.journal.api import _install_journal as journal
-    from memvane.journal.api import _reader as reader
-    from memvane.journal.api import seal_reader
+    from memvane.journal import api as journal
+    from memvane.journal.api import schema3_reader_record, seal_reader
     from memvane.app.api import _runtime_dispatch as dispatch
     from memvane.sync import api as sync
     from memvane.store import api as values
@@ -130,10 +129,10 @@ def finalize_initial_build(*, project_root, state_root):
             with workspace_files.mutation_lock.lock(project):
                 dispatch.resolve('laya-sync', str(project))
                 row = journal.inspect_journal(identity['journalPath'])
-                attestation, digest = journal._attestation(Path(identity['journalPath']))
+                attestation, digest = journal.journal_attestation(Path(identity['journalPath']))
                 if digest != identity['attestationSha256'] or row['state'] != 'prepared':
                     _fail('initial_build_journal_changed')
-                manifest = journal._v1_provider_manifest(attestation, row['vectorProfile'])
+                manifest = journal.provider_manifest(attestation, row['vectorProfile'])
                 spec = provider_spec(manifest, row['vectorProfile'])
                 if spec is None:
                     _fail('initial_build_vector_spec_unavailable')
@@ -192,23 +191,8 @@ def finalize_initial_build(*, project_root, state_root):
                             return _rescan_stale_build(record, project)
                         if store.head(handle) != head:
                             _fail('initial_build_head_changed')
-                        store_evidence = reader._schema3_store(state, project,
-                            {'scopeId': identity['scopeId']}, decision,
-                            identity['storePath'], worktree_id)
-                        sealed = dict(install_id=identity['installId'], project=str(project),
-                            project_node=reader._node(project), state=str(state),
-                            state_node=reader._node(state), scope=identity['scopeId'],
-                            attestation_sha256=digest, profile=row['vectorProfile']['profileId'],
-                            settings=reader._sha(reader._raw(decision['recallSettings'])),
-                            roots=decision['collections'], store_format='schema3',
-                            capability=reader.SCHEMA3_CAPABILITY, checkout_policy=reader.SCHEMA3_POLICY,
-                            vector_profile=spec['profile_id'], vector_recipe=spec['recipe_id'],
-                            head_floor={'view_id': head['view_id'], 'epoch': head['epoch'],
-                                        'ordinal': head_row[0]},
-                            creation_epoch=(row['reader']['creation_epoch'] if row['reader'] else row['epoch'] + 1),
-                            **store_evidence)
-                        if not reader._schema3_shape(sealed):
-                            _fail('initial_build_reader_invalid')
+                        sealed = schema3_reader_record(state, project, identity, decision, worktree_id,
+                                                       digest, row, spec, head, head_row, fail=_fail)
                     finally:
                         store.release(pin)
                 finally:
@@ -241,9 +225,8 @@ def _rescan_stale_build(record, project):
 def activate_origin_selection(project_root, journal_path, route_bytes):
     """Publish or recover the proved v1 selection under the install lock."""
     from memvane.install.api import _initial_build as build
-    from memvane.journal.api import _install_journal as journal_module
-    from memvane.journal.api import _reader as reader
-    from memvane.journal.api import commit_selection
+    from memvane.journal import api as journal_module
+    from memvane.journal.api import commit_selection, pin_schema3
     from memvane.sync import api as sync
     from memvane.wiki.intake import api as discovery
     from memvane.settings import api as project_dir
@@ -251,14 +234,14 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.route.api import classify_v4 as _classify_v4
     from memvane.route.types import SELECTION_SCHEMA_V1
     _read_json, _write = _ledger._read_json, _ledger._write
-    from memvane.journal.api import _api_reader_lifetime as reader_lifetime
+    from memvane.journal.api import reader_lifetime
     from memvane.runtime.api import sync_owner
     project = _checked_project(project_root)
     journal = Path(journal_path)
     state = _private_parent(journal.parent)
     if journal != state / 'journal.sqlite':
         _fail('initial_build_journal_changed')
-    route, digest = journal_module._route(route_bytes, journal)
+    route, digest = journal_module.route_record(route_bytes, journal)
     with build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
@@ -291,15 +274,15 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                         or any(row[key] != identity[key] for key in
                                ('projectRoot', 'installId', 'scopeId', 'storePath', 'storeIncarnation'))):
                     _fail('initial_build_ledger_changed')
-                attestation, att_sha = journal_module._attestation(journal)
+                attestation, att_sha = journal_module.journal_attestation(journal)
                 if att_sha != identity['attestationSha256']:
                     _fail('worker_attestation_changed')
-                journal_module._v1_provider_manifest(attestation, row['vectorProfile'])
+                journal_module.provider_manifest(attestation, row['vectorProfile'])
                 decision = _classify_v4(project, project_dir.settings_path(project), route)
                 if decision.get('state') != 'candidate':
                     _fail('initial_build_route_changed')
                 saved = row['reader']
-                with reader._schema3_pin(saved, deadline=time.monotonic() + 45, pin_view=False) as (store, handle, head):
+                with pin_schema3(saved, deadline=time.monotonic() + 45, pin_view=False) as (store, handle, head):
                     floor = saved['head_floor']
                     if (floor is None or head['view_id'] != floor['view_id']
                             or head['epoch'] != floor['epoch']):
@@ -370,11 +353,11 @@ def restore_origin_selection(*, project_root, state_root):
 def _provider_changed(journal, path, row):
     """True when this host's provider, model or runtime differs from the attestation."""
     from memvane.journal.types import JournalEvidenceError
-    attestation, digest = journal._attestation(path)
+    attestation, digest = journal.journal_attestation(path)
     if digest != row['attestationSha256']:
         _fail('worker_attestation_changed')
     try:
-        _manifest, available = journal._v1_provider_manifest(
+        _manifest, available = journal.provider_manifest(
             attestation, row['vectorProfile'], allow_local_unavailable=True)
     except JournalEvidenceError as exc:
         if str(exc) != 'provider_identity_changed':
@@ -395,11 +378,11 @@ def _restored_without_build(journal, project, state):
 
 def _restore_v1_locked(project, state):
     from memvane.install.api import _initial_build as build
-    from memvane.journal.api import _install_journal as journal
+    from memvane.journal import api as journal
     from memvane.journal.api import restore_selection
     from memvane.route.types import SELECTION_SCHEMA_V1
     _read_json, _write, _fsync_dir = _ledger._read_json, _ledger._write, _ledger._fsync_dir
-    from memvane.journal.api import _api_reader_lifetime as reader_lifetime
+    from memvane.journal.api import reader_lifetime
     from memvane.runtime.api import sync_owner
     from memvane.wiki.workspace.api import file_coordination as workspace_files
     with build.owner(state) as owned:

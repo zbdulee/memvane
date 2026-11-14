@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from memvane.journal.api import _reader as journal
+from memvane.journal import api as journal
 
 @dataclass(frozen=True)
 class ReaderResult:
@@ -69,23 +69,21 @@ def _approved_profile_matches(candidate, proof):
 
 
 def _persisted_schema3(endpoint):
-    return (type(endpoint) is journal.VerifiedEndpoint and endpoint in journal._issued
-            and endpoint in journal._read_only and endpoint.record.get('store_format')=='schema3')
+    return journal.persisted_schema3(endpoint)
 
 
 def _vector_proof(authority,snapshot,decision,provider,deadline):
-    from memvane.journal.api import _reader as leases
     from memvane.provider.api import reviewed_provider_class
     ReviewedLocalQmdProvider = reviewed_provider_class()
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline or not _persisted_schema3(authority)
             or type(provider) is not ReviewedLocalQmdProvider or snapshot is not None):
         raise ValueError('reader_vector_caller_unproved')
-    leases._bound(authority, capability=journal.SCHEMA3_CAPABILITY)
-    selected=leases._reader_selections.get(authority)
+    journal.bind_schema3(authority)
+    selected=journal.reader_selection(authority)
     if selected is None or selected.preferred_endpoint!=authority.endpoint_id:
         raise ValueError('reader_vector_caller_unproved')
-    _record,_raw,proof=journal._recheck(authority)
+    _record,_raw,proof=journal.recheck_reader(authority)
     if (proof.get('productRouteAllowed') is not True or not isinstance(decision,dict)
             or proof.get('vectorProfile')!=decision.get('vectorProfile')
             or provider.manifest!=proof.get('providerManifest')):
@@ -190,16 +188,15 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     worktree project root. A view sealed without vectors answers lexical
     lists only (``lexical_only``).
     """
-    from memvane.journal.api import _reader as leases
-    selected=leases._reader_selections.get(endpoint)
+    selected=journal.reader_selection(endpoint)
     if (not _persisted_schema3(endpoint) or selected is None
             or selected.preferred_endpoint!=endpoint.endpoint_id):
         raise ValueError('reader_endpoint_not_issued')
     if (snapshot is not None or type(deadline) not in (int,float) or not math.isfinite(deadline)
             or Path(checkout)!=Path(endpoint.record['project']) or time.monotonic()>=deadline):
         raise ValueError('reader_endpoint_invalid')
-    leases._bound(endpoint,capability=journal.SCHEMA3_CAPABILITY)
-    record,_raw,_proof=journal._recheck(endpoint)
+    journal.bind_schema3(endpoint)
+    record,_raw,_proof=journal.recheck_reader(endpoint)
     if (not isinstance(decision,dict) or decision.get('scopeId')!=record['scope']
             or decision.get('projectRoot')!=record['project']
             or decision.get('collections')!=record['roots']
@@ -230,7 +227,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         if remaining<=0:raise ValueError('reader_snapshot_deadline')
         return remaining
     def attempt():
-        with journal._schema3_pin(record,deadline=deadline,linked=linked) as (store,handle,pin):
+        with journal.pin_schema3(record,deadline=deadline,linked=linked) as (store,handle,pin):
             vector=store._pinned(pin)['vector']
             # A lexical head (vectors pending) answers lexical lists only.
             semantic=query_vector is not None and vector is not None

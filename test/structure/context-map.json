@@ -229,6 +229,16 @@
       "layer": "application",
       "pinned": false
     },
+    "memvane/journal/application/reader_checks.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/install_setup.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/journal/build_record.py": {
       "context": "journal",
       "layer": "adapter",

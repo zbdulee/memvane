@@ -1,40 +1,6 @@
 """Public journal selection and worker proof operations."""
 
 
-def _load(module):
-    from importlib import import_module
-    return import_module(module)
-
-class _JournalOperations:
-    """Read and journal operations kept behind the journal domain API."""
-
-    def __getattr__(self, name):
-        for module in ('journal_reader', 'reader_lease', 'journal_paths'):
-            target = _load('memvane.journal.' + module)
-            if hasattr(target, name):
-                return getattr(target, name)
-        raise AttributeError(name)
-
-class _InstallJournalOperations:
-    """Install journal operations kept behind the journal domain API."""
-
-    def __getattr__(self, name):
-        return getattr(_load('memvane.journal.install_journal'), name)
-
-_reader = _JournalOperations()
-_install_journal = _InstallJournalOperations()
-
-def _call(module, name, *args, **kwargs):
-    return getattr(_load('memvane.journal.' + module), name)(*args, **kwargs)
-
-def _api_route(*a, **k): return _call('install_journal', '_route', *a, **k)
-def _api_stage_v1_attestation(*a, **k): return _call('install_journal', 'stage_v1_attestation', *a, **k)
-def _api_create_v1_journal(*a, **k): return _call('install_journal', 'create_v1_journal', *a, **k)
-def _api_prepare_lifetime(*a, **k): return _call('reader_lease', '_prepare_lifetime', *a, **k)
-def _api_reader_lifetime(*a, **k): return _call('reader_lease', 'reader_lifetime', *a, **k)
-def _api_journal_directory(*a, **k): return _call('journal_paths', 'journal_directory', *a, **k)
-
-
 def select_route(cwd, *, action='recall', linked=True):
     from memvane.journal.route_selection import select_route as implementation
     return implementation(cwd, action=action, linked=linked)
@@ -151,47 +117,92 @@ def publish_plugin_version(decision, owner, running):
     from memvane.journal.application.selection_transitions import publish_plugin_version as implementation
     return implementation(decision, owner, running)
 
-class _BuildOperations:
-    def read_v1(self, state_root):
-        from memvane.journal.build_record import read_v1 as implementation
-        return implementation(state_root)
+def persisted_schema3(endpoint):
+    from memvane.journal.application.reader_checks import persisted_schema3 as implementation
+    return implementation(endpoint)
 
-    def lookup(self, project_root):
-        from memvane.journal.initial_build import lookup as implementation
-        return implementation(project_root)
+def bind_schema3(endpoint):
+    from memvane.journal.application.reader_checks import bind_schema3 as implementation
+    return implementation(endpoint)
 
-    def owner(self, state_root):
-        from memvane.journal.initial_build import owner as implementation
-        return implementation(state_root)
+def reader_selection(endpoint):
+    from memvane.journal.application.reader_checks import reader_selection as implementation
+    return implementation(endpoint)
 
-    def create_v1(self, identity):
-        from memvane.journal.initial_build import create_v1 as implementation
-        return implementation(identity)
+def selected_journal_reader(path):
+    from memvane.journal.application.reader_checks import selected_journal_reader as implementation
+    return implementation(path)
 
-    def register_project(self, identity):
-        from memvane.journal.initial_build import register_project as implementation
-        return implementation(identity)
+def schema3_reader_repository(decision, record, journal_path):
+    from memvane.journal.application.reader_checks import schema3_reader_repository as implementation
+    return implementation(decision, record, journal_path)
 
-    def advance_v1(self, record, *, phase, reason=None):
-        from memvane.journal.initial_build import advance_v1 as implementation
-        return implementation(record, phase=phase, reason=reason)
+def schema3_selection_current(decision, endpoint, epoch):
+    from memvane.journal.application.reader_checks import schema3_selection_current as implementation
+    return implementation(decision, endpoint, epoch)
 
-    def registered_pointer_path(self, project_root):
-        from memvane.journal.initial_build import registered_pointer_path as implementation
-        return implementation(project_root)
+def schema3_reader_record(state, project, identity, decision, worktree_id, digest, row, spec,
+                          head, head_row, *, fail):
+    from memvane.journal.application.reader_checks import schema3_reader_record as implementation
+    return implementation(state, project, identity, decision, worktree_id, digest, row, spec,
+                          head, head_row, fail=fail)
 
-    def retire_project_pointer(self, identity):
-        from memvane.journal.initial_build import retire_project_pointer as implementation
-        return implementation(identity)
+def route_record(raw, journal_path):
+    from memvane.journal.install_journal import _route as implementation
+    return implementation(raw, journal_path)
 
-    @property
-    def V1_BUILD_FILE(self):
-        from memvane.journal.types import V1_BUILD_FILE
-        return V1_BUILD_FILE
+def prepare_v1_journal(journal, reviewed_provider, route_raw):
+    from memvane.journal.application.install_setup import prepare_v1_journal as implementation
+    return implementation(journal, reviewed_provider, route_raw)
 
-    @property
-    def V1_BUILD_SCHEMA(self):
-        from memvane.journal.types import V1_BUILD_SCHEMA
-        return V1_BUILD_SCHEMA
+def journal_attestation(path):
+    from memvane.journal.install_journal import _attestation as implementation
+    return implementation(path)
 
-build = _BuildOperations()
+def provider_manifest(record, profile, *, allow_local_unavailable=False):
+    from memvane.journal.install_journal import _v1_provider_manifest as implementation
+    return implementation(record, profile, allow_local_unavailable=allow_local_unavailable)
+
+def prepare_reader_lifetime(install_id, *, create=True):
+    from memvane.journal.reader_lease import _prepare_lifetime as implementation
+    return implementation(install_id, create=create)
+
+def reader_lifetime(install_id, *, exclusive):
+    from memvane.journal.reader_lease import reader_lifetime as implementation
+    return implementation(install_id, exclusive=exclusive)
+
+def journal_directory(*parts, create=False):
+    from memvane.journal.journal_paths import journal_directory as implementation
+    return implementation(*parts, create=create)
+
+def build_lookup(project_root):
+    from memvane.journal.initial_build import lookup as implementation
+    return implementation(project_root)
+
+def build_owner(state_root):
+    from memvane.journal.initial_build import owner as implementation
+    return implementation(state_root)
+
+def build_create_v1(identity):
+    from memvane.journal.initial_build import create_v1 as implementation
+    return implementation(identity)
+
+def build_register_project(identity):
+    from memvane.journal.initial_build import register_project as implementation
+    return implementation(identity)
+
+def build_read_v1(state_root):
+    from memvane.journal.build_record import read_v1 as implementation
+    return implementation(state_root)
+
+def build_advance_v1(record, *, phase, reason=None):
+    from memvane.journal.initial_build import advance_v1 as implementation
+    return implementation(record, phase=phase, reason=reason)
+
+def build_registered_pointer_path(project_root):
+    from memvane.journal.initial_build import registered_pointer_path as implementation
+    return implementation(project_root)
+
+def build_retire_project_pointer(identity):
+    from memvane.journal.initial_build import retire_project_pointer as implementation
+    return implementation(identity)

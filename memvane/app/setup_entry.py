@@ -56,8 +56,8 @@ def _exception_detail(exc):
 
 
 def _read_v1_build(state):
-    from memvane.journal.api import build
-    return build.read_v1(state)
+    from memvane.journal.api import build_read_v1
+    return build_read_v1(state)
 
 
 def main(argv=None):
