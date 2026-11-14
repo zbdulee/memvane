@@ -81,3 +81,10 @@ def reviewed_provider_class():
 def default_embed_model_uri():
     from memvane.provider.adapters.local_embed_provider import DEFAULT_EMBED_MODEL_URI
     return DEFAULT_EMBED_MODEL_URI
+
+
+def runtime_file_sha256(path):
+    """The provider hasher's sha256 of one attested runtime file, cached by file identity."""
+    from memvane.kernel.persistent_identity import cached_by_identity
+    from memvane.provider.adapters.local_embed_provider import _hash_file
+    return cached_by_identity(path, _hash_file)

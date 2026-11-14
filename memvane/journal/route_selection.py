@@ -11,6 +11,7 @@ from memvane.settings import api as project_dir, types as project_types
 from memvane.route.api import (canonical_absolute as _canonical_absolute,
     candidate_paths as _candidate_paths, classify_v4 as _classify_v4,
     decision as _decision, derived_collections as _derived_collections,
+    foreign_format as _foreign_format,
     multi_compile_supported as _multi_compile_supported,
     multi_settings_supported as _multi_settings_supported, pairs as _pairs,
     read_regular as _read_regular, selected_settings_supported as _selected_settings_supported,
@@ -36,6 +37,9 @@ def _classify_record(root: Path, auto: Path, path: Path, current: Path) -> dict:
             raise ValueError('unsafe_route_settings')
         raw = _read_regular(path, MAX_RECORD_BYTES)
         record = json.loads(raw.decode('utf-8'), object_pairs_hook=_pairs)
+        foreign = _foreign_format(record)
+        if foreign is not None:
+            return foreign
         if not isinstance(record, dict) or record.get('schema') != SCHEMA_V4:
             raise ValueError('unsupported_route_format')
         return _classify_v4(root, settings, record)
@@ -222,7 +226,10 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
             marker_record = _read_json(marker_path)
             schema = marker_record.get('schema') if isinstance(marker_record, dict) else None
         except (OSError, RuntimeError, ValueError, TypeError):
-            schema = None
+            marker_record = schema = None
+        foreign = _foreign_format(marker_record, marker=True)
+        if foreign is not None:
+            return foreign
         if schema == SELECTION_SCHEMA_V1:
             try:
                 if (set(marker_record) != {'schema', 'projectRoot', 'installId', 'routeSha256'}
@@ -245,6 +252,9 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
                     raise ValueError('selection_marker_invalid')
                 route_bytes = _read_regular(records[0][2], MAX_RECORD_BYTES)
                 route = json.loads(route_bytes.decode('utf-8'), object_pairs_hook=_pairs)
+                foreign = _foreign_format(route)
+                if foreign is not None:
+                    return foreign
                 if (not isinstance(route, dict) or route.get('schema') != SCHEMA_V4
                         or route.get('installId') != marker_record['installId']
                         or route.get('projectRoot') != marker_record['projectRoot']

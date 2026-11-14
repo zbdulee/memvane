@@ -94,26 +94,21 @@ def _read_private(path, limit):
 
 
 def _write_or_verify_private(path, raw):
+    """Create a private record with exactly ``raw``, or verify the one there.
+
+    The bytes are written beside the record and published with a no-replace
+    rename, so an interrupted write leaves no record and its rerun writes it.
+    """
+    from memvane.kernel.atomic_rename import write_new_file
     target = Path(path)
-    if target.exists() or target.is_symlink():
-        if _read_private(target, 8192) != raw:
-            _fail('private_route_requires_recovery')
-        return
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                 getattr(os, 'O_NOFOLLOW', 0), 0o600)
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except BaseException:
-        # Retain a partial path for explicit recovery; never unlink on error.
-        raise
-    directory = os.open(target.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
+    if not target.exists() and not target.is_symlink():
+        try:
+            write_new_file(target, raw)
+            return
+        except FileExistsError:
+            pass
+    if _read_private(target, 8192) != raw:
+        _fail('private_route_requires_recovery')
 
 
 # Origin planning reads settings only; the initial build scans the wiki.
@@ -124,7 +119,10 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     (``{name, skipPaths}``); any other shape refuses as
     ``minimal_settings_required``. The settings file is never rewritten; the
     installer builds a separate private generation from the canonical wiki
-    root. No QMD database is read, copied, or selected.
+    root. No QMD database is read, copied, or selected. A project route or
+    selection marker refuses (``project_selection_already_exists``) unless
+    it names an install that does not exist on this machine; the plan then
+    lists those pointers (``replacesForeignPointers``) and prepare removes them.
     """
     from memvane.settings import api as config
     from memvane.route.api import (multi_settings_supported as _multi_settings_supported,
@@ -138,10 +136,14 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
             project.resolve(strict=True) != project):
         _fail('invalid_project_root')
     auto = project_dir.folder(project)
+    foreign = None
     if ((auto / RECORD).exists() or (auto / RECORD).is_symlink() or
             (not _bound_marker and ((auto / QMD_SELECTION_MARKER).exists() or
                                     (auto / QMD_SELECTION_MARKER).is_symlink()))):
-        _fail('project_selection_already_exists')
+        from memvane.app.setup_activation import foreign_pointers
+        foreign = foreign_pointers(project)
+        if not foreign:
+            _fail('project_selection_already_exists')
     found = config.find_project_config(str(project))
     settings = auto / 'settings.json'
     if (found.get('configPath') != str(settings) or
@@ -185,6 +187,9 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
             'projectRoot': str(project), 'settingsSha256': settings_sha,
             'scopeId': hashlib.sha256(seed).hexdigest()[:32],
             'collections': collections, 'sourceInventory': 'durable_wiki_catalog_scan'}
+    if foreign:
+        # prepare removes exactly these pointer bytes before it registers the build.
+        plan['replacesForeignPointers'] = foreign
     digest = hashlib.sha256(json.dumps(plan, sort_keys=True,
         ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
     return {'status': 'review_required', 'proposalSha256': digest, **plan}
@@ -396,6 +401,8 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
             model_path=model_path, dimension=dimension)
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
+        from memvane.app.setup_activation import retire_foreign_pointers
+        retire_foreign_pointers(plan)
         result = _register_initial_build(
             plan=plan, reviewed_provider=review['reviewedProvider'],
             state=state, journal=journal,

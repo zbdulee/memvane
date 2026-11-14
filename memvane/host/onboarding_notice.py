@@ -20,12 +20,19 @@ ONBOARDING_NOTICE_NO_SESSION = ('[memvane] 이 프로젝트는 아직 MemVane �
 ONBOARDING_ANSWER_PREFIX = '[memvane] onboarding-answer '
 BUILD_NOTICE = ('[memvane] {root}: 초기 MemVane 색인을 준비 중입니다. '
                 '빌드가 끝나면 setup skill로 활성화하세요.')
+# A route or selection marker of another plugin major (route ``majorMismatch``).
+MAJOR_NOTICES = {
+    'newer': '[memvane] 이 프로젝트는 더 높은 MemVane 버전으로 설치되어 있습니다. 이 호스트의 플러그인을 올려 주세요.',
+    'other': '[memvane] 이 플러그인 버전에 맞게 다시 온보딩해 주세요.',
+}
 
 
 def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
     """One SessionStart line for a project with settings but no selected route.
 
-    The caller has already classified the event ``legacy``. A directory
+    The caller has already classified the event ``legacy``. A route or
+    selection marker of another plugin major gets its own line instead
+    (``MAJOR_NOTICES``). A directory
     without ``.memvane/settings.json`` (or the ``.auto-context/`` fallback)
     is not opted in and stays silent.
     """
@@ -41,6 +48,13 @@ def onboarding_notice(payload_file: str, fallback_cwd: str) -> str | None:
         pass
     if not Path(cwd).is_absolute():
         return None
+    try:
+        from memvane.journal.api import select_route
+        mismatch = select_route(cwd, action='update-queued').get('majorMismatch')
+    except Exception:
+        mismatch = None
+    if mismatch in MAJOR_NOTICES:
+        return MAJOR_NOTICES[mismatch]
     found = find_project_config(cwd)
     if found.get("configFormat") != "auto-context-dir":
         return None

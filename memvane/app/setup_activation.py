@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import time
 
@@ -20,6 +21,79 @@ _read_private = _workflow._read_private
 _request_build_wake = _workflow._request_build_wake
 _write_or_verify_private = _workflow._write_or_verify_private
 project_dir = _workflow.project_dir
+
+_POINTER_NAMES = ('route.json', 'selection.json')
+
+
+def foreign_pointers(project):
+    """``{name: sha256}`` of project pointers that name an install missing here, else None.
+
+    Only a route the hook classifies ``legacy``/``foreign_install`` (B5)
+    qualifies, and only when every present pointer is a 1.x record naming one
+    install whose state root does not exist on this machine. A pointer of a
+    live install, of another major or of an unreadable shape never does.
+    """
+    from memvane.journal.api import select_route
+    from memvane.kernel import memvane_paths
+    from memvane.kernel.memvane_version import same_major
+    from memvane.route.api import read_regular
+    from memvane.route.types import MAX_RECORD_BYTES, SCHEMA_V4, SELECTION_SCHEMA_V1
+    auto = project_dir.folder(project)
+    decision = select_route(str(project), action='update')
+    if decision.get('state') != 'legacy' or decision.get('reason') != 'foreign_install':
+        return None
+    found, installs = {}, set()
+    for name, schema in zip(_POINTER_NAMES, (SCHEMA_V4, SELECTION_SCHEMA_V1)):
+        path = auto / name
+        if not os.path.lexists(path):
+            continue
+        try:
+            raw = read_regular(path, MAX_RECORD_BYTES)
+            record = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique)
+        except (OSError, ValueError, UnicodeError, _workflow.InstallBlocked):
+            return None
+        if (not isinstance(record, dict) or record.get('schema') != schema
+                or type(record.get('installId')) is not str
+                or not re.fullmatch(r'[0-9a-f]{32}', record['installId'])):
+            return None
+        if name == 'route.json':
+            state_root = record.get('stateRoot')
+            try:
+                if not same_major(record.get('stateFormat')):
+                    return None
+            except ValueError:
+                return None
+            if not isinstance(state_root, str) or (os.path.isabs(state_root)
+                                                   and os.path.lexists(state_root)):
+                return None
+        if os.path.lexists(memvane_paths.install_root(record['installId'])):
+            return None
+        installs.add(record['installId'])
+        found[name] = hashlib.sha256(raw).hexdigest()
+    return found if len(installs) == 1 else None
+
+
+def _retire_foreign_pointer(path):
+    os.unlink(path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def retire_foreign_pointers(plan):
+    """Remove the reviewed foreign pointers: the route first, the marker last."""
+    foreign = plan.get('replacesForeignPointers')
+    if not foreign:
+        return
+    project = Path(plan['projectRoot'])
+    if foreign_pointers(project) != foreign:
+        _fail('reviewed_origin_plan_changed')
+    for name in _POINTER_NAMES:
+        if name in foreign:
+            _retire_foreign_pointer(project_dir.folder(project) / name)
+
 
 def finalize_initial_build(*, project_root, state_root):
     """Seal the ready single-store head in the prepared journal and ledger."""

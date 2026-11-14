@@ -22,11 +22,16 @@ def dispatch_target(project, *, build):
     project = _project(project)
     from memvane.journal.api import select_route
     route = select_route(str(project), action='update')
+    if route.get('majorMismatch'):
+        # A pointer of another major: only a host of that major serves it.
+        raise DispatchTargetError('state_format_mismatch')
     if route.get('state') == 'candidate':
         from memvane.journal.api import verify_dispatch_target
         try:
             proof = verify_dispatch_target(route)
         except (OSError, RuntimeError, ValueError) as exc:
+            if str(exc) == 'state_format_mismatch':
+                raise DispatchTargetError('state_format_mismatch') from exc
             raise DispatchTargetError('target_journal_changed') from exc
         stable = {key: proof[key] for key in ('installId', 'scopeId',
                                              'storeIncarnation', 'journalPath')}

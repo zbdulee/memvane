@@ -9,7 +9,9 @@
 ### 설치 / cleanup
 Claude·Codex는 marketplace plugin install이 제품 경로다. 제품용 `install.sh`/`uninstall.sh`는 없다. AGY는 공식 PostToolUse payload adapter 전까지 자동 hook을 설치하지 않는다.
 
-live `v1/`에 쓰는 setup과 writer는 실행 플러그인 루트가 Claude 또는 Codex의 `plugins/cache/<marketplace>/memvane/<version>` 경로에 있어야 한다. `MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT=1`은 격리 시험 전용이다.
+live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service는 실행 플러그인 루트가 Claude 또는 Codex의 `plugins/cache/<marketplace>/memvane/<version>`이나 Hermes의 `~/.hermes/plugins/memvane`일 때만 연다(`memvane/kernel/memvane_execution_guard.py`). `MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT=1`은 격리 시험 전용이고 `MEMVANE_TEST_RUNTIME_ROOT`가 함께 있을 때만 인정한다.
+
+설치 기록(provider attestation, journal, 프로젝트의 `route.json`·`selection.json`)은 옆 파일에 완성해 fsync한 뒤 덮어쓰지 않는 rename으로 게시한다. 중단된 생성은 기록을 남기지 않고, 같은 단계의 재실행이 남은 조각을 지우고 다시 만든다.
 
 새 머신의 Laya embed runtime은 `setup_entry.py provision-index-runtime --approve-index-runtime-download`가 만든다(`memvane/provider/embed_runtime.py`). Node는 `PATH`를 먼저 보고 mise/fnm/nvm/volta/asdf/Homebrew/system 설치 순으로 찾되 메이저 22/24/26의 실제 바이너리만 받는다(버전 매니저 shim은 거절). `locks/laya-embed-runtime`(node-llama-cpp 3.18.1 + prebuilt `@node-llama-cpp/mac-arm64-metal`)를 `npm ci --ignore-scripts`로 설치하고, GGUF는 `https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf`에서 받아 sha256 `f470220f84b6235197541352d22f10bf00098a8242c18eaacea9c8a4add557bc`과 일치할 때만 채택한다(`--provider-model-file`로 같은 GGUF의 로컬 사본 지정). 결과는 `~/.local/state/memvane/v1/embed-runtime`의 세대 디렉터리와 `active.json`·`previous.json`이다. `gc-index-runtime`은 active·previous·`~/.local/state/memvane/v1/installs/*/provider-attestation.json`이 가리키지 않는 세대를 나열하고 `--approve-index-runtime-gc`가 있을 때만 지운다(attestation의 과거 `profileDependencyClosure` 행은 보지 않는다).
 

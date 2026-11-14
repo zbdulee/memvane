@@ -141,18 +141,13 @@ def stage_v1_attestation(journal_path, reviewed_provider):
         if existing != record:
             _fail('production_attestation_already_owned')
         return {'attestationPath': str(target), 'attestationSha256': digest}
+    from memvane.kernel.atomic_rename import write_new_file
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
-                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
-        with os.fdopen(fd, 'wb') as out:
-            out.write(raw)
-            out.flush()
-            os.fsync(out.fileno())
-        directory = os.open(target.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        # Complete bytes beside it, then a no-replace rename: an interrupted
+        # stage leaves no attestation and its rerun writes it again.
+        write_new_file(target, raw)
+    except FileExistsError:
+        pass  # compared below
     except OSError as exc:
         raise JournalEvidenceError('production_attestation_stage_incomplete') from exc
     existing, digest = _attestation(journal)
@@ -455,13 +450,19 @@ def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
     node = project.lstat()
     if not stat.S_ISDIR(node.st_mode) or node.st_uid != os.getuid():
         _fail('journal_project_unavailable')
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    from memvane.kernel.atomic_rename import discard_partial, partial_path, publish_new
+    # The journal is assembled beside its path and published with a
+    # no-replace rename: an interrupted creation leaves no journal, and the
+    # rerun (under the same install lock) discards the partial file.
+    building = partial_path(path)
+    discard_partial(building, '-journal')
+    fd = os.open(building, os.O_CREAT | os.O_EXCL | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
         original = os.fstat(fd)
     finally:
         os.close(fd)
     try:
-        with closing(sqlite3.connect(path, timeout=2, isolation_level=None)) as db:
+        with closing(sqlite3.connect(building, timeout=2, isolation_level=None)) as db:
             db.execute('PRAGMA journal_mode=DELETE')
             db.execute('PRAGMA synchronous=FULL')
             db.execute(f'PRAGMA application_id={V1_APP_ID}')
@@ -480,7 +481,7 @@ def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
                     or project.lstat().st_ino != node.st_ino):
                 _fail('journal_identity_changed')
             db.commit()
-        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        fd = os.open(building, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
         try:
             current = os.fstat(fd)
             if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
@@ -488,13 +489,19 @@ def create_v1_journal(journal_path, route_raw, expected_attestation_sha256):
             os.fsync(fd)
         finally:
             os.close(fd)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        publish_new(building, path)
+        current = path.lstat()
+        if (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino):
+            _fail('journal_file_changed')
+    except FileExistsError as exc:
+        discard_partial(building, '-journal')
+        raise JournalEvidenceError('journal_already_exists') from exc
     except (OSError, sqlite3.Error) as exc:
+        discard_partial(building, '-journal')
         raise JournalEvidenceError('journal_creation_incomplete') from exc
+    except BaseException:
+        discard_partial(building, '-journal')
+        raise
     return inspect_journal(path)
 
 
@@ -841,7 +848,7 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
         try:
             for path_key, hash_key in (('nodePath', 'nodeSha256'),
                                        ('moduleEntryPath', 'moduleEntrySha256'), ('modelPath', 'modelSha256')):
-                if _hash_file(manifest[path_key]) != manifest[hash_key]:
+                if laya_embed_runtime.runtime_file_sha256(manifest[path_key]) != manifest[hash_key]:
                     _fail('provider_identity_changed')
             _verify_runtime_files(record)
             active = laya_embed_runtime.select()

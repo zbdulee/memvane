@@ -50,6 +50,21 @@ def _crash_once(real, when=lambda *_a, **_k: True):
     return wrapper
 
 
+def _fd_name(fd):
+    """Base name of the file an fd is open on ('' when it names no file)."""
+    import fcntl
+    try:
+        raw = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024))
+    except (OSError, ValueError, AttributeError):
+        return ''
+    return os.path.basename(raw.split(b'\0', 1)[0].decode('utf-8', 'replace'))
+
+
+def _opened_for(name):
+    """``os.fdopen`` filter: the file (or the partial file beside it) is ``name``."""
+    return lambda fd, *_a, **_k: _fd_name(fd) in (name, '.' + name + '.partial')
+
+
 class FixtureOnboarding(unittest.TestCase):
     git = base.WikiDbProvenance.git
     revision = base.WikiDbProvenance.revision
@@ -444,6 +459,131 @@ class FixtureOnboarding(unittest.TestCase):
             self.assertFalse((self.state / 'journal.sqlite').exists())
         shutil.rmtree(bulk)
         self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+
+    # -- proof/state review --------------------------------------------------------------
+    def write_pointer(self, name, record):
+        """Replace one project pointer with ``record``'s canonical bytes; returns them."""
+        raw = json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
+        (self.project / '.memvane' / name).write_bytes(raw)
+        return raw
+
+    def test_foreign_route_is_replaced_by_a_new_onboarding(self):
+        """Proof F3: pointers of an install missing on this machine give way; a live one never."""
+        import hashlib
+        from memvane.app import setup_workflow as workflow
+        from memvane.journal.api import select_route
+        self.install(1)
+        plan = lambda: workflow.plan_fresh_wiki_origin(self.project)
+        self.blocked('project_selection_already_exists', plan)
+        folder = self.project / '.memvane'
+        saved = {name: (folder / name).read_bytes() for name in ('route.json', 'selection.json')}
+        # Inode mismatch while the install directory exists here: foreign, but never replaced.
+        route = json.loads(saved['route.json'])
+        moved = self.write_pointer('route.json', {**route, 'stateNode': [route['stateNode'][0],
+                                                                      route['stateNode'][1] + 1]})
+        marker = json.loads(saved['selection.json'])
+        self.write_pointer('selection.json', {**marker, 'routeSha256': hashlib.sha256(moved).hexdigest()})
+        decision = select_route(str(self.project), action='update')
+        self.assertEqual((decision['state'], decision['reason']), ('legacy', 'foreign_install'))
+        self.blocked('project_selection_already_exists', plan)
+        for name, raw in saved.items():
+            (folder / name).write_bytes(raw)
+        self.assertEqual(select_route(str(self.project), action='update')['state'], 'candidate')
+        # The committed pointers on a second machine: no install, no build pointer.
+        self.state.rename(self.home / 'elsewhere')
+        self.build_pointer().rename(self.home / 'elsewhere-build-pointer.json')
+        decision = select_route(str(self.project), action='update')
+        self.assertEqual((decision['state'], decision['reason']), ('legacy', 'foreign_install'))
+        reviewed = plan()
+        self.assertEqual(reviewed['status'], 'review_required')
+        self.assertEqual(reviewed['replacesForeignPointers'],
+                         {name: hashlib.sha256(raw).hexdigest() for name, raw in saved.items()})
+        self.use_install(THIRD_INSTALL)
+        from memvane.app import setup_activation as activation
+        with mock.patch.object(activation, '_retire_foreign_pointer',
+                               _crash_once(activation._retire_foreign_pointer,
+                                           lambda path: path.name == 'selection.json')):
+            with self.assertRaises(_Crash):
+                self.prepare()
+        self.assertEqual(self.project_pointers(), ['selection.json'], 'the route goes first')
+        self.assertIsNone(self.build_pointer())
+        self.assertEqual(list(plan()['replacesForeignPointers']), ['selection.json'])
+        self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+        self.assertEqual(self.project_pointers(), [])
+        self.build()
+        self.assertEqual(self.finalize()['status'], 'initial_build_finalized')
+        self.assertEqual(self.activate()['status'], 'selected')
+        self.assertEqual(json.loads((folder / 'route.json').read_bytes())['installId'], THIRD_INSTALL)
+        self.assertIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
+
+    def test_pointer_of_another_major_answers_without_hook_work(self):
+        """Proof F4: an unknown schema or another major follows D4, never a refused hook."""
+        from memvane.app import setup_workflow as workflow
+        from memvane.host.onboarding_notice import MAJOR_NOTICES, onboarding_notice
+        from memvane.journal.api import dispatch_target, selected_project_proof
+        from memvane.journal.types import DispatchTargetError
+        from memvane.kernel.errors import IndexContractError
+        self.install(1)
+        folder = self.project / '.memvane'
+        saved = {name: (folder / name).read_bytes() for name in ('route.json', 'selection.json')}
+        route, marker = (json.loads(saved[name]) for name in ('route.json', 'selection.json'))
+
+        def answers(kind):
+            for action in ('recall', 'update-queued', 'update', 'gate', 'posttool', 'index',
+                           'compile', 'file-change-event'):
+                self.assertEqual(self.hook_state(action), 'legacy', action)
+            self.assertEqual(onboarding_notice(str(self.payload_file()), str(self.project)),
+                             MAJOR_NOTICES[kind])
+            with self.assertRaises(DispatchTargetError) as caught:
+                dispatch_target(self.project, build=True)
+            self.assertEqual(caught.exception.code, 'state_format_mismatch')
+            with self.assertRaises(IndexContractError):
+                selected_project_proof(self.project)
+            self.blocked('project_selection_already_exists',
+                         lambda: workflow.plan_fresh_wiki_origin(self.project))
+
+        changed = (('route.json', {**route, 'schema': 'memvane-route-v5'}, 'newer'),
+                   ('route.json', {**route, 'stateFormat': 2}, 'newer'),
+                   ('route.json', {**route, 'stateFormat': 2, 'storeFormat': 'v5'}, 'newer'),
+                   ('route.json', {**route, 'schema': 'laya-index-route-v1'}, 'other'),
+                   ('selection.json', {**marker, 'schema': 'memvane-selection-v2'}, 'newer'))
+        for name, record, kind in changed:
+            self.write_pointer(name, record)
+            answers(kind)
+            (folder / name).write_bytes(saved[name])
+        self.assertEqual(self.hook_state('recall'), 'candidate')
+        self.assertIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
+
+    def test_interrupted_record_creation_reruns(self):
+        """Proof F7: attestation, journal and project pointers never stay half written."""
+        from memvane.journal import install_journal
+        self.install(1, onboard=False)
+        partials = lambda: sorted(path.name for folder in (self.state, self.project / '.memvane')
+                                  for path in folder.iterdir() if path.name.endswith('.partial'))
+        attestation = self.state / install_journal.PRODUCTION_ATTESTATION
+        with mock.patch('os.fdopen', _crash_once(os.fdopen, _opened_for(attestation.name))):
+            with self.assertRaises(_Crash):
+                self.prepare()
+        self.assertEqual((attestation.exists(), partials()), (False, []))
+        with mock.patch.object(install_journal, '_inspect_v1_row',
+                               _crash_once(install_journal._inspect_v1_row)):
+            with self.assertRaises(_Crash):
+                self.prepare()
+        self.assertTrue(attestation.exists())
+        self.assertEqual(((self.state / 'journal.sqlite').exists(), partials()), (False, []))
+        self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+        self.assertEqual(self.journal_row()['state'], 'prepared')
+        self.build()
+        self.assertEqual(self.finalize()['status'], 'initial_build_finalized')
+        for name in ('selection.json', 'route.json'):
+            with mock.patch('os.fdopen', _crash_once(os.fdopen, _opened_for(name))):
+                with self.assertRaises(_Crash):
+                    self.activate()
+            self.assertEqual(partials(), [])
+            self.assertNotIn(name, self.project_pointers())
+        self.assertEqual(self.activate()['status'], 'selected')
+        self.assertEqual(self.project_pointers(), ['route.json', 'selection.json'])
+        self.assertIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
 
 
 if __name__ == '__main__':

@@ -22,6 +22,9 @@ const METHODS = [
   'test_reruns_compare_recorded_nodes_by_inode',
   'test_recall_in_interrupted_windows_exits_zero_without_context',
   'test_prepare_refuses_a_raw_tree_over_the_scan_bounds',
+  'test_foreign_route_is_replaced_by_a_new_onboarding',
+  'test_pointer_of_another_major_answers_without_hook_work',
+  'test_interrupted_record_creation_reruns',
 ];
 
 for (const method of METHODS) {

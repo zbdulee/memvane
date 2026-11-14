@@ -26,7 +26,7 @@ def select_hook_payload(action: str, body: bytes, fallback_cwd: str) -> dict:
             # preserve that path when its fallback project has no route marker.
             # A present marker is sticky even without a parseable event cwd.
             fallback = select_route(fallback_cwd, action=action)
-            return (fallback if fallback["state"] == "legacy" else
+            return (fallback if fallback["state"] == "legacy" or fallback.get("majorMismatch") else
                     _decision("blocked", "unparseable_selected_hook_payload"))
         if not isinstance(payload, dict):
             raise ValueError("invalid_hook_payload")
@@ -58,6 +58,12 @@ def main(argv: list[str] | None = None) -> int:
     if decision["state"] == "blocked" and decision.get("recallQuiet") is True and args[1] == "recall":
         # An onboarding or activation step stopped midway: the hook dispatcher
         # treats the recall like an unselected project, exit 0 without context.
+        print("legacy")
+        return 0
+    if decision["state"] == "blocked" and decision.get("majorMismatch") in ("newer", "other"):
+        # A pointer of another plugin major: no hook work and exit 0; the
+        # SessionStart notice names the mismatch (onboarding_notice). Writers
+        # and setup refuse through their own route proofs.
         print("legacy")
         return 0
     print(decision["state"])

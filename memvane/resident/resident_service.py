@@ -135,12 +135,6 @@ def service_dir(*, create=False, home=None):
     return private_root(cursor)
 
 
-
-
-
-
-
-
 def private_root(root):
     root = Path(root)
     info = root.lstat()
@@ -323,8 +317,6 @@ def default_spawn(argv, *, pass_fds):
                      start_new_session=True, env=env, cwd='/')
 
 
-
-
 def _spawn(root, *, python=None, learning_root=None, spawn=None):
     """Start one successor that waits for the service lease."""
     fd = _private_lock(Path(root) / SUCCESSOR)
@@ -354,10 +346,13 @@ def _learning_root():
         return None
 
 
-
-
-
-
+def _require_installed_plugin(root):
+    """A copy outside a host install path never serves or joins the live service."""
+    from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+    try:
+        require_cached_plugin_for_live_write(root)
+    except ValueError as exc:
+        raise _deferred('live_write_requires_plugin_cache') from exc
 
 
 def ensure_service(*, root=None, python=None, learning_root=None, spawn=None):
@@ -366,11 +361,16 @@ def ensure_service(*, root=None, python=None, learning_root=None, spawn=None):
     Returns ``ready``, ``starting`` or ``replacing``; raises ResourceDeferred
     ``laya_service_protocol_mismatch`` for an older client of an incompatible
     newer service. ``python`` asks for that interpreter (learning inference).
+    A copy outside a host install path never starts, replaces or joins the
+    live service (ResourceDeferred ``live_write_requires_plugin_cache``).
     """
     if root is None:
         if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
             raise _deferred('laya_service_fixture')
+        if 'MEMVANE_TEST_RUNTIME_ROOT' not in os.environ:
+            _require_installed_plugin(None)
         root = service_dir(create=True)
+    _require_installed_plugin(root)
     root = private_root(Path(root))
     answer = hello(root)
     mine = bundle_identity()
@@ -429,6 +429,10 @@ def request_adopt(project, *, root=None, spawn=None):
     if root is None and (os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
                          or os.environ.get('QMD_SANDBOX')):
         raise _deferred('laya_service_fixture')
+    if root is None and 'MEMVANE_TEST_RUNTIME_ROOT' not in os.environ:
+        _require_installed_plugin(None)
+    if root is not None:
+        _require_installed_plugin(root)
     try:
         root = private_root(Path(root)) if root is not None else service_dir(create=True)
         register(project, root=root)
@@ -443,25 +447,6 @@ def request_adopt(project, *, root=None, spawn=None):
         with suppress(Exception):
             exchange(root, {'command': 'adopt', 'project': str(project)})
     return state
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # --------------------------------------------------------------- service side
@@ -1627,6 +1612,11 @@ def main(argv=None):
             return 2
         root = private_root(Path(args[1]))
     except (OSError, ValueError):
+        return 2
+    from memvane.kernel.resource_deferred import ResourceDeferred
+    try:
+        _require_installed_plugin(root)
+    except ResourceDeferred:
         return 2
     learning_root = None if args[2] == '-' else args[2]
     service = Service(root, learning_root=learning_root,

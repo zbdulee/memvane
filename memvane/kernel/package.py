@@ -19,6 +19,10 @@ def sync_owner_directory(*, create=False):
     if raw is None:
         if os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1' or os.environ.get('QMD_SANDBOX'):
             raise ValueError('journal_test_root_missing')
+        if create:
+            # Taking the live owner lock is a live write: host-installed copies only.
+            from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+            require_cached_plugin_for_live_write()
         start = Path(pwd.getpwuid(os.getuid()).pw_dir)
         parts = ('.local', 'state', 'memvane', 'v1', 'sync-owner-locks')
         private_at = len(parts)

@@ -7,6 +7,37 @@ Live fd/path and before/after observations must use their full identities.
 from __future__ import annotations
 
 from collections.abc import Mapping
+import os
+import stat
+
+# (digest function, path, inode, size, mtime_ns) -> digest of a file this
+# process already read; see ``cached_by_identity``.
+_DIGESTS = {}
+_DIGESTS_MAX = 65536
+
+
+def cached_by_identity(path, digest):
+    """``digest(path)``, read again only when the file's (path, inode, size, mtime_ns) moves.
+
+    A path that is not a regular file goes to ``digest`` as is, so its own
+    error names it. The caller still compares the digest on every use.
+    """
+    try:
+        info = os.lstat(path)
+    except (OSError, TypeError, ValueError):
+        return digest(path)
+    if not stat.S_ISREG(info.st_mode):
+        return digest(path)
+    key = (digest, str(path), info.st_ino, info.st_size, info.st_mtime_ns)
+    if key in _DIGESTS:
+        return _DIGESTS[key]
+    value = digest(path)
+    after = os.lstat(path)
+    if (after.st_ino, after.st_size, after.st_mtime_ns) == key[2:]:
+        if len(_DIGESTS) >= _DIGESTS_MAX:
+            _DIGESTS.clear()
+        _DIGESTS[key] = value
+    return value
 
 
 def persistent_identity_equal(stored, live, *, device_index=None, device_fields=('dev',)):

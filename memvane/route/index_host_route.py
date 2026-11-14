@@ -113,6 +113,39 @@ def _decision(state: str, reason: str, **details: str) -> dict:
     return {"state": state, "reason": reason, **details}
 
 
+_ROUTE_SCHEMA = re.compile(r"memvane-route-v([0-9]{1,6})\Z")
+_SELECTION_SCHEMA = re.compile(r"memvane-selection-v([0-9]{1,6})\Z")
+
+
+def _foreign_format(record, *, marker: bool = False):
+    """The decision for a pointer of another major, or None when this major reads it.
+
+    A route or selection marker with an unknown schema id, or a v4 route
+    whose ``stateFormat`` is another major, belongs to another plugin major.
+    Recall answers without context (``recallQuiet``), SessionStart names it
+    once (``majorMismatch`` is ``newer`` for a higher major, else ``other``)
+    and every writer and setup refuses. A record without a string schema is
+    not a pointer of another major; it stays invalid.
+    """
+    if not isinstance(record, dict) or type(record.get("schema")) is not str:
+        return None
+    schema = record["schema"]
+    if schema == (SELECTION_SCHEMA_V1 if marker else SCHEMA_V4):
+        state_format = record.get("stateFormat")
+        if marker or type(state_format) is not int or state_format < 1:
+            return None
+        from memvane.kernel.memvane_version import same_major
+        if same_major(state_format):
+            return None
+        from memvane.kernel.memvane_paths import STATE_FORMAT
+        newer = state_format > STATE_FORMAT
+    else:
+        match = (_SELECTION_SCHEMA if marker else _ROUTE_SCHEMA).fullmatch(schema)
+        newer = match is not None and int(match.group(1)) > (1 if marker else 4)
+    return _decision("blocked", "route_major_mismatch",
+                     majorMismatch="newer" if newer else "other", recallQuiet=True)
+
+
 def _canonical_absolute(value: object) -> bool:
     if not isinstance(value, str) or not value or "\x00" in value:
         return False
@@ -349,6 +382,9 @@ def _classify_v4(root: Path, settings: Path, record: dict, *, inspect_store=True
     import sqlite3
     from memvane.kernel.memvane_version import same_major
 
+    foreign = _foreign_format(record)
+    if foreign is not None:
+        return foreign
     if (set(record) != FIELDS_V4 or record['status'] != 'active'
             or type(record['installId']) is not str
             or not INCARNATION.fullmatch(record['installId'])

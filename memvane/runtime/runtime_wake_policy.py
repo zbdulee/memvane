@@ -55,6 +55,11 @@ PREPARING_RETRY_SECS = 15
 # refuses to adopt the install. The wake keeps waiting without counting, but at the capped backoff,
 # and the streak is reported once (``runtime_work`` keeps its first sighting).
 PREPARING_STALL_SECS = 300
+# Reasons only a newer host (or the install's own major) can serve: the row
+# stays exactly as it is, and this host looks at it again only after this long
+# or once its revision changes.
+OTHER_HOST_REASONS = frozenset(('writer_floor', 'state_format_mismatch'))
+OTHER_HOST_RECHECK_SECS = RETRY_MAX_SECS
 
 
 def validate_wake(kind, target):
@@ -137,6 +142,8 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
            reported=False):
     """Decide what happens to a claimed wake after one execution.
 
+    leave: the row goes back to pending with its due, attempts and reason as
+    they were (``OTHER_HOST_REASONS``); the caller records the skip apart.
     ack: delete the claimed revision; a newer revision (enqueued while running)
     survives and is re-pended at ``due`` without counting an attempt.
     retry: keep the row, push ``due`` back by the backoff and count the attempt.
@@ -170,9 +177,10 @@ def settle(attempts, *, done, now, error=None, kind=None, missing=None, preparin
             and error.detail == 'deferred:deferred:owner_busy'):
         return {'ack': False, 'due': now + retry_delay(attempts),
                 'reason': failure_reason(error), 'count': 0}
-    if isinstance(error, DispatchFailure) and error.code in ('writer_floor', 'state_format_mismatch'):
-        # A newer host may process this row; never ACK or exhaust its retries.
-        return {'ack': False, 'due': now + RETRY_MAX_SECS,
+    if isinstance(error, DispatchFailure) and error.code in OTHER_HOST_REASONS:
+        # A newer host may process this row: leave its due, attempts and
+        # reason untouched; never ACK, push or exhaust it.
+        return {'ack': False, 'leave': True, 'due': None,
                 'reason': failure_reason(error), 'count': 0}
     if isinstance(error, DispatchFailure) and error.code in UNCOUNTED_DISPATCH_REASONS:
         step = {'ack': False, 'due': now + PREPARING_RETRY_SECS,

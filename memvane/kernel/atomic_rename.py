@@ -38,6 +38,62 @@ def rename_noreplace(parent_fd, source, target):
         raise OSError(error, os.strerror(error), target)
 
 
+def partial_path(target):
+    """Where a new ``target`` is assembled before it is published."""
+    target = Path(target)
+    return target.with_name('.' + target.name + '.partial')
+
+
+def discard_partial(path, *suffixes):
+    """Remove a partial file a killed writer left (and its named siblings)."""
+    for name in (str(path), *(str(path) + suffix for suffix in suffixes)):
+        try:
+            os.unlink(name)
+        except FileNotFoundError:
+            pass
+
+
+def publish_new(temp, target):
+    """Rename a complete ``temp`` onto ``target``, which must not exist.
+
+    Raises FileExistsError when ``target`` exists; the directory entry is
+    durable on return.
+    """
+    temp, target = Path(temp), Path(target)
+    if temp.parent != target.parent:
+        raise ValueError('publish_new_parent_mismatch')
+    fd = os.open(target.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        rename_noreplace(fd, temp.name, target.name)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_new_file(target, raw, mode=0o600):
+    """Create ``target`` with exactly ``raw``: never a partial or replaced file.
+
+    The bytes are written and fsynced beside it (``partial_path``), then
+    published with a no-replace rename. The caller holds the lock that
+    serializes writers of ``target``, so a partial file found there was left
+    by a killed writer and is removed first. Raises FileExistsError when
+    ``target`` exists.
+    """
+    target = Path(target)
+    temp = partial_path(target)
+    discard_partial(temp)
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), mode)
+    try:
+        with os.fdopen(fd, 'wb') as out:
+            out.write(raw)
+            out.flush()
+            os.fsync(out.fileno())
+        publish_new(temp, target)
+    except BaseException:
+        discard_partial(temp)
+        raise
+
+
 MAX_FILE = 16 * 1024 * 1024
 
 

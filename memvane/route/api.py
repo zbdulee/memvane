@@ -93,3 +93,8 @@ def vector_profile(*args, **kwargs):
 def decision(*args, **kwargs):
     from memvane.route.index_host_route import _decision as implementation
     return implementation(*args, **kwargs)
+
+
+def foreign_format(*args, **kwargs):
+    from memvane.route.index_host_route import _foreign_format as implementation
+    return implementation(*args, **kwargs)

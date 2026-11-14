@@ -5,3 +5,5 @@
 구현: `embed_resident.py`, `resident_service.py`.
 
 서비스는 idle 상태로 끝나지 않는다. 대신 tick마다 서비스 root와 lease 파일이 처음 잡은 것(같은 경로·device·inode)인지 다시 확인하고, 사라지거나 바뀌면 worker를 drain한 뒤 종료한다(`resident.drain` 이벤트 reason `service_root_changed`).
+
+호스트 설치 경로 밖의 플러그인 사본(dev worktree 등)은 live 서비스를 띄우거나 교체하지 않고, 프로젝트를 등록하거나 adopt를 요청하지도 않는다(`ResourceDeferred` `live_write_requires_plugin_cache`). 그 사본의 recall은 lexical 결과로 답한다.

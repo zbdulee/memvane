@@ -73,6 +73,9 @@ MISSING_FILE='runtime-wake-missing.json'
 # Each wake's consecutive target_preparing streak and whether it was reported.
 PREPARING_FILE='runtime-wake-preparing.json'
 TIMER_LOCK='runtime-wake-timer.lock'
+# Rows this host left untouched for a newer host (``OTHER_HOST_REASONS``):
+# revision, plugin version and the time this host looks at the row again.
+DEFERRED_FILE='runtime-wake-deferred.json'
 TIMER_CHUNK_SECONDS=15
 TIMER_MIN_SLEEP_SECONDS=.5
 TIMER_MAX_SECONDS=3600
@@ -118,7 +121,12 @@ def foreground(namespace,*,coordinator=None):
 
 class WakeQueue:
     def __init__(self,root=None):
+        from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
+        # Only a host-installed copy reads or writes the account's live queue.
+        if root is None and not os.environ.get('MEMVANE_TEST_RUNTIME_ROOT'):
+            require_cached_plugin_for_live_write()
         self.root=_private_state(Path(root) if root is not None else default_root())
+        require_cached_plugin_for_live_write(self.root)
         self.path=self.root/'runtime-wakes.sqlite3'
 
     @contextmanager
@@ -215,6 +223,44 @@ def _upsert(db,key,kind,target,now,*,pull_due=False,delay=0):
                 'mark':DELAYED_REASON if delay else None,'delayed':DELAYED_REASON})
 
 
+def _plugin_version():
+    from memvane.kernel.memvane_version import plugin_version
+    try:return plugin_version()
+    except (OSError,ValueError,KeyError,TypeError):return None
+
+
+def _own_view(root,rows,now):
+    """The rows as this host schedules them.
+
+    A row this host left for a newer host (``DEFERRED_FILE``) counts as due
+    only at its recheck time, while its revision is the one left and this
+    host's version is not above the one that left it. The queue row itself
+    keeps its due for every other host.
+    """
+    left=_read_map(root/DEFERRED_FILE)
+    if not left:return rows
+    from memvane.kernel.memvane_version import version_key
+    mine=version_key(_plugin_version())
+    view=[]
+    for row in rows:
+        entry=left.get(row['id'])
+        if (mine is not None and isinstance(entry,dict) and entry.get('revision')==row['revision']
+                and type(entry.get('until')) in (int,float) and math.isfinite(entry['until'])
+                and now<entry['until'] and version_key(entry.get('version')) is not None
+                and mine<=version_key(entry['version'])):
+            row={**row,'due':max(row['due'],entry['until'])}
+        view.append(row)
+    return view
+
+
+def _leave_for_other_host(db,root,row,step,now):
+    """Put a claimed row back exactly as it was and record the skip apart."""
+    db.execute("UPDATE wakes SET status='pending' WHERE id=? AND status='running'",(row['id'],))
+    _record_tail(root/DEFERRED_FILE,row['id'],{'at':now,'until':now+wake_policy.OTHER_HOST_RECHECK_SECS,
+        'revision':row['revision'],'version':_plugin_version(),'target':row['target'],
+        'reason':step['reason']},limit=MAX_WAKES)
+
+
 def _promote_overflow(db,now):
     """Move capacity-deferred wakes into free slots, oldest first."""
     for row in db.execute('SELECT id,kind,target FROM wake_overflow ORDER BY at,id').fetchall():
@@ -250,7 +296,7 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
             if not rows:return {'status':'drained','runs':runs}
             # A mover waits for this lease: never start another child for it.
             if yield_requested(queue.root):return {'status':'yielded','runs':runs}
-            due=wake_policy.due_rows(rows,wall())
+            due=wake_policy.due_rows(_own_view(queue.root,rows,wall()),wall())
             # Only backed-off rows: release the lease now instead of sleeping
             # on it; a hook, a request or the runtime monitor wakes a worker
             # again once one is due.
@@ -279,6 +325,8 @@ def drain(queue,*,execute,on_drop=None,on_stall=None,ready=None,clock=time.monot
                 step=wake_policy.settle(row['attempts'],done=done,error=error,now=wall(),kind=row['kind'],
                                         missing=streak,preparing=waiting and waiting[:2],
                                         reported=bool(waiting and waiting[2]))
+                if step.get('leave'):
+                    _leave_for_other_host(db,queue.root,row,step,wall());continue
                 if step.get('drop'):_record_drop(queue.root,row,step,error,wall(),on_drop=on_drop)
                 if not missing or step['ack']:_clear_missing(queue.root,row['id'])
                 if not preparing or step['ack']:_clear_missing(queue.root,row['id'],PREPARING_FILE)
@@ -416,7 +464,7 @@ def _wake(queue=None):
     if not rows:return 'idle'
     # Backed-off rows alone never start a worker that would only wait: the
     # lease-free timer runs them once they are due.
-    if not wake_policy.any_due(rows,time.time()):
+    if not wake_policy.any_due(_own_view(queue.root,rows,time.time()),time.time()):
         _arm_timer(queue);return 'idle'
     if yield_requested(queue.root):
         _arm_timer(queue);return 'yield'
@@ -482,7 +530,7 @@ def timer(queue,*,wake_once=None,wall=time.time,clock=time.monotonic,sleep=time.
         except (OSError,ValueError,sqlite3.Error):return 'gone'
         rows=[row for row in rows if row['kind'] in wake_policy.KINDS]
         if not rows:return 'empty'
-        now=wall();earliest=min(row['due'] for row in rows)
+        now=wall();earliest=min(row['due'] for row in _own_view(queue.root,rows,now))
         if earliest<=now:
             try:wake_once(queue)
             except (OSError,ValueError,sqlite3.Error):return 'gone'
