@@ -58,6 +58,30 @@ class DiscoveryCursor(FixtureCase):
         self.assertIn(changed, queue.read_text())
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
 
+    def test_post_tool_consent_does_not_authorize_session_grant(self):
+        use_config(self, self.project, expanded(self.project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_tool_source'],
+            'extractor': {'builtins': ['codex']}}))
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        grant = discovery.record_grant(self.decision, 'session_start', engine='codex')
+        self.assertTrue(discovery.activate_grant(self.decision, 'session_start', grant))
+        result = self.drain('g2', {self.key: changed})
+        self.assertEqual((result['state'], result['reason'], result['pending']),
+                         ('pending', 'compile_trigger_denied', 1))
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['session_start'], [])
+        self.assertEqual(discovery._read(discovery._paths(self.decision)[0])['pending'], {self.key: changed})
+        self.assertFalse((self.root / workspace.rel(workspace_types.SOURCE_QUEUE)).exists())
+
+    def test_unchanged_raw_snapshot_spends_grant_without_queueing(self):
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.accept()
+        result = self.drain('g2', {self.key: self.initial})
+        self.assertEqual((result['state'], result['pending']), ('drained', 0))
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
+        self.assertFalse((self.root / workspace.rel(workspace_types.SOURCE_QUEUE)).exists())
+
     def test_corrupt_cursor_fails_closed_without_reset(self):
         path = discovery._paths(self.decision)[0]
         path.write_bytes(b'{bad')
@@ -120,6 +144,24 @@ class DiscoveryCursor(FixtureCase):
         result = self.drain('g2', {self.key: changed})
         self.assertEqual(result['state'], 'drained')
         self.assertEqual(queue.read_bytes(), before)
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
+
+    def test_fault_after_journal_keeps_pending_and_grant_for_retry(self):
+        from memvane.wiki.intake import wiki_compile_enqueue as enqueue
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        grant = self.accept()
+        with patch.object(enqueue, 'enqueue_changed_sources', side_effect=OSError('synthetic disk full')):
+            with self.assertRaisesRegex(OSError, 'synthetic disk full'):
+                self.drain('g2', {self.key: changed})
+        state = discovery._read(discovery._paths(self.decision)[0])
+        self.assertEqual((state['baseGen'], state['pending']), ('g2', {self.key: changed}))
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [grant])
+        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        self.assertFalse(queue.exists())
+        self.assertEqual(self.drain('g2', {self.key: changed})['queued'], 1)
+        self.assertEqual(len(queue.read_text().splitlines()), 1)
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
 
     def test_route_change_before_enqueue_preserves_cursor_and_grant(self):

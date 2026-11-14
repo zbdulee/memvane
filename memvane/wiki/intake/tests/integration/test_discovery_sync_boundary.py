@@ -23,9 +23,13 @@ class DiscoverySyncBoundary(FixtureCase):
         payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
                    'tool_input': {'command': 'false'},
                    'tool_response': {'exit_code': 1}, 'cwd': str(project.root)}
-        with patch.object(runtime, 'request') as wake:
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
             self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, payload), {})
-        wake.assert_not_called()
+            wake.assert_not_called()
+            edit = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write', 'cwd': str(project.root),
+                    'tool_input': {'file_path': str(project.root / 'docs/note.md')}}
+            self.assertEqual(host.serve_selected('index', 'claude', decision, edit), {})
+            self.assertIn('laya-sync', [call.args[0] for call in wake.call_args_list])
         grants = discovery.observe_grants(decision)
         self.assertEqual(grants['grants']['sync'], [])
         self.assertEqual(grants['provisional']['sync'], [])
