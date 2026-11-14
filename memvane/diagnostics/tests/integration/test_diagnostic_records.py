@@ -1,0 +1,178 @@
+import json
+import threading
+import unittest
+import os
+from pathlib import Path
+from unittest.mock import patch
+from tests.support.case import FixtureCase
+from memvane.diagnostics import api
+from memvane.diagnostics import event_log
+
+
+class DiagnosticRecordTests(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.state = self.tmp / 'state'
+        self.state.mkdir(mode=0o700)
+
+    def rows(self, path):
+        return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+
+    def test_prompt_fields_store_only_digest_and_character_count(self):
+        result = api.prompt_fields('private prompt')
+        self.assertEqual(set(result), {'sha256', 'chars'})
+        self.assertEqual(result['chars'], len('private prompt'))
+
+    def test_event_writer_drops_secret_fields_and_bounds_prompt_metadata(self):
+        self.assertTrue(api.emit('recall', outcome='ok', state_root=self.state,
+                                 prompt=api.prompt_fields('private prompt'),
+                                 api_key='secret', note='safe'))
+        rows = self.rows(self.state / 'events.jsonl')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['event'], 'recall')
+        self.assertNotIn('api_key', rows[0])
+        self.assertEqual(rows[0]['prompt'], api.prompt_fields('private prompt'))
+        self.assertNotIn('private prompt', json.dumps(rows))
+
+    def test_event_writer_refuses_missing_state_root_without_raising(self):
+        self.assertFalse(api.emit('recall', state_root=None))
+        self.assertEqual(event_log.inspect(self.tmp / 'missing')['reason'], 'state_root_missing')
+
+    def test_job_telemetry_filters_unapproved_content_fields(self):
+        path = self.state / 'job-telemetry.jsonl'
+        self.assertTrue(api.telemetry_emit(path, 'queued', job_id='job-1',
+                                           prompt='private', body='private', attempt=1))
+        row = json.loads(path.read_text(encoding='utf-8').splitlines()[0])
+        self.assertEqual(row['job_id'], 'job-1')
+        self.assertNotIn('prompt', row)
+        self.assertNotIn('body', row)
+
+    def test_event_line_stays_within_the_format_limit(self):
+        self.assertTrue(api.emit('large', state_root=self.state, detail='x' * 12000))
+        line = (self.state / 'events.jsonl').read_bytes()
+        self.assertLessEqual(len(line.rstrip(b'\n')), event_log.MAX_LINE)
+
+    def test_reader_skips_malformed_records(self):
+        path = self.state / 'events.jsonl'
+        self.assertTrue(api.emit('valid', state_root=self.state))
+        with path.open('ab') as stream:
+            stream.write(b'{broken}\n')
+        rows = event_log.read(self.state)
+        self.assertEqual([row['event'] for row in rows], ['valid'])
+
+    def test_wiki_tail_sanitizes_display_fields(self):
+        api.wiki(self.state, 'created', 'wiki/card.md', 'Title\u202e unsafe')
+        rendered = api.wiki_tail(self.state)
+        self.assertIn('wiki/card.md', rendered)
+        self.assertNotIn('\u202e', rendered)
+
+    def test_job_replay_leaves_unfinished_attempt_open(self):
+        from memvane.diagnostics import job_telemetry
+        lines = [json.dumps({'schema': job_telemetry.SCHEMA, 'phase': 'started',
+                             'ts': 1.0, 'job_id': 'job-1', 'attempt': 1})]
+        rows = job_telemetry.replay(lines)
+        self.assertEqual(len(rows), 1)
+        self.assertIsNone(rows[0]['finished_at'])
+
+    def test_job_replay_separates_attempts_and_rejects_invalid_finishes(self):
+        from memvane.diagnostics import job_telemetry
+        path = self.state / 'job-telemetry.jsonl'
+        emit = job_telemetry.emit
+        emit(path, 'queued', job_id='episode:7:write', attempt=1, ts=1000)
+        emit(path, 'started', job_id='episode:7:write', attempt=1, ts=1001)
+        emit(path, 'finished', job_id='episode:7:write', attempt=1, status='error', ts=1003)
+        emit(path, 'queued', job_id='episode:7:write', attempt=2, ts=1004)
+        emit(path, 'started', job_id='episode:7:write', attempt=2, ts=1005)
+        emit(path, 'finished', job_id='episode:7:write', attempt=2, status='success', run_ms=900, ts=1006)
+        emit(path, 'started', job_id='crashed:1', ts=1011)
+        bad = {'schema': job_telemetry.SCHEMA, 'phase': 'finished', 'job_id': 'crashed:1',
+               'attempt': 1, 'ts': 1012, 'status': [], 'run_ms': 1000}
+        rows = job_telemetry.replay(path.read_text().splitlines() + [json.dumps(bad), 'not-json'])
+        self.assertEqual([(r['attempt'], r['retry_count'], r['status'], r['queue_wait_ms'], r['run_ms'])
+                          for r in rows[:2]], [(1, 0, 'error', 1000, 2000),
+                                               (2, 1, 'success', 1000, 900)])
+        self.assertEqual(rows[2]['status'], 'incomplete')
+        self.assertIsNone(rows[2]['finished_at'])
+
+    def test_job_metrics_normalize_aliases_and_remove_secrets(self):
+        path = self.state / 'job-telemetry.jsonl'
+        self.assertTrue(api.telemetry_emit(path, 'finished', job_id='sample:1', op='train',
+            status='success', resources={'observed_avg_cpu_percent': 175,
+                'observed_peak_cpu_percent': 220, 'observed_avg_rss_kib': 2048,
+                'observed_peak_rss_kib': 4096, 'resource_samples': 3,
+                'elapsed_seconds': 1.25, 'secret': 'private'}))
+        row = json.loads(path.read_text())
+        self.assertEqual([row['cpu_avg_percent'], row['cpu_peak_percent'],
+                          row['rss_avg_mib'], row['rss_peak_mib'], row['run_ms']],
+                         [175, 220, 2, 4, 1250])
+        self.assertNotIn('private', path.read_text())
+
+    def test_append_serializes_concurrent_event_lines(self):
+        workers = [threading.Thread(target=api.emit,
+                                    kwargs={'event': 'parallel', 'state_root': self.state,
+                                            'worker': index})
+                   for index in range(12)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        rows = event_log.read(self.state)
+        self.assertEqual(len(rows), 12)
+        self.assertEqual({row['worker'] for row in rows}, set(range(12)))
+
+    def test_event_symlink_is_refused_without_touching_target(self):
+        target = self.tmp / 'outside.jsonl'
+        target.write_text('untouched\n', encoding='utf-8')
+        (self.state / 'events.jsonl').symlink_to(target)
+        self.assertFalse(api.emit('refused', state_root=self.state))
+        self.assertEqual(target.read_text(encoding='utf-8'), 'untouched\n')
+
+    def test_rotation_keeps_bounded_private_generations_in_order(self):
+        with patch.object(event_log, 'LOG_LIMIT', 2000):
+            for index in range(200):
+                event_log.emit('recall', state_root=self.state, n=index)
+        names = sorted(path.name for path in self.state.iterdir()
+                       if path.name.startswith(event_log.NAME))
+        self.assertEqual(names, ['events.jsonl', 'events.jsonl.1', 'events.jsonl.2'])
+        for name in names:
+            info = (self.state / name).stat()
+            self.assertLessEqual(info.st_size, 2000)
+            self.assertEqual(info.st_mode & 0o777, 0o600)
+        numbers = [row['n'] for row in event_log.read(self.state)]
+        self.assertEqual(numbers, sorted(numbers))
+        self.assertEqual(numbers[-1], 199)
+
+    def test_event_writer_catches_storage_errors(self):
+        with patch.object(event_log, '_write', side_effect=RuntimeError('synthetic')):
+            self.assertFalse(event_log.emit('gate', state_root=self.state))
+        self.assertFalse(event_log.emit('gate', state_root='relative/path'))
+
+    def test_replaced_state_root_is_rechecked(self):
+        self.assertTrue(event_log.emit('first', state_root=self.state))
+        old = self.tmp / 'state.old'
+        os.rename(self.state, old)
+        self.state.mkdir(mode=0o700)
+        self.assertTrue(event_log.emit('second', state_root=self.state))
+        self.assertEqual([row['event'] for row in event_log.read(self.state)], ['second'])
+        self.assertEqual([row['event'] for row in event_log.read(old)], ['first'])
+
+    def test_reader_limits_total_bytes_even_for_corrupt_generations(self):
+        for name in (event_log.NAME, event_log.NAME + '.1', event_log.NAME + '.2'):
+            (self.state / name).write_bytes(b'x' * 300000)
+            os.chmod(self.state / name, 0o600)
+        real_read = os.read
+        sizes = []
+
+        def count_read(fd, size):
+            data = real_read(fd, size)
+            sizes.append(len(data))
+            return data
+
+        with patch.object(event_log, 'READ_LIMIT', 200000), \
+                patch.object(event_log.os, 'read', side_effect=count_read):
+            self.assertEqual(event_log.read(self.state), [])
+        self.assertLessEqual(sum(sizes), 200000)
+
+
+if __name__ == '__main__':
+    unittest.main()

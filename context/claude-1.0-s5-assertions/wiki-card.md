@@ -1,0 +1,44 @@
+# L1 단정 이관 원장 (진행 중)
+
+미이관 항목은 원본을 보존하며 완료 전에 개별 대조한다.
+
+- `test/fixtures/source-spans-checks.py::test_single_line_multibyte_quote` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_single_line_multibyte_quote`
+- `test/fixtures/source-spans-checks.py::test_multiline_quote_hashes_whole_line_slice` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_multiline_quote_hashes_whole_line_slice`
+- `test/fixtures/source-spans-checks.py::test_duplicate_overlapping_and_paraphrased_quotes_are_not_located` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_duplicate_overlapping_and_paraphrased_quotes_are_not_located`
+- `test/fixtures/source-spans-checks.py::test_quote_must_lie_inside_shown_prefix` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_quote_must_lie_inside_shown_prefix`
+- `test/fixtures/source-spans-checks.py::test_decoy_or_respelled_source_path_is_ignored` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_decoy_or_respelled_source_path_is_ignored`
+- `test/fixtures/source-spans-checks.py::test_only_supported_true_claims_are_located` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_only_supported_true_claims_are_located`
+- `test/fixtures/source-spans-checks.py::test_mixed_claims_keep_only_locatable_spans_sorted_and_deduplicated` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_mixed_claims_keep_only_locatable_spans_sorted_and_deduplicated`
+- `test/fixtures/source-spans-checks.py::test_crlf_lines_split_on_newline_only` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_crlf_lines_split_on_newline_only`
+- `test/fixtures/source-spans-checks.py::test_evidence_refuses_bytes_that_do_not_match_revision` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_evidence_refuses_bytes_that_do_not_match_revision`
+- `test/fixtures/source-spans-checks.py::test_line_slice_bounds` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_line_slice_bounds`
+- `test/fixtures/source-spans-checks.py::test_verify_span_uses_current_full_bytes` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_verify_span_uses_current_full_bytes`
+- `test/fixtures/source-spans-checks.py::test_round_trip_and_absent` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_round_trip_and_absent`
+- `test/fixtures/source-spans-checks.py::test_malformed_present_lists_are_invalid_without_partial_result` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_malformed_present_lists_are_invalid_without_partial_result`
+- `test/fixtures/source-spans-checks.py::test_dump_refuses_any_bad_sibling` → `memvane/wiki/card/tests/unit/test_source_spans.py::test_dump_refuses_any_bad_sibling`
+- `test/fixtures/source-spans-checks.py::test_verified_stamp_writes_status_and_spans_together_without_quotes` → 미대조
+- `test/fixtures/source-spans-checks.py::test_contested_or_spanless_restamp_and_status_reset_clear_spans` → 미대조
+- `test/fixtures/source-spans-checks.py::test_unbound_or_non_verified_spans_write_nothing` → 미대조
+- `test/fixtures/source-spans-checks.py::test_tampered_duplicate_headers_are_replaced_by_one_block` → 미대조
+- `test/wiki-source-missing.test.mjs::자동 경로(patch_frontmatter_fields)도 쓰기 실패에서 원본을 지킨다` → 미대조
+- `test/wiki-source-missing.test.mjs::verify pass 스탬프(자동, 사람 개입 없음)가 쓰기 실패로 카드를 절단하지 않는다` → 미대조
+- `test/wiki-source-missing.test.mjs::원자적 쓰기가 원본 권한을 보존한다 (0600 → 0600)` → 미대조
+- `test/wiki-freshness.test.mjs::stable file revision makes an unchanged source fresh and changed bytes stale` → 미대조
+- `test/wiki-freshness.test.mjs::mtime-only change remains fresh because SHA-256 is the freshness proof` → 미대조
+- `test/wiki-freshness.test.mjs::outside allow roots and malformed or legacy provenance fail closed as unknown` → 미대조
+- `test/wiki-freshness.test.mjs::missing source is stale rather than authorized` → 미대조
+- `test/wiki-freshness.test.mjs::snapshot_file refuses a file whose fstat changed during its single read` → 미대조
+- `test/wiki-freshness.test.mjs::sourceRevisions uses a closed typed YAML flow-mapping schema` → 미대조
+- `test/wiki-freshness.test.mjs::quoted numeric fields and empty mapping entries fail closed before card freshness` → 미대조
+- `test/wiki-freshness.test.mjs::sourceRevisions emission rejects an entire list when any sibling is invalid` → 미대조
+- `test/wiki-freshness.test.mjs::strict pending ledger API distinguishes absent or empty from malformed, invalid, and unreadable` → 미대조
+- `test/wiki-freshness.test.mjs::strict pending ledger converts every filesystem permission failure to unknown` → 미대조
+- `test/wiki-freshness.test.mjs::pending refresh resolves only with the successful compile revision still on disk` → 미대조
+- `test/wiki-freshness.test.mjs::ordered history and unique event ids reject prior resolution and token replay for later ABA pending` → 미대조
+- `test/wiki-freshness.test.mjs::pending refresh compaction atomically retains only each source latest unresolved event or resolved pair` → 미대조
+- `test/wiki-freshness.test.mjs::격리는 손상 원장을 개명해 치우고 원본 바이트를 남긴다(삭제 아님)` → 미대조
+- `test/wiki-freshness.test.mjs::격리는 멱등이고 앞선 격리 파일을 덮어쓰지 않는다` → 미대조
+- `test/wiki-freshness.test.mjs::정상 원장은 격리하지 않는다 — 빈 줄·resolved 쌍·부재·빈 파일` → 미대조
+- `test/wiki-freshness.test.mjs::읽을 수 없는 원장은 격리하지 않는다(권한 문제로 정상 원장을 잃지 않는다)` → 미대조
+- `test/wiki-freshness.test.mjs::비UTF8 바이트는 격리한다(내용 손상이므로)` → 미대조
+- `test/wiki-freshness.test.mjs::CLI는 손상 여부와 무관하게 exit 0이다(worker를 죽이지 않는다)` → 미대조

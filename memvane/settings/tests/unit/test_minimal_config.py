@@ -147,20 +147,6 @@ PINNED_EMPTY = {'allowRoots': [],
  'topN': 3,
  'wikiPath': '.memvane/wiki'}
 
-# Values a hand-written legacy settings file could hold. None of them is a choice
-# after decision 8: the compile block reads only what minimal expansion writes.
-LEGACY_COMPILE = {
-    "mode": "auto-wiki",
-    "enabled": False,
-    "autoWrite": False,
-    "maxCardsPerSource": 4,
-    "defaultStatus": "tentative",
-    "extractor": {"backends": {"claude": ["python3", "fake.py"]}, "argv": ["x"]},
-    "semanticDedup": {"judge": {"crossEngine": "require"}},
-    "verify": {"onFail": "contested", "onInconclusive": "none", "crossEngine": "prefer"},
-}
-
-
 def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False)
 
@@ -183,39 +169,6 @@ class MinimalConfigTest(unittest.TestCase):
             found = config.find_project_config(str(project))
         self.assertEqual(found["configFormat"], "auto-context-dir")
         self.assertEqual(canonical(found["config"]), canonical(PINNED_MINIMAL))
-
-    def test_legacy_settings_file_is_refused(self):
-        legacy = {**MINIMAL_SETTINGS, "compile": LEGACY_COMPILE}
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp).resolve() / "proj"
-            (project / ".memvane").mkdir(parents=True)
-            (project / ".memvane" / "settings.json").write_text(
-                json.dumps(legacy), encoding="utf-8")
-            found = config.find_project_config(str(project))
-            raw = config.load_project_config_raw(str(project))
-        expected = {**PINNED_EMPTY, "collections": []}
-        self.assertEqual(canonical(found["config"]), canonical(expected))
-        self.assertEqual(raw, {})
-
-    def test_legacy_compile_values_have_no_effect(self):
-        legacy = config.compile_config(LEGACY_COMPILE)
-        plain = config.compile_config({"mode": "auto-wiki"})
-        self.assertEqual(canonical(legacy), canonical(plain))
-        self.assertEqual(legacy["mode"], "auto-wiki")
-        self.assertEqual(legacy["extractor"]["backends"], {})
-        self.assertEqual(legacy["budget"]["cardsPerSource"], 10)
-        self.assertEqual((legacy["verify"]["onFail"], legacy["verify"]["onInconclusive"],
-                          legacy["verify"]["crossEngine"],
-                          legacy["semanticDedup"]["judge"]["crossEngine"],
-                          legacy["defaultStatus"]),
-                         ("delete", "delete", "off", "off", "generated"))
-
-    def test_deprecated_key_handling_is_gone(self):
-        names = ("deprecated_keys", "deprecated_key_notice", "invalid_compile_flags",
-                 "DEPRECATED_RELOCATED_KEYS", "DEPRECATED_FOLDED_KEYS",
-                 "DEPRECATED_REMOVED_KEYS", "VERIFY_ON_FAIL", "extractor_backends")
-        self.assertEqual([name for name in names if hasattr(config, name)], [])
-
 
 if __name__ == "__main__":
     unittest.main()

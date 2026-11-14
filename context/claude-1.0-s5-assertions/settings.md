@@ -1,0 +1,51 @@
+# L1 단정 이관 원장 (진행 중)
+
+미이관 항목은 원본을 보존하며 완료 전에 개별 대조한다.
+
+- `test/source-text.test.mjs::source_text matches extensions case-insensitively and denies dependency and cache directories` → 미대조
+- `test/collection-match.test.mjs::longest-prefix로 컬렉션 1개 선정` → 미대조
+- `test/collection-match.test.mjs::멀티 컬렉션 patch` → 미대조
+- `test/collection-match.test.mjs::중첩 경로는 더 깊은 컬렉션` → 미대조
+- `test/collection-match.test.mjs::컬렉션 밖 편집은 빈 결과` → 미대조
+- `test/collection-match.test.mjs::cwd 밖 절대경로 collectionPath는 선택 제외 (safe boundary)` → 미대조
+- `test/collection-match.test.mjs::allowRoots 안의 절대경로 collectionPath는 선택됨` → 미대조
+- `test/collection-match.test.mjs::wildcard collectionPaths 키 → 실제 collection 이름 선택 (resolve_paths와 일치)` → 미대조
+- `test/collection-match.test.mjs::wildcard + 멀티 collection 매핑` → 미대조
+- `test/collection-match.test.mjs::exact 키가 wildcard보다 우선 (resolve_paths 첫 매칭 규칙)` → 미대조
+- `test/collection-match.test.mjs::collections 비고 collectionPaths만 있으면 선택 없음 (resolve_paths와 일치)` → 미대조
+- `test/collection-match.test.mjs::~ 경로 collectionPath는 홈 확장 후 매칭 (allowRoots 안)` → 미대조
+- `test/config.test.mjs::dogfood project pins the wiki extractor reasoning-effort policy` → 미대조
+- `test/config.test.mjs::generation host plan tries unknown hosts once in a fixed order and preserves a known host` → 미대조
+- `test/config.test.mjs::기존 novel 스키마 무수정 동작 (신규 필드 부재 → 기본값)` → 미대조
+- `test/config.test.mjs::SessionStart file sync defaults on without changing explicit off or compile consent` → 미대조
+- `test/config.test.mjs::신규 필드 파싱` → 미대조
+- `test/config.test.mjs::recallStrategy 유효값은 통과하고 잘못된/미지정 값은 기본(hierarchical)으로 coerce된다` → 미대조
+- `test/config.test.mjs::wiki recall 신규 필드는 additive로 normalize 된다` → 미대조
+- `test/config.test.mjs::compile.reasoningEffort resolves phase defaults and symbolic engine overrides, invalid values fall back safely` → 미대조
+- `test/config.test.mjs::compile recallVerifiedOnly: 기본 true, bool 커스텀 존중, 불량 값은 기본값 폴백` → 미대조
+- `test/config.test.mjs::compile verify config: 커스텀 값 정규화 + 불량 값은 기본값 폴백` → 미대조
+- `test/config.test.mjs::compile extractor config drops shell strings and invalid timeout` → 미대조
+- `test/config.test.mjs::compile extractor config preserves valid built-ins and drops invalid values (dispatch 키 없이)` → 미대조
+- `test/config.test.mjs::빈/깨진 JSON → 전부 기본값` → 미대조
+- `test/config.test.mjs::indexing 필드 passthrough (true/false/없음)` → 미대조
+- `test/config.test.mjs::indexing 문자열 ` → 미대조
+- `test/config.test.mjs::config 숫자 타입은 보수적으로 coercion 하고 실패 시 기본값` → 미대조
+- `test/config.test.mjs::rawFallbackMinScore 누락 시 정규화된 minScore를 따른다` → 미대조
+- `test/config.test.mjs::find_project_config: .auto-context/settings.json preferred` → 미대조
+- `test/config.test.mjs::find_project_config: settings.json beats legacy .auto-context.json when both exist` → 미대조
+- `test/config.test.mjs::find_project_config: no config returns null path and cwd root` → 미대조
+- `test/config.test.mjs::find_project_config: 내부 경로 탐색에서 예상 못한 예외가 나도 fail-open(빈 config)한다` → 미대조
+- `test/config.test.mjs::compile extractor cooldownSeconds is preserved and defaults to 600` → 미대조
+- `test/config.test.mjs::compile.batch는 시작 조건만 정규화한다 (maxPerRun은 budget으로 이동)` → 미대조
+- `test/config.test.mjs::compile.budget: 값 정규화 + 유료 호출 클램프가 함께 이동했다` → 미대조
+- `test/config.test.mjs::compile.sourceScan: enabled는 bool만, maxCardsPerScan은 클램프된다` → 미대조
+- `test/config.test.mjs::coerce_int 계약: bool·비정수 실수는 거부하고 기본값으로 보낸다 (budget.* 공용)` → 미대조
+- `test/config.test.mjs::compile.semanticDedup는 enabled/maxPairsPerScan/candidateMinScore만 정규화한다` → 미대조
+- `test/config.test.mjs::dedup score thresholds stay fixed and retrieval has a 20-card context budget` → 미대조
+- `test/config.test.mjs::compile.semanticDedup.maxPairsPerScan normalizes with a 10 default` → 미대조
+- `test/config.test.mjs::WIKI_STATUSES / lowPriorityStatuses accept superseded` → 미대조
+- `test/live-settings-freeze.test.mjs::라이브 fixture가 조용히 빠지거나 늘지 않는다` → 미대조
+- `test/live-settings-freeze.test.mjs::fixture에 머신 의존 절대 경로가 없다` → 미대조
+- `test/live-settings-freeze.test.mjs::§7.2 마이그레이션 부채: 옛 위치의 손편집 budget 값은 더 이상 읽히지 않는다` → 미대조
+- `test/live-settings-freeze.test.mjs::§7.2 마이그레이션 명세: 새 위치로 옮기면 클램프까지 포함해 복원된다` → 미대조
+- `test/live-settings-freeze.test.mjs::compile을 켠 3개 프로젝트의 게이트 입력이 보존된다` → 미대조

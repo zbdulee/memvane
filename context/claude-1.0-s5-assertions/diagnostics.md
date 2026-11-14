@@ -1,0 +1,84 @@
+# L1 단정 이관 원장 (진행 중)
+
+미이관 항목은 원본을 보존하며 완료 전에 개별 대조한다.
+
+- `test/fixtures/diagnostic-capture-checks.py::test_exception_chain_and_origin_warning` → `memvane/diagnostics/tests/integration/test_diagnostic_capture.py::test_exception_chain_and_origin_warning`
+- `test/fixtures/diagnostic-capture-checks.py::test_off_and_disabled_before_write_leave_no_secret` → `memvane/diagnostics/tests/integration/test_diagnostic_capture.py::test_off_and_disabled_before_write_leave_no_secret`
+- `test/fixtures/diagnostic-capture-checks.py::test_limits_and_incomplete_fragments` → `memvane/diagnostics/tests/integration/test_diagnostic_capture.py::test_limits_and_incomplete_fragments`
+- `test/fixtures/diagnostic-host-checks.py::test_enabled_exception_joins_recall_event` → 미대조
+- `test/fixtures/diagnostic-host-checks.py::test_disabled_records_no_sentinel_and_no_id` → 미대조
+- `test/fixtures/diagnostic-host-checks.py::test_each_host_keeps_its_identity_in_diagnostics` → 미대조
+- `test/fixtures/diagnostic-host-checks.py::test_logging_failure_keeps_original_exception` → 미대조
+- `test/fixtures/diagnostic-host-checks.py::test_invalid_pool_warning_links_origin_stack` → 미대조
+- `test/fixtures/diagnostic-host-checks.py::test_no_candidates_is_not_a_warning` → 미대조
+- `test/fixtures/diagnostic-host-checks.py::test_exception_survives_warning_capture_limit` → 미대조
+- `test/job-telemetry.test.mjs::concurrent writers append complete private JSONL lines without content fields` → 미대조
+- `test/job-telemetry.test.mjs::malformed and unavailable metrics become null; local process aliases are normalized` → 미대조
+- `test/job-telemetry.test.mjs::failed local trainer keeps its original error, exit code, elapsed time and sampled resources` → 미대조
+- `test/job-telemetry.test.mjs::live zero-RSS snapshots stay unknown and exited failures keep their error` → 미대조
+- `test/job-telemetry.test.mjs::detached worker records a failed cycle and a pre-lock exception as errors` → 미대조
+- `test/job-telemetry.test.mjs::unsafe destination and logging failure return false without touching another file` → 미대조
+- `test/job-telemetry.test.mjs::replay separates attempts, derives durations, and leaves crashed jobs incomplete` → 미대조
+- `test/job-telemetry.test.mjs::replay rejects malformed finish rows before mutating an attempt` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_failure_keeps_fixed_outcome_and_links_opt_in_exception` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_failure_with_diagnostics_off_omits_raw_exception` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_unproved_selection_marks_trace_unavailable` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_selection_of_another_install_is_never_used` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_diagnostic_write_failure_keeps_outcome` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_unlogged_failure_links_host_exception_and_keeps_refusal` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_diagnostics_off_keeps_refusal_without_raw_exception` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_already_logged_exception_is_not_captured_twice` → 미대조
+- `test/fixtures/diagnostic-boundaries-checks.py::test_diagnostic_write_failure_keeps_refusal` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_full_config_only_boolean_true_enables` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_minimal_config_preserved_and_only_boolean_true_enables` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_diagnostics_does_not_change_other_effective_fields` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_settings_identity_unchanged_by_diagnostics` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_load_project_config_reads_opt_in_from_temp_project` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_module_exposes_enabled` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_candidate_rereads_settings_on_every_call` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_invalid_settings_values_are_off` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_non_selected_or_malformed_decisions_are_off` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_worktree_uses_confirmed_main_route_settings` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_worktree_without_confirmed_main_route_is_off` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_stale_project_root_is_off` → 미대조
+- `test/fixtures/diagnostic-trace-checks.py::test_read_failures_and_exceptions_are_off` → 미대조
+- `test/fixtures/diagnostic-worker-checks.py::test_verify_exception_does_not_break_worker` → 미대조
+- `test/fixtures/diagnostic-worker-checks.py::test_dispatch_exception_preserves_identity` → 미대조
+- `test/fixtures/diagnostic-worker-checks.py::test_preparing_records_warning_origin` → 미대조
+- `test/fixtures/diagnostic-worker-checks.py::test_child_process_stack_is_not_invented` → 미대조
+- `test/fixtures/diagnostic-worker-checks.py::test_child_tail_limit_and_disabled_setting` → 미대조
+- `test/fixtures/diagnostic-worker-checks.py::test_diagnostic_failure_does_not_replace_original_exception` → 미대조
+- `test/fixtures/event-log-checks.py::test_hook_actions_record_outcome_and_reason` → 미대조
+- `test/fixtures/event-log-checks.py::test_recall_event_carries_cards_notes_prompt_hash_and_latency` → 미대조
+- `test/fixtures/event-log-checks.py::test_retry_and_worktree_recalls_write_one_line` → 미대조
+- `test/fixtures/event-log-checks.py::test_main_refusal_after_route_change_is_recorded_once` → 미대조
+- `test/fixtures/event-log-checks.py::test_wiki_card_writes_and_retirement` → 미대조
+- `test/fixtures/event-log-checks.py::test_wake_and_index_publish` → 미대조
+- `test/fixtures/event-log-checks.py::test_resident_service_drain_forced_exit_and_adopt` → 미대조
+- `test/fixtures/event-log-checks.py::test_learning_capture_status` → 미대조
+- `test/fixtures/event-log-checks.py::test_prompt_is_hashed_even_with_legacy_debug_flag` → 미대조
+- `test/fixtures/event-log-checks.py::test_secret_named_fields_are_dropped` → 미대조
+- `test/fixtures/event-log-checks.py::test_rotation_keeps_two_generations` → 미대조
+- `test/fixtures/event-log-checks.py::test_line_is_bounded` → 미대조
+- `test/fixtures/event-log-checks.py::test_refusals_are_non_fatal_and_counted` → 미대조
+- `test/fixtures/event-log-checks.py::test_emit_never_raises` → 미대조
+- `test/fixtures/event-log-checks.py::test_latency_smoke` → 미대조
+- `test/fixtures/event-log-checks.py::test_views_on_fixture_log` → 미대조
+- `test/fixtures/event-log-checks.py::test_unsafe_or_refused_log_is_reported` → 미대조
+- `test/fixtures/event-log-checks.py::test_unselected_project_exits_1` → 미대조
+- `test/fixtures/event-log-checks.py::test_rotation_never_moves_a_file_mid_append` → 미대조
+- `test/fixtures/event-log-checks.py::test_concurrent_appends_while_rotating_lose_no_written_line` → 미대조
+- `test/fixtures/event-log-checks.py::test_busy_locks_never_block_an_emit` → 미대조
+- `test/fixtures/event-log-checks.py::test_busy_refusal_counter_never_blocks_an_emit` → 미대조
+- `test/fixtures/event-log-checks.py::test_process_reuses_its_proven_state_root` → 미대조
+- `test/fixtures/event-log-checks.py::test_wiki_tail_renders_only_valid_card_writes` → 미대조
+- `test/fixtures/event-log-checks.py::test_malformed_records_are_skipped_by_reader_and_skill` → 미대조
+- `test/fixtures/event-log-checks.py::test_fifo_generation_never_blocks_a_reader` → 미대조
+- `test/fixtures/event-log-checks.py::test_reader_takes_only_the_newest_bytes` → 미대조
+- `test/fixtures/event-log-checks.py::test_preview_recall_is_logged` → 미대조
+- `test/fixtures/event-log-checks.py::test_live_file_stops_at_hard_cap_while_rotation_is_starved` → 미대조
+- `test/fixtures/event-log-checks.py::test_replaced_state_root_is_walked_again` → 미대조
+- `test/fixtures/event-log-checks.py::test_wiki_tail_drops_format_and_bidi_characters` → 미대조
+- `test/fixtures/event-log-checks.py::test_read_budget_counts_bytes_actually_read` → 미대조
+- `test/fixtures/event-log-checks.py::test_qmd_recall_log_is_not_read` → 미대조
+- `test/fixtures/event-log-checks.py::test_folded_logs_have_no_writer` → 미대조
