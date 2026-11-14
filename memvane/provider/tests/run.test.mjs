@@ -2,3 +2,5 @@
 import { runDomain } from '../../../tests/support/runner.mjs';
 
 runDomain({ domain: 'provider' });
+
+import './laya-qmd-chunking.test.mjs';
