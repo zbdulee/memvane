@@ -233,10 +233,9 @@ def _relative_ok(value, tail):
 
 def _verify_generation(generation):
     """Every file of one sealed generation against runtime.json; returns its manifest.
-
-    A file is read again only when its (path, inode, size, mtime_ns) moved.
-    """
-    from memvane.kernel.persistent_identity import cached_by_identity
+    Unchanged files reuse their digests (``runtime_digests``)."""
+    from memvane.provider.runtime_digests import cache_for, digest
+    cache = cache_for(generation)
     _owner_dir(generation)
     manifest, raw = _read_json(generation / MANIFEST, 16 * 1024 * 1024)
     if (not _manifest_valid(manifest) or
@@ -263,11 +262,12 @@ def _verify_generation(generation):
                     info.st_uid != os.getuid() or info.st_nlink != 1 or
                     stat.S_IMODE(info.st_mode) & 0o077 or
                     bool(stat.S_IMODE(info.st_mode) & 0o100) != row[3] or
-                    info.st_size != row[2] or cached_by_identity(path, _hash)[0] != row[1]):
+                    info.st_size != row[2] or digest(path, _hash, cache, 'sha256-size')[0] != row[1]):
                 _fail('laya_embed_runtime_corrupt')
             found.add(rel)
     if found != set(expected):
         _fail('laya_embed_runtime_corrupt')
+    cache.flush()
     return manifest
 
 

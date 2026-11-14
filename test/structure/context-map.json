@@ -794,6 +794,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/provider/runtime_digests.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/provider/types.py": {
       "context": "provider",
       "layer": "domain",

@@ -103,7 +103,11 @@ def default_embed_model_uri():
 
 
 def runtime_file_sha256(path):
-    """The provider hasher's sha256 of one attested runtime file, cached by file identity."""
-    from memvane.kernel.persistent_identity import cached_by_identity
+    """The provider hasher's sha256 of one attested runtime file, cached by file identity
+    in this process and, for a file in a Laya generation, in that runtime's digest cache."""
     from memvane.provider.adapters.local_embed_provider import _hash_file
-    return cached_by_identity(path, _hash_file)
+    from memvane.provider.runtime_digests import cache_for, digest
+    cache = cache_for(path)
+    value = digest(path, _hash_file, cache, 'provider-sha256')
+    cache.flush()
+    return value
