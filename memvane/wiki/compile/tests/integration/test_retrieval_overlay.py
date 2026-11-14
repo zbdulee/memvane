@@ -7,9 +7,14 @@ import sqlite3
 from unittest.mock import patch
 
 from memvane.wiki.compile import selected_execution as execution, wiki_compile_retrieval as retrieval
+from memvane.wiki.compile import wiki_compile_worker as worker
+from memvane.wiki.engines import api as engines
 from memvane.wiki.workspace import api as workspace
+from memvane.provider import api as provider
+from memvane.resident import api as resident
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
+from tests.support.settings_fake import expanded, use_config
 
 
 class OverlayChecks(FixtureCase):
@@ -45,6 +50,52 @@ class OverlayChecks(FixtureCase):
     def status(self):
         with closing(sqlite3.connect(self.root / '.memvane/compile/wiki-retrieval/cards.sqlite')) as db:
             return json.loads(db.execute("SELECT value FROM state WHERE key='status'").fetchone()[0])
+
+    def test_vector_query_is_utf8_bounded_without_changing_profile_or_short_query(self):
+        manifest, profile = {'synthetic': True}, {'profileId': 'synthetic'}
+        query_text = '한글 공포 기록🙂👻 ' * 2000
+        with patch.object(provider, 'reviewed_provider') as factory, \
+             patch.object(resident, 'admit_query') as admit:
+            query = retrieval.query_provider(({}, {'providerManifest': manifest}))
+            query(query_text, profile)
+            received, received_profile = factory.return_value.call_args.args
+            self.assertLessEqual(len(received.encode('utf-8')), retrieval.QUERY_VECTOR_BYTES)
+            self.assertTrue(received and query_text.startswith(received))
+            self.assertIs(received_profile, profile)
+            query('짧은 기록🙂', profile)
+            factory.return_value.assert_called_with('짧은 기록🙂', profile)
+            factory.assert_called_once_with(manifest)
+            admit.assert_called_once_with()
+
+    def test_twenty_live_compact_cards_reach_extractor_payload(self):
+        self.project.write_note('docs/source.md', 'starship archive source')
+        for number in range(20):
+            self.card('concepts/card-%02d.md' % number,
+                      '---\ntitle: "Card %d"\ncanonicalKey: card-%d\n---\n'
+                      '## Summary\nstarship archive detail number %d\n' % (number, number, number))
+        config = expanded(self.project, compile={'extractor': {'builtins': ['claude']}})
+        use_config(self, self.project, config)
+        self.bound[0]['collections'][0]['name'] = self.project.wiki_name
+        job = {'trigger': 'manual', 'engine': 'claude', 'cwd': str(self.root),
+               'selectedRoute': workspace.route_identity(self.bound),
+               'source': {'kind': 'file', 'path': 'docs/source.md', 'collection': self.project.raw_name}}
+        payloads = []
+        def extract(_argv, payload, _timeout, _root):
+            payloads.append(payload)
+            return {'candidates': []}, None, 0
+        with patch.object(workspace, 'selected', return_value=self.bound), \
+             patch.object(worker, 'selected_compiled_revision_card', return_value=None), \
+             patch.object(engines, 'run_extractor', side_effect=extract):
+            self.assertEqual(worker.process_job(self.root, config, config['compile'], job), (True, False, []))
+        pages = payloads[0]['wiki']['similarPages']
+        self.assertEqual(len(pages), 20)
+        self.assertEqual(len({page['path'] for page in pages}), 20)
+        for page in pages:
+            identity = json.loads(page['content'].split('\n')[0])
+            self.assertEqual(identity['targetPath'], page['path'])
+            self.assertIn('starship archive detail', page['content'])
+        section = engines.render_existing_context_section(payloads[0]['wiki'])
+        self.assertEqual(section.count('### .memvane/wiki/concepts/card-'), 20)
 
     def test_cold_corpus_above_two_hundred_has_no_card_count_refusal(self):
         for i in range(240):
