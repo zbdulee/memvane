@@ -40,14 +40,6 @@ def wake_cancel_status(kind, target, *, queue=None):
     given = {'queue': queue} if queue is not None else {}
     return implementation(kind, target, **given)
 
-def cancel_pending_wake(kind, target, revision, backup_dir, proof_sha256, still_owned, *, queue=None,
-                        clock=None):
-    """``clock`` None means the implementation default ``time.time``."""
-    from memvane.runtime.wake_cancel import cancel_pending as implementation
-    given = {key: value for key, value, default in (
-        ('queue', queue, None), ('clock', clock, None)) if value is not default}
-    return implementation(kind, target, revision, backup_dir, proof_sha256, still_owned, **given)
-
 # Sync owner.
 
 def sync_owner(queue_path, *, recheck_queue=None, wait=False, deadline=None):

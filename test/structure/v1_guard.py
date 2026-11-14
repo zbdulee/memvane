@@ -188,7 +188,7 @@ _API_PARTS = ('api', 'types')
 # refreshes, source spans) and each called from wiki/compile, wiki/verify,
 # wiki/lifecycle, wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
 # card contract every wiki writer and reader shares; no two names share a callee.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 35, 'wiki/card': 48}
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 41, 'wiki/workspace': 35, 'wiki/card': 48}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')
@@ -227,7 +227,7 @@ _VALUE_SOURCES = {
     'memvane.journal.api.reader_selection': 'memvane.journal.types.ReaderSelection',
     'memvane.recall.api.query_endpoint': 'memvane.recall.types.ReaderResult',
 }
-# Runtime surface (rereview 3.1): other domains call 59 runtime names, the 42
+# Runtime surface (rereview 3.1): other domains call 58 runtime names, the 41
 # api names plus the 17 methods of its four handles (coordinator 9, wake queue 3,
 # supervisor 2, training guard 3), and read two handle attributes
 # (coordinator root, supervisor status).

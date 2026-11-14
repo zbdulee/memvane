@@ -7,13 +7,6 @@ import sys
 
 
 def runtime_work_main(argv):
-    if argv[:1]==['cancel-build-wake'] and len(argv)==7 and argv[1::2]==['--project','--revision','--backup-dir']:
-        # Official per-UID queue only; ownership is proven from private build state.
-        from memvane.install.api import cancel_wake
-        try:revision=int(argv[4])
-        except ValueError:revision=None
-        result=cancel_wake(argv[2],revision,argv[6])
-        print(json.dumps(result,sort_keys=True,default=str));return 0 if result['status']!='refused' else 3
     if argv[:1]==['build-wake-status'] and len(argv)==3 and argv[1]=='--project':
         from memvane.install.api import wake_status
         print(json.dumps(wake_status(argv[2]),sort_keys=True,default=str));return 0

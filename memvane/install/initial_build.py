@@ -1,13 +1,5 @@
 """Installation facade for journal-owned initial-build records."""
 from memvane.journal import api as _journal
-from memvane.journal.types import V1_BUILD_FILE, V1_BUILD_SCHEMA
-
-SCHEMA = 'laya-initial-build-v1'
-POINTER_SCHEMA = 'laya-initial-build-pointer-v1'
-RECORD = 'initial-build.json'
-LOCK = 'initial-build.lock'
-POINTERS = 'initial-builds'
-RETIRED_POINTER = 'retired-build-pointer.json'
 
 
 def lookup(project_root):

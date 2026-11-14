@@ -2,12 +2,8 @@
 from __future__ import annotations
 
 
-def cancel_wake(project_raw, revision, backup_dir, *, queue=None):
-    from memvane.install.runtime_wake_cancel import cancel as implementation
-    return implementation(project_raw, revision, backup_dir, queue=queue)
-
-
 def wake_status(project_raw, *, queue=None):
+    """``{wake, overflow, cancellations}`` of the project's ``laya-sync`` wake row (read-only)."""
     from memvane.install.runtime_wake_cancel import status as implementation
     return implementation(project_raw, queue=queue)
 
