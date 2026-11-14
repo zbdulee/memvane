@@ -74,3 +74,35 @@ class PosttoolEnqueue(FixtureCase):
                 self.assertEqual(self.run_edit(path)['queued'], 0)
         self.assertEqual(self.rows(self.queue), [])
         self.assertEqual(card.unresolved_pending_refreshes(self.root), [])
+
+    def test_disabled_compile_and_indexing_do_not_enqueue(self):
+        variants = ({'compile': {'mode': 'auto-wiki', 'triggers': ['manual']}},
+                    {'compile': {'mode': 'off', 'triggers': ['post_tool_source']}},
+                    {'indexing': False})
+        for overrides in variants:
+            with self.subTest(overrides=overrides):
+                use_config(self, self.project, expanded(self.project, **overrides))
+                self.assertEqual(self.run_edit(self.source)['queued'], 0)
+                self.assertEqual(self.rows(self.queue), [])
+                self.assertEqual(self.rows(self.pending), [])
+
+    def test_text_extensions_enqueue_but_code_and_dependencies_do_not(self):
+        for rel in ('docs/note.txt', 'docs/guide.RST', 'docs/tool.py',
+                    'docs/node_modules/pkg/readme.md'):
+            path = self.project.write_note(rel, 'synthetic text\n')
+            self.run_edit(path)
+        self.assertEqual(sorted(row['source']['path'] for row in self.rows(self.queue)),
+                         ['docs/guide.RST', 'docs/note.txt'])
+
+    def test_sandbox_dispatch_never_enqueues(self):
+        import os
+        import subprocess
+        from pathlib import Path
+        hook = Path(__file__).resolve().parents[5] / 'hooks/run-hook'
+        payload = {'hook_event_name': 'PostToolUse', 'cwd': str(self.root),
+                   'tool_name': 'Write', 'tool_input': {'file_path': str(self.source)}}
+        child = subprocess.run([str(hook), 'compile', 'claude'], input=json.dumps(payload), text=True,
+                               capture_output=True, env={**os.environ, 'QMD_SANDBOX': '1'}, timeout=30)
+        self.assertEqual((child.returncode, child.stdout, child.stderr), (0, '', ''))
+        self.assertEqual(self.rows(self.queue), [])
+        self.assertEqual(self.rows(self.pending), [])
