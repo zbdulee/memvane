@@ -133,3 +133,20 @@ class OwnerContention(FixtureCase):
                     self.assertEqual(resident_service.ensure_service(root=root), 'ready')
         exchange.assert_not_called()
         spawn.assert_not_called()
+
+    def test_unproved_install_reports_each_reason_once_per_episode(self):
+        from unittest.mock import patch
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        service = resident_service.Service(root, bundle={'version': '1.0.0'})
+        project = '/synthetic/project'
+        reasons = ('provider_owner_route_unavailable', 'invalid_evidence',
+                   'provider_owner_route_unavailable', 'invalid_evidence')
+        with patch.object(resident_service, '_event') as event:
+            for reason in reasons:
+                service._report_waiting(project, {}, reason, outcome='unproved')
+            self.assertEqual([call.args[3] for call in event.call_args_list],
+                             ['provider_owner_route_unavailable', 'invalid_evidence'])
+            service.unproved.pop(project)
+            service._report_waiting(project, {}, reasons[0], outcome='unproved')
+        self.assertEqual(event.call_count, 3)
