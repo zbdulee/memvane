@@ -124,3 +124,41 @@ class DiscoveryCursor(FixtureCase):
         self.assertEqual((result['state'], result['queued']), ('drained', 1))
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [later])
         self.assertNotIn(first, discovery.observe_grants(self.decision)['grants']['sync'])
+
+    def test_seed_baseline_is_idempotent_and_changed_baseline_requires_inert_proof(self):
+        from memvane.wiki.intake.types import DiscoveryBlocked
+        first = {self.key: self.initial}
+        self.assertEqual(discovery.seed_source_snapshot(self.decision, first, generation='g1'), first)
+        self.assertEqual(discovery.seed_source_snapshot(self.decision, first, generation='g1'), first)
+        changed = {self.key: 'f' * 64}
+        with self.assertRaisesRegex(DiscoveryBlocked, 'baseline_changed'):
+            discovery.seed_source_snapshot(self.decision, changed, generation='g2')
+        self.assertEqual(discovery._read(discovery._paths(self.decision)[0])['rawSnapshot'], first)
+        self.assertEqual(discovery.seed_source_snapshot(self.decision, changed, generation='g2',
+                                                        replace_inert=True), changed)
+        self.assertEqual(discovery._read(discovery._paths(self.decision)[0])['rawSnapshot'], changed)
+
+    def test_changed_cursor_binding_and_roots_are_held_without_reset(self):
+        import json
+        path = discovery._paths(self.decision)[0]
+        valid = discovery._state_doc(self.decision, 'g1', {self.key: self.initial}, {})
+        for field, value, reason in (('scopeId', 'f' * 32, 'state_binding_mismatch'),
+                                     ('rawCollections', ['other'], 'state_roots_changed')):
+            with self.subTest(field=field):
+                row = {**valid, field: value}
+                encoded = json.dumps(row).encode()
+                path.write_bytes(encoded)
+                path.chmod(0o600)
+                result = self.drain('g2', {self.key: self.initial})
+                self.assertEqual((result['state'], result['reason']), ('blocked', reason))
+                self.assertEqual(path.read_bytes(), encoded)
+
+    def test_symlink_cursor_is_rejected_and_target_is_unchanged(self):
+        path = discovery._paths(self.decision)[0]
+        outside = self.home / 'outside.json'
+        outside.write_text('{}')
+        path.symlink_to(outside)
+        result = self.drain('g2', {self.key: self.initial})
+        self.assertEqual((result['state'], result['reason']), ('blocked', 'state_unreadable'))
+        self.assertTrue(path.is_symlink())
+        self.assertEqual(outside.read_text(), '{}')
