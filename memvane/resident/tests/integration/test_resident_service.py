@@ -587,3 +587,35 @@ class ServiceChecks(Fixture):
         self.service()
         self.wait(lambda: self.ready(manifest), message='listener above FD_SETSIZE never served')
         self.assertEqual(len(embed(manifest)), DIM)
+
+    def test_drain_kills_a_worker_whose_stop_never_returns(self):
+        from memvane.resident.tests.support import Handle
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        release = threading.Event()
+        self.addCleanup(release.set)
+        original = self.start_worker
+        handles = []
+
+        class Stuck(Handle):
+            def stop(self):
+                release.wait(30)
+
+        def start_worker(item, admit):
+            handle = original(item, admit)
+            stuck = Stuck(handle.process, handle.socket_path)
+            handles.append(stuck)
+            return stuck
+
+        with patch.object(svc, 'MAX_EXIT_CLEANUP_SECONDS', 1):
+            service = self.service(start=False)
+            service.start_worker = start_worker
+            self.assertTrue(service.acquire(wait=5))
+            service.start()
+            self.wait(lambda: self.ready(manifest))
+            service.begin_drain()
+            self.assertTrue(service.stopped.wait(15))
+        self.wait(lambda: handles[0].process.poll() is not None)
+        release.set()
+        handles[0].process.stdin.close()
+        handles[0].process.stdout.close()
