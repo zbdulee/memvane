@@ -500,3 +500,43 @@ class ServiceChecks(Fixture):
                 self.wait(lambda m=manifest: self.ready(m))
                 self.assertGreaterEqual(attempts[project], 2)
         self.assertEqual(len(self.loads), 1)
+
+    def test_newer_service_drains_inflight_then_successor_readopts(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        old = self.service(bundle={'version': '1.0.0', 'digest': 'old'})
+        self.wait(lambda: self.ready(manifest))
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = svc.Worker.forward
+        responses = []
+
+        def gated(worker, *args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return original(worker, *args, **kwargs)
+
+        with patch.object(svc.Worker, 'forward', gated):
+            thread = threading.Thread(target=lambda: responses.append(embed(manifest, kind='document')))
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            spawned = []
+            with patch.object(svc, 'bundle_identity',
+                              return_value={'version': '1.0.1', 'digest': 'new'}):
+                state = svc.ensure_service(root=self.root, learning_root=False,
+                                           spawn=lambda argv, **_kwargs: spawned.append(argv))
+            self.assertEqual(state, 'replacing')
+            self.assertEqual(len(spawned), 1)
+            self.assertTrue(old.draining.is_set())
+            with self.assertRaisesRegex(IndexContractError, '^provider_unavailable$'):
+                embed(manifest)
+            release.set()
+            thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(len(responses[0]), DIM)
+        self.assertTrue(old.stopped.wait(30))
+        old.close()
+        self.service(bundle={'version': '1.0.1', 'digest': 'new'})
+        self.wait(lambda: self.ready(manifest))
+        self.assertEqual(len(embed(manifest)), DIM)
