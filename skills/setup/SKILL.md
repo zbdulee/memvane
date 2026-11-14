@@ -31,6 +31,8 @@ Onboarding is a reviewed setup operation for the requested project. Confirm the 
 
 Tell the user that the per-machine pointers `.memvane/route.json` and `.memvane/selection.json` should be ignored by Git. Suggest adding those two lines to the project's `.gitignore`; do not edit that file for them.
 
+A project inside an already selected project cannot be onboarded as a separate nested install. An initial build may report `selected_route_unavailable`; explain that the parent project is already selected and use that project or a separate directory outside it. Multiple route records in one ancestor chain are refused as `ambiguous_route_records`.
+
 The user asks in natural language; the actions below are internal maintenance steps of this skill, run in this order. Every action except `plan-fresh-wiki-origin` takes `--state-root "$STATE_ROOT"`, where a new install's state root is `~/.local/state/memvane/v1/installs/<install id>` with a fresh 32-hex install ID (any other new path refuses as `unsupported_state_root_creation`). Report each step's `status` (and `reason` on a refusal) before the next one.
 
 1. `plan-fresh-wiki-origin` (read-only) returns `review_required` with the plan's collections and a `proposalSha256`. Show the plan and ask for approval.
