@@ -225,6 +225,21 @@ class CheckoutFingerprints(FixtureCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(self.candidates, [])
 
+    def test_extractor_receives_bundled_rules_not_project_root_pages(self):
+        for name in ('SCHEMA.md', 'index.md', 'log.md'):
+            (self.project.wiki / name).write_text('PRIVATE_ROOT_SENTINEL')
+        self.assertEqual(self.process(), (True, False, []))
+        first = self.calls[-1]['wiki']
+        self.assertEqual(first['schema'], worker.card_rules('default'))
+        self.assertNotIn('PRIVATE_ROOT_SENTINEL', repr(first))
+        self.assertNotIn('index', first)
+        (self.project.root / '04_Manuscript').mkdir()
+        self.assertEqual(self.process(), (True, False, []))
+        second = self.calls[-1]['wiki']
+        self.assertEqual(second['schema'], worker.card_rules('novel'))
+        self.assertNotEqual(second['schema'], first['schema'])
+        self.assertNotIn('PRIVATE_ROOT_SENTINEL', repr(second))
+
     def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
         for case in ('non-git', 'unborn'):
             with self.subTest(case=case):

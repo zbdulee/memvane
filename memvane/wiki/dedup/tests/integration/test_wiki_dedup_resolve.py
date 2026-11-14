@@ -63,6 +63,27 @@ class ResolveCase(FixtureCase):
 
 
 class Merge(ResolveCase):
+    def test_selected_merge_logs_to_state_and_preserves_root_index(self):
+        from memvane.wiki.workspace import api as workspace
+        loser = self.page('entities/loser.md', '---\ntitle: Loser Card\n---\n\nloser\n')
+        self.page('entities/winner.md', '---\ntitle: Winner Card\n---\n\nwinner\n')
+        index = self.wiki / 'index.md'
+        index.write_text('Existing index remains unchanged.\n')
+        state = self.home / 'state'
+        state.mkdir(mode=0o700)
+        bound = ({'journalPath': str(state / 'journal.sqlite'), 'installId': 'a' * 32}, {})
+        entry = {'pageA': 'entities/loser.md', 'pageB': 'entities/winner.md', 'score': 0.95}
+        with mock.patch.object(workspace, 'recheck'), mock.patch.object(workspace, 'request_sync'):
+            result = resolve.resolve_entry(self.root, self.wiki, self.compile, entry, 'merge',
+                                           'entities/loser.md', laya_bound=bound)
+        self.assertEqual(result['action'], 'deleted')
+        self.assertFalse(loser.exists())
+        self.assertEqual(index.read_text(), 'Existing index remains unchanged.\n')
+        self.assertFalse((self.wiki / 'log.md').exists())
+        rows = jsonl(state / 'events.jsonl')
+        self.assertEqual([(row['event'], row['outcome'], row['reason'], row['path'], row['title'])
+                          for row in rows], [('wiki', 'deleted', 'dedup', 'entities/loser.md', 'Loser Card')])
+
     def test_merge_deletes_the_named_loser_after_logging_its_full_content(self):
         loser = self.page('entities/loser.md', '---\ntitle: Loser\n---\n\nLoser content.\n')
         winner = self.page('entities/winner.md', '---\ntitle: Winner\n---\n\nWinner content.\n')
