@@ -540,3 +540,30 @@ class ServiceChecks(Fixture):
         self.service(bundle={'version': '1.0.1', 'digest': 'new'})
         self.wait(lambda: self.ready(manifest))
         self.assertEqual(len(embed(manifest)), DIM)
+
+    def test_connection_cap_bounds_handlers_and_falls_back_to_lexical(self):
+        import socket
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        with patch.object(svc, 'MAX_CONNECTIONS', 2), \
+             patch.object(svc, 'LISTEN_BACKLOG', 2):
+            service = self.service()
+            self.wait(lambda: self.ready(manifest))
+            self.wait(lambda: service.connections._value == 2)
+            sockets = []
+            try:
+                for _ in range(2):
+                    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    sockets.append(conn)
+                    conn.connect(manifest['serviceSocketPath'])
+                self.wait(lambda: service.connections._value == 0)
+                handlers = [thread for thread in threading.enumerate()
+                            if thread.name == 'laya-service-client']
+                self.assertLessEqual(len(handlers), 2)
+                with self.assertRaisesRegex(IndexContractError, '^provider_unavailable$'):
+                    embed(manifest)
+            finally:
+                for conn in sockets:
+                    conn.close()
+            self.wait(lambda: service.connections._value == 2)
+            self.assertEqual(len(embed(manifest)), DIM)
