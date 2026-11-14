@@ -242,3 +242,27 @@ class OwnerContention(FixtureCase):
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_fixture'):
                 embed_resident.ensure_running('/synthetic/project', manifest)
         spawn.assert_not_called()
+
+    def test_learning_client_needing_its_interpreter_rebases_same_release(self):
+        import json
+        import sys
+        from unittest.mock import patch
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        identity = {'version': '1.0.0', 'digest': 'same'}
+        answer = {'status': 'ready', 'protocols': [resident_service.PROTOCOL],
+                  'python': '/synthetic/other-python', 'bundle': identity}
+        sent, spawned = [], []
+        def exchange(_root, row, **_kwargs):
+            sent.append(row['command'])
+            return {'status': 'draining'}
+        with patch.object(resident_service, 'hello', return_value=answer), \
+             patch.object(resident_service, 'exchange', side_effect=exchange), \
+             patch.object(resident_service, 'bundle_identity', return_value=identity):
+            result = resident_service.ensure_service(root=root, python=sys.executable,
+                learning_root=False, spawn=lambda argv, **_kwargs: spawned.append(argv))
+        self.assertEqual(result, 'replacing')
+        self.assertEqual(sent, ['drain'])
+        self.assertEqual(spawned[0][:3], [sys.executable, '-I', '-B'])
+        self.assertEqual(json.loads((root / resident_service.INTERPRETER).read_text())['python'],
+                         sys.executable)
