@@ -266,3 +266,52 @@ class ExternalEditNotification(FixtureCase):
         self.assertEqual([row['source']['path'] for row in self.queue_rows()], ['docs/valid.md'])
         self.assertEqual(self.box()['edits'], [])
         self.assertNotIn('docs/note.md', [row['path'] for row in self.box()['seen']])
+
+    def test_return_to_processed_revision_sends_new_hint(self):
+        original = self.source.read_bytes()
+        self.notify(self.source)
+        self.drain()
+        self.source.write_text('intermediate revision\n')
+        self.notify(self.source)
+        self.drain()
+        self.source.write_bytes(original)
+        self.notify(self.source)
+        self.assertEqual(self.box()['edits'][0]['blob'], external._revision(self.source)[0])
+
+    def test_revert_while_newer_hint_waits_keeps_current_revision(self):
+        original = self.source.read_bytes()
+        self.notify(self.source)
+        self.drain()
+        self.source.write_text('pending revision\n')
+        self.notify(self.source)
+        self.source.write_bytes(original)
+        self.notify(self.source)
+        self.assertEqual(self.box()['edits'][0]['blob'], external._revision(self.source)[0])
+
+    def test_restored_source_reuses_content_without_suppressing_hint(self):
+        original = self.source.read_bytes()
+        self.notify(self.source)
+        self.drain()
+        self.source.unlink()
+        self.notify(self.source)
+        self.drain()
+        self.source.write_bytes(original)
+        self.notify(self.source)
+        self.assertEqual(self.box()['edits'][0]['blob'], external._revision(self.source)[0])
+
+    def test_invalid_rows_do_not_block_valid_hint(self):
+        from memvane.wiki.intake import wiki_discovery as discovery
+        self.notify(self.source)
+        inbox = external._inbox_path(self.decision)
+        box = self.box()
+        bad = {'path': 'a\\\\b.md', 'blob': 'c' * 40, 'host': 'codex'}
+        malformed = {'path': 'bad-host.md', 'blob': 'd' * 40, 'host': []}
+        box['edits'].extend([bad, malformed])
+        box['seen'].append(bad)
+        box['tokens'].update({bad['path']: '1' * 32, malformed['path']: '2' * 32})
+        discovery._write(inbox, box)
+        self.drain()
+        self.assertEqual([row['source']['path'] for row in self.queue_rows()], ['docs/note.md'])
+        saved = self.box()
+        self.assertEqual((saved['edits'], saved['tokens']), ([], {}))
+        self.assertEqual([row['path'] for row in saved['seen']], ['docs/note.md'])
