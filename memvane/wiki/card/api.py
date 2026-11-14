@@ -84,10 +84,6 @@ def fold_inline(value):
     from memvane.wiki.card.yaml_scalars import fold_inline as implementation
     return implementation(value)
 
-def load(raw):
-    from memvane.wiki.card.yaml_scalars import load as implementation
-    return implementation(raw)
-
 def load_flow_mapping(raw):
     from memvane.wiki.card.yaml_scalars import load_flow_mapping as implementation
     return implementation(raw)

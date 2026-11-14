@@ -181,14 +181,14 @@ _API_PARTS = ('api', 'types')
 # collection, the activity log) with a caller in wiki/compile, wiki/verify,
 # wiki/dedup, wiki/intake, wiki/lifecycle, host, sync or app; no two share a
 # callee.
-# wiki/card excepted at its exact count: 49 functions, each forwarding to a
+# wiki/card excepted at its exact count: 48 functions, each forwarding to a
 # distinct card implementation (frontmatter parsing and field rendering, body
 # parsing, YAML scalar
 # dump/load, recall trust, declared sources, source freshness and pending
 # refreshes, source spans) and each called from wiki/compile, wiki/verify,
 # wiki/lifecycle, wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
 # card contract every wiki writer and reader shares; no two names share a callee.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 35, 'wiki/card': 49}
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 35, 'wiki/card': 48}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')
@@ -733,7 +733,8 @@ def strict_checks(trees, contexts):
                 + _provider_path_literals(trees, contexts) + g5 + g9)
     unique = {(f['rule'], f['kind'], f['file'], f['line'], f['name'], f['target']): f for f in findings}
     ordered = sorted(unique.values(), key=lambda f: (f['rule'], f['target'], f['file'], f['line'], f['kind'], f['name']))
-    return ordered, {'api_attributes': attributes, 'table_owners': owners}
+    return ordered, {'api_attributes': attributes, 'api_name_limits': dict(_API_NAME_LIMITS),
+                     'table_owners': owners}
 
 
 def strict_line(finding):

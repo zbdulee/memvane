@@ -66,4 +66,10 @@ test('product modules satisfy structure rules G1 to G7 and strict G1, G5, G9', t
   for (const rule of ['G1', 'G5', 'G9']) {
     assert.deepEqual(report.strict_issues[rule], [], `strict ${rule}`);
   }
+  // Each api name limit exception is pinned at the domain's exact count.
+  const {api_attributes: names, api_name_limits: limits} = report.strict_metrics;
+  assert.deepEqual(limits, {journal: 51, runtime: 42, 'wiki/workspace': 35, 'wiki/card': 48});
+  for (const [domain, limit] of Object.entries(limits)) {
+    assert.equal(names[`memvane/${domain}/api.py`], limit, domain);
+  }
 });
