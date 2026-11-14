@@ -20,6 +20,9 @@ class WorktreeRouteBoundary(FixtureCase):
         self.install = build_install(self, self.project)
 
     def test_nested_and_sibling_worktrees_classify_read_only(self):
+        import subprocess
+        import sys
+        from pathlib import Path
         main = journal.select_route(str(self.project.root), action='recall')
         self.assertEqual(main['state'], 'candidate')
         nested = self.project.root / '.claude/worktrees/agent'
@@ -33,6 +36,13 @@ class WorktreeRouteBoundary(FixtureCase):
                     self.assertEqual(decision['state'], 'worktree', decision)
                     self.assertEqual(decision['worktreeRoot'], str(root))
                     self.assertEqual(decision['mainRoute']['projectRoot'], str(self.project.root))
+            payload = self.home / ('payload-' + root.name + '.json')
+            payload.write_text(json.dumps({'cwd': str(root), 'prompt': 'synthetic'}))
+            entry = Path(__file__).resolve().parents[5] / 'entry/run.py'
+            child = subprocess.run([sys.executable, '-B', str(entry), 'hook-classify', 'recall',
+                                    str(payload), '/'], capture_output=True, text=True, timeout=30)
+            self.assertEqual(child.returncode, 0, child.stderr)
+            self.assertEqual(child.stdout.strip(), 'worktree')
 
     def test_unproven_identity_keeps_todays_classification(self):
         linked = self.project.linked_worktree('changed', 'changed-branch')
