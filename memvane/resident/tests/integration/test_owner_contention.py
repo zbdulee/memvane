@@ -100,3 +100,36 @@ class OwnerContention(FixtureCase):
                 state = embed_resident.read_owner_state(manifest)
                 self.assertEqual((worker.state, state['reason'], state['terminal']),
                                  ('terminal', 'identity_invalid', True))
+
+    def test_incompatible_newer_service_never_spawns_or_drains(self):
+        from unittest.mock import patch
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        answer = {'status': 'ready', 'protocols': [999],
+                  'bundle': {'version': '9.0.0', 'digest': 'newer'}}
+        with patch.object(resident_service, 'hello', return_value=answer), \
+             patch.object(resident_service, 'bundle_identity',
+                          return_value={'version': '1.0.0', 'digest': 'old'}), \
+             patch.object(resident_service, 'exchange') as exchange, \
+             patch.object(resident_service, '_spawn') as spawn:
+            for _ in range(2):
+                with self.assertRaisesRegex(ResourceDeferred, 'laya_service_protocol_mismatch'):
+                    resident_service.ensure_service(root=root, learning_root=False)
+        exchange.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_equal_or_older_client_keeps_compatible_service(self):
+        from unittest.mock import patch
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        answer = {'status': 'ready', 'protocols': [resident_service.PROTOCOL],
+                  'bundle': {'version': '1.0.1', 'digest': 'newer'}}
+        with patch.object(resident_service, 'hello', return_value=answer), \
+             patch.object(resident_service, 'exchange') as exchange, \
+             patch.object(resident_service, '_spawn') as spawn:
+            for version in ('1.0.0', '1.0.1'):
+                with patch.object(resident_service, 'bundle_identity',
+                                  return_value={'version': version, 'digest': 'other'}):
+                    self.assertEqual(resident_service.ensure_service(root=root), 'ready')
+        exchange.assert_not_called()
+        spawn.assert_not_called()
