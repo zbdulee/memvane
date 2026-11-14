@@ -28,6 +28,7 @@ const METHODS = [
   'test_finalize_takes_the_sync_dispatch_check_as_a_port',
   'test_recover_without_ledger_never_abandons',
   'test_other_major_route_is_released_by_restore_then_plans',
+  'test_refused_registration_keeps_foreign_pointers',
 ];
 
 for (const method of METHODS) {

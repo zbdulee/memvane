@@ -567,6 +567,28 @@ class FixtureOnboarding(unittest.TestCase):
         self.assertEqual(install.plan_fresh_wiki_origin(self.project)['status'], 'review_required')
         self.assertEqual(self.journal_row()['state'], 'selected', 'the state root is not read')
 
+    def test_refused_registration_keeps_foreign_pointers(self):
+        """Verify R5: foreign pointers go only after the build registration succeeded."""
+        import hashlib
+        self.install(1)
+        folder = self.project / '.memvane'
+        saved = {name: (folder / name).read_bytes() for name in ('route.json', 'selection.json')}
+        # A second machine: no install directory, but a stale build pointer of it remains.
+        self.state.rename(self.home / 'elsewhere')
+        self.use_install(THIRD_INSTALL)
+        from memvane.install.application import onboarding_workflow as workflow
+        self.assertEqual(workflow.plan_fresh_wiki_origin(self.project)['replacesForeignPointers'],
+                         {name: hashlib.sha256(raw).hexdigest() for name, raw in saved.items()})
+        for _ in range(2):
+            with self.assertRaises(Exception) as caught:
+                self.prepare()
+            self.assertEqual(str(caught.exception), 'initial_build_parent_unavailable')
+            self.assertEqual({name: (folder / name).read_bytes() for name in saved}, saved)
+        self.build_pointer().rename(self.home / 'elsewhere-build-pointer.json')
+        self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+        self.assertEqual(self.project_pointers(), [])
+        self.assertIsNotNone(self.build_pointer())
+
     # -- proof/state review --------------------------------------------------------------
     def write_pointer(self, name, record):
         """Replace one project pointer with ``record``'s canonical bytes; returns them."""
@@ -613,7 +635,7 @@ class FixtureOnboarding(unittest.TestCase):
             with self.assertRaises(_Crash):
                 self.prepare()
         self.assertEqual(self.project_pointers(), ['selection.json'], 'the route goes first')
-        self.assertIsNone(self.build_pointer())
+        self.assertIsNotNone(self.build_pointer(), 'the build registers before any pointer goes')
         self.assertEqual(list(plan()['replacesForeignPointers']), ['selection.json'])
         self.assertEqual(self.prepare()['status'], 'initial_build_registered')
         self.assertEqual(self.project_pointers(), [])

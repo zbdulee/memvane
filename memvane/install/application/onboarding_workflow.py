@@ -397,12 +397,15 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root,
         if review['proposalSha256'] != accepted_provider_sha256:
             _fail('reviewed_provider_proposal_changed')
         from memvane.install.application.onboarding_restore import retire_foreign_pointers
-        retire_foreign_pointers(plan)
         result = _register_initial_build(
             plan=plan, reviewed_provider=review['reviewedProvider'],
             state=state, journal=journal,
             install_id=install_id)
-        return result
+        # Only a registered build replaces the reviewed foreign pointers; a
+        # refused registration leaves the committed pointer files in place.
+        # The wake follows, so the build never classifies the old pointers.
+        retire_foreign_pointers(plan)
+        return {**result, 'wake': _request_build_wake(plan['projectRoot'])}
 
 
 def _require_raw_scan_within_bounds(plan):
@@ -568,8 +571,7 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
             'pendingRouteSha256': route_sha, 'storePath': store['storePath'],
             'routeFile': str(state / 'route.json'),
             'buildRecord': str(state / V1_BUILD_FILE),
-            'buildPointer': pointer, 'buildPhase': record['phase'],
-            'wake': _request_build_wake(plan['projectRoot'])}
+            'buildPointer': pointer, 'buildPhase': record['phase']}
 
 
 def index_origin_status(state_root):

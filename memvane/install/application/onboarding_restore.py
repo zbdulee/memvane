@@ -79,7 +79,10 @@ def _retire_foreign_pointer(path):
 
 
 def retire_foreign_pointers(plan):
-    """Remove the reviewed foreign pointers: the route first, the marker last."""
+    """Remove the reviewed foreign pointers: the route first, the marker last.
+
+    Prepare calls it after the build registration succeeded.
+    """
     foreign = plan.get('replacesForeignPointers')
     if not foreign:
         return
