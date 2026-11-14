@@ -68,6 +68,59 @@ class ExternalInstallRouting(FixtureCase):
         wake.assert_not_called()
         self.assertFalse(external._inbox_path(self.b.select()).exists())
 
+    def test_nested_owner_worktree_never_routes_to_parent(self):
+        linked = self.b.project.root / 'worktrees/nested'
+        linked.parent.mkdir(parents=True)
+        self.b.project.git('worktree', 'add', '-qb', 'nested-external-branch', str(linked))
+        source = linked / 'docs/note.md'
+        source.write_text('nested worktree edit\n')
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            result = external.notify([source], cwd=self.a.project.root, host='codex',
+                                     origin=str(self.a.project.root))
+        self.assertEqual(result['owners'], 0)
+        wake.assert_not_called()
+        self.assertFalse(external._inbox_path(self.b.select()).exists())
+
+    def test_unselected_disabled_or_corrupt_owner_does_not_route(self):
+        import json
+        import sqlite3
+        project = self.b.project
+        source = project.write_note('docs/note.md', 'external edit\n')
+        route = project.root / '.memvane/route.json'
+        settings = project.settings_path
+        decision = self.b.select()
+        for case in ('unonboarded', 'disabled', 'corrupt_route', 'inactive_journal'):
+            original_route, original_settings = route.read_bytes(), settings.read_bytes()
+            route_mode = route.stat().st_mode & 0o777
+            try:
+                if case == 'unonboarded':
+                    route.unlink()
+                elif case == 'disabled':
+                    data = json.loads(original_settings)
+                    data['indexing'] = False
+                    settings.write_text(json.dumps(data))
+                elif case == 'corrupt_route':
+                    route.write_text('{"schema":')
+                else:
+                    with sqlite3.connect(self.b.journal) as db:
+                        db.execute("UPDATE selection SET state='prepared' WHERE id=1")
+                with self.subTest(case=case), \
+                     patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+                    result = external.notify([source], cwd=self.a.project.root, host='codex',
+                                             origin=str(self.a.project.root))
+                    self.assertEqual(result['owners'], 0)
+                    wake.assert_not_called()
+                    self.assertFalse(external._inbox_path(decision).exists())
+            finally:
+                route.write_bytes(original_route)
+                route.chmod(route_mode)
+                settings.write_bytes(original_settings)
+                if case == 'inactive_journal':
+                    with sqlite3.connect(self.b.journal) as db:
+                        db.execute("UPDATE selection SET state='selected' WHERE id=1")
+            from memvane.journal import api as journal
+            self.assertTrue(journal.verify_notification_target(decision)['notificationOnly'])
+
     def test_external_edit_hints_and_wakes_only_selected_owner(self):
         source = self.b.project.write_note('docs/note.md', 'owner revision\n')
         import time
