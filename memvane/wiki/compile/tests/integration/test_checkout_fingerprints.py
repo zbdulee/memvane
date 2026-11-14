@@ -1,13 +1,15 @@
 """Compile fingerprints describe the same source read and checkout observation."""
 import hashlib
+import io
 import json
 import sqlite3
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from memvane.store import api as store
 from memvane.wiki.card import api as card
-from memvane.wiki.compile import wiki_compile_worker as worker
+from memvane.wiki.compile import wiki_compile as compiler, wiki_compile_worker as worker
 from memvane.wiki.engines import api as engines
 from memvane.wiki.intake import api as intake
 from memvane.wiki.workspace import api as workspace
@@ -147,6 +149,24 @@ class CheckoutFingerprints(FixtureCase):
         self.assertTrue(queue.read_text().strip())
         audit = self.project.root / '.memvane/compile/candidates.jsonl'
         self.assertEqual(json.loads(audit.read_text().splitlines()[-1])['reason'], 'checkout_unavailable')
+
+    def test_writer_places_observed_fingerprint_in_verify_job(self):
+        self.assertEqual(self.process(), (True, False, []))
+        candidate = self.candidates[0]
+        with patch.object(workspace, 'request_sync'), patch.object(workspace, 'append_activity'), \
+             patch.object(compiler, 'judge_new_page_duplicate',
+                          return_value=(None, None, {'outcome': 'unavailable', 'reason': 'fixture'})), \
+             patch.object(compiler, 'find_wiki_semantic_match', return_value=(None, None)), \
+             redirect_stdout(io.StringIO()):
+            self.assertEqual(compiler._compile_locked(self.project.root, self.config,
+                             self.config['compile'], 'auto-wiki', self.project.wiki, candidate, False), 0)
+        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
+        job = json.loads(queue.read_text().splitlines()[0])
+        observed, stored = candidate['sourceFingerprints'], job['sourceFingerprints']
+        self.assertEqual(stored['viewId'], observed['viewId'])
+        self.assertEqual(stored['fingerprints'], observed['fingerprints'])
+        self.assertEqual(stored['scanId'], observed['fingerprints'][0]['scan_id'])
+        self.assertEqual(stored['observedNs'], observed['fingerprints'][0]['observed_ns'])
 
     def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
         for case in ('non-git', 'unborn'):
