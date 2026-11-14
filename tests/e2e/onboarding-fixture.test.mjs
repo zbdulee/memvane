@@ -29,6 +29,7 @@ const METHODS = [
   'test_recover_without_ledger_never_abandons',
   'test_other_major_route_is_released_by_restore_then_plans',
   'test_refused_registration_keeps_foreign_pointers',
+  'test_plan_reviewed_before_a_reboot_still_prepares',
 ];
 
 for (const method of METHODS) {

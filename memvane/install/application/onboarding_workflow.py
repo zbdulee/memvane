@@ -177,8 +177,10 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
                                              str(wiki_root))):
         _fail('fresh_wiki_origin_settings_unsupported')
     info = project.stat()
-    seed = json.dumps(['fresh-wiki-only', str(project), info.st_dev,
-                       info.st_ino, settings_sha], separators=(',', ':')).encode()
+    # No st_dev: APFS may renumber devices at boot, and a rerun must review
+    # the same plan (path, inode and settings bytes identify the project).
+    seed = json.dumps(['fresh-wiki-only', str(project), info.st_ino, settings_sha],
+                      separators=(',', ':')).encode()
     plan = {'schema': 'laya-fresh-wiki-origin-plan-v1', 'mode': 'fresh_wiki_only',
             'projectRoot': str(project), 'settingsSha256': settings_sha,
             'scopeId': hashlib.sha256(seed).hexdigest()[:32],

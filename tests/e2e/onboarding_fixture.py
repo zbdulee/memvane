@@ -589,6 +589,40 @@ class FixtureOnboarding(unittest.TestCase):
         self.assertEqual(self.project_pointers(), [])
         self.assertIsNotNone(self.build_pointer())
 
+    def test_plan_reviewed_before_a_reboot_still_prepares(self):
+        """Verify F6: a renumbered project st_dev keeps the plan, so prepare reruns pass."""
+        from memvane.install import api as install
+        from memvane.install.application import onboarding_workflow as workflow
+        self.install(1, onboard=False)
+        reviewed = install.plan_fresh_wiki_origin(self.project)
+        self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+        record = self.build_record()
+        real_stat, real_plan, project = Path.stat, workflow.plan_fresh_wiki_origin, str(self.project)
+
+        def renumbered(path, *args, **kwargs):
+            info = real_stat(path, *args, **kwargs)
+            if str(path) != project:
+                return info
+            fields = list(info[:10])
+            fields[2] += 7
+            return os.stat_result(fields, {name: getattr(info, name) for name in dir(info)
+                                           if name.startswith('st_') and name not in (
+                                               'st_mode', 'st_ino', 'st_dev', 'st_nlink', 'st_uid',
+                                               'st_gid', 'st_size')})
+
+        def plan_after_reboot(*args, **kwargs):
+            # The plan sees the new boot's device number for the project.
+            with mock.patch.object(Path, 'stat', renumbered):
+                self.assertEqual(self.project.stat().st_dev, os.stat(project).st_dev + 7)
+                return real_plan(*args, **kwargs)
+        with mock.patch.object(workflow, 'plan_fresh_wiki_origin', plan_after_reboot):
+            after = workflow.plan_fresh_wiki_origin(self.project)
+            self.assertEqual((after['proposalSha256'], after['scopeId']),
+                             (reviewed['proposalSha256'], reviewed['scopeId']))
+            for _ in range(2):
+                self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+        self.assertEqual(self.build_record(), record)
+
     # -- proof/state review --------------------------------------------------------------
     def write_pointer(self, name, record):
         """Replace one project pointer with ``record``'s canonical bytes; returns them."""
