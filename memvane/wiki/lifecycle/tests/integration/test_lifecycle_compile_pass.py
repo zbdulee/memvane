@@ -12,7 +12,15 @@ from tests.support.project import make_project
 
 class LifecycleCompilePass(FixtureCase):
     def test_session_start_retires_backfills_and_regenerates_in_one_compile_pass(self):
-        project = make_project(self.home)
+        self.lifecycle_pass('session')
+
+    def test_edit_and_bash_run_lifecycle_before_compile(self):
+        for trigger in ('edit', 'bash'):
+            with self.subTest(trigger=trigger):
+                self.lifecycle_pass(trigger)
+
+    def lifecycle_pass(self, trigger):
+        project = make_project(self.home, name='project-' + trigger, dirname='project-' + trigger)
         gone = project.write_note('docs/gone.md', 'source to retire\n')
         changed = project.write_note('docs/changed.md', 'before edit\n')
         legacy_source = project.write_note('docs/legacy.md', 'legacy source\n')
@@ -30,29 +38,40 @@ class LifecycleCompilePass(FixtureCase):
                     '.memvane/wiki/concepts/changed.md', '.memvane/wiki/concepts/legacy.md',
                     'docs/gone.md', 'docs/changed.md', 'docs/legacy.md')
         project.git('commit', '-qm', 'initial fixture')
-        install = build_install(self, project)
+        install = build_install(self, project, install_id={'session': '1', 'edit': '2', 'bash': '3'}[trigger] * 32)
         project.git('rm', '-q', '--', 'docs/gone.md')
         project.git('commit', '-qm', 'delete source')
         changed.write_text('new source revision\n')
-        seen = self.home / 'extractor-called'
-        fake = self.home / 'fake-extractor'
+        seen = self.home / ('extractor-called-' + trigger)
+        fake = self.home / ('fake-extractor-' + trigger)
         fake.write_text('#!/usr/bin/env python3\nimport json,os\n'
                         'open(os.environ["FIXTURE_SEEN"],"a").write("called\\n")\n'
                         'print(json.dumps({"candidates": []}))\n')
         fake.chmod(0o700)
-        env = {'QMD_ENGINE': 'claude', 'QMD_SYNC_STATE_DIR': str(self.home / 'scan-state'),
-               'FIXTURE_SEEN': str(seen), 'QMD_WIKI_LIFECYCLE_LOG': str(self.home / 'lifecycle.log'),
+        lifecycle_log = self.home / ('lifecycle-' + trigger + '.log')
+        env = {'QMD_ENGINE': 'claude', 'QMD_SYNC_STATE_DIR': str(self.home / ('scan-' + trigger)),
+               'FIXTURE_SEEN': str(seen), 'QMD_WIKI_LIFECYCLE_LOG': str(lifecycle_log),
                'QMD_EXTRACTOR_CLAUDE_BIN': str(fake),
                'QMD_EXTRACTOR_CODEX_BIN': str(fake), 'QMD_EXTRACTOR_HERMES_BIN': str(fake)}
-        payload = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
+        if trigger == 'session':
+            action = 'update-queued'
+            payload = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
+        elif trigger == 'edit':
+            action = 'index'
+            payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write', 'cwd': str(project.root),
+                       'tool_input': {'file_path': str(changed)}}
+        else:
+            action = 'file-change-event'
+            payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash', 'cwd': str(project.root),
+                       'tool_input': {'command': 'touch docs/changed.md'}, 'tool_response': {'exit_code': 0}}
         with patch.dict(os.environ, env), patch.object(runtime, 'request', return_value={'status': 'queued'}):
-            host.serve_selected('update-queued', 'claude', install.select(), payload)
+            host.serve_selected(action, 'claude', install.select(), payload)
             result = compile_api.run(project.root)
         self.assertIn(result['state'], ('drained', 'pending'), result)
         self.assertFalse(gone_card.exists())
         self.assertEqual(len(list((project.root / '.memvane/compile/retired-wiki').glob('*.md'))), 1)
         self.assertEqual(legacy.read_bytes(), legacy_before)
-        self.assertIn('schema3_selected', (self.home / 'lifecycle.log').read_text())
+        self.assertIn('schema3_selected', lifecycle_log.read_text())
         self.assertTrue(changed_card.exists())
         self.assertTrue(seen.exists(), 'regeneration never reached the synthetic extractor')
         queue = project.root / '.memvane/compile/source-queue.jsonl'
