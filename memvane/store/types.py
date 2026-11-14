@@ -1,7 +1,8 @@
-"""Shared store values and failure types."""
+"""Shared store values, failure types and the view store handle members."""
 from __future__ import annotations
 
 import re
+from typing import Protocol
 
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 UUID = re.compile(r'[0-9a-f]{32}\Z')
@@ -30,3 +31,50 @@ STAGE_ITEM_FIELDS = ('path', 'action', 'input_sha', 'blob_sha', 'trust_digest', 
 
 
 MAX_FILES = 64
+
+
+class ViewStoreHandle(Protocol):
+    """Public members other domains call on an open view store (``api.open_store``).
+
+    The store holds a SQLite connection, read pins and capture handles, so it
+    crosses the domain boundary as a handle. Only these members may be used
+    outside ``memvane.store``; ``_`` members never. Signatures are the
+    ``ViewStore`` methods' own (the structure guard compares them).
+    """
+
+    def capture_view(self, worktree_id, *, deadline=None): ...
+
+    def head(self, handle): ...
+
+    def pin_view(self, handle, *, deadline=None): ...
+
+    def release(self, pin): ...
+
+    def close(self): ...
+
+    def prepare_generation(self, handle, manifest, *, expected_head, vector_spec=None,
+                           deadline=None): ...
+
+    def publish_generation(self, handle, gen_id, *, expected_head, deadline=None): ...
+
+    def ingest_attested_card(self, worktree_id, path, *, decision, provenance_scan,
+                             current_sources=None): ...
+
+    def document(self, blob_sha): ...
+
+    def put_compiled_attestation(self, worktree_id, intent, *, policy_digest): ...
+
+    def fill_status(self, handle, manifest, recipe_id, profile_id): ...
+
+    def fill_view(self, handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence,
+                  expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30): ...
+
+    def search(self, pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None,
+               deadline_seconds=2): ...
+
+    def search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work=4000000,
+                     deadline_seconds=2, path_prefixes=None, excluded_paths=None): ...
+
+    def card_locations(self, pin, paths, *, deadline_seconds=2): ...
+
+    def vectors(self, blob_sha, recipe_id, profile_id): ...
