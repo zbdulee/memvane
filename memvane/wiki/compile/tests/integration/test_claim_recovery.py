@@ -1,6 +1,7 @@
 """Compile queue recovery retains work and bounds retries under the workspace API."""
 import json
 import os
+from pathlib import Path
 import time
 from unittest.mock import patch
 
@@ -56,3 +57,26 @@ class ClaimRecovery(FixtureCase):
                          ('docs/poison.md', 'max_requeue_exceeded', 4))
         self.assertEqual((seen, row['backfillReceipt']), (['docs/poison.md'], {'fixture': 'receipt'}))
         self.assertFalse(orphan.exists())
+
+    def test_live_pid_older_than_backstop_is_recovered(self):
+        orphan = self.orphan('old', {'path': 'docs/old.md'}, pid=os.getppid())
+        old = time.time() - 25 * 3600
+        os.utime(orphan, (old, old))
+        claimed = workspace.claim_queue(self.queue)
+        self.assertEqual(json.loads(claimed.read_text())['path'], 'docs/old.md')
+        self.assertFalse(orphan.exists())
+
+    def test_requeue_write_failure_keeps_original_claim(self):
+        orphan = self.orphan('unwritable', {'path': 'docs/retry.md'})
+        real_open = Path.open
+        def guarded_open(path, *args, **kwargs):
+            if path == self.queue and args and args[0] == 'a':
+                raise OSError('synthetic queue write failure')
+            return real_open(path, *args, **kwargs)
+        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}), \
+             patch.object(Path, 'open', guarded_open):
+            self.assertIsNone(workspace.claim_queue(self.queue))
+        self.assertTrue(orphan.exists())
+        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': str(self.dead_pid)}):
+            claimed = workspace.claim_queue(self.queue)
+        self.assertEqual(json.loads(claimed.read_text())['path'], 'docs/retry.md')

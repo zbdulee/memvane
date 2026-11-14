@@ -60,3 +60,17 @@ class CompileDecisions(FixtureCase):
         redacted, reasons = compile_rule.redact(text)
         self.assertNotIn(secret, redacted)
         self.assertIn('secret_like', reasons)
+
+    def test_root_meta_pages_are_not_identity_or_explicit_targets(self):
+        text = '---\ntitle: Shared\ncanonicalKey: shared\n---\nuntouched\n'
+        for name in ('index.md', 'log.md'):
+            (self.wiki / name).write_text(text)
+        index = compile_rule.build_identity_index(self.wiki)
+        candidate = {'title': 'Shared', 'canonicalKey': 'shared'}
+        for target_path in (None, '.memvane/wiki/index.md', '.memvane/wiki/log.md'):
+            with self.subTest(target_path=target_path):
+                value = {**candidate, **({'targetPath': target_path} if target_path else {})}
+                target, reason, _ = compile_rule.resolve_target(self.root, self.wiki, value, 'concept', index)
+                self.assertEqual((target, reason), (self.wiki / 'concepts/shared.md', 'slug'))
+        for name in ('index.md', 'log.md'):
+            self.assertEqual((self.wiki / name).read_text(), text)

@@ -71,8 +71,9 @@ class OverlayChecks(FixtureCase):
         self.project.write_note('docs/source.md', 'starship archive source')
         for number in range(20):
             self.card('concepts/card-%02d.md' % number,
-                      '---\ntitle: "Card %d"\ncanonicalKey: card-%d\n---\n'
-                      '## Summary\nstarship archive detail number %d\n' % (number, number, number))
+                      ('---\ntitle: "Card %d"\ncanonicalKey: card-%d\n'
+                       'sourceRevisions:\n  - SOURCE_REVISION_ONLY\n---\n## Summary\n'
+                       % (number, number)) + ('starship archive detail number %d. ' % number) * 500)
         config = expanded(self.project, compile={'extractor': {'builtins': ['claude']}})
         use_config(self, self.project, config)
         self.bound[0]['collections'][0]['name'] = self.project.wiki_name
@@ -94,6 +95,8 @@ class OverlayChecks(FixtureCase):
             identity = json.loads(page['content'].split('\n')[0])
             self.assertEqual(identity['targetPath'], page['path'])
             self.assertIn('starship archive detail', page['content'])
+            self.assertIn('이하 생략', page['content'])
+            self.assertNotIn('SOURCE_REVISION_ONLY', page['content'])
         section = engines.render_existing_context_section(payloads[0]['wiki'])
         self.assertEqual(section.count('### .memvane/wiki/concepts/card-'), 20)
 
