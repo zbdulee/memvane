@@ -13,6 +13,51 @@ from tests.support.settings_fake import expanded, use_config
 
 
 class DiscoverySyncBoundary(FixtureCase):
+    def test_runtime_retains_wake_and_grant_after_discovery_journal_failure(self):
+        import fcntl
+        import os
+        from memvane.wiki.intake import wiki_compile_enqueue as enqueue
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('changed source\n')
+        decision = install.select()
+        grant = discovery.record_grant(decision, 'sync', engine='claude')
+        self.assertTrue(discovery.activate_grant(decision, 'sync', grant))
+        wakes = runtime.wake_queue()
+        wakes.put('laya-sync', str(project.root), now=0)
+        timer = os.open(wakes.root / 'runtime-wake-timer.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(timer, fcntl.LOCK_EX)
+        def worker():
+            fd = os.open(wakes.root / 'runtime-worker.lock', os.O_CREAT | os.O_RDWR, 0o600)
+            return runtime.runtime_main(['worker', str(fd)], execute=lambda row: install.run_sync())
+        try:
+            with patch.object(enqueue, 'enqueue_changed_sources', side_effect=OSError('synthetic disk full')):
+                self.assertEqual(worker(), 0)
+            rows = wakes.pending()
+            self.assertEqual([(row['kind'], row['attempts']) for row in rows], [('laya-sync', 1)])
+            cursor = discovery._read(discovery._paths(decision)[0])
+            key = project.raw_name + '/docs/note.md'
+            self.assertEqual(cursor['pending'], {key: hashlib.sha256(source.read_bytes()).hexdigest()})
+            self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [grant])
+            with wakes.connect() as db:
+                db.execute('UPDATE wakes SET due=0')
+            with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+                self.assertEqual(worker(), 0)
+            self.assertEqual(wakes.pending(), [])
+            self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [])
+            queue = project.root / '.memvane/compile/source-queue.jsonl'
+            self.assertEqual([json.loads(line)['source']['path'] for line in queue.read_text().splitlines()],
+                             ['docs/note.md'])
+        finally:
+            os.close(timer)
+
     def test_discovery_failure_after_publish_preserves_grant_for_retry(self):
         from memvane.wiki.intake import api as intake
         project = make_project(self.home)
