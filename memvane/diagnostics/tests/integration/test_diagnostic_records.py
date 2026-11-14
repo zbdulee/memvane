@@ -35,6 +35,42 @@ class DiagnosticRecordTests(FixtureCase):
         finally:
             os.close(fd)
 
+    def test_refused_append_is_counted_then_reported_once(self):
+        target = self.tmp / 'victim'
+        target.write_text('keep')
+        path = self.state / event_log.NAME
+        path.symlink_to(target)
+        with patch.object(event_log, '_DROPPED', 0):
+            self.assertFalse(api.emit('gate', state_root=self.state))
+            self.assertFalse(api.emit('gate', state_root=self.state))
+            info = event_log.inspect(self.state)
+            self.assertEqual((info['writable'], info['refused']), (False, 2))
+            self.assertEqual(info['lastRefusal']['reason'], 'events_not_regular')
+            self.assertEqual(target.read_text(), 'keep')
+            path.unlink()
+            self.assertTrue(api.emit('gate', state_root=self.state))
+            self.assertTrue(api.emit('gate', state_root=self.state))
+            first, second = event_log.read(self.state)
+            self.assertEqual(first['dropped'], 2)
+            self.assertNotIn('dropped', second)
+
+    def test_busy_refusal_counter_does_not_block_emit(self):
+        import fcntl
+        import subprocess
+        import sys
+        (self.state / event_log.NAME).symlink_to(self.tmp / 'absent')
+        fd = os.open(self.state / event_log.REFUSED_NAME, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            code = ('import sys; from memvane.diagnostics import api; '
+                    'print(api.emit("gate", state_root=sys.argv[1]))')
+            result = subprocess.run([sys.executable, '-B', '-c', code, str(self.state)],
+                                    text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'False')
+        finally:
+            os.close(fd)
+
     def test_fifo_generation_is_skipped_by_reader(self):
         import subprocess
         import sys

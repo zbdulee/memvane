@@ -36,6 +36,23 @@ class DiagnosticConsentTests(FixtureCase):
         self.project.settings_path.write_text('{broken', encoding='utf-8')
         self.assertFalse(settings.diagnostic_enabled(self.route))
 
+    def test_diagnostics_only_changes_its_own_effective_configuration(self):
+        without = settings.normalize_config({'name': 'fixture'})
+        with_diagnostics = settings.normalize_config({'name': 'fixture', 'diagnostics': {'enabled': True}})
+        self.assertFalse(without.pop('diagnostics')['enabled'])
+        self.assertTrue(with_diagnostics.pop('diagnostics')['enabled'])
+        self.assertEqual(with_diagnostics, without)
+
+    def test_missing_or_unreadable_settings_fail_closed(self):
+        from unittest.mock import patch
+        self.settings({'enabled': True})
+        self.project.settings_path.unlink()
+        self.assertFalse(settings.diagnostic_enabled(self.route))
+        self.settings({'enabled': True})
+        with patch('builtins.open', side_effect=PermissionError('denied')):
+            self.assertFalse(settings.diagnostic_enabled(self.route))
+        self.assertFalse(settings.diagnostic_enabled({**self.route, 'projectRoot': str(self.tmp / 'missing')}))
+
     def test_linked_worktree_uses_only_proved_main_settings(self):
         linked = make_project(self.home, git=False, dirname='linked')
         linked.settings_path.write_text(json.dumps({'name': 'linked', 'diagnostics': {'enabled': True}}))
