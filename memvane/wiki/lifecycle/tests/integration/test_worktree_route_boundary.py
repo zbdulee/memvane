@@ -86,3 +86,57 @@ class WorktreeRouteBoundary(FixtureCase):
             if 'violet otter' in context.lower():
                 break
         self.assertIn('violet otter', context.lower())
+
+    def test_repeated_session_start_coalesces_lifecycle_request(self):
+        from unittest.mock import patch
+        from memvane.host import api as host
+        from memvane.runtime import api as runtime
+        from memvane.wiki.workspace import api as workspace
+        decision = self.install.select()
+        payload = {'hook_event_name': 'SessionStart', 'cwd': str(self.project.root),
+                   'session_id': 'fixture-session'}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            first = host.serve_selected('update-queued', 'claude', decision, payload)
+            second = host.serve_selected('update-queued', 'claude', decision, payload)
+        self.assertEqual(first, second)
+        self.assertEqual([call.args[0] for call in wake.call_args_list].count('laya-compile'), 1)
+        claim = workspace.claim_lifecycle(self.project.root)
+        self.assertEqual(claim['trigger'], 'session_start')
+        self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+
+    def test_unselected_session_start_records_no_lifecycle_request(self):
+        from memvane.wiki.workspace import api as workspace
+        self.assertIsNone(workspace.request_lifecycle({'state': 'legacy'}, 'session_start'))
+        self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+
+    def test_edit_and_successful_bash_trigger_one_coalesced_lifecycle_request(self):
+        from unittest.mock import patch
+        from memvane.host import api as host
+        from memvane.runtime import api as runtime
+        from memvane.wiki.workspace import api as workspace
+        decision = self.install.select()
+        edit = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write',
+                'tool_input': {'file_path': str(self.project.root / 'docs/note.md')},
+                'cwd': str(self.project.root)}
+        bash = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                'tool_input': {'command': 'touch docs/note.md'},
+                'tool_response': {'exit_code': 0}, 'cwd': str(self.project.root)}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            self.assertEqual(host.serve_selected('index', 'claude', decision, edit), {})
+            self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, bash), {})
+        self.assertEqual([call.args[0] for call in wake.call_args_list].count('laya-compile'), 1)
+        self.assertEqual(workspace.claim_lifecycle(self.project.root)['trigger'], 'source_edit')
+        self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+
+    def test_lifecycle_request_failure_does_not_change_hook_answer(self):
+        from unittest.mock import patch
+        from memvane.host import api as host
+        from memvane.runtime import api as runtime
+        from memvane.wiki.workspace import api as workspace
+        decision = self.install.select()
+        payload = {'hook_event_name': 'SessionStart', 'cwd': str(self.project.root),
+                   'session_id': 'fixture-session'}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+            baseline = host.serve_selected('update-queued', 'claude', decision, payload)
+            with patch.object(workspace, 'request_lifecycle', side_effect=OSError('unwritable')):
+                self.assertEqual(host.serve_selected('update-queued', 'claude', decision, payload), baseline)
