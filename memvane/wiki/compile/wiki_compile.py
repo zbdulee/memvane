@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.paths import safe_managed_dir, read_jsonl
 from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl
-from memvane.wiki.workspace.api import file_coordination as workspace_files
+from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.settings import api as source_text
@@ -814,7 +814,7 @@ def markdown_page(candidate: dict, summary: str, status: str, redactions: list[s
 
 
 
-@workspace_files.mutation_lock.guard_path
+@workspace_files.guard_path
 def rewrite_generated_card(path: Path, old_text: str, generated_page: str) -> bool:
     """Atomically refresh trusted frontmatter and the managed block together.
 
@@ -909,14 +909,14 @@ def write_pending_card(path: Path, text: str) -> bool:
             os.unlink(name)
 
 
-@workspace_files.mutation_lock.guard_path
-@workspace_files.mutation_lock.guard_path
+@workspace_files.guard_path
+@workspace_files.guard_path
 def insert_source_revisions(path: Path, revisions: list) -> bool:
     from memvane.wiki.card.api import _insert_source_revisions as implementation
     return implementation(path, revisions)
 
 
-@workspace_files.mutation_lock.guard_path
+@workspace_files.guard_path
 def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = None,
                              expected_text: str | None = None) -> bool:
     """Rewrite only the named top-level scalar frontmatter keys in place.
@@ -989,7 +989,7 @@ def _render_frontmatter_fields(text: str, updates: dict, blocks: dict | None = N
     return text[: match.start(1)] + new_frontmatter + text[match.end(1) :]
 
 
-@workspace_files.mutation_lock.guard_path
+@workspace_files.guard_path
 def stamp_verification(path: Path, status: str, engine: str, mode: str,
                        body_hash: str | None, source_spans: list | None = None) -> bool:
     """Write a machine-review outcome — status AND all three proof fields together.
@@ -1331,7 +1331,7 @@ def main() -> int:
         return 1
 
     try:
-        with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
             return _compile_locked(
                 root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate,
                 budget_final=args.budget_final)
@@ -1380,10 +1380,10 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     summary, redactions = redact(str(candidate.get("summary") or "").strip())
     h = source_hash({**candidate, "summary": summary})
 
-    candidate_path = cp.ledger(root, ct.CANDIDATES)
-    tombstone_path = cp.ledger(root, ct.TOMBSTONES)
-    manifest_path = cp.ledger(root, ct.MANIFEST)
-    merge_needed_path = cp.ledger(root, ct.MERGE_NEEDED)
+    candidate_path = qmd_config.ledger(root, ct.CANDIDATES)
+    tombstone_path = qmd_config.ledger(root, ct.TOMBSTONES)
+    manifest_path = qmd_config.ledger(root, ct.MANIFEST)
+    merge_needed_path = qmd_config.ledger(root, ct.MERGE_NEEDED)
     if candidate_path is None or tombstone_path is None or manifest_path is None or merge_needed_path is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1
@@ -1637,7 +1637,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
                 {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
                  'body': old}, selected[0], current_source=False):
             if (not verify_cfg.get("enabled", True)
-                    or cp.ledger(root, ct.VERIFY_QUEUE) is None):
+                    or qmd_config.ledger(root, ct.VERIFY_QUEUE) is None):
                 record['action'] = 'merge-needed'
                 record['lint'] = {'verdict': 'needs_review',
                                   'findings': ['verified_replacement_requires_review']}
@@ -1679,7 +1679,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     compact_manifest(manifest_path)
     # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
     if pending_path is None:
-        workspace_files.activity_log.append(root, action, target.relative_to(wiki_root).as_posix(),
+        workspace_files.append_activity(root, action, target.relative_to(wiki_root).as_posix(),
                                  title, bound=selected, reason='compile')
 
     collection, collection_path = find_wiki_collection(config)
@@ -1690,7 +1690,7 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
     # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
     verify_queued = False
     if verify_cfg.get("enabled", True) and status == "generated":
-        verify_queue_path = cp.ledger(root, ct.VERIFY_QUEUE)
+        verify_queue_path = qmd_config.ledger(root, ct.VERIFY_QUEUE)
         if verify_queue_path is not None:
             verify_queued = True
             # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게

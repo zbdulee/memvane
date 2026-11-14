@@ -56,7 +56,7 @@ from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.kernel.paths import now_iso
 from memvane.wiki.verify.api import supersede_compile_intent as _supersede_compile_intent, compile_intent_id as _compile_intent_id
-from memvane.wiki.workspace.api import file_coordination as workspace_files
+from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as qmd_config, types as settings_types
@@ -252,7 +252,7 @@ def verify_skipped_path(root: Path, vcfg: dict) -> Path:
     제거됐지만, 파일 자체가 밖을 가리키는 symlink면 `cp.ledger`가 여전히 None을 낸다.
     그때도 기본 경로로 떨어져 흔적을 남긴다(마커 없는 삭제보다 나은 실패다).
     """
-    return cp.ledger(root, ct.VERIFY_SKIPPED) or cp.under(root, ct.VERIFY_SKIPPED)
+    return qmd_config.ledger(root, ct.VERIFY_SKIPPED) or cp.under(root, ct.VERIFY_SKIPPED)
 
 
 def verify_deleted_path(root: Path, vcfg: dict) -> Path:
@@ -264,7 +264,7 @@ def verify_deleted_path(root: Path, vcfg: dict) -> Path:
     됐다(실측 3 run 연속). 설정 키(`compile.verify.deletedPath`)는 제거됐지만 symlink escape는
     남으므로 폴백도 남는다.
     """
-    return cp.ledger(root, ct.VERIFY_DELETED) or cp.under(root, ct.VERIFY_DELETED)
+    return qmd_config.ledger(root, ct.VERIFY_DELETED) or cp.under(root, ct.VERIFY_DELETED)
 
 
 # 유료 호출 전 원장 쓰기 가능성 판정. 정의는 `wiki_compile`이 SSOT다 — dedup scan도 같은
@@ -323,7 +323,7 @@ def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: 
     delete is preferable to contested (fix the source, get a fresh card). Fail-open:
     an unwritable manifest degrades to today's tombstone behaviour, never to a crash.
     """
-    path = cp.ledger(root, ct.MANIFEST)
+    path = qmd_config.ledger(root, ct.MANIFEST)
     if path is None:
         return
     # targetPath만 담아 same_generated_identity가 이 카드에만 매칭되게 한다
@@ -518,7 +518,7 @@ def publish_pending_replacement(root: Path, config: dict, job: dict,
     except OSError:
         return 'retry'
     wiki_root = (root / config.get('wikiPath', settings_types.WIKI_REL)).resolve()
-    workspace_files.activity_log.append(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
+    workspace_files.append_activity(root, 'updated', live_target.relative_to(wiki_root).as_posix(),
                              str(pending_meta.get('title') or live_target.stem),
                              reason='pending_publish')
     reindex_wiki(root, config)
@@ -997,7 +997,7 @@ def process_verify_job(
                         yaml_scalars.card_body_hash(live_text)):
                 if checkout is not None:
                     try:
-                        with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+                        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
                             current_text, _, _, _ = card_state(live_target)
                             if current_text == live_text:
                                 _, gate_reason = _provenance_gate(job, checkout)
@@ -1019,7 +1019,7 @@ def process_verify_job(
         staged_text, _, staged_status, staged_hash = card_state(target)
         if staged_status == 'verified' and staged_hash == job.get('sourceHash'):
             try:
-                with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+                with cp.card_write_lock(root), workspace_files.mutation_lock(root):
                     _, gate_reason = _provenance_gate(job, checkout)
                     if gate_reason == 'provenance_checkout_changed':
                         _supersede_job_intent(root, config, job, target, selected_route[0])
@@ -1226,7 +1226,7 @@ def process_verify_job(
     spans = source_spans.derive_spans(claims, span_evidence) if verdict == "pass" else []
     wiki_selected_laya.recheck(selected_route)
     try:
-        with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
             return apply_verify_verdict_locked(
                 root, config, compile_cfg, vcfg, job, target, job_hash,
                 # payload 로 보낸 파일 전문. 잠금 아래 다시 읽은 전문과 축자 대조해
@@ -1334,7 +1334,7 @@ def apply_negative_verdict(
                                    'suppressedSources': suppressed})
             return True
         wiki_root = (root / config.get("wikiPath", settings_types.WIKI_REL)).resolve()
-        workspace_files.activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
+        workspace_files.append_activity(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  dead_title, reason='verify_retire')
         record_machine_delete(root, compile_cfg, record, verdict)
         reindex_wiki(root, config)
@@ -1560,7 +1560,7 @@ def run(
     queue = _safe_queue_path(root, VERIFY_QUEUE_DEFAULT)
     if queue is None or not queue.exists():
         return result
-    log_path = cp.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)
+    log_path = qmd_config.ledger(root, ct.VERIFY_LOG) or cp.under(root, ct.VERIFY_LOG)
 
     # **유료 호출 전 preflight: fail-closed 원장에 쓸 수 없으면 검수하지 않는다.**
     # fail-closed 삭제(원장 없이는 지우지 않는다)는 유지하지만 그 실패에 종점이 없으면

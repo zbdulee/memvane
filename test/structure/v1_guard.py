@@ -174,7 +174,14 @@ _API_PARTS = ('api', 'types')
 # that scripts/development_guard.py imports; wake queue/sync owner serve host,
 # app, sync, wiki, journal and install; the QA ledger trio serves the wiki CLI).
 # No two names forward to the same callee, so no merge keeps behavior.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42}
+# wiki/workspace excepted at its exact count: 32 functions, each one distinct
+# workspace implementation (card/run/mutation locks, queue paths and claims,
+# lifecycle requests, the selected-route proof and checkout, scan cursors,
+# atomic writes, the activity log) with a caller in wiki/compile, wiki/dedup,
+# wiki/intake, wiki/lifecycle, host, sync or app; no two share a callee. The
+# 33rd name is UNRESOLVED_BINDING, the activity-log sentinel append_activity
+# needs as its default so an omitted binding stays distinguishable from None.
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 33}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')

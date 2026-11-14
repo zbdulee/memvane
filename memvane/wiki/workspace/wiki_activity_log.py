@@ -19,7 +19,7 @@ from memvane.diagnostics import api as event_log
 from memvane.diagnostics.types import MEASURE_REASONS
 
 TAIL_CHARS = event_log.WIKI_TAIL_CHARS
-_UNRESOLVED = object()
+from memvane.wiki.workspace.types import UNRESOLVED_BINDING as _UNRESOLVED
 
 REASON_CODES = {
     'card_measure': MEASURE_REASONS,

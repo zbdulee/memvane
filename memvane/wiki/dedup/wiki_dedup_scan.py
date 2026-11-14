@@ -285,8 +285,8 @@ def run(cwd: str) -> dict:
         log("ABORT: wiki root differs from the selected route")
         return result
     compile_dir = project_dir.compile_dir(root, create=True)
-    queue_path = cp.ledger(root, ct.DEDUP_NEEDED)
-    skipped_path = cp.ledger(root, ct.DEDUP_SKIPPED)
+    queue_path = qmd_config.ledger(root, ct.DEDUP_NEEDED)
+    skipped_path = qmd_config.ledger(root, ct.DEDUP_SKIPPED)
     if compile_dir is None or queue_path is None:
         log("ABORT: unsafe_compile_path")
         return result

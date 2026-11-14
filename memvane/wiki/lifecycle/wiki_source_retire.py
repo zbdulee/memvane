@@ -9,7 +9,7 @@ from memvane.wiki.card.api import archive_card
 from memvane.wiki.workspace import api as cp
 from memvane.settings import types as project_types
 from memvane.wiki.card import api as wiki_card
-from memvane.wiki.workspace.api import file_coordination as workspace_files
+from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.workspace import api as wiki_selected_laya
 from memvane.wiki.card import api as yaml_scalars
 from memvane.settings.api import is_wiki_meta_page
@@ -28,7 +28,7 @@ def _is_auto_writable_page(path: Path):
         return False, ["unreadable_target"]
 
 
-@workspace_files.mutation_lock.guard_path
+@workspace_files.guard_path
 def _insert_source_revisions(path: Path, revisions: list) -> bool:
     return wiki_card._insert_source_revisions(path, revisions)
 
@@ -103,7 +103,7 @@ def retire_deleted_source(root: Path, config: dict, selected, collection: str,
         # A renamed raw collection's old label resolves by path (recall rule).
         return label(item['collection'], item['path']), item['path']
     deleted = key({'collection': collection, 'path': rel})
-    with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+    with cp.card_write_lock(root), workspace_files.mutation_lock(root):
         wiki_selected_laya.recheck(selected)
         cards = sorted(wiki_root.rglob('*.md'))
         if len(cards) > MAX_CARDS:
@@ -218,7 +218,7 @@ def retire_card(root: Path, wiki_root: Path, selected, card: Path,
     wiki_root = Path(wiki_root)
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return 'blocked'
-    with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+    with cp.card_write_lock(root), workspace_files.mutation_lock(root):
         wiki_selected_laya.recheck(selected)
         try:
             subpath = card.relative_to(wiki_root)
@@ -267,7 +267,7 @@ def _record_retired(root, config, selected, card, text, reason, *, wiki_root=Non
         rel = Path(card).relative_to(wiki_root).as_posix()
         meta, _ = wiki_card.parse_frontmatter(text)
         title = str(meta.get('title') or Path(card).stem)
-        workspace_files.activity_log.append(root, 'retired', rel, title, bound=selected, reason=reason)
+        workspace_files.append_activity(root, 'retired', rel, title, bound=selected, reason=reason)
     except Exception:
         pass
 
@@ -292,7 +292,7 @@ def record_source_revisions(root: Path, wiki_root: Path, selected, card: Path,
     wiki_root = Path(wiki_root)
     if wiki_root.is_symlink() or not wiki_root.is_dir():
         return 'blocked'
-    with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+    with cp.card_write_lock(root), workspace_files.mutation_lock(root):
         wiki_selected_laya.recheck(selected)
         if selected is not None and 'journalPath' in selected[0]:
             return 'schema3_selected'

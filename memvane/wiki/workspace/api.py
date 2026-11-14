@@ -1,180 +1,164 @@
 """Public wiki workspace operations."""
 from __future__ import annotations as _annotations
 
+from memvane.wiki.workspace.types import UNRESOLVED_BINDING
 
-def card_write_lock(*args, **kwargs):
+
+def card_write_lock(root, *, folder=None):
     from memvane.wiki.workspace.compile_paths import card_write_lock as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root, folder=folder)
 
 
-def write_text_atomic(*args, **kwargs):
+def write_text_atomic(path, text):
     from memvane.wiki.workspace.atomic_io import write_text_atomic as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path, text)
 
 
-def owner_scope(*args, **kwargs):
+def owner_scope(bound, owner):
     from memvane.wiki.workspace.wiki_selected_laya import _owner_scope as implementation
-    return implementation(*args, **kwargs)
+    return implementation(bound, owner)
 
 
-def rel(*args, **kwargs):
+def rel(name, root=None):
     from memvane.wiki.workspace.compile_paths import rel as implementation
-    return implementation(*args, **kwargs)
+    return implementation(name, root)
 
 
-def under(*args, **kwargs):
+def under(root, name):
     from memvane.wiki.workspace.compile_paths import under as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root, name)
 
 
-def ledger(*args, **kwargs):
-    from memvane.settings.api import ledger as implementation
-    return implementation(*args, **kwargs)
-
-
-def try_compile_run_lock(*args, **kwargs):
+def try_compile_run_lock(root, *, folder=None):
     from memvane.wiki.workspace.compile_paths import try_compile_run_lock as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root, folder=folder)
 
 
-def validate_compile_run_lock(*args, **kwargs):
+def validate_compile_run_lock(root, fd):
     from memvane.wiki.workspace.compile_paths import validate_compile_run_lock as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root, fd)
 
 
-def safe_queue_path(*args, **kwargs):
+def safe_queue_path(project_root, configured_path=None):
     from memvane.wiki.workspace.queue_paths import _safe_queue_path
-    return _safe_queue_path(*args, **kwargs)
+    return _safe_queue_path(project_root, configured_path)
 
 
-def queue_lock_path(*args, **kwargs):
+def queue_lock_path(path):
     from memvane.wiki.workspace.queue_paths import _queue_lock_path
-    return _queue_lock_path(*args, **kwargs)
+    return _queue_lock_path(path)
 
 
-def requeue_lines(*args, **kwargs):
+def requeue_lines(path, raw_lines):
     from memvane.wiki.workspace.queue_paths import requeue_lines as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path, raw_lines)
 
 
-
-
-
-def append_jsonl(*args, **kwargs):
+def append_jsonl(path, payload):
     from memvane.wiki.workspace.queue import append_jsonl as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path, payload)
 
 
-
-def read_queue(*args, **kwargs):
+def read_queue(path):
     from memvane.wiki.workspace.queue import read_queue as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path)
 
 
-
-def claim_queue(*args, **kwargs):
+def claim_queue(path, *, receipt_writer=None):
     from memvane.wiki.workspace.queue import claim_queue as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path, receipt_writer=receipt_writer)
 
 
-
-def request_lifecycle(*args, **kwargs):
+def request_lifecycle(decision, trigger):
     from memvane.wiki.workspace.lifecycle_requests import request as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, trigger)
 
 
-
-def claim_lifecycle(*args, **kwargs):
+def claim_lifecycle(root):
     from memvane.wiki.workspace.lifecycle_requests import claim as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root)
 
 
-def selected(*args, **kwargs):
+def selected(root):
     from memvane.wiki.workspace.wiki_selected_laya import selected as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root)
 
 
-def recheck(*args, **kwargs):
+def recheck(bound, *, owner=None):
     from memvane.wiki.workspace.wiki_selected_laya import recheck as implementation
-    return implementation(*args, **kwargs)
+    return implementation(bound, owner=owner)
 
 
-def request_compile(*args, **kwargs):
+def request_compile(root, bound, *, owner=None):
     from memvane.wiki.workspace.wiki_selected_laya import request_compile as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root, bound, owner=owner)
 
 
-def request_sync(*args, **kwargs):
+def request_sync(root, bound=None):
     from memvane.wiki.workspace.wiki_selected_laya import request_sync as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root, bound)
 
 
-def route_identity(*args, **kwargs):
+def route_identity(bound):
     from memvane.wiki.workspace.wiki_selected_laya import route_identity as implementation
-    return implementation(*args, **kwargs)
+    return implementation(bound)
 
 
-def schema3_checkout(*args, **kwargs):
+def schema3_checkout(bound):
     from memvane.wiki.workspace.wiki_selected_laya import schema3_checkout as implementation
-    return implementation(*args, **kwargs)
+    return implementation(bound)
 
 
-def queue_busy(*args, **kwargs):
+def queue_busy(queue, *, receipt_writer=None):
     from memvane.wiki.workspace.wiki_selected_laya import _queue_busy as implementation
-    return implementation(*args, **kwargs)
+    return implementation(queue, receipt_writer=receipt_writer)
 
 
-def deferred_result(*args, **kwargs):
+def deferred_result(exc):
     from memvane.wiki.workspace.wiki_selected_laya import deferred_result as implementation
-    return implementation(*args, **kwargs)
+    return implementation(exc)
 
 
-def state_dir(*args, **kwargs):
+def state_dir(explicit=None):
     from memvane.wiki.workspace.scan_state import state_dir as implementation
-    return implementation(*args, **kwargs)
+    return implementation(explicit)
 
 
-def project_key(*args, **kwargs):
+def project_key(project_root, config_path):
     from memvane.wiki.workspace.scan_state import project_key as implementation
-    return implementation(*args, **kwargs)
+    return implementation(project_root, config_path)
 
 
-def read_state(*args, **kwargs):
+def read_state(path):
     from memvane.wiki.workspace.scan_state import read_state as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path)
 
 
-def write_state_atomic(*args, **kwargs):
+def write_state_atomic(path, snapshot):
     from memvane.wiki.workspace.scan_state import write_state_atomic as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path, snapshot)
 
 
-def trim_jsonl(*args, **kwargs):
+def trim_jsonl(path):
     from memvane.wiki.workspace.atomic_io import trim_jsonl as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path)
 
 
-class file_coordination:
-    """Public workspace mutation locking and activity-log operations."""
+def mutation_lock(root):
+    from memvane.wiki.workspace.wiki_mutation_lock import lock as implementation
+    return implementation(root)
 
-    class mutation_lock:
-        @staticmethod
-        def lock(*args, **kwargs):
-            from memvane.wiki.workspace.wiki_mutation_lock import lock as implementation
-            return implementation(*args, **kwargs)
 
-        @staticmethod
-        def guard_path(*args, **kwargs):
-            from memvane.wiki.workspace.wiki_mutation_lock import guard_path as implementation
-            return implementation(*args, **kwargs)
+def guard_path(func):
+    from memvane.wiki.workspace.wiki_mutation_lock import guard_path as implementation
+    return implementation(func)
 
-    class activity_log:
-        @staticmethod
-        def append(*args, **kwargs):
-            from memvane.wiki.workspace.wiki_activity_log import append as implementation
-            return implementation(*args, **kwargs)
 
-        @staticmethod
-        def tail(*args, **kwargs):
-            from memvane.wiki.workspace.wiki_activity_log import tail as implementation
-            return implementation(*args, **kwargs)
+def append_activity(root, action, rel, title, bound=UNRESOLVED_BINDING, *, reason=None):
+    from memvane.wiki.workspace.wiki_activity_log import append as implementation
+    return implementation(root, action, rel, title, bound, reason=reason)
+
+
+def activity_tail(root, bound):
+    from memvane.wiki.workspace.wiki_activity_log import tail as implementation
+    return implementation(root, bound)

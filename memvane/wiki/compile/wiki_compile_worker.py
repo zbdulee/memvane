@@ -90,7 +90,7 @@ def candidate_path(root: Path, compile_cfg: dict) -> Path:
     # `cp.ledger`가 None을 내는 것은 파일 자체가 compile 디렉터리 밖을 가리키는
     # symlink일 때뿐이다. 그때도 원장이 **한 줄도 남지 않는** 상태는 만들지 않는다
     # (그것이 과금 루프의 입구였다) — 기본 위치로 떨어뜨려 흔적을 남긴다.
-    return cp.ledger(root, ct.CANDIDATES) or cp.under(root, ct.CANDIDATES)
+    return qmd_config.ledger(root, ct.CANDIDATES) or cp.under(root, ct.CANDIDATES)
 
 
 def cooldown_path(root: Path) -> Path:
@@ -492,10 +492,10 @@ def orientation(root: Path, wiki_root: Path, config: dict, bound) -> dict:
     Nothing here reads the project wiki's root files; the card catalog is the
     selected memvane-db index (`similarPages`).
     """
-    from memvane.wiki.workspace.api import file_coordination as workspace_files
+    from memvane.wiki.workspace import api as workspace_files
     return {
         "schema": card_rules(card_rules_preset(root, wiki_root, config)),
-        "logTail": workspace_files.activity_log.tail(root, bound),
+        "logTail": workspace_files.activity_tail(root, bound),
     }
 
 
@@ -1485,7 +1485,7 @@ def _main():
         return 0  # unsafe lock path: keep the queue, never run unguarded
     if run_lock is None:
         if args.json:
-            queue = cp.ledger(root, ct.SOURCE_QUEUE)
+            queue = qmd_config.ledger(root, ct.SOURCE_QUEUE)
             if queue is not None:
                 print(json.dumps(_busy_report(root, queue), ensure_ascii=False))
         return 0

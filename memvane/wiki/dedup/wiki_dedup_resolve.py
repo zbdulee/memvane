@@ -21,7 +21,7 @@ from pathlib import Path
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as project_dir, types as project_types
 from memvane.settings import api as qmd_config
-from memvane.wiki.workspace.api import file_coordination as workspace_files
+from memvane.wiki.workspace import api as workspace_files
 from memvane.kernel.paths import safe_managed_dir
 from memvane.wiki.card.api import parse_frontmatter
 from memvane.wiki.dedup import wiki_dedup_scan as dedup_scan
@@ -89,7 +89,7 @@ def record_skip(root: Path, wiki_root: Path, compile_dir: Path, entry: dict) -> 
             texts[rel] = target.read_text(encoding="utf-8")
         except OSError:
             return False
-    skipped_path = cp.ledger(root, ct.DEDUP_SKIPPED)
+    skipped_path = qmd_config.ledger(root, ct.DEDUP_SKIPPED)
     if skipped_path is None:
         return False
     first, second = sorted((page_a, page_b))  # order-independent pair key
@@ -176,7 +176,7 @@ def pair_missing(wiki_root: Path, entry: dict) -> bool:
 def resolve_entry(root: Path, wiki_root: Path, compile_dir: Path, entry: dict, action: str, delete_rel: str | None, *, laya_bound=None) -> dict:
     # Match compiler/verifier/retirement lock order. Queueing a wake performs
     # journal proof checks, so do it only after both card locks are released.
-    with cp.card_write_lock(root), workspace_files.mutation_lock.lock(root):
+    with cp.card_write_lock(root), workspace_files.mutation_lock(root):
         if laya_bound is not None:
             wiki_selected_laya.recheck(laya_bound)
         result = _resolve_entry_locked(root, wiki_root, compile_dir, entry, action,
@@ -230,7 +230,7 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         content = target.read_text(encoding="utf-8")
         if laya_bound is not None:
             record_recovery(compile_dir, delete_rel, paired_with, content)
-        deleted_path = cp.ledger(root, ct.DEDUP_DELETED)
+        deleted_path = qmd_config.ledger(root, ct.DEDUP_DELETED)
         if deleted_path is not None:
             cp.append_jsonl(deleted_path, {
                 "deletedPath": delete_rel,
@@ -245,7 +245,7 @@ def _resolve_entry_locked(root: Path, wiki_root: Path, compile_dir: Path, entry:
         target.unlink()
         meta, _ = parse_frontmatter(content)
         title = str(meta.get("title") or Path(delete_rel).stem)
-        workspace_files.activity_log.append(root, "deleted", target.relative_to(wiki_root).as_posix(),
+        workspace_files.append_activity(root, "deleted", target.relative_to(wiki_root).as_posix(),
                                  title, bound=laya_bound, reason='dedup')
         # The caller requests sync after releasing the card locks but before
         # ACKing the dedup queue. A failure requeues this row for stale retry.
@@ -275,7 +275,7 @@ def main() -> int:
     if wiki_root is None or compile_dir is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
         return 1
-    queue_path = cp.ledger(root, ct.DEDUP_NEEDED)
+    queue_path = qmd_config.ledger(root, ct.DEDUP_NEEDED)
     if queue_path is None:
         print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
         return 1

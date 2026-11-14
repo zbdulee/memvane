@@ -40,3 +40,7 @@ DEFERRED_REASONS = frozenset(('owner_busy', 'writer_proof_deadline',
                               'reader_lifetime_busy', 'writer_proof_physical_busy'))
 
 LOG_MAX_BYTES = 256 * 1024
+
+# Activity log default binding: append/tail resolve the selected binding
+# themselves, and an append names no install on its event line.
+UNRESOLVED_BINDING = object()
