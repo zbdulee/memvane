@@ -236,8 +236,10 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                 proof = writer.admission_proof()
                 expected_build = build.build_lookup(decision['projectRoot'])
                 info = writer.store()
+                # Initial builds never yield to each other (_initial_build_waiting).
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
-                                                   report=report, start_service=start_service)
+                                                   report=report, start_service=start_service,
+                                                   yield_to_builds=False)
                 store = store_api.open_store(info['path'], repository=info['repository'],
                                              scope_id=decision['scopeId'])
                 try:
@@ -820,8 +822,12 @@ SCHEMA3_PROVIDER_DEFECTS = frozenset(('provider_manifest_invalid', 'selected_pro
                                       'worker_runtime_files_invalid', 'worker_provider_unapproved'))
 
 
-def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start_service):
+def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start_service,
+                            yield_to_builds=True):
     """Per-pass vector state: the install provider's spec and a lazily admitted provider.
+
+    ``yield_to_builds`` is False for an initial build's own pass: only a
+    selected sync yields its provider calls to a waiting initial build.
 
     ``acquire()`` takes the provider lane (``controller.activity``) and the
     warm service on first use and keeps both in ``lane`` until the pass
@@ -885,7 +891,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             # between rounds: another project's initial build waiting on the
             # owner this pass holds. Sets already committed stay (a pass that
             # added some reports progress and is re-offered).
-            if _initial_build_waiting(controller, Path(decision['projectRoot'])):
+            if yield_to_builds and _initial_build_waiting(controller, Path(decision['projectRoot'])):
                 raise ResourceDeferred('laya_sync_yield_priority')
             context['calls'] += 1
             try:
