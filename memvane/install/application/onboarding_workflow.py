@@ -453,7 +453,7 @@ def _create_v1_store(project_root, state_root, scope_id):
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
             _fail('initial_store_unsafe')
-        meta = store_api.read_header(path, project_root=str(project))
+        meta = store_api.read_header(path, project_root=str(project), timeout=5)
         if meta is None or len(meta['worktrees']) != 1:
             _fail('initial_store_identity_changed')
         repository = json.loads(meta['repository_json'], object_pairs_hook=_unique)

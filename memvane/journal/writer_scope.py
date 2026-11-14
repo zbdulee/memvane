@@ -136,7 +136,7 @@ class _BuildWriterContext:
                           'journalPath': identity['journalPath'], 'selectionEpoch': row['epoch'],
                           'vectorProfile': row['vectorProfile'], 'providerManifest': manifest}
             path = Path(identity['storePath'])
-            meta = store_api.read_header(path, project_root=identity['projectRoot'])
+            meta = store_api.read_header(path, project_root=identity['projectRoot'], timeout=5)
             R._need(meta is not None and len(meta['worktrees']) == 1, 'writer_plan_store_changed')
             repository = json.loads(meta['repository_json'])
             worktree_id = meta['worktrees'][0]['worktree_id']

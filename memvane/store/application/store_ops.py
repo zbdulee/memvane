@@ -65,7 +65,7 @@ def store_identity(store, handle=None):
     return identity
 
 
-def read_header(path, *, project_root=None, worktree_id=None, recover=False):
+def read_header(path, *, project_root=None, worktree_id=None, recover=False, timeout=2):
     """The store header and worktree rows in one query_only snapshot, or None.
 
     Opens ``path`` itself: ``kernel.errors._query_only_uri`` (``mode=ro``, or
@@ -74,7 +74,8 @@ def read_header(path, *, project_root=None, worktree_id=None, recover=False):
     (only for reads under the queue's sync owner). ``query_only`` and
     ``trusted_schema=OFF`` stay on, so that rollback is the only write. A
     ``mode=ro`` open refuses a hot journal with ``SQLITE_READONLY_ROLLBACK``;
-    every ``sqlite3.Error`` reaches the caller untranslated.
+    every ``sqlite3.Error`` reaches the caller untranslated. ``timeout`` is
+    the SQLite busy timeout in seconds (the store's own opens use 2).
 
     Returns None when the database has no ``store_meta`` row, else a dict
     with ``types.STORE_HEADER_KEYS``: ``worktree`` is the ``worktree_id`` row
@@ -88,7 +89,7 @@ def read_header(path, *, project_root=None, worktree_id=None, recover=False):
     from memvane.store.types import STORE_HEADER_KEYS, STORE_WORKTREE_KEYS
     columns = ','.join(STORE_WORKTREE_KEYS)
     uri = Path(path).as_uri() + '?mode=rw' if recover else _query_only_uri(path)
-    with closing(sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)) as db:
+    with closing(sqlite3.connect(uri, uri=True, timeout=timeout, isolation_level=None)) as db:
         db.execute('PRAGMA query_only=ON')
         db.execute('PRAGMA trusted_schema=OFF')
         db.execute('BEGIN')

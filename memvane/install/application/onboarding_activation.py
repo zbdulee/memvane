@@ -69,7 +69,8 @@ def finalize_initial_build(*, project_root, state_root, resolve_sync_target):
                 decision = journal.select_route(str(project), action='recall')
                 if decision.get('state') != 'preview':
                     _fail('initial_build_route_changed')
-                meta = store_api.read_header(Path(identity['storePath']), project_root=str(project))
+                meta = store_api.read_header(Path(identity['storePath']), project_root=str(project),
+                                              timeout=5)
                 if meta is None or len(meta['worktrees']) != 1:
                     _fail('initial_build_store_changed')
                 repository = json.loads(meta['repository_json'], object_pairs_hook=_unique)

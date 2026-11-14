@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from memvane.kernel.errors import _query_only_uri
 from memvane.store import api as store_api
@@ -104,6 +105,27 @@ class ReadHeader(unittest.TestCase):
         with closing(sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True)) as db:
             self.assertEqual(db.execute("SELECT count(*) FROM sqlite_master WHERE name='killed_writer'")
                              .fetchone()[0], 0)
+
+    def test_busy_timeout_is_the_callers(self):
+        opened = []
+        real = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            if kwargs.get('uri'):
+                opened.append(kwargs.get('timeout'))
+            return real(*args, **kwargs)
+        with mock.patch.object(sqlite3, 'connect', connect):
+            store_api.read_header(self.path)
+            store_api.read_header(self.path, timeout=5)
+        self.assertEqual(opened, [2, 5])
+        # The timeout reaches SQLite: a writer's lock refuses a zero-timeout read.
+        with closing(sqlite3.connect(self.path, isolation_level=None)) as writer:
+            writer.execute('BEGIN EXCLUSIVE')
+            with self.assertRaises(sqlite3.OperationalError):
+                store_api.read_header(self.path, timeout=0)
+            writer.execute('ROLLBACK')
+        self.assertEqual(store_api.read_header(self.path, timeout=0)['incarnation'],
+                         self.binding['incarnation'])
 
     def test_read_writes_nothing(self):
         before = self.path.read_bytes()

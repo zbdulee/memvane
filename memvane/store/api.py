@@ -94,9 +94,10 @@ def store_identity(store, handle=None):
     return implementation(store, handle)
 
 
-def read_header(path, *, project_root=None, worktree_id=None, recover=False):
+def read_header(path, *, project_root=None, worktree_id=None, recover=False, timeout=2):
     from memvane.store.application.store_ops import read_header as implementation
-    return implementation(path, project_root=project_root, worktree_id=worktree_id, recover=recover)
+    return implementation(path, project_root=project_root, worktree_id=worktree_id, recover=recover,
+                          timeout=timeout)
 
 
 # Pinned reads.
