@@ -150,3 +150,37 @@ class OwnerContention(FixtureCase):
             service.unproved.pop(project)
             service._report_waiting(project, {}, reasons[0], outcome='unproved')
         self.assertEqual(event.call_count, 3)
+
+    def test_default_admission_checks_runtime_without_provider_lane(self):
+        from unittest.mock import Mock, patch
+        from memvane.runtime import api as runtime_api
+        controller = Mock()
+        controller.check.return_value = {'ready': False}
+        controller.activity.side_effect = AssertionError('provider lane must remain free')
+        report = {'ready': True, 'synthetic': True}
+        with patch.object(runtime_api, 'coordinator', return_value=controller), \
+             patch.object(runtime_api, 'resource_report', return_value=report) as observe:
+            self.assertFalse(resident_service.default_admit())
+        self.assertEqual(controller.check.call_count, 1)
+        self.assertEqual(controller.check.call_args.args[1], report)
+        self.assertEqual(observe.call_args.kwargs, {'detailed': True})
+        controller.activity.assert_not_called()
+
+    def test_default_worker_start_checks_provider_and_worker_hashes(self):
+        from unittest.mock import patch
+        from memvane.kernel.errors import IndexContractError
+        from memvane.provider import api as provider_api
+        manifest = {'providerArtifactSha256': 'a' * 64, 'workerSha256': 'b' * 64}
+        paths = [self.home / 'provider', self.home / 'worker']
+        with patch.object(resident_service, 'bundle_file', side_effect=paths), \
+             patch.object(provider_api, 'hash_file', side_effect=['a' * 64, 'b' * 64]), \
+             patch.object(provider_api, 'start_owned_embed_service', return_value='handle') as start:
+            self.assertEqual(resident_service.default_start_worker(manifest, lambda: True), 'handle')
+        self.assertEqual(start.call_args.args[0]['providerPath'], str(paths[0]))
+        self.assertEqual(start.call_args.args[0]['workerPath'], str(paths[1]))
+        with patch.object(resident_service, 'bundle_file', side_effect=paths), \
+             patch.object(provider_api, 'hash_file', return_value='f' * 64), \
+             patch.object(provider_api, 'start_owned_embed_service') as start:
+            with self.assertRaisesRegex(IndexContractError, 'provider_attestation_invalid'):
+                resident_service.default_start_worker(manifest, lambda: True)
+        start.assert_not_called()
