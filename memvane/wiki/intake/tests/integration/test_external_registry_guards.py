@@ -56,3 +56,14 @@ class ExternalRegistryGuards(FixtureCase):
             result = external.notify([self.source], cwd=self.home, host='codex', origin=None)
         self.assertEqual(result, {'owners': 0, 'failed': 1, 'overflow': 0})
         wake.assert_not_called()
+
+    def test_incomplete_scan_never_routes_an_earlier_parent(self):
+        def incomplete(deadline):
+            yield self.home / ('a' * 32)
+            raise ValueError('external_edit_discovery_incomplete')
+        with patch.object(registry, 'routing_rows', return_value={'complete': False, 'rows': []}), \
+             patch.object(external, '_scanned_states', side_effect=incomplete), \
+             patch.object(runtime, 'request') as wake:
+            result = external.notify([self.source], cwd=self.home, host='codex', origin=None)
+        self.assertEqual(result, {'owners': 0, 'failed': 1, 'overflow': 0})
+        wake.assert_not_called()

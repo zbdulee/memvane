@@ -248,6 +248,40 @@ class ExternalInstallRouting(FixtureCase):
         wake.assert_not_called()
         self.assertFalse(external._inbox_path(self.b.select()).exists())
 
+    def test_external_symlink_resolving_inside_origin_never_routes_to_owner(self):
+        from memvane.host import api as host
+        private = self.a.project.write_note('docs/private.md', 'origin source\n')
+        link = self.b.project.root / 'docs/link.md'
+        link.symlink_to(private)
+        event = {'hook_event_name': 'PostToolUse', 'tool_name': 'Write',
+                 'tool_input': {'file_path': str(link)}, 'cwd': str(self.a.project.root)}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            self.assertEqual(host.serve_selected('index', 'codex', self.a.select(), event), {})
+        self.assertIn(('laya-sync', str(self.a.project.root)), [call.args for call in wake.call_args_list])
+        self.assertNotIn(('laya-sync', str(self.b.project.root)), [call.args for call in wake.call_args_list])
+        self.assertFalse(external._inbox_path(self.b.select()).exists())
+
+    def test_current_owner_skip_paths_reject_excluded_source(self):
+        import json
+        project = self.b.project
+        settings = json.loads(project.settings_path.read_text())
+        settings['skipPaths'] = ['excluded']
+        project.settings_path.write_text(json.dumps(settings))
+        excluded = project.write_note('excluded/skip.md', 'excluded source\n')
+        valid = project.write_note('docs/note.md', 'allowed source\n')
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            result = external.notify([excluded], cwd=self.a.project.root, host='codex',
+                                     origin=str(self.a.project.root))
+            self.assertEqual(result['owners'], 0)
+            wake.assert_not_called()
+            result = external.notify([valid], cwd=self.a.project.root, host='codex',
+                                     origin=str(self.a.project.root))
+            self.assertEqual(result['owners'], 1)
+            wake.assert_called_once_with('laya-sync', str(project.root))
+        inbox = external._inbox_path(self.b.select())
+        self.assertEqual([row['path'] for row in external._read_box(inbox, self.b.select())['edits']],
+                         ['docs/note.md'])
+
     def test_notification_proof_rejects_unsafe_journal_parent(self):
         from memvane.journal import api as journal
         from memvane.journal.types import JournalEvidenceError

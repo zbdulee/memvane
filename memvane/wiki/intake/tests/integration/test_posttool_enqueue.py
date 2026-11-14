@@ -78,7 +78,7 @@ class PosttoolEnqueue(FixtureCase):
     def test_disabled_compile_and_indexing_do_not_enqueue(self):
         variants = ({'compile': {'mode': 'auto-wiki', 'triggers': ['manual']}},
                     {'compile': {'mode': 'off', 'triggers': ['post_tool_source']}},
-                    {'indexing': False})
+                    {'indexing': False}, {'indexing': None})
         for overrides in variants:
             with self.subTest(overrides=overrides):
                 use_config(self, self.project, expanded(self.project, **overrides))
