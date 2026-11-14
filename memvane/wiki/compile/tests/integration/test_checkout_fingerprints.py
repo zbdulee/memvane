@@ -167,6 +167,9 @@ class CheckoutFingerprints(FixtureCase):
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
         job = json.loads(queue.read_text().splitlines()[0])
         observed, stored = candidate['sourceFingerprints'], job['sourceFingerprints']
+        self.assertEqual(job['engine'], 'claude')
+        self.assertRegex(job['sourceHash'], r'^[a-f0-9]{16}$')
+        self.assertNotIn('authoritativeSources', (self.project.root / job['targetPath']).read_text())
         self.assertEqual(stored['viewId'], observed['viewId'])
         self.assertEqual(stored['fingerprints'], observed['fingerprints'])
         self.assertEqual(stored['scanId'], observed['fingerprints'][0]['scan_id'])

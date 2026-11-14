@@ -100,3 +100,20 @@ class CompileDecisions(FixtureCase):
         self.assertEqual(worker.card_rules_preset(self.root, self.wiki, {}), 'default')
         (self.wiki / 'characters').mkdir()
         self.assertEqual(worker.card_rules_preset(self.root, self.wiki, {}), 'novel')
+
+    def test_frontmatter_updates_only_named_fields_and_rejects_unparseable_text(self):
+        page = self.wiki / 'page.md'
+        original = ('---\ntitle: "Some Decision"\ncanonicalKey: "some-decision"\n'
+                    'aliases:\n  - "Alt Name"\nstatus: generated\ncreatedBy: memvane\n'
+                    '---\n\nBody text must survive.\n')
+        page.write_text(original)
+        self.assertTrue(compile_rule.patch_frontmatter_fields(
+            page, {'status': 'superseded', 'supersededBy': '.memvane/wiki/decisions/new.md'}))
+        expected = original.replace('status: generated', 'status: superseded').replace(
+            'createdBy: memvane\n', 'createdBy: memvane\nsupersededBy: ".memvane/wiki/decisions/new.md"\n')
+        self.assertEqual(page.read_text(), expected)
+        self.assertTrue(compile_rule.patch_frontmatter_fields(page, {'status': 'needs review'}))
+        self.assertIn('status: "needs review"', page.read_text())
+        page.write_text('no frontmatter here\n')
+        self.assertFalse(compile_rule.patch_frontmatter_fields(page, {'status': 'superseded'}))
+        self.assertEqual(page.read_text(), 'no frontmatter here\n')

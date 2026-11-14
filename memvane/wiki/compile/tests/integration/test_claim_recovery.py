@@ -1,11 +1,14 @@
 """Compile queue recovery retains work and bounds retries under the workspace API."""
 import json
+import fcntl
 import os
 from pathlib import Path
+import threading
 import time
 from unittest.mock import patch
 
 from memvane.wiki.workspace import api as workspace
+from memvane.wiki.intake import api as intake
 from tests.support.case import FixtureCase
 
 
@@ -107,3 +110,47 @@ class ClaimRecovery(FixtureCase):
                 self.assertIsNone(workspace.claim_queue(self.queue, receipt_writer=lambda _job: None))
         rows = [json.loads(line) for line in (self.queue.parent / 'discard-ledger.jsonl').read_text().splitlines()]
         self.assertEqual([row['targetPath'] for row in rows], [expected for _, _, expected in cases])
+
+    def test_append_and_claim_share_lock_and_preserve_both_jobs(self):
+        first = {'source': {'path': 'docs/a.md', 'collection': 'raw'}}
+        second = {'source': {'path': 'docs/b.md', 'collection': 'raw'}}
+        self.queue.write_text(json.dumps(first) + '\n')
+        lock = workspace.queue_lock_path(self.queue)
+        started, finished = threading.Event(), threading.Event()
+        append_started, append_finished = threading.Event(), threading.Event()
+        outcomes, errors = [], []
+        def claim():
+            started.set()
+            try:
+                outcomes.append(workspace.claim_queue(self.queue))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                finished.set()
+        def append():
+            append_started.set()
+            try:
+                intake.append_source_jobs(self.queue, [second])
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                append_finished.set()
+        with lock.open('a') as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            thread = threading.Thread(target=claim)
+            appender = threading.Thread(target=append)
+            thread.start()
+            appender.start()
+            self.assertTrue(started.wait(2))
+            self.assertTrue(append_started.wait(2))
+            self.assertFalse(finished.wait(0.05), 'claim must wait for the shared queue lock')
+            self.assertFalse(append_finished.wait(0.05), 'append must wait for the shared queue lock')
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        thread.join(timeout=5)
+        appender.join(timeout=5)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(appender.is_alive())
+        self.assertEqual(errors, [])
+        claimed = outcomes[0]
+        rows = [json.loads(line) for path in (claimed, self.queue) for line in path.read_text().splitlines()]
+        self.assertEqual({row['source']['path'] for row in rows}, {'docs/a.md', 'docs/b.md'})
