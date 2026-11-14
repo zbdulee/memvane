@@ -8,7 +8,6 @@ configuration after compare-and-swap checks, preserving new captures/candidates.
 from __future__ import annotations
 import argparse
 from contextlib import closing, contextmanager
-from copy import deepcopy
 import fcntl
 import hashlib
 import json
@@ -226,7 +225,7 @@ def _inventory(root):
 
 
 def _desired_settings(raw,root,*,mode='default'):
-    settings=deepcopy(raw)
+    settings,dropped=learning_profile.closed_learning(raw)
     learning=settings.setdefault('contextLearning',{})
     shared=settings.setdefault('sharedLearning',{})
     if not isinstance(learning,dict) or not isinstance(shared,dict):raise ValueError('setup_settings_invalid')
@@ -238,7 +237,7 @@ def _desired_settings(raw,root,*,mode='default'):
         shared.update(enabled=True,root=str(root),profile=learning_profile.SCHEMA,autoApply=False)
     else:
         shared.update(enabled=True,root=str(root),profile=learning_profile.SCHEMA,autoApply=True)
-    return settings
+    return settings,dropped
 
 
 def _guard_state_root():
@@ -509,6 +508,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
         teacher=None
     elif memory_profile is not None or memory_evidence is not None:
         raise ValueError('setup_mode_invalid')
+    settings,dropped=_desired_settings(raw,root,mode=mode)
     return {**({'mode':mode,'bindingSha256':bound} if mode==SYNTHETIC_STAGED else {}),
             'schema':SCHEMA,'projectRoot':str(project),'namespaceRoot':str(root),
             'expiresAtUnixMs':expires_at_unix_ms,'notBeforeUnixMs':not_before_unix_ms,'cohortId':cohort_id,
@@ -518,7 +518,7 @@ def prepare(project,root,*,expires_at_unix_ms,not_before_unix_ms,cohort_id='gene
             'modelIdentitySha256':model_identity(model),'artifactSha256':file_sha(artifact),
             'policy':policy,'teacherConsent':teacher,'localConsent':consent,
             **({'memoryEvidence':memory_evidence} if mode==SYNTHETIC_STAGED else {}),
-            'settings':_desired_settings(raw,root,mode=mode)}
+            'settings':settings,'droppedLearningFields':dropped}
 
 
 @contextmanager

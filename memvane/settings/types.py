@@ -258,4 +258,10 @@ DEFAULT_CONFIG = {
     },
 }
 
+# settings의 학습 블록이 받는 필드와 타입(닫힌 모양). 학습 프로필이 쓰는 필드만 담는다.
+LEARNING_BLOCK_FIELDS = {
+    "contextLearning": {"capture": bool, "autoCycle": bool},
+    "sharedLearning": {"enabled": bool, "root": str, "profile": str, "autoApply": bool},
+}
+
 DEDUP_AUTO_MERGE_THRESHOLD = 0.9    # ← semanticDedup.autoMergeThreshold (scan cosine 후보 임계)

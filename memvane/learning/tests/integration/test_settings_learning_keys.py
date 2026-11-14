@@ -107,10 +107,10 @@ class SettingsLearningKeys(FixtureCase):
                     routes.derived_collections(ROUTE, self.project.root,
                                                self.project.settings_path.read_bytes())
 
-    def test_profile_activation_keeps_the_project_settings(self):
+    def activate_profile(self, mode):
+        """Propose and activate the local learning profile on the current settings; returns the plan."""
         from memvane.learning.context_learning import adapter, learning_profile as profile
         from memvane.learning.context_learning import runtime_authorization
-        from memvane.route import api as routes
         root = self.shared
         policy = {'trainerArgv': ['/fake/python', '/fake/adapter', str(root / 'model')],
                   'modelInputView': adapter.EDIT_INPUT_VIEW, '_runtime_authorization_v2': True,
@@ -121,19 +121,24 @@ class SettingsLearningKeys(FixtureCase):
         for name, row in (('shared-policy.json', policy), ('live-selector.json', {'fixture': 'live'})):
             (root / name).write_text(json.dumps(row), encoding='utf-8')
             (root / name).chmod(0o600)
-        before = self.write(self.base)
-        identity = routes.settings_identity_digest(
-            self.project.root, routes.derived_collections(ROUTE,
-                                                          self.project.root, before))
         expiry = int(time.time() * 1000) + 3600000
         with mock.patch('memvane.learning.context_learning.shared._policy', return_value=policy), \
                 mock.patch.object(runtime_authorization, 'require_operation', return_value=grant), \
                 mock.patch.object(adapter, 'model_identity', return_value='a' * 64):
-            plan = profile.proposal(self.project.root, root, choice='local-auto-apply', mode='new',
+            plan = profile.proposal(self.project.root, root, choice='local-auto-apply', mode=mode,
                                     expires_at_unix_ms=expiry)
             result = profile.activate(self.project.root, root, accepted_sha256=profile.digest(plan),
-                                      choice='local-auto-apply', mode='new', expires_at_unix_ms=expiry)
+                                      choice='local-auto-apply', mode=mode, expires_at_unix_ms=expiry)
         self.assertEqual(result['status'], 'learning_profile_selected')
+        return plan
+
+    def test_profile_activation_keeps_the_project_settings(self):
+        from memvane.route import api as routes
+        before = self.write(self.base)
+        identity = routes.settings_identity_digest(
+            self.project.root, routes.derived_collections(ROUTE, self.project.root, before))
+        plan = self.activate_profile('new')
+        self.assertEqual(plan['droppedLearningFields'], [])
         written = json.loads(self.project.settings_path.read_text(encoding='utf-8'))
         self.assertEqual(set(written), {'name', 'skipPaths', 'contextLearning', 'sharedLearning'})
         config = self.found()['config']
@@ -141,11 +146,41 @@ class SettingsLearningKeys(FixtureCase):
         self.assertEqual(config['collections'], [self.project.raw_name, self.project.wiki_name])
         self.assertNotIn('settingsNotes', config)
         self.assertEqual((config['sharedLearning']['profile'], config['sharedLearning']['autoApply'],
-                          config['sharedLearning']['root']), (SCHEMA, True, str(root)))
+                          config['sharedLearning']['root']), (SCHEMA, True, str(self.shared)))
         self.assertIs(config['contextLearning']['capture'], False)
         after = routes.derived_collections(ROUTE, self.project.root,
                                            self.project.settings_path.read_bytes())
         self.assertEqual(routes.settings_identity_digest(self.project.root, after), identity)
+
+    def test_preserve_profile_writes_only_the_closed_learning_shape(self):
+        self.write({**self.base,
+                    'contextLearning': {'capture': True, 'autoCycle': 'yes', 'liveSelection': True,
+                                        'candidateTopK': 15},
+                    'sharedLearning': {'enabled': True, 'trialSelection': True, 'autoApply': 1}})
+        plan = self.activate_profile('preserve')
+        self.assertEqual(plan['droppedLearningFields'],
+                         ['contextLearning.autoCycle', 'contextLearning.candidateTopK',
+                          'contextLearning.liveSelection', 'sharedLearning.autoApply',
+                          'sharedLearning.trialSelection'])
+        written = json.loads(self.project.settings_path.read_text(encoding='utf-8'))
+        self.assertEqual(written['contextLearning'], {'capture': True, 'autoCycle': True})
+        self.assertEqual(written['sharedLearning'], {'enabled': True, 'root': str(self.shared),
+                                                     'profile': SCHEMA, 'autoApply': True})
+        config = self.found()['config']
+        self.assertNotIn('settingsNotes', config)
+        self.assertIs(config['sharedLearning']['enabled'], True)
+        self.assertIs(config['contextLearning']['capture'], True)
+
+    def test_setup_settings_keep_only_the_closed_learning_shape(self):
+        from memvane.learning import project_learning_setup as setup
+        raw = {**self.base, 'contextLearning': {'capture': False, 'stateRoot': '/elsewhere'},
+               'sharedLearning': {'rerankTargetSeconds': 2, 'enabled': False}}
+        settings, dropped = setup._desired_settings(raw, self.shared)
+        self.assertEqual(dropped, ['contextLearning.stateRoot', 'sharedLearning.rerankTargetSeconds'])
+        self.assertEqual(settings['contextLearning'], {'capture': True, 'autoCycle': True})
+        self.assertEqual(settings['sharedLearning'], {'enabled': True, 'root': str(self.shared),
+                                                      'profile': SCHEMA, 'autoApply': True})
+        self.assertEqual(raw['contextLearning'], {'capture': False, 'stateRoot': '/elsewhere'})
 
     def test_shared_learning_enabled_reaches_the_shared_queue(self):
         from memvane.learning.context_learning import shared

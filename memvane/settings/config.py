@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from memvane.settings import project_dir
-from memvane.settings.types import (DEFAULT_CONFIG, DEDUP_AUTO_MERGE_THRESHOLD,
+from memvane.settings.types import (DEFAULT_CONFIG, DEDUP_AUTO_MERGE_THRESHOLD, LEARNING_BLOCK_FIELDS,
                                     VERIFIED_MODE_CROSS, VERIFIED_MODE_SELF,
                                     VERIFIED_MODE_UNKNOWN, VERIFIED_MODES,
                                     COLLECTION_ROLE_RAW, COLLECTION_ROLE_WIKI,
@@ -74,12 +74,9 @@ DEFAULT_REASONING_EFFORT = {
 # contextLearning·sharedLearning만 받는다. 나머지 effective 설정은 플러그인이 유도한다.
 MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths", "diagnostics",
                                    "contextLearning", "sharedLearning"})
-# 학습 블록은 learning_profile이 쓰는 필드만 담는 닫힌 모양이다. 모양이 틀리면 두 블록을
-# 모두 버리고 학습 기본값을 쓰며, 정규화된 config의 `settingsNotes`에 사유를 남긴다.
-LEARNING_BLOCK_FIELDS = {
-    "contextLearning": {"capture": bool, "autoCycle": bool},
-    "sharedLearning": {"enabled": bool, "root": str, "profile": str, "autoApply": bool},
-}
+# 학습 블록은 learning_profile이 쓰는 필드만 담는 닫힌 모양이다(`types.LEARNING_BLOCK_FIELDS`).
+# 모양이 틀리면 두 블록을 모두 버리고 학습 기본값을 쓰며, 정규화된 config의
+# `settingsNotes`에 사유를 남긴다.
 LEARNING_PROFILE_SCHEMA = "qmd-local-learning-profile-v1"
 LEARNING_SETTINGS_INVALID = "learning_settings_invalid"
 MINIMAL_CONTEXT_LEARNING = {"capture": True, "autoCycle": True}
