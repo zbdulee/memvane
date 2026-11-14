@@ -270,6 +270,7 @@ class OwnerContention(FixtureCase):
                 learning_root=False, spawn=lambda argv, **_kwargs: spawned.append(argv))
         self.assertEqual(result, 'replacing')
         self.assertEqual(sent, ['drain'])
+        self.assertEqual(len(spawned), 1)
         self.assertEqual(spawned[0][:3], [sys.executable, '-I', '-B'])
         self.assertEqual(json.loads((root / resident_service.INTERPRETER).read_text())['python'],
                          sys.executable)
