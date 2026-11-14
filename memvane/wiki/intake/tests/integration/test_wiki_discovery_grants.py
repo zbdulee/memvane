@@ -71,3 +71,12 @@ class DiscoveryGrants(FixtureCase):
         with self.assertRaisesRegex(ValueError, 'invalid_wiki_grant_engine'):
             discovery.record_grant(self.decision, 'sync', engine='unknown-host')
         self.assertFalse(discovery._paths(self.decision)[1].exists())
+
+    def test_failed_grant_write_never_produces_usable_grant(self):
+        from unittest.mock import patch
+        with patch.object(discovery, '_write_grants', side_effect=OSError('write failed')):
+            with self.assertRaisesRegex(OSError, 'write failed'):
+                discovery.record_grant(self.decision, 'sync', engine='codex')
+        observed = discovery.observe_grants(self.decision)
+        self.assertEqual(observed['grants']['sync'], [])
+        self.assertEqual(observed['provisional']['sync'], [])

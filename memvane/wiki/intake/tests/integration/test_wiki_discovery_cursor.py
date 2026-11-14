@@ -208,3 +208,21 @@ class DiscoveryCursor(FixtureCase):
             result = discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
                                                view_generation='g2', raw_snapshot={self.key: changed})
         self.assertEqual((result['state'], result['queued']), ('drained', 1))
+
+    def test_initial_seed_refuses_a_source_scan_over_the_file_cap(self):
+        from memvane.wiki.intake.types import DiscoveryBlocked
+        self.project.write_note('docs/second.md', 'second\n')
+        with patch.object(discovery, 'RAW_SCAN_MAX_FILES', 1):
+            with self.assertRaisesRegex(DiscoveryBlocked, 'raw_source_stale'):
+                discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.assertFalse(discovery._paths(self.decision)[0].exists())
+
+    def test_seed_rejects_foreign_paths_and_invalid_revision_without_state(self):
+        from memvane.wiki.intake.types import DiscoveryBlocked
+        bad = ({'other/docs/x.md': 'a' * 64}, {self.key: 'not-a-hash'},
+               {self.project.raw_name + '/../outside.md': 'a' * 64})
+        for baseline in bad:
+            with self.subTest(baseline=baseline):
+                with self.assertRaisesRegex(DiscoveryBlocked, 'baseline_invalid'):
+                    discovery.seed_source_snapshot(self.decision, baseline, generation='g1')
+                self.assertFalse(discovery._paths(self.decision)[0].exists())
