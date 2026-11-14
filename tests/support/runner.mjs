@@ -62,7 +62,18 @@ export function leftoverProcesses(home) {
   return alive;
 }
 
-export function runDomain({ domain, tiers = ['unit', 'integration'], timeoutMs = 600000 }) {
+// Per-tier child timeout. A domain whose slowest tier, run alone under the
+// development guard, takes more than two thirds of the default gets its own
+// value with at least 50% headroom over that measurement (S5 L13).
+export const DEFAULT_TIER_TIMEOUT_MS = 600000;
+// Measured alone (2026-11-15): sync integration 390 s, registry integration 423 s.
+export const DOMAIN_TIER_TIMEOUT_MS = {
+  registry: 900000,
+  sync: 900000,
+};
+
+export function runDomain({ domain, tiers = ['unit', 'integration'],
+  timeoutMs = DOMAIN_TIER_TIMEOUT_MS[domain] ?? DEFAULT_TIER_TIMEOUT_MS }) {
   for (const tier of tiers) {
     const start = join('memvane', domain, 'tests', tier);
     test(`${domain} ${tier} python tests`, { skip: !existsSync(join(ROOT, start)) && 'tier absent' }, () => {
