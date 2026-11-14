@@ -110,9 +110,15 @@ def _test_paths(root, suffixes):
 
 def _stdlib():
     stdlib_dir = Path(sysconfig.get_path('stdlib'))
-    return set(sys.builtin_module_names) | {p.stem for p in stdlib_dir.iterdir()
-                                             if p.name not in ('site-packages', 'dist-packages') and
-                                             (p.suffix == '.py' or (p.is_dir() and (p / '__init__.py').is_file()))}
+    names = set(sys.builtin_module_names) | {p.stem for p in stdlib_dir.iterdir()
+                                              if p.name not in ('site-packages', 'dist-packages') and
+                                              (p.suffix == '.py' or (p.is_dir() and (p / '__init__.py').is_file()))}
+    # C-extension stdlib modules (resource, fcntl, select, ...) live in lib-dynload.
+    for base in {stdlib_dir, Path(sysconfig.get_path('platstdlib'))}:
+        dynload = base / 'lib-dynload'
+        if dynload.is_dir():
+            names |= {p.name.split('.')[0] for p in dynload.iterdir() if p.suffix in ('.so', '.pyd')}
+    return names
 
 
 def _test_source(path):
