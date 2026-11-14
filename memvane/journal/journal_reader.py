@@ -467,8 +467,12 @@ def _adopted_vector_spec(record, proof, *, deadline):
 
 
 def resettle_selection(decision, owner):
-    """Re-seal the selected reader under the existing sync owner and lifetime."""
-    from contextlib import closing
+    """Re-seal the selected reader under the existing sync owner and lifetime.
+
+    A cold main view (``view_preparing``) leaves the record unchanged.
+    """
+    from contextlib import ExitStack, closing
+    from memvane.store.types import BlobStoreError
     from memvane.runtime.api import validate_sync_owner
     from memvane.journal.reader_windows import _Lifetime
     from memvane.store.api import provider_spec, pinned_vector
@@ -488,7 +492,16 @@ def resettle_selection(decision, owner):
         expected = provider_spec(proof['providerManifest'], proof['vectorProfile'])
         replacement = dict(saved, settings=_sha(_raw(decision['recallSettings'])))
         unbound = dict(saved, vector_profile=None, vector_recipe=None)
-        with _schema3_pin(unbound, deadline=time.monotonic() + 10) as (store, _handle, pin):
+        with ExitStack() as stack:
+            try:
+                store, _handle, pin = stack.enter_context(
+                    _schema3_pin(unbound, deadline=time.monotonic() + 10))
+            except BlobStoreError as exc:
+                # A cold main view (no published head yet) has nothing to adopt
+                # or re-seal; the record stays and a later pass re-seals it.
+                if exc.reason != 'view_preparing':
+                    raise
+                return 'unchanged', proof
             vector = pinned_vector(store, pin)
             if vector is not None and expected is not None and all(
                     vector[key] == expected[key] for key in ('profile_id', 'recipe_id')):
