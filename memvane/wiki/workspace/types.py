@@ -1,7 +1,6 @@
 """Shared limits for the wiki workspace queues."""
 from __future__ import annotations
 
-from memvane.diagnostics.types import WIKI_TAIL_CHARS
 from memvane.settings.types import CURRENT
 
 COMPILE_DIR = CURRENT + "/compile"
@@ -41,9 +40,3 @@ DEFERRED_REASONS = frozenset(('owner_busy', 'writer_proof_deadline',
                               'reader_lifetime_busy', 'writer_proof_physical_busy'))
 
 LOG_MAX_BYTES = 256 * 1024
-
-# Activity log defaults: the tail length, and the binding default that makes
-# append/tail resolve the selected binding themselves (an append then names no
-# install on its event line).
-ACTIVITY_TAIL_CHARS = WIKI_TAIL_CHARS
-UNRESOLVED_BINDING = object()

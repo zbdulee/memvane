@@ -1,8 +1,6 @@
 """Public wiki workspace operations."""
 from __future__ import annotations as _annotations
 
-from memvane.wiki.workspace.types import ACTIVITY_TAIL_CHARS, LOG_MAX_BYTES, UNRESOLVED_BINDING
-
 
 def card_write_lock(root, *, folder=None):
     from memvane.wiki.workspace.compile_paths import card_write_lock as implementation
@@ -139,9 +137,11 @@ def write_state_atomic(path, snapshot):
     return implementation(path, snapshot)
 
 
-def trim_jsonl(path, max_bytes=LOG_MAX_BYTES):
+def trim_jsonl(path, max_bytes=262144):
+    # max_bytes reaches the callee only when it differs from LOG_MAX_BYTES.
     from memvane.wiki.workspace.atomic_io import trim_jsonl as implementation
-    return implementation(path, max_bytes)
+    given = (max_bytes,) if type(max_bytes) is not int or max_bytes != 262144 else ()
+    return implementation(path, *given)
 
 
 def mutation_lock(root):
@@ -154,11 +154,19 @@ def guard_path(func):
     return implementation(func)
 
 
-def append_activity(root, action, rel, title, bound=UNRESOLVED_BINDING, *, reason=None):
+def append_activity(root, action, rel, title, bound=object(), *, reason=None):
+    # An omitted bound reaches the callee as its own unresolved-binding default.
     from memvane.wiki.workspace.wiki_activity_log import append as implementation
-    return implementation(root, action, rel, title, bound, reason=reason)
+    given = () if bound is append_activity.__defaults__[0] else (bound,)
+    return implementation(root, action, rel, title, *given, reason=reason)
 
 
-def activity_tail(root, bound=UNRESOLVED_BINDING, limit=ACTIVITY_TAIL_CHARS):
+def activity_tail(root, bound=object(), limit=8000):
+    # An omitted bound and the default limit reach the callee as its own defaults.
     from memvane.wiki.workspace.wiki_activity_log import tail as implementation
-    return implementation(root, bound, limit)
+    given = {}
+    if bound is not activity_tail.__defaults__[0]:
+        given['bound'] = bound
+    if type(limit) is not int or limit != 8000:
+        given['limit'] = limit
+    return implementation(root, **given)
