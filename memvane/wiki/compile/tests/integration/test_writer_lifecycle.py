@@ -5,7 +5,9 @@ import json
 from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_compile as compiler
+from memvane.settings import api as settings
 from memvane.wiki.workspace import api as workspace
+from memvane.wiki.workspace import types as workspace_types
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
 from tests.support.settings_fake import expanded, use_config
@@ -76,3 +78,14 @@ class WriterLifecycle(FixtureCase):
         self.assertEqual([path.read_text() for path in paths], [card, card])
         self.assertFalse((self.project.wiki / 'concepts/renamed-identity.md').exists())
         self.assertEqual(self.audit('candidates.jsonl')[-1]['action'], 'merge-needed')
+
+    def test_ledger_path_refuses_symlink_without_touching_outside_file(self):
+        directory = self.project.root / '.memvane/compile'
+        directory.mkdir()
+        outside = self.home / 'outside.jsonl'
+        outside.write_text('unchanged')
+        (directory / workspace_types.VERIFY_DELETED).symlink_to(outside)
+        self.assertIsNone(settings.ledger(self.project.root, workspace_types.VERIFY_DELETED))
+        self.assertEqual(settings.ledger(self.project.root, workspace_types.VERIFY_SKIPPED),
+                         directory / workspace_types.VERIFY_SKIPPED)
+        self.assertEqual(outside.read_text(), 'unchanged')

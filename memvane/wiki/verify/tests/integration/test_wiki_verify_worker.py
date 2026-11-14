@@ -39,6 +39,7 @@ class Pass(VerifyCase):
         self.assertEqual((row['result'], row['verifiedMode'], row['attemptedMode'], row['producedBy'],
                           row['engine'], row['claims']), ('verified', 'self', 'self', 'claude', 'claude', 1))
         self.assertEqual(self.queued(), '')
+        self.assertFalse((self.root / '.memvane/compile/verify-deleted.jsonl').exists())
 
     def test_default_verification_uses_only_the_producing_host(self):
         for host in ('codex', 'claude', 'hermes'):
