@@ -148,17 +148,25 @@ class SourceEnqueue(FixtureCase):
 
     def test_existing_rows_are_preserved_and_new_rows_append(self):
         self.queue.parent.mkdir(parents=True, exist_ok=True)
-        self.queue.write_text('{"prior": true}\n')
+        self.queue.write_text('not json\n{"prior": true}\n')
         self.assertEqual(self.run_enqueue()['queued'], 4)
-        rows = self.rows()
+        lines = self.queue.read_text().splitlines()
+        self.assertEqual(lines[0], 'not json')
+        rows = [json.loads(line) for line in lines[1:]]
         self.assertEqual(rows[0], {'prior': True})
         self.assertEqual(len(rows), 5)
+        before = self.queue.read_bytes()
+        self.assertEqual(self.run_enqueue()['queued'], 0)
+        self.assertEqual(self.queue.read_bytes(), before)
 
     def test_claimed_rows_are_not_suppressed_by_old_queue_keys(self):
         self.assertEqual(self.run_enqueue()['queued'], 4)
-        self.queue.unlink()
+        claimed = self.queue.with_name(self.queue.name + '.claimed.synthetic')
+        self.queue.rename(claimed)
+        before = claimed.read_bytes()
         self.assertEqual(self.run_enqueue()['queued'], 4)
         self.assertEqual(len(self.rows()), 4)
+        self.assertEqual(claimed.read_bytes(), before)
 
     def test_invalid_cap_falls_back_to_default(self):
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': 'many'}):
