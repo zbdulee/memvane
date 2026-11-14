@@ -40,6 +40,12 @@ class CompileSecretBoundaryTests(FixtureCase):
                 card = compile_card('Leaky Card %d' % number, secret, 'leaky-card-%d' % number)
                 self.assertFalse(card.exists())
         ledger = (project.root / '.memvane/compile/candidates.jsonl').read_text(encoding='utf-8')
-        self.assertIn('secret_like', ledger)
-        for secret in secrets:
-            self.assertNotIn(secret, ledger)
+        records = {row['title']: row for row in map(json.loads, ledger.splitlines())}
+        self.assertEqual(records['Extractor Auth Config']['summary'], benign)
+        self.assertEqual(records['Extractor Auth Config']['redactions'], [])
+        for number, secret in enumerate(secrets):
+            with self.subTest(number=number):
+                row = records['Leaky Card %d' % number]
+                self.assertIn('[REDACTED]', row['summary'])
+                self.assertIn('secret_like', json.dumps(row))
+                self.assertNotIn(secret, ledger)

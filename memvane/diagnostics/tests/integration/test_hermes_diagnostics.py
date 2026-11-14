@@ -10,6 +10,8 @@ from memvane.diagnostics import api as diagnostics, diagnostic_trace, event_log
 class HermesDiagnosticsTests(FixtureCase):
     def setUp(self):
         super().setUp()
+        from memvane.host import api as host
+        host.refusal_code(ValueError('fixture preload'))
         self.project = self.tmp / 'project'
         (self.project / '.memvane').mkdir(parents=True)
         (self.project / '.memvane/settings.json').write_text(json.dumps({'name': 'fixture'}))

@@ -87,6 +87,35 @@ class HostDiagnosticsTests(FixtureCase):
         self.assertNotIn('diagnostic_ids', row)
         self.assertFalse(any(r.get('event', '').startswith('diagnostic.') for r in rows))
 
+    def test_recall_event_records_cards_and_hashed_prompt(self):
+        import hashlib
+        from memvane.recall.types import RecallAnswer
+        self.consent(False)
+        decision = {**self.decision, 'scopeId': 'a' * 32, 'sourceRoot': str(self.project),
+                    'collectionName': 'fixture'}
+        body = 'Synthetic source body'
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        rows = [{'scope': 'a' * 32, 'generation': 'g1', 'path': 'docs/a.md',
+                 'hash': digest, 'body': body, 'score': 0.5}]
+        def serve(*args, **kwargs):
+            kwargs['trace'].note('laya_vector_selected_provider_preparing')
+            return RecallAnswer(decision, rows=rows, selection_fallback='laya_selector_not_prepared',
+                                vector_fallback='selected_provider_preparing')
+        prompt = 'private synthetic question'
+        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        with patch('memvane.settings.api.diagnostic_enabled', return_value=False), \
+             patch('memvane.journal.api.verify_selected_route', return_value=proof), \
+             patch('memvane.recall.api.serve_endpoint_recall', side_effect=serve):
+            host.serve_selected('recall', 'codex', decision, {'prompt': prompt, 'session_id': 'session-1'})
+        row = [r for r in event_log.read(self.state) if r.get('event') == 'recall'][-1]
+        self.assertEqual((row['outcome'], row['reason'], row['count']), ('served', 'selected', 1))
+        self.assertEqual(row['cards'], [{'path': 'docs/a.md', 'sha': digest}])
+        self.assertEqual(row['selection_fallback'], 'laya_selector_not_prepared')
+        self.assertEqual(row['vector_fallback'], 'selected_provider_preparing')
+        self.assertIn('laya_vector_selected_provider_preparing', row['notes'])
+        self.assertEqual(row['prompt'], {'sha256': hashlib.sha256(prompt.encode()).hexdigest(), 'chars': len(prompt)})
+        self.assertNotIn(prompt, (self.state / event_log.NAME).read_text())
+
     def test_logging_failure_preserves_original_exception(self):
         self.consent(True)
         for target in ('memvane.diagnostics.api.emit', 'memvane.diagnostics.api.capture'):
