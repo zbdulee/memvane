@@ -59,6 +59,13 @@ def _proof_cache(test, out):
         test.assertEqual(report['teacherCalls'], 0)
 
 
+def _shared_local(test, out):
+    report = json.loads(out)
+    test.assertEqual(report['shared_queue'], 'passed')
+    test.assertEqual(report['local_trial'], 'passed')
+    test.assertEqual(report['external_calls'], 0)
+
+
 # script -> (stdout check or None, extra environment)
 TABLE = {
     'context_learning_adapter_binding.py': (_all_true(
@@ -99,6 +106,8 @@ TABLE = {
     'context_learning_proof_cache.py': (_proof_cache, {}),
     'project_learning_recovery_lock.py': (None, {}),
     'project_learning_setup.py': (None, {}),
+    'context_learning_shared_local.py': (_shared_local, {}),
+    'context_learning_shared_family.py': (_all_true('independent_holdout', 'no_false_quality'), {}),
 }
 
 

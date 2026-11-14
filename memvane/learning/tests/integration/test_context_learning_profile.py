@@ -1,4 +1,4 @@
-"""Private synthetic installation profile; never uses operating settings."""
+"""Private synthetic installation profile on minimal settings plus the learning blocks (decision 8 A1)."""
 from pathlib import Path
 import json,tempfile,unittest,time
 from unittest.mock import patch
@@ -9,11 +9,13 @@ except ImportError:P=None
 class Checks(unittest.TestCase):
  def setUp(self):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-  self.project=Path(self.tmp.name).resolve();self.project.chmod(0o700)
+  base=Path(self.tmp.name).resolve();base.chmod(0o700)
+  # The minimal raw collection is the whole project, so the namespace lives beside it.
+  self.project=base/'project';self.project.mkdir(mode=0o700)
   (self.project/'.memvane').mkdir(mode=0o700)
-  self.root=self.project/'private';self.root.mkdir(mode=0o700)
+  self.root=base/'private';self.root.mkdir(mode=0o700)
   self.settings=self.project/'.memvane/settings.json'
-  self.raw={'name':'synthetic','collections':['wiki'],'collectionPaths':{'wiki':'wiki'},'indexing':True}
+  self.raw={'name':'synthetic'}
   self.policy={'trainerArgv':['/fake/python','/fake/adapter',str(self.root/'model')], 'modelInputView':laya_adapter.EDIT_INPUT_VIEW,'_runtime_authorization_v2':True,'batchMin':5,'batchMax':120}
   self.grant={'projectRoot':str(self.project),'cohort':{'id':'fixture','minQualityTrainCases':100},'operations':['local_train','quality_evaluate']}
   for name,row in [('shared-policy.json',self.policy),('live-selector.json',{'fixture':'live'})]:self.write(self.root/name,row)
@@ -34,11 +36,11 @@ class Checks(unittest.TestCase):
   self.assertNotIn('gold',plan['operations']);self.assertEqual(plan['projectRoot'],str(self.project))
  def test_preserving_migration_never_reverses_false_or_grants_capture(self):
   self.assertIsNotNone(P,'learning profile missing')
-  raw={**self.raw,'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':False},'sharedLearning':{'enabled':False,'autoApply':False}}
+  raw={**self.raw,'contextLearning':{'capture':False,'autoCycle':False},'sharedLearning':{'enabled':False,'autoApply':False}}
   self.write(self.settings,raw)
   plan=self.plan(mode='preserve');self.assertFalse(plan['localTrain']);self.assertFalse(plan['autoApply'])
   for key in ('capture','autoCycle'):self.assertFalse(plan['settings']['contextLearning'][key])
-  self.assertNotIn('liveSelection',plan['settings']['contextLearning'])
+  self.assertEqual(set(plan['settings']['contextLearning']),{'capture','autoCycle'})
   self.assertFalse(plan['settings']['sharedLearning']['enabled'])
  def test_old_signed_binding_ignores_only_removed_selection_key(self):
   old={**self.raw,'contextLearning':{'capture':False,'autoCycle':True,'liveSelection':False},
@@ -75,20 +77,23 @@ class Checks(unittest.TestCase):
   plan=learning.propose_learning_profile(self.project,self.root,**scope)
   result=learning.activate_learning_profile(self.project,self.root,accepted_sha256=learning.learning_profile_digest(plan),**scope)
   self.assertEqual(result['status'],'learning_profile_selected')
-  normalized=config.normalize_config(json.loads(self.settings.read_text()))
+  # The written settings stay project settings: the effective config carries the profile.
+  found=config.find_project_config(str(self.project))
+  self.assertEqual(found['projectRoot'],str(self.project))
+  self.assertNotIn('settingsNotes',found['config'])
+  self.assertEqual(len(found['config']['collections']),2)
+  normalized=found['config']
   self.assertEqual(normalized['sharedLearning']['profile'],P.SCHEMA)
   self.assertTrue(normalized['sharedLearning']['autoApply'])
   self.assertTrue(hasattr(P,'selection_root'),'approved selection route missing')
   self.assertEqual(P.selection_root(normalized,self.project),self.root)
- def test_off_indexing_false_and_expiry_disable_execution_and_selection(self):
+ def test_off_and_expiry_disable_execution_and_selection(self):
   self.assertIsNotNone(P,'learning profile missing')
-  raw={**self.raw,'contextLearning':{'autoCycle':True,'liveSelection':True},'sharedLearning':{'enabled':True}}
+  raw={**self.raw,'contextLearning':{'autoCycle':True},'sharedLearning':{'enabled':True}}
   self.write(self.settings,raw)
   off=P.proposal(self.project,self.root,choice='off',mode='preserve',expires_at_unix_ms=self.expiry)
   self.assertFalse(off['settings']['contextLearning']['autoCycle'])
   self.assertFalse(off['settings']['sharedLearning']['enabled'])
-  self.write(self.settings,{**self.raw,'indexing':False})
-  disabled=self.plan();self.assertFalse(disabled['localTrain']);self.assertFalse(disabled['autoApply'])
   self.write(self.settings,self.raw);plan=self.plan()
   P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='new',expires_at_unix_ms=self.expiry)
   with patch.object(P.time,'time',return_value=self.expiry/1000+1):
@@ -103,7 +108,7 @@ class Checks(unittest.TestCase):
   from memvane.learning import context_learning_auto as auto
   from memvane.learning.context_learning import shared
   plan=self.plan();P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='new',expires_at_unix_ms=self.expiry)
-  cfg=config.normalize_config(json.loads(self.settings.read_text()))
+  cfg=config.find_project_config(str(self.project))['config']
   old_policy={'schema':'qmd-auto-cycle-policy-v1','versionId':'legacy','revisionsJson':'/fake/revisions','trainerArgvJson':'/fake/argv','incumbentArtifact':'/fake/artifact','maxSeconds':60,'maxRssMib':512}
   self.write(self.root/auto.POLICY,old_policy)
   found={'config':cfg,'configFormat':'auto-context-dir','projectRoot':str(self.project)}
@@ -120,14 +125,14 @@ class Checks(unittest.TestCase):
   plan=self.plan(mode='preserve');self.assertFalse(plan['localTrain'])
   P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='preserve',expires_at_unix_ms=self.expiry)
   self.write(self.root/shared.DATABASE_NAME,{'fixture':'only existence check; evaluation queue is injected'})
-  cfg=config.normalize_config(json.loads(self.settings.read_text()))
+  cfg=config.find_project_config(str(self.project))['config']
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(EvaluationQueue,'pending',return_value=[{'cycle_id':'existing'}]),patch.object(automatic_staging,'evaluate_pending',return_value={'status':'staged_evaluated'}) as evaluate,patch.object(shared,'train_due',side_effect=AssertionError('training forbidden')):
    self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'staged_evaluated');evaluate.assert_called_once()
  def test_incomplete_apply_resumes_before_new_training_or_evaluation(self):
   from memvane.settings import api as config
   from memvane.learning.context_learning import shared,candidate_apply
   plan=self.plan();P.activate(self.project,self.root,accepted_sha256=P.digest(plan),choice='local-auto-apply',mode='new',expires_at_unix_ms=self.expiry)
-  cfg=config.normalize_config(json.loads(self.settings.read_text()))
+  cfg=config.find_project_config(str(self.project))['config']
   self.write(self.root/candidate_apply.JOURNAL,{'schema':candidate_apply.SCHEMA,'apply_id':'a'*32,'phase':'pointer_committed','cycle_id':'pending-cycle'})
   with patch.object(config,'find_project_config',return_value={'config':cfg}),patch.object(shared,'_safe_root',return_value=self.root),patch.object(shared,'train_due',side_effect=AssertionError('new training skipped pending apply')),patch.object(candidate_apply,'apply_candidate',return_value={'status':'apply_deferred'}) as recover:
    self.assertEqual(shared.run_training_pending(self.root,self.project)['status'],'apply_deferred');recover.assert_called_once_with(self.root,self.policy,'pending-cycle')
