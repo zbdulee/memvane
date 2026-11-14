@@ -192,3 +192,125 @@ class BackfillChecks(FixtureCase):
         self.assertTrue(backfill.settled_job(self.bound, job))
         backfill.settle_job(self.bound, job)
         self.assertEqual(backfill.summary(backfill._load(self.decision))['settled'], 1)
+
+    def orphan_first_batch(self, *, markerless=False):
+        from memvane.wiki.workspace import types as workspace_types
+        self.add('one.md')
+        self.add('two.md')
+        with patch.object(enqueue, 'compile_max_files', return_value=1):
+            self.dispatch(self.start())
+        job = self.jobs()[0]
+        if markerless:
+            job.pop('initialBackfill')
+        job['_requeue_count'] = workspace_types.MAX_REQUEUE_COUNT
+        queue = self.project / '.memvane/compile/source-queue.jsonl'
+        queue.write_text('')
+        orphan = queue.with_name(queue.name + '.claimed.99999999.dead')
+        orphan.write_text(json.dumps(job) + '\n')
+        return queue, orphan, job
+
+    def claim_orphan(self, queue):
+        import os
+        with patch.dict(os.environ, {'QMD_FORCE_DEAD_PIDS': '99999999'}):
+            return selected.claim_queue(queue, receipt_writer=backfill.write_discard_receipt)
+
+    def test_discard_before_ack_crash_is_reconciled_by_next_sync(self):
+        queue, orphan, _job = self.orphan_first_batch(markerless=True)
+        claimed = self.claim_orphan(queue)
+        self.assertEqual(selected.read_queue(claimed), [])
+        self.assertFalse(orphan.exists())
+        row = backfill._load(self.decision)
+        self.assertEqual(backfill.summary(row)['dispatched'], 1)
+        self.assertEqual(self.dispatch(row)['skipped'], 1)
+        self.assertEqual(self.jobs()[0]['source']['path'], 'two.md')
+        before = backfill.summary(backfill._load(self.decision))
+        backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision)), before)
+
+    def test_partial_atomic_receipt_write_keeps_claim_and_retry_recovers(self):
+        import os
+        queue, orphan, job = self.orphan_first_batch()
+        row = backfill._load(self.decision)
+        real_write = os.write
+        calls = []
+        def partial(fd, data):
+            calls.append(1)
+            if len(calls) == 1:
+                return real_write(fd, data[:7])
+            raise OSError('ENOSPC after prefix')
+        with patch.object(discovery.os, 'write', side_effect=partial):
+            with self.assertRaises(OSError):
+                self.claim_orphan(queue)
+        self.assertTrue(orphan.exists())
+        path = backfill._receipt_path(self.decision, row, 'docs/one.md')
+        self.assertFalse(path.exists())
+        self.claim_orphan(queue)
+        self.assertFalse(orphan.exists())
+        self.assertEqual(discovery._read(path)['contentRevision'], job['contentRevision'])
+        backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['skipped'], 1)
+
+    def test_atomic_replace_failure_retains_claim(self):
+        queue, orphan, _job = self.orphan_first_batch()
+        with patch.object(discovery.os, 'replace', side_effect=OSError('replace failed')):
+            with self.assertRaises(OSError):
+                self.claim_orphan(queue)
+        self.assertTrue(orphan.exists())
+        self.claim_orphan(queue)
+        backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['skipped'], 1)
+
+    def test_discard_fsync_failure_retains_orphan_and_recovery_is_idempotent(self):
+        queue, orphan, _job = self.orphan_first_batch()
+        with patch.object(discovery.os, 'fsync', side_effect=OSError('disk failure')):
+            with self.assertRaises(OSError):
+                self.claim_orphan(queue)
+        self.assertTrue(orphan.exists())
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
+        self.claim_orphan(queue)
+        backfill.reconcile_discards(self.bound)
+        summary = backfill.summary(backfill._load(self.decision))
+        self.assertEqual((summary['skipped'], summary['pending']), (1, 1))
+
+    def test_directory_fsync_failure_rechecks_existing_receipt_before_drop_or_ack(self):
+        import os
+        import stat
+        queue, orphan, _job = self.orphan_first_batch()
+        path = backfill._receipt_path(self.decision, backfill._load(self.decision),
+                                      'docs/one.md', create=True)
+        real_fsync = os.fsync
+        def fail_receipt_directory(fd):
+            info = os.fstat(fd)
+            if stat.S_ISDIR(info.st_mode) and info.st_ino == path.parent.stat().st_ino:
+                raise OSError('receipt directory fsync failed')
+            return real_fsync(fd)
+        with patch.object(discovery.os, 'fsync', side_effect=fail_receipt_directory):
+            for _ in range(2):
+                with self.assertRaises(OSError):
+                    self.claim_orphan(queue)
+                self.assertTrue(orphan.exists())
+                self.assertTrue(path.exists())
+            with self.assertRaises(OSError):
+                backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
+        self.claim_orphan(queue)
+        backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['skipped'], 1)
+
+    def test_invalid_or_symlink_atomic_receipt_fails_closed(self):
+        queue, _orphan, _job = self.orphan_first_batch()
+        self.claim_orphan(queue)
+        row = backfill._load(self.decision)
+        path = backfill._receipt_path(self.decision, row, 'docs/one.md')
+        receipt = discovery._read(path)
+        discovery._write(path, {**receipt, 'initialBackfill': 'f' * 32})
+        with self.assertRaises(discovery.DiscoveryBlocked):
+            backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
+        outside = self.home / 'foreign.json'
+        discovery._write(outside, receipt)
+        path.unlink()
+        path.symlink_to(outside)
+        with self.assertRaises(discovery.DiscoveryBlocked):
+            backfill.reconcile_discards(self.bound)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
