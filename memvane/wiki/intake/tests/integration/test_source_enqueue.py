@@ -109,3 +109,54 @@ class SourceEnqueue(FixtureCase):
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': 'many'}):
             result = self.run_enqueue()
         self.assertEqual((result['queued'], result['reason']), (4, 'queued'))
+
+    def test_skipped_rows_use_cap_slots_but_are_not_deferred(self):
+        only_a = {'docs': {'root': str(self.project.root / 'docs'),
+                           'created': [], 'updated': ['a.md'], 'deleted': []}}
+        self.changed = only_a
+        self.assertEqual(self.run_enqueue()['queued'], 1)
+        self.changed = {'docs': {'root': str(self.project.root / 'docs'),
+                                 'created': ['a.md', 'b.md', 'c.md'], 'updated': [], 'deleted': []},
+                        'src': {'root': str(self.project.root / 'src'),
+                                'created': ['s.md'], 'updated': [], 'deleted': []}}
+        with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '2'}):
+            result = self.run_enqueue()
+        self.assertEqual((result['queued'], result['deferred'], result.get('wakePending')),
+                         (1, 2, True))
+        self.assertEqual(result['deferredFiles'], [('docs', 'c.md'), ('src', 's.md')])
+        self.assertEqual([r['source']['path'] for r in self.rows()], ['docs/a.md', 'docs/b.md'])
+
+    def test_oversized_live_queue_falls_back_to_plain_append(self):
+        self.assertEqual(enqueue.QUEUE_SCAN_MAX_BYTES, 8 * 1024 * 1024)
+        self.assertEqual(self.run_enqueue()['queued'], 4)
+        original = self.queue.read_bytes()
+        self.assertEqual(len(enqueue._queued_revision_keys(self.queue, limit=len(original))), 4)
+        self.assertEqual(enqueue._queued_revision_keys(self.queue, limit=len(original) - 1), set())
+        with self.queue.open('ab') as handle:
+            handle.write(json.dumps({'pad': 'x' * enqueue.QUEUE_SCAN_MAX_BYTES}).encode() + b'\n')
+        before = self.queue.read_bytes()
+        result = self.run_enqueue()
+        self.assertEqual((result['queued'], result['reason']), (4, 'queued'))
+        self.assertNotIn('wakePending', result)
+        result_bytes = self.queue.read_bytes()
+        self.assertTrue(result_bytes.startswith(before))
+        before_rows = [json.loads(line) for line in original.splitlines()]
+        appended = [json.loads(line) for line in result_bytes[len(before):].splitlines()]
+        for row in before_rows + appended:
+            row.pop('ts', None)
+        self.assertEqual(appended, before_rows)
+
+    def test_same_content_is_queued_once_per_trigger(self):
+        import hashlib
+        for entry in self.changed.values():
+            entry['revisions'] = {rel: hashlib.sha256((self.project.root / entry['root'] / rel).read_bytes()).hexdigest()
+                                  for rel in entry['created'] + entry['updated']
+                                  if (self.project.root / entry['root'] / rel).is_file()}
+        self.assertEqual(self.run_enqueue(session_start=True)['queued'], 4)
+        self.assertEqual(self.run_enqueue(session_start=False)['queued'], 4)
+        self.assertEqual(self.run_enqueue(session_start=False)['queued'], 0)
+        rows = self.rows()
+        self.assertEqual(len(rows), 8)
+        self.assertEqual({row['trigger'] for row in rows},
+                         {'session_start_source', 'post_sync_source'})
+        self.assertTrue(all(row.get('contentRevision') for row in rows))

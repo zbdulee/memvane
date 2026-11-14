@@ -180,3 +180,15 @@ class BackfillChecks(FixtureCase):
         discovery.revoke_grant(self.decision, grant)
         self.assertNotIn('engines', discovery.observe_grants(self.decision))
 
+    def test_settled_receipt_survives_continuation_wake_failure(self):
+        self.add('one.md')
+        self.add('two.md')
+        with patch.object(enqueue, 'compile_max_files', return_value=1):
+            self.dispatch(self.start())
+        job = self.jobs()[0]
+        with patch.object(selected, 'request_sync', side_effect=OSError('wake failed')):
+            with self.assertRaises(OSError):
+                self.settle(job)
+        self.assertTrue(backfill.settled_job(self.bound, job))
+        backfill.settle_job(self.bound, job)
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['settled'], 1)
