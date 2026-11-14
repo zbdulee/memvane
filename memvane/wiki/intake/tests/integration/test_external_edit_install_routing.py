@@ -51,3 +51,40 @@ class ExternalInstallRouting(FixtureCase):
         self.assertEqual(row, {'path': 'docs/note.md', 'blob': blob, 'host': 'codex'})
         self.assertFalse(external._inbox_path(self.a.select()).exists())
         self.assertNotIn('owner revision', inbox.read_text())
+
+    def test_notification_proof_reads_journal_without_opening_owner_store(self):
+        import sqlite3
+        from memvane.journal import api as journal
+        from memvane.journal.types import JournalEvidenceError
+        decision = self.b.select()
+        original = sqlite3.connect
+        opened = []
+        def connect(target, *args, **kwargs):
+            if str(self.b.store_path) in str(target):
+                opened.append(str(target))
+                raise AssertionError('notification opened owner store')
+            return original(target, *args, **kwargs)
+        with patch.object(sqlite3, 'connect', side_effect=connect):
+            proof = journal.verify_notification_target(decision)
+            self.assertTrue(proof['notificationOnly'])
+            self.assertEqual(proof['projectRoot'], str(self.b.project.root))
+            self.assertEqual(proof['installId'], self.b.install_id)
+            self.assertEqual(opened, [])
+            for state in ('legacy', 'blocked', 'preview', 'worktree', 'upgrading'):
+                with self.subTest(state=state), self.assertRaises(JournalEvidenceError):
+                    journal.verify_notification_target({**decision, 'state': state})
+            changed = {**decision, 'recallSettings': {**decision['recallSettings'], 'skipPaths': ['other']}}
+            with self.assertRaises(JournalEvidenceError):
+                journal.verify_notification_target(changed)
+        self.assertEqual(opened, [])
+
+    def test_notification_proof_rejects_unsafe_journal_parent(self):
+        from memvane.journal import api as journal
+        from memvane.journal.types import JournalEvidenceError
+        decision = self.b.select()
+        self.b.state.chmod(0o755)
+        try:
+            with self.assertRaises(JournalEvidenceError):
+                journal.verify_notification_target(decision)
+        finally:
+            self.b.state.chmod(0o700)
