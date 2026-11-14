@@ -75,6 +75,21 @@ class SourceEnqueue(FixtureCase):
                                                          changed, engine='claude')['queued'], 0)
         self.assertEqual(self.queue.read_bytes(), queued)
 
+    def test_manual_sync_queue_record_preserves_fields_and_revision(self):
+        import hashlib
+        path = self.project.root / 'docs/a.md'
+        self.changed = {'docs': {'root': str(path.parent), 'created': ['a.md'],
+                                 'updated': [], 'deleted': []}}
+        timestamp = '2026-10-17T00:00:00Z'
+        with patch.object(enqueue, '_utc_now', return_value=timestamp):
+            self.assertEqual(self.run_enqueue()['queued'], 1)
+        self.assertEqual(self.rows(), [{
+            'ts': timestamp, 'trigger': 'post_sync_source', 'engine': 'claude',
+            'cwd': str(self.project.root),
+            'source': {'kind': 'file', 'path': 'docs/a.md', 'collection': 'docs'},
+            'contentRevision': hashlib.sha256(path.read_bytes()).hexdigest(),
+        }])
+
     def test_cap_defers_the_tail_and_cap_zero_writes_nothing(self):
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '0'}):
             result = self.run_enqueue()
