@@ -39,6 +39,7 @@ class ForcedExit(FixtureCase):
         self.addCleanup(successor.close)
         self.assertTrue(successor.acquire(wait=15))
         self.assertEqual(driver.wait(timeout=15), svc.FORCED_EXIT_CODE)
+        self.assertGreaterEqual(int((self.home / 'learning-observations').read_text()), 3)
         child = int(child_record.read_text())
         with self.assertRaises(ProcessLookupError):
             os.kill(child, 0)

@@ -31,9 +31,16 @@ def main(base):
 
     svc.register(str(project), root=root)
     service = svc.Service(root, bundle={'version': '1.0.0'},
+                          learning_root=str(base / 'learning'),
                           prove=lambda _project: (decision, {'providerManifest': manifest}, 'selected'),
                           attest=lambda *_args: None, start_worker=start_worker,
                           admit=lambda: True, tick=.05)
+    observations = []
+    def learning_busy():
+        observations.append(1)
+        (base / 'learning-observations').write_text(str(len(observations)))
+        return len(observations) <= 2
+    service._learning_busy = learning_busy
     if not service.acquire(wait=5):
         return 75
     service.start()
