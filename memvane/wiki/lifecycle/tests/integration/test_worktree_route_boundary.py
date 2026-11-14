@@ -104,6 +104,33 @@ class WorktreeRouteBoundary(FixtureCase):
         self.assertEqual(claim['trigger'], 'session_start')
         self.assertIsNone(workspace.claim_lifecycle(self.project.root))
 
+    def test_worktree_hooks_only_wake_main_sync_and_never_queue_compile(self):
+        from unittest.mock import patch
+        from memvane.host import api as host
+        from memvane.runtime import api as runtime
+        from memvane.wiki.workspace import api as workspace
+        linked = self.project.linked_worktree('hooks', 'hooks-branch')
+        decision = journal.select_route(str(linked.root), action='recall')
+        edit = {'hook_event_name': 'PostToolUse', 'tool_name': 'Edit', 'cwd': str(linked.root),
+                'tool_input': {'file_path': str(linked.root / 'docs/note.md')}}
+        bash = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash', 'cwd': str(linked.root),
+                'tool_input': {'command': 'touch docs/note.md'}, 'tool_response': {'exit_code': 0}}
+        session = {'hook_event_name': 'SessionStart', 'cwd': str(linked.root)}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            notice = host.serve_selected('update-queued', 'claude', decision, session)
+            self.assertTrue(notice['hookSpecificOutput']['additionalContext'])
+            for action in ('posttool', 'compile', 'index'):
+                self.assertEqual(host.serve_selected(action, 'claude', decision, edit), {})
+            self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, bash), {})
+            for engine in ('claude', 'codex'):
+                self.assertEqual(host.serve_selected('gate', engine, decision,
+                    {**edit, 'hook_event_name': 'PreToolUse'}), {})
+        self.assertEqual([call.args for call in wake.call_args_list],
+                         [('laya-sync', str(self.project.root))] * 3)
+        self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+        source_queue = self.project.root / '.memvane/compile/source-queue.jsonl'
+        self.assertFalse(source_queue.exists() and source_queue.read_text().strip())
+
     def test_unselected_session_start_records_no_lifecycle_request(self):
         from memvane.wiki.workspace import api as workspace
         self.assertIsNone(workspace.request_lifecycle({'state': 'legacy'}, 'session_start'))
