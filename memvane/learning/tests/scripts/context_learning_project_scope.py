@@ -53,7 +53,8 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
  adapter=installs['codex'][0]/'memvane/learning/context_learning/adapter.py'
  policy={'trainerArgv':[str(python),str(adapter),str(model)],'modelInputView':EDIT_INPUT_VIEW,'baseArtifact':str(artifact),'batchMin':5,'batchMax':100}
  save(root/'shared-policy.json',policy)
- settings={'indexing':True,'collectionPaths':{'docs':'docs'},'contextLearning':{'capture':False,'autoCycle':False,'liveSelection':True}}
+ # Minimal project settings plus the learning profile block (decision 8 A1).
+ settings={'name':'scope','contextLearning':{'capture':False,'autoCycle':False}}
  save(project/'.memvane/settings.json',settings)
  cutoff=int(time.time()*1000)-1000;expiry=cutoff+3600000
  with patch.object(Path,'home',return_value=home),patch.object(scope,'_installations',return_value=[{'host':host,'root':str(installs[host][0])} for host in ('claude','codex')]):
@@ -88,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
   changed={**settings,'contextLearning':{'capture':True,'autoCycle':True}}
   save(project/'.memvane/settings.json',changed)
   assert scope.require(root,policy,'local_train')==row
-  save(project/'.memvane/settings.json',{**changed,'collectionPaths':{'docs':'.'}})
+  save(project/'.memvane/settings.json',{**changed,'skipPaths':['drafts']})
   expect('changed',lambda:scope.require(root,policy,'local_train'))
   save(project/'.memvane/settings.json',settings)
   artifact.write_text('tampered');expect('changed',lambda:scope.require(root,policy,'local_train'));artifact.write_text('base')

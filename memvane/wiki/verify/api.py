@@ -30,3 +30,8 @@ def load_verify_suppressions(path):
 def source_body_hash(text):
     from memvane.wiki.verify.verify_ledger import source_body_hash as implementation
     return implementation(text)
+
+
+def stamp_verification(path, status, engine, mode, body_hash, source_spans=None):
+    from memvane.wiki.verify.verification_stamp import stamp_verification as implementation
+    return implementation(path, status, engine, mode, body_hash, source_spans=source_spans)

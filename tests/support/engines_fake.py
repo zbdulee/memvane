@@ -27,9 +27,13 @@ from unittest import mock
 
 
 def _engine(argv):
-    joined = ' '.join(str(part) for part in argv or ())
-    for name in ('claude', 'codex', 'hermes', 'gemini'):
-        if name in joined:
+    # Builtin adapters end with `extractor-<engine>`; a bare host name is also accepted.
+    # Whole elements only, so a repository path that contains a host name never decides it.
+    for part in reversed([str(part) for part in argv or ()]):
+        name = os.path.basename(part)
+        if name.startswith('extractor-'):
+            return name[len('extractor-'):] or None
+        if name in ('claude', 'codex', 'hermes', 'gemini'):
             return name
     return None
 

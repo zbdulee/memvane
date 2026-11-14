@@ -967,7 +967,7 @@ QA-only barrier (`memvane/sync/product_sync_worker.py`):
   admission. Existing synthetic tests in `test/runtime_resources_test.py`,
   `test/runtime_training_watch_test.py`,
   `test/fixtures/runtime-wake-policy-checks.py`, and
-  `test/fixtures/context-learning-coordination-checks.py` are L0 coverage,
+  `memvane/learning/tests/integration/test_context_learning_coordination.py` are L0 coverage,
   not this installed-candidate result.
 - **Timeout:** 60 min.
 - **Cleanup:** remove the test namespace through its approved path; preserve

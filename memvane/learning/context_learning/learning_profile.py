@@ -51,6 +51,16 @@ def recommendation(settings):
             'capture':'preserve; new default false','existingExplicitFalse':'preserved',
             'teacherPermission':'unchanged','changesApplied':0}
 
+def closed_learning(raw):
+    """A settings copy whose learning blocks keep only the closed-shape fields, and the dropped ``block.field`` names."""
+    from memvane.settings.types import LEARNING_BLOCK_FIELDS
+    cfg=deepcopy(raw);dropped=[]
+    for key,fields in LEARNING_BLOCK_FIELDS.items():
+        if isinstance(cfg.get(key),dict):
+            dropped+=sorted(key+'.'+name for name,value in cfg[key].items() if type(value) is not fields.get(name))
+            cfg[key]={name:value for name,value in cfg[key].items() if type(value) is fields.get(name)}
+    return cfg,dropped
+
 def _preferences(raw,root,choice):
     cfg=deepcopy(raw);learning=cfg.setdefault('contextLearning',{});shared=cfg.setdefault('sharedLearning',{})
     if not isinstance(learning,dict) or not isinstance(shared,dict):raise ValueError('profile_settings_invalid')
@@ -83,7 +93,8 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
     if type(staged_no_selection)is not bool or (staged_no_selection and
             (choice!='local-staged' or not enable_learning)):
         raise ValueError('profile_staged_scope_required')
-    preferences=deepcopy(raw)
+    # Settings accept only the closed learning shape; the plan shows what it leaves out.
+    preferences,dropped=closed_learning(raw)
     if enable_learning:
         preferences.setdefault('contextLearning',{}).update(capture=True,autoCycle=True)
         preferences.setdefault('sharedLearning',{})['enabled']=True
@@ -113,7 +124,8 @@ def proposal(project,root,*,choice,mode,expires_at_unix_ms,enable_learning=False
             'livePolicySha256':_hash(root/'live-selector.json'),'trainerArgv':policy['trainerArgv'],
             'modelIdentitySha256':model_identity(policy['trainerArgv'][2]),'view':policy['modelInputView'],
             'codeSha256':code_identity(),'expiresAtUnixMs':expires_at_unix_ms,'maxQualityAgeSeconds':3600,
-            'sourceSettingsSha256':digest(raw),'settings':cfg,'settingsBindingSha256':digest(binding(cfg))}
+            'sourceSettingsSha256':digest(raw),'settings':cfg,'droppedLearningFields':dropped,
+            'settingsBindingSha256':digest(binding(cfg))}
 
 def _check_scope(row,root,policy,operation,*,settings=True):
     from .runtime_authorization import require_operation,proposal_sha256

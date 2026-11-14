@@ -16,9 +16,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import structure_guard as old_guard
 
 
+def _top_statements(body):
+    """Statements that bind module (or class) names, including inside top-level try/if blocks."""
+    for node in body:
+        if isinstance(node, ast.Try):
+            for block in (node.body, node.orelse, node.finalbody, *[h.body for h in node.handlers]):
+                yield from _top_statements(block)
+        elif isinstance(node, ast.If):
+            yield from _top_statements(node.body)
+            yield from _top_statements(node.orelse)
+        else:
+            yield node
+
+
 def _symbol_table(tree):
     result = set()
-    for node in tree.body:
+    for node in _top_statements(tree.body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             result.add(node.name)
         elif isinstance(node, ast.Import):
@@ -110,9 +123,15 @@ def _test_paths(root, suffixes):
 
 def _stdlib():
     stdlib_dir = Path(sysconfig.get_path('stdlib'))
-    return set(sys.builtin_module_names) | {p.stem for p in stdlib_dir.iterdir()
-                                             if p.name not in ('site-packages', 'dist-packages') and
-                                             (p.suffix == '.py' or (p.is_dir() and (p / '__init__.py').is_file()))}
+    names = set(sys.builtin_module_names) | {p.stem for p in stdlib_dir.iterdir()
+                                              if p.name not in ('site-packages', 'dist-packages') and
+                                              (p.suffix == '.py' or (p.is_dir() and (p / '__init__.py').is_file()))}
+    # C-extension stdlib modules (resource, fcntl, select, ...) live in lib-dynload.
+    for base in {stdlib_dir, Path(sysconfig.get_path('platstdlib'))}:
+        dynload = base / 'lib-dynload'
+        if dynload.is_dir():
+            names |= {p.name.split('.')[0] for p in dynload.iterdir() if p.suffix in ('.so', '.pyd')}
+    return names
 
 
 def _test_source(path):

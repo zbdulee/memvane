@@ -1,5 +1,4 @@
 """Synthetic complete-set contracts; no model or operational state."""
-import copy
 import json
 from pathlib import Path
 import sqlite3

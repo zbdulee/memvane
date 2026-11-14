@@ -16,8 +16,9 @@
 
 ## Minimal settings
 
-settings 파일의 키가 `name`(필수)과 `skipPaths`(선택), 그리고 선택적 진단 동의
-[`diagnostics`](#diagnostics--상세-진단-동의-opt-in)뿐이면 **minimal settings**입니다.
+settings 파일의 키가 `name`(필수)과 `skipPaths`(선택), 선택적 진단 동의
+[`diagnostics`](#diagnostics--상세-진단-동의-opt-in), 학습 프로필 블록
+[`contextLearning`·`sharedLearning`](#학습-프로필-블록)뿐이면 **minimal settings**입니다.
 나머지 effective 설정은 플러그인이 `name`에서 결정적으로 유도합니다
 (`memvane/settings/config.py`의 `expand_minimal_settings`).
 
@@ -100,10 +101,26 @@ laya route에서의 role은 `raw`입니다.
 진단의 종류와 읽는 방법은 [architecture.md](architecture.md#detailed-diagnostics)와
 `logs` skill을 보세요.
 
+### 학습 프로필 블록
+
+`contextLearning`·`sharedLearning`은 학습 프로필이 쓰는 블록이며 아래 필드만 받습니다. 모든 필드는
+선택입니다.
+
+| 블록 | 필드 |
+|---|---|
+| `contextLearning` | `capture`(bool), `autoCycle`(bool) |
+| `sharedLearning` | `enabled`(bool), `root`(절대 경로 문자열), `profile`(`qmd-local-learning-profile-v1`만), `autoApply`(bool) |
+
+적힌 `contextLearning` 필드는 학습 기본값(`capture: true`, `autoCycle: true`) 위에 얹힙니다.
+블록 모양이 틀리면(객체가 아님, 모르는 필드, 타입 불일치, 상대 경로 `root`, 다른 `profile`) 두
+블록을 모두 무시하고 학습 기본값을 쓰며, 정규화된 설정의 `settingsNotes`에
+`learning_settings_invalid`가 남습니다. 나머지 설정은 그대로 씁니다. 학습 블록은 route의
+settings identity에 들어가지 않으므로 학습 블록을 바꿔도 선택된 route는 유지됩니다.
+
 ### Laya 온보딩과 settings binding
 
 Laya 온보딩(`plan-fresh-wiki-origin`)은 minimal settings만 받습니다. canonical
-`.memvane/settings.json`이 `{name, skipPaths}`가 아니면 `minimal_settings_required`로
+`.memvane/settings.json`이 minimal settings가 아니면 `minimal_settings_required`로
 거부하고 파일을 다시 쓰지 않습니다. legacy 형식을 minimal로 바꾸는 일은 사용자가 직접
 파일을 고쳐서 합니다(`name` slug가 raw collection `<slug>`와 wiki collection `<slug>-wiki`를
 정합니다).

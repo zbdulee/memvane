@@ -531,3 +531,4 @@ class CheckoutCase(FixtureCase):
                     break
                 if time.monotonic() > deadline:
                     self.fail(f'fake git process {pid} outlived the refusal')
+                time.sleep(0.05)
