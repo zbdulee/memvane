@@ -100,6 +100,7 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.install.api import _initial_build as build
     from memvane.journal.api import _install_journal as journal
     from memvane.journal.api import _reader as reader
+    from memvane.journal.api import seal_reader
     from memvane.app.api import _runtime_dispatch as dispatch
     from memvane.sync import api as sync
     from memvane.store import api as values
@@ -212,7 +213,7 @@ def finalize_initial_build(*, project_root, state_root):
                         store.release(pin)
                 finally:
                     store.close()
-                path = _seal_reader(journal, reader, identity['journalPath'], row, sealed, spec)
+                path = seal_reader(identity['journalPath'], row, sealed, spec, fail=_fail)
                 ledger_path = state / 'ledger.json'
                 ledger = {'schema': 'memvane-install-ledger-v1', 'epoch': 1,
                           'phase': 'prepared', 'identity': identity}
@@ -224,40 +225,6 @@ def finalize_initial_build(*, project_root, state_root):
                 return {'status': 'initial_build_finalized', 'phase': 'prepared',
                         'journalPath': str(path), 'routeFile': str(state / 'route.json'),
                         'generation': head['gen_id']}
-
-
-def _seal_reader(journal, reader, journal_path, row, sealed, spec):
-    """Insert or reseal the unselected reader record in one journal CAS."""
-    from contextlib import closing
-    path, db = journal._open(journal_path, write=True)
-    with closing(db):
-        db.execute('BEGIN IMMEDIATE')
-        try:
-            current_row = journal._inspect_v1_row(db)
-            if current_row != {k: v for k, v in row.items() if k != 'journalPath'}:
-                _fail('initial_build_journal_changed')
-            stored = current_row['reader']
-            if stored is not None:
-                # Record nodes compare by inode: a reboot may renumber st_dev.
-                sealed = reader._preserve_node_devices(stored, sealed)
-            if stored != sealed:
-                # Unselected (the CAS below): a newer ready head reseals the floor.
-                if stored is None:
-                    db.execute('INSERT INTO reader(id,record) VALUES(1,?)', (journal._canon(sealed),))
-                elif db.execute('UPDATE reader SET record=? WHERE id=1',
-                                (journal._canon(sealed),)).rowcount != 1:
-                    _fail('initial_build_journal_changed')
-                changed = db.execute("UPDATE selection SET epoch=epoch+1,vector_recipe=? "
-                    "WHERE id=1 AND epoch=? AND state='prepared'",
-                    (spec['recipe_id'], row['epoch'])).rowcount
-                if changed != 1:
-                    _fail('initial_build_journal_changed')
-            journal._inspect_v1_row(db)
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
-    return path
 
 
 def _rescan_stale_build(record, project):
@@ -276,11 +243,11 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.install.api import _initial_build as build
     from memvane.journal.api import _install_journal as journal_module
     from memvane.journal.api import _reader as reader
+    from memvane.journal.api import commit_selection
     from memvane.sync import api as sync
     from memvane.wiki.intake import api as discovery
     from memvane.settings import api as project_dir
     from memvane.wiki.workspace.api import file_coordination as workspace_files
-    from contextlib import closing
     from memvane.route.api import classify_v4 as _classify_v4
     from memvane.route.types import SELECTION_SCHEMA_V1
     _read_json, _write = _ledger._read_json, _ledger._write
@@ -357,22 +324,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                                         separators=(',', ':')).encode('utf-8')
                 _write_or_verify_private(project_dir.runtime_file(project, 'selection.json'), marker_raw)
                 _write_or_verify_private(project_dir.runtime_file(project, 'route.json'), route_bytes)
-                path, db = journal_module._open(journal, write=True)
-                with closing(db):
-                    db.execute('BEGIN IMMEDIATE')
-                    try:
-                        current = journal_module._inspect_v1_row(db)
-                        if current != {k: v for k, v in row.items() if k != 'journalPath'}:
-                            _fail('initial_build_journal_changed')
-                        if current['state'] == 'prepared':
-                            if db.execute("UPDATE selection SET state='selected',epoch=epoch+1 "
-                                          "WHERE id=1 AND epoch=? AND state='prepared'", (row['epoch'],)).rowcount != 1:
-                                _fail('initial_build_journal_changed')
-                        journal_module._inspect_v1_row(db)
-                        db.commit()
-                    except BaseException:
-                        db.rollback()
-                        raise
+                path = commit_selection(journal, row, fail=_fail)
                 if ledger['phase'] == 'prepared':
                     ledger = {**ledger, 'phase': 'selected', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)
@@ -444,7 +396,7 @@ def _restored_without_build(journal, project, state):
 def _restore_v1_locked(project, state):
     from memvane.install.api import _initial_build as build
     from memvane.journal.api import _install_journal as journal
-    from contextlib import closing
+    from memvane.journal.api import restore_selection
     from memvane.route.types import SELECTION_SCHEMA_V1
     _read_json, _write, _fsync_dir = _ledger._read_json, _ledger._write, _ledger._fsync_dir
     from memvane.journal.api import _api_reader_lifetime as reader_lifetime
@@ -500,22 +452,7 @@ def _restore_v1_locked(project, state):
                     ledger = {**ledger, 'phase': 'restoring', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)
                 if row['state'] in ('prepared', 'selected'):
-                    _, db = journal._open(path, write=True)
-                    with closing(db):
-                        db.execute('BEGIN IMMEDIATE')
-                        try:
-                            current = journal._inspect_v1_row(db)
-                            if current != {k: v for k, v in row.items() if k != 'journalPath'}:
-                                _fail('initial_build_journal_changed')
-                            if db.execute("UPDATE selection SET state='restored',epoch=epoch+1 "
-                                          "WHERE id=1 AND state=? AND new_write_seen=? AND epoch=?",
-                                          (row['state'], int(row['newWriteSeen']), row['epoch'])).rowcount != 1:
-                                _fail('restore_state_invalid')
-                            journal._inspect_v1_row(db)
-                            db.commit()
-                        except BaseException:
-                            db.rollback()
-                            raise
+                    restore_selection(path, row, fail=_fail)
                 marker = {'schema': SELECTION_SCHEMA_V1, 'projectRoot': str(project),
                           'installId': identity['installId'], 'routeSha256': identity['routeSha256']}
                 marker_raw = json.dumps(marker, sort_keys=True, ensure_ascii=False,

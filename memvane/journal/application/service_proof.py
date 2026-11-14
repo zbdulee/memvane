@@ -80,3 +80,31 @@ def _selection_moves_defer(call, argument):
 
 def _without_epoch(proof):
     return {key: value for key, value in proof.items() if key != 'selectionEpoch'}
+
+
+def worker_provider_manifest(decision, proof):
+    """The worker attestation's provider manifest for the current proof (closure rehash)."""
+    from pathlib import Path
+    from memvane.journal import install_journal as journal
+    with journal.read_only_journals():
+        if proof.get('buildPending'):
+            from memvane.journal.dispatch_target import dispatch_target
+            dispatch_target(decision['projectRoot'], build=True)
+            row = journal.inspect_journal(decision['journalPath'])
+            attestation, digest = journal._attestation(Path(decision['journalPath']))
+            if row['state'] != 'prepared' or digest != row['attestationSha256']:
+                raise IndexContractError('worker_attestation_changed')
+            return journal._v1_provider_manifest(attestation, row['vectorProfile'])
+        if journal.journal_version(decision['journalPath']) not in (1, 5):
+            raise IndexContractError('writer_plan_v5_required')
+        return journal._worker_attestation_manifest(proof)
+
+
+def worker_attestation(decision, proof, mode):
+    """The provider manifest a ``selected`` or ``preview`` worker attestation proves; None otherwise."""
+    if mode == 'selected':
+        return service_worker_attestation(decision, proof)
+    if mode == 'preview':
+        from memvane.journal.install_journal import verify_preview_worker_attestation
+        return verify_preview_worker_attestation(decision['journalPath'], proof['providerManifest'])
+    return None

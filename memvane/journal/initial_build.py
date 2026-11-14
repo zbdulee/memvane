@@ -13,11 +13,11 @@ import tempfile
 import time
 
 from memvane.kernel.errors import IndexContractError
-from memvane.journal.api import build as build_record
+from memvane.journal import build_record
 
-_canon = build_record.canonical
-_private_dir = build_record.private_dir
-_read_json = build_record.read_json
+_canon = build_record._canon
+_private_dir = build_record._private_dir
+_read_json = build_record._read_json
 read_v1 = build_record.read_v1
 from memvane.journal.types import MAX_RECORD_BYTES, V1_BUILD_SCHEMA, V1_BUILD_FILE, V1_BUILD_IDENTITY
 

@@ -231,7 +231,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
     """Publish the registered main view under the existing build and sync owners."""
     from contextlib import ExitStack
     from memvane.install import api as build
-    from memvane.journal.api import writer as normal
+    from memvane.journal.api import build_writer_scope
     from memvane.store.api import view_store_class
     ViewStore = view_store_class()
     state = Path(decision['stateRoot'])
@@ -239,10 +239,10 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}
-            with ExitStack() as lane, normal.build_writer_scope(decision, queue_owner=owner) as writer:
-                proof = normal.admission_proof(writer)
+            with ExitStack() as lane, build_writer_scope(decision, queue_owner=owner) as writer:
+                proof = writer.admission_proof()
                 expected_build = build.build_lookup(decision['projectRoot'])
-                info = normal.writer_store(writer)
+                info = writer.store()
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
                                                    report=report, start_service=start_service)
                 store = ViewStore.open(info['path'], repository=info['repository'],
@@ -372,19 +372,19 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
     asks for query vectors (``resettle_selection``).
     """
     from contextlib import ExitStack
-    from memvane.journal.api import writer as normal
+    from memvane.journal.api import selected_v1_writer_scope
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
             if owner is None:
                 return {'state': 'deferred', 'reason': 'owner_busy'}, proof
-            with ExitStack() as lane, normal.selected_v1_writer_scope(decision, queue_owner=owner) as writer:
-                if normal.admission_proof(writer) != proof:
+            with ExitStack() as lane, selected_v1_writer_scope(decision, queue_owner=owner) as writer:
+                if writer.admission_proof() != proof:
                     raise IndexContractError('selected_proof_changed')
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
                                                    report=report, start_service=start_service)
                 vectors['rawScan'] = raw_scan
                 result, proof = _publish_schema3(decision, proof, writer, vectors)
-            from memvane.journal.api import _api_resettle_selection as resettle_selection
+            from memvane.journal.api import resettle_selection
             status, proof = resettle_selection(decision, owner)
             if status != 'unchanged':
                 result = {**result, 'readerResettle': status}
@@ -454,10 +454,9 @@ def _publish_schema3(decision, proof, writer, vectors=None):
         vectors = {'spec': None}
     from memvane.store import api as v
     from memvane.store import api as checkout
-    from memvane.journal.api import writer as normal
     from memvane.store.api import view_store_class
     ViewStore = view_store_class()
-    info = normal.writer_store(writer)
+    info = writer.store()
     deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
     store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
     try:
@@ -617,8 +616,7 @@ def _mark_schema3_write(writer, proof, marks):
     ``proof`` is the pass's admission proof; the fresh one is kept in
     ``marks['proof']`` for ``_after_sync``.
     """
-    from memvane.journal.api import writer as normal
-    fresh = normal.mark_new_write(writer)
+    fresh = writer.mark_new_write()
     expected_epoch = proof['selectionEpoch'] + (0 if proof.get('buildPending') else 1)
     if (fresh.get('selectionEpoch') != expected_epoch
             or fresh.get('productRouteAllowed') is not True):
@@ -628,12 +626,11 @@ def _mark_schema3_write(writer, proof, marks):
 
 def _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current):
     """Consume this view's compile intents without changing its member trust (``compile_intents``)."""
-    from memvane.journal.api import writer as normal
     from memvane.sync import compile_intents
     return compile_intents.consume(
         store, decision, handle, members, current,
         mark=lambda: 'proof' in marks or _mark_schema3_write(writer, proof, marks),
-        validate=lambda: normal.validate_normal_writer(writer),
+        validate=lambda: writer.validate(),
         ingest_limit=SCHEMA3_MAX_INGEST)
 
 
@@ -654,7 +651,6 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     gets its vector generation from the same manifest.
     """
     from memvane.store import api as v
-    from memvane.journal.api import writer as normal
     from memvane.wiki.card.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
     from memvane.store.api import regular as _regular
     from memvane.store import api as view_values
@@ -728,7 +724,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             started = time.monotonic()
             generation = store.prepare_generation(handle, manifest, expected_head=head,
                                                   vector_spec=vectors['spec'], deadline=deadline)
-            normal.validate_normal_writer(writer)
+            writer.validate()
             store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
             vector = dict(vector, state='published', publishMs=int((time.monotonic() - started) * 1000))
             return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
@@ -785,7 +781,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         started = time.monotonic()
         generation = store.prepare_generation(handle, manifest, expected_head=head,
                                               vector_spec=spec, deadline=deadline)
-        normal.validate_normal_writer(writer)
+        writer.validate()
         if cold and pending:
             # No partial first generation: recall answers view_preparing until complete.
             return {'state': 'pending', 'reason': 'schema3_view_preparing', 'storeFormat': 'schema3',
@@ -919,14 +915,13 @@ def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, 
 
     Returns ``(generation, vector)``; an unfinished fill keeps the lexical head.
     """
-    from memvane.journal.api import writer as normal
     vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline)
     head = store.head(handle)
     if vector['state'] != 'complete':
         return head['gen_id'], vector
     generation = store.prepare_generation(handle, manifest, expected_head=head, vector_spec=vectors['spec'],
                                           deadline=deadline)
-    normal.validate_normal_writer(writer)
+    writer.validate()
     store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
     return generation, vector
 
@@ -1113,19 +1108,8 @@ def _schema3_vector_spec(proof):
 
 def _schema3_worker_manifest(decision, proof):
     """The worker attestation's provider manifest for the current proof (closure rehash)."""
-    from memvane.journal.api import _install_journal as journal
-    with journal.read_only_journals():
-        if proof.get('buildPending'):
-            from memvane.journal.api import dispatch_target
-            dispatch_target(decision['projectRoot'], build=True)
-            row = journal.inspect_journal(decision['journalPath'])
-            attestation, digest = journal._attestation(Path(decision['journalPath']))
-            if row['state'] != 'prepared' or digest != row['attestationSha256']:
-                raise IndexContractError('worker_attestation_changed')
-            return journal._v1_provider_manifest(attestation, row['vectorProfile'])
-        if journal.journal_version(decision['journalPath']) not in (1, 5):
-            raise IndexContractError('writer_plan_v5_required')
-        return journal._worker_attestation_manifest(proof)
+    from memvane.journal.api import worker_provider_manifest
+    return worker_provider_manifest(decision, proof)
 
 
 def _schema3_chunker(context, current):

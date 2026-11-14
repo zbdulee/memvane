@@ -615,15 +615,9 @@ def default_attest(decision, proof, mode):
     journal-bound root, and a busy window defers (``ResourceDeferred``).
     Preview: the preview proof validated the record; re-hash its runtime files.
     """
-    if mode == 'selected':
-        from memvane.journal.api import service_worker_attestation
-        if service_worker_attestation(decision, proof) != proof['providerManifest']:
-            _fail('provider_attestation_invalid')
-    elif mode == 'preview':
-        from memvane.journal.api import verify_preview_worker_attestation
-        if verify_preview_worker_attestation(decision['journalPath'],
-                                             proof['providerManifest']) \
-                != proof['providerManifest']:
+    if mode in ('selected', 'preview'):
+        from memvane.journal.api import worker_attestation
+        if worker_attestation(decision, proof, mode) != proof['providerManifest']:
             _fail('provider_attestation_invalid')
 
 

@@ -220,7 +220,7 @@ def _select_route(cwd: str, *, action: str = "recall") -> dict:
     if markers:
         # The marker stays through restoration. Only its durable ledger can
         # classify an absent route as legacy.
-        from memvane.journal.api import ledger_read_json as _read_json
+        from memvane.journal.ledger_io import _read_json
         marker_root, marker_path = markers[0]
         try:
             marker_record = _read_json(marker_path)

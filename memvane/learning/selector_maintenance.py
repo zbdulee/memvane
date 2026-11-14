@@ -77,13 +77,11 @@ def request(decision, *, force=False, owner=None):
 
 def run(project, *, force=False):
     """Serialize selector repair and monotonic version publication off-hook."""
-    from contextlib import closing
     from memvane.learning.context_learning import selector_heal
     from memvane.journal.api import select_route
-    from memvane.journal.api import (_api_open as _open, _api_inspect_v1_row as _inspect_v1_row, inspect_journal,
-                                      verify_selected_route_for_write)
+    from memvane.journal.api import inspect_journal, publish_plugin_version, verify_selected_route_for_write
     from memvane.kernel.memvane_version import plugin_version, version_key
-    from memvane.runtime.api import sync_owner, validate_sync_owner
+    from memvane.runtime.api import sync_owner
     project = str(Path(project).resolve(strict=True))
     decision = select_route(project, action='update')
     proof = verify_selected_route_for_write(decision)
@@ -105,25 +103,7 @@ def run(project, *, force=False):
             current = verify_selected_route_for_write(decision)
             if current['installId'] != proof['installId']:
                 return
-            path, db = _open(decision['journalPath'], write=True)
-            with closing(db):
-                db.execute('BEGIN IMMEDIATE')
-                try:
-                    row = _inspect_v1_row(db)
-                    old = version_key(row['maxPluginVersion'])
-                    if row['state'] != 'selected' or old is None:
-                        raise ValueError('selector_version_changed')
-                    if running > old:
-                        validate_sync_owner(owner, Path(decision['storePath']))
-                        if db.execute("UPDATE selection SET max_plugin_version=?,epoch=epoch+1 "
-                                      "WHERE id=1 AND state='selected' AND epoch=?",
-                                      (plugin_version(), row['epoch'])).rowcount != 1:
-                            raise ValueError('selector_version_changed')
-                        _inspect_v1_row(db)
-                    db.commit()
-                except BaseException:
-                    db.rollback()
-                    raise
+            publish_plugin_version(decision, owner, running)
     finally:
         os.close(lease)
 

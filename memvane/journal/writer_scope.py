@@ -10,32 +10,12 @@ from memvane.journal import install_journal as J
 from memvane.journal import journal_reader as R
 from memvane.journal import reader_windows as W
 from memvane.runtime.api import validate_sync_owner
+from memvane.journal.types import BuildWriter, SelectedWriter
 
 # Keep abandoned admissions strongly owned. Only explicit creator exit can
 # release their lifetime and queue pin; no generator/finalizer does cleanup.
 _build_issued = {}
 _selected_issued = {}
-
-
-class BuildWriter:
-    """A same-thread initial-build writer held under the existing owners."""
-    __slots__ = ()
-
-    def __new__(cls):
-        raise ValueError('normal_writer_not_issued')
-
-    def __reduce__(self):
-        raise TypeError('normal_writer_not_serializable')
-
-
-class SelectedWriter:
-    __slots__ = ()
-
-    def __new__(cls):
-        raise ValueError('normal_writer_not_issued')
-
-    def __reduce__(self):
-        raise TypeError('normal_writer_not_serializable')
 
 
 def _selected_record(writer):

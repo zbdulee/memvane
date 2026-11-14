@@ -219,6 +219,16 @@
       "layer": "application",
       "pinned": false
     },
+    "memvane/journal/application/selection_transitions.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/journal_reads.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/journal/build_record.py": {
       "context": "journal",
       "layer": "adapter",

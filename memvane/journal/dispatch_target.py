@@ -26,7 +26,7 @@ def dispatch_target(project, *, build):
         # A pointer of another major: only a host of that major serves it.
         raise DispatchTargetError('state_format_mismatch')
     if route.get('state') == 'candidate':
-        from memvane.journal.api import verify_dispatch_target
+        from memvane.journal.install_journal import verify_dispatch_target
         try:
             proof = verify_dispatch_target(route)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -55,7 +55,7 @@ def dispatch_target(project, *, build):
         except (OSError, RuntimeError, ValueError) as exc:
             raise DispatchTargetError('target_journal_changed') from exc
         if record.get('schema') == 'memvane-initial-build-v1':
-            from memvane.journal.api import _api_attestation as _attestation, _api_route as _route, _api_v1_provider_manifest as _v1_provider_manifest
+            from memvane.journal.install_journal import _attestation, _route, _v1_provider_manifest
             from memvane.route.api import classify_v4 as _classify_v4, read_regular as _read_regular
             from memvane.route.types import MAX_RECORD_BYTES
             import hashlib

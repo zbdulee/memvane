@@ -246,11 +246,10 @@ def consume(store, decision, handle, members, current, *, mark, validate, ingest
     again in the pass and never renamed.
     """
     from memvane.journal import api as ledger
-    from memvane.journal.api import _reader as reader
     from memvane.store import api as values
 
     result = {'consumed': 0, 'rejected': {}, 'waiting': 0, 'superseded': 0, 'unsafe': 0}
-    state = reader._state(Path(decision['journalPath']).parent)
+    state = ledger.reader_state(Path(decision['journalPath']).parent)
     directory = state / 'provenance-intents'
     try:
         info = directory.lstat()

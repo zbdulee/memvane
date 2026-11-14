@@ -1,5 +1,5 @@
 """Public journal selection and worker proof operations."""
-from __future__ import annotations
+
 
 def _load(module):
     from importlib import import_module
@@ -27,137 +27,162 @@ _install_journal = _InstallJournalOperations()
 def _call(module, name, *args, **kwargs):
     return getattr(_load('memvane.journal.' + module), name)(*args, **kwargs)
 
-def _api_attestation(*a, **k): return _call('install_journal', '_attestation', *a, **k)
 def _api_route(*a, **k): return _call('install_journal', '_route', *a, **k)
-def _api_v1_provider_manifest(*a, **k): return _call('install_journal', '_v1_provider_manifest', *a, **k)
 def _api_stage_v1_attestation(*a, **k): return _call('install_journal', 'stage_v1_attestation', *a, **k)
 def _api_create_v1_journal(*a, **k): return _call('install_journal', 'create_v1_journal', *a, **k)
 def _api_prepare_lifetime(*a, **k): return _call('reader_lease', '_prepare_lifetime', *a, **k)
 def _api_reader_lifetime(*a, **k): return _call('reader_lease', 'reader_lifetime', *a, **k)
-def _api_open(*a, **k): return _call('install_journal', '_open', *a, **k)
-def _api_inspect_v1_row(*a, **k): return _call('install_journal', '_inspect_v1_row', *a, **k)
 def _api_journal_directory(*a, **k): return _call('journal_paths', 'journal_directory', *a, **k)
-def _api_resettle_selection(*a, **k): return _call('journal_reader', 'resettle_selection', *a, **k)
 
-def __getattr__(name):
-    try:
-        return getattr(_install_journal, name)
-    except AttributeError:
-        return getattr(_reader, name)
 
-def inspect_journal(*args, **kwargs):
+def select_route(cwd, *, action='recall', linked=True):
+    from memvane.journal.route_selection import select_route as implementation
+    return implementation(cwd, action=action, linked=linked)
+
+def inspect_journal(journal_path):
     from memvane.journal.install_journal import inspect_journal as implementation
-    return implementation(*args, **kwargs)
+    return implementation(journal_path)
 
-def verify_selected_route(*args, **kwargs):
+def verify_selected_route(decision):
     from memvane.journal.install_journal import verify_selected_route as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision)
 
-def verify_selected_route_for_write(*args, **kwargs):
+def verify_selected_route_for_write(decision, action='update'):
     from memvane.journal.install_journal import verify_selected_route_for_write as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, action)
 
-def owned_selected_proof(*args, **kwargs):
+def owned_selected_proof(decision, owner):
     from memvane.journal.application.selected_proof import owned_selected_proof as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, owner)
 
-def selected_project_proof(*args, **kwargs):
+def selected_project_proof(project, *, owner_wait=False):
     from memvane.journal.application.selected_proof import selected_project_proof as implementation
-    return implementation(*args, **kwargs)
+    return implementation(project, owner_wait=owner_wait)
 
-def dispatch_target(*args, **kwargs):
+def dispatch_target(project, *, build):
     from memvane.journal.dispatch_target import dispatch_target as implementation
-    return implementation(*args, **kwargs)
+    return implementation(project, build=build)
 
-def verify_dispatch_target(*args, **kwargs):
-    from memvane.journal.install_journal import verify_dispatch_target as implementation
-    return implementation(*args, **kwargs)
+def select_notification_route(project):
+    from memvane.journal.notification_route import select_notification_route as implementation
+    return implementation(project)
 
-def verify_notification_target(*args, **kwargs):
+def verify_notification_target(decision):
     from memvane.journal.install_journal import verify_notification_target as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision)
 
-def verify_preview_worker_attestation(*args, **kwargs):
-    from memvane.journal.install_journal import verify_preview_worker_attestation as implementation
-    return implementation(*args, **kwargs)
+def verify_preview_route(decision):
+    from memvane.journal.preview_proof import verify_preview_route as implementation
+    return implementation(decision)
 
-def read_only_journals(*args, **kwargs):
-    from memvane.journal.install_journal import read_only_journals as implementation
-    return implementation(*args, **kwargs)
+def worker_attestation(decision, proof, mode):
+    from memvane.journal.application.service_proof import worker_attestation as implementation
+    return implementation(decision, proof, mode)
 
-def reader_deadline(*args, **kwargs):
-    from memvane.journal.install_journal import reader_deadline as implementation
-    return implementation(*args, **kwargs)
+def worker_provider_manifest(decision, proof):
+    from memvane.journal.application.service_proof import worker_provider_manifest as implementation
+    return implementation(decision, proof)
 
-def journal_version(*args, **kwargs):
+def read_only_journals(deadline=None):
+    from memvane.journal.application.journal_reads import read_only_journals as implementation
+    return implementation(deadline)
+
+def journal_version(journal_path):
     from memvane.journal.install_journal import journal_version as implementation
-    return implementation(*args, **kwargs)
+    return implementation(journal_path)
 
-
-def recheck_reader(*args, **kwargs):
-    from memvane.journal.journal_reader import _recheck as implementation
-    return implementation(*args, **kwargs)
-
-def pin_schema3(*args, **kwargs):
-    from memvane.journal.journal_reader import _schema3_pin as implementation
-    return implementation(*args, **kwargs)
-
-def settings_resettle_pending(*args, **kwargs):
-    from memvane.journal.journal_reader import settings_resettle_pending as implementation
-    return implementation(*args, **kwargs)
-
-def resolve_endpoint(*args, **kwargs):
+def resolve_endpoint(project, *, action, host_root):
     from memvane.journal.reader_lease import resolve_endpoint as implementation
-    return implementation(*args, **kwargs)
+    return implementation(project, action=action, host_root=host_root)
 
-def service_worker_attestation(*args, **kwargs):
-    from memvane.journal.application.service_proof import service_worker_attestation as implementation
-    return implementation(*args, **kwargs)
+def recheck_reader(endpoint):
+    from memvane.journal.journal_reader import _recheck as implementation
+    return implementation(endpoint)
+
+def pin_schema3(record, *, deadline, linked=None, pin_view=True):
+    from memvane.journal.journal_reader import _schema3_pin as implementation
+    return implementation(record, deadline=deadline, linked=linked, pin_view=pin_view)
+
+def settings_resettle_pending(state, project, executing_root):
+    from memvane.journal.journal_reader import settings_resettle_pending as implementation
+    return implementation(state, project, executing_root)
+
+def resettle_selection(decision, owner):
+    from memvane.journal.journal_reader import resettle_selection as implementation
+    return implementation(decision, owner)
+
+def reader_state(state):
+    from memvane.journal.journal_reader import _state as implementation
+    return implementation(state)
+
+def ledger_private_file(path, limit=65536):
+    from memvane.journal.ledger_io import _private_file as implementation
+    return implementation(path, limit)
+
+def ledger_read_json(path):
+    from memvane.journal.ledger_io import _read_json as implementation
+    return implementation(path)
+
+def ledger_write(path, value, *, replace):
+    from memvane.journal.ledger_io import _write as implementation
+    return implementation(path, value, replace=replace)
+
+def build_writer_scope(decision, *, queue_owner):
+    from memvane.journal.writer_scope import build_writer_scope as implementation
+    return implementation(decision, queue_owner=queue_owner)
+
+def selected_v1_writer_scope(decision, *, queue_owner):
+    from memvane.journal.writer_scope import selected_v1_writer_scope as implementation
+    return implementation(decision, queue_owner=queue_owner)
+
+def seal_reader(journal_path, row, sealed, spec, *, fail):
+    from memvane.journal.application.selection_transitions import seal_reader as implementation
+    return implementation(journal_path, row, sealed, spec, fail=fail)
+
+def commit_selection(journal, row, *, fail):
+    from memvane.journal.application.selection_transitions import commit_selection as implementation
+    return implementation(journal, row, fail=fail)
+
+def restore_selection(path, row, *, fail):
+    from memvane.journal.application.selection_transitions import restore_selection as implementation
+    return implementation(path, row, fail=fail)
+
+def publish_plugin_version(decision, owner, running):
+    from memvane.journal.application.selection_transitions import publish_plugin_version as implementation
+    return implementation(decision, owner, running)
 
 class _BuildOperations:
-    def canonical(self, *args, **kwargs):
-        from memvane.journal.build_record import _canon as implementation
-        return implementation(*args, **kwargs)
-
-    def private_dir(self, *args, **kwargs):
-        from memvane.journal.build_record import _private_dir as implementation
-        return implementation(*args, **kwargs)
-
-    def read_json(self, *args, **kwargs):
-        from memvane.journal.build_record import _read_json as implementation
-        return implementation(*args, **kwargs)
-
-    def read_v1(self, *args, **kwargs):
+    def read_v1(self, state_root):
         from memvane.journal.build_record import read_v1 as implementation
-        return implementation(*args, **kwargs)
+        return implementation(state_root)
 
-    def lookup(self, *args, **kwargs):
+    def lookup(self, project_root):
         from memvane.journal.initial_build import lookup as implementation
-        return implementation(*args, **kwargs)
+        return implementation(project_root)
 
-    def owner(self, *args, **kwargs):
+    def owner(self, state_root):
         from memvane.journal.initial_build import owner as implementation
-        return implementation(*args, **kwargs)
+        return implementation(state_root)
 
-    def create_v1(self, *args, **kwargs):
+    def create_v1(self, identity):
         from memvane.journal.initial_build import create_v1 as implementation
-        return implementation(*args, **kwargs)
+        return implementation(identity)
 
-    def register_project(self, *args, **kwargs):
+    def register_project(self, identity):
         from memvane.journal.initial_build import register_project as implementation
-        return implementation(*args, **kwargs)
+        return implementation(identity)
 
-    def advance_v1(self, *args, **kwargs):
+    def advance_v1(self, record, *, phase, reason=None):
         from memvane.journal.initial_build import advance_v1 as implementation
-        return implementation(*args, **kwargs)
+        return implementation(record, phase=phase, reason=reason)
 
-    def registered_pointer_path(self, *args, **kwargs):
+    def registered_pointer_path(self, project_root):
         from memvane.journal.initial_build import registered_pointer_path as implementation
-        return implementation(*args, **kwargs)
+        return implementation(project_root)
 
-    def retire_project_pointer(self, *args, **kwargs):
+    def retire_project_pointer(self, identity):
         from memvane.journal.initial_build import retire_project_pointer as implementation
-        return implementation(*args, **kwargs)
+        return implementation(identity)
 
     @property
     def V1_BUILD_FILE(self):
@@ -170,58 +195,3 @@ class _BuildOperations:
         return V1_BUILD_SCHEMA
 
 build = _BuildOperations()
-
-def ledger_private_file(*args, **kwargs):
-    from memvane.journal.ledger_io import _private_file as implementation
-    return implementation(*args, **kwargs)
-
-def ledger_read_json(*args, **kwargs):
-    from memvane.journal.ledger_io import _read_json as implementation
-    return implementation(*args, **kwargs)
-
-def ledger_write(*args, **kwargs):
-    from memvane.journal.ledger_io import _write as implementation
-    return implementation(*args, **kwargs)
-
-def reader_state(*args, **kwargs):
-    from memvane.journal.journal_reader import _state as implementation
-    return implementation(*args, **kwargs)
-
-def select_notification_route(*args, **kwargs):
-    from memvane.journal.notification_route import select_notification_route as implementation
-    return implementation(*args, **kwargs)
-
-def verify_preview_route(*args, **kwargs):
-    from memvane.journal.preview_proof import verify_preview_route as implementation
-    return implementation(*args, **kwargs)
-
-def select_route(*args, **kwargs):
-    from memvane.journal.route_selection import select_route as implementation
-    return implementation(*args, **kwargs)
-
-class _WriterOperations:
-    def build_writer_scope(self, *args, **kwargs):
-        from memvane.journal.writer_scope import build_writer_scope as implementation
-        return implementation(*args, **kwargs)
-
-    def selected_v1_writer_scope(self, *args, **kwargs):
-        from memvane.journal.writer_scope import selected_v1_writer_scope as implementation
-        return implementation(*args, **kwargs)
-
-    def admission_proof(self, *args, **kwargs):
-        from memvane.journal.writer_scope import admission_proof as implementation
-        return implementation(*args, **kwargs)
-
-    def writer_store(self, *args, **kwargs):
-        from memvane.journal.writer_scope import writer_store as implementation
-        return implementation(*args, **kwargs)
-
-    def mark_new_write(self, *args, **kwargs):
-        from memvane.journal.writer_scope import mark_new_write as implementation
-        return implementation(*args, **kwargs)
-
-    def validate_normal_writer(self, *args, **kwargs):
-        from memvane.journal.writer_scope import validate_normal_writer as implementation
-        return implementation(*args, **kwargs)
-
-writer = _WriterOperations()

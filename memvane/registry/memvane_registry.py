@@ -333,7 +333,7 @@ def is_home_install(state, home=None):
 def _journal_reads(deadline):
     """Registry journal reads: never legacy recovery, busy waits bounded by ``deadline``."""
     from memvane.journal import api as journal
-    with journal.read_only_journals(), journal.reader_deadline(deadline):
+    with journal.read_only_journals(deadline):
         yield
 
 
