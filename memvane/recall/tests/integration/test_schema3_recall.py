@@ -5,7 +5,8 @@ without a published head answers ``view_preparing`` without context (never the
 main view's rows), a checkout that keeps moving answers ``checkout_changed``,
 and a hot store journal is a recovery refusal that asks for the sync owner.
 A reader sealed without a vector spec serves lexical rows without asking the
-provider.
+provider; an admitted provider makes the read semantic, and a cold one serves
+lexical rows with one owner wake.
 """
 from contextlib import closing
 import json
@@ -119,6 +120,44 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual(event['notes'], ['laya_vector_selected_view_vectors_pending'])
         self.assertIn('selected_view_vectors_pending; serving lexical results', err)
         self.assertEqual(self.wakes, [])
+
+    def observed_reads(self):
+        reads = []
+        real = recall_api.query_endpoint
+
+        def observed(*args, **kwargs):
+            reads.append((kwargs['query_vector'], real(*args, **kwargs)))
+            return reads[-1][1]
+        return reads, mock.patch('memvane.recall.api.query_endpoint', side_effect=observed)
+
+    def test_an_admitted_provider_embeds_the_query_and_the_read_is_semantic(self):
+        self.install.provider.admit_queries()
+        reads, patch = self.observed_reads()
+        with patch:
+            context, err, event = self.recall(PROMPT)
+        self.assertIn('zqheronx', context)
+        self.assertEqual([(vector, result.semantic_status) for vector, result in reads],
+                         [([1.0, 0.0], 'complete')])
+        self.assertEqual((event['outcome'], event.get('vector_fallback'), event.get('notes')),
+                         ('served', None, None))
+        self.assertNotIn('serving lexical results', err)
+        self.assertEqual(self.wakes, [])
+
+    def test_a_cold_provider_serves_lexical_rows_and_wakes_the_owner_once(self):
+        self.install.provider.admit_queries()
+        self.install.provider.answer_queries('provider_unavailable')
+        reads, patch = self.observed_reads()
+        with patch:
+            context, err, event = self.recall(PROMPT)
+        self.assertIn('zqheronx', context)
+        self.assertEqual([(vector, result.semantic_status) for vector, result in reads],
+                         [(None, 'provider_absent')])
+        self.assertEqual((event['outcome'], event['vector_fallback']),
+                         ('served', 'selected_provider_preparing'))
+        self.assertEqual(event['notes'], ['laya_vector_selected_provider_preparing'])
+        self.assertIn('selected_provider_preparing; serving lexical results', err)
+        self.assertEqual([(kind, target, kwargs.get('pull_due')) for kind, target, kwargs in self.wakes],
+                         [('laya-sync', str(self.project), True)])
 
     def test_the_learning_selector_receives_the_published_rows(self):
         seen = []

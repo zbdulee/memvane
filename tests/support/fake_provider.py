@@ -11,8 +11,9 @@ sealed runtime digest, the recorded manifest as identity proof, vector
 ``[1, 0, ...]`` per document, query admission refused (lexical recall), a
 no-op warm service. ``change_identity()`` makes every identity proof refuse
 with ``provider_identity_changed``; ``admit_queries()`` makes query admission
-admit (the provider is then never asked for a query vector by a view sealed
-without vectors; a sealed view's query vector path refuses under the fixture).
+admit. An admitted query embeds to the spec vector (``query_embedding='vector'``,
+the default) or, after ``answer_queries('provider_unavailable')``, meets a
+cold provider.
 """
 from __future__ import annotations
 
@@ -24,7 +25,8 @@ SPEC_SCHEMA = 'memvane-test-provider-fixture-v1'
 REVIEW_SHA = '9' * 64
 RUNTIME_FILES_SHA = 'c' * 64
 PORT_METHODS = ('review', 'sealed_files_sha256', 'provider_manifest', 'reviewed_provider',
-                'admit_query', 'start_service', 'vector_profile', 'manifest')
+                'admit_query', 'start_service', 'vector_profile', 'manifest', 'is_handle',
+                'query_result')
 
 
 def _spec_path():
@@ -36,19 +38,22 @@ def _spec_path():
 
 
 class FixtureProvider:
-    def __init__(self, dimension=2, *, vector=None, identity_changed=False, query_admission='refuse'):
+    def __init__(self, dimension=2, *, vector=None, identity_changed=False, query_admission='refuse',
+                 query_embedding='vector'):
         if type(dimension) is not int or dimension < 1:
             raise ValueError('dimension')
         self.dimension = dimension
         self.vector = list(vector) if vector is not None else [1.0] + [0.0] * (dimension - 1)
         self.identity_changed = identity_changed
         self.query_admission = query_admission
+        self.query_embedding = query_embedding
         self._path = None
 
     def spec(self):
         return {'schema': SPEC_SCHEMA, 'dimension': self.dimension, 'vector': self.vector,
                 'proposalSha256': REVIEW_SHA, 'runtimeFilesSha256': RUNTIME_FILES_SHA,
-                'identityChanged': self.identity_changed, 'queryAdmission': self.query_admission}
+                'identityChanged': self.identity_changed, 'queryAdmission': self.query_admission,
+                'queryEmbedding': self.query_embedding}
 
     # -- seam --------------------------------------------------------------------
     def install(self, case):
@@ -75,6 +80,12 @@ class FixtureProvider:
     def admit_queries(self, admitted=True):
         """From now on query admission admits (or, with ``False``, refuses as lexical recall)."""
         self.query_admission = 'admit' if admitted else 'refuse'
+        if self._path is not None:
+            self._publish()
+
+    def answer_queries(self, query_embedding):
+        """From now on the query embed child answers ``'vector'`` or ``'provider_unavailable'``."""
+        self.query_embedding = query_embedding
         if self._path is not None:
             self._publish()
 
