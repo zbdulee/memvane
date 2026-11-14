@@ -228,6 +228,11 @@ class NamedGeneration(Machine):
                 dimension=2, runtime_generation=str(source))
             self.assertEqual(result['status'], 'review_required')
             self.assertEqual(result['embedRuntimeGeneration'], str(source))
+            manifest = result['reviewedProvider']['providerManifest']
+            self.assertEqual(manifest['modelPath'], self.first['modelPath'])
+            self.assertEqual(manifest['nodePath'], self.first['nodePath'])
+            self.assertFalse((self.home / '.cache' / 'qmd').exists())
+            self.assertFalse(self.qmd_runtime.exists())
             for value in (source.name, str(outside), str(alias), self.first):
                 with self.subTest(value=str(value)):
                     with self.assertRaises(InstallBlocked):
