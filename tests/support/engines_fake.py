@@ -12,9 +12,8 @@ not a JSON object, each with the extractor's own ``(result, reason, code)``.
 ``script(tmp, payload)`` writes a real extractor executable that prints
 ``payload`` for tests that cross the process boundary.
 
-Reach: callers that look ``run_extractor`` up on ``engines.api`` at call time
-(the verify worker). The compile worker and the dedup judge bind the name at
-import (``wiki_compile_worker.run_extractor``); see the S5 L0 report.
+Reach: the compile worker, the dedup judge and the verify worker all look
+``run_extractor`` up on ``engines.api`` at call time.
 """
 from __future__ import annotations
 

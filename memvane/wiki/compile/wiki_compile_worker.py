@@ -27,9 +27,10 @@ from pathlib import Path
 from memvane.kernel.paths import now_iso
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
+from memvane.wiki.engines import api as engines_api
 from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_argv,
     load_engine_cooldowns, cooling_engines,
-    reasoning_effort_audit, resolve_extractor_argv, run_extractor, budget_of, decode_source_bounded)
+    reasoning_effort_audit, resolve_extractor_argv, budget_of, decode_source_bounded)
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import api as source_text
@@ -54,6 +55,11 @@ DEFAULT_SOURCE_QUEUE = cp.rel(ct.SOURCE_QUEUE)
 # 불가 argv)가 스키마에서 사라진 뒤 남은 유일한 쓰임은 빈 key에 대한 폴백이다 —
 # `entries[""]`가 되면 그 항목이 "모든 엔진"처럼 읽히므로 이름을 붙여 둔다.
 _EXTRACTOR_BUDGET = ContextVar('wiki_extractor_budget', default=None)
+
+
+def run_extractor(argv, payload, timeout, root):
+    # engines.api를 호출 시점에 조회한다 — 그 이름을 교체한 대역이 verify·dedup처럼 compile에도 닿는다.
+    return engines_api.run_extractor(argv, payload, timeout, root)
 
 
 
