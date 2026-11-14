@@ -242,6 +242,13 @@ class OwnerContention(FixtureCase):
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_fixture'):
                 embed_resident.ensure_running('/synthetic/project', manifest)
         spawn.assert_not_called()
+        import os
+        with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '', 'QMD_SANDBOX': '1'}), \
+             patch.object(resident_service, '_spawn') as spawn, \
+             patch.object(embed_resident, '_failure_decision'):
+            with self.assertRaisesRegex(ResourceDeferred, 'laya_service_fixture'):
+                embed_resident.ensure_running('/synthetic/project', manifest)
+        spawn.assert_not_called()
 
     def test_learning_client_needing_its_interpreter_rebases_same_release(self):
         import json
