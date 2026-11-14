@@ -125,7 +125,7 @@ class PreviewRoute(HermesCase, FixtureCase):
         self.fixture.write_card('heron.md', title='Emerald heron', body=NOTE, sources=[note])
         self.fixture.commit('fixture')
         self.project = self.fixture.root
-        build_install(self, self.fixture, upto='prepared')
+        self.install = build_install(self, self.fixture, upto='prepared')
 
     def test_a_preview_recalls_no_context_until_the_build_is_selected(self):
         with mock.patch('memvane.host.api.serve_preview', wraps=host_api.serve_preview) as preview:
@@ -133,6 +133,31 @@ class PreviewRoute(HermesCase, FixtureCase):
         self.assertEqual(calls[0]['stdout'], 'preview')
         self.assertEqual(answer, {'context': ''})
         self.assertEqual([call.args[:2] for call in preview.call_args_list], [('recall', 'hermes')])
+
+    def preview(self, prompt):
+        """In-process ``serve_preview`` of the preview decision; returns the recall event lines."""
+        from memvane.journal.api import select_route
+        decision = select_route(str(self.project), action='recall')
+        self.assertEqual(decision['state'], 'preview', decision)
+        answer = host_api.serve_preview('recall', 'claude', decision, {
+            'cwd': str(self.project), 'prompt': prompt, 'session_id': 'preview-1',
+            'hook_event_name': 'UserPromptSubmit'})
+        return answer
+
+    def recall_lines(self):
+        return [(line['event'], line['outcome'], line['reason'], line.get('degraded'))
+                for line in self.install.events() if line.get('event') == 'recall']
+
+    def test_a_preview_recall_writes_one_empty_event_line(self):
+        answer = self.preview(PROMPT)
+        self.assertEqual(answer['hookSpecificOutput']['additionalContext'], '')
+        self.assertEqual(self.recall_lines(), [('recall', 'empty', 'initial_build_preview', 'preview')])
+
+    def test_a_refused_preview_recall_writes_one_refused_line(self):
+        from memvane.recall.types import HostResponseError
+        with self.assertRaisesRegex(HostResponseError, '^invalid_query_prompt$'):
+            self.preview('   ')
+        self.assertEqual(self.recall_lines(), [('recall', 'refused', 'invalid_query_prompt', 'preview')])
 
     def test_a_failed_preview_proof_is_quiet(self):
         self.fixture.write_settings(name='renamed')
