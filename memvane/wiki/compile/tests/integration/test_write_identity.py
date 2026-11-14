@@ -1,10 +1,12 @@
 """Candidates cannot overwrite a card belonging to another source or identity."""
 import io
 import json
+import hashlib
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_compile as compiler
+from memvane.wiki.card import api as card
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
 from tests.support.project import make_project
@@ -34,12 +36,14 @@ class WriteIdentity(FixtureCase):
                                      'sourceRoot': str(self.project.wiki)}]}
         self.bound = (decision, {'productRouteAllowed': True})
 
-    def compile(self, title, key, source):
+    def compile(self, title, key, source, revisions=None):
         candidate = {'trigger': 'post_tool_source', 'engine': 'claude', 'title': title,
                      'canonicalKey': key, 'summary': 'Revised synthetic fact.',
                      'suggestedType': 'entity', 'confidence': 'high',
                      'targetPath': '.memvane/wiki/entities/existing-a.md',
                      'sources': [{'kind': 'file', 'path': source, 'collection': self.project.raw_name}]}
+        if revisions is not None:
+            candidate['sourceRevisions'] = revisions
         output = io.StringIO()
         with patch.object(workspace, 'selected', return_value=self.bound), \
              patch.object(workspace, 'recheck'), patch.object(workspace, 'request_sync'), \
@@ -103,3 +107,19 @@ class WriteIdentity(FixtureCase):
         self.assertIn('status: generated', result)
         self.assertNotIn('reviewed:', result)
         self.assertIn('Revised synthetic fact.', result)
+
+    def test_refresh_replaces_old_source_revision_with_current_bytes(self):
+        source = self.project.root / 'docs/a.md'
+        def revision():
+            return {'kind': 'file', 'path': 'docs/a.md', 'collection': self.project.raw_name,
+                    **card.snapshot_bytes(source)[0]}
+        first = revision()
+        self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md', [first])['action'], 'updated')
+        source.write_text('updated synthetic source\n')
+        second = revision()
+        self.assertEqual(self.compile('Renamed A', 'existing-a', 'docs/a.md', [second])['action'], 'updated')
+        block = compiler.FRONTMATTER_RE.match(self.card.read_text()).group(1)
+        revisions = card.frontmatter_source_revisions(block)
+        self.assertEqual(len(revisions), 1)
+        self.assertEqual(revisions[0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
+        self.assertNotEqual(revisions[0]['sha256'], first['sha256'])

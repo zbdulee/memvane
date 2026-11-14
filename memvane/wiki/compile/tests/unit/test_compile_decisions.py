@@ -45,6 +45,9 @@ class CompileDecisions(FixtureCase):
         candidate = {'title': 'Alias'}
         target, reason, _ = compile_rule.resolve_target(self.root, self.wiki, candidate, 'concept', index)
         self.assertEqual((target, reason), (first, 'title'))
+        candidate = {'title': 'Alias', 'targetPath': 'concepts/explicit.md'}
+        target, reason, _ = compile_rule.resolve_target(self.root, self.wiki, candidate, 'concept', index)
+        self.assertEqual((target, reason), (self.wiki / 'concepts/explicit.md', 'explicit'))
         second = first.with_name('second.md')
         second.write_text(first.read_text())
         target, reason, matches = compile_rule.resolve_target(

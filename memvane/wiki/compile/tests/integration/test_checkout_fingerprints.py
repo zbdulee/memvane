@@ -4,6 +4,7 @@ import io
 import json
 import sqlite3
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -157,13 +158,14 @@ class CheckoutFingerprints(FixtureCase):
     def test_writer_places_observed_fingerprint_in_verify_job(self):
         self.assertEqual(self.process(), (True, False, []))
         candidate = self.candidates[0]
-        with patch.object(workspace, 'request_sync'), patch.object(workspace, 'append_activity'), \
+        with patch.object(workspace, 'request_sync') as request_sync, patch.object(workspace, 'append_activity'), \
              patch.object(compiler, 'judge_new_page_duplicate',
                           return_value=(None, None, {'outcome': 'unavailable', 'reason': 'fixture'})), \
              patch.object(compiler, 'find_wiki_semantic_match', return_value=(None, None)), \
              redirect_stdout(io.StringIO()):
             self.assertEqual(compiler._compile_locked(self.project.root, self.config,
                              self.config['compile'], 'auto-wiki', self.project.wiki, candidate, False), 0)
+        request_sync.assert_called_once_with(self.project.root, self.bound)
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
         job = json.loads(queue.read_text().splitlines()[0])
         observed, stored = candidate['sourceFingerprints'], job['sourceFingerprints']
@@ -174,6 +176,23 @@ class CheckoutFingerprints(FixtureCase):
         self.assertEqual(stored['fingerprints'], observed['fingerprints'])
         self.assertEqual(stored['scanId'], observed['fingerprints'][0]['scan_id'])
         self.assertEqual(stored['observedNs'], observed['fingerprints'][0]['observed_ns'])
+        page = self.project.root / job['targetPath']
+        def trust_state():
+            block = compiler.FRONTMATTER_RE.match(page.read_text()).group(1)
+            values = card.parse_frontmatter_scalars(block)
+            revisions = card.frontmatter_source_revisions(block)
+            meta = {'status': values.get('status'), 'createdBy': values.get('createdBy'),
+                    'sourceRevisions': revisions}
+            return card.is_auto_trusted_card(meta), card.check_card(meta, self.project.root,
+                                                                     card.allow_roots_of(self.config))
+        self.assertFalse(trust_state()[0])
+        self.assertTrue(verify.stamp_verification(page, 'verified', 'claude', 'self',
+                                                  card.card_body_hash(page.read_text())))
+        trusted, freshness = trust_state()
+        self.assertTrue(trusted)
+        self.assertEqual(freshness['state'], 'fresh')
+        self.source.write_text('different source content\n')
+        self.assertEqual(trust_state()[1]['state'], 'stale')
 
     def test_model_cannot_replace_queue_authority_or_compiler_owned_revision(self):
         forged = {'title': 'Source', 'summary': 'Synthetic fact', 'engine': 'decoy',
@@ -181,7 +200,11 @@ class CheckoutFingerprints(FixtureCase):
                   'authoritativeSources': [{'kind': 'file', 'path': 'decoy'}],
                   'sources': [{'kind': 'file', 'path': 'docs/decoy.md'},
                               {'kind': 'file', 'path': 'docs/source.md', 'collection': 'decoy'}]}
-        with patch.object(engines, 'run_extractor', return_value=({'candidates': [forged]}, None, 0)):
+        absent = {'title': 'Absent', 'summary': 'Synthetic fact'}
+        decoy = {'title': 'Decoy', 'summary': 'Synthetic fact', 'sourceRevisions': [
+            {'kind': 'file', 'path': 'decoy.md', 'collection': 'raw',
+             'sha256': '0' * 64, 'size': 1, 'mtimeNs': 1}]}
+        with patch.object(engines, 'run_extractor', return_value=({'candidates': [absent, decoy, forged]}, None, 0)):
             self.assertEqual(self.process(), (True, False, []))
         candidate = self.candidates[-1]
         self.assertEqual((candidate['engine'], candidate['trigger']), ('claude', 'post_tool_source'))
@@ -190,6 +213,10 @@ class CheckoutFingerprints(FixtureCase):
         self.assertEqual([item['path'] for item in candidate['authoritativeSources']], ['docs/source.md'])
         self.assertEqual(candidate['sourceRevisions'][0]['sha256'],
                          hashlib.sha256(self.source.read_bytes()).hexdigest())
+        for item in self.candidates:
+            self.assertEqual(item['sourceRevisions'][0]['path'], 'docs/source.md')
+            self.assertEqual(item['sourceRevisions'][0]['sha256'],
+                             hashlib.sha256(self.source.read_bytes()).hexdigest())
 
     def test_source_change_during_extraction_preserves_job_without_writing(self):
         def extract(argv, payload, timeout, root):
@@ -226,6 +253,12 @@ class CheckoutFingerprints(FixtureCase):
                 job['source']['path'] = rel
                 result = worker.process_job(self.project.root, self.config, self.config['compile'], job)
                 self.assertEqual(result[:2], (True, False))
+        for collection in ('missing-collection', self.project.wiki_name):
+            with self.subTest(collection=collection):
+                job = self.job()
+                job['source']['collection'] = collection
+                self.assertEqual(worker.process_job(self.project.root, self.config, self.config['compile'], job)[:2],
+                                 (True, False))
         self.assertEqual(self.calls, [])
         self.assertEqual(self.candidates, [])
 
@@ -343,6 +376,48 @@ class CheckoutFingerprints(FixtureCase):
         claims = list(queue.parent.glob('source-queue.jsonl.claimed.*'))
         self.assertEqual(len(claims), 1)
         self.assertEqual(json.loads(claims[0].read_text())['source']['path'], 'docs/source.md')
+
+    def test_effort_audit_follows_actual_adapter_capability(self):
+        self.config['compile']['reasoningEffort']['generation'] = 'high'
+        builtin = engines.builtin_adapter_argv('claude')
+        answer = {'candidates': [{'title': 'Source', 'summary': 'Synthetic fact'}],
+                  '_qmd': {'reasoningEffort': {'requested': 'high', 'applied': 'high',
+                                                'status': 'applied', 'reason': 'capability_flag'}}}
+        for argv, expected in ((['python3', 'custom.py'], 'unsupported'), (builtin, 'applied')):
+            with self.subTest(argv=argv), patch.object(worker, 'resolve_extractor_argv', return_value=argv), \
+                 patch.object(engines, 'run_extractor', return_value=(answer, None, 0)):
+                self.assertEqual(self.process()[:2], (True, False))
+                effort = self.candidates[-1]['_qmd']['reasoningEffort']
+                self.assertEqual(effort['status'], expected)
+                self.assertEqual(effort['applied'], 'high' if expected == 'applied' else None)
+
+    def test_worker_reports_debounce_delay_and_flush_processes_the_same_job(self):
+        queue = self.project.root / '.memvane/compile/source-queue.jsonl'
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        job = self.job()
+        job['ts'] = datetime.now(timezone.utc).isoformat()
+        queue.write_text(json.dumps(job) + '\n')
+        self.config['compile']['batch'] = {'idleSeconds': 90, 'maxItems': 5}
+        with patch.object(workspace, 'schema3_checkout', return_value=self.checkout), \
+             patch.object(intake, 'reconcile_discards'), patch.object(intake, 'settle_job'), \
+             patch.object(worker, 'recover_pending_refreshes'), patch.object(worker, '_run_verify_pass'), \
+             patch.object(worker, 'process_job', return_value=(True, False, [])) as process:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                worker._main_locked(SimpleNamespace(json=True, flush_all=False), self.project.root,
+                                    self.config, self.config['compile'], queue, self.bound)
+            report = json.loads(output.getvalue())
+            self.assertEqual((report['processed'], report['remaining']), (0, 1))
+            self.assertGreaterEqual(report['wakeAfterSeconds'], 1)
+            self.assertLessEqual(report['wakeAfterSeconds'], 90)
+            process.assert_not_called()
+            output = io.StringIO()
+            with redirect_stdout(output):
+                worker._main_locked(SimpleNamespace(json=True, flush_all=True), self.project.root,
+                                    self.config, self.config['compile'], queue, self.bound)
+            report = json.loads(output.getvalue())
+            self.assertEqual((report['processed'], report['remaining']), (1, 0))
+            process.assert_called_once()
 
     def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
         for case in ('non-git', 'unborn'):

@@ -50,6 +50,7 @@ class WriterLifecycle(FixtureCase):
     def test_deleted_generated_identity_is_tombstoned_then_suppressed(self):
         first = self.compile()
         self.assertEqual(first['action'], 'created')
+        self.assertFalse((self.project.root / '.memvane/compile/verify-queue.jsonl').exists())
         target = self.project.root / first['targetPath']
         target.unlink()
         self.assertEqual(self.compile(title='Renamed rule')['action'], 'tombstoned')
