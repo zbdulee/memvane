@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from tests.support.case import FixtureCase
@@ -58,6 +59,35 @@ class JobTelemetryTests(FixtureCase):
         os.chmod(public, 0o755)
         self.assertFalse(api.telemetry_emit(public / self.path.name, 'queued', job_id='safe'))
         self.assertFalse(api.telemetry_emit(self.path, 'queued', job_id='bad/identifier'))
+        self.assertEqual(victim.read_text(), 'unchanged')
+
+    def test_learning_worker_prelock_failure_records_failed_attempt(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        from memvane.learning import api as learning
+        import sys
+        root = Path(__file__).resolve().parents[4]
+        victim = self.directory / 'victim'
+        victim.write_text('unchanged')
+        policy = {'schema': 'qmd-shared-learning-v1', 'enabled': True, 'goldModel': 'synthetic',
+                  'maxGoldCalls': 10, 'batchMin': 5, 'batchMax': 20, 'targetExact': .95,
+                  'trainerArgv': [sys.executable, str(root / 'memvane/learning/context_learning/adapter.py'),
+                                  str(self.directory)], 'baseArtifact': str(victim), 'maxRssMib': 4096,
+                  'minAvailableMib': 128, 'maxLoadPerCpu': 4, 'safetySeconds': 900, 'experimental': True}
+        policy_path = self.directory / 'shared-policy.json'
+        policy_path.write_text(json.dumps(policy))
+        policy_path.chmod(0o600)
+        (self.directory / 'shared-worker.lock').symlink_to(victim)
+        self.assertTrue(api.telemetry_emit(self.path, 'queued', job_id='worker:1', op='shared_worker'))
+        with patch.dict(os.environ, {'QMD_JOB_ID': 'worker:1'}, clear=False), contextlib.redirect_stdout(io.StringIO()):
+            result = learning.learning_main(['run', str(self.directory)])
+        self.assertEqual(result, 1)
+        rows = replay(self.path.read_text().splitlines())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['status'], 'error')
+        self.assertEqual(rows[0]['error_code'], 'worker_failed')
+        self.assertEqual([r['phase'] for r in self.rows()], ['queued', 'started', 'finished'])
         self.assertEqual(victim.read_text(), 'unchanged')
 
     def test_replay_keeps_retries_and_rejects_bad_finish(self):

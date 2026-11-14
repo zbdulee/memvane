@@ -169,6 +169,11 @@ class DiagnosticRecordTests(FixtureCase):
         import sys
         self.assertTrue(api.emit('gate', outcome='refused', reason='selected_proof_changed',
                                  state_root=self.state, host='claude'))
+        self.assertTrue(api.emit('recall', outcome='served', reason='selected', count=1,
+                                 cards=[{'path': 'wiki/a.md', 'sha': 'a' * 64}], state_root=self.state))
+        self.assertTrue(api.emit('recall', outcome='empty', reason='no_candidates', count=0,
+                                 notes=['laya_vector_selected_provider_preparing'], state_root=self.state))
+        self.assertTrue(api.emit('index.publish', outcome='published', generation='g9', state_root=self.state))
         before = sorted((p.name, p.lstat().st_mtime_ns) for p in self.state.iterdir())
         root = Path(__file__).resolve().parents[4]
         script = root / 'skills' / 'logs' / 'scripts' / 'logs.py'
@@ -176,6 +181,13 @@ class DiagnosticRecordTests(FixtureCase):
                                 text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('gate refused reason=selected_proof_changed', result.stdout)
+        self.assertIn('recalls: 2 served=1 empty/refused=1 (no_candidates 1)', result.stdout)
+        self.assertIn('generation=g9', result.stdout)
+        recalls = subprocess.run([sys.executable, '-B', str(script), '--state-root', str(self.state), 'recalls'],
+                                 text=True, capture_output=True, timeout=30)
+        self.assertEqual(recalls.returncode, 0, recalls.stderr)
+        self.assertIn('notes=laya_vector_selected_provider_preparing', recalls.stdout)
+        self.assertIn('wiki/a.md aaaaaaaaaaaa', recalls.stdout)
         after = sorted((p.name, p.lstat().st_mtime_ns) for p in self.state.iterdir())
         self.assertEqual(after, before)
 
