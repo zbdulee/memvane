@@ -28,8 +28,8 @@ MemVane 색인 기반 자동 컨텍스트 주입 훅을 **Claude Code · Codex �
 
 ```bash
 npm run test:guard-unit                    # 작은 합성 보호 장치 단위 검사만 순차 실행
-npm test                                   # guard 단독(--exclusive) + 파일 병렬 1
-npm run test:focused -- test/laya-runtime-provision.test.mjs # 같은 guard, 최대 3개 동시, 병렬 1
+npm test                                   # guard 단독(--exclusive) 세 부분 test:part1~3, 각 1,800초, 파일 병렬 1
+npm run test:focused -- memvane/runtime/tests/run.test.mjs # 같은 guard, 최대 3개 동시, 병렬 1, 900초
 npm run dev:guard -- --kind backup -- <명령> # 같은 잠금을 단독으로
 npm run dev:guard -- --kind hash -- <명령>   # 단독
 npm run dev:guard -- --kind model-test -- node --test <실제 모델 시험> # 학습용 자원 제한 유지

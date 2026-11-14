@@ -45,7 +45,11 @@ test('CI installs the declared Node versions and runs the deterministic suite', 
   const workflow = read('.github/workflows/test.yml');
   assert.match(workflow, /actions\/setup-node/);
   assert.match(workflow, /node-version/);
-  assert.match(workflow, /npm test/);
+  // The deterministic suite is npm test's three guarded parts, one CI job per part.
+  assert.match(workflow, /shard: \[1, 2, 3\]/);
+  assert.match(workflow, /npm run test:part\$\{\{ matrix\.shard \}\}/);
+  const scripts = JSON.parse(read('package.json')).scripts;
+  assert.equal(scripts.test, 'npm run test:part1 && npm run test:part2 && npm run test:part3');
   assert.match(workflow, /python3/);
 });
 

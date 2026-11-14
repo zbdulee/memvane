@@ -15,19 +15,17 @@ completion evidence exists.
 
 ## Commands covered
 
-`npm test` and `npm run test:focused -- test/NAME.test.mjs` route through
+`npm test` and `npm run test:focused -- memvane/DOMAIN/tests/run.test.mjs` (or
+`tests/PATH.test.mjs`) route through
 `scripts/development_guard.py`, force `node --test --test-concurrency=1`, and
 preserve the existing QMD fixture/log isolation. Backup and hash work must use
 `npm run dev:guard -- --kind backup -- COMMAND ...` or `--kind hash`.
 The wrapper launches an argv directly, never constructs a shell command.
-The complete `npm test` suite has a finite1,800-second budget; focused checks
-keep the wrapper's900-second default. CI runs the suite as three
-`--test-shard=N/3` jobs per Node version so each shard stays inside that budget.
-
-The full suite runs all `laya-sync-first-proof-checks.py` cases through
-`laya-sync-first-proof.test.mjs`. Its six dedicated focused wrappers repeat a
-subset of those same cases, so `npm test` excludes only those wrapper test names.
-`npm run test:focused` continues to execute each wrapper when requested.
+`npm test` runs three exclusive guarded parts (`test:part1` sync, registry,
+host; `test:part2` journal, store, learning, recall; `test:part3` the rest),
+each with a 1,800-second budget. Focused checks keep the wrapper's 900-second
+default; run the sync and registry runners in separate focused runs. CI runs
+`npm run test:partN` as three jobs per Node version.
 
 Ordinary mock, regression and integration tests (`--kind test`, including CI),
 remote review (`--kind review`) and hash or staging work (`--kind hash`) do not

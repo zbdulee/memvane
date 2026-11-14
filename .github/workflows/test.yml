@@ -25,4 +25,4 @@ jobs:
           python3 --version
           bash --version
       - name: Run deterministic tests
-        run: npm test -- --test-shard=${{ matrix.shard }}/3
+        run: npm run test:part${{ matrix.shard }}
