@@ -52,6 +52,18 @@ _DURABLE_WAKE_STATES = frozenset(('queued', 'busy',
                                   'deferred_queue_capacity_retained'))
 
 
+def _wake_recorded(result) -> bool:
+    """A durable wake, or the test fixture switch's skipped one.
+
+    ``runtime.api.request`` records no wake and returns None under
+    ``QMD_SETUP_GUARD_FIXTURE=1``; that is not queued and not an error.
+    Outside the switch a None answer stays a failed request.
+    """
+    if result is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
+        return True
+    return isinstance(result, dict) and result.get('status') in _DURABLE_WAKE_STATES
+
+
 # Inputs of one served recall for post-output learning capture. Only an
 # entry that runs capture after its answer (``main``) opens a slot, bound to
 # its own context; an in-process host (Hermes, possibly concurrent recalls)
@@ -655,8 +667,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
         if pending or any(path.exists() and path.stat().st_size > 0 for path in queues):
             compile_result = runtime_work.request('laya-compile', decision['projectRoot'],
                                                   **defer)
-            if (not isinstance(compile_result, dict) or
-                    compile_result.get('status') not in _DURABLE_WAKE_STATES):
+            if not _wake_recorded(compile_result):
                 _fail('selected_compile_enqueue_failed')
     refreshed = verify_selected_route(decision)
     # The owner may have started and advanced the journal epoch before
@@ -667,7 +678,7 @@ def _request_selected_sync(action: str, decision: dict, proof: dict, *,
     if (stable(refreshed) != stable(proof)
             or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
         _fail("selected_proof_changed")
-    if not isinstance(result, dict) or result.get("status") not in _DURABLE_WAKE_STATES:
+    if not _wake_recorded(result):
         _fail("selected_sync_enqueue_failed")
 
 
@@ -732,7 +743,7 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
     except Exception:
         result = None
         _start_owner()
-    if isinstance(result, dict) and result.get('status') in _DURABLE_WAKE_STATES:
+    if _wake_recorded(result):
         return
     try:
         live = laya_wiki_discovery.revoke_grant(decision, grant)
@@ -1199,7 +1210,7 @@ def _request_worktree_sync(main: dict, proof: dict, recheck) -> None:
     if (stable(refreshed) != stable(proof)
             or refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
         _fail('selected_proof_changed')
-    if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
+    if not _wake_recorded(result):
         _fail('selected_sync_enqueue_failed')
 
 
