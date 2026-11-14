@@ -48,6 +48,8 @@ class ManualExtract(FixtureCase):
         self.assertEqual(json.loads(result.stdout)['action'], 'created')
         page = self.project.wiki / 'concepts/api-port.md'
         text = page.read_text()
+        for name in ('SCHEMA.md', 'index.md', 'log.md'):
+            self.assertFalse((self.project.wiki / name).exists())
         self.assertIn('API alias', text)
         self.assertIn(hashlib.sha256(source.read_bytes()).hexdigest(), text)
         self.assertNotIn('decoy.md', text)

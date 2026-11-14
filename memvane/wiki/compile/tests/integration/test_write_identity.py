@@ -67,3 +67,17 @@ class WriteIdentity(FixtureCase):
                 self.assertEqual(result['action'], 'updated')
                 self.assertIn('Revised synthetic fact.', self.card.read_text())
                 self.assertIn('Preserve these notes.', self.card.read_text())
+
+    def test_refresh_ignores_reviewed_scalar_and_removes_old_verification_spans(self):
+        old = self.card.read_text().replace('status: generated\n',
+                                          'status: generated\nreviewed: true\nsourceSpans:\n'
+                                          '  - {path: "docs/a.md", startLine: 1, endLine: 1}\n')
+        self.card.write_text(old)
+        result = self.compile('Renamed A', 'existing-a', 'docs/a.md')
+        self.assertEqual(result['action'], 'updated')
+        new = self.card.read_text()
+        self.assertIn('Revised synthetic fact.', new)
+        self.assertIn('status: generated', new)
+        self.assertNotIn('sourceSpans:', new)
+        self.assertNotIn('reviewed:', new)
+        self.assertIn('Preserve these notes.', new)
