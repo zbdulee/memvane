@@ -73,11 +73,10 @@ def _persisted_schema3(endpoint):
 
 
 def _vector_proof(authority,snapshot,decision,provider,deadline):
-    from memvane.provider.api import reviewed_provider_class
-    ReviewedLocalQmdProvider = reviewed_provider_class()
+    from memvane.provider.api import is_reviewed_provider
     if (type(deadline) not in (int, float) or not math.isfinite(deadline)
             or time.monotonic() >= deadline or not _persisted_schema3(authority)
-            or type(provider) is not ReviewedLocalQmdProvider or snapshot is not None):
+            or not is_reviewed_provider(provider) or snapshot is not None):
         raise ValueError('reader_vector_caller_unproved')
     journal.bind_schema3(authority)
     selected=journal.reader_selection(authority)

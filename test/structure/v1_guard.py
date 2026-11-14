@@ -202,6 +202,7 @@ _HANDLE_SOURCES = {
     'memvane.runtime.api.wake_queue': 'memvane.runtime.types.WakeQueueHandle',
     'memvane.runtime.api.supervisor': 'memvane.runtime.types.SupervisorHandle',
     'memvane.runtime.api.training_guard': 'memvane.runtime.types.TrainingGuardHandle',
+    'memvane.provider.api.reviewed_provider': 'memvane.provider.types.ReviewedProviderHandle',
 }
 _HANDLE_CLASSES = {
     'memvane.store.types.ViewStoreHandle': 'memvane.store.view.view_store.ViewStore',
@@ -209,6 +210,8 @@ _HANDLE_CLASSES = {
     'memvane.runtime.types.WakeQueueHandle': 'memvane.runtime.runtime_work.WakeQueue',
     'memvane.runtime.types.SupervisorHandle': 'memvane.runtime.runtime_monitor.Supervisor',
     'memvane.runtime.types.TrainingGuardHandle': 'memvane.runtime.resource_coordination.TrainingGuard',
+    'memvane.provider.types.ReviewedProviderHandle':
+        'memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
 }
 # Direct reads of another domain's table that the layer order keeps off that
 # domain's api (S4b rule 3). Only a FROM/JOIN in a string that writes nothing

@@ -804,8 +804,7 @@ def _worker_attestation_manifest(selected):
 
 def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
     """Verify provider bytes and runtime identity using this plugin copy."""
-    from memvane.provider.api import reviewed_provider_class, hash_file as _hash_file
-    ReviewedLocalQmdProvider = reviewed_provider_class()
+    from memvane.provider.api import reviewed_provider, hash_file as _hash_file
     if (not isinstance(record, dict)
             or set(record) != {'schema', 'journalPath', 'vectorProfile', 'providerManifest',
                                'dependencyClosure', RUNTIME_FILES_FIELD}
@@ -827,7 +826,7 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False):
                 or manifest['serviceSocketPath'] != str(memvane_paths.install_socket(
                     Path(record['journalPath']).parent))):
             _fail('worker_attestation_invalid')
-        provider = ReviewedLocalQmdProvider(manifest)
+        provider = reviewed_provider(manifest)
         if (provider.profile['profile_id'] != profile['profileId']
                 or manifest['providerArtifactSha256'] != profile['providerArtifactSha256']
                 or manifest['approvedProviderId'] != profile['approvedProviderId']

@@ -30,8 +30,7 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
     from memvane.journal import api as reader
     from memvane.recall import api as dispatch
     from memvane.kernel.errors import IndexContractError
-    from memvane.provider.api import reviewed_provider_class
-    ReviewedLocalQmdProvider = reviewed_provider_class()
+    from memvane.provider.api import reviewed_provider
     degraded = main_proof is None
     _recall_epoch(proof)
     _trace_fields(store_format='schema3', reader_endpoint=endpoint.endpoint_id)
@@ -59,7 +58,7 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
         vector_off.append('provider_artifact_changed')
     else:
         try:
-            provider = ReviewedLocalQmdProvider(manifest)
+            provider = reviewed_provider(manifest)
         except IndexContractError as exc:
             provider = None
             vector_off.append('provider_manifest_' + (str(exc) if re.fullmatch(

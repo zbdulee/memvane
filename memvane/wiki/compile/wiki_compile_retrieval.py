@@ -391,10 +391,9 @@ def query_provider(bound):
     """Only ask an already warm reviewed provider; no model is started here."""
     from memvane.recall.types import VectorUnavailable
     from memvane.kernel.errors import IndexContractError
-    from memvane.provider.api import reviewed_provider_class
-    ReviewedLocalQmdProvider = reviewed_provider_class()
+    from memvane.provider.api import reviewed_provider
     from memvane.resident.api import admit_query
-    provider = ReviewedLocalQmdProvider(bound[1]['providerManifest'])
+    provider = reviewed_provider(bound[1]['providerManifest'])
     try:
         admit_query()
     except Exception:

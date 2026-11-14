@@ -30,8 +30,9 @@ from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
 from memvane.journal.api import build_read_v1
 from memvane.journal.api import inspect_journal, selected_project_proof as _selected
-from memvane.provider.api import reviewed_provider_class
-ReviewedLocalQmdProvider = reviewed_provider_class()
+# ReviewedLocalQmdProvider(manifest) builds a reviewed provider handle; the
+# worker's tests patch this module name.
+from memvane.provider.api import reviewed_provider as ReviewedLocalQmdProvider
 from memvane.provider.api import start_owned_embed_service
 
 # A conservative cold-start proxy, not a measured GGUF/native peak. The
