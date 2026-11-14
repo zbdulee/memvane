@@ -85,3 +85,42 @@ class DiscoveryCursor(FixtureCase):
                          ('drained', 'pending_over_cap_skipped', 2))
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
         self.assertEqual(discovery._read(discovery._paths(self.decision)[0])['pending'], {})
+
+    def test_fault_after_enqueue_retry_does_not_duplicate(self):
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed after seed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        self.accept()
+        cursor = discovery._paths(self.decision)[0]
+        real_write = discovery._write
+        writes = [0]
+        def fail_ack(path, value):
+            if path == cursor:
+                writes[0] += 1
+                if writes[0] == 2:
+                    raise OSError('simulated cursor ACK failure')
+            return real_write(path, value)
+        with patch.object(discovery, '_write', side_effect=fail_ack):
+            with self.assertRaisesRegex(OSError, 'ACK failure'):
+                self.drain('g2', {self.key: changed})
+        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        before = queue.read_bytes()
+        self.assertEqual(len(before.splitlines()), 1)
+        result = self.drain('g2', {self.key: changed})
+        self.assertEqual(result['state'], 'drained')
+        self.assertEqual(queue.read_bytes(), before)
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
+
+    def test_grant_recorded_after_snapshot_survives_consumption(self):
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed after seed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        first = self.accept()
+        observed = discovery.observe_grants(self.decision)
+        later = self.accept()
+        with patch.object(workspace, 'selected', return_value=None):
+            result = discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
+                                               view_generation='g2', raw_snapshot={self.key: changed})
+        self.assertEqual((result['state'], result['queued']), ('drained', 1))
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [later])
+        self.assertNotIn(first, discovery.observe_grants(self.decision)['grants']['sync'])
