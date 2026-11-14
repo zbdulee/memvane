@@ -241,3 +241,70 @@ class BackfillWorkerBoundary(FixtureCase):
         retry = subprocess.run(command, cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(calls.read_text().splitlines(), ['codex', 'claude', 'hermes'])
+
+    def test_budget_one_and_two_resume_only_untried_unknown_hosts(self):
+        import copy
+        import json
+        for remaining in (1, 2):
+            with self.subTest(remaining=remaining):
+                project = make_project(self.home, name='budget%d' % remaining,
+                                       dirname='budget-project-%d' % remaining)
+                special = project.write_note('docs/special.md', 'SPECIAL_BACKFILL unique source\n')
+                pads = [project.write_note('docs/pad%d.md' % index, 'padding source %d\n' % index)
+                        for index in range(10 - remaining)]
+                project.git('add', '--', '.memvane/settings.json', 'docs')
+                project.git('commit', '-qm', 'fixture')
+                install = build_install(self, project, install_id=str(remaining + 4) * 32)
+                decision = install.select()
+                revision = hashlib.sha256(special.read_bytes()).hexdigest()
+                snapshot = {project.raw_name + '/docs/special.md': revision}
+                config = expanded(project, compile={'mode': 'auto-wiki',
+                                  'triggers': ['post_sync_source'], 'extractor': {'builtins': ['codex']}})
+                row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'unknown'})
+                backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
+                queue = project.root / '.memvane/compile/source-queue.jsonl'
+                special_job = json.loads(queue.read_text().splitlines()[0])
+                jobs = []
+                for source in pads:
+                    job = copy.deepcopy(special_job)
+                    job.pop('initialBackfill')
+                    job['engine'] = 'codex'
+                    job['source']['path'] = source.relative_to(project.root).as_posix()
+                    job['contentRevision'] = hashlib.sha256(source.read_bytes()).hexdigest()
+                    jobs.append(job)
+                queue.write_text(''.join(json.dumps(job) + '\n' for job in jobs + [special_job]))
+                calls = self.home / ('calls-%d.jsonl' % remaining)
+                scripts = {}
+                for engine in ('codex', 'claude', 'hermes'):
+                    fake = self.home / ('fake-%d-%s' % (remaining, engine))
+                    fake.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
+                        'special=any("SPECIAL_BACKFILL" in arg for arg in sys.argv[1:])\n'
+                        'open(os.environ["FIXTURE_CALLS"],"a").write(json.dumps({"engine":'
+                        + repr(engine) + ',"special":special})+"\\n")\n'
+                        + ('\nif special: sys.exit(127)\n' if engine in ('codex', 'claude') else '\n')
+                        + 'print(json.dumps({"candidates": []}))\n')
+                    fake.chmod(0o700)
+                    scripts[engine] = str(fake)
+                root = Path(__file__).resolve().parents[5]
+                env = {**os.environ, 'QMD_ENGINE': '', 'FIXTURE_CALLS': str(calls),
+                       'QMD_EXTRACTOR_CODEX_BIN': scripts['codex'], 'QMD_EXTRACTOR_CLAUDE_BIN': scripts['claude'],
+                       'QMD_EXTRACTOR_HERMES_BIN': scripts['hermes']}
+                command = [sys.executable, '-B', str(root / 'entry/run.py'),
+                           'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all']
+                first = subprocess.run(command, cwd=str(project.root), env=env,
+                                       capture_output=True, text=True, timeout=90)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                kept = [json.loads(line) for line in queue.read_text().splitlines()]
+                self.assertEqual(len(kept), 1, first.stdout + first.stderr)
+                expected = ['codex', 'claude'][:remaining]
+                self.assertEqual(kept[0]['_fallbackAttempts']['engines'], expected)
+                first_calls = [json.loads(line) for line in calls.read_text().splitlines()]
+                self.assertEqual(len(first_calls), 10)
+                second = subprocess.run(command, cwd=str(project.root), env=env,
+                                        capture_output=True, text=True, timeout=90)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                all_calls = [json.loads(line) for line in calls.read_text().splitlines()]
+                self.assertEqual([call['engine'] for call in all_calls if call['special']],
+                                 ['codex', 'claude', 'hermes'])
+                self.assertEqual(backfill.summary(backfill._load(decision))['settled'], 1)
+                self.assertFalse(queue.read_text().strip())
