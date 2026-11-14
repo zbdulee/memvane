@@ -80,6 +80,7 @@ class ExternalInstallRouting(FixtureCase):
 
     def test_hook_rejects_failed_edits_then_routes_mixed_and_multiedit_paths(self):
         from memvane.host import api as host
+        import json
         source = self.b.project.write_note('docs/note.md', 'external edit\n')
         local = self.a.project.write_note('docs/local.md', 'local edit\n')
         hidden = self.b.project.write_note('.hidden.md', 'hidden\n')
@@ -105,6 +106,12 @@ class ExternalInstallRouting(FixtureCase):
                               ('laya-compile', str(self.a.project.root))})
             self.assertEqual([row['path'] for row in external._read_box(inbox, self.b.select())['edits']],
                              ['docs/note.md'])
+            self.assertEqual(host.serve_selected('compile', 'codex', decision, mixed), {})
+            local_queue = self.a.project.root / '.memvane/compile/source-queue.jsonl'
+            jobs = [json.loads(line) for line in local_queue.read_text().splitlines()]
+            self.assertEqual([job['source']['path'] for job in jobs], ['docs/local.md'])
+            owner_queue = self.b.project.root / '.memvane/compile/source-queue.jsonl'
+            self.assertFalse(owner_queue.exists() and owner_queue.read_text().strip())
             for tool_input in ({'file_path': str(source), 'edits': [{'old_string': 'a', 'new_string': 'b'}]},
                                {'edits': [{'file_path': str(source), 'old_string': 'a', 'new_string': 'b'}]}):
                 wake.reset_mock()
@@ -116,6 +123,23 @@ class ExternalInstallRouting(FixtureCase):
             self.assertEqual(host.serve_selected('index', 'codex', decision,
                 {**base, 'tool_name': 'NotebookEdit', 'tool_input': {'notebook_path': str(notebook)}}), {})
             wake.assert_not_called()
+
+    def test_unsafe_owner_inbox_cannot_break_local_edit_or_write_through_symlink(self):
+        from memvane.host import api as host
+        source = self.b.project.write_note('docs/note.md', 'external edit\n')
+        local = self.a.project.write_note('docs/local.md', 'local edit\n')
+        inbox = external._inbox_path(self.b.select())
+        inbox.parent.mkdir(parents=True, exist_ok=True)
+        target = self.home / 'untouched.json'
+        target.write_text('{}')
+        inbox.symlink_to(target)
+        event = {'hook_event_name': 'PostToolUse', 'cwd': str(self.a.project.root),
+                 'tool_name': 'apply_patch', 'tool_input': {'patch': (
+                     '*** Update File: %s\n*** Update File: %s\n' % (local, source))}}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            self.assertEqual(host.serve_selected('index', 'codex', self.a.select(), event), {})
+        self.assertEqual(target.read_text(), '{}')
+        self.assertIn(('laya-sync', str(self.a.project.root)), [call.args for call in wake.call_args_list])
 
     def test_notification_proof_rejects_unsafe_journal_parent(self):
         from memvane.journal import api as journal
