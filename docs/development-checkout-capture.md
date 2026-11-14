@@ -71,5 +71,5 @@ split index의 shared 내용까지 증명할 수 없으면 `split_index_unsuppor
 자동 fetch 차단 변수는 [Git 2.39.5의 promisor 구현](https://raw.githubusercontent.com/git/git/v2.39.5/promisor-remote.c)을 따른다.
 index framing은 [Git index format](https://git-scm.com/docs/index-format)을 따른다.
 
-검증은 `test/laya-checkout-view.test.mjs`와 임시 Git fixture를 사용한다.
+검증은 `memvane/store/tests/integration/test_checkout_view.py`(`memvane/store/tests/run.test.mjs`)와 임시 Git fixture를 사용한다.
 기존 호스트 route 회귀는 `test/laya-index-host-route.test.mjs`로 확인한다.
