@@ -17,7 +17,7 @@ class ExternalEditNotification(FixtureCase):
         self.state = self.home / 'owner-state'
         self.state.mkdir(mode=0o700)
         self.decision = {
-            'projectRoot': str(self.root), 'scopeId': 'a' * 32,
+            'projectRoot': str(self.root), 'installId': 'd' * 32, 'scopeId': 'a' * 32,
             'storeIncarnation': 'b' * 32, 'storePath': str(self.state / 'store.sqlite'),
             'collections': [
                 {'name': self.project.raw_name, 'role': 'raw', 'sourceRoot': str(self.root)},
@@ -126,3 +126,115 @@ class ExternalEditNotification(FixtureCase):
         inbox.symlink_to(outside)
         self.assertEqual(self.notify(self.source)['failed'], 1)
         self.assertEqual(outside.read_text(), '{}')
+
+    def drain(self, recheck=lambda: None):
+        from memvane.wiki.workspace import api as workspace
+        from tests.support.settings_fake import expanded, use_config
+        use_config(self, self.project, expanded(self.project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_tool_source'],
+            'extractor': {'builtins': ['claude', 'codex']}}))
+        with patch.object(journal, 'verify_selected_route_for_write',
+                          return_value={'productRouteAllowed': True}), \
+             patch.object(journal, 'select_route', return_value=self.decision), \
+             patch.object(workspace, 'selected', return_value=(self.decision, {'productRouteAllowed': True})), \
+             patch.object(workspace, 'request_compile'):
+            return external.drain(self.decision, recheck=recheck)
+
+    def queue_rows(self):
+        import json
+        from memvane.wiki.workspace import api as workspace, types as workspace_types
+        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        return [json.loads(line) for line in queue.read_text().splitlines()] if queue.exists() else []
+
+    def test_drain_repeats_full_proof_and_compiles_current_blob(self):
+        self.notify(self.source)
+        result = self.drain()
+        self.assertEqual((result['processed'], result['remaining']), (1, 0))
+        self.assertEqual([(row['source']['path'], row['engine']) for row in self.queue_rows()],
+                         [('docs/note.md', 'codex')])
+        self.drain()
+        self.assertEqual(len(self.queue_rows()), 1)
+
+    def test_stale_blob_is_not_compiled(self):
+        self.notify(self.source)
+        self.source.write_text('different bytes\n')
+        self.drain()
+        self.assertEqual(self.queue_rows(), [])
+
+    def test_stale_deleted_hint_is_not_compiled(self):
+        self.source.unlink()
+        self.notify(self.source)
+        self.source.write_text('restored\n')
+        self.drain()
+        self.assertEqual(self.queue_rows(), [])
+
+    def test_current_deletion_requests_existing_owner_lifecycle(self):
+        from memvane.wiki.workspace import api as workspace
+        self.source.unlink()
+        self.notify(self.source)
+        with patch.object(workspace, 'request_lifecycle') as request:
+            self.drain()
+        request.assert_called_once_with(self.decision, 'source_edit')
+        self.assertEqual(self.queue_rows(), [])
+
+    def test_changed_proof_during_drain_keeps_hint(self):
+        self.notify(self.source)
+        def fail_recheck():
+            raise ValueError('selected_proof_changed')
+        with self.assertRaisesRegex(ValueError, 'selected_proof_changed'):
+            self.drain(recheck=fail_recheck)
+        self.assertEqual(self.queue_rows(), [])
+        self.assertEqual(len(self.box()['edits']), 1)
+
+    def test_inbox_symlink_is_refused_by_drain(self):
+        self.notify(self.source)
+        inbox = external._inbox_path(self.decision)
+        inbox.unlink()
+        outside = self.home / 'outside.json'
+        outside.write_text('{}')
+        inbox.symlink_to(outside)
+        from memvane.wiki.intake.types import DiscoveryBlocked
+        with self.assertRaisesRegex(DiscoveryBlocked, 'state_unreadable'):
+            self.drain()
+        self.assertEqual(outside.read_text(), '{}')
+        self.assertEqual(self.queue_rows(), [])
+
+    def test_only_current_of_several_blobs_compiles(self):
+        self.notify(self.source)
+        self.source.write_text('new content\n')
+        self.notify(self.source)
+        self.drain()
+        self.assertEqual([row['source']['path'] for row in self.queue_rows()], ['docs/note.md'])
+
+    def test_stale_uncompiled_hint_can_be_notified_again_when_current(self):
+        original = self.source.read_bytes()
+        self.notify(self.source)
+        self.source.write_text('unobserved content\n')
+        self.drain()
+        self.assertEqual(self.queue_rows(), [])
+        self.source.write_bytes(original)
+        self.notify(self.source)
+        self.assertEqual([row['path'] for row in self.box()['edits']], ['docs/note.md'])
+
+    def test_current_skip_paths_apply_at_drain(self):
+        self.notify(self.source)
+        self.decision['recallSettings']['skipPaths'] = ['docs']
+        self.drain()
+        self.assertEqual(self.queue_rows(), [])
+
+    def test_new_hint_during_owner_hash_is_not_lost(self):
+        self.notify(self.source)
+        revision = external._revision
+        armed = [True]
+        def interleave(path):
+            result = revision(path)
+            if path == self.source and armed[0]:
+                armed[0] = False
+                self.source.write_text('new bytes during owner hashing\n')
+                self.notify(self.source)
+            return result
+        with patch.object(external, '_revision', side_effect=interleave):
+            self.drain()
+        current = external._revision(self.source)[0]
+        self.assertEqual([row['blob'] for row in self.box()['edits']], [current])
+        self.assertEqual(self.queue_rows(), [])
