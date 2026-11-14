@@ -226,3 +226,31 @@ class DiscoveryCursor(FixtureCase):
                 with self.assertRaisesRegex(DiscoveryBlocked, 'baseline_invalid'):
                     discovery.seed_source_snapshot(self.decision, baseline, generation='g1')
                 self.assertFalse(discovery._paths(self.decision)[0].exists())
+
+    def test_failed_grant_removal_after_ack_never_pays_deferred_tail(self):
+        import os
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        second = self.project.write_note('docs/second.md', 'other source\n')
+        snapshot = {self.key: hashlib.sha256(self.source.read_bytes()).hexdigest(),
+                    self.project.raw_name + '/docs/second.md': hashlib.sha256(second.read_bytes()).hexdigest()}
+        grant = self.accept()
+        observed = discovery.observe_grants(self.decision)
+        with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '1'}), \
+             patch.object(workspace, 'selected', return_value=None):
+            with patch.object(discovery, '_write_grants', side_effect=OSError('synthetic disk full')):
+                with self.assertRaises(OSError):
+                    discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
+                                               view_generation='g2', raw_snapshot=snapshot)
+            queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+            self.assertEqual(len(queue.read_text().splitlines()), 1)
+            state = discovery._read(discovery._paths(self.decision)[0])
+            self.assertEqual(list(state['pending']), [self.project.raw_name + '/docs/second.md'])
+            self.assertEqual(state['spentGrants'], [grant])
+            retry = discovery.observe_grants(self.decision)
+            self.assertEqual(retry['grants']['sync'], [grant])
+            result = discovery.drain_after_sync(self.decision, retry, recheck=lambda: None,
+                                               view_generation='g2', raw_snapshot=snapshot)
+        self.assertEqual((result['state'], result['reason']), ('pending', 'no_accepted_grant'))
+        self.assertEqual(len(queue.read_text().splitlines()), 1)
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])

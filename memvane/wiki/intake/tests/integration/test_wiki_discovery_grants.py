@@ -80,3 +80,33 @@ class DiscoveryGrants(FixtureCase):
         observed = discovery.observe_grants(self.decision)
         self.assertEqual(observed['grants']['sync'], [])
         self.assertEqual(observed['provisional']['sync'], [])
+
+    def test_uncertain_grant_writes_are_not_silently_accepted(self):
+        from unittest.mock import patch
+        real_write = discovery._write_grants
+        def faults(*plan):
+            steps = iter(plan)
+            def write(*args, **kwargs):
+                if next(steps) == 'landed':
+                    real_write(*args, **kwargs)
+                raise OSError('synthetic fsync failure')
+            return write
+        with patch.object(discovery, '_write_grants', side_effect=faults('landed', 'refused')):
+            with self.assertRaises(OSError):
+                discovery.record_grant(self.decision, 'sync')
+        observed = discovery.observe_grants(self.decision)
+        self.assertEqual(observed['grants']['sync'], [])
+        self.assertEqual(len(observed['provisional']['sync']), 1)
+
+        grant = discovery.record_grant(self.decision, 'session_start')
+        with patch.object(discovery, '_write_grants', side_effect=faults('landed', 'landed')):
+            with self.assertRaises(OSError):
+                discovery.activate_grant(self.decision, 'session_start', grant)
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['session_start'], [])
+        self.assertFalse(discovery.activate_grant(self.decision, 'session_start', grant))
+
+        grant = discovery.record_grant(self.decision, 'session_start')
+        with patch.object(discovery, '_write_grants', side_effect=faults('landed', 'refused')):
+            with self.assertRaises(discovery.GrantUncertain):
+                discovery.activate_grant(self.decision, 'session_start', grant)
+        self.assertEqual(discovery.observe_grants(self.decision)['grants']['session_start'], [grant])
