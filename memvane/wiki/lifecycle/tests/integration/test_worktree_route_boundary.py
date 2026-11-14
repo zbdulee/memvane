@@ -140,3 +140,20 @@ class WorktreeRouteBoundary(FixtureCase):
             baseline = host.serve_selected('update-queued', 'claude', decision, payload)
             with patch.object(workspace, 'request_lifecycle', side_effect=OSError('unwritable')):
                 self.assertEqual(host.serve_selected('update-queued', 'claude', decision, payload), baseline)
+
+    def test_repeated_session_start_is_served_by_one_compile_pass(self):
+        from unittest.mock import patch
+        from memvane.host import api as host
+        from memvane.runtime import api as runtime
+        from memvane.wiki.compile import api as compile_api
+        from memvane.wiki.workspace import api as workspace
+        decision = self.install.select()
+        payload = {'hook_event_name': 'SessionStart', 'cwd': str(self.project.root),
+                   'session_id': 'fixture-session'}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            host.serve_selected('update-queued', 'claude', decision, payload)
+            host.serve_selected('update-queued', 'claude', decision, payload)
+            self.assertEqual([call.args[0] for call in wake.call_args_list].count('laya-compile'), 1)
+            result = compile_api.run(self.project.root)
+        self.assertEqual(result, {'state': 'drained', 'processed': 0})
+        self.assertIsNone(workspace.claim_lifecycle(self.project.root))
