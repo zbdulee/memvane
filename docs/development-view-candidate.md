@@ -217,9 +217,9 @@ manifest의 `sources`는 같은 pass의 raw 관측이며 관측 상한(4,096 파
 
 vector는 lexical 세대를 먼저 게시한 뒤 `fill_view` cursor로 설치 provider spec의 set을 채우고,
 완료되면 vector 세대를 새로 게시한다. view chunk는 provider의 1차 분할과 같은 위치여야 한다.
-provider가 token window로 다시 쪼개는 카드는 재현할 chunk 텍스트가 없어
-`chunk_text_unreconstructable`로 그 view의 vector fill을 막고, 그 view는 카드가 바뀔 때까지
-lexical 세대로 남는다. main view의 vector spec이 endpoint record에 봉인되기 전까지 recall은
+provider가 token window로 다시 쪼갠 카드는 view recipe가 그 chunk 위치를 재현할 수 없어 recipe의
+fallback 창(`store.types.FALLBACK_CHARS`, 600/90/135 UTF-16 단위)으로 chunk set을 만들고 창마다
+따로 embed한다(`_schema3_chunker`). 그 카드의 vector도 같은 vector 세대에 게시된다. main view의 vector spec이 endpoint record에 봉인되기 전까지 recall은
 lexical 결과만 쓴다.
 
 ## 입력 상한과 실패
