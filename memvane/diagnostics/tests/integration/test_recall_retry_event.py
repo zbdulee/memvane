@@ -34,3 +34,24 @@ class RecallRetryEventTests(FixtureCase):
         self.assertEqual(rows[0]['retry'], 'selected_proof_changed')
         self.assertIn('laya_recall_proof_retry', rows[0]['notes'])
         self.assertEqual(rows[0]['outcome'], 'empty')
+
+    def test_worktree_recall_records_one_degraded_event(self):
+        from memvane.journal import api as journal
+        project = make_project(self.home)
+        project.git('add', '.memvane/settings.json')
+        project.git('commit', '-qm', 'fixture')
+        linked = project.linked_worktree('linked', 'fixture-linked')
+        install = build_install(self, project)
+        decision = journal.select_route(str(linked.root), action='recall')
+        self.assertEqual(decision['state'], 'worktree', decision)
+        main = decision['mainRoute']
+        before = len([r for r in install.events() if r.get('event') == 'recall'])
+        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        with patch('memvane.journal.api.verify_selected_route', return_value=proof), \
+             patch('memvane.recall.api.serve_endpoint_recall', return_value=RecallAnswer(main)):
+            host.serve_selected('recall', 'claude', decision,
+                                {'prompt': 'synthetic', 'cwd': str(linked.root)})
+        rows = [r for r in install.events() if r.get('event') == 'recall'][before:]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['install'], install.install_id)
+        self.assertEqual(rows[0]['degraded'], 'worktree')
