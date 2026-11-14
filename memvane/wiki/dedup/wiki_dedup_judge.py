@@ -52,8 +52,7 @@ UNUSABLE_OUTPUT_REASONS = {"invalid_extractor_json", "invalid_verdict"}
 # `producing=""` 하나가 두 세계를 뭉친다 — (a) write-time인데 이번 카드의 생산 엔진을 못 읽음
 # (사용자가 고친다 = require를 지킬 여지가 있다), (b) retroactive scan(생산자라는 사실이
 # 애초에 존재하지 않는다 = require를 지킬 여지가 영원히 없다).
-ATTRIBUTION_JOB = "job"    # 생산 엔진이 큐 잡에서 온 사실 (write-time gate)
-ATTRIBUTION_NONE = "none"  # 카드 두 장, 둘째 생산자 미기록 (retroactive scan)
+from memvane.wiki.dedup.types import ATTRIBUTION_JOB, ATTRIBUTION_NONE
 
 # `diagnostics()`가 남기는 필드. 값이 있는 것만 나간다.
 DIAGNOSTIC_KEYS = (

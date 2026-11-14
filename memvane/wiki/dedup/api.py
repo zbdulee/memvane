@@ -1,39 +1,39 @@
 """Public wiki deduplication operations."""
 from __future__ import annotations
 
-from memvane.wiki.dedup.types import OUTCOME_OK, OUTCOME_UNAVAILABLE
+from memvane.wiki.dedup.types import OUTCOME_OK, OUTCOME_UNAVAILABLE, ATTRIBUTION_JOB
 
 
-def max_pairs_per_compile(*args, **kwargs):
+def max_pairs_per_compile(compile_cfg):
     from memvane.wiki.dedup.wiki_dedup_judge import max_pairs_per_compile as implementation
-    return implementation(*args, **kwargs)
+    return implementation(compile_cfg)
 
 
-def is_available(*args, **kwargs):
+def is_available(compile_cfg, engine='', attribution=ATTRIBUTION_JOB):
     from memvane.wiki.dedup.wiki_dedup_judge import is_available as implementation
-    return implementation(*args, **kwargs)
+    return implementation(compile_cfg, engine, attribution)
 
 
-def read_card(*args, **kwargs):
+def read_card(path):
     from memvane.wiki.dedup.wiki_dedup_judge import read_card as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path)
 
 
-def judge_pair(*args, **kwargs):
+def judge_pair(root, compile_cfg, page_a, page_b, engine='', attribution=ATTRIBUTION_JOB):
     from memvane.wiki.dedup.wiki_dedup_judge import judge_pair as implementation
-    return implementation(*args, **kwargs)
+    return implementation(root, compile_cfg, page_a, page_b, engine, attribution)
 
 
-def diagnostics(*args, **kwargs):
+def diagnostics(info):
     from memvane.wiki.dedup.wiki_dedup_judge import diagnostics as implementation
-    return implementation(*args, **kwargs)
+    return implementation(info)
 
 
-def run(*args, **kwargs):
+def run(cwd):
     from memvane.wiki.dedup.wiki_dedup_scan import run as implementation
-    return implementation(*args, **kwargs)
+    return implementation(cwd)
 
 
-def log(*args, **kwargs):
+def log(message):
     from memvane.wiki.dedup.wiki_dedup_scan import log as implementation
-    return implementation(*args, **kwargs)
+    return implementation(message)

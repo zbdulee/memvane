@@ -22,7 +22,7 @@ also kept rather than guessed to match a newer file.
 REVISION_FIELD = "contentRevision"
 
 # 편집 훅 경로의 trigger 라벨.
-POST_TOOL_TRIGGER = "post_tool_source"
+from memvane.wiki.intake.types import POST_TOOL_TRIGGER
 # sync 경유 compile enqueue의 trigger 라벨(스냅샷 diff가 출처).
 SYNC_TRIGGER = "post_sync_source"
 # SessionStart sync 경유 라벨. 이 경로는 자기 grant만 인정한다 — `post_tool_source`

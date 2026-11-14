@@ -55,13 +55,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
 from memvane.kernel.paths import now_iso
-from memvane.wiki.verify.api import _supersede_compile_intent, compile_intent_id as _compile_intent_id
+from memvane.wiki.verify.api import supersede_compile_intent as _supersede_compile_intent, compile_intent_id as _compile_intent_id
 from memvane.wiki.workspace.api import file_coordination as workspace_files
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as qmd_config, types as settings_types
-from memvane.wiki.compile.api import _operations as wc
-from memvane.wiki.compile.api import _operations as wcw
+from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.engines import api as engines
 from memvane.wiki.card.api import card_support
 wiki_freshness = card_support.freshness

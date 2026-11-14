@@ -2,128 +2,129 @@
 from __future__ import annotations
 
 from memvane.wiki.intake.types import (RAW_SCAN_MAX_FILES, RAW_SCAN_MAX_BYTES, QUEUE_SCAN_MAX_BYTES,
-                                        SESSION_START_ACCEPTED_TRIGGERS, GrantUncertain)
+                                        SESSION_START_ACCEPTED_TRIGGERS, GrantUncertain,
+                                        HOOK_LOCK_SECONDS, POST_TOOL_TRIGGER)
 
 
-def scan_collections(*args, **kwargs):
+def scan_collections(roots, scope, index, max_files=200, max_bytes=5000000, *, wiki_only=False):
     from memvane.wiki.intake.source_scan import scan_collections as implementation
-    return implementation(*args, **kwargs)
+    return implementation(roots, scope, index, max_files, max_bytes, wiki_only=wiki_only)
 
 
-def collection_roots(*args, **kwargs):
+def collection_roots(roots):
     from memvane.wiki.intake.source_scan import _collection_roots as implementation
-    return implementation(*args, **kwargs)
+    return implementation(roots)
 
 
 
-def record_grant(*args, **kwargs):
+def record_grant(decision, kind, *, engine=None, wait=HOOK_LOCK_SECONDS):
     from memvane.wiki.intake.wiki_discovery import record_grant as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, kind, engine=engine, wait=wait)
 
 
 
-def activate_grant(*args, **kwargs):
+def activate_grant(decision, kind, grant, *, wait=HOOK_LOCK_SECONDS):
     from memvane.wiki.intake.wiki_discovery import activate_grant as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, kind, grant, wait=wait)
 
 
 
-def revoke_grant(*args, **kwargs):
+def revoke_grant(decision, grant, *, wait=HOOK_LOCK_SECONDS):
     from memvane.wiki.intake.wiki_discovery import revoke_grant as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, grant, wait=wait)
 
 
 
-def observe_grants(*args, **kwargs):
+def observe_grants(decision):
     from memvane.wiki.intake.wiki_discovery import observe_grants as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision)
 
 
 
-def seed_source_snapshot(*args, **kwargs):
+def seed_source_snapshot(decision, baseline, *, generation, replace_inert=False):
     from memvane.wiki.intake.wiki_discovery import seed_source_snapshot as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, baseline, generation=generation, replace_inert=replace_inert)
 
 
 
-def drain_after_sync(*args, **kwargs):
+def drain_after_sync(decision, observed, *, recheck, view_generation=None, raw_snapshot=None):
     from memvane.wiki.intake.wiki_discovery import drain_after_sync as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, observed, recheck=recheck, view_generation=view_generation, raw_snapshot=raw_snapshot)
 
 
 
-def enqueue_payload(*args, **kwargs):
+def enqueue_payload(payload):
     from memvane.wiki.intake.wiki_compile_enqueue import enqueue_payload as implementation
-    return implementation(*args, **kwargs)
+    return implementation(payload)
 
 
 
-def enqueue_changed_sources(*args, **kwargs):
+def enqueue_changed_sources(project_root, config, changed_files, *, session_start=False, initial_backfill=None, engine=None):
     from memvane.wiki.intake.wiki_compile_enqueue import enqueue_changed_sources as implementation
-    return implementation(*args, **kwargs)
+    return implementation(project_root, config, changed_files, session_start=session_start, initial_backfill=initial_backfill, engine=engine)
 
 
 
-def source_record(*args, **kwargs):
+def source_record(path_value, cwd, project_root, config, engine, trigger=POST_TOOL_TRIGGER):
     from memvane.wiki.intake.wiki_compile_enqueue import _source_record as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path_value, cwd, project_root, config, engine, trigger)
 
 
 
-def utc_now(*args, **kwargs):
+def utc_now():
     from memvane.wiki.intake.wiki_compile_enqueue import _utc_now as implementation
-    return implementation(*args, **kwargs)
+    return implementation()
 
 
 
-def queued_revision_keys(*args, **kwargs):
+def queued_revision_keys(path, limit=None):
     from memvane.wiki.intake.wiki_compile_enqueue import _queued_revision_keys as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path, limit)
 
 
 
-def append_source_jobs(*args, **kwargs):
+def append_source_jobs(path, records):
     from memvane.wiki.intake.wiki_compile_enqueue import _append_jsonl as implementation
-    return implementation(*args, **kwargs)
+    return implementation(path, records)
 
 
 
-def revision_key(*args, **kwargs):
+def revision_key(record):
     from memvane.wiki.intake.wiki_source_intent import revision_key as implementation
-    return implementation(*args, **kwargs)
+    return implementation(record)
 
 
 
-def settled_job(*args, **kwargs):
+def settled_job(bound, job):
     from memvane.wiki.intake.wiki_backfill import settled_job as implementation
-    return implementation(*args, **kwargs)
+    return implementation(bound, job)
 
 
 
-def settle_job(*args, **kwargs):
+def settle_job(bound, job):
     from memvane.wiki.intake.wiki_backfill import settle_job as implementation
-    return implementation(*args, **kwargs)
+    return implementation(bound, job)
 
 
 
-def reconcile_discards(*args, **kwargs):
+def reconcile_discards(bound):
     from memvane.wiki.intake.wiki_backfill import reconcile_discards as implementation
-    return implementation(*args, **kwargs)
+    return implementation(bound)
 
 
 
-def write_discard_receipt(*args, **kwargs):
+def write_discard_receipt(job):
     from memvane.wiki.intake.wiki_backfill import write_discard_receipt as implementation
-    return implementation(*args, **kwargs)
+    return implementation(job)
 
 
 
-def notify(*args, **kwargs):
+def notify(paths, *, cwd, host, origin):
     from memvane.wiki.intake.external_edits import notify as implementation
-    return implementation(*args, **kwargs)
+    return implementation(paths, cwd=cwd, host=host, origin=origin)
 
 
 
-def drain(*args, **kwargs):
+def drain(decision, *, recheck, owner=None):
     from memvane.wiki.intake.external_edits import drain as implementation
-    return implementation(*args, **kwargs)
+    return implementation(decision, recheck=recheck, owner=owner)

@@ -73,7 +73,7 @@ MAX_MEMBERS = 50_000
 # the indexed wiki catalog and vector budget unchanged.
 from memvane.wiki.intake.types import RAW_SCAN_MAX_FILES, RAW_SCAN_MAX_BYTES, DiscoveryBlocked, GrantUncertain
 MAX_GRANT_COUNT = 1000
-HOOK_LOCK_SECONDS = 1.0
+from memvane.wiki.intake.types import HOOK_LOCK_SECONDS
 WORKER_LOCK_SECONDS = 5.0
 _HEX32 = re.compile(r'[0-9a-f]{32}\Z')
 _HEX64 = re.compile(r'[0-9a-f]{64}\Z')
