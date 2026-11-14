@@ -43,6 +43,23 @@ class EnginePolicyTests(unittest.TestCase):
         self.assertIn('stable fact', rendered)
         self.assertEqual(api.render_existing_context_section({'similarPages': []}), '')
 
+    def test_prompt_includes_similar_pages_and_ignores_stale_index(self):
+        from memvane.wiki.engines.extractors import lib
+        source = {'path': 'docs/a.md', 'content': 'new source'}
+        wiki = {'schema': 'SCHEMA', 'index': 'old/index/line.md', 'similarPages': [
+            {'path': '.memvane/wiki/entities/known.md', 'score': 0.91, 'content': 'The known fact.'}]}
+        prompt = lib.build_prompt({'source': source, 'wiki': wiki})
+        for value in ('TOP MATCHING EXISTING WIKI PAGES', '.memvane/wiki/entities/known.md', 'The known fact.'):
+            self.assertIn(value, prompt)
+        self.assertNotIn('EXISTING WIKI INDEX', prompt)
+        self.assertNotIn('old/index/line.md', prompt)
+        without = lib.build_prompt({'source': source, 'wiki': {'schema': 'SCHEMA', 'index': 'old/index/line.md'}})
+        empty = lib.build_prompt({'source': source, 'wiki': {'schema': 'SCHEMA', 'similarPages': []}})
+        self.assertEqual(without, empty)
+        self.assertNotIn('TOP MATCHING EXISTING WIKI PAGES', without)
+        self.assertNotIn('old/index/line.md', without)
+        self.assertIn('CARD RULES (bundled with the plugin):\nSCHEMA', without)
+
     def test_extractor_candidate_parser_ignores_prose_and_keeps_json_objects(self):
         from memvane.wiki.engines.extractors import lib
         parsed = lib.extract_candidates('answer: {"candidates": [{"title": "A"}]}')

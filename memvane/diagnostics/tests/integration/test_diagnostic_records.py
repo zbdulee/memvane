@@ -143,6 +143,40 @@ class DiagnosticRecordTests(FixtureCase):
         finally:
             os.close(fd)
 
+    def test_logs_skill_reads_summary_without_mutating_state(self):
+        import subprocess
+        import sys
+        self.assertTrue(api.emit('gate', outcome='refused', reason='selected_proof_changed',
+                                 state_root=self.state, host='claude'))
+        before = sorted((p.name, p.lstat().st_mtime_ns) for p in self.state.iterdir())
+        root = Path(__file__).resolve().parents[4]
+        script = root / 'skills' / 'logs' / 'scripts' / 'logs.py'
+        result = subprocess.run([sys.executable, '-B', str(script), '--state-root', str(self.state)],
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('gate refused reason=selected_proof_changed', result.stdout)
+        after = sorted((p.name, p.lstat().st_mtime_ns) for p in self.state.iterdir())
+        self.assertEqual(after, before)
+
+    def test_logs_skill_reports_refusal_and_unselected_project(self):
+        import subprocess
+        import sys
+        root = Path(__file__).resolve().parents[4]
+        script = root / 'skills' / 'logs' / 'scripts' / 'logs.py'
+        (self.state / event_log.NAME).symlink_to(self.tmp / 'missing-target')
+        self.assertFalse(api.emit('gate', state_root=self.state))
+        result = subprocess.run([sys.executable, '-B', str(script), '--state-root', str(self.state)],
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('events_not_regular', result.stdout)
+        self.assertIn('1 event write(s) refused', result.stdout)
+        project = self.home / 'unselected'
+        project.mkdir()
+        result = subprocess.run([sys.executable, '-B', str(script), '--cwd', str(project)],
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('not onboarded', result.stderr)
+
     def test_prompt_fields_store_only_digest_and_character_count(self):
         result = api.prompt_fields('private prompt')
         self.assertEqual(set(result), {'sha256', 'chars'})
