@@ -199,3 +199,45 @@ class BackfillWorkerBoundary(FixtureCase):
         self.assertEqual(calls.read_text().splitlines(), ['codex'])
         self.assertEqual(backfill.summary(backfill._load(decision))['dispatched'], 1)
         self.assertTrue((project.root / '.memvane/compile/source-queue.jsonl').read_text().strip())
+
+    def test_unknown_exhaustion_is_skipped_without_rebilling_cycle(self):
+        import json
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'frozen source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        decision = install.select()
+        revision = hashlib.sha256(source.read_bytes()).hexdigest()
+        snapshot = {project.raw_name + '/docs/note.md': revision}
+        config = expanded(project, compile={'mode': 'auto-wiki',
+                          'triggers': ['post_sync_source'], 'extractor': {'builtins': ['codex']}})
+        row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'unknown'})
+        backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
+        calls = self.home / 'calls.txt'
+        scripts = {}
+        for engine in ('codex', 'claude', 'hermes'):
+            fake = self.home / ('fake-' + engine)
+            fake.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                            'open(os.environ["FIXTURE_CALLS"], "a").write(' + repr(engine + '\n') + ')\n'
+                            'sys.exit(1)\n')
+            fake.chmod(0o700)
+            scripts[engine] = str(fake)
+        root = Path(__file__).resolve().parents[5]
+        env = {**os.environ, 'QMD_ENGINE': '', 'FIXTURE_CALLS': str(calls),
+               'QMD_EXTRACTOR_CODEX_BIN': scripts['codex'], 'QMD_EXTRACTOR_CLAUDE_BIN': scripts['claude'],
+               'QMD_EXTRACTOR_HERMES_BIN': scripts['hermes']}
+        command = [sys.executable, '-B', str(root / 'entry/run.py'),
+                   'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all']
+        child = subprocess.run(command, cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(calls.read_text().splitlines(), ['codex', 'claude', 'hermes'])
+        progress = backfill.summary(backfill._load(decision))
+        self.assertEqual((progress['state'], progress['skipped'], progress['settled']),
+                         ('complete_with_skips', 1, 0))
+        candidates = project.root / '.memvane/compile/candidates.jsonl'
+        rows = [json.loads(line) for line in candidates.read_text().splitlines()]
+        self.assertTrue(any(row.get('reason') == 'unknown_host_exhausted' for row in rows))
+        retry = subprocess.run(command, cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(calls.read_text().splitlines(), ['codex', 'claude', 'hermes'])
