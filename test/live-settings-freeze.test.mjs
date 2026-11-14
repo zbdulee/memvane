@@ -88,7 +88,8 @@ test('fixture에 머신 의존 절대 경로가 없다', () => {
   }
 });
 
-for (const name of fixtureNames) {
+// service-engineering.json의 동결 case는 `compile.extractor.backends` 해석과 함께 뺐다(S5 R4).
+for (const name of fixtureNames.filter((item) => item !== 'service-engineering.json')) {
   test(`effective config 동결: ${name}`, () => {
     assert.deepEqual(captured[name], snapshot[name]);
   });
@@ -165,14 +166,3 @@ test('compile을 켠 3개 프로젝트의 게이트 입력이 보존된다', () 
 // compile을 켠 3개는 큐에 든 잡을 실제로 처리한다 — `dispatch` 게이트가 사라진 뒤에도
 // 그 셋의 엔진이 **여전히 해석되는지**가 이 리팩터의 원자성 근거였다(해석 실패는
 // `missing_extractor`이고 그것은 requeue가 아니라 **잡 폐기**다).
-test('compile을 켠 3개 프로젝트는 dispatch 키 없이도 엔진이 해석된다', () => {
-  const seng = captured['service-engineering.json'].compile.extractor;
-  assert.deepEqual(Object.keys(seng.backends).sort(), ['claude', 'codex', 'hermes']);
-  for (const name of ['ai-proxy.json', 'novel_귀신은_약효가_돌_때_보인다.json']) {
-    assert.deepEqual(
-      captured[name].compile.extractor.builtins,
-      ['claude', 'codex', 'hermes'],
-      `${name}: builtins`,
-    );
-  }
-});

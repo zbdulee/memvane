@@ -18,8 +18,7 @@ from memvane.settings.types import (DEFAULT_CONFIG, DEDUP_AUTO_MERGE_THRESHOLD,
                                     MAX_VERIFY_PER_RUN, VERIFY_PRODUCED_HARD_CAP,
                                     WIKI_STATUSES, DEDUP_SCORE_THRESHOLD, DEDUP_TOP_K,
                                     DEDUP_SIMILAR_PAGE_MAX_CHARS,
-                                    DEDUP_GROUNDING_MAX_CHARS, VERIFY_CROSS_ENGINE,
-                                    CROSS_ENGINE_MODES, VERIFY_PROOF_FIELDS,
+                                    DEDUP_GROUNDING_MAX_CHARS, VERIFY_PROOF_FIELDS,
                                     UNKNOWN_ENGINE, REASONING_EFFORTS)
 
 
@@ -44,14 +43,6 @@ MAX_INJECT_SOURCE_PATHS_PER_CARD = 10
 MAX_SOURCE_SCAN_CARDS = 5000
 
 COMPILE_MODES = {"off", "candidates", "guarded", "auto-wiki"}
-# `compile.defaultStatus`가 받는 값. `WIKI_STATUSES` 전체가 아니다 — `verified`를
-# 넣으면 기계 검수를 거치지 않은 신규 카드가 `recallVerifiedOnly` 기본값 아래에서 곧바로
-# 캐논 근거로 인용된다(검수 파이프라인 전체를 설정 한 줄로 우회하는 구멍이었다).
-COMPILE_DEFAULT_STATUSES = {"generated", "tentative"}
-
-# onFail과 onInconclusive가 공유하는 값 집합. "none"이 유일한 "현행 유지"(카드를
-# generated로 남김) 표현이므로, 기본값을 delete로 올려도 기존 동작을 명시 선택할 수 있다.
-VERIFY_ON_FAIL = {"delete", "contested", "none"}
 
 
 COMPILE_TRIGGERS = {
@@ -294,19 +285,6 @@ def string_map(value):
     }
 
 
-def extractor_backends(value):
-    if not isinstance(value, dict):
-        return {}
-    return {
-        key: item
-        for key, item in value.items()
-        if isinstance(key, str)
-        and isinstance(item, list)
-        and item
-        and all(isinstance(arg, str) for arg in item)
-    }
-
-
 def builtin_extractor_engines(value):
     return [
         item
@@ -399,37 +377,6 @@ def invalid_role_collections(value, collections):
     )
 
 
-def invalid_compile_flags(compile_cfg):
-    """compile에서 **값이 present인데 읽을 수 없어** 기본값으로 폴백한 스위치의 키 목록.
-
-    `invalid_role_collections`와 같은 자리·같은 이유다 — "키 없음"(의도 없음)과
-    "키 있음 + 값 미지"(의도했는데 못 읽음)를 구분하고, 후자는 fail-open이든
-    fail-closed든 **조용하면 안 된다**. 이 함수의 결과가 SessionStart notice의
-    입력이고(`core/update.sh`) 그것이 종점이다. raw settings를 받는다 —
-    정규화된 config는 이미 bool로 접혀 있어 판정 정보가 없다.
-
-    **범위는 `compile.sourceScan`뿐이다**(블록 자체 + 그 안의 `enabled`). compile의
-    다른 스위치도 값 미지면 조용히 기본값으로 떨어지지만 여기서 잡지 않는다:
-    `compile.enabled`/`autoWrite`는 `DEPRECATED_FOLDED_KEYS` 알림이, 제거된 키는
-    `DEPRECATED_REMOVED_KEYS` 알림이 부분적으로 덮는다(그 알림들은 "키가 있다"만
-    보고 값은 보지 않으므로 완전한 커버리지가 아니다 — 넓히는 것은 별건이다).
-    `sourceScan.maxCardsPerScan`은 **의도적으로** 제외한다: 그 값의 오류는 "창 폭이
-    기본값"으로 끝나고 순환 커서가 커버리지를 유지하지만, `enabled`는 사용자가 적어 둔
-    **opt-out 자체가 무력화**되는 자리다. 방향이 다르므로 같은 알림에 묶지 않는다.
-    """
-    if not isinstance(compile_cfg, dict):
-        return []
-    if "sourceScan" not in compile_cfg:
-        return []
-    scan = compile_cfg.get("sourceScan")
-    if not isinstance(scan, dict):
-        # 블록 자체를 못 읽었다(`sourceScan: "off"`) — 그 안의 모든 값이 기본값이 된다.
-        return ["compile.sourceScan"]
-    if "enabled" in scan and not isinstance(scan.get("enabled"), bool):
-        return ["compile.sourceScan.enabled"]
-    return []
-
-
 def collection_role(roles, collection):
     """collection의 유효 role.
 
@@ -513,31 +460,14 @@ def compile_active(compile_cfg):
 
 
 def compile_config(value):
+    """정규화된 compile 블록. 선택지가 있는 값(`defaultStatus`, `extractor.backends`,
+    `verify.onFail`·`onInconclusive`·`crossEngine`, `semanticDedup.judge.crossEngine`)은
+    settings로 고를 수 없으므로 읽지 않고 기본값을 쓴다(결정 8)."""
     if not isinstance(value, dict):
         value = {}
     defaults = DEFAULT_CONFIG["compile"]
     result = dict(defaults)
     result["mode"] = value.get("mode") if value.get("mode") in COMPILE_MODES else defaults["mode"]
-    # 제거된 off 스위치는 **끄는 방향으로만** 존중한다(켜는 방향은 무시).
-    #
-    # `enabled`/`autoWrite`는 mode로 접혀 스키마에서 사라졌고, 나머지 제거 키처럼 무시하는
-    # 것이 일관돼 보인다. 그러나 이 둘의 실패 방향은 비대칭이다: `enabled:true`를 무시하면
-    # 카드가 안 생길 뿐이지만(복구 가능), **`enabled:false`를 무시하면 사용자가 기록해 둔
-    # opt-out을 어기고 유료 host CLI가 돈다**(사용자 계정 청구, 복구 불가). 0.26.0의
-    # docs/settings.md가 `enabled:false`를 문서화된 off 스위치로 안내했으므로, 그 형태로
-    # 꺼 둔 프로젝트가 플러그인 업그레이드만으로 조용히 재무장하면 안 된다.
-    # 알림(SessionStart deprecated-keys)은 이 구멍을 못 덮는다 — TTL 4h 1줄이고 Hermes는
-    # notice 채널이 아예 없는데 편집 훅 enqueue는 돈다.
-    #
-    # 그래서 "죽은 키는 무시한다"의 예외는 딱 두 개이고 방향도 하나다.
-    if value.get("enabled") is False:
-        result["mode"] = "off"
-    elif value.get("autoWrite") is False and result["mode"] in ("auto-wiki", "guarded"):
-        # 구버전 `wiki_compile.py`의 쓰기 분기는 `mode == "candidates" or not autoWrite`라
-        # autoWrite:false면 **mode와 무관하게** candidate 큐잉까지만 했다. guarded도 같다 —
-        # auto-wiki만 접으면 §2 진리표(guarded + autoWrite:false → candidates)와 갈린다.
-        result["mode"] = "candidates"
-    result["defaultStatus"] = value.get("defaultStatus") if value.get("defaultStatus") in COMPILE_DEFAULT_STATUSES else defaults["defaultStatus"]
     result["excludeStatusesFromRecall"] = [
         status for status in string_list(value.get("excludeStatusesFromRecall"), defaults["excludeStatusesFromRecall"])
         if status in WIKI_STATUSES
@@ -557,16 +487,8 @@ def compile_config(value):
     ]
     result["maxAutoPageLines"] = coerce_int(value.get("maxAutoPageLines", defaults["maxAutoPageLines"]), defaults["maxAutoPageLines"])
     result["maxSourceChars"] = coerce_int(value.get("maxSourceChars", defaults["maxSourceChars"]), defaults["maxSourceChars"])
-    # sourceScan은 `wiki_lifecycle.run`이 `enabled`·`maxCardsPerScan`을 읽는다.
-    #
-    # `enabled`는 bool만 받는다. **비-bool이면 기본값(True = 수명 주기 유지)으로 폴백하되
-    # 침묵하지 않는다** — 폴백만 하면 사용자가 적어 둔 opt-out이 무력화되는데(`"false"`
-    # 문자열도 결과가 "껐는데 돈다"다) 그 사실이 어디에도 나타나지 않는다. 종점은
-    # `invalid_compile_flags` → SessionStart `notice_once`이고, `COLLECTION_ROLE_INVALID`
-    # 와 같은 규칙이다("키 없음"과 "키 있음 + 값 미지"를 구분하고 후자는 조용하면 안 된다).
-    # **끄는 쪽으로 읽지 않는 이유**: 수명 주기는 제품 기본 동작이고, 비-bool 집합에는
-    # 켜려는 의도의 값(`1`·`"true"`·`"yes"`)도 들어 있다. 켜진 쪽의 삭제는 보관본
-    # (`retired-wiki/`)으로 복구할 수 있고 대량 삭제 가드가 한 run의 폭을 막는다.
+    # sourceScan은 `wiki_lifecycle.run`이 `enabled`·`maxCardsPerScan`을 읽는다. `enabled`는
+    # bool만 받고 그 밖의 값은 기본값(True = 수명 주기 유지)이다.
     raw_scan = value.get("sourceScan")
     scan = raw_scan if isinstance(raw_scan, dict) else {}
     default_scan = defaults["sourceScan"]
@@ -588,10 +510,7 @@ def compile_config(value):
     extractor = raw_extractor if isinstance(raw_extractor, dict) else {}
     default_extractor = defaults["extractor"]
     result["extractor"] = {
-        # `dispatch` 게이트가 사라졌으므로 backends/builtins는 **무조건** 해석된다.
-        # 게이트가 있던 동안 그 키를 안 적은 config는 엔진이 하나도 해석되지 않아
-        # `wiki_compile_worker.process_job`이 잡을 폐기했다(`missing_extractor`).
-        "backends": extractor_backends(extractor.get("backends")),
+        "backends": dict(default_extractor["backends"]),
         "builtins": builtin_extractor_engines(extractor.get("builtins")),
         "timeout": coerce_int(extractor.get("timeout", default_extractor["timeout"]), default_extractor["timeout"]),
         "cooldownSeconds": coerce_int(extractor.get("cooldownSeconds", default_extractor["cooldownSeconds"]), default_extractor["cooldownSeconds"]),
@@ -606,30 +525,13 @@ def compile_config(value):
     raw_budget = value.get("budget")
     budget = raw_budget if isinstance(raw_budget, dict) else {}
     default_budget = defaults["budget"]
-    # **`compile.maxCardsPerSource`만 값을 실제로 이전한다**(`DEPRECATED_RELOCATED_KEYS`의
-    # 이름값대로). 새 키가 **키로 존재하면** 새 키가 이기고, 없을 때만 옛 값이 기본값
-    # 자리를 대신한 뒤 같은 `coerce_capped_int`를 통과한다 — 이전은 위치 이동이므로
-    # 새 키에 그 값을 적은 것과 결과가 같아야 한다. 알림은 그대로 나간다(옮겨 적으라는
-    # 안내는 여전히 유효하다 — 잠정 반영이지 새 스키마가 아니다).
-    #
-    # **같은 목록의 나머지 4키는 이전하지 않는다.** (1) `test/live-settings-freeze.test.mjs`
-    # 의 "§7.2 마이그레이션 부채" 테스트가 라이브 3개 파일의 `verifyPerRun=3`을 못박아
-    # 2026-08-03 "하위호환 폐기" 결정을 계약으로 동결해 뒀다. (2) 그 4키의 이전 방향은
-    # **비용 증가**다(실측: verify 예산 3→15, 3→50) — 플러그인 업그레이드만으로 유료
-    # 호출이 늘어나는 방향이라, "끄는 방향으로만 존중한다"는 위 compile off 스위치의
-    # 비대칭과 정반대다. (3) `maxCardsPerSource`는 라이브 사용이 0건이라 반영해도 지금
-    # 예산이 바뀌는 프로젝트가 없고, 이 키를 적는 동기가 카드 수를 줄이는 것(계획서 재현
-    # 사례 `4` < 기본 `10` = 비용 감소 방향)이다.
-    legacy_cards_per_source = default_budget["cardsPerSource"]
-    if "maxCardsPerSource" in value:
-        legacy_cards_per_source = value.get("maxCardsPerSource")
     result["budget"] = {
         "extractorPerRun": coerce_capped_int(
             budget.get("extractorPerRun", default_budget["extractorPerRun"]),
             default_budget["extractorPerRun"], MAX_COMPILE_PER_RUN,
         ),
         "cardsPerSource": coerce_capped_int(
-            budget.get("cardsPerSource", legacy_cards_per_source),
+            budget.get("cardsPerSource", default_budget["cardsPerSource"]),
             default_budget["cardsPerSource"], MAX_CARDS_PER_SOURCE,
         ),
         "verifyPerRun": coerce_capped_int(
@@ -664,7 +566,7 @@ def compile_config(value):
         "candidateMinScore": coerce_float(semantic.get("candidateMinScore", default_semantic["candidateMinScore"]), default_semantic["candidateMinScore"]),
         "judge": {
             "enabled": judge.get("enabled") if isinstance(judge.get("enabled"), bool) else default_judge["enabled"],
-            "crossEngine": judge.get("crossEngine") if judge.get("crossEngine") in CROSS_ENGINE_MODES else default_judge["crossEngine"],
+            "crossEngine": default_judge["crossEngine"],
             "timeout": coerce_int(judge.get("timeout", default_judge["timeout"]), default_judge["timeout"]),
             "cooldownSeconds": coerce_int(judge.get("cooldownSeconds", default_judge["cooldownSeconds"]), default_judge["cooldownSeconds"]),
             "maxCharsPerPage": coerce_int(judge.get("maxCharsPerPage", default_judge["maxCharsPerPage"]), default_judge["maxCharsPerPage"]),
@@ -676,9 +578,9 @@ def compile_config(value):
     result["verify"] = {
         "enabled": verify.get("enabled") if isinstance(verify.get("enabled"), bool) else default_verify["enabled"],
         "timeout": coerce_int(verify.get("timeout", default_verify["timeout"]), default_verify["timeout"]),
-        "onFail": verify.get("onFail") if verify.get("onFail") in VERIFY_ON_FAIL else default_verify["onFail"],
-        "onInconclusive": verify.get("onInconclusive") if verify.get("onInconclusive") in VERIFY_ON_FAIL else default_verify["onInconclusive"],
-        "crossEngine": verify.get("crossEngine") if verify.get("crossEngine") in VERIFY_CROSS_ENGINE else default_verify["crossEngine"],
+        "onFail": default_verify["onFail"],
+        "onInconclusive": default_verify["onInconclusive"],
+        "crossEngine": default_verify["crossEngine"],
         # 심볼릭 엔진 이름만 받는다(adapter 경로 금지). 빈 목록 = extractor 풀 상속.
         "builtins": string_list(verify.get("builtins"), default_verify["builtins"]),
         "cooldownSeconds": coerce_int(verify.get("cooldownSeconds", default_verify["cooldownSeconds"]), default_verify["cooldownSeconds"]),
@@ -742,123 +644,6 @@ def load_input_config():
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
-
-
-# ---------------------------------------------------------------------------
-# 제거된 설정 키 감지 (deprecated key notice)
-#
-# 스키마 정리로 사라진 키는 `normalize_config()`가 **조용히 무시한다**(하위호환 없음).
-# 조용한 무시는 제거보다 나쁘다 — `verify.maxPerRun: 15`를 적어 둔 사용자는 그 값이
-# 여전히 검수 예산이라고 믿는데 코드는 `budget.verifyPerRun`을 읽는다. 종점은
-# SessionStart의 `notice_once` 1줄이다(`core/update.sh`).
-#
-# **감지는 `normalize_config()` 안에서 하지 않고 이 함수들로 분리한다.** 이유는 비용이
-# 아니라 **반환 계약**이다: `normalize_config`는 UserPromptSubmit·PostToolUse·enqueue
-# 같은 blocking hook에서 프롬프트마다 돌고 그 반환 dict는 effective config로서
-# 동결 테스트(`config-emission-freeze` · `live-settings-freeze`)·`--raw` 출력·
-# recall/worker 소비자가 그대로 읽는다. 거기에 `deprecatedKeys`를 얹으면 모든 소비자가
-# 무시해야 할 키가 하나 늘고 두 동결 스냅샷이 통째로 흔들린다. 분리해 두면 호출자가
-# **update 경로 하나**로 고정되므로, marker 쓰기가 hook 경로로 새지 않는다는 성질도
-# 코드 구조로 보장된다(Hermes 등 stdout이 없는 호스트가 marker를 선점하면 이후
-# Claude/Codex 세션의 알림이 통째로 삼켜진다 — notice_once의 알려진 함정).
-#
-# 값이 옮겨간 키. 사용자 값이 여전히 의미를 가지므로 **행선지를 알려준다**.
-DEPRECATED_RELOCATED_KEYS = {
-    "compile.batch.maxPerRun": "compile.budget.extractorPerRun",
-    "compile.maxCardsPerSource": "compile.budget.cardsPerSource",
-    "compile.verify.maxPerRun": "compile.budget.verifyPerRun",
-    "compile.semanticDedup.judge.maxPairsPerScan": "compile.budget.dedupPairsPerScan",
-    "compile.semanticDedup.judge.maxPairsPerCompile": "compile.budget.dedupPairsPerCompile",
-}
-
-# `compile.mode`로 흡수된 스위치. "사라졌다"가 아니라 "한 값으로 합쳐졌다"라서 문구가
-# 따로다 — 사용자는 지우는 것이 아니라 `mode`를 다시 정해야 한다(진리표는 계획 §2).
-DEPRECATED_FOLDED_KEYS = ("compile.enabled", "compile.autoWrite")
-
-# 대체가 없는 키. 경로 9종은 상수화됐고(`core/compile_paths.py`) 위치는 그대로이므로
-# 지우기만 하면 된다. dedup 레버 4종은 daemon score가 순위 기반이라 도달 불가였고
-# extractor 3종은 backends/builtins로 일원화됐다. 선언 순서가 곧 알림 문구의 순서다
-# (알림이 실행마다 흔들리지 않게 — dict/tuple 순회 순서를 그대로 쓴다).
-DEPRECATED_REMOVED_KEYS = (
-    "compile.canonSignals",
-    "compile.requireReviewForCanon",
-    "compile.candidatePath",
-    "compile.sourceQueuePath",
-    "compile.tombstonePath",
-    "compile.manifestPath",
-    "compile.mergeNeededPath",
-    "compile.verify.queuePath",
-    "compile.verify.logPath",
-    "compile.verify.skippedPath",
-    "compile.verify.deletedPath",
-    # 원문 소실 원장 경로 키. 소비자가 없으므로 알림 대상이다.
-    "compile.sourceMissingPath",
-    "compile.extractor.argv",
-    "compile.extractor.dispatch",
-    "compile.extractor.default",
-    "compile.semanticDedup.threshold",
-    "compile.semanticDedup.autoMergeThreshold",
-    "compile.semanticDedup.topK",
-    "compile.semanticDedup.similarPageMaxChars",
-)
-
-
-def _has_key_path(node, dotted):
-    """`a.b.c`가 중첩 dict에 **키로** 존재하는가. 값은 보지 않는다(`null`도 존재다)."""
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return False
-        node = node[part]
-    return True
-
-
-def deprecated_keys(input_config):
-    """raw(정규화 전) config에 남아 있는 제거된 키 목록.
-
-    반환은 `{"key", "kind", "replacement"}` 레코드 목록이고 kind는
-    `relocated`(행선지 있음) / `folded`(mode로 흡수) / `removed`(대체 없음)다.
-    호출자는 `core/update.sh`의 SessionStart 경로 하나다 — hook에서 부르지 말 것.
-    """
-    if not isinstance(input_config, dict):
-        return []
-    found = []
-    for key, replacement in DEPRECATED_RELOCATED_KEYS.items():
-        if _has_key_path(input_config, key):
-            found.append({"key": key, "kind": "relocated", "replacement": replacement})
-    for key in DEPRECATED_FOLDED_KEYS:
-        if _has_key_path(input_config, key):
-            found.append({"key": key, "kind": "folded", "replacement": "compile.mode"})
-    for key in DEPRECATED_REMOVED_KEYS:
-        if _has_key_path(input_config, key):
-            found.append({"key": key, "kind": "removed", "replacement": None})
-    return found
-
-
-def deprecated_key_notice(input_config):
-    """SessionStart 알림 1줄. 제거된 키가 없으면 빈 문자열.
-
-    문구를 bash가 아니라 여기서 만드는 것은 형제 알림(role-invalid·dead-registration)과
-    다르다 — 저쪽은 python이 숫자/이름만 주고 bash가 문장을 만든다. 여기서는 문장이
-    **세 갈래로 갈리고** 각 갈래가 키 목록을 끼고 있어 bash에서 조립하면 세 벌의
-    분기가 생기고, 그 분기가 위 세 상수와 갈리는 순간 알림이 틀린 행선지를 말한다.
-    """
-    records = deprecated_keys(input_config)
-    if not records:
-        return ""
-    parts = []
-    relocated = ["%s → %s" % (r["key"], r["replacement"]) for r in records if r["kind"] == "relocated"]
-    if relocated:
-        parts.append("옮겨짐(값을 새 키로 다시 적으세요): " + ", ".join(relocated))
-    folded = [r["key"] for r in records if r["kind"] == "folded"]
-    if folded:
-        parts.append("compile.mode로 통합(mode 값 하나로 지정하세요): " + ", ".join(folded))
-    removed = [r["key"] for r in records if r["kind"] == "removed"]
-    if removed:
-        parts.append("제거됨(대체 없음, 지우세요): " + ", ".join(removed))
-    return (
-        "[qmd] .memvane/settings.json에 더 이상 읽지 않는 설정 키 %d개가 있습니다 — "
-        "적어 둔 값은 무시됩니다. %s" % (len(records), " / ".join(parts))
-    )
 
 
 def diagnostics_config(value):

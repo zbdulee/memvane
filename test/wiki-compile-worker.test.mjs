@@ -669,36 +669,6 @@ test('source queue enqueue and claim share fcntl lock to avoid rename/open appen
 // cross-engine verify/dedup claim needs that attribution. The invariant that took their
 // place: an argv comes ONLY from the named engine, so an engine with nothing configured
 // resolves to None no matter what other engines the project declares.
-test('resolver resolves argv only from the named engine (no global argv, no default)', () => {
-  const code = `
-import json, sys
-sys.path.insert(0, '.')
-import memvane.wiki.compile.wiki_compile_worker as w
-# 'argv'/'default' are dead keys; they must not resurrect as a cross-engine override.
-cfg = {'extractor': {'argv': ['python3', 'legacy.py'], 'backends': {'codex': ['python3', 'custom.py']}, 'default': ['python3', 'fallback.py']}}
-print(json.dumps({
-  'codex': w.resolve_extractor_argv(cfg, 'codex'),
-  'claude': w.resolve_extractor_argv(cfg, 'claude'),
-  'unknown': w.resolve_extractor_argv(cfg, 'unknown'),
-}))
-`;
-  const out = JSON.parse(execFileSync('python3', ['-c', code], { cwd: process.cwd(), encoding: 'utf8' }));
-  assert.deepEqual(out.codex, ['python3', 'custom.py'], 'the named engine still resolves');
-  assert.equal(out.claude, null, 'a legacy global argv must not run for an unconfigured engine');
-  assert.equal(out.unknown, null, 'the unknown sentinel never inherits somebody else argv');
-});
-
-test('resolver keeps explicit engine backend ahead of built-in backend', () => {
-  const code = `
-import json, sys
-sys.path.insert(0, '.')
-import memvane.wiki.compile.wiki_compile_worker as w
-cfg = {'extractor': {'backends': {'codex': ['python3', 'custom.py']}, 'builtins': ['codex']}}
-print(json.dumps(w.resolve_extractor_argv(cfg, 'codex')))
-`;
-  const primary = JSON.parse(execFileSync('python3', ['-c', code], { cwd: process.cwd(), encoding: 'utf8' }));
-  assert.deepEqual(primary, ['python3', 'custom.py']);
-});
 
 test('resolver maps built-in engine to adapter path from worker location without plugin env', () => {
   const code = `

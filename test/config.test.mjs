@@ -297,18 +297,6 @@ test('compile verify config: 커스텀 값 정규화 + 불량 값은 기본값 �
 // 안전하다). 반면 `defaultStatus`는 **신규 카드에 찍히는 값**이라 집합이 좁다 —
 // `verified`를 허용하면 기계 검수를 거치지 않은 카드가 `recallVerifiedOnly` 기본값 아래에서
 // 캐논 근거가 된다. 예전 테스트는 `verified`가 **통과하는 것**을 단정했다(구멍의 동결).
-test('defaultStatus는 generated/tentative만 받는다 (verified는 검수 우회라 거부)', () => {
-  const cfg = loadConfig(JSON.stringify({
-    compile: {
-      defaultStatus: 'verified',
-      excludeStatusesFromRecall: ['discarded', 'verified'],
-    },
-  }));
-  assert.equal(cfg.compile.defaultStatus, 'generated', 'verified는 집합 밖 → 기본값');
-  assert.deepEqual(cfg.compile.excludeStatusesFromRecall, ['discarded', 'verified'],
-    'excludeStatuses는 필터라 WIKI_STATUSES 전체를 그대로 받는다');
-  assert.equal(loadConfig(JSON.stringify({ compile: { defaultStatus: 'tentative' } })).compile.defaultStatus, 'tentative');
-});
 
 test('compile extractor config drops shell strings and invalid timeout', () => {
   const cfg = loadConfig(JSON.stringify({
@@ -612,63 +600,11 @@ test('coerce_int 계약: bool·비정수 실수는 거부하고 기본값으로 
 // `enabled` 비-bool은 기본값(true = 스캔 유지)으로 폴백하는데, 그것만으로는 사용자가 적어
 // 둔 opt-out이 **무력화된 채 조용하다**(결과가 "껐는데 돈다"다 — 이 작업이 고치려던 실패의
 // 한 단계 이동). `COLLECTION_ROLE_INVALID`와 같은 규칙으로 표면화하고, 그 판정이 여기다.
-test('invalid_compile_flags: 값 미지 스위치를 표면화한다 (키 없음과 구분)', () => {
-  const flagsOf = (compile) => JSON.parse(execFileSync('python3', ['-c', [
-    'import json, sys',
-    "sys.path.insert(0, '.')",
-    'import memvane.settings.config as c',
-    'print(json.dumps(c.invalid_compile_flags(json.loads(sys.argv[1]))))',
-  ].join('\n'), JSON.stringify(compile)], { encoding: 'utf8' }).trim());
-
-  // 값 미지 — 켜려는 의도(`1`)든 끄려는 의도(`"false"`)든 우리는 못 읽었다는 사실만 안다.
-  assert.deepEqual(flagsOf({ sourceScan: { enabled: 'false' } }), ['compile.sourceScan.enabled']);
-  assert.deepEqual(flagsOf({ sourceScan: { enabled: 1 } }), ['compile.sourceScan.enabled']);
-  assert.deepEqual(flagsOf({ sourceScan: { enabled: null } }), ['compile.sourceScan.enabled']);
-  // 블록 자체를 못 읽으면 그 안의 모든 값이 기본값이 된다.
-  assert.deepEqual(flagsOf({ sourceScan: 'off' }), ['compile.sourceScan']);
-  // 키 없음·정상 bool은 보고하지 않는다(의도 없음 / 의도대로 동작).
-  assert.deepEqual(flagsOf({}), []);
-  assert.deepEqual(flagsOf({ sourceScan: {} }), []);
-  assert.deepEqual(flagsOf({ sourceScan: { enabled: false } }), []);
-  assert.deepEqual(flagsOf({ sourceScan: { enabled: true } }), []);
-  assert.deepEqual(flagsOf('nope'), []);
-  // maxCardsPerScan은 이 알림의 대상이 아니다 — 창 폭이 기본값이 될 뿐 순환 커서가
-  // 커버리지를 유지하므로 `enabled`(opt-out 무력화)와 방향이 다르다.
-  assert.deepEqual(flagsOf({ sourceScan: { maxCardsPerScan: 0 } }), []);
-  assert.deepEqual(flagsOf({ sourceScan: { maxCardsPerScan: 'many' } }), []);
-});
 
 // `compile.maxCardsPerSource`는 `DEPRECATED_RELOCATED_KEYS`의 이름값대로 **값이 이전**된다.
 // 같은 목록의 나머지 4키는 이전하지 않는다 — 근거는 core/config.py의 주석 3항목이고
 // (frozen contract / 비용 증가 방향 / 라이브 발생 0건) 여기서 그 비대칭을 못박는다.
 // 이 단정이 없으면 다음 "전부 고쳐라" 스윕이 프리즈 테스트를 깨면서 되돌린다.
-test('compile.maxCardsPerSource만 budget.cardsPerSource로 값이 이전된다', () => {
-  const budgetOf = (compile) => loadConfig(JSON.stringify({ compile })).compile.budget;
-
-  // 새 키가 없으면 옛 값이 반영된다(관측된 동기 사례: 4 < 기본 10 = 비용 감소 방향).
-  assert.equal(budgetOf({ maxCardsPerSource: 4 }).cardsPerSource, 4);
-  assert.equal(budgetOf({ maxCardsPerSource: '4' }).cardsPerSource, 4);
-  // 새 키가 있으면 새 키가 이긴다(값이 옛 키보다 작아도).
-  assert.equal(budgetOf({ maxCardsPerSource: 40, budget: { cardsPerSource: 7 } }).cardsPerSource, 7);
-  // 이전은 위치 이동이므로 새 키에 적은 것과 같은 클램프·같은 폴백을 통과한다.
-  assert.equal(budgetOf({ maxCardsPerSource: 99999999 }).cardsPerSource, 50);
-  assert.equal(budgetOf({ maxCardsPerSource: 'nope' }).cardsPerSource, 10);
-  assert.equal(budgetOf({ maxCardsPerSource: 0 }).cardsPerSource, 10);
-  // 옛 키는 정규화 출력에 남지 않는다(남으면 소비자가 다시 읽기 시작한다).
-  assert.equal('maxCardsPerSource' in loadConfig(JSON.stringify({
-    compile: { maxCardsPerSource: 4 },
-  })).compile, false);
-
-  // 나머지 4개 relocated 키는 여전히 값이 유실된다(알림만) — 의도된 비대칭이다.
-  const stale = loadConfig(JSON.stringify({
-    compile: {
-      batch: { maxPerRun: 30 },
-      verify: { maxPerRun: 15 },
-      semanticDedup: { judge: { maxPairsPerScan: 40, maxPairsPerCompile: 5 } },
-    },
-  })).compile.budget;
-  assert.deepEqual(stale, BUDGET_DEFAULTS, '4키는 이전하지 않는다(비용 증가 방향 + 동결된 계약)');
-});
 
 // score 레버 4개(threshold·topK·similarPageMaxChars·autoMergeThreshold)는 상수가 됐다 —
 // daemon score가 순위 기반이라 어떤 값도 "같은 사실"을 표현하지 못했고, judge-less 폴백

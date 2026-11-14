@@ -149,47 +149,6 @@ test('claude adapter: task=dedup uses the dedup prompt and emits a dedup verdict
   removeTemp(d);
 });
 
-test('judge_engine_pool: backends-only config resolves without a producer (retroactive scan has none)', () => {
-  // Regression: the scan calls is_available()/judge_pair() with no engine, so a
-  // config using extractor.backends WITHOUT builtins resolved to "" -> backends[""]
-  // missed -> judge permanently "unavailable" -> every scan silently degraded to the
-  // legacy score gate. Both dogfood projects use exactly that shape.
-  const py = `import json,os,sys; sys.path.insert(0,'.'); import memvane.wiki.dedup.wiki_dedup_judge as j
-cfg_backends = {'extractor': {'backends': {'codex': ['/x/codex'], 'claude': ['/x/claude']}}, 'semanticDedup': {'judge': {'crossEngine': 'prefer'}}}
-cfg_builtins = {'extractor': {'builtins': ['codex'], 'backends': {'claude': ['/x/claude']}}}
-out = {}
-out['pool_no_producer'] = j.judge_engine_pool(cfg_backends)
-out['pool_builtins_first'] = j.judge_engine_pool(cfg_builtins)
-os.environ['QMD_ENGINE'] = 'codex'
-out['env_configured'] = j.judge_engine_pool(cfg_backends)
-os.environ['QMD_ENGINE'] = 'gemini'
-out['env_unconfigured'] = j.judge_engine_pool(cfg_backends)
-del os.environ['QMD_ENGINE']
-out['available_no_producer'] = j.is_available(cfg_backends)
-# 생산자를 아는 경우(write-time): 그 엔진이 **마지막**으로 밀린다.
-attempts, mode, reason = j.plan_judge_attempts(cfg_backends, 'claude')
-out['order_with_producer'] = [a['engine'] for a in attempts]
-out['modes'] = [a['mode'] for a in attempts]
-out['mode'] = mode
-# 생산자를 모르는 경우(scan): 예전 순서 그대로이고 어떤 시도도 교차를 주장하지 않는다.
-scan_attempts, _, _ = j.plan_judge_attempts(cfg_backends)
-out['order_scan'] = [a['engine'] for a in scan_attempts]
-out['modes_scan'] = [a['mode'] for a in scan_attempts]
-print(json.dumps(out))`;
-  const out = JSON.parse(runLib(py));
-  // Deterministic pick (sorted) so two hosts scanning the same project agree.
-  assert.deepEqual(out.pool_no_producer, ['claude', 'codex']);
-  assert.deepEqual(out.pool_builtins_first, ['codex', 'claude'], 'builtins가 backends 키보다 우선');
-  assert.equal(out.env_configured[0], 'codex', '설정된 host engine이면 QMD_ENGINE 우선');
-  assert.equal(out.env_unconfigured[0], 'claude', '미설정 engine 라벨로는 죽지 않음');
-  assert.equal(out.available_no_producer, true, '생산자 없이도 judge 가용');
-  assert.deepEqual(out.order_with_producer, ['codex', 'claude'], '생산 엔진(claude)이 마지막');
-  assert.deepEqual(out.modes, ['cross-engine', 'self']);
-  assert.equal(out.mode, 'prefer');
-  assert.deepEqual(out.order_scan, ['claude', 'codex'], 'scan 순서는 예전 그대로');
-  assert.deepEqual(out.modes_scan, ['unknown', 'unknown'], '생산자 불명이면 교차를 주장하지 않는다');
-});
-
 // ------------------------------------------------- write-time gate (wiki_compile)
 
 function writeCompileSettings(work, compile = {}) {
@@ -212,27 +171,6 @@ function writeCompileSettings(work, compile = {}) {
     },
   }));
 }
-
-test('default dedup uses the producing host only and never guesses another installed host', () => {
-  const out = JSON.parse(runLib(`import json,sys; sys.path.insert(0,'.')
-import memvane.settings.config as config; import memvane.wiki.dedup.wiki_dedup_judge as j
-cfg = config.normalize_config({'compile': {'extractor': {'backends': {
-    'claude': ['/x/claude'], 'codex': ['/x/codex'], 'hermes': ['/x/hermes']}}}})['compile']
-out = {}
-for host in ('claude','codex','hermes','unknown',''):
-    attempts, mode, reason = j.plan_judge_attempts(cfg, host)
-    out[host] = {'engines': [a['engine'] for a in attempts], 'modes': [a['mode'] for a in attempts], 'policy': mode, 'reason': reason}
-print(json.dumps(out))`));
-  for (const host of ['claude', 'codex', 'hermes']) {
-    assert.deepEqual(out[host].engines, [host]);
-    assert.deepEqual(out[host].modes, ['self']);
-    assert.equal(out[host].policy, 'off');
-  }
-  for (const host of ['unknown', '']) {
-    assert.deepEqual(out[host].engines, []);
-    assert.equal(out[host].reason, 'producing_engine_unavailable');
-  }
-});
 
 function writeExistingCard(work, rel, body = 'The stalker asked for CCTV footage at the front desk.') {
   const full = join(work, '.auto-context', 'wiki', rel);
@@ -430,39 +368,6 @@ const scanSkipped = (work) => jsonl(join(work, '.auto-context/compile/dedup-skip
 // `cross_engine_unavailable` → `is_available` False → scan 의 `judging=False` → retrieval floor 가
 // `autoMergeThreshold`(0.9)로 올라가 사실상 아무것도 큐되지 않는다. 이 커밋 자신의 docstring 과
 // docs/settings.md 는 "scan 은 확장하지 않고 예전 선택을 그대로 쓴다"고 서술해 그 상실을 부정했다.
-
-test('MAJOR 1 — 귀속 가능성은 경로의 성질이다: scan 은 waive, write-time 은 그대로 fail-closed', () => {
-  const py = `import json,sys; sys.path.insert(0,'.'); import memvane.wiki.dedup.wiki_dedup_judge as j
-cfg = {'extractor': {'backends': {'claude': ['/x/claude'], 'codex': ['/x/codex']}},
-       'semanticDedup': {'judge': {'crossEngine': 'require'}}}
-out = {}
-# retroactive scan: 생산자라는 사실이 존재하지 않는다 → require 미적용, prefer 와 같은 순서.
-a, mode, reason = j.plan_judge_attempts(cfg, '', attribution=j.ATTRIBUTION_NONE)
-out['scan'] = [[x['engine'] for x in a], mode, reason]
-out['scan_modes'] = [x['mode'] for x in a]
-out['scan_available'] = j.is_available(cfg, attribution=j.ATTRIBUTION_NONE)
-out['scan_waived'] = j.require_waived(cfg, j.ATTRIBUTION_NONE)
-# write-time 인데 이번 카드의 생산자를 못 읽음 → 사용자가 고칠 수 있는 상태라 fail-closed 유지.
-b, bmode, breason = j.plan_judge_attempts(cfg, '', attribution=j.ATTRIBUTION_JOB)
-out['job_unknown_producer'] = [[x['engine'] for x in b], bmode, breason]
-out['job_waived'] = j.require_waived(cfg, j.ATTRIBUTION_JOB)
-# write-time + 귀속 가능 → 교차가 실제로 강제된다(생산 엔진 제외).
-c, _, _ = j.plan_judge_attempts(cfg, 'claude', attribution=j.ATTRIBUTION_JOB)
-out['job_attributed'] = [[x['engine'] for x in c], [x['mode'] for x in c]]
-# 기본값은 write-time 이다 — 새 호출자가 실수로 waive 하지 않는다.
-d, _, dreason = j.plan_judge_attempts(cfg, '')
-out['default_reason'] = dreason
-print(json.dumps(out))`;
-  const out = JSON.parse(runLib(py));
-  assert.deepEqual(out.scan, [['claude', 'codex'], 'require', ''], 'scan 은 후보를 잃지 않는다');
-  assert.deepEqual(out.scan_modes, ['unknown', 'unknown']);
-  assert.equal(out.scan_available, true, 'is_available 도 같은 판정을 써야 한다');
-  assert.equal(out.scan_waived, true);
-  assert.deepEqual(out.job_unknown_producer, [[], 'require', 'cross_engine_unavailable']);
-  assert.equal(out.job_waived, false);
-  assert.deepEqual(out.job_attributed, [['codex'], ['cross-engine']]);
-  assert.equal(out.default_reason, 'cross_engine_unavailable', '기본 attribution 은 JOB');
-});
 
 // MAJOR 2 — 판정 불가 출력이 억제 기록 없이 매 scan 재과금됐다.
 //

@@ -17,11 +17,6 @@ def cooling_engines(path):
     return implementation(path)
 
 
-def extractor_engine_pool(compile_cfg):
-    from memvane.wiki.engines.execution import extractor_engine_pool as implementation
-    return implementation(compile_cfg)
-
-
 def load_engine_cooldowns(path):
     from memvane.wiki.engines.execution import load_engine_cooldowns as implementation
     return implementation(path)
@@ -30,11 +25,6 @@ def load_engine_cooldowns(path):
 def reasoning_effort_audit(raw, requested=None, reason="capability_not_declared", capability_declared=True):
     from memvane.wiki.engines.execution import reasoning_effort_audit as implementation
     return implementation(raw, requested, reason, capability_declared)
-
-
-def plan_engine_order(pool, producing, mode, attributable):
-    from memvane.wiki.engines.execution import plan_engine_order as implementation
-    return implementation(pool, producing, mode, attributable)
 
 
 def resolve_extractor_argv(compile_cfg, engine, builtins=None):

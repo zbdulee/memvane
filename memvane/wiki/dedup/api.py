@@ -1,7 +1,7 @@
 """Public wiki deduplication operations."""
 from __future__ import annotations
 
-from memvane.wiki.dedup.types import OUTCOME_OK, OUTCOME_UNAVAILABLE, ATTRIBUTION_JOB
+from memvane.wiki.dedup.types import OUTCOME_OK, OUTCOME_UNAVAILABLE
 
 
 def max_pairs_per_compile(compile_cfg):
@@ -9,9 +9,9 @@ def max_pairs_per_compile(compile_cfg):
     return implementation(compile_cfg)
 
 
-def is_available(compile_cfg, engine='', attribution=ATTRIBUTION_JOB):
+def is_available(compile_cfg, engine=''):
     from memvane.wiki.dedup.wiki_dedup_judge import is_available as implementation
-    return implementation(compile_cfg, engine, attribution)
+    return implementation(compile_cfg, engine)
 
 
 def read_card(path):
@@ -19,9 +19,9 @@ def read_card(path):
     return implementation(path)
 
 
-def judge_pair(root, compile_cfg, page_a, page_b, engine='', attribution=ATTRIBUTION_JOB):
+def judge_pair(root, compile_cfg, page_a, page_b, engine=''):
     from memvane.wiki.dedup.wiki_dedup_judge import judge_pair as implementation
-    return implementation(root, compile_cfg, page_a, page_b, engine, attribution)
+    return implementation(root, compile_cfg, page_a, page_b, engine)
 
 
 def diagnostics(info):

@@ -31,11 +31,6 @@ def reasoning_effort_audit(raw, requested=None, reason="capability_not_declared"
     return {"requested": requested, "applied": applied, "status": status, "reason": str(reason)[:120]}
 
 
-def _argv_list(value) -> list[str] | None:
-    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
-        return value
-    return None
-
 def _builtin_adapter_argv(engine: str) -> list[str] | None:
     if engine not in BUILTIN_EXTRACTOR_ENGINES:
         return None
@@ -44,52 +39,6 @@ def _builtin_adapter_argv(engine: str) -> list[str] | None:
         return None
     from memvane.kernel.bundle_paths import entry_argv
     return entry_argv(f"extractor-{engine}")
-
-def extractor_engine_pool(compile_cfg: dict) -> list[str]:
-    """Symbolic engines this project can dispatch to, in preference order.
-
-    `compile.extractor.builtins` first (declared order), then explicitly configured
-    `backends` keys sorted (deterministic so two hosts scanning the same project pick
-    the same engine). One definition of "which engines exist" — the verifier inherits
-    it when `compile.verify.builtins` is empty and the dedup judge uses it directly.
-    """
-    raw = compile_cfg.get("extractor")
-    extractor = raw if isinstance(raw, dict) else {}
-    picked = [e for e in (extractor.get("builtins") or []) if isinstance(e, str) and e]
-    backends = extractor.get("backends") if isinstance(extractor.get("backends"), dict) else {}
-    picked += sorted(name for name in backends if isinstance(name, str) and name)
-    ordered: list[str] = []
-    for engine in picked:
-        if engine not in ordered:
-            ordered.append(engine)
-    return ordered
-
-def plan_engine_order(pool: list[str], producing: str, mode: str, attributable: bool) -> list[str]:
-    """Candidate order for a judgment ABOUT work an engine produced. Shared rule.
-
-    LLM self-review measurably degrades judgment (Huang et al. ICLR'24) and the stated
-    mitigation is separating generator from judge, so the producing engine goes LAST
-    (`prefer`) or is dropped (`require`). `off` is the 0.x path: producer only.
-
-    `attributable` is the caller's proof that `producing` names a real, resolvable
-    engine — without it no candidate can be SHOWN to differ from the producer, so the
-    whole pool is offered and every attempt is labelled `unknown`.
-
-    Only the ORDER lives here. Argv resolution (resolve_extractor_argv), cooldown
-    skipping, mode labelling and the empty-plan reasons stay with each caller, because
-    verify and dedup differ there: verify reads `compile.verify.*` and preserves its
-    queue when `require` cannot be satisfied, while the dedup judge reads
-    `compile.semanticDedup.judge.*` and must map an empty plan onto its own
-    unavailable/transient outcome contract.
-    """
-    if mode == "off":
-        # 생성 엔진이 귀속 불가면 그 라벨로는 argv가 안 나오므로 풀의 첫 후보로 폴백한다 —
-        # 폐기하면 그 대상은 영원히 판정되지 않는다(mode는 unknown이라 거짓 주장도 아니다).
-        return [producing] if attributable else pool[:1]
-    if not attributable:
-        return list(pool)
-    others = [engine for engine in pool if engine != producing]
-    return others if mode == "require" else others + [producing]
 
 def load_engine_cooldowns(path: Path) -> dict:
     """{cooldown key: expiry epoch}. 읽기 실패는 fail-open(빈 dict) — 식힘 기록을 못 읽는
@@ -148,28 +97,19 @@ def set_engine_cooldown(path: Path, key: str, seconds: int, *, _queue_lock_path,
 def resolve_extractor_argv(
     compile_cfg: dict, engine: str, builtins: list[str] | None = None
 ) -> list[str] | None:
-    """engine → argv (없으면 None). Single rule for every adapter caller.
+    """engine → bundled adapter argv (없으면 None). Single rule for every adapter caller.
 
-    `builtins` overrides which symbolic engines may resolve to a bundled adapter, so
-    the verifier can consider an engine its own pool allows (compile.verify.builtins)
-    without a second copy of this resolution living in wiki_verify_worker.
-
-    **`extractor.dispatch` 게이트는 없다.** 예전에는 `dispatch == "by-engine"`일 때만
-    backends/builtins를 봤고, 그 키를 안 적은 config에서는 여기가 항상 None을 돌려줘
-    `process_job`이 잡을 `missing_extractor`로 **폐기**했다(requeue가 아니다).
-    `extractor.argv`(모든 엔진 공용 단일 argv)와 `extractor.default`(엔진 무관 폴백)도
-    함께 사라졌다 — 둘 다 엔진 귀속이 불가능해 교차검증 주장을 할 수 없었고,
-    `backends[engine]`이 같은 일을 엔진 라벨을 지키면서 한다.
+    An engine resolves only when it is a declared builtin. `builtins` overrides the
+    declared list (`compile.extractor.builtins`), so the verifier can add
+    `compile.verify.builtins` without a second copy of this resolution.
     """
-    raw = compile_cfg.get("extractor")
-    extractor = raw if isinstance(raw, dict) else {}
-    backends = extractor.get("backends") if isinstance(extractor.get("backends"), dict) else {}
-    primary = _argv_list(backends.get(engine))
     if builtins is None:
+        raw = compile_cfg.get("extractor")
+        extractor = raw if isinstance(raw, dict) else {}
         builtins = extractor.get("builtins") if isinstance(extractor.get("builtins"), list) else []
-    if primary is None and engine in {item for item in builtins if isinstance(item, str)}:
-        primary = _builtin_adapter_argv(engine)
-    return primary
+    if engine in {item for item in builtins if isinstance(item, str)}:
+        return _builtin_adapter_argv(engine)
+    return None
 
 def run_extractor(argv: list[str], payload: dict, timeout: int, root: Path) -> tuple[dict | None, str | None, int | None]:
     try:

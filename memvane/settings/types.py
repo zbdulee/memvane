@@ -106,24 +106,12 @@ WIKI_STATUSES = {"generated", "verified", "tentative", "contested", "discarded",
 # score는 후보 retrieval floor(`semanticDedup.candidateMinScore`)로만 남는다.
 # `DEDUP_AUTO_MERGE_THRESHOLD`는 retroactive scan(`wiki_dedup_scan`)의 후보 임계다 — 두 카드의
 # 저장된 memvane-db chunk 벡터 중심점 사이 cosine이라 실제 유사도이고, 판정은 resolver 에이전트가
-# 한다. 넷 모두 설정으로 다시 열지 않는다(`DEPRECATED_REMOVED_KEYS`의 레버 4종).
+# 한다. 넷 모두 설정으로 열지 않는다.
 DEDUP_SCORE_THRESHOLD = 0.82        # ← semanticDedup.threshold (write-time 레거시 게이트)
 DEDUP_TOP_K = 20                    # 관련 후보의 상한. 유료 judge 호출 예산과 독립이다.
 DEDUP_SIMILAR_PAGE_MAX_CHARS = 12000  # ← semanticDedup.similarPageMaxChars
 DEDUP_GROUNDING_MAX_CHARS = 36000    # 렌더된 기존 카드 문맥 전체(헤더/생략 표식 포함)
 
-# 기계 검수 엔진 선택 정책. 기본은 현재 host의 독립 호출이며 교차 엔진은 명시 선택이다.
-#   prefer  — 다른 엔진을 먼저 시도하고, 없으면 같은 엔진으로 검증(자기검증으로 기록)
-#   require — 다른 엔진만 허용. 없으면 검증하지 않고 큐를 보존한다(카드는 generated로
-#             남아 recallVerifiedOnly 기본값 아래 recall에서 빠진다 — 단일 CLI 머신에서는
-#             wiki가 통째로 사라지므로 명시 선택만 허용한다)
-#   off     — 기본값. 카드를 만든 엔진으로 검증, host 불명확하면 다른 CLI로 폴백하지 않음
-VERIFY_CROSS_ENGINE = {"prefer", "require", "off"}
-# dedup judge(`compile.semanticDedup.judge.crossEngine`)가 **같은 어휘**를 쓴다. 값 집합을
-# 따로 두면 두 파이프라인의 정책 이름이 갈려 사용자가 한쪽만 끄게 된다. 뜻도 같다 —
-# 다만 dedup에서 `require`가 만족되지 않으면 잡 보존이 아니라 `unavailable`(레거시 score
-# 게이트로 degrade)이다: 판정 대상이 큐가 아니라 지금 쓰려는 카드이므로 보류할 자리가 없다.
-CROSS_ENGINE_MODES = VERIFY_CROSS_ENGINE
 # 카드 frontmatter `verifiedMode` = 검수 엔진과 생성 엔진의 관계. 값 집합은 코드가 정하고
 # 모델 입력이 아니다. 이 필드가 **없는** 카드는 4단계 이전에 검수된 카드로, 자기검증일
 # 가능성이 높다(실측 655/688) — 없음은 cross-engine을 뜻하지 않는다.
@@ -186,9 +174,7 @@ DEFAULT_CONFIG = {
         # 균일하지 않아 `enabled:true + mode:"off"`에서 dedup scan과 SessionStart
         # notice만 도는 비대칭이 있었다. `mode != "off"`가 곧 활성이다.
         "mode": "off",
-        # 값 집합은 `COMPILE_DEFAULT_STATUSES`(generated|tentative)로 좁다 —
-        # `verified`를 넣으면 검수되지 않은 카드가 `recallVerifiedOnly` 기본값 아래에서
-        # 캐논으로 인용된다(기계 검수를 우회하는 유일한 구멍이었다).
+        # 신규 카드는 언제나 `generated`다 — 기계 검수만 `verified`로 올린다.
         "defaultStatus": "generated",
         "excludeStatusesFromRecall": ["discarded", "contested"],
         "lowPriorityStatuses": ["generated", "tentative"],
@@ -211,11 +197,10 @@ DEFAULT_CONFIG = {
             "engines": {},
         },
         "extractor": {
-            # 심볼릭 엔진 이름만 (adapter 경로 금지 — worker가 런타임에 해석한다).
-            # `dispatch: "by-engine"` 게이트는 제거됐다: 그 키가 없으면 builtins/backends가
-            # 통째로 무시돼 잡이 `missing_extractor`로 **폐기**됐고(requeue 아님),
-            # "by-engine이 아닌 dispatch"라는 다른 값은 존재한 적이 없다.
+            # `backends`는 항상 빈 dict다(엔진 argv는 builtin adapter에서만 온다). 키는
+            # 정규화된 config 모양을 유지하려고 남긴다.
             "backends": {},
+            # 심볼릭 엔진 이름만 (adapter 경로 금지 — worker가 런타임에 해석한다).
             "builtins": [],
             # 120초. 30이던 동안 이 값을 명시하지 않는 writer(`--init-wiki` novel preset)로
             # 온보딩한 프로젝트는 compile을 켜 놓고도 adapter 호출이 매번 timeout →
@@ -252,8 +237,7 @@ DEFAULT_CONFIG = {
             "candidateMinScore": 0.3,
             "judge": {
                 "enabled": True,
-                # 기본은 신규 후보를 만든 host CLI만 사용한다. 다른 엔진을 쓰는
-                # prefer/require 정책은 사용자가 명시적으로 선택할 수 있다.
+                # 신규 후보를 만든 host CLI만 판정한다(다른 값은 없다).
                 "crossEngine": "off",
                 "timeout": 120,
                 "cooldownSeconds": 600,
@@ -265,8 +249,8 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "onFail": "delete",
             "onInconclusive": "delete",
-            # 같은 host CLI의 독립 호출로 검수한다. 다른 CLI 설치를 요구하지 않는다.
-            # prefer/require를 명시하면 기존 교차 엔진 정책을 사용할 수 있다.
+            # 같은 host CLI의 독립 호출로 검수한다(다른 값은 없다). 선택된 route는
+            # onFail·onInconclusive를 `none`으로 바꿔 카드를 지우지 않는다.
             "crossEngine": "off",
             "builtins": [],
             "cooldownSeconds": 600,

@@ -637,32 +637,6 @@ test('verify-deleted.jsonl은 상한을 넘어도 트림되지 않는다 (verify
   } finally { removeTemp(project); }
 });
 
-test('verify fail + onFail=contested → status contested 패치(파일 보존)', () => {
-  const verifier = mockVerifier({ verdict: 'fail', claims: [], reasons: ['contradiction'] });
-  const project = setupProject({ extractorArgv: ['python3', verifier], verify: { onFail: 'contested' } });
-  const dirtyQueue = join(mkdtempSync(join(tmpdir(), 'dirty-vc-')), 'queue');
-  try {
-    runVerifyWorker(project, { QMD_DIRTY_QUEUE: dirtyQueue });
-    const text = readFileSync(join(project, CARD_REL), 'utf8');
-    assert.match(text, /^status: contested$/m);
-    assert.equal(existsSync(join(project, '.auto-context', 'compile', 'verify-deleted.jsonl')), false,
-      '삭제하지 않았으면 삭제 원장에 쓰지 않는다');
-  } finally { removeTemp(project); }
-});
-
-test('inconclusive + onInconclusive=none → generated 유지 + log 기록 (하위호환)', () => {
-  const verifier = mockVerifier({ verdict: 'inconclusive', claims: [], reasons: ['source truncated'] });
-  const project = setupProject({ extractorArgv: ['python3', verifier], verify: { onInconclusive: 'none' } });
-  try {
-    runVerifyWorker(project);
-    assert.match(readFileSync(join(project, CARD_REL), 'utf8'), /^status: generated$/m);
-    const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
-    assert.equal(log[0].result, 'inconclusive');
-    assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-skipped.jsonl')).length, 0,
-      '삭제하지 않았으면 억제 마커도 남기지 않는다');
-  } finally { removeTemp(project); }
-});
-
 test('inconclusive + onInconclusive 기본(delete) → 카드 삭제 + 억제 마커 + 삭제 사유 로그', () => {
   const verifier = mockVerifier({ verdict: 'inconclusive', claims: [], reasons: ['verifier could not adjudicate'] });
   const project = setupProject({ extractorArgv: ['python3', verifier] });
@@ -702,16 +676,6 @@ test('inconclusive delete: legacy reviewed scalar does not protect a generated c
     assert.equal(existsSync(join(project, CARD_REL)), false, 'status-only lifecycle applies configured delete');
     const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
     assert.equal(log.at(-1).result, 'deleted');
-  } finally { removeTemp(project); }
-});
-
-test('inconclusive + onInconclusive=contested → 파일 보존 + status contested', () => {
-  const verifier = mockVerifier({ verdict: 'inconclusive', claims: [], reasons: ['unclear'] });
-  const project = setupProject({ extractorArgv: ['python3', verifier], verify: { onInconclusive: 'contested' } });
-  try {
-    runVerifyWorker(project);
-    assert.match(readFileSync(join(project, CARD_REL), 'utf8'), /^status: contested$/m);
-    assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-skipped.jsonl')).length, 0);
   } finally { removeTemp(project); }
 });
 
@@ -1122,28 +1086,6 @@ test('degrade: 다른 엔진 CLI가 없으면(127) 같은 엔진으로 검수하
   } finally { removeTemp(project); }
 });
 
-test('crossEngine:require + 다른 엔진 없음 → 검수 안 함, 카드 보존 + 큐 보존', () => {
-  const tracker = trackerFile('require');
-  const project = setupProject({
-    verify: { crossEngine: 'require' },
-    extractor: {
-      timeout: 30,
-      backends: { claude: mockEngine('claude', tracker, 'pass') },
-    },
-  });
-  try {
-    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 0);
-    assert.deepEqual(calls(tracker), [], '자기검증을 금지했으므로 아무 CLI도 호출하지 않는다');
-    assert.match(readFileSync(join(project, CARD_REL), 'utf8'), /^status: generated$/m, '카드는 삭제되지 않는다');
-    assert.match(
-      readFileSync(join(project, '.auto-context', 'compile', 'verify-queue.jsonl'), 'utf8'),
-      /test-card\.md/, '두 번째 CLI가 설정되면 검증되도록 잡 보존');
-    const log = jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'));
-    assert.equal(log[0].reason, 'cross_engine_unavailable');
-    assert.equal(log[0].crossEngine, 'require');
-  } finally { removeTemp(project); }
-});
-
 test('crossEngine:off → 0.x 동작(카드를 만든 엔진이 검수, mode self)', () => {
   const tracker = trackerFile('off');
   const project = setupProject({
@@ -1268,46 +1210,9 @@ test('기존 verified 카드는 자동 재검증되지 않는다 (655장 재검�
   } finally { removeTemp(project); }
 });
 
-test('crossEngine:require는 풀 밖 라벨(귀속 불가)로 만족되지 않는다', () => {
-  const tracker = trackerFile('outside-pool-require');
-  const project = setupProject({
-    jobOverrides: { engine: 'hermes' },
-    verify: { crossEngine: 'require' },
-    extractor: { timeout: 30, backends: { codex: mockEngine('codex', tracker, 'pass') } },
-  });
-  try {
-    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 0);
-    // "never self-verify" 약속은 생성 엔진을 특정할 수 없으면 지킬 수 없다 → fail-closed.
-    assert.deepEqual(calls(tracker), [], '증명할 수 없으면 유료 호출도 하지 않는다');
-    assert.match(readFileSync(join(project, CARD_REL), 'utf8'), /^status: generated$/m);
-    assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'))[0].reason,
-      'cross_engine_unavailable');
-    assert.match(readFileSync(join(project, '.auto-context', 'compile', 'verify-queue.jsonl'), 'utf8'),
-      /test-card\.md/, '거부는 폐기가 아니다 — 잡 보존');
-  } finally { removeTemp(project); }
-});
-
 // verify.builtins가 생성 엔진을 제외해도 self 폴백은 사라지면 안 된다. plan 단위 단정은
 // 아래 'verify.builtins를 좁혀도…' 테스트가 하고, 여기서는 worker 실행 전체를 본다:
 // 선호 후보(codex)가 127로 빠지면 풀 밖인 생성 엔진(claude)이 실제로 검수를 끝낸다.
-test('verify.builtins가 생성 엔진을 제외해도 최후 후보로 남아 검수가 완료된다(prefer)', () => {
-  const tracker = trackerFile('builtins-exclude-producer');
-  const project = setupProject({
-    verify: { builtins: ['codex'] },
-    extractor: {
-      timeout: 30,
-      backends: { claude: mockEngine('claude', tracker, 'pass'), codex: mockEngine('codex', tracker, 'absent') },
-    },
-  });
-  try {
-    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
-    assert.deepEqual(calls(tracker), ['codex', 'claude'], '풀 밖이어도 생성 엔진이 최후 후보');
-    const text = readFileSync(join(project, CARD_REL), 'utf8');
-    assert.match(text, /^status: verified$/m, 'missing_extractor로 영구 drop되지 않는다');
-    assert.match(text, /^verifiedMode: "?self"?$/m);
-    assert.equal(readFileSync(join(project, '.auto-context', 'compile', 'verify-queue.jsonl'), 'utf8'), '');
-  } finally { removeTemp(project); }
-});
 
 // ---------------------------------------------------------------------------
 // 리뷰 반영: non-127 실패의 run 간 degrade (전역 cooldown → 후보 단위)
@@ -1385,53 +1290,6 @@ test('CLI 부재(127)는 로그 1줄을 남기고 후보를 식히지 않는다(
     assert.equal(log[0].reason, 'extractor_unavailable');
     assert.deepEqual(log[0].enginesAttempted, ['codex', 'claude']);
     assert.deepEqual(engineCooldown(project), {}, '127은 식히지 않는다');
-  } finally { removeTemp(project); }
-});
-
-test('귀속 불가 라벨(sentinel "unknown"): prefer는 cross-engine을 주장하지 않고 require는 fail-closed', () => {
-  for (const [mode, expect] of [['prefer', 'unknown'], ['require', null]]) {
-    const tracker = trackerFile(`unattributed-${mode}`);
-    const project = setupProject({
-      jobOverrides: { engine: 'unknown' },
-      verify: { crossEngine: mode },
-      extractor: {
-        timeout: 30,
-        backends: { claude: mockEngine('claude', tracker, 'pass'), codex: mockEngine('codex', tracker, 'pass') },
-      },
-    });
-    try {
-      runVerifyWorker(project);
-      if (expect === null) {
-        assert.deepEqual(calls(tracker), [], 'require는 생성 엔진을 특정할 수 없으면 검수하지 않는다');
-        assert.match(readFileSync(join(project, CARD_REL), 'utf8'), /^status: generated$/m);
-        assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl'))[0].reason,
-          'cross_engine_unavailable');
-        assert.match(readFileSync(join(project, '.auto-context', 'compile', 'verify-queue.jsonl'), 'utf8'),
-          /test-card\.md/, '잡 보존');
-      } else {
-        assert.match(readFileSync(join(project, CARD_REL), 'utf8'),
-          new RegExp(`^verifiedMode: "?${expect}"?$`, 'm'));
-      }
-    } finally { removeTemp(project); }
-  }
-});
-
-test('verify.builtins를 좁혀도 prefer에서 생성 엔진은 최후 후보로 남는다', () => {
-  const tracker = trackerFile('builtins-narrow');
-  const project = setupProject({
-    // builtins-only(--enable-compile 기본형) + verify.builtins가 codex만 지정.
-    verify: { builtins: ['codex'] },
-    extractor: { timeout: 30, builtins: ['claude', 'codex'], backends: {} },
-  });
-  try {
-    const plan = execFileSync('python3', ['-c', `
-import json, sys; sys.path.insert(0, '.')
-import memvane.wiki.verify.wiki_verify_worker as w
-cfg = {"extractor": {"builtins": ["claude", "codex"], "backends": {}}}
-attempts, mode, reason = w.plan_verify_attempts(cfg, {"builtins": ["codex"], "crossEngine": "prefer"}, "claude")
-print(json.dumps([[a["engine"], a["mode"]] for a in attempts]))
-`], { cwd: process.cwd(), encoding: 'utf8' });
-    assert.deepEqual(JSON.parse(plan), [['codex', 'cross-engine'], ['claude', 'self']]);
   } finally { removeTemp(project); }
 });
 
@@ -1837,19 +1695,6 @@ print(json.dumps({'verdict': 'pass', 'claims': [{'claim': 'c', 'supported': True
     assert.doesNotMatch(fm, /sourceSpans/);
     assert.equal(jsonl(join(project, '.auto-context', 'compile', 'verify-log.jsonl')).at(-1).reason,
       'source_changed_during_verify');
-  } finally { removeTemp(project); }
-});
-
-test('sourceSpans: contested verdict removes a stale span list in the same stamp', () => {
-  const stale = `sourceSpans:\n  - {path: "docs/source.md", sourceSha256: "${'a'.repeat(64)}", startLine: 1, endLine: 1, spanSha256: "${'b'.repeat(64)}"}`;
-  const verifier = mockVerifier({ verdict: 'fail', claims: [{ claim: 'c', supported: false, quote: '', sourcePath: 'docs/source.md' }], reasons: ['contradiction'] });
-  const project = setupProject({ extractorArgv: ['python3', verifier], verify: { onFail: 'contested' }, cardExtraFm: stale });
-  try {
-    bindSource(project);
-    assert.equal(JSON.parse(runVerifyWorker(project)).processed, 1);
-    const fm = frontmatterOf(project);
-    assert.match(fm, /^status: contested$/m);
-    assert.doesNotMatch(fm, /sourceSpans|spanSha256/);
   } finally { removeTemp(project); }
 });
 

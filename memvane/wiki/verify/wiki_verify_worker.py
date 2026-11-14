@@ -3,12 +3,11 @@
 
 wiki_compile.py enqueues freshly written generated cards to verify-queue.jsonl.
 This worker replays each card against its source documents through the same
-host-CLI adapter pool used for extraction (payload {"task": "verify"}). By default
-it uses the producing host in a separate call; cross-engine review is an explicit
-compile.verify.crossEngine option. It then:
+host-CLI adapter pool used for extraction (payload {"task": "verify"}). The
+producing host verifies in a separate call. It then:
   pass         -> status: verified (+ verifiedBy/verifiedAt/verifiedMode)
-  fail         -> compile.verify.onFail: delete card (default) | contested | none
-  inconclusive -> compile.verify.onInconclusive: delete (default) | contested | none
+  fail         -> compile.verify.onFail: delete card (default) | none (selected route)
+  inconclusive -> compile.verify.onInconclusive: delete (default) | none (selected route)
 
 Deleting on `inconclusive` needs loop protection that `fail` does not: "the verifier
 could not adjudicate" is far more likely to reproduce verbatim on the same source
@@ -77,6 +76,9 @@ MAX_SOURCES = 3
 # "호출은 됐지만 출력이 판정으로 쓸 수 없다" — 같은 입력에서 재현되는 설정 오류이므로
 # 후보가 다 떨어지면 종점이 있다(defer_or_drop). transient(timeout·실행 실패)와 구분된다.
 UNUSABLE_OUTPUT_REASONS = {"invalid_extractor_json", "invalid_verdict"}
+# 검수 엔진 정책. 카드를 만든 엔진이 검수한다(교차 엔진 선택지는 settings로 고를 수 없다).
+# 판정 행의 `crossEngine` 필드는 이 값을 그대로 남긴다.
+CROSS_ENGINE_POLICY = "off"
 
 
 def extractor_builtins(compile_cfg: dict) -> list[str]:
@@ -85,118 +87,33 @@ def extractor_builtins(compile_cfg: dict) -> list[str]:
     return [e for e in (extractor.get("builtins") or []) if isinstance(e, str) and e]
 
 
-def verify_engine_pool(compile_cfg: dict, vcfg: dict) -> list[str]:
-    """Symbolic engines allowed to verify, in preference order.
-
-    `compile.verify.builtins` when set, else inherited from the extractor pool
-    (`compile.extractor.builtins` + explicitly configured `backends` keys — the shape
-    both dogfood projects use). Only engine LABELS live here; argv resolution stays in
-    wiki_compile_worker.resolve_extractor_argv so there is one rule, not two.
-
-    This list does NOT have to contain the producing engine: under "prefer" that engine
-    is always appended as the LAST candidate (plan_verify_attempts), so narrowing the
-    pool — or typing an engine name wrong — can never take the self-verify fallback away.
-    Replacing the fallback was measured to strand builtins-only projects (the
-    `--enable-compile` default shape) on `missing_extractor`.
-    """
-    picked = [e for e in (vcfg.get("builtins") or []) if isinstance(e, str) and e]
-    if not picked:
-        # 상속 목록은 `engines.extractor_engine_pool`이 SSOT다(dedup judge도 같은 함수를 쓴다).
-        picked = engines.extractor_engine_pool(compile_cfg)
-    ordered = []
-    for engine in picked:
-        if engine not in ordered:
-            ordered.append(engine)
-    return ordered
-
-
 def plan_verify_attempts(
     compile_cfg: dict, vcfg: dict, producing: str, cooled=()
 ) -> tuple[list[dict], str, str]:
-    """Ordered verify attempts → ([{engine, argv, mode, key}], crossEngine mode, empty reason).
+    """Verify attempt → ([{engine, argv, mode, key}], crossEngine policy, empty reason).
 
-    Step 4 of the injection-quality roadmap: prefer an engine OTHER than the one that
-    wrote the card. Self-review measurably degrades LLM judgment (Huang et al. ICLR'24)
-    and the literature's stated mitigation is separating generator from judge; the live
-    corpus was 655/688 verified cards self-reviewed by `claude`.
+    The engine that wrote the card verifies it in a separate call (`mode: self`).
+    `producing` must resolve to a per-engine argv from `compile.extractor.builtins` or
+    `compile.verify.builtins`; the `"unknown"` sentinel (config.UNKNOWN_ENGINE, what
+    enqueue writes when the host is unknown) and an unresolvable label defer with
+    `producing_engine_unavailable` instead of paying another installed CLI.
 
-    Degrade is deliberate and asymmetric to the config:
-      - "prefer" puts the producing engine LAST instead of dropping it, so a
-        single-CLI machine still verifies — marked `mode: self`. Requiring a second CLI
-        would leave every card `generated`, and `recallVerifiedOnly` (default true)
-        would then erase the whole wiki from recall with no human-review path to
-        recover. A weaker-but-labelled check beats no wiki.
-      - "require" drops it, and fails CLOSED when the producer cannot be attributed.
-        Callers preserve the job instead of dropping it.
-      - "off" (default) uses the producing engine only. An unattributable host
-        defers instead of paying another installed CLI.
-
-    `cooled` are cooldown keys whose last paid call failed (non-127); they are skipped so
-    the NEXT run degrades to the next candidate. This is what keeps "one paid call per
-    card per run" from turning into "verification never happens": a run never retries a
-    failed engine, and a later run never retries it either until its cooldown expires.
-
-    **A cross-engine claim requires an attributable producer.** `producing` must resolve
-    to a per-engine argv in the current pool; the `"unknown"` sentinel
-    (config.UNKNOWN_ENGINE, what enqueue writes when the host is unknown) and a label
-    outside the pool both fail that test. In that case no candidate can be shown to
-    differ from the producer, so every attempt is mode `unknown` and "require" refuses
-    outright. (`extractor.argv`/`extractor.default` — the unattributable 0.x forms that
-    used to land here — no longer exist in the schema; every argv now comes from a
-    named engine, so provenance is always expressible.)
+    `cooled` are cooldown keys whose last paid call failed (non-127); a cooled producer
+    defers with `engines_cooling` until its cooldown expires, so a failing engine is
+    not re-billed every run.
     """
-    pool = verify_engine_pool(compile_cfg, vcfg)
-    mode = vcfg.get("crossEngine", "off")
-    if mode not in settings_types.VERIFY_CROSS_ENGINE:
-        mode = "off"
-    cooled = set(cooled)
-
-    # 생성 엔진이 builtin adapter로 카드를 만들었다면 그 adapter로 검수할 수 있어야 한다 —
-    # verify.builtins가 좁혀져 있어도(또는 오타여도) self 폴백이 사라지면 안 된다.
-    resolve_builtins = list(pool)
-    if producing and producing in extractor_builtins(compile_cfg) and producing not in resolve_builtins:
-        resolve_builtins.append(producing)
-    producing_attributable = bool(
-        producing and producing != settings_types.UNKNOWN_ENGINE
-        and engines.resolve_extractor_argv(compile_cfg, producing, builtins=resolve_builtins) is not None
-    )
-    if mode == "off" and not producing_attributable:
-        return [], mode, "producing_engine_unavailable"
-    if mode == "require" and not producing_attributable:
-        # 어느 후보도 "생성 엔진과 다르다"를 증명할 수 없다 → 약속을 지킬 수 없으므로 거부.
-        return [], mode, "cross_engine_unavailable"
-
-    # 순서 규칙은 dedup judge와 공용이다(`engines.plan_engine_order`가 SSOT). 여기 남는 것은
-    # verify 고유의 것들 — argv 해석, 식힘 건너뛰기, mode 라벨, 빈 계획의 사유다.
-    order = engines.plan_engine_order(pool, producing, mode, producing_attributable)
-
-    attempts: list[dict] = []
-    seen_argv: list[list[str]] = []
-    skipped_cooling = 0
-    for engine in order:
-        primary = engines.resolve_extractor_argv(compile_cfg, engine, builtins=resolve_builtins)
-        if primary is None or primary in seen_argv:
-            continue
-        seen_argv.append(primary)
-        if engine in cooled:
-            skipped_cooling += 1
-            continue
-        if not producing_attributable:
-            attempt_mode = settings_types.VERIFIED_MODE_UNKNOWN
-        elif engine == producing:
-            attempt_mode = settings_types.VERIFIED_MODE_SELF
-        else:
-            attempt_mode = settings_types.VERIFIED_MODE_CROSS
-        attempts.append({"engine": engine, "argv": primary, "mode": attempt_mode, "key": engine})
-    if attempts:
-        return attempts, mode, ""
-    # 빈 결과의 사유를 구분한다: cooldown(일시적, 큐 보존) / require가 걸러냄(설정·설치
-    # 상태, 큐 보존) / 설정 자체가 없음(기존 동작, 잡 폐기).
-    if skipped_cooling:
-        return [], mode, "engines_cooling"
-    if mode == "require" and producing_attributable:
-        return [], mode, "cross_engine_unavailable"
-    return [], mode, "missing_extractor"
+    builtins = extractor_builtins(compile_cfg)
+    builtins += [e for e in (vcfg.get("builtins") or []) if isinstance(e, str) and e]
+    primary = None
+    if producing and producing != settings_types.UNKNOWN_ENGINE:
+        primary = engines.resolve_extractor_argv(compile_cfg, producing, builtins=builtins)
+    if primary is None:
+        return [], CROSS_ENGINE_POLICY, "producing_engine_unavailable"
+    if producing in set(cooled):
+        return [], CROSS_ENGINE_POLICY, "engines_cooling"
+    return ([{"engine": producing, "argv": primary,
+              "mode": settings_types.VERIFIED_MODE_SELF, "key": producing}],
+            CROSS_ENGINE_POLICY, "")
 
 
 def verify_cfg_of(compile_cfg: dict) -> dict:
@@ -273,7 +190,7 @@ def preflight_block_reason(root: Path, vcfg: dict) -> str:
       - `verify-skipped.jsonl` — inconclusive 삭제의 억제 마커. 이것이 없으면 unchanged
         source가 재컴파일→재검수→재삭제를 반복하고 매 반복이 유료 호출이다.
     억제 마커는 `onInconclusive`가 실제로 삭제일 때만 필요하므로 그 경우에만 검사한다 —
-    무조건 검사하면 `onInconclusive: none|contested` 프로젝트의 검수를 이유 없이 막는다.
+    선택된 route(`onInconclusive: none`)의 검수를 이유 없이 막지 않는다.
 
     `run()`(큐 claim 전)과 `core/update.sh`의 SessionStart notice가 **같은 함수**를 부른다.
     판정을 두 곳에서 재구현하면 "막혔는데 아무도 안 알려주는" 상태가 다시 생긴다.
@@ -313,7 +230,7 @@ def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: 
     wiki_compile's delete-detection reads "manifest says it existed + file gone" as a
     deliberate user deletion and tombstones the identity permanently. Without this
     row, a verify delete would suppress the card forever — contradicting the reason
-    delete is preferable to contested (fix the source, get a fresh card). Fail-open:
+    a machine delete exists (fix the source, get a fresh card). Fail-open:
     an unwritable manifest degrades to today's tombstone behaviour, never to a crash.
     """
     path = qmd_config.ledger(root, ct.MANIFEST)
@@ -1094,14 +1011,13 @@ def process_verify_job(
     if not attempts:
         log_verdict(log_path, {
             **base_record(job),
-            "result": "deferred" if empty_reason != "missing_extractor" else "skipped",
+            "result": "deferred",
             "reason": empty_reason, "crossEngine": cross_mode,
             "enginesCooling": sorted(cooled),
         })
-        # 설정 자체가 없으면(missing_extractor) 기존대로 잡을 폐기한다. 나머지(식힘 중,
-        # require가 후보를 걸러냄)는 설정/설치/시간의 함수이므로 잡을 보존한다 — 카드는
+        # 생산 엔진 해석 불가·식힘 중은 설치/시간의 함수이므로 잡을 보존한다 — 카드는
         # generated로 남고 삭제되지 않는다.
-        return (True, False) if empty_reason == "missing_extractor" else (False, True)
+        return False, True
 
     timeout = int(vcfg.get("timeout", 120) or 120)
     payload = {
@@ -1211,8 +1127,7 @@ def process_verify_job(
         #
         # **`lib.emit_verdict`에서 exit 1로 막지 않는다.** 비127 종료는 transient 로 분류돼
         # 잡이 영구 보존되고 cooldown 만료마다 재호출된다(= 이 저장소가 억제 마커로 반복해서
-        # 닫아 온 과금 루프). worker 쪽이 유일하게 옳은 층이고, 명시 argv/`backends` adapter
-        # (lib 우회)도 여기서 함께 덮인다.
+        # 닫아 온 과금 루프). worker 쪽이 유일하게 옳은 층이다.
         return defer_or_drop(root, vcfg, job, attempt, has_more, provenance, "invalid_verdict", log_path)
 
     # 기존 pass claims 의 정확한 인용만 코드로 위치시킨다(추가 유료 호출·프롬프트 변경 없음).
@@ -1336,19 +1251,8 @@ def apply_negative_verdict(
             "suppressedSources": suppressed,
         })
         return True
-    if action == "contested":
-        # pass 경로와 같은 이유로 반환값을 확인한다. 여기서 실패하면 카드가 `generated`로
-        # 남아 recall에서 빠지므로(비가시) 조용히 넘기면 안 된다. 이 함수는 (processed,
-        # preserve)를 돌려주지 않으므로 실패 사실을 로그로만 표면화한다 — 다음 소스 변경이
-        # 카드를 재생성하고 다시 검수 대상이 된다.
-        if not stamp_verification(target, "contested", engine, verified_mode, body_hash):
-            log_verdict(log_path, {**record, "result": "stamp_failed", "stampStatus": "contested"})
-            return False
-        reindex_wiki(root, config)
-        log_verdict(log_path, {**record, "result": "contested"})
-        return True
-    # none: 카드를 건드리지 않는다. inconclusive에서는 이것이 0.x 하위호환 경로 —
-    # generated로 남아 recallVerifiedOnly 기본값 아래 recall에서 제외된다.
+    # none(선택된 route): 카드를 건드리지 않는다 — generated로 남아 recallVerifiedOnly
+    # 기본값 아래 recall에서 제외된다.
     log_verdict(log_path, {**record, "result": "inconclusive" if verdict == "inconclusive" else "kept"})
     return True
 
