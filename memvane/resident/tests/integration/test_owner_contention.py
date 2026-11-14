@@ -184,3 +184,24 @@ class OwnerContention(FixtureCase):
             with self.assertRaisesRegex(IndexContractError, 'provider_attestation_invalid'):
                 resident_service.default_start_worker(manifest, lambda: True)
         start.assert_not_called()
+
+    def test_slow_sender_cannot_extend_the_absolute_read_deadline(self):
+        from unittest.mock import patch
+        class SlowSender:
+            def __init__(self):
+                self.timeouts = []
+                self.reads = 0
+
+            def settimeout(self, value):
+                self.timeouts.append(value)
+
+            def recv(self, _limit):
+                self.reads += 1
+                return b'x'
+
+        sender = SlowSender()
+        with patch.object(resident_service.time, 'monotonic', side_effect=[1.0, 2.0, 3.0, 4.0]):
+            with self.assertRaisesRegex(TimeoutError, 'laya_service_deadline'):
+                resident_service._read_all(sender, 100, 3.5)
+        self.assertEqual(sender.timeouts, [2.5, 1.5, .5])
+        self.assertEqual(sender.reads, 3)
