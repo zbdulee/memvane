@@ -1,0 +1,87 @@
+"""Recall latency: selector warm-up (the exact vector math is a provider test)."""
+import hashlib
+import json
+from pathlib import Path
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+from memvane.learning.context_learning import inference_service, selector_heal
+from memvane.learning.context_learning.contracts import digest
+from memvane.learning.context_learning.store import canonical
+
+
+def private(path, value):
+    path.write_text(json.dumps(value)); path.chmod(0o600)
+
+
+class WarmTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='qmd-warm-')
+        self.state = Path(self.temp.name).resolve(); self.state.chmod(0o700)
+        artifact = self.state / 'head.artifact'; artifact.write_text('head'); artifact.chmod(0o600)
+        self.active = {'schema_version': 1, 'artifact_path': str(artifact),
+                       'artifact_sha256': hashlib.sha256(b'head').hexdigest()}
+        private(self.state / 'active-checkpoint.json', self.active)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_warm_sends_one_request_the_worker_accepts(self):
+        sent = []
+        policy = {'trainerArgv': [sys.executable, 'adapter', 'model'], 'timeoutSeconds': 30, 'maxRssMib': 4096}
+        def predict(state, policy_, request, sha, *, deadline, **kw):
+            sent.append((state, policy_, request, sha, deadline - time.monotonic()))
+            return {}, {}
+        with patch.object(inference_service, '_policy', return_value=(policy, policy)), \
+                patch.object(inference_service, 'predict', side_effect=predict), \
+                patch.object(selector_heal, '_service_identity', return_value=[1, 2, 3, 'sig']):
+            self.assertEqual(selector_heal.warm('/p', state=self.state), {'status': 'selector_warm'})
+        state, used, request, sha, left = sent[0]
+        self.assertEqual((state, used, sha), (self.state, policy, self.active['artifact_sha256']))
+        self.assertTrue(0 < left <= selector_heal.WARM_SECONDS)
+        # The exact shape the hosted worker validates (_validate_request).
+        self.assertEqual(set(request), {'schema_version', 'artifact_path', 'cases'})
+        self.assertEqual(request['artifact_path'], self.active['artifact_path'])
+        (case,) = request['cases']
+        self.assertEqual(set(case), {'request_id', 'prompt', 'candidates', 'input_sha256'})
+        self.assertEqual(case['input_sha256'],
+                         digest(canonical({k: v for k, v in case.items() if k != 'input_sha256'})))
+        (row,) = case['candidates']
+        self.assertEqual(set(row), {'id', 'revision_sha256', 'input_text', 'input_kind'})
+        self.assertEqual(len(row['revision_sha256']), 64)
+
+    def test_concurrent_and_repeated_warm_ups_send_one_inference_per_generation(self):
+        import threading
+        calls, started, release = [], threading.Event(), threading.Event()
+        policy = {'trainerArgv': [sys.executable, 'adapter', 'model'], 'timeoutSeconds': 30, 'maxRssMib': 4096}
+        def predict(*args, **kwargs):
+            calls.append(1); started.set(); release.wait(5)
+            return {}, {}
+        service = [[11, 2, 3, 'sig']]
+        results = []
+        with patch.object(inference_service, '_policy', return_value=(policy, policy)), \
+                patch.object(inference_service, 'predict', side_effect=predict), \
+                patch.object(selector_heal, '_service_identity', side_effect=lambda: service[0], create=True):
+            # Two workers (two hosts' SessionStart) at once: one inference.
+            first = threading.Thread(target=lambda: results.append(selector_heal.warm('/p', state=self.state)))
+            first.start(); self.assertTrue(started.wait(5))
+            results.append(selector_heal.warm('/p', state=self.state))
+            release.set(); first.join(5)
+            self.assertEqual(sorted(r['status'] for r in results), ['selector_warm', 'selector_warm_busy'])
+            self.assertEqual(len(calls), 1)
+            # Later runs for the same generation in the same service: none.
+            self.assertEqual(selector_heal.warm('/p', state=self.state)['status'], 'selector_warm_current')
+            self.assertEqual(len(calls), 1)
+            # A restarted service, or a new checkpoint, is warmed again.
+            service[0] = [12, 2, 4, 'sig']
+            self.assertEqual(selector_heal.warm('/p', state=self.state)['status'], 'selector_warm')
+            private(self.state / 'active-checkpoint.json', {**self.active, 'artifact_sha256': '1' * 64})
+            self.assertEqual(selector_heal.warm('/p', state=self.state)['status'], 'selector_warm')
+            self.assertEqual(len(calls), 3)
+
+
+if __name__ == '__main__':
+    unittest.main()
