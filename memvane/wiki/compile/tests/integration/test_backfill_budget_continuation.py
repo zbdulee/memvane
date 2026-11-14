@@ -16,6 +16,77 @@ from tests.support.settings_fake import expanded, use_config
 
 
 class BackfillBudgetContinuation(FixtureCase):
+    def test_per_run_extractor_cap_preserves_and_drains_all_sources(self):
+        project = make_project(self.home)
+        paths = ['docs/%02d.md' % number for number in range(7)]
+        for path in paths:
+            project.write_note(path, 'synthetic source ' + path + '\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs')
+        project.git('commit', '-qm', 'fixture')
+        build_install(self, project)
+        config = expanded(project, compile={'budget': {'extractorPerRun': 3},
+                          'extractor': {'builtins': ['claude']}})
+        use_config(self, project, config)
+        changed = {project.raw_name: {'root': str(project.root), 'created': paths,
+                                      'updated': [], 'deleted': []}}
+        with patch.object(workspace, 'request_compile'):
+            self.assertEqual(intake.enqueue_changed_sources(str(project.root), config, changed,
+                                                            engine='claude')['queued'], 7)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        bound = workspace.selected(project.root)
+        calls, reports = [], []
+        def extract(argv, payload, timeout, root):
+            calls.append(payload['source']['path'])
+            return {'candidates': []}, None, 0
+        with patch.object(engines, 'run_extractor', side_effect=extract), \
+             patch.object(worker, 'gather_similar_pages', return_value=[]), \
+             patch.object(worker, '_run_verify_pass'), patch.object(workspace, 'request_compile'):
+            for _ in range(3):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    worker._main_locked(argparse.Namespace(json=True, flush_all=True), project.root,
+                                        config, config['compile'], queue, bound)
+                reports.append(json.loads(output.getvalue()))
+        self.assertEqual([row['processed'] for row in reports], [3, 3, 1])
+        self.assertEqual([row['remaining'] for row in reports], [4, 1, 0])
+        self.assertEqual(sorted(calls), sorted(paths))
+        self.assertFalse(queue.read_text().strip())
+
+    def test_cards_per_source_cap_records_every_excess_candidate(self):
+        project = make_project(self.home)
+        project.write_note('docs/note.md', 'synthetic source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs')
+        project.git('commit', '-qm', 'fixture')
+        build_install(self, project)
+        config = expanded(project, compile={'budget': {'cardsPerSource': 4},
+                          'extractor': {'builtins': ['claude']}, 'verify': {'enabled': False}})
+        use_config(self, project, config)
+        changed = {project.raw_name: {'root': str(project.root), 'created': ['docs/note.md'],
+                                      'updated': [], 'deleted': []}}
+        with patch.object(workspace, 'request_compile'):
+            self.assertEqual(intake.enqueue_changed_sources(str(project.root), config, changed,
+                                                            engine='claude')['queued'], 1)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        bound, compiled = workspace.selected(project.root), []
+        candidates = [{'title': 'Candidate %d' % n, 'summary': 'Synthetic fact'} for n in range(14)]
+        def write(root, candidate, **kwargs):
+            compiled.append(candidate['title'])
+            return {'action': 'created', 'sourceRevisions': candidate['sourceRevisions']}
+        with patch.object(engines, 'run_extractor', return_value=({'candidates': candidates}, None, 0)), \
+             patch.object(worker, 'compile_candidate', side_effect=write), \
+             patch.object(worker, 'gather_similar_pages', return_value=[]), \
+             patch.object(worker, '_run_verify_pass'), patch.object(workspace, 'request_compile'), \
+             redirect_stdout(io.StringIO()):
+            worker._main_locked(argparse.Namespace(json=True, flush_all=True), project.root,
+                                config, config['compile'], queue, bound)
+        self.assertEqual(compiled, ['Candidate %d' % n for n in range(4)])
+        audit = project.root / '.memvane/compile/candidates.jsonl'
+        rows = [json.loads(line) for line in audit.read_text().splitlines()]
+        capped = next(row for row in rows if row.get('reason') == 'cards_per_source_cap')
+        self.assertEqual((capped['cardsReturned'], capped['cardsCompiled']), (14, 4))
+        self.assertEqual(len(capped['skippedTitles']), 10)
+        self.assertEqual(capped['source']['path'], 'docs/note.md')
+
     def test_mixed_host_attempts_are_bounded_and_request_a_continuation(self):
         project = make_project(self.home)
         paths = ['docs/%02d.md' % number for number in range(10)]
