@@ -1591,7 +1591,7 @@
     },
     "memvane/app/setup_workflow.py": {
       "context": "app",
-      "layer": "application",
+      "layer": "adapter",
       "pinned": false
     },
     "memvane/install/locks.py": {
@@ -1616,6 +1616,21 @@
     },
     "memvane/app/setup_activation.py": {
       "context": "app",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/application/__init__.py": {
+      "context": "install",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/application/onboarding_workflow.py": {
+      "context": "install",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/application/onboarding_restore.py": {
+      "context": "install",
       "layer": "application",
       "pinned": false
     }

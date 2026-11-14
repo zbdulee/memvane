@@ -703,7 +703,7 @@ class ProviderReproof(ReproofBase):
 class WorkerReproof(ReproofBase):
     def run_worker(self, review, attestation=None):
         import laya_active_upgrade
-        from memvane.app import setup_workflow as product
+        from memvane.install.application import onboarding_workflow as product
         state = self.base / 'worker-state'
         state.mkdir(mode=0o700)
         project = self.base / 'project'

@@ -341,7 +341,7 @@ class RuntimeReviewBinding(unittest.TestCase):
                             proposals.append(proposal)
                             raise Reviewed()
                         with review_authorities(install, module, mode), \
-                                mock.patch.object(EMBED['product'], 'review_local_provider', actual_review), \
+                                mock.patch.object(EMBED['onboarding'], 'review_local_provider', actual_review), \
                                 mock.patch.object(FRESH['active'], 'review_local_provider', actual_review):
                             with self.assertRaises(Reviewed):
                                 module.upgrade(**args, accepted_provider_sha256=baseline['proposalSha256'])

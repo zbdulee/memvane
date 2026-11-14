@@ -34,6 +34,7 @@ import laya_bundle_upgrade as auto  # noqa: E402
 from memvane.provider import embed_runtime as R  # noqa: E402
 from memvane.install import product_bundle as bundle  # noqa: E402
 from memvane.app import setup_workflow as product  # noqa: E402
+from memvane.install.application import onboarding_workflow as onboarding  # noqa: E402
 from memvane.kernel.errors import IndexContractError  # noqa: E402
 from memvane.provider.domain.profile import profile_identity  # noqa: E402
 from memvane.provider.adapters.local_embed_provider import (DEFAULT_EMBED_MODEL_URI,  # noqa: E402
@@ -527,9 +528,9 @@ class MovedProvider(Base):
                 mock.patch.object(auto, 'select_source', return_value=(source, commit)), \
                 mock.patch.object(auto, '_not_older'), \
                 mock.patch.object(auto, '_read_attestation', return_value=attestation), \
-                mock.patch.object(product, 'review_local_provider',
+                mock.patch.object(onboarding, 'review_local_provider',
                                   lambda **kw: self.review_at(host, **kw)), \
-                mock.patch.object(product, '_request_build_wake',
+                mock.patch.object(onboarding, '_request_build_wake',
                                   return_value={'status': 'queued'}), \
                 mock.patch.object(laya_active_upgrade, 'upgrade',
                                   side_effect=lambda **kw: calls.append(kw) or
@@ -795,7 +796,7 @@ class OnboardingWithOnlyLayaRuntime(E2E['FreshOnboarding']):
         shutil.rmtree(self.home / 'vendor')
         stack = ExitStack()
         self.addCleanup(stack.close)
-        stack.enter_context(mock.patch.object(product, 'review_local_provider', REAL_REVIEW))
+        stack.enter_context(mock.patch.object(onboarding, 'review_local_provider', REAL_REVIEW))
         stack.enter_context(mock.patch('platform.system', return_value='Darwin'))
         stack.enter_context(mock.patch('platform.machine', return_value='arm64'))
 

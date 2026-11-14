@@ -211,7 +211,7 @@ class WikiDbProvenance(unittest.TestCase):
         attempt = {'engine': 'claude', 'argv': ['synthetic-verifier'], 'mode': 'cross-engine',
                    'key': 'claude'}
         for target, value in (
-                ('memvane.app.setup_workflow.review_local_provider', lambda **_kw: review),
+                ('memvane.install.application.onboarding_workflow.review_local_provider', lambda **_kw: review),
                 ('memvane.provider.embed_runtime.sealed_files_sha256', lambda *_a, **_k: 'c' * 64),
                 ('memvane.journal.install_journal._v1_provider_manifest', _provider_proof),
                 ('memvane.sync.product_sync_worker.ReviewedLocalQmdProvider', _FixtureProvider),
@@ -229,7 +229,8 @@ class WikiDbProvenance(unittest.TestCase):
                                        side_effect=ResourceDeferred('fixture_lexical_recall')))
 
     def onboard(self):
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_workflow as workflow
+        from memvane.app import setup_activation as activation
         from memvane.journal.api import select_route
         plan = workflow.plan_fresh_wiki_origin(self.project)
         self.assertEqual(plan['status'], 'review_required', plan)
@@ -245,12 +246,12 @@ class WikiDbProvenance(unittest.TestCase):
                 break
         else:
             self.fail('initial build not ready: %r' % results)
-        finalized = workflow.finalize_initial_build(project_root=str(self.project),
+        finalized = activation.finalize_initial_build(project_root=str(self.project),
                                                     state_root=str(self.state))
         self.assertEqual(finalized['status'], 'initial_build_finalized', finalized)
-        route = workflow._read_private(self.state / 'route.json', 8192)
-        with workflow._install_lock(self.state):
-            selected = workflow.activate_origin_selection(self.project, self.state / 'journal.sqlite',
+        route = activation._read_private(self.state / 'route.json', 8192)
+        with activation._install_lock(self.state):
+            selected = activation.activate_origin_selection(self.project, self.state / 'journal.sqlite',
                                                           route)
         self.assertEqual(selected['status'], 'selected', selected)
         self.decision = select_route(str(self.project), action='recall')

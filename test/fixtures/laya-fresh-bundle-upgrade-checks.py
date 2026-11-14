@@ -30,6 +30,7 @@ import laya_bound_upgrade as bound_upgrade  # noqa: E402
 import laya_fresh_wiki_origin as fresh  # noqa: E402
 from memvane.journal import initial_build  # noqa: E402
 from memvane.app import setup_workflow as product  # noqa: E402
+from memvane.install.application import onboarding_workflow as onboarding  # noqa: E402
 from memvane.sync import product_sync_worker as worker  # noqa: E402
 from memvane.wiki.intake import wiki_discovery as discovery  # noqa: E402
 from laya_index_a import LayaIndexA  # noqa: E402
@@ -339,7 +340,7 @@ class UpgradeCase(FreshBoundCase):
     def patches(self, module):
         stack = ExitStack()
         enter = stack.enter_context
-        enter(mock.patch.object(product, 'review_local_provider',
+        enter(mock.patch.object(onboarding, 'review_local_provider',
                                 side_effect=lambda **_kw: self.review))
         if module is active:
             # This fixture's journal CAS and on-disk file are synthetic v4.

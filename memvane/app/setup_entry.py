@@ -140,7 +140,8 @@ def main(argv=None):
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
                            'restore-index-origin'):
-            from memvane.app import setup_workflow as product
+            from memvane.install import api as product
+            from memvane.app import setup_activation as selection
             installed = Path(__file__).resolve(strict=True).parents[2]
             if args.action != 'plan-fresh-wiki-origin' and not args.state_root:
                 raise ValueError('state_root_required')
@@ -160,7 +161,7 @@ def main(argv=None):
                     model_path=args.provider_model_file,
                     dimension=args.provider_dimension)
             else:
-                state = product._private_parent(args.state_root)
+                state = product.private_parent(args.state_root)
                 journal = state / 'journal.sqlite'
                 if args.action == 'index-origin-status':
                     from memvane.journal.api import inspect_journal
@@ -176,7 +177,7 @@ def main(argv=None):
                               if args.action == 'index-build-status' else
                               product.request_initial_build_rescan(state))
                 elif args.action == 'finalize-index-origin':
-                    result = product.finalize_initial_build(
+                    result = selection.finalize_initial_build(
                         project_root=args.project, state_root=state)
                 elif args.action == 'restore-index-origin':
                     # Abandons an unselected install, withdraws a selection before its
@@ -186,15 +187,15 @@ def main(argv=None):
                     result = product.restore_origin_selection(
                         project_root=args.project, state_root=state)
                 else:
-                    route = product._read_private(state / 'route.json', 8192)
-                    with product._install_lock(state):
+                    route = product.read_private(state / 'route.json', 8192)
+                    with product.install_lock(state):
                         if args.action == 'activate-index-origin':
                             if not args.approve_index_origin_activation:
                                 raise ValueError('index_origin_activation_approval_required')
-                            result = product.activate_origin_selection(
+                            result = selection.activate_origin_selection(
                                 Path(args.project), journal, route)
                         else:
-                            result = product.recover_origin_selection(
+                            result = selection.recover_origin_selection(
                                 Path(args.project), journal, route)
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         else:result=select_learning(args)

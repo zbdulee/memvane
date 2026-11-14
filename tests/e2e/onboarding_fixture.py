@@ -122,7 +122,7 @@ class FixtureOnboarding(unittest.TestCase):
 
     # -- lifecycle steps ---------------------------------------------------------
     def prepare(self):
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_workflow as workflow
         plan = workflow.plan_fresh_wiki_origin(self.project)
         self.assertEqual(plan['status'], 'review_required', plan)
         return workflow.prepare_fresh_wiki_origin(
@@ -139,19 +139,19 @@ class FixtureOnboarding(unittest.TestCase):
         self.fail('initial build not ready: %r' % results)
 
     def finalize(self):
-        from memvane.app import setup_workflow as workflow
+        from memvane.app import setup_activation as workflow
         return workflow.finalize_initial_build(project_root=str(self.project),
                                                state_root=str(self.state))
 
     def activate(self):
-        from memvane.app import setup_workflow as workflow
+        from memvane.app import setup_activation as workflow
         route = workflow._read_private(self.state / 'route.json', 8192)
         with workflow._install_lock(self.state):
             return workflow.activate_origin_selection(self.project, self.state / 'journal.sqlite',
                                                       route)
 
     def restore(self):
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_restore as workflow
         return workflow.restore_origin_selection(project_root=str(self.project),
                                                  state_root=str(self.state))
 
@@ -321,7 +321,7 @@ class FixtureOnboarding(unittest.TestCase):
 
     def test_rescan_after_selection_is_refused(self):
         """F4: a selected install's refresh belongs to the sync owner."""
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_workflow as workflow
         self.install(1)
         for _ in range(2):
             self.blocked('initial_build_already_selected',
@@ -331,7 +331,7 @@ class FixtureOnboarding(unittest.TestCase):
 
     def test_provider_change_releases_a_written_selection(self):
         """F5: after the first selected write a changed provider still exits through restore."""
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_workflow as workflow
         from memvane.install import initial_build
         from memvane.journal.types import JournalEvidenceError
         self.install(1)
@@ -376,7 +376,7 @@ class FixtureOnboarding(unittest.TestCase):
 
     def test_reruns_compare_recorded_nodes_by_inode(self):
         """F6: prepare and finalize reruns after a boot that renumbered st_dev write nothing."""
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_workflow as workflow
         from memvane.journal import journal_reader
         self.install(1, onboard=False)
         self.assertEqual(self.prepare()['status'], 'initial_build_registered')
@@ -470,7 +470,7 @@ class FixtureOnboarding(unittest.TestCase):
     def test_foreign_route_is_replaced_by_a_new_onboarding(self):
         """Proof F3: pointers of an install missing on this machine give way; a live one never."""
         import hashlib
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_workflow as workflow
         from memvane.journal.api import select_route
         self.install(1)
         plan = lambda: workflow.plan_fresh_wiki_origin(self.project)
@@ -499,7 +499,7 @@ class FixtureOnboarding(unittest.TestCase):
         self.assertEqual(reviewed['replacesForeignPointers'],
                          {name: hashlib.sha256(raw).hexdigest() for name, raw in saved.items()})
         self.use_install(THIRD_INSTALL)
-        from memvane.app import setup_activation as activation
+        from memvane.install.application import onboarding_restore as activation
         with mock.patch.object(activation, '_retire_foreign_pointer',
                                _crash_once(activation._retire_foreign_pointer,
                                            lambda path: path.name == 'selection.json')):
@@ -518,7 +518,7 @@ class FixtureOnboarding(unittest.TestCase):
 
     def test_pointer_of_another_major_answers_without_hook_work(self):
         """Proof F4: an unknown schema or another major follows D4, never a refused hook."""
-        from memvane.app import setup_workflow as workflow
+        from memvane.install.application import onboarding_workflow as workflow
         from memvane.host.onboarding_notice import MAJOR_NOTICES, onboarding_notice
         from memvane.journal.api import dispatch_target, selected_project_proof
         from memvane.journal.types import DispatchTargetError
