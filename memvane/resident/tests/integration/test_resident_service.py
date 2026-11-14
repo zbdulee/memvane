@@ -396,3 +396,65 @@ class ServiceChecks(Fixture):
             for _ in range(10):
                 service.tick()
                 self.assertEqual(service.connections._value, 4)
+
+    def test_drain_keeps_lease_until_loading_worker_stops(self):
+        project, _manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        handles = []
+        start = self.start_worker
+
+        def start_worker(manifest, admit):
+            entered.set()
+            release.wait(10)
+            handle = start(manifest, admit)
+            handles.append(handle)
+            return handle
+
+        service = self.service(start=False)
+        service.start_worker = start_worker
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        self.assertTrue(entered.wait(5))
+        service.begin_drain()
+        self.assertTrue(service.draining.is_set())
+        self.assertFalse(service.stopped.is_set())
+        self.assertIsNotNone(service.lease)
+        release.set()
+        self.assertTrue(service.stopped.wait(30))
+        self.assertEqual(len(handles), 1)
+        self.assertIsNotNone(handles[0].process.poll())
+
+    def test_worker_death_mid_request_is_provider_unavailable(self):
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        service = self.service()
+        self.wait(lambda: self.ready(manifest))
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = svc.Worker.forward
+        errors = []
+
+        def gated(worker, *args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return original(worker, *args, **kwargs)
+
+        def query():
+            try:
+                embed(manifest)
+            except Exception as exc:
+                errors.append(str(exc))
+
+        with patch.object(svc.Worker, 'forward', gated):
+            thread = threading.Thread(target=query)
+            thread.start()
+            self.assertTrue(entered.wait(5))
+            handle = next(iter(service.workers.values())).handle
+            handle.process.kill()
+            handle.process.wait(timeout=5)
+            release.set()
+            thread.join(10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, ['provider_unavailable'])
