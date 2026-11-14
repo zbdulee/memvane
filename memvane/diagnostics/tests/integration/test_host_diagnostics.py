@@ -116,6 +116,29 @@ class HostDiagnosticsTests(FixtureCase):
         self.assertEqual(row['prompt'], {'sha256': hashlib.sha256(prompt.encode()).hexdigest(), 'chars': len(prompt)})
         self.assertNotIn(prompt, (self.state / event_log.NAME).read_text())
 
+    def test_hook_actions_log_one_fixed_refusal_without_private_text(self):
+        from memvane.recall.types import HostResponseError
+        actions = ('gate', 'posttool', 'update', 'update-queued', 'index', 'compile', 'file-change-event')
+        for action in actions:
+            with self.subTest(action=action), \
+                 patch('memvane.journal.api.verify_selected_route', side_effect=HostResponseError('selected_proof_changed')):
+                with self.assertRaises(HostResponseError):
+                    host.serve_selected(action, 'claude', self.decision, self.payload)
+        rows = [r for r in event_log.read(self.state) if r.get('event') in actions]
+        self.assertEqual([r['event'] for r in rows], list(actions))
+        for row in rows:
+            self.assertEqual((row['outcome'], row['reason'], row['host'], row['session']),
+                             ('refused', 'selected_proof_changed', 'claude', 'synthetic-session'))
+            self.assertNotIn('synthetic prompt', json.dumps(row))
+
+    def test_learning_capture_status_is_recorded(self):
+        from memvane.learning import api as learning
+        status = learning.capture_recall('claude', self.decision, {}, {}, [], [])
+        rows = [r for r in event_log.read(self.state) if r.get('event') == 'learning.capture']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]['outcome'], rows[0]['host']), (status, 'claude'))
+        self.assertEqual(status, 'disabled')
+
     def test_logging_failure_preserves_original_exception(self):
         self.consent(True)
         for target in ('memvane.diagnostics.api.emit', 'memvane.diagnostics.api.capture'):
