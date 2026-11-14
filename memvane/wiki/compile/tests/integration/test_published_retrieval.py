@@ -35,6 +35,7 @@ class PublishedRetrieval(FixtureCase):
                 self.assertEqual(mode, 'bound')
                 self.assertIn('concepts/archive.md', [row[0] for row in rows])
             self.assertIn(self.card, [row[0] for row in self.matches('archive')])
+
         new = self.project.write_card('concepts/new.md', title='Quasar',
                                        body='Quasar observatory record.\n')
         self.assertIn(new, [row[0] for row in self.matches('quasar observatory')])
@@ -59,3 +60,25 @@ class PublishedRetrieval(FixtureCase):
                 with self.assertRaisesRegex(RuntimeError, 'synthetic read failure'):
                     self.matches('archive')
             self.assertIn(self.card, [row[0] for row in self.matches('archive')])
+
+
+class WeakPublishedVectors(FixtureCase):
+    def test_twenty_weak_real_vector_neighbors_do_not_fill_result_quota(self):
+        project = make_project(self.home)
+        source = project.write_note('docs/source.md', 'Synthetic source.\n')
+        for number in range(20):
+            project.write_card('concepts/card-%02d.md' % number, title='Garden %d' % number,
+                               body='Garden flower number %d.\n' % number, sources=[source])
+        project.git('add', '--', '.memvane/settings.json', '.memvane/wiki', 'docs')
+        project.git('commit', '-qm', 'fixture')
+        build_install(self, project)
+        bound = workspace.selected(project.root)
+        with patch.object(retrieval, 'overlay_paths', return_value=[]), \
+             patch.object(retrieval, 'query_provider', return_value=lambda _text, _profile: {'vector': [-1.0, 0.0]}):
+            with retrieval.selected_search(bound, 'unmentionedxyz') as (rows, _excluded, _name, _mode):
+                self.assertEqual(len(rows), 20)
+                self.assertTrue(all(row[2] == -1.0 for row in rows))
+            result = execution.wiki_matches(project.root, project.wiki, 'unmentionedxyz', 20, 12000,
+                                            bound=bound)
+            self.assertEqual(result, [])
+
