@@ -56,6 +56,25 @@ class SourceEnqueue(FixtureCase):
         self.assertEqual(self.run_enqueue(session_start=True)['reason'], 'queued')
         self.assertEqual({row['trigger'] for row in self.rows()}, {'session_start_source'})
 
+    def test_sync_keeps_caller_input_and_sources_while_recording_revisions(self):
+        import hashlib
+        changed = copy.deepcopy(self.changed)
+        before = copy.deepcopy(changed)
+        source_paths = [self.project.root / path for path in
+                        ('docs/a.md', 'docs/b.md', 'docs/c.md', 'src/s.md')]
+        original = {str(path): path.read_bytes() for path in source_paths}
+        result = enqueue.enqueue_changed_sources(str(self.project.root), self.config, changed, engine='claude')
+        self.assertEqual(result['queued'], 4)
+        self.assertEqual(changed, before)
+        for row in self.rows():
+            path = self.project.root / row['source']['path']
+            self.assertEqual(row['contentRevision'], hashlib.sha256(original[str(path)]).hexdigest())
+            self.assertEqual(path.read_bytes(), original[str(path)])
+        queued = self.queue.read_bytes()
+        self.assertEqual(enqueue.enqueue_changed_sources(str(self.project.root), self.config,
+                                                         changed, engine='claude')['queued'], 0)
+        self.assertEqual(self.queue.read_bytes(), queued)
+
     def test_cap_defers_the_tail_and_cap_zero_writes_nothing(self):
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '0'}):
             result = self.run_enqueue()
