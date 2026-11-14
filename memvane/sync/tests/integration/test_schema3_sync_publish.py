@@ -170,9 +170,6 @@ class SyncPublish(SyncCase):
         self.assertEqual((self.head(), self.epoch()), (start, epoch))
 
     # -- cold views and staged changes ------------------------------------------
-    # Product regression candidate (reported to the lead): a pass on a cold main
-    # view raises ``view_preparing`` from ``journal.api.resettle_selection``
-    # (``journal_reader.py`` ``_schema3_pin``) instead of returning ``pending``.
     def test_cold_view_publishes_only_complete_and_recall_is_preparing(self):
         cards = sorted(self.members(self.head()[0]))
         # A new branch is a new view with no published generation (D9).
