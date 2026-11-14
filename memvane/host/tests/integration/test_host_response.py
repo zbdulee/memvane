@@ -83,11 +83,23 @@ class SelectedActions(HostInstallCase):
         self.assertEqual(self.wakes.calls, [])
 
     def test_an_unrecorded_wake_refuses_session_start(self):
+        # Outside the fixture switch a dropped wake and a None answer both
+        # refuse; under the switch a None answer is the skipped request.
         for status in ('dropped', None):
             with self.subTest(status=status):
                 self.wakes.status = status
-                with self.assertRaisesRegex(HostResponseError, '^selected_sync_enqueue_failed$'):
-                    self.serve('update-queued', {'hook_event_name': 'SessionStart'})
+                with mock.patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': ''}):
+                    with self.assertRaisesRegex(HostResponseError, '^selected_sync_enqueue_failed$'):
+                        self.serve('update-queued', {'hook_event_name': 'SessionStart'})
+        with self.subTest('fixture switch skips the request'):
+            self.wakes.status = None
+            before = len(self.wakes.calls)
+            self.serve('update-queued', {'hook_event_name': 'SessionStart'})
+            # The same two sync requests as a queued SessionStart: the deferred
+            # wake, then the one that follows the activated discovery grant.
+            root = str(self.project)
+            self.assertEqual(self.wakes.calls[before:], [('laya-sync', root, {'start': False}),
+                                                        ('laya-sync', root, {})])
         self.wakes.status = 'deferred_queue_capacity_retained'
         self.serve('update-queued', {'hook_event_name': 'SessionStart'})
 
