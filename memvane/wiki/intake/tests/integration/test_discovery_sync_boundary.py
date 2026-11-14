@@ -32,6 +32,15 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(discovery._read(cursor)['pending'], {key: revision})
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         self.assertFalse(queue.exists() and queue.read_text().strip())
+        session = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+            host.serve_selected('update-queued', 'claude', install.select(), session)
+        self.assertEqual(len(discovery.observe_grants(install.select())['grants']['session_start']), 1)
+        refused = install.run_sync()
+        self.assertIn(refused['state'], ('indexed', 'unchanged'), refused)
+        self.assertEqual(discovery._read(cursor)['pending'], {key: revision})
+        self.assertEqual(discovery.observe_grants(install.select())['grants']['session_start'], [])
+        self.assertFalse(queue.exists() and queue.read_text().strip())
         payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
                    'tool_input': {'command': 'touch docs/note.md'},
                    'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
