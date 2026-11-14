@@ -157,3 +157,31 @@ class WorktreeRouteBoundary(FixtureCase):
             result = compile_api.run(self.project.root)
         self.assertEqual(result, {'state': 'drained', 'processed': 0})
         self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+
+    def test_failed_lifecycle_child_does_not_leave_the_request_pending(self):
+        from unittest.mock import patch
+        from memvane.wiki.compile import api as compile_api
+        from memvane.wiki.lifecycle import api as lifecycle_api
+        from memvane.wiki.workspace import api as workspace
+        from memvane.runtime import api as runtime
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+            self.assertEqual(workspace.request_lifecycle(self.install.select(), 'session_start'), 'recorded')
+            with patch.object(lifecycle_api, 'run_lifecycle', return_value={'state': 'failed', 'reason': 'TimeoutExpired'}) as child:
+                result = compile_api.run(self.project.root)
+        child.assert_called_once()
+        self.assertEqual(result, {'state': 'drained', 'processed': 0})
+        self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+
+    def test_linked_worktree_session_does_not_request_lifecycle(self):
+        from unittest.mock import patch
+        from memvane.host import api as host
+        from memvane.runtime import api as runtime
+        from memvane.wiki.workspace import api as workspace
+        linked = self.project.linked_worktree('no-lifecycle', 'no-lifecycle-branch')
+        decision = journal.select_route(str(linked.root), action='update-queued')
+        self.assertEqual(decision['state'], 'worktree')
+        payload = {'hook_event_name': 'SessionStart', 'cwd': str(linked.root), 'session_id': 'linked'}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+            host.serve_selected('update-queued', 'claude', decision, payload)
+        self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+        self.assertIsNone(workspace.claim_lifecycle(linked.root))
