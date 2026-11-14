@@ -2,15 +2,19 @@
 from contextlib import redirect_stdout
 import io
 import json
+import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from memvane.kernel.resource_deferred import ResourceDeferred
+from memvane.runtime import api as runtime
 from memvane.wiki.compile import selected_execution as execution, wiki_compile_worker as worker
 from memvane.wiki.intake import api as intake
 from memvane.wiki.workspace import api as workspace
 from tests.support.case import FixtureCase
+from tests.support.install_builder import build_install
 from tests.support.project import make_project
 
 
@@ -20,6 +24,19 @@ class OwnerBusy(FixtureCase):
         self.root = make_project(self.home, git=False).root
         (self.root / '.memvane/compile').mkdir()
         self.bound = ({'projectRoot': str(self.root)}, {})
+
+    def test_wake_entry_reports_real_owner_contention(self):
+        project = make_project(self.home, name='selected', dirname='selected')
+        project.git('add', '--', '.memvane/settings.json')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        entry = Path(__file__).resolve().parents[5] / 'entry/run.py'
+        with runtime.sync_owner(install.store_path) as owner:
+            self.assertIsNotNone(owner)
+            child = subprocess.run([sys.executable, '-B', str(entry), 'wake', 'laya-compile',
+                                    str(project.root)], capture_output=True, text=True, timeout=90)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        self.assertEqual(json.loads(child.stdout), {'state': 'deferred', 'reason': 'owner_busy'})
 
     def test_worker_main_reports_owner_busy(self):
         output = io.StringIO()

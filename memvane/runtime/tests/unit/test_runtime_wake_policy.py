@@ -25,6 +25,21 @@ class PolicyPurity(unittest.TestCase):
 
 
 class PolicyDecisions(unittest.TestCase):
+    def test_compile_owner_busy_is_uncounted_but_other_deferrals_are_counted(self):
+        accepted = policy.DispatchFailure('target_deferred', detail='deferred:deferred:owner_busy')
+        step = policy.settle(policy.RETRY_CAP_ATTEMPTS - 1, done=False, now=100,
+                             error=accepted, kind='laya-compile')
+        self.assertEqual((step['ack'], step['count']), (False, 0))
+        self.assertNotIn('drop', step)
+        for kind, detail in (('laya-sync', 'deferred:deferred:owner_busy'),
+                             ('laya-compile', 'deferred:pending:unlabeled'),
+                             ('laya-compile', 'deferred:deferred:owner_busy:extra'),
+                             ('laya-compile', 'deferred:deferred:owner_busy\nprivate')):
+            with self.subTest(kind=kind, detail=detail):
+                failure = policy.DispatchFailure('target_deferred', detail=detail)
+                step = policy.settle(0, done=False, now=100, error=failure, kind=kind)
+                self.assertEqual((step['ack'], step['count']), (False, 1))
+
     def test_sync_durable_progress_retries_without_counting_only_new_details(self):
         for reason in ('schema3_progress_ingest', 'schema3_progress_vector'):
             failure = policy.DispatchFailure('target_deferred',
