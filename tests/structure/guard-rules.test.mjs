@@ -7,7 +7,7 @@ import {spawnSync} from 'node:child_process';
 
 const python = process.env.STRUCTURE_TEST_PYTHON || 'python3';
 const helper = resolve('tests/structure/guard_rules.py');
-const guard = resolve('test/structure/v1_guard.py');
+const guard = resolve('tests/structure/v1_guard.py');
 
 function env(home) {
   return {PATH: process.env.PATH, HOME: home, TMPDIR: home, PYTHONDONTWRITEBYTECODE: '1',
@@ -439,4 +439,142 @@ test('the product guard reports strict rules separately and filters them by rule
   assert.equal(report.strict_counts.G9, report.strict_issues.G9.length);
   const strict = run('--rules', 'G9', '--domain', 'runtime', '--strict');
   assert.equal(strict.status, report.strict_counts.G9 ? 1 : 0);
+});
+
+function scanTests(t, files, exceptions) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mv-guard-tests-')));
+  t.after(() => rmSync(root, {recursive: true, force: true}));
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), {recursive: true});
+    writeFileSync(join(root, path), text);
+  }
+  const args = ['-B', helper, '--tests', root, ...(exceptions ? [JSON.stringify(exceptions)] : [])];
+  const result = spawnSync(python, args, {encoding: 'utf8', env: env(root), timeout: 60000});
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, null, 'guard_rules.py --tests timed out');
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+const testProduct = {
+  'memvane/__init__.py': '',
+  'memvane/kernel/paths.py': 'def home():\n    return 1\n',
+  'memvane/store/api.py': 'def open_store(path):\n    return path\n',
+  'memvane/store/view/view_store.py': 'class ViewStore:\n    def read(self):\n        return 1\n',
+  'memvane/journal/api.py': 'def open_journal():\n    return 1\n\ndef _private():\n    return 2\n',
+  'memvane/journal/journal_reader.py': 'def read():\n    return 1\n',
+  'memvane/sync/worker.py': 'def run():\n    return 1\n',
+};
+
+// "<file>:<line>:<target>:<kind>" -> "<file>:<target>:<kind>"
+const g8Rows = report => report.G8.map(x => x.split(':')).map(([file, , target, kind]) => `${file}:${target}:${kind}`).sort();
+// "<file>:<line>:<kind>:<name>:<reason>" -> "<file>:<kind>:<name>:<reason>"
+const g1Rows = report => report.G1.map(x => x.split(':')).map(([file, , ...rest]) => [file, ...rest].join(':')).sort();
+
+test('G8 reads patch targets in tests/ and memvane/**/tests/ next to the old test/ tree', t => {
+  const report = scanTests(t, {
+    ...testProduct,
+    'memvane/store/tests/unit/test_patch.py': [
+      'from unittest import mock',
+      'from unittest.mock import patch',
+      "patch('memvane.store.view.view_store.ViewStore.read')",
+      "patch('memvane.store.view.view_store.ViewStore.gone')",
+      "mock.patch('memvane.store.missing_mod.thing')",
+      "TABLE = (('memvane.store.api.removed', None), ('memvane.store.api.open_store', None))",
+      "MODULE = 'memvane.store.view.view_store'",
+      ''].join('\n'),
+    'tests/e2e/flow.py': "from unittest.mock import patch\npatch('memvane.journal.api.removed')\n",
+    'test/old_checks.py': [
+      'from unittest import mock',
+      'from unittest.mock import patch',
+      "mock.patch('memvane.store.api.old_attribute_form')",
+      "TABLE = ('memvane.store.api.old_table_form',)",
+      "patch('memvane.store.api.old_name')",
+      ''].join('\n'),
+  });
+  assert.deepEqual(g8Rows(report), [
+    'memvane/store/tests/unit/test_patch.py:memvane.store.api.removed:missing_attribute',
+    'memvane/store/tests/unit/test_patch.py:memvane.store.missing_mod.thing:missing_attribute',
+    'memvane/store/tests/unit/test_patch.py:memvane.store.view.view_store.ViewStore.gone:missing_attribute',
+    'test/old_checks.py:memvane.store.api.old_name:missing_attribute',
+    'tests/e2e/flow.py:memvane.journal.api.removed:missing_attribute',
+  ]);
+});
+
+test('test G1 limits what domain tests and tests/ may import, patch or embed', t => {
+  const report = scanTests(t, {
+    ...testProduct,
+    'memvane/store/tests/unit/test_names.py': [
+      'import importlib',
+      'from unittest.mock import patch',
+      'from memvane.store.view import view_store',
+      'from memvane.kernel import paths',
+      'from memvane.journal.api import open_journal, _private',
+      'from memvane.journal import journal_reader',
+      'from tests.support import project',
+      'from tests.e2e import harness',
+      'from memvane.journal.tests.unit import helper',
+      'from . import sibling',
+      "importlib.import_module('memvane.journal.journal_reader')",
+      "patch('memvane.journal.api.open_journal')",
+      "patch('memvane.journal.journal_reader.read')",
+      "CODE = 'from memvane.sync.worker import run\\n'",
+      "TABLE = ('memvane.sync.worker.run',)",
+      ''].join('\n'),
+    'memvane/store/tests/unit/sibling.py': '',
+    'tests/e2e/flow.py': [
+      'from memvane.store import api',
+      'from memvane.store.view import view_store',
+      'from tests.e2e import harness',
+      'from memvane.gone import thing',
+      ''].join('\n'),
+    'tests/e2e/flow.test.mjs': [
+      "import {execFileSync} from 'node:child_process';",
+      "execFileSync('python3', ['-c', 'from memvane.journal.journal_reader import read\\nfrom memvane.store.api import open_store']);",
+      "const script = `from unittest.mock import patch",
+      "patch('memvane.sync.worker.run')",
+      "import memvane.store.api, memvane.sync.worker as worker`;",
+      ''].join('\n'),
+    'tests/structure/self.test.mjs': "const sample = 'from memvane.journal.journal_reader import read';\n",
+    'test/old_checks.py': 'from memvane.journal import journal_reader\n',
+  });
+  assert.deepEqual(g1Rows(report), [
+    'memvane/store/tests/unit/test_names.py:embedded:memvane.sync.worker.run:internal',
+    'memvane/store/tests/unit/test_names.py:import:memvane.journal.api._private:private_api',
+    'memvane/store/tests/unit/test_names.py:import:memvane.journal.journal_reader:internal',
+    'memvane/store/tests/unit/test_names.py:import:memvane.journal.tests.unit.helper:test_module',
+    'memvane/store/tests/unit/test_names.py:import:tests.e2e.harness:test_module',
+    'memvane/store/tests/unit/test_names.py:import_module:memvane.journal.journal_reader:internal',
+    'memvane/store/tests/unit/test_names.py:patch:memvane.journal.journal_reader.read:internal',
+    'memvane/store/tests/unit/test_names.py:string:memvane.sync.worker.run:internal',
+    'tests/e2e/flow.py:import:memvane.gone.thing:missing_module',
+    'tests/e2e/flow.py:import:memvane.store.view.view_store:internal',
+    'tests/e2e/flow.test.mjs:embedded:memvane.journal.journal_reader.read:internal',
+    'tests/e2e/flow.test.mjs:embedded:memvane.sync.worker:internal',
+    'tests/e2e/flow.test.mjs:embedded_patch:memvane.sync.worker.run:internal',
+  ].sort());
+});
+
+test('a test G1 exception excuses one named name in one file and reports itself when unused', t => {
+  const product = {...testProduct, 'memvane/provider/seam.py': 'def fixture_provider():\n    return 1\n'};
+  const exceptions = [
+    ['tests/support/fake_provider.py', 'memvane.provider.seam.fixture_provider'],
+    ['tests/support/present.py', 'memvane.sync.worker'],
+    ['tests/support/absent.py', 'memvane.sync.worker'],
+  ];
+  const report = scanTests(t, {
+    ...product,
+    'tests/support/fake_provider.py': [
+      'from memvane.provider.seam import fixture_provider',
+      'from memvane.provider import seam',
+      ''].join('\n'),
+    'tests/support/other.py': 'from memvane.provider.seam import fixture_provider\n',
+    'tests/support/present.py': 'from memvane.store import api\n',
+  }, exceptions);
+  assert.deepEqual(report.exceptions, exceptions.map(pair => pair.join(':')).sort());
+  assert.deepEqual(g1Rows(report), [
+    'tests/support/fake_provider.py:import:memvane.provider.seam:internal',
+    'tests/support/other.py:import:memvane.provider.seam.fixture_provider:internal',
+    'tests/support/present.py:exception:memvane.sync.worker:unused_exception',
+  ]);
 });

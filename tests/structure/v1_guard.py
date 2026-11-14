@@ -12,7 +12,7 @@ import sys
 import sysconfig
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'test' / 'helpers'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import structure_guard as old_guard
 
 
@@ -93,11 +93,69 @@ def _hook_closures(snapshot, trees):
     return result
 
 
-def _patch_checks(trees):
+def _test_paths(root, suffixes):
+    """Test files: everything under test/ and tests/, and every memvane/**/tests/ folder."""
+    found = set()
+    for folder in ('test', 'tests', 'memvane'):
+        base = root / folder
+        if not base.is_dir():
+            continue
+        for file in base.rglob('*'):
+            relative = file.relative_to(root)
+            if (file.suffix in suffixes and '__pycache__' not in relative.parts and not file.is_symlink()
+                    and (folder != 'memvane' or 'tests' in relative.parts[1:-1]) and file.is_file()):
+                found.add(relative.as_posix())
+    return sorted(found)
+
+
+def _stdlib():
+    stdlib_dir = Path(sysconfig.get_path('stdlib'))
+    return set(sys.builtin_module_names) | {p.stem for p in stdlib_dir.iterdir()
+                                             if p.name not in ('site-packages', 'dist-packages') and
+                                             (p.suffix == '.py' or (p.is_dir() and (p / '__init__.py').is_file()))}
+
+
+def _test_source(path):
+    """The owner of a test file: a domain for memvane/<A>/tests, ``tests/<X>`` or ``test``."""
+    parts = path.split('/')
+    if parts[0] == 'memvane' and 'tests' in parts[1:-1]:
+        return '/'.join(parts[1:parts.index('tests', 1)])
+    if parts[0] == 'tests':
+        return 'tests/' + parts[1] if len(parts) > 2 else 'tests'
+    return 'test'
+
+
+def _g8_targets(tree, aliases, names, wide):
+    """Yield (line, target) for the patch calls of a test file.
+
+    ``wide`` also reads ``mock.patch('...')`` and whole dotted memvane strings that
+    name no module (patch target tables).
+    """
+    consumed = set()
+    for node in ast.walk(tree):  # breadth first: a call comes before its argument
+        if isinstance(node, ast.Call) and node.args:
+            func, first = node.func, node.args[0]
+            if isinstance(first, ast.Constant) and (
+                    isinstance(func, ast.Name) and func.id == 'patch'
+                    or wide and isinstance(func, ast.Attribute) and func.attr == 'patch'):
+                consumed.add(id(first))
+                yield node.lineno, first.value
+            elif (isinstance(func, ast.Attribute) and func.attr == 'object' and len(node.args) > 1
+                  and isinstance(first, ast.Name) and isinstance(node.args[1], ast.Constant)):
+                module = aliases.get(first.id)
+                if module:
+                    yield node.lineno, module + '.' + str(node.args[1].value)
+        elif (wide and isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in consumed
+              and _DOTTED_NAME.fullmatch(node.value) and node.value not in names):
+            yield node.lineno, node.value
+
+
+def _patch_checks(root, trees, paths):
     names = {_module_name(path): path for path in trees}
     symbols = {path: _symbol_table(tree) | {'__file__', '__name__', '__package__'} for path, tree in trees.items()}
     bad, unknown = [], []
-    for path in ROOT.joinpath('test').rglob('*.py'):
+    for relative in paths:
+        path = root / relative
         try:
             tree = ast.parse(path.read_text(encoding='utf8'), filename=str(path))
         except (OSError, SyntaxError, UnicodeError):
@@ -110,22 +168,13 @@ def _patch_checks(trees):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 for item in node.names:
                     aliases[item.asname or item.name] = node.module + '.' + item.name
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
-                continue
-            func = node.func
-            target = None
-            if isinstance(func, ast.Name) and func.id == 'patch' and isinstance(node.args[0], ast.Constant):
-                target = node.args[0].value
-            elif (isinstance(func, ast.Attribute) and func.attr == 'object' and len(node.args) > 1
-                  and isinstance(node.args[0], ast.Name) and isinstance(node.args[1], ast.Constant)):
-                module = aliases.get(node.args[0].id)
-                if module:
-                    target = module + '.' + str(node.args[1].value)
+        # Outside the old test/ tree G8 also reads mock.patch('...') and whole dotted
+        # memvane strings (patch target tables); test/ keeps its S4 reading.
+        for lineno, target in _g8_targets(tree, aliases, names, not relative.startswith('test/')):
             if not isinstance(target, str) or '.' not in target:
                 continue
             parts = target.split('.')
-            location = str(path.relative_to(ROOT)) + ':' + str(node.lineno)
+            location = relative + ':' + str(lineno)
             module_path, remaining = None, []
             for index in range(len(parts) - 1, 0, -1):
                 candidate = '.'.join(parts[:index])
@@ -152,6 +201,159 @@ def _patch_checks(trees):
             if isinstance(current, ast.ClassDef) and attr not in _symbol_table(current):
                 bad.append(location + ':' + target + ':missing_attribute')
     return sorted(set(bad)), sorted(set(unknown))
+
+
+# Test G1 (S5): what a test may name. memvane/<A>/tests/** names memvane.<A>.*,
+# memvane.kernel.*, tests.support.* and the api/types of other domains;
+# tests/<X>/** names api/types, kernel, tests.support.* and its own folder. Import
+# statements, literal import_module/__import__ arguments, patch targets and Python
+# embedded in string literals (``-c`` scripts, the Python inside .mjs files) all
+# count. A '_' name of another domain's api is a finding as well.
+#
+# tests/structure holds the guard itself; its .mjs self-tests carry synthetic
+# sources that name internal modules on purpose.
+_TEST_G1_EXEMPT_DIRS = ('tests/structure/',)
+# Each entry: (test file, dotted name it may name) -> reason. An entry whose file
+# exists but never names it is itself a finding (unused_exception).
+_TEST_G1_EXCEPTIONS = {}
+_EMBEDDED_FROM = re.compile(r'\bfrom[ \t]+([A-Za-z_][\w.]*)[ \t]+import[ \t]*(?:\(([^)]*)\)|([\w \t,]+))')
+_EMBEDDED_IMPORT = re.compile(r'(?<![\w.])import[ \t]+([A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?'
+                              r'(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?)*)')
+_EMBEDDED_CALL = re.compile(r'\b(import_module|__import__|patch)\(\s*\\?[\'"]([A-Za-z_][\w.]*)\\?[\'"]')
+# A whole string that is a dotted memvane name: a patch target kept in a table.
+_DOTTED_NAME = re.compile(r'memvane(?:\.\w+)+')
+_QUOTED_NAME = re.compile(r'[\'"`](memvane(?:\.\w+)+)[\'"`]')
+
+
+def _embedded_references(text):
+    """Yield (offset, kind, dotted) for Python import and patch text inside a string."""
+    for match in _EMBEDDED_FROM.finditer(text):
+        base = match.group(1)
+        if base == '__future__':
+            continue
+        for item in (match.group(2) or match.group(3) or '').split(','):
+            words = item.split()
+            if words and words[0] != '*':
+                yield match.start(), 'embedded', base + '.' + words[0]
+    for match in _EMBEDDED_IMPORT.finditer(text):
+        for item in match.group(1).split(','):
+            yield match.start(), 'embedded', item.split()[0]
+    for match in _EMBEDDED_CALL.finditer(text):
+        yield match.start(), 'embedded_patch' if match.group(1) == 'patch' else 'embedded', match.group(2)
+
+
+def _python_references(tree, module, is_package):
+    """Yield (line, kind, dotted) for the names a Python test file reaches."""
+    aliases = {}
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docstrings.add(id(first.value))
+        if isinstance(node, ast.Import):
+            for item in node.names:
+                aliases[item.asname or item.name.split('.')[0]] = item.asname and item.name or item.name.split('.')[0]
+                yield node.lineno, 'import', item.name
+        elif isinstance(node, ast.ImportFrom):
+            base = _resolve_from(node, module, is_package)
+            if base == '__future__':
+                continue
+            for item in node.names:
+                if item.name != '*':
+                    aliases[item.asname or item.name] = base + '.' + item.name
+                yield node.lineno, 'import', base if item.name == '*' else base + '.' + item.name
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            for offset, kind, dotted in _embedded_references(node.value):
+                yield node.lineno + node.value.count('\n', 0, offset), kind, dotted
+            if _DOTTED_NAME.fullmatch(node.value):
+                yield node.lineno, 'string', node.value
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func, first = node.func, node.args[0]
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ''
+        if name in ('import_module', '__import__') and isinstance(first, ast.Constant) \
+                and isinstance(first.value, str) and not first.value.startswith('.'):
+            yield node.lineno, 'import_module', first.value
+        elif name == 'patch' and isinstance(first, ast.Constant) and isinstance(first.value, str):
+            yield node.lineno, 'patch', first.value
+        elif (name == 'object' and isinstance(func.value, ast.Name) and func.value.id == 'patch'
+              and isinstance(first, ast.Name) and first.id in aliases and len(node.args) > 1
+              and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
+            yield node.lineno, 'patch', aliases[first.id] + '.' + node.args[1].value
+
+
+def _test_reference(dotted, source, names, contexts, symbols):
+    """None when a test owned by ``source`` may name ``dotted``; otherwise the reason."""
+    parts = dotted.split('.')
+    if parts[0] == 'tests':
+        owner = 'tests/' + parts[1] if len(parts) > 1 else 'tests'
+        return None if owner in ('tests/support', source) else 'test_module'
+    if parts[0] == 'memvane' and 'tests' in parts[1:]:
+        return None if '/'.join(parts[1:parts.index('tests', 1)]) == source else 'test_module'
+    for index in range(len(parts), 0, -1):
+        path = names.get('.'.join(parts[:index]))
+        if path is None:
+            continue
+        rest = parts[index:]
+        if path.endswith('__init__.py') and rest and rest[0] not in symbols[path]:
+            break  # memvane.<gone>: a package prefix whose next name is neither a module nor bound in it.
+        owner = contexts[path]
+        if owner == 'kernel' or owner == source:
+            return None
+        if not path.endswith(('/api.py', '/types.py')):
+            return 'internal'
+        return 'private_api' if rest and _private(rest[0]) else None
+    return 'missing_module' if parts[0] == 'memvane' else None
+
+
+def test_checks(root, trees, contexts):
+    """Return (G8 findings, unresolved patch targets, test G1 findings) for the test files under root."""
+    bad, unknown = _patch_checks(root, trees, _test_paths(root, ('.py',)))
+    names = {_module_name(path): path for path in trees}
+    symbols = {path: _symbol_table(tree) for path, tree in trees.items() if path.endswith('__init__.py')}
+    findings, used, present = [], set(), set()
+    for relative in _test_paths(root, ('.py', '.mjs')):
+        if relative.startswith('test/') or relative.startswith(_TEST_G1_EXEMPT_DIRS):
+            continue
+        present.add(relative)
+        source = _test_source(relative)
+        try:
+            text = (root / relative).read_text(encoding='utf8')
+        except (OSError, UnicodeError):
+            continue
+        if relative.endswith('.py'):
+            try:
+                tree = ast.parse(text, filename=relative)
+            except SyntaxError:
+                findings.append(f'{relative}:0:parse:-:syntax_error')
+                continue
+            references = _python_references(tree, _module_name(relative), relative.endswith('/__init__.py'))
+        else:
+            quoted = ((m.start(), 'string', m.group(1)) for m in _QUOTED_NAME.finditer(text))
+            references = ((text.count('\n', 0, offset) + 1, kind, dotted)
+                          for offset, kind, dotted in list(_embedded_references(text)) + list(quoted))
+        seen = set()
+        for line, kind, dotted in references:
+            # One site per (line, name): a patch('memvane.x') call is also a dotted string.
+            if (line, dotted) in seen:
+                continue
+            seen.add((line, dotted))
+            reason = _test_reference(dotted, source, names, contexts, symbols)
+            if reason is None:
+                continue
+            key = next((k for k in _TEST_G1_EXCEPTIONS
+                        if k[0] == relative and (dotted == k[1] or dotted.startswith(k[1] + '.'))), None)
+            if key:
+                used.add(key)
+                continue
+            findings.append(f'{relative}:{line}:{kind}:{dotted}:{reason}')
+    for path, dotted in sorted(set(_TEST_G1_EXCEPTIONS) - used):
+        if path in present:
+            findings.append(f'{path}:0:exception:{dotted}:unused_exception')
+    by_line = lambda line: (line.split(':', 1)[0], int(line.split(':', 2)[1]), line)
+    return bad, unknown, sorted(set(findings), key=by_line)
 
 
 # Strict rules (S4b): api passages that the import-path checks of G1/G5 do not see,
@@ -844,10 +1046,7 @@ def inspect(config, baseline=None):
     trees = {p: ast.parse((ROOT / p).read_text(encoding='utf8'), filename=p)
              for p in files if (ROOT / p).is_file()}
     issues = {f'G{i}': [] for i in range(1, 9)}
-    stdlib_dir = Path(sysconfig.get_path('stdlib'))
-    stdlib = set(sys.builtin_module_names) | {p.stem for p in stdlib_dir.iterdir()
-              if p.name not in ('site-packages', 'dist-packages') and
-              (p.suffix == '.py' or (p.is_dir() and (p / '__init__.py').is_file()))}
+    stdlib = _stdlib()
     issues['G1'].extend(errors)
     names = {_module_name(path): path for path in trees}
     for src, tree in trees.items():
@@ -960,9 +1159,35 @@ def inspect(config, baseline=None):
                 issues['G7'].append(f'{path}:{node.lineno}:adapter_to_application')
             if isinstance(node, ast.Import):
                 issues['G7'].extend(f'{path}:{node.lineno}:adapter_to_application' for item in node.names if '.application' in item.name)
-    issues['G8'], unknown = _patch_checks(trees)
-    strict = strict_checks(trees, {p: files[p]['context'] for p in trees})
-    return snapshot, closures, {key: sorted(set(value)) for key, value in issues.items()}, unknown, strict
+    contexts = {p: files[p]['context'] for p in trees}
+    issues['G8'], unknown, test_g1 = test_checks(ROOT, trees, contexts)
+    strict = strict_checks(trees, contexts)
+    return (snapshot, closures, {key: sorted(set(value)) for key, value in issues.items()}, unknown, strict,
+            test_g1)
+
+
+def _tests_report(g8, unknown, test_g1):
+    """Per-file and per-folder counts of the findings located in test files.
+
+    A patch target outside the product whose root is a standard library module
+    (``time.time``, ``sys.argv``) is external; any other is unresolved, usually a
+    module loaded by file path that the guard cannot follow.
+    """
+    stdlib = _stdlib()
+    external = [line for line in unknown if line.split(':')[2].split('.')[0] in stdlib]
+    unresolved = [line for line in unknown if line not in external]
+    keys = ('G1', 'G8', 'unresolved_patch_targets', 'external_patch_targets')
+    by_file, by_dir = {}, {}
+    for key, lines in zip(keys, (test_g1, g8, unresolved, external)):
+        for line in lines:
+            path = line.split(':', 1)[0]
+            by_file.setdefault(path, dict.fromkeys(keys, 0))[key] += 1
+            folder = path.split('/tests/', 1)[0] + '/tests' if path.startswith('memvane/') else _test_source(path)
+            by_dir.setdefault(folder, dict.fromkeys(keys, 0))[key] += 1
+    return {'counts': {'G1': len(test_g1), 'G8': len(g8), 'unresolved_patch_targets': len(unresolved),
+                       'external_patch_targets': len(external)},
+            'G1': test_g1, 'unresolved_patch_targets': unresolved, 'by_file': by_file, 'by_dir': by_dir,
+            'exceptions': sorted(f'{path}:{dotted}' for path, dotted in _TEST_G1_EXCEPTIONS)}
 
 
 def _csv(value):
@@ -971,27 +1196,37 @@ def _csv(value):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--baseline', default=str(ROOT / 'test/structure/v1-baseline.json'))
+    parser.add_argument('--baseline', default=str(Path(__file__).resolve().parent / 'v1-baseline.json'))
     parser.add_argument('--write-baseline', action='store_true')
     parser.add_argument('--rules', type=_csv, default=[],
                         help='comma-separated rules to report, e.g. G1,G5,G9 (default: all)')
     parser.add_argument('--domain', type=_csv, default=[],
                         help='report only strict findings whose crossed api or table owner is one of these domains')
     parser.add_argument('--source', type=_csv, default=[],
-                        help='report only strict findings located in these domains')
+                        help='report only strict findings located in these domains, and only G8 and test '
+                             'findings of test files these owners hold (a domain, tests/<X> or test)')
+    parser.add_argument('--tests', action='store_true',
+                        help='add per-file test G1, G8 and unresolved patch counts; test G1 counts toward '
+                             'the exit status')
     parser.add_argument('--strict', action='store_true',
                         help='count strict G1/G5/G9 findings toward the exit status')
     args = parser.parse_args()
-    config = json.loads((ROOT / 'test/structure/context-map.json').read_text(encoding='utf8'))
+    config = json.loads((Path(__file__).resolve().parent / 'context-map.json').read_text(encoding='utf8'))
     baseline_path = Path(args.baseline)
     baseline = json.loads(baseline_path.read_text(encoding='utf8')) if baseline_path.exists() else None
-    snapshot, closures, issues, unknown, strict = inspect(config, baseline)
+    snapshot, closures, issues, unknown, strict, test_g1 = inspect(config, baseline)
     if args.write_baseline:
         exceptions = {kind: {p: n for p, n in snapshot[kind].items() if n > limit}
                       for kind, limit in (('file_sizes', 800), ('function_sizes', 150))}
         baseline = {'size_exceptions': exceptions, 'hook_closures': closures}
         baseline_path.write_text(json.dumps(baseline, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
-        snapshot, closures, issues, unknown, strict = inspect(config, baseline)
+        snapshot, closures, issues, unknown, strict, test_g1 = inspect(config, baseline)
+    if args.source:
+        # G8 and test findings are located in test files; keep those of the chosen owners.
+        located = lambda line: _test_source(line.split(':', 1)[0]) in args.source
+        issues['G8'] = [line for line in issues['G8'] if located(line)]
+        unknown = [line for line in unknown if located(line)]
+        test_g1 = [line for line in test_g1 if located(line)]
     findings, strict_metrics = strict
     findings = [f for f in findings if (not args.domain or f['target'] in args.domain)
                 and (not args.source or f['source'] in args.source)]
@@ -1005,14 +1240,26 @@ def main():
         strict_issues = {k: v for k, v in strict_issues.items() if k in args.rules}
         by_domain = {d: {k: n for k, n in row.items() if k in args.rules} for d, row in by_domain.items()}
         by_domain = {d: row for d, row in by_domain.items() if row}
-    print(json.dumps({'counts': {k: len(v) for k, v in issues.items()},
-                      'issues': issues, 'unknown_patch_targets': unknown,
-                      'strict_counts': {k: len(v) for k, v in strict_issues.items()},
-                      'strict_issues': strict_issues, 'strict_by_domain': by_domain,
-                      'strict_metrics': strict_metrics,
-                      'limitations': ['G1 and G2 cover resolved import statements in classified source modules; test imports and nonliteral dynamic imports are not yet classified', 'G6 closure follows static top-level imports and requires hook target verification', 'G7 adapter relative imports and indirect I/O require further analysis', 'G8 examines statically identifiable Python patch calls; JavaScript embedded Python and dynamic targets require further analysis', 'strict G1 follows names bound from another domain api through assignment, call, subscript, with and for within a scope, into parameters annotated with a declared handle Protocol or value type, and into the parameters of a top-level function of the same module that a call passes a handle or value to (positional before any *args, or by keyword); methods, nested functions, other modules and returned values are not followed', 'strict G9 reads Python string literals only; table names built at run time and SQL in JavaScript are not checked'],
-                      'metrics': snapshot['metrics']}, ensure_ascii=False, sort_keys=True))
-    failing = any(issues.values()) or (args.strict and any(strict_issues.values()))
+    limitations = [
+        'G1 and G2 cover resolved import statements in classified source modules; nonliteral dynamic imports are not classified',
+        'G6 closure follows static top-level imports and requires hook target verification',
+        'G7 adapter relative imports and indirect I/O require further analysis',
+        'G8 examines statically identifiable Python patch calls under test/, tests/ and memvane/**/tests/; patch targets in JavaScript embedded Python and dynamic targets are not resolved',
+        'test G1 reads import statements, literal import_module/__import__ arguments, patch and patch.object targets, and import or patch text inside string literals and .mjs files (comments included); relative imports inside strings, python -m module arguments and computed names are not read',
+        'strict G1 follows names bound from another domain api through assignment, call, subscript, with and for within a scope, into parameters annotated with a declared handle Protocol or value type, and into the parameters of a top-level function of the same module that a call passes a handle or value to (positional before any *args, or by keyword); methods, nested functions, other modules and returned values are not followed',
+        'strict G9 reads Python string literals only; table names built at run time and SQL in JavaScript are not checked']
+    report = {'counts': {k: len(v) for k, v in issues.items()},
+              'issues': issues, 'unknown_patch_targets': unknown,
+              'strict_counts': {k: len(v) for k, v in strict_issues.items()},
+              'strict_issues': strict_issues, 'strict_by_domain': by_domain,
+              'strict_metrics': strict_metrics, 'limitations': limitations,
+              'metrics': snapshot['metrics']}
+    if args.tests:
+        report['tests'] = _tests_report(issues.get('G8', []) if not args.rules or 'G8' in args.rules else [],
+                                        unknown, test_g1 if not args.rules or 'G1' in args.rules else [])
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    failing = (any(issues.values()) or (args.strict and any(strict_issues.values()))
+               or (args.tests and bool(report['tests']['G1'])))
     return 1 if failing else 0
 
 

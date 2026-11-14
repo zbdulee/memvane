@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-path=Path(__file__).resolve().parents[1]/'scripts/development_guard.py'
+path=Path(__file__).resolve().parents[2]/'scripts/development_guard.py'
 spec=importlib.util.spec_from_file_location('development_guard',path)
 guard=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)

@@ -58,7 +58,7 @@ test('the free-name check flags unbound names and missing module attributes', t 
 });
 
 test('product modules satisfy structure rules G1 to G7 and strict G1, G5, G9', t => {
-  const {result} = run(t, '../../test/structure/v1_guard.py', ['--strict']);
+  const {result} = run(t, 'v1_guard.py', ['--strict']);
   const report = JSON.parse(result.stdout);
   for (const rule of ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7']) {
     assert.deepEqual(report.issues[rule], [], rule);
@@ -71,5 +71,19 @@ test('product modules satisfy structure rules G1 to G7 and strict G1, G5, G9', t
   assert.deepEqual(limits, {journal: 51, runtime: 41, 'wiki/workspace': 35, 'wiki/card': 48});
   for (const [domain, limit] of Object.entries(limits)) {
     assert.equal(names[`memvane/${domain}/api.py`], limit, domain);
+  }
+});
+
+// Report-only until the last S5 layer: old tests still carry G8 findings and
+// tests/ still names internal modules. The counts are printed, not asserted.
+test('test files report G8 and test G1 counts (report only)', t => {
+  const {result} = run(t, 'v1_guard.py', ['--tests', '--rules', 'G1,G8']);
+  const {counts, by_dir: folders} = JSON.parse(result.stdout).tests;
+  for (const key of ['G1', 'G8', 'unresolved_patch_targets', 'external_patch_targets']) {
+    assert.equal(typeof counts[key], 'number', key);
+  }
+  t.diagnostic(`test G1 ${counts.G1}, G8 ${counts.G8}, unresolved patch targets ${counts.unresolved_patch_targets}`);
+  for (const [folder, row] of Object.entries(folders).sort()) {
+    t.diagnostic(`${folder}: G1 ${row.G1}, G8 ${row.G8}, unresolved ${row.unresolved_patch_targets}`);
   }
 });

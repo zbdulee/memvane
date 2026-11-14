@@ -2,7 +2,7 @@
 
 `context-map.json`은 `memvane/`, `entry/`, `hermes_adapter/`의 Python 모듈을 도메인·계층별로 분류한다. `pinned_paths`는 host 진입점, manifest, provider와 worker 등 필수 경로를 기록한다.
 
-`test/helpers/structure_guard.py`는 정적 import 그래프, 함수 크기와 고정 경로를 조사한다. 도메인 API 경계와 기준선을 함께 관리한다.
+`structure_guard.py`는 정적 import 그래프, 함수 크기와 고정 경로를 조사한다. 도메인 API 경계와 기준선을 함께 관리한다.
 
 `v1_guard.py`는 G1~G8을 `issues`에 보고한다. 엄격 규칙은 `strict_issues`에 따로 보고하고, `--strict`를 줄 때만 종료 코드에 반영한다.
 
@@ -10,4 +10,7 @@
 - G5(엄격): `api.py`의 모듈 이름(`_` 포함, dunder와 `__future__` 제외)과 클래스 멤버를 합친 속성이 30개를 넘는 경우, 모듈 `__getattr__`, `import_module`·`__import__`, `__getattr__`를 정의한 클래스, 서명이 `*args`·`**kwargs`뿐인 함수와 lambda.
 - G9: `CREATE TABLE`이 있는 도메인을 그 테이블의 소유자로 보고, 다른 도메인 문자열 리터럴의 `FROM`·`INTO`·`UPDATE`·`DELETE FROM`·`JOIN` 뒤에 그 테이블 이름이 오는 곳. 층 방향 때문에 소유 도메인 api를 쓸 수 없는 읽기는 `_G9_READ_EXCEPTIONS`(파일·테이블, 근거 주석)에 둔다. 쓰기 키워드가 없는 문자열의 `FROM`·`JOIN`만 면제되고, 맞는 문자열이 없는 예외는 `unused_read_exception`이다.
 
-`--rules G1,G9`는 보고할 규칙을, `--domain journal`은 경계를 넘어 닿는 api·테이블 소유 도메인을, `--source sync`는 위반이 있는 파일의 도메인을 고른다. `strict_by_domain`은 닿는 도메인별 건수다. 탐지기 자체 검사는 `tests/structure/guard-rules.test.mjs`(합성 코드, `tests/structure/guard_rules.py`)가 맡는다.
+- G8: 시험 파일의 `patch` 대상이 실제 모듈·속성인지 본다. `test/`, `tests/`, `memvane/**/tests/`의 Python 파일을 읽는다. `test/` 밖에서는 `mock.patch('…')`와 문자열 전체가 `memvane.` 점 경로인 값(patch 대상 표)도 대상으로 읽는다.
+- 시험 G1(`--tests`): 시험이 이름을 부르는 범위. `memvane/<A>/tests/**`는 `memvane.<A>.*`, `memvane.kernel.*`, `tests.support.*`, 다른 도메인의 `api`·`types`만, `tests/<X>/**`는 `api`·`types`, kernel, `tests.support.*`와 자기 폴더만 부른다. import 문, 리터럴 `import_module`·`__import__` 인자, `patch`·`patch.object` 대상, 문자열과 `.mjs` 안의 Python import·patch 문장을 모두 센다. 다른 도메인 api의 `_` 이름은 `private_api`, 없는 `memvane.` 모듈은 `missing_module`이다. 예외는 `_TEST_G1_EXCEPTIONS`(시험 파일, 점 이름) 표에만 두고, 파일이 있는데 쓰지 않는 예외는 `unused_exception`이다. 가드 자기시험의 합성 소스가 있는 `tests/structure/`는 시험 G1을 보지 않는다. 출력 `tests`에는 파일별·폴더별 시험 G1·G8·미해석 patch 대상 수가 있다. 표준 라이브러리 대상(`time.time` 등)은 `external_patch_targets`로 따로 센다.
+
+`--rules G1,G9`는 보고할 규칙을, `--domain journal`은 경계를 넘어 닿는 api·테이블 소유 도메인을, `--source sync`는 위반이 있는 파일의 도메인을 고른다. `--source`는 G8과 시험 결과도 그 소유자(도메인, `tests/<X>`, `test`)의 시험 파일로 좁힌다. `strict_by_domain`은 닿는 도메인별 건수다. 탐지기 자체 검사는 `tests/structure/guard-rules.test.mjs`(합성 코드, `tests/structure/guard_rules.py`)가 맡는다.
