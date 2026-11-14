@@ -78,6 +78,45 @@ class ExternalInstallRouting(FixtureCase):
                 journal.verify_notification_target(changed)
         self.assertEqual(opened, [])
 
+    def test_hook_rejects_failed_edits_then_routes_mixed_and_multiedit_paths(self):
+        from memvane.host import api as host
+        source = self.b.project.write_note('docs/note.md', 'external edit\n')
+        local = self.a.project.write_note('docs/local.md', 'local edit\n')
+        hidden = self.b.project.write_note('.hidden.md', 'hidden\n')
+        loose = self.home / 'outside.md'
+        loose.write_text('outside\n')
+        decision = self.a.select()
+        inbox = external._inbox_path(self.b.select())
+        base = {'hook_event_name': 'PostToolUse', 'cwd': str(self.a.project.root),
+                'tool_name': 'Write', 'tool_input': {'file_path': str(source)}}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            for failure in ({'is_error': True}, {'success': False}, {'interrupted': True}):
+                self.assertEqual(host.serve_selected('index', 'codex', decision,
+                                                    {**base, 'tool_response': failure}), {})
+            self.assertFalse(inbox.exists())
+            wake.assert_not_called()
+            mixed = {**base, 'tool_name': 'apply_patch', 'tool_input': {'patch': (
+                '*** Update File: %s\n*** Update File: %s\n*** Update File: %s\n*** Update File: %s\n'
+                % (local, source, hidden, loose))}}
+            self.assertEqual(host.serve_selected('index', 'codex', decision, mixed), {})
+            self.assertEqual({call.args for call in wake.call_args_list},
+                             {('laya-sync', str(self.a.project.root)),
+                              ('laya-sync', str(self.b.project.root)),
+                              ('laya-compile', str(self.a.project.root))})
+            self.assertEqual([row['path'] for row in external._read_box(inbox, self.b.select())['edits']],
+                             ['docs/note.md'])
+            for tool_input in ({'file_path': str(source), 'edits': [{'old_string': 'a', 'new_string': 'b'}]},
+                               {'edits': [{'file_path': str(source), 'old_string': 'a', 'new_string': 'b'}]}):
+                wake.reset_mock()
+                event = {**base, 'tool_name': 'MultiEdit', 'tool_input': tool_input}
+                self.assertEqual(host.serve_selected('index', 'codex', decision, event), {})
+                wake.assert_called_once_with('laya-sync', str(self.b.project.root))
+            notebook = self.b.project.write_note('book.ipynb', '{}')
+            wake.reset_mock()
+            self.assertEqual(host.serve_selected('index', 'codex', decision,
+                {**base, 'tool_name': 'NotebookEdit', 'tool_input': {'notebook_path': str(notebook)}}), {})
+            wake.assert_not_called()
+
     def test_notification_proof_rejects_unsafe_journal_parent(self):
         from memvane.journal import api as journal
         from memvane.journal.types import JournalEvidenceError
