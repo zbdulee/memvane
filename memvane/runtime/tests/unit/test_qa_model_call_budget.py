@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from tests.support.case import FixtureCase
 from memvane.runtime import api
+from memvane.runtime import runtime_admission
 from memvane.runtime.types import ResourceDeferred
 
 
@@ -17,6 +18,10 @@ class QaModelBudgetTests(FixtureCase):
             self.assertEqual(api.qa_budget_status(ledger, 6), 6)
             with self.assertRaisesRegex(ResourceDeferred, 'qa_call_budget_exhausted'):
                 api.reserve_qa_budget()
+            with patch.object(runtime_admission.subprocess, 'Popen') as spawn:
+                with self.assertRaisesRegex(ResourceDeferred, 'qa_call_budget_exhausted'):
+                    api.provider_run(['/synthetic/provider'], timeout=1)
+                spawn.assert_not_called()
             with self.assertRaises(FileExistsError):
                 api.qa_budget_initialize(ledger, limit=6, used=0)
             with patch.dict(os.environ, {'QMD_QA_CALL_LIMIT': '7'}):

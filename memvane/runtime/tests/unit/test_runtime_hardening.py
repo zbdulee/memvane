@@ -1,6 +1,6 @@
 from unittest.mock import patch
 from tests.support.case import FixtureCase
-from memvane.runtime.resource_coordination import Coordinator
+from memvane.runtime.resource_coordination import Coordinator, decision
 from memvane.runtime.types import ResourceDeferred
 from memvane.runtime import runtime_work as runtime
 
@@ -14,6 +14,18 @@ class Hardening(FixtureCase):
         self.report={"ready":True,"total_mib":16000,"available_mib":12000,"load_per_cpu":.1,
             "query_status":{"memory_pressure":"ok"},"memory_pressure":{"level":"normal","system_free_percent":70},
             "observed_at_mono":10.}
+
+    def test_missing_old_future_and_nonfinite_observations_defer(self):
+        for value in (None, 90., 110., float('nan')):
+            with self.subTest(value=value):
+                self.assertFalse(decision(self.policy, {**self.report, 'observed_at_mono': value},
+                                          now=100.)['ready'])
+
+    def test_malformed_pressure_metadata_is_unknown_not_healthy(self):
+        for fields in ({'query_status': None}, {'query_status': {}}, {'memory_pressure': {}},
+                       {'memory_pressure': {'level': 'normal', 'system_free_percent': float('nan')}}):
+            with self.subTest(fields=fields):
+                self.assertFalse(decision(self.policy, {**self.report, **fields}, now=10.)['ready'])
 
     def test_pressure_recovery_needs_five_stable_seconds_across_instances(self):
         clock=[10.]

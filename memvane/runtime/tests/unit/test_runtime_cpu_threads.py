@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import time
 from unittest.mock import Mock, patch
 from tests.support.case import FixtureCase
 
@@ -88,3 +89,32 @@ class CpuThreads(FixtureCase):
         cpu.configure_torch(torch);torch.get_num_threads.return_value=8
         with self.assertRaisesRegex(ValueError,'cpu_thread_configuration'):cpu.configure_torch(torch)
         torch.set_num_interop_threads.assert_called_once_with(1)
+
+
+    def test_provider_cpu_refusal_precedes_dispatch_intent(self):
+        cpu=self.cpu();from memvane.runtime import runtime_admission as admission
+        from memvane.runtime.resource_coordination import Coordinator
+        c=Coordinator(self.root);before=Mock()
+        report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
+        with patch.object(cpu.os,'cpu_count',return_value=4),patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'','QMD_PROVIDER_COORD_FD':''}),patch.object(admission,'Coordinator',return_value=c),patch.object(admission,'sample',return_value=report),patch.object(admission.subprocess,'Popen',side_effect=AssertionError('must not send')):
+            with cpu.lease(self.root):
+                with self.assertRaises(admission.PreSendDeferred):admission.provider_popen(['synthetic'],before_launch=before)
+        before.assert_not_called()
+
+    def test_provider_child_retains_share_after_popen_returns(self):
+        cpu=self.cpu();from memvane.runtime import runtime_admission as admission
+        from memvane.runtime.resource_coordination import Coordinator
+        c=Coordinator(self.root);held=[]
+        report={'ready':True,'observed_at_mono':time.monotonic(),'total_mib':16000,'available_mib':12000,'load_per_cpu':.1,'query_status':{'memory_pressure':'ok'},'memory_pressure':{'level':'normal','system_free_percent':70}}
+
+        def spawn(*args,**options):
+            self.assertEqual(options['env']['OPENBLAS_NUM_THREADS'],'1')
+            self.assertEqual(options['env']['INDEX_PATH'],'synthetic')
+            held.append(os.dup(options['pass_fds'][-1]));return Mock()
+        try:
+            with patch.object(cpu.os,'cpu_count',return_value=4),patch.dict(os.environ,{'QMD_SETUP_GUARD_FIXTURE':'','QMD_PROVIDER_COORD_FD':''}),patch.object(admission,'Coordinator',return_value=c),patch.object(admission,'sample',return_value=report),patch.object(admission.subprocess,'Popen',side_effect=spawn):
+                admission.provider_popen(['synthetic'],env={'INDEX_PATH':'synthetic'})
+                with self.assertRaises(ValueError):
+                    with cpu.lease(self.root):self.fail('provider share lost')
+        finally:
+            for fd in held:os.close(fd)

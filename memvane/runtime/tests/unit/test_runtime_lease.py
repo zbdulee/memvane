@@ -2,7 +2,10 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 from tests.support.case import FixtureCase
+from unittest.mock import patch
 from memvane.runtime import runtime_lease as lease
 
 
@@ -52,3 +55,29 @@ class AtomicJson(FixtureCase):
             lease.atomic_json(path,'x'*lease.MAX_FILE)
         self.assertEqual(path.read_bytes(),before)
         self.assertEqual(sorted(p.name for p in self.root.iterdir()),['state.json'])
+
+
+class RuntimeAliases(FixtureCase):
+    def test_runtime_work_queue_with_explicit_root_does_not_load_context_learning(self):
+        root = self.tmp / 'queue'
+        root.mkdir(mode=0o700)
+        repo = str(Path(__file__).resolve().parents[4])
+        probe = ("import sys; from memvane.runtime import runtime_work as r; "
+                 "q=r.WakeQueue(sys.argv[1]);q.put('learning','/synthetic/a'); "
+                 "print(any(x.startswith('memvane.learning.') for x in sys.modules))")
+        result = subprocess.run([sys.executable, '-B', '-c', probe, str(root)],
+                                env={**os.environ, 'PYTHONPATH': repo},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'False')
+
+    def test_runtime_work_shims_reach_the_real_coordinator_and_root_on_call(self):
+        from memvane.runtime import runtime_work, resource_coordination
+        root = self.tmp / 'state'
+        root.mkdir(mode=0o700)
+        with patch.object(resource_coordination, 'default_root', return_value=root):
+            self.assertEqual(runtime_work.default_root(), root)
+            self.assertEqual(runtime_work.WakeQueue().root, root)
+        controller = runtime_work.Coordinator(root)
+        self.assertIsInstance(controller, resource_coordination.Coordinator)
+        self.assertEqual(controller.root, root)
