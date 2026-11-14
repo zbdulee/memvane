@@ -8,7 +8,6 @@ import unittest
 
 from memvane.install import api as install
 from memvane.runtime import api as runtime
-from memvane.runtime import runtime_work
 
 TARGET = '/synthetic/project'
 
@@ -18,7 +17,7 @@ class BuildWakeStatus(unittest.TestCase):
         self.root = Path(os.path.realpath(tempfile.mkdtemp(prefix='mvi-', dir='/tmp')))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.root.chmod(0o700)
-        self.queue = runtime_work.WakeQueue(self.root)
+        self.queue = runtime.wake_queue(self.root)
 
     def tables(self):
         db = sqlite3.connect(self.queue.path.as_uri() + '?mode=ro', uri=True)
