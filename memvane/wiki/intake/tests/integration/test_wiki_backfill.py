@@ -314,3 +314,66 @@ class BackfillChecks(FixtureCase):
         with self.assertRaises(discovery.DiscoveryBlocked):
             backfill.reconcile_discards(self.bound)
         self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
+
+    def test_markerless_dispatched_revision_keeps_authority_for_same_install(self):
+        self.add('one.md')
+        self.dispatch(self.start())
+        job = self.jobs()[0]
+        job.pop('initialBackfill')
+        row = backfill._load(self.decision)
+        self.assertIsNotNone(backfill._authority(self.decision, row, job, markerless=True))
+        backfill.settle_job(self.bound, {**job, '_processedContentRevision': job['contentRevision']})
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['settled'], 1)
+
+    def test_changed_install_scope_or_incarnation_has_no_frozen_authority(self):
+        import copy
+        self.add('one.md')
+        self.dispatch(self.start())
+        job = self.jobs()[0]
+        job.pop('initialBackfill')
+        row = backfill._load(self.decision)
+        for field in ('installId', 'scopeId', 'storeIncarnation'):
+            with self.subTest(field=field):
+                tampered = copy.deepcopy(job)
+                tampered['selectedRoute'][field] = 'f' * 32
+                self.assertIsNone(backfill._authority(self.decision, row, tampered, markerless=True))
+                backfill.settle_job(self.bound, {**tampered, '_processedContentRevision': job['contentRevision']})
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
+
+    def test_unrelated_markerless_job_has_no_frozen_authority(self):
+        import copy
+        self.add('one.md')
+        self.dispatch(self.start())
+        job = self.jobs()[0]
+        job.pop('initialBackfill')
+        unrelated = copy.deepcopy(job)
+        unrelated['source']['path'] = 'unrelated.md'
+        unrelated['contentRevision'] = self.add('unrelated.md')
+        self.assertIsNone(backfill._authority(self.decision, backfill._load(self.decision),
+                                              unrelated, markerless=True))
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
+
+    def test_pending_markerless_revision_cannot_claim_dispatched_authority(self):
+        import copy
+        self.add('one.md')
+        second_hash = self.add('two.md')
+        with patch.object(enqueue, 'compile_max_files', return_value=1):
+            self.dispatch(self.start())
+        job = copy.deepcopy(self.jobs()[0])
+        job.pop('initialBackfill')
+        job['source']['path'] = 'two.md'
+        job['contentRevision'] = second_hash
+        self.assertIsNone(backfill._authority(self.decision, backfill._load(self.decision),
+                                              job, markerless=True))
+        progress = backfill.summary(backfill._load(self.decision))
+        self.assertEqual((progress['pending'], progress['dispatched']), (1, 1))
+
+    def test_tampered_markerless_revision_has_no_frozen_authority(self):
+        self.add('one.md')
+        self.dispatch(self.start())
+        job = self.jobs()[0]
+        job.pop('initialBackfill')
+        job['contentRevision'] = 'f' * 64
+        self.assertIsNone(backfill._authority(self.decision, backfill._load(self.decision),
+                                              job, markerless=True))
+        self.assertEqual(backfill.summary(backfill._load(self.decision))['dispatched'], 1)
