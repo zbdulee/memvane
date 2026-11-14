@@ -205,3 +205,40 @@ class OwnerContention(FixtureCase):
                 resident_service._read_all(sender, 100, 3.5)
         self.assertEqual(sender.timeouts, [2.5, 1.5, .5])
         self.assertEqual(sender.reads, 3)
+
+    def test_two_projects_request_one_service_spawn(self):
+        import fcntl
+        import os
+        from unittest.mock import patch
+        from memvane.resident.tests.support import manifest_for
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        spawned = []
+        with patch.object(resident_service, '_learning_root', return_value=None), \
+             patch.object(embed_resident, '_failure_decision'):
+            for index in (1, 2):
+                project = self.home / ('p%d' % index)
+                project.mkdir(mode=0o700)
+                manifest = manifest_for(self.home / ('e%d.sock' % index))
+                with self.assertRaisesRegex(ResourceDeferred, 'laya_service_preparing'):
+                    embed_resident.ensure_running(str(project), manifest, service_root=root,
+                        spawn=lambda argv, **_kwargs: spawned.append(argv))
+                if index == 1:
+                    held = os.open(root / resident_service.SUCCESSOR, os.O_RDWR)
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    self.addCleanup(os.close, held)
+        self.assertEqual(len(spawned), 1)
+        self.assertIn('resident-service', spawned[0])
+        self.assertIn(str(root), spawned[0])
+        service = resident_service.Service(root, bundle={'version': '1.0.0'})
+        self.assertEqual(len(service.registered()), 2)
+
+    def test_fixture_never_spawns_implicit_live_service(self):
+        from unittest.mock import patch
+        from memvane.resident.tests.support import manifest_for
+        manifest = manifest_for(self.home / 'e.sock')
+        with patch.object(resident_service, '_spawn') as spawn, \
+             patch.object(embed_resident, '_failure_decision'):
+            with self.assertRaisesRegex(ResourceDeferred, 'laya_service_fixture'):
+                embed_resident.ensure_running('/synthetic/project', manifest)
+        spawn.assert_not_called()
