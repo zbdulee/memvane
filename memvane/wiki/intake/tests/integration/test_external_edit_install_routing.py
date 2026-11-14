@@ -32,6 +32,42 @@ class ExternalInstallRouting(FixtureCase):
             self.fail('fixture registry did not complete')
         self.a, self.b = self.installs
 
+    def test_changed_owner_route_or_attestation_never_wakes_owner(self):
+        import json
+        from memvane.journal import api as journal
+        from memvane.journal.types import JournalEvidenceError
+        source = self.b.project.write_note('docs/note.md', 'edited outside owner\n')
+        decision = self.b.select()
+        route = self.b.project.root / '.memvane/route.json'
+        attestation = self.b.state / 'provider-attestation.json'
+        for target in (route, attestation):
+            original = target.read_bytes()
+            try:
+                data = json.loads(original)
+                data['syntheticChangedField'] = True
+                target.write_text(json.dumps(data, sort_keys=True, separators=(',', ':')))
+                with self.subTest(target=target.name), \
+                     patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+                    with self.assertRaises(JournalEvidenceError):
+                        journal.verify_notification_target(decision)
+                    result = external.notify([source], cwd=self.a.project.root, host='codex',
+                                             origin=str(self.a.project.root))
+                    self.assertEqual(result['owners'], 0)
+                    wake.assert_not_called()
+                    self.assertFalse(external._inbox_path(decision).exists())
+            finally:
+                target.write_bytes(original)
+
+    def test_owner_linked_worktree_edits_never_route_to_main(self):
+        linked = self.b.project.linked_worktree('external-linked', 'external-linked-branch')
+        source = linked.write_note('docs/note.md', 'worktree edit\n')
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            result = external.notify([source], cwd=self.a.project.root, host='codex',
+                                     origin=str(self.a.project.root))
+        self.assertEqual(result['owners'], 0)
+        wake.assert_not_called()
+        self.assertFalse(external._inbox_path(self.b.select()).exists())
+
     def test_external_edit_hints_and_wakes_only_selected_owner(self):
         source = self.b.project.write_note('docs/note.md', 'owner revision\n')
         import time
