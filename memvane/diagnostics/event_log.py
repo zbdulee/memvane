@@ -85,7 +85,7 @@ LOCK_WAIT = 0.0005
 GENERATIONS = (NAME + '.1', NAME + '.2')
 LOG_LIMIT = 4 * 1024 * 1024
 MAX_LINE = 4096
-from memvane.diagnostics.types import PROMPT_CHARS, WIKI_TAIL_CHARS
+from memvane.diagnostics.types import PROMPT_CHARS, UNRESOLVED as _UNRESOLVED, WIKI_TAIL_CHARS
 VERSION = 1
 PROMPT_ENV = 'MEMVANE_EVENT_LOG_PROMPTS'
 WIKI_TAIL_WINDOW = 1024 * 1024
@@ -99,7 +99,6 @@ _LIST_LIMIT = 16
 _SECRET_KEY = re.compile(r'(?i)(token|passw|secret|credential|api[_-]?key|authori[sz]|cookie)')
 _SESSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z')
 _CODE = re.compile(r'[A-Za-z0-9_.:-]{1,80}\Z')
-_UNRESOLVED = object()
 
 # Per process (and per context for an in-process host): the bound install.
 _BOUND: contextvars.ContextVar = contextvars.ContextVar('memvane_event_log_bound',

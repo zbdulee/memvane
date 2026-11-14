@@ -4,6 +4,10 @@ from __future__ import annotations
 PROMPT_CHARS = 1000
 WIKI_TAIL_CHARS = 8000
 
+# emit() default for state_root/install/host/session: resolve from the bound
+# install, so an omitted field stays distinguishable from an explicit None.
+UNRESOLVED = object()
+
 REASON_SPAWN_FAILED = 'runtime_spawn_failed'
 REASON_TIMEOUT = 'runtime_timeout'
 REASON_RUNTIME_ERROR = 'runtime_error'
