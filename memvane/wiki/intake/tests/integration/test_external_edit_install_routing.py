@@ -379,6 +379,30 @@ class ExternalInstallRouting(FixtureCase):
         wake.assert_not_called()
         self.assertFalse(external._inbox_path(self.b.select()).exists())
 
+    def test_unregistered_nested_install_never_falls_back_to_parent(self):
+        from memvane.journal import api as journal
+        parent = make_project(self.home, name='new-parent', dirname='new-parent')
+        parent.git('add', '--', '.memvane/settings.json')
+        parent.git('commit', '-qm', 'fixture')
+        project = make_project(self.home, name='nested', dirname='new-parent/nested')
+        source = project.write_note('docs/note.md', 'nested source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project, install_id='7' * 32)
+        self.assertEqual(install.select()['state'], 'candidate')
+        parent_install = build_install(self, parent, install_id='8' * 32)
+        registry.after_setup('activate-index-origin', str(parent.root), str(parent_install.state),
+                             {'phase': 'selected', 'status': 'selected'})
+        self.assertEqual(journal.inspect_journal(install.journal)['state'], 'selected')
+        self.assertEqual(install.select()['state'], 'blocked')
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            result = external.notify([source], cwd=self.a.project.root, host='codex',
+                                     origin=str(self.a.project.root))
+        self.assertEqual(result['owners'], 0)
+        wake.assert_not_called()
+        self.assertFalse(external._inbox_path(parent_install.select()).exists())
+        self.assertEqual(list(install.state.glob('external-edits-*.json')), [])
+
     def test_external_symlink_resolving_inside_origin_never_routes_to_owner(self):
         from memvane.host import api as host
         private = self.a.project.write_note('docs/private.md', 'origin source\n')

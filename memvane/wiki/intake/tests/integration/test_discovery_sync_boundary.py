@@ -196,7 +196,9 @@ class DiscoverySyncBoundary(FixtureCase):
     def test_ungranted_revision_waits_for_a_successful_bash_grant(self):
         project = make_project(self.home)
         source = project.write_note('docs/note.md', 'initial source\n')
-        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        gone = project.write_note('docs/gone.md', 'to be deleted\n')
+        gone_hash = hashlib.sha256(gone.read_bytes()).hexdigest()
+        project.git('add', '--', '.memvane/settings.json', 'docs')
         project.git('commit', '-qm', 'fixture')
         install = build_install(self, project)
         use_config(self, project, expanded(project, compile={
@@ -204,12 +206,16 @@ class DiscoverySyncBoundary(FixtureCase):
             'extractor': {'builtins': ['claude']}}))
         install.settle()
         source.write_text('changed source\n')
+        new = project.write_note('docs/new.md', 'new source\n')
+        gone.unlink()
         first = install.run_sync()
         self.assertIn(first['state'], ('indexed', 'unchanged'), first)
         cursor = discovery._paths(install.select())[0]
         key = project.raw_name + '/docs/note.md'
         revision = hashlib.sha256(source.read_bytes()).hexdigest()
-        self.assertEqual(discovery._read(cursor)['pending'], {key: revision})
+        expected = {key: revision, project.raw_name + '/docs/gone.md': gone_hash,
+                    project.raw_name + '/docs/new.md': hashlib.sha256(new.read_bytes()).hexdigest()}
+        self.assertEqual(discovery._read(cursor)['pending'], expected)
         queue = project.root / '.memvane/compile/source-queue.jsonl'
         self.assertFalse(queue.exists() and queue.read_text().strip())
         session = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
@@ -218,7 +224,7 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(len(discovery.observe_grants(install.select())['grants']['session_start']), 1)
         refused = install.run_sync()
         self.assertIn(refused['state'], ('indexed', 'unchanged'), refused)
-        self.assertEqual(discovery._read(cursor)['pending'], {key: revision})
+        self.assertEqual(discovery._read(cursor)['pending'], expected)
         self.assertEqual(discovery.observe_grants(install.select())['grants']['session_start'], [])
         self.assertFalse(queue.exists() and queue.read_text().strip())
         payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
@@ -231,8 +237,9 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertIn(second['state'], ('indexed', 'unchanged'), second)
         self.assertEqual(discovery._read(cursor)['pending'], {})
         jobs = [json.loads(line) for line in queue.read_text().splitlines()]
-        self.assertEqual(len(jobs), 1)
-        self.assertEqual((jobs[0]['source']['path'], jobs[0]['engine']), ('docs/note.md', 'claude'))
+        self.assertEqual({job['source']['path']: (job['engine'], job['contentRevision']) for job in jobs},
+                         {'docs/new.md': ('claude', expected[project.raw_name + '/docs/new.md']),
+                          'docs/note.md': ('claude', revision), 'docs/gone.md': ('claude', gone_hash)})
         self.assertEqual(discovery.observe_grants(install.select())['grants']['sync'], [])
 
     def test_refused_wake_withdraws_event_grant_before_later_sync(self):
