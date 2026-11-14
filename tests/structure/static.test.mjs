@@ -57,10 +57,13 @@ test('the free-name check flags unbound names and missing module attributes', t 
     'reader.journal.removed_row']);
 });
 
-test('product modules satisfy structure rules G1 to G7', t => {
-  const {result} = run(t, '../../test/structure/v1_guard.py');
+test('product modules satisfy structure rules G1 to G7 and strict G1, G5, G9', t => {
+  const {result} = run(t, '../../test/structure/v1_guard.py', ['--strict']);
   const report = JSON.parse(result.stdout);
   for (const rule of ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7']) {
     assert.deepEqual(report.issues[rule], [], rule);
+  }
+  for (const rule of ['G1', 'G5', 'G9']) {
+    assert.deepEqual(report.strict_issues[rule], [], `strict ${rule}`);
   }
 });
