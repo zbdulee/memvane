@@ -24,3 +24,33 @@ test('tests/support fixtures', () => {
     removeTemp(fixture.home);
   }
 });
+
+test('wiki trust probe reads a card the project builder wrote', async () => {
+  const { wikiTrustState } = await import('./wiki_trust.mjs');
+  const fixture = fixtureHome('mvw');
+  try {
+    const env = fixtureEnv(fixture);
+    const made = spawnSync('python3', ['-B', '-c', [
+      'import sys',
+      'from tests.support.project import make_project',
+      'p = make_project(sys.argv[1], name="trust")',
+      'n = p.write_note("notes/a.md", "The amber lantern glows.\\n")',
+      'p.write_card("concepts/a.md", title="Amber", body="The amber lantern glows.\\n", sources=[n])',
+      'print(p.root)',
+    ].join('\n'), fixture.home], { cwd: ROOT, encoding: 'utf8', env });
+    assert.equal(made.status, 0, made.stderr);
+    const project = made.stdout.trim();
+    const previous = process.env.HOME;
+    process.env.HOME = fixture.home;
+    try {
+      const state = wikiTrustState(project, '.memvane/wiki/concepts/a.md');
+      assert.equal(state.status, 'verified');
+      assert.equal(state.trusted, true);
+      assert.equal(state.revisions.length, 1);
+    } finally {
+      process.env.HOME = previous;
+    }
+  } finally {
+    removeTemp(fixture.home);
+  }
+});
