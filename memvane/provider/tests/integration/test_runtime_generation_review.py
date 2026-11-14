@@ -118,3 +118,36 @@ class NamedGeneration(Machine):
         record = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
                   runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
         self.assertEqual(runtime.ensure_for_attestation(record, self.home), self.first)
+
+    def test_operations_return_the_sealed_generation_after_a_concurrent_switch(self):
+        from contextlib import contextmanager
+        record0 = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
+                   runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
+        record1 = {'providerManifest': self.second, 'dependencyClosure': self.second['dependencyClosure'],
+                   runtime.FILES_SHA: self.second[runtime.FILES_SHA]}
+        self.model_bytes = Path(self.first['modelPath']).read_bytes()
+        operations = (
+            lambda: runtime.ensure_for_attestation(record0, self.home),
+            lambda: runtime.provision_from_attestation(record0, self.home),
+            self.provision,
+        )
+        for operation in operations:
+            with self.subTest(operation=operation):
+                runtime.ensure_for_attestation(record1, self.home)
+                original_lock = runtime._lock
+                evidence = []
+
+                @contextmanager
+                def switch_after_unlock(root):
+                    with original_lock(root):
+                        yield
+                    if not evidence:
+                        evidence.append(runtime.select(self.home)['generation'])
+                        runtime.ensure_for_attestation(record1, self.home)
+
+                with patch.object(runtime, '_lock', switch_after_unlock):
+                    result = operation()
+                self.assertEqual(evidence, [self.first['generation']])
+                self.assertEqual(result['generation'], self.first['generation'])
+                self.assertEqual(result[runtime.FILES_SHA], self.first[runtime.FILES_SHA])
+                self.assertEqual(runtime.select(self.home)['generation'], self.second['generation'])
