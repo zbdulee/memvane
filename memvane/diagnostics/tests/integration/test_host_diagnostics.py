@@ -44,6 +44,49 @@ class HostDiagnosticsTests(FixtureCase):
                     else:
                         self.assertNotIn('diagnostic_id', row)
 
+    def test_recall_trace_warnings_are_bounded_and_exception_is_preserved(self):
+        self.consent(True)
+        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        def serve(*args, **kwargs):
+            trace = kwargs['trace']
+            for _ in range(5):
+                trace.note('laya_selector_invalid_pool')
+            raise ValueError('synthetic-final-error')
+        with patch('memvane.settings.api.diagnostic_enabled', return_value=True), \
+             patch('memvane.journal.api.verify_selected_route', return_value=proof), \
+             patch('memvane.recall.api.serve_endpoint_recall', side_effect=serve):
+            with self.assertRaisesRegex(ValueError, 'synthetic-final-error'):
+                host.serve_selected('recall', 'claude', self.decision, self.payload)
+        rows = event_log.read(self.state)
+        row = [r for r in rows if r.get('event') == 'recall'][-1]
+        self.assertIn('laya_selector_invalid_pool', row['notes'])
+        self.assertEqual(len(row['diagnostic_ids']), 4)
+        warning = diag.reassemble(rows, row['diagnostic_ids'][0])
+        self.assertEqual(warning['status'], 'complete')
+        self.assertEqual(warning['kind'], 'origin_stack')
+        exception = diag.reassemble(rows, row['diagnostic_id'])
+        self.assertEqual(exception['status'], 'complete')
+        self.assertIn('synthetic-final-error', exception['text'])
+
+    def test_empty_recall_notes_do_not_produce_diagnostics(self):
+        self.consent(True)
+        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        def serve(*args, **kwargs):
+            kwargs['trace'].note('no_candidates')
+            kwargs['trace'].note('laya_selector_selected_zero')
+            from memvane.recall.types import RecallAnswer
+            return RecallAnswer(self.decision)
+        with patch('memvane.settings.api.diagnostic_enabled', return_value=True), \
+             patch('memvane.journal.api.verify_selected_route', return_value=proof), \
+             patch('memvane.recall.api.serve_endpoint_recall', side_effect=serve):
+            result = host.serve_selected('recall', 'claude', self.decision, self.payload)
+            self.assertEqual(result['hookSpecificOutput']['additionalContext'], '')
+        rows = event_log.read(self.state)
+        row = [r for r in rows if r.get('event') == 'recall'][-1]
+        self.assertNotIn('diagnostic_id', row)
+        self.assertNotIn('diagnostic_ids', row)
+        self.assertFalse(any(r.get('event', '').startswith('diagnostic.') for r in rows))
+
     def test_logging_failure_preserves_original_exception(self):
         self.consent(True)
         for target in ('memvane.diagnostics.api.emit', 'memvane.diagnostics.api.capture'):
