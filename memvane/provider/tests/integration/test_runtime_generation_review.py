@@ -1,4 +1,5 @@
 """Named runtime reviews validate the requested sealed generation."""
+import os
 from pathlib import Path
 import shutil
 from unittest.mock import patch
@@ -151,3 +152,61 @@ class NamedGeneration(Machine):
                 self.assertEqual(result['generation'], self.first['generation'])
                 self.assertEqual(result[runtime.FILES_SHA], self.first[runtime.FILES_SHA])
                 self.assertEqual(runtime.select(self.home)['generation'], self.second['generation'])
+
+    def test_corrupted_runtime_refuses_review_and_reprovisioning(self):
+        source = Path(self.first['generation'])
+        dep = next(source.rglob('lifecycle-utils/dist/index.js'))
+        native = Path(self.first['dependencyClosure'][0]['path'])
+        model = Path(self.first['modelPath'])
+        metadata = source / 'runtime.json'
+        files = (dep, native, model, metadata)
+        saved = {path: (path.read_bytes(), path.stat().st_mode & 0o777) for path in files}
+        extra = source / 'node_modules' / 'unexpected.js'
+        hardlink = self.home / 'second-link'
+        record = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
+                  runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
+        for kind in ('dependency', 'native', 'model', 'extra', 'missing', 'symlink',
+                     'public', 'hardlink', 'metadata'):
+            with self.subTest(kind=kind):
+                try:
+                    if kind in ('dependency', 'native', 'model'):
+                        target = {'dependency': dep, 'native': native, 'model': model}[kind]
+                        target.write_bytes(target.read_bytes() + b'changed')
+                    elif kind == 'extra':
+                        extra.write_text('unexpected')
+                        extra.chmod(0o600)
+                    elif kind == 'missing':
+                        dep.unlink()
+                    elif kind == 'symlink':
+                        dep.unlink()
+                        dep.symlink_to(self.home)
+                    elif kind == 'public':
+                        dep.chmod(0o640)
+                    elif kind == 'hardlink':
+                        os.link(dep, hardlink)
+                    else:
+                        metadata.write_bytes(metadata.read_bytes() + b'corrupt')
+                    with self.assertRaises(runtime.RuntimeUnavailable):
+                        runtime.select_generation(str(source), self.home)
+                    with self.assertRaises(runtime.RuntimeUnavailable):
+                        runtime.ensure_for_attestation(record, self.home)
+                    self.assertEqual(self.pointer.read_bytes(), self.before)
+                finally:
+                    extra.unlink(missing_ok=True)
+                    hardlink.unlink(missing_ok=True)
+                    for path, (data, mode) in saved.items():
+                        if path.is_symlink():
+                            path.unlink()
+                        path.write_bytes(data)
+                        path.chmod(mode)
+
+    def test_corrupt_active_pointer_refuses_selection_then_attestation_recovers(self):
+        self.pointer.write_text('{}')
+        self.pointer.chmod(0o600)
+        with self.assertRaises(runtime.RuntimeUnavailable):
+            runtime.select(self.home)
+        self.assertEqual(runtime.select_generation(self.first['generation'], self.home), self.first)
+        record = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
+                  runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
+        self.assertEqual(runtime.ensure_for_attestation(record, self.home), self.first)
+        self.assertEqual(runtime.select(self.home), self.first)
