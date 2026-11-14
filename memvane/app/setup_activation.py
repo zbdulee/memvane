@@ -102,14 +102,11 @@ def finalize_initial_build(*, project_root, state_root):
     from memvane.journal.api import schema3_reader_record, seal_reader
     from memvane.app.api import _runtime_dispatch as dispatch
     from memvane.sync import api as sync
-    from memvane.store import api as values
-    from memvane.store import api as view_values, types as store_types
+    from memvane.store import api as store_api, types as store_types
     from memvane.wiki.workspace.api import file_coordination as workspace_files
     from contextlib import closing
     from memvane.store.api import regular as _regular
     _read_json, _write = _ledger._read_json, _ledger._write
-    from memvane.store.api import view_store_class, skip_patterns as _skip_patterns
-    ViewStore = view_store_class()
     from memvane.store.api import provider_spec
     from memvane.runtime.api import sync_owner
     state = _private_parent(state_root)
@@ -142,49 +139,43 @@ def finalize_initial_build(*, project_root, state_root):
                 from memvane.kernel.errors import _query_only_uri
                 with closing(sqlite3.connect(_query_only_uri(Path(identity['storePath'])), uri=True)) as db:
                     db.execute('PRAGMA query_only=ON')
-                    meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
-                    trees = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
-                                       (str(project),)).fetchall()
+                    meta = store_api.stored_header(db)
+                    trees = store_api.stored_worktrees(db, project_root=str(project))
                 if meta is None or len(trees) != 1:
                     _fail('initial_build_store_changed')
                 repository = json.loads(meta[0], object_pairs_hook=_unique)
                 worktree_id = trees[0][0]
-                store = ViewStore.open_reader(identity['storePath'], repository=repository,
-                                              scope_id=identity['scopeId'])
+                store = store_api.open_store(identity['storePath'], repository=repository,
+                                             scope_id=identity['scopeId'], reader=True)
                 try:
-                    if store._incarnation != identity['storeIncarnation']:
+                    if store_api.store_identity(store)['incarnation'] != identity['storeIncarnation']:
                         _fail('initial_build_store_changed')
                     handle = store.capture_view(worktree_id)
                     pin = store.pin_view(handle)
                     try:
                         head = store.head(handle)
-                        vector = store._pinned(pin)['vector']
+                        vector = store_api.pinned_vector(store, pin)
                         if (head['gen_id'] is None or vector is None
                                 or vector['recipe_id'] != spec['recipe_id']
                                 or vector['profile_id'] != spec['profile_id']):
                             _fail('initial_build_vectors_pending')
-                        with store._session() as db:
-                            tree = db.execute('SELECT * FROM worktrees WHERE worktree_id=?',
-                                              (worktree_id,)).fetchone()
-                            baseline = sync.schema3_rows_baseline(store, db, handle, head)
-                            head_row = db.execute('SELECT ordinal FROM s_heads WHERE view_id=?',
-                                                  (handle.view_id,)).fetchone()
+                        tree, baseline, head_row = store_api.read_view_baseline(
+                            store, handle, head, worktree_id=worktree_id, head_ordinal=True)
                         if tree is None or head_row is None:
                             _fail('initial_build_store_changed')
                         found, _skipped = sync.schema3_wiki_cards(tree['wiki_root'])
-                        skips = _skip_patterns(dict(tree))
-                        paths = [p for p in found if not view_values.skipped(p, skips)]
+                        paths = store_api.admitted_paths(dict(tree), found)
                         current = {}
                         for path in paths:
                             raw, _node, _root = _regular(tree['wiki_root'], path, store_types.MAX_BODY)
-                            current[path] = values.hash_bytes(raw)
+                            current[path] = hashlib.sha256(raw).hexdigest()
                         stale = current != {p: member['blob_sha'] for p, member in baseline['old'].items()}
                         scan = {}
                         observed = sync.schema3_sources(decision, handle, time.monotonic() + 45,
                                                          raw_scan=scan)
                         if 'snapshot' not in scan:
                             _fail('raw_scan_unavailable')
-                        stale = stale or not sync.schema3_head_same(store, head, baseline, observed, handle)
+                        stale = stale or not store_api.head_same(store, head, baseline, observed, handle)
                         if stale:
                             # Sources moved after the published head: one more
                             # build pass, then this finalize reseals its floor.
@@ -228,6 +219,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.journal import api as journal_module
     from memvane.journal.api import commit_selection, pin_schema3
     from memvane.sync import api as sync
+    from memvane.store import api as store_api
     from memvane.wiki.intake import api as discovery
     from memvane.settings import api as project_dir
     from memvane.wiki.workspace.api import file_coordination as workspace_files
@@ -287,12 +279,11 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                     if (floor is None or head['view_id'] != floor['view_id']
                             or head['epoch'] != floor['epoch']):
                         _fail('initial_build_head_changed')
-                    with store._session() as db:
-                        baseline = sync.schema3_rows_baseline(store, db, handle, head)
+                    _tree, baseline, _ordinal = store_api.read_view_baseline(store, handle, head)
                     scan = {}
                     observed = sync.schema3_sources(decision, handle, time.monotonic() + 45,
                                                      raw_scan=scan)
-                    if 'snapshot' not in scan or not sync.schema3_head_same(
+                    if 'snapshot' not in scan or not store_api.head_same(
                             store, head, baseline, observed, handle):
                         _fail('initial_build_out_of_date')
                     # Unselected and no pointer yet: an older inert snapshot gives way.

@@ -480,16 +480,16 @@ def _schema3_cosines(bound, record, current, text, generation):
     from memvane.recall.api import approved_profile_matches
     from memvane.store.types import DEFERRED
     from memvane.store.types import BlobStoreError
+    from memvane.store.api import pinned_vector, vector_profile
     decision, _proof = bound
     if record.get('vector_profile') is None:
         return {}
     deadline = time.monotonic() + QUERY_SECONDS
     with reader.pin_schema3(record, deadline=deadline) as (store, _handle, pin):
-        vector = store._pinned(pin)['vector']
+        vector = pinned_vector(store, pin)
         if pin.gen_id != generation or vector is None:
             return {}
-        with store._session():
-            profile = store._profile(vector['profile_id'])
+        profile = vector_profile(store, vector['profile_id'], session=True)
         if not approved_profile_matches(profile, current):
             return {}
         from memvane.kernel.errors import IndexContractError

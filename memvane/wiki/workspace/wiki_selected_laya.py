@@ -98,18 +98,13 @@ def schema3_checkout(bound):
             return None
         recheck(bound)
         row = journal.schema3_reader_repository(decision, record, journal_path)
-        from memvane.store.api import view_store_class
-        ViewStore = view_store_class()
-        store = ViewStore.open_reader(record['db_path'], repository=json.loads(row[0]), scope_id=record['scope'])
-        try:
-            saved, _capture = store._observe_worktree(record['worktree_id'])
-            if not saved['binding_digest'] == record['worktree_binding']:
-                raise JournalEvidenceError('reader_store_changed')
-            from memvane.store.api import worktree_record as _worktree_record
-            repository = store._repository
-            worktree = _worktree_record(saved, repository, store._policy)
-        finally:
-            store.close()
+        from memvane.store.api import observe_binding
+        binding = observe_binding(record['db_path'], repository=json.loads(row[0]), scope_id=record['scope'],
+                                  worktree_id=record['worktree_id'], reader=True)
+        if not binding['saved']['binding_digest'] == record['worktree_binding']:
+            raise JournalEvidenceError('reader_store_changed')
+        repository = binding['repository']
+        worktree = binding['record']
         issued = _Schema3Checkout(decision, endpoint, epoch, repository, worktree)
         if not issued._selection_current():
             raise ValueError('reader_selection_changed')

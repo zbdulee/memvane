@@ -396,12 +396,12 @@ class WikiDbProvenance(unittest.TestCase):
                 'WHERE a.trust_digest=? ORDER BY a.ordinal', (trust,))]
 
     def store_verify(self):
-        from memvane.store.api import view_store_class
+        from memvane.store.api import open_store
         with self.db() as db:
             repository = json.loads(db.execute(
                 'SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()[0])
-        store = view_store_class().open_reader(self.store_path, repository=repository,
-                                               scope_id=self.decision['scopeId'])
+        store = open_store(self.store_path, repository=repository, scope_id=self.decision['scopeId'],
+                           reader=True)
         try:
             return store.verify()
         finally:

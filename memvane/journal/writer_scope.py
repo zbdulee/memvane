@@ -36,8 +36,7 @@ class _SelectedWriterContext:
         self.marked = False
 
     def __enter__(self):
-        from memvane.store.api import view_store_class
-        ViewStore = view_store_class()
+        from memvane.store import api as store_api
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread()
                 and not self.entered and not self.finished, 'normal_writer_reentered')
         try:
@@ -55,21 +54,19 @@ class _SelectedWriterContext:
                                         record['db_path'], record['worktree_id'])
             R._need(R.records_agree(record, evidence, tuple(evidence)), 'writer_plan_store_changed')
             with R._readonly(Path(record['db_path']), state, recover=True) as db:
-                meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+                meta = store_api.stored_header(db)
             R._need(meta is not None, 'writer_plan_store_changed')
             repository = json.loads(meta[0])
-            store = ViewStore.open(record['db_path'], repository=repository, scope_id=record['scope'])
-            try:
-                saved, _capture = store._observe_worktree(record['worktree_id'])
-                R._need(store._incarnation == record['incarnation']
-                        and store._policy == record['settings_policy_digest']
-                        and saved['binding_digest'] == record['worktree_binding'],
-                        'writer_plan_store_changed')
-                self.store = {'path': record['db_path'], 'incarnation': store._incarnation,
-                              'worktree_id': record['worktree_id'], 'repository': repository,
-                              'worktree_binding': record['worktree_binding'], 'policy_digest': store._policy}
-            finally:
-                store.close()
+            binding = store_api.observe_binding(record['db_path'], repository=repository,
+                                                scope_id=record['scope'], worktree_id=record['worktree_id'])
+            R._need(binding['incarnation'] == record['incarnation']
+                    and binding['policy_digest'] == record['settings_policy_digest']
+                    and binding['saved']['binding_digest'] == record['worktree_binding'],
+                    'writer_plan_store_changed')
+            self.store = {'path': record['db_path'], 'incarnation': binding['incarnation'],
+                          'worktree_id': record['worktree_id'], 'repository': repository,
+                          'worktree_binding': record['worktree_binding'],
+                          'policy_digest': binding['policy_digest']}
             self.entered = True
             token = object.__new__(SelectedWriter)
             self.writer = token
@@ -116,8 +113,7 @@ class _BuildWriterContext:
         from memvane.journal import initial_build as build
         from memvane.journal.dispatch_target import dispatch_target
         from memvane.journal.install_journal import _attestation, _v1_provider_manifest, inspect_journal
-        from memvane.store.api import view_store_class
-        ViewStore = view_store_class()
+        from memvane.store import api as store_api
         from memvane.kernel.errors import _query_only_uri
         import sqlite3
         from contextlib import closing
@@ -146,20 +142,17 @@ class _BuildWriterContext:
             path = Path(identity['storePath'])
             with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
                 db.execute('PRAGMA query_only=ON')
-                meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
-                rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
-                                  (identity['projectRoot'],)).fetchall()
+                meta = store_api.stored_header(db)
+                rows = store_api.stored_worktrees(db, project_root=identity['projectRoot'])
             R._need(meta is not None and len(rows) == 1, 'writer_plan_store_changed')
             repository = json.loads(meta[0])
-            store = ViewStore.open(path, repository=repository, scope_id=identity['scopeId'])
-            try:
-                saved, _capture = store._observe_worktree(rows[0][0])
-                R._need(store._incarnation == identity['storeIncarnation'], 'writer_plan_store_changed')
-                self.store = {'path': str(path), 'incarnation': store._incarnation,
-                              'worktree_id': rows[0][0], 'repository': repository,
-                              'worktree_binding': saved['binding_digest'], 'policy_digest': store._policy}
-            finally:
-                store.close()
+            binding = store_api.observe_binding(path, repository=repository, scope_id=identity['scopeId'],
+                                                worktree_id=rows[0][0])
+            R._need(binding['incarnation'] == identity['storeIncarnation'], 'writer_plan_store_changed')
+            self.store = {'path': str(path), 'incarnation': binding['incarnation'],
+                          'worktree_id': rows[0][0], 'repository': repository,
+                          'worktree_binding': binding['saved']['binding_digest'],
+                          'policy_digest': binding['policy_digest']}
             self.entered = True
             token = object.__new__(BuildWriter)
             self.writer = token

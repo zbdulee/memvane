@@ -1069,6 +1069,21 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/store/application/__init__.py": {
+      "context": "store",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/store/application/store_ops.py": {
+      "context": "store",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/store/application/view_sync.py": {
+      "context": "store",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/store/blob/__init__.py": {
       "context": "store",
       "layer": "adapter",

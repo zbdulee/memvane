@@ -232,8 +232,7 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
     from contextlib import ExitStack
     from memvane.install import api as build
     from memvane.journal.api import build_writer_scope
-    from memvane.store.api import view_store_class
-    ViewStore = view_store_class()
+    from memvane.store import api as store_api
     state = Path(decision['stateRoot'])
     try:
         with sync_owner(Path(decision['storePath']), wait=True) as owner:
@@ -245,10 +244,12 @@ def _run_cold_build(decision, *, coordinator=None, report=None,
                 info = writer.store()
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
                                                    report=report, start_service=start_service)
-                store = ViewStore.open(info['path'], repository=info['repository'],
-                                       scope_id=decision['scopeId'])
+                store = store_api.open_store(info['path'], repository=info['repository'],
+                                             scope_id=decision['scopeId'])
                 try:
-                    if (store._incarnation, store._policy) != (info['incarnation'], info['policy_digest']):
+                    identity = store_api.store_identity(store)
+                    if (identity['incarnation'], identity['policy_digest']) != (info['incarnation'],
+                                                                                info['policy_digest']):
                         raise IndexContractError('schema3_store_changed')
                     result = _publish_schema3_view(store, writer, decision, proof,
                         info['worktree_id'], info['worktree_binding'],
@@ -399,8 +400,6 @@ def _schema3_wiki_cards(root):
     Dot segments, root meta pages and links are not cards; a file the store
     would refuse to admit (not owned, linked, too large) is counted, not read.
     """
-    from memvane.store import api as v
-    from memvane.store import api as view_values
     cards, skipped = [], 0
     for base, dirs, files in os.walk(root, followlinks=False):
         dirs[:] = sorted(name for name in dirs if not name.startswith('.'))
@@ -452,15 +451,13 @@ def _publish_schema3(decision, proof, writer, vectors=None):
     """
     if vectors is None:
         vectors = {'spec': None}
-    from memvane.store import api as v
-    from memvane.store import api as checkout
-    from memvane.store.api import view_store_class
-    ViewStore = view_store_class()
+    from memvane.store import api as store_api
     info = writer.store()
     deadline = time.monotonic() + SCHEMA3_PASS_SECONDS
-    store = ViewStore.open(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
+    store = store_api.open_store(info['path'], repository=info['repository'], scope_id=decision['scopeId'])
     try:
-        if (store._incarnation, store._policy) != (info['incarnation'], info['policy_digest']):
+        identity = store_api.store_identity(store)
+        if (identity['incarnation'], identity['policy_digest']) != (info['incarnation'], info['policy_digest']):
             raise IndexContractError('schema3_store_changed')
         marks = {}
         result = _publish_schema3_view(store, writer, decision, proof, info['worktree_id'],
@@ -567,21 +564,12 @@ def _schema3_linked_projects(decision, deadline):
 def _schema3_linked_worktree(store, writer, proof, info, project, deadline, marks):
     """The linked worktree's registered id, registering it on first sight.
 
-    Registration is a store write, so the pass's journal fence comes first.
-    The record is built by ``laya_checkout_view.register_worktree`` and bound
-    by ``ViewStore.register_worktree`` (no rebinding of an existing row).
+    Registration is a store write, so the pass's journal fence comes first
+    (``store.api.linked_worktree_id``).
     """
-    from memvane.store import api as checkout
-    with store._session() as db:
-        rows = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
-                          (str(project),)).fetchall()
-    if len(rows) > 1 or any(row[0] == info['worktree_id'] for row in rows):
-        raise IndexContractError('schema3_worktree_rows_invalid')
-    if rows:
-        return rows[0][0]
-    _mark_schema3_write(writer, proof, marks)
-    record = checkout.register_worktree(str(project), info['repository'], deadline=deadline)
-    return store.register_worktree(str(project), record)
+    from memvane.store import api as store_api
+    return store_api.linked_worktree_id(store, info, project, deadline,
+                                        lambda: _mark_schema3_write(writer, proof, marks))
 
 
 def _linked_decision(decision, project):
@@ -650,11 +638,10 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     result's ``vector`` names why the vectors wait. An unchanged lexical head
     gets its vector generation from the same manifest.
     """
+    import hashlib
     from memvane.store import api as v
     from memvane.wiki.card.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
     from memvane.store.api import regular as _regular
-    from memvane.store import api as view_values
-    from memvane.store.api import skip_patterns as _skip_patterns
     import uuid
     if vectors is None:
         vectors = {'spec': None}
@@ -662,19 +649,16 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         handle = store.capture_view(worktree_id, deadline=deadline)
         head = store.head(handle)
         cold = head['gen_id'] is None
-        with store._session() as db:
-            row = db.execute('SELECT * FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
-            baseline = _schema3_rows_baseline(store, db, handle, head)
+        row, baseline, _ordinal = v.read_view_baseline(store, handle, head, worktree_id=worktree_id)
         old, carry = baseline['old'], baseline['carry']
         if row is None or (binding is not None and row['binding_digest'] != binding):
-            v.fail('wiki_binding_changed')
+            raise store_types.BlobStoreError('wiki_binding_changed')
         root = row['wiki_root']
         found, skipped = _schema3_wiki_cards(root)
         # skipPaths is read each pass, outside the binding: a card it newly
         # covers leaves the generation (not a file removal), one it no longer
         # covers is ingested like a new card.
-        skips = _skip_patterns(dict(row))
-        paths = [p for p in found if not view_values.skipped(p, skips)]
+        paths = v.admitted_paths(dict(row), found)
         removed = sorted(set(old) - set(found))
         excluded = sorted(set(old) & (set(found) - set(paths)))
         current = {}
@@ -682,8 +666,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             try:
                 raw, _node, _root = _regular(root, path, store_types.MAX_BODY)
             except OSError:
-                v.fail('wiki_card_unavailable')
-            current[path] = (v.hash_bytes(raw), raw)
+                raise store_types.BlobStoreError('wiki_card_unavailable')
+            current[path] = (hashlib.sha256(raw).hexdigest(), raw)
         changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
         if (len(removed) > MASS_DELETE_MIN
                 and len(removed) > MASS_DELETE_FRACTION * len(old)):
@@ -697,7 +681,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         current_sources = ({source: (sha, length) for source, (sha, length, _tracked) in observed.items()}
                            if 'snapshot' in scanned else None)
         if (not changed and not removed and not excluded and not cold
-                and _schema3_head_same(store, head, baseline, observed, handle)):
+                and v.head_same(store, head, baseline, observed, handle)):
             provenance = _consume_compile_intents(store, writer, proof, marks, decision, handle, old, current)
             if window:
                 # The main view has nothing to ingest: its vector fill (and the
@@ -719,7 +703,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 _mark_schema3_write(writer, proof, marks)
                 scan = {'id': uuid.uuid4().hex, 'observed_ns': time.time_ns()}
                 manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
-                                complete=True, sources=_schema3_put_sources(store, handle, scan, observed),
+                                complete=True, sources=v.put_source_fingerprints(store, handle, scan, observed),
                                 members=[old[p] for p in sorted(old)])
             started = time.monotonic()
             generation = store.prepare_generation(handle, manifest, expected_head=head,
@@ -763,7 +747,7 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if pending and not ingested and not removed and not excluded:
             return {'state': 'deferred', 'reason': 'schema3_pass_budget', 'storeFormat': 'schema3'}
         provenance = _consume_compile_intents(store, writer, proof, marks, decision, handle, members, current)
-        sources = _schema3_put_sources(store, handle, scan, observed)
+        sources = v.put_source_fingerprints(store, handle, scan, observed)
         manifest = dict(scan_id=scan['id'], policy_digest=handle.policy_digest, revocation_epoch=0,
                         complete=True, sources=sources, members=[members[p] for p in sorted(members)])
         staging = pending and (cold or held)
@@ -819,69 +803,6 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     return result
 
 
-
-
-def _schema3_rows_baseline(store, db, handle, head):
-    """Format 4: the head's open card rows, the view's ready stage, and the head's sources.
-
-    The view keeps one stage. A ready stage over this head is the progress of
-    an unfinished change set (``carry``); for a cold view, a ready stage over
-    no head is the progress itself (``old``). Members are read in the worker's
-    member shape. ``sources`` and ``head_oid`` let an unchanged pass compare
-    this pass's observation without reading a stored manifest.
-    """
-    import json
-    from memvane.store import api as view_rows
-    from memvane.store import api as view_values
-    cold = head['gen_id'] is None
-
-    def member(row):
-        return dict(path=row['path'], blob_sha=row['blob_sha'], display_title=row['title'],
-                    trust_digest=row['trust_digest'])
-    opened = {} if cold else {row['path']: member(row) for row in store._rows_open(db, handle.view_id)}
-    staged = {}
-    job = db.execute("SELECT job_id,base_gen_id,base_epoch FROM s_stage_jobs WHERE view_id=? AND state='ready'",
-                     (handle.view_id,)).fetchone()
-    if job is not None and (job[1], job[2]) == (head['gen_id'], head['epoch']):
-        staged = dict(opened)
-        for item in db.execute('SELECT path,action,input_sha,blob_sha,trust_digest,metadata_json FROM s_stage_items '
-                               'WHERE job_id=? ORDER BY path', (job[0],)).fetchall():
-            new = view_rows.stage_item_row(view_values.check_stage_item(dict(zip(store_types.STAGE_ITEM_FIELDS,
-                                                                             tuple(item)))))
-            if new is None:
-                staged.pop(item[0], None)
-            else:
-                staged[item[0]] = member(new)
-    spec = head_oid = None
-    sources = []
-    if not cold:
-        generation = db.execute('SELECT g.recipe_id,g.profile_id,g.coverage,g.capture_json FROM s_heads h '
-                                'JOIN s_generations g ON g.view_id=h.view_id AND g.ordinal=h.ordinal '
-                                'WHERE h.view_id=?', (handle.view_id,)).fetchone()
-        if generation[2] == 'complete':
-            spec = dict(recipe_id=generation[0], profile_id=generation[1])
-        head_oid = json.loads(generation[3])['headOid']
-        sources = store._rows_open_sources(db, handle.view_id)
-    return dict(old=staged if cold else opened, carry={} if cold else staged, manifest=None,
-                vector_spec=spec, head_oid=head_oid, sources=sources)
-
-
-def _schema3_head_same(store, head, baseline, observed, handle):
-    """The head was published from exactly this observation at the same HEAD."""
-    from memvane.store import api as view_values
-    if baseline['head_oid'] != handle.head_oid:
-        return False
-    wanted = []
-    for path in sorted(observed, key=lambda item: item.encode('utf8')):
-        sha, length, tracked = observed[path]
-        content = view_values.source_content(sha, length)
-        observation = view_values.source_observation(
-            worktree_id=handle.worktree_id, branch_key=handle.branch_key, path=path, tracked_state=tracked,
-            binding_state='observed', content_id=content['content_id'], legacy_fingerprint_id=None)
-        wanted.append(dict(path=path, observation_id=observation['observation_id']))
-    return wanted == baseline['sources']
-
-
 def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
     """Whether a row-format stage can seal ``vectors['spec']`` now, without a fill.
 
@@ -896,11 +817,7 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
         return {'state': 'off'}
     blobs = set(changed_blobs) if sealed == spec else {member['blob_sha'] for member in manifest['members']}
     try:
-        with store._session() as db:
-            store._recipe(spec['recipe_id']); store._profile(spec['profile_id'])
-            missing = any(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
-                                     (blob, spec['recipe_id'], spec['profile_id'])).fetchone() is None
-                          for blob in blobs)
+        missing = v.embedding_sets_missing(store, blobs, spec['recipe_id'], spec['profile_id'])
     except store_types.BlobStoreError as exc:
         if exc.reason not in ('recipe_missing', 'profile_missing'):
             raise
@@ -974,22 +891,6 @@ def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
         except (git_branch_safety.GitUnavailable, OSError, ValueError):
             pass  # unknown tracked state: observed, never deletion authority
     return {path: tuple(value) for path, value in observed.items()}
-
-
-
-
-def _schema3_put_sources(store, handle, scan, observed):
-    """Record this scan's observed fingerprints in one write; returns the manifest sources."""
-    sources = []
-    with store._session(write=True) as db:
-        for path in sorted(observed):
-            sha, length, tracked = observed[path]
-            fingerprint = store._put_fingerprint(db, dict(
-                worktree_id=handle.worktree_id, branch_key=handle.branch_key, path=path,
-                source_sha=sha, byte_length=length, head_oid=handle.head_oid, tracked_state=tracked,
-                binding_state='observed', scan_id=scan['id'], observed_ns=scan['observed_ns']))
-            sources.append({'path': path, 'fingerprint_id': fingerprint, 'presence': 'present'})
-    return sources
 
 
 class _VectorMemberBlocked(Exception):
@@ -1122,7 +1023,7 @@ def _schema3_chunker(context, current):
     recipe's fallback windows (``FALLBACK_CHARS``) and keeps no vector, so the
     embedder embeds each window alone.
     """
-    from memvane.store import api as v
+    import hashlib
     from memvane.store.types import FALLBACK_CHARS
     from memvane.store.api import qmd_first_pass
 
@@ -1154,7 +1055,7 @@ def _schema3_chunker(context, current):
             title = document['title'] or 'none'
             for (_pos, text), row in zip(parts, rows):
                 context['stash']['title: ' + title + ' | text: ' + text] = row['vector']
-        return [{'seq': seq, 'position': pos, 'text': text, 'text_sha': v.hash_bytes(text.encode('utf8'))}
+        return [{'seq': seq, 'position': pos, 'text': text, 'text_sha': hashlib.sha256(text.encode('utf8')).hexdigest()}
                 for seq, (pos, text) in enumerate(parts)]
 
     def embedder(inputs, _profile):
@@ -1201,22 +1102,10 @@ SCHEMA3_LINKED_LIST_SECONDS = 5
 SCHEMA3_FILL_DEADLINES = frozenset(('content_fill_deadline', 'fill_deadline_exceeded'))
 
 
-def _schema3_first_missing(store, targets, cursor, recipe_id, profile_id):
-    """``(index, chunked)`` of the first target from ``cursor`` without its embedding set, or None."""
-    with store._session() as db:
-        for index in range(cursor, len(targets)):
-            blob = targets[index]['blob_sha']
-            if db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
-                          (blob, recipe_id, profile_id)).fetchone() is None:
-                chunked = db.execute('SELECT 1 FROM chunk_sets WHERE blob_sha=? AND recipe_id=?',
-                                     (blob, recipe_id)).fetchone()
-                return index, chunked is not None
-    return None
-
-
 def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
     """Index of the first target from ``cursor`` without its embedding set, when its chunk set is stored."""
-    first = _schema3_first_missing(store, targets, cursor, recipe_id, profile_id)
+    from memvane.store import api as v
+    first = v.embedding_coverage(store, targets, recipe_id, profile_id, first_from=cursor)
     return first[0] if first is not None and first[1] else None
 
 
@@ -1245,14 +1134,6 @@ def _schema3_vector_detail(result):
     return re.sub(r'[^a-z0-9_.:-]', '_', ':'.join(parts))[:80]
 
 
-def _schema3_embedded(store, targets, recipe_id, profile_id):
-    """How many of ``targets`` have the spec's embedding set (store observation)."""
-    with store._session() as db:
-        return sum(db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? '
-                              'AND profile_id=?', (t['blob_sha'], recipe_id, profile_id)).fetchone() is not None
-                   for t in targets)
-
-
 def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vectors, deadline,
                      *, window=False):
     """Fill this manifest's vectors for the pass's spec; ``state`` says what remains.
@@ -1279,8 +1160,8 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     recipe_id, profile_id = spec['recipe_id'], spec['profile_id']
     current = lambda: marks.get('proof', proof)  # noqa: E731 - the proof after this pass's fence
     try:
-        with store._session():
-            store._recipe(recipe_id); store._profile(profile_id)
+        # No blobs: only the recipe and profile rows are checked.
+        v.embedding_sets_missing(store, (), recipe_id, profile_id)
         registered = True
     except store_types.BlobStoreError as exc:
         if exc.reason not in ('recipe_missing', 'profile_missing'):
@@ -1293,10 +1174,10 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             _mark_schema3_write(writer, proof, marks)
             from memvane.store.api import register_provider_spec
             if register_provider_spec(store, current()['providerManifest'], current()['vectorProfile']) != spec:
-                v.fail('vector_spec_mismatch')
-        _entry, _saved, _job, targets, stored = store._rows_fill_plan(handle, recipe_id, profile_id)
+                raise store_types.BlobStoreError('vector_spec_mismatch')
+        _entry, _saved, _job, targets, stored = v.fill_plan(store, handle, recipe_id, profile_id)
         cursor = 0 if stored is None else stored
-        before = _schema3_embedded(store, targets, recipe_id, profile_id)
+        before = v.embedding_coverage(store, targets, recipe_id, profile_id)
         missing = len(targets) - before
         if missing:
             vectors['acquire'](current())
@@ -1308,15 +1189,15 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         def pending(reason, at):
             # ``progress``: embedding sets this pass added (store observation,
             # not callback counts); ``ordinal``: the first target still missing.
-            first = _schema3_first_missing(store, targets, at, recipe_id, profile_id)
+            first = v.embedding_coverage(store, targets, recipe_id, profile_id, first_from=at)
             return {'state': 'pending', 'reason': reason, 'filled': filled, 'cacheHits': hits,
                     'remaining': len(targets) - at,
-                    'progress': _schema3_embedded(store, targets, recipe_id, profile_id) - before,
+                    'progress': v.embedding_coverage(store, targets, recipe_id, profile_id) - before,
                     'cursorMoved': at - cursor, 'ordinal': None if first is None else first[0],
                     'providerMs': vectors.get('stats', {}).get('providerMs', 0)}
         while not status['complete']:
             left = deadline - SCHEMA3_PUBLISH_RESERVE - time.monotonic()
-            first = _schema3_first_missing(store, targets, status['cursor'], recipe_id, profile_id)
+            first = v.embedding_coverage(store, targets, recipe_id, profile_id, first_from=status['cursor'])
             span = None if first is None else first[0] - status['cursor'] + 1
             # The first cold target of a pass (no chunk set: its single chunked
             # provider call is the whole work) gets the resume budget, so a card
@@ -1339,7 +1220,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             # The targets this call can reach: the window compares their sets
             # before and after a call stopped by its own deadline.
             reach = targets[status['cursor']:status['cursor'] + files]
-            mark = _schema3_embedded(store, reach, recipe_id, profile_id) if window else None
+            mark = v.embedding_coverage(store, reach, recipe_id, profile_id) if window else None
             try:
                 step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
                                        embedder=embedder, write_fence=fence,
@@ -1350,7 +1231,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                     raise
                 # Content sets committed before the deadline stay (cache hits
                 # next pass); the lexical publish of this pass goes on.
-                if window and _schema3_embedded(store, reach, recipe_id, profile_id) > mark:
+                if window and v.embedding_coverage(store, reach, recipe_id, profile_id) > mark:
                     # Inside the vector window, a call that added sets before its
                     # own deadline does not end the window: the next call passes
                     # those as cache hits. A call that added none ends it.

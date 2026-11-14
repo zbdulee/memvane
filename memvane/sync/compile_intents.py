@@ -102,31 +102,7 @@ def _named(name, intent, suffix):
 def _stored(store, handle, intent):
     """A consumed file is a witness only if its exact evidence is stored for this view."""
     from memvane.store import api as values
-    intent = _required(intent)
-    result = {key: value for key, value in intent.items()
-              if key not in ('kind', 'verdict_digest', 'result_digest')}
-    if (intent.get('kind') != 'compile' or intent['viewId'] != handle.view_id
-            or values.compile_result_digest(result, intent['verdict_digest']) != intent['result_digest']):
-        return False
-    sources = []
-    for fp in intent['sourceFingerprints']['fingerprints']:
-        if (fp['worktree_id'], fp['branch_key']) != (handle.worktree_id, handle.branch_key):
-            return False
-        fingerprint_id = values.digest('memvane-source-fingerprint-v1',
-                                       values.fingerprint(fp, store._repository['gitObjectFormat']))
-        spans = [dict(span, kind='lines-v1') for span in intent['sourceSpans']
-                 if span['path'] == fp['path'] and span['sourceSha256'] == fp['source_sha']]
-        sources.append(dict(fingerprint_id=fingerprint_id, spans=spans))
-    spec = values.attestation(dict(blob_sha=intent['cardSha'], verification_kind='compiled',
-        engine_identity=intent['producingEngine'], policy_digest=handle.policy_digest,
-        receipt=dict(schema='memvane-card-evidence-v2', verdict='verified',
-                     result_digest=intent['result_digest'], prior_trust=None,
-                     verdict_digest=intent['verdict_digest'], verified_mode=intent['verifiedMode'],
-                     verify_engine=intent['verifyEngine']), sources=sources))
-    try:
-        return store.attestation(values.digest('memvane-card-attestation-v1', spec)) == spec
-    except store_types.BlobStoreError:
-        return False
+    return values.compile_evidence_stored(store, handle, _required(intent))
 
 
 def _open(path):

@@ -9,16 +9,6 @@ def run(*args, **kwargs):
 
 
 
-def schema3_head_same(*args, **kwargs):
-    from memvane.sync.product_sync_worker import _schema3_head_same as implementation
-    return implementation(*args, **kwargs)
-
-
-def schema3_rows_baseline(*args, **kwargs):
-    from memvane.sync.product_sync_worker import _schema3_rows_baseline as implementation
-    return implementation(*args, **kwargs)
-
-
 def schema3_sources(*args, **kwargs):
     from memvane.sync.product_sync_worker import _schema3_sources as implementation
     return implementation(*args, **kwargs)

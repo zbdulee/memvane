@@ -6,3 +6,13 @@
 - `view_fill.py` / `fill_schema.py` — capture·manifest·recipe/profile에 묶인 durable fill cursor와 불변 대상 metadata. content set 뒤 별도 cursor CAS를 commit하며 완료 재호출은 쓰기·fence·provider가 없다. 계획은 본문 전체 대신 길이 metadata를 보관한다. schema3 sync owner가 view별 vector fill에 쓴다.
 - `view_store.py` / `view_reader.py` / `view_schema.py` / `view_values.py` / `view_fts.py` / `view_vectors.py` — schema3 view store의 capture-bound 불변 세대·same-view epoch CAS·세대별 FTS와 pinned lexical·exact reader. 벡터 coverage는 lexical-only 또는 동일 recipe/profile의 전체 eligible member 참조이며 실제 행·set digest를 봉인한다. hybrid는 같은 pin의 lexical 결과를 유지하고 semantic work/deadline만 defer한다. seal과 검색 결과는 구조적 commitment이며 운영 권한을 증명하지 않는다. 운영 권한은 journal의 schema3 endpoint record가 정한다. recall(`reader_dispatch.query_endpoint`), sync 게시(`product_sync_worker`), write-time dedup retrieval(`wiki_compile_retrieval`)이 쓴다. API·상한·실패 의미는 `docs/development-view-candidate.md` 참고.
 - `journal_reader.py` — 설치 journal의 reader endpoint 기록과 선택, view pin 및 epoch floor 증명을 담당한다. sync owner의 `resettle_selection`은 설정 또는 vector spec 변경에 맞춰 선택을 재봉인한다.
+
+## 공개 API (`api.py`)
+
+다른 도메인은 `memvane.store.api`의 함수만 쓴다. `open_store`가 돌려준 열린 view store의 공개 메서드(`capture_view`, `head`, `pin_view`, `release`, `prepare_generation`, `publish_generation`, `ingest_attested_card`, `fill_view`, `fill_status`, `search_exact`, `vectors`, `close` 등)는 그대로 부른다. 그 밖에 store의 `_` 멤버나 store 테이블(`store_meta`, `worktrees`, `s_*`, `embedding_sets`, `chunk_sets` 등)이 필요한 읽기·쓰기는 아래 함수로 한다.
+
+- `application/store_ops.py` — 수명과 정체성(`observe_binding`: 열거나 만들고 워크트리 하나를 관측한 뒤 닫는다, `open_store`, `store_identity`), 호출자 연결에서 읽는 store 헤더·워크트리 행(`stored_header`, `stored_worktrees`: journal `_readonly`나 query_only 연결 그대로), pinned 읽기(`pinned_vector`, `vector_profile`, `eligible_members`, `worktree_wiki_root`), `skipPaths` 판정(`admitted_paths`).
+- `application/view_sync.py` — sync owner의 view pass가 쓰는 store 읽기·쓰기(`read_view_baseline`, `head_same`, `compile_evidence_stored`, `linked_worktree_id`, `embedding_sets_missing`, `embedding_coverage`, `fill_plan`, `put_source_fingerprints`). 무엇을 넣고 언제 게시할지와 journal fence는 sync가 정한다.
+- 값 함수 — checkout capture(`capture_view`, `capture_matches`), provider vector spec(`provider_spec`, `register_provider_spec`, `qmd_first_pass`, `query_values`, `profile`), blob 값(`regular`, `digest`, `markdown_title`, `provenance_digests`, `relative`).
+
+route(층 2)는 store(층 3)보다 아래 층이라 `index_host_route._store_identity`의 `store_meta` 읽기는 이 api를 쓰지 않는다.

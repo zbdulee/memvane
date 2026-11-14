@@ -50,8 +50,9 @@ def schema3_reader_repository(decision, record, journal_path):
         reader._need(actual[key] == record[key], 'reader_store_changed')
     reader._need(reader.persistent_node_equal(actual['db_node'], record['db_node']),
                  'reader_store_changed')
+    from memvane.store.api import stored_header
     with reader._readonly(Path(record['db_path']), state) as db:
-        row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+        row = stored_header(db)
     reader._need(row is not None and reader._repository_digest(row[0]) == record['repository_digest'],
                  'reader_store_changed')
     return row

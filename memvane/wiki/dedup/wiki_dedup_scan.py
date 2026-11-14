@@ -177,6 +177,7 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
     from memvane.journal import api as lease
     from memvane.kernel.bundle_paths import plugin_root
     from memvane.wiki.card.types import MAX_CARDS
+    from memvane.store.api import eligible_members, pinned_vector, vector_profile
     root = Path(decision["projectRoot"])
     deadline = min(deadline, time.monotonic() + SCHEMA3_READ_SECONDS)
     with lease.resolve_endpoint(root, action="recall", host_root=plugin_root()) as endpoint:
@@ -184,14 +185,12 @@ def indexed_cards_schema3(decision: dict, deadline: float) -> tuple[str, dict[st
         if record.get("store_format") != "schema3" or record["scope"] != decision["scopeId"]:
             raise ValueError("selected_dedup_schema3_endpoint_changed")
         with reader.pin_schema3(record, deadline=deadline) as (store, _handle, pin):
-            generation, vector = pin.gen_id, store._pinned(pin)["vector"]
+            generation, vector = pin.gen_id, pinned_vector(store, pin)
             if vector is None:
                 return generation, None
-            with store._session():
-                dimension = store._profile(vector["profile_id"])["dimension"]
-            with store._reading(deadline):
-                # Either store format: the pinned generation's eligible cards in binary path order.
-                rows = store._eligible_members(generation, limit=MAX_CARDS + 1)
+            dimension = vector_profile(store, vector["profile_id"], session=True)["dimension"]
+            # Either store format: the pinned generation's eligible cards in binary path order.
+            rows = eligible_members(store, generation, deadline=deadline, limit=MAX_CARDS + 1)
             if len(rows) > MAX_CARDS:
                 raise ValueError("selected_dedup_card_capacity")
             cards, total = {}, 0

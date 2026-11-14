@@ -218,12 +218,11 @@ def _schema3_store(state, project, proof, decision, db_path, worktree_id):
     path = Path(db_path)
     _need(path.is_absolute() and str(path) == decision.get('storePath'),
           'reader_store_path_invalid')
+    from memvane.store import api as store_api
     node = _file(path, state)
     with _readonly(path, state) as db:
-        meta = db.execute('SELECT incarnation,scope_id,repository_json,settings_policy_digest '
-                          'FROM store_meta WHERE singleton=1').fetchone()
-        tree = db.execute('SELECT project_root,binding_digest FROM worktrees WHERE worktree_id=?',
-                          (worktree_id,)).fetchone()
+        meta = store_api.stored_header(db, identity=True)
+        tree = store_api.stored_worktrees(db, worktree_id=worktree_id)
     _need(meta is not None and tree is not None and meta[1] == proof['scopeId']
           and isinstance(meta[2], str) and tree[0] == str(project), 'reader_store_changed')
     return dict(db_path=str(path), db_node=node, incarnation=meta[0],
@@ -249,41 +248,40 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
     ``view_preparing``. Any pinned view may be sealed without vectors
     (lexical-first); a vector profile other than the endpoint's is refused.
     """
-    from memvane.store.api import view_store_class
-    ViewStore = view_store_class()
-    from memvane.store.api import fail
+    from memvane.store import api as store_api
+    from memvane.store.types import BlobStoreError
     state, path = Path(record['state']), Path(record['db_path'])
     target, project = record['worktree_id'], record['project']
     with _readonly(path, state) as db:
-        row = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
+        row = store_api.stored_header(db)
         if linked is not None:
             project = linked.get('worktreeProjectRoot')
             _need(isinstance(project, str) and project != record['project'], 'reader_checkout_changed')
-            trees = db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
-                               (project,)).fetchall()
+            trees = store_api.stored_worktrees(db, project_root=project)
     _need(row is not None and isinstance(row[0], str)
           and _repository_digest(row[0]) == record['repository_digest'], 'reader_store_changed')
     if linked is not None:
         _need(len(trees) <= 1 and all(tree[0] != record['worktree_id'] for tree in trees),
               'reader_store_changed')
         if not trees:
-            fail('view_preparing')
+            raise BlobStoreError('view_preparing')
         target = trees[0][0]
-    store = ViewStore.open_reader(path, repository=json.loads(row[0]), scope_id=record['scope'],
-                                 deadline=deadline)
+    store = store_api.open_store(path, repository=json.loads(row[0]), scope_id=record['scope'],
+                                 reader=True, deadline=deadline)
     try:
-        _need(store._incarnation == record['incarnation']
-              and store._policy == record['settings_policy_digest']
+        identity = store_api.store_identity(store)
+        _need(identity['incarnation'] == record['incarnation']
+              and identity['policy_digest'] == record['settings_policy_digest']
               and persistent_node_equal(record['db_node'], _file(path, state)), 'reader_store_changed')
         handle = store.capture_view(target, deadline=deadline)
-        _need(store._handles[handle.token]['capture']['projectRoot'] == project,
+        _need(store_api.store_identity(store, handle)['capture']['projectRoot'] == project,
               'reader_checkout_changed')
         if not pin_view:
             # Head identity only (seal join, highest published ordinal, floor);
             # the generation itself is verified by the pin that served it.
             head = store.head(handle)
             if head['gen_id'] is None:
-                fail('view_preparing')
+                raise BlobStoreError('view_preparing')
             _need(head['incarnation'] == record['incarnation'], 'reader_store_changed')
             floor = record.get('head_floor')
             if floor is not None and head['view_id'] == floor['view_id']:
@@ -296,7 +294,7 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
             floor = record.get('head_floor')
             if floor is not None and pin.view_id == floor['view_id']:
                 _need(pin.epoch >= floor['epoch'], 'reader_head_regressed')
-            vector = store._pinned(pin)['vector']
+            vector = store_api.pinned_vector(store, pin)
             # A view head may be lexical (vectors pending after a lexical-first
             # publish); a vector head must carry the endpoint's spec. A record
             # sealed without one reads any head lexically until the owner
@@ -441,7 +439,7 @@ def resettled_pair(old, new):
 
 def _adopted_vector_spec(record, proof, *, deadline):
     """The current main head's vector spec when it is the install provider's, else None."""
-    from memvane.store.api import provider_spec
+    from memvane.store.api import provider_spec, pinned_vector
     expected = provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
     if expected is None:
         return None
@@ -449,7 +447,7 @@ def _adopted_vector_spec(record, proof, *, deadline):
     try:
         unbound = dict(record, vector_profile=None, vector_recipe=None)
         with _schema3_pin(unbound, deadline=deadline) as (store, _handle, pin):
-            vector = store._pinned(pin)['vector']
+            vector = pinned_vector(store, pin)
     except BlobStoreError:
         # Best effort: a cold view, a moving checkout or a busy store leaves
         # the record as it is; the owner's next pass adopts the spec.
@@ -464,7 +462,7 @@ def resettle_selection(decision, owner):
     from contextlib import closing
     from memvane.runtime.api import validate_sync_owner
     from memvane.journal.reader_windows import _Lifetime
-    from memvane.store.api import provider_spec
+    from memvane.store.api import provider_spec, pinned_vector
     import time
     project = Path(decision['projectRoot'])
     state = Path(decision['journalPath']).parent
@@ -482,7 +480,7 @@ def resettle_selection(decision, owner):
         replacement = dict(saved, settings=_sha(_raw(decision['recallSettings'])))
         unbound = dict(saved, vector_profile=None, vector_recipe=None)
         with _schema3_pin(unbound, deadline=time.monotonic() + 10) as (store, _handle, pin):
-            vector = store._pinned(pin)['vector']
+            vector = pinned_vector(store, pin)
             if vector is not None and expected is not None and all(
                     vector[key] == expected[key] for key in ('profile_id', 'recipe_id')):
                 replacement.update(vector_profile=expected['profile_id'], vector_recipe=expected['recipe_id'])

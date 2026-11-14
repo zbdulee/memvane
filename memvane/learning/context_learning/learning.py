@@ -63,6 +63,7 @@ def _schema3_members(root, decision):
     from memvane.journal import api as reader
     from memvane.journal import api as lease
     from memvane.kernel.bundle_paths import plugin_root
+    from memvane.store.api import eligible_members
     deadline = time.monotonic() + SCHEMA3_READ_SECONDS
     with lease.resolve_endpoint(root, action='recall', host_root=plugin_root()) as endpoint:
         record, _raw, _proof = reader.recheck_reader(endpoint)
@@ -71,9 +72,8 @@ def _schema3_members(root, decision):
                 or len(names) != 1):
             raise ValueError('laya_learning_schema3_endpoint_changed')
         with reader.pin_schema3(record, deadline=deadline) as (store, _handle, pin):
-            with store._reading(deadline):
-                # Either store format: the pinned generation's eligible cards in binary path order.
-                rows = store._eligible_members(pin.gen_id, limit=MAX_DOCUMENTS + 1)
+            # Either store format: the pinned generation's eligible cards in binary path order.
+            rows = eligible_members(store, pin.gen_id, deadline=deadline, limit=MAX_DOCUMENTS + 1)
             generation = pin.gen_id
     return generation, [(names[0] + '/' + path, sha) for path, sha in rows]
 

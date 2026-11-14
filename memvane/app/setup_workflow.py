@@ -444,9 +444,7 @@ def _request_build_wake(project_root):
 def _create_v1_store(project_root, state_root, scope_id):
     """Create one new format-4 store under the installer's lock."""
     from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
-    from memvane.store import api as checkout
-    from memvane.store.api import view_store_class
-    ViewStore = view_store_class()
+    from memvane.store import api as store_api
     state = _private_parent(state_root)
     require_cached_plugin_for_live_write(state)
     project = _checked_project(project_root)
@@ -460,25 +458,18 @@ def _create_v1_store(project_root, state_root, scope_id):
             _fail('initial_store_unsafe')
         with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
             db.execute('PRAGMA query_only=ON')
-            meta = db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
-            rows = db.execute('SELECT record_json FROM worktrees WHERE project_root=?',
-                              (str(project),)).fetchall()
+            meta = store_api.stored_header(db)
+            rows = store_api.stored_worktrees(db, project_root=str(project), records=True)
         if meta is None or len(rows) != 1:
             _fail('initial_store_identity_changed')
         repository = json.loads(meta[0], object_pairs_hook=_unique)
         worktree = json.loads(rows[0][0], object_pairs_hook=_unique)
-        store = ViewStore.open(path, repository=repository, scope_id=scope_id)
+        binding = store_api.observe_binding(path, repository=repository, scope_id=scope_id,
+                                            worktree_id=worktree['worktreeId'])
     else:
-        repository = checkout.register_repository(str(project))
-        worktree = checkout.register_worktree(str(project), repository)
-        store = ViewStore.create(path, project_root=str(project), repository=repository,
-                                 worktree=worktree, scope_id=scope_id)
-    try:
-        store._observe_worktree(worktree['worktreeId'])
-        incarnation = store._incarnation
-        policy = store._policy
-    finally:
-        store.close()
+        binding = store_api.observe_binding(path, scope_id=scope_id, create_root=str(project))
+        repository, worktree = binding['repository'], binding['worktree']
+    incarnation, policy = binding['incarnation'], binding['policy_digest']
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
             or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):

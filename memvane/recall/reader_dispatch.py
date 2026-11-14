@@ -219,6 +219,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
     from memvane.settings.api import auxiliary_wiki_row
     from memvane.store.types import BlobStoreError
     from memvane.store.types import DEFERRED
+    from memvane.store import api as store_api
     queries=[query for query in _hybrid_fts_queries(
         prompt,tuple(decision['recallSettings'].get('lexicalPatterns',())) ) if query]
 
@@ -228,17 +229,15 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
         return remaining
     def attempt():
         with journal.pin_schema3(record,deadline=deadline,linked=linked) as (store,handle,pin):
-            vector=store._pinned(pin)['vector']
+            vector=store_api.pinned_vector(store,pin)
             # A lexical head (vectors pending) answers lexical lists only.
             semantic=query_vector is not None and vector is not None
             if semantic:
                 proof=_vector_proof(authority,None,decision,provider,deadline)
-                if (vector is None or not _approved_profile_matches(store._profile(vector['profile_id']),proof)
+                if (vector is None or not _approved_profile_matches(store_api.vector_profile(store,vector['profile_id'],session=False),proof)
                         or proof!=valid[-1][7]):
                     raise ValueError('reader_vector_caller_unproved')
-            with store._reading(time.monotonic()+left()) as db:
-                saved=db.execute('SELECT wiki_root FROM worktrees WHERE worktree_id=?',
-                                 (handle.worktree_id,)).fetchone()
+            saved=store_api.worktree_wiki_root(store,handle.worktree_id,deadline=time.monotonic()+left())
             def rooted(source):
                 if linked is None:
                     return str(Path(source))
