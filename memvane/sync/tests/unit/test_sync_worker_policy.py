@@ -8,6 +8,18 @@ from memvane.store.types import FALLBACK_CHARS
 from memvane.sync import product_sync_worker as worker
 
 
+class ExternalHintAdmission(unittest.TestCase):
+    def test_incomplete_sync_never_drains_external_hints(self):
+        from unittest.mock import patch
+        from memvane.wiki.intake import api as intake
+        with patch.object(intake, 'drain') as drain:
+            for state in ('deferred', 'pending', 'blocked'):
+                with self.subTest(state=state):
+                    result = {'state': state, 'reason': 'synthetic'}
+                    self.assertEqual(worker._after_sync({}, {}, None, result), result)
+        drain.assert_not_called()
+
+
 class Provider:
     """A provider handle answering ``positions(body)`` chunk positions; records every call."""
 

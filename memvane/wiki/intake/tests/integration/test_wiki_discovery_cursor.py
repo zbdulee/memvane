@@ -289,6 +289,18 @@ class DiscoveryCursor(FixtureCase):
                 discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
         self.assertFalse(discovery._paths(self.decision)[0].exists())
 
+    def test_initial_seed_accepts_large_corpus_and_enforces_both_scan_caps(self):
+        from memvane.wiki.intake.types import DiscoveryBlocked
+        for number in range(201):
+            self.project.write_note('docs/extra-%03d.md' % number, 'x' * 30000)
+        baseline = discovery._raw_snapshot(self.decision, {self.project.raw_name})
+        self.assertGreater(len(baseline), 200)
+        self.assertEqual(discovery.seed_source_snapshot(self.decision, baseline, generation='g1'), baseline)
+        for name, limit in (('RAW_SCAN_MAX_FILES', 200), ('RAW_SCAN_MAX_BYTES', 5000000)):
+            with self.subTest(limit=name), patch.object(discovery, name, limit):
+                with self.assertRaisesRegex(DiscoveryBlocked, 'raw_source_stale'):
+                    discovery.seed_source_snapshot(self.decision, baseline, generation='g1')
+
     def test_seed_rejects_foreign_paths_and_invalid_revision_without_state(self):
         from memvane.wiki.intake.types import DiscoveryBlocked
         bad = ({'other/docs/x.md': 'a' * 64}, {self.key: 'not-a-hash'},
