@@ -24,6 +24,8 @@ class DispatchWorkerDiagnosticsTests(FixtureCase):
         fake = self.tmp / 'synthetic-child.py'
         if mode == 'preparing':
             fake.write_text('import json\nprint(json.dumps({"state":"deferred","reason":"laya_service_preparing"}))\n')
+        elif mode == 'indexed':
+            fake.write_text('import json\nprint(json.dumps({"state":"indexed","generation":"g2"}))\n')
         else:
             fake.write_text('import sys\nsys.stderr.write("synthetic-child-private-error\\n")\nsys.exit(17)\n')
         queue = runtime.wake_queue()
@@ -46,6 +48,7 @@ class DispatchWorkerDiagnosticsTests(FixtureCase):
                    if capture_fails else contextlib.nullcontext())
         try:
             with patch.object(sys, 'argv', argv), patch('subprocess.Popen', side_effect=controlled_popen), \
+                 patch('memvane.learning.api.wake_after_index', return_value=None), \
                  capture, contextlib.redirect_stdout(io.StringIO()):
                 entry.main()
         finally:
@@ -57,6 +60,13 @@ class DispatchWorkerDiagnosticsTests(FixtureCase):
         rows = install.events()[before:]
         event = next(row for row in rows if row.get('event') == 'wake.sync')
         return event, rows
+
+    def test_successful_sync_records_wake_and_publish(self):
+        event, rows = self.dispatch_fixture('indexed')
+        self.assertEqual((event['outcome'], event['generation']), ('indexed', 'g2'))
+        publish = [row for row in rows if row.get('event') == 'index.publish']
+        self.assertEqual(len(publish), 1)
+        self.assertEqual(publish[0]['generation'], 'g2')
 
     def test_child_failure_records_bounded_tail_without_exposing_it_in_event(self):
         event, rows = self.dispatch_fixture('child')

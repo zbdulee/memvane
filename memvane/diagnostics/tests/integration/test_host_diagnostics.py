@@ -139,6 +139,33 @@ class HostDiagnosticsTests(FixtureCase):
         self.assertEqual((rows[0]['outcome'], rows[0]['host']), (status, 'claude'))
         self.assertEqual(status, 'disabled')
 
+    def test_successful_observer_actions_emit_one_event_each(self):
+        proof = {'productRouteAllowed': True, 'stateFormat': 1, 'writerFloor': '1.0.0'}
+        payload = {'cwd': str(self.project), 'session_id': 'synthetic-session',
+                   'tool_name': 'Edit', 'tool_input': {'file_path': 'note.md'}}
+        with patch('memvane.journal.api.verify_selected_route', return_value=proof):
+            host.serve_selected('gate', 'claude', self.decision, {**payload, 'hook_event_name': 'PreToolUse'})
+            host.serve_selected('posttool', 'claude', self.decision, {**payload, 'hook_event_name': 'PostToolUse'})
+            host.serve_selected('file-change-event', 'claude', self.decision, {})
+        rows = [r for r in event_log.read(self.state) if r.get('event') in ('gate', 'posttool', 'file-change-event')]
+        self.assertEqual([r['event'] for r in rows], ['gate', 'posttool', 'file-change-event'])
+        self.assertTrue(all(r['outcome'] != 'refused' for r in rows))
+        self.assertTrue(all(r['host'] == 'claude' for r in rows))
+
+    def test_wiki_activity_records_actions_without_card_body(self):
+        from memvane.wiki.workspace import api as workspace
+        bound = (self.decision, {})
+        for action, path, title, reason in (('created', 'concepts/a.md', 'A', 'compile'),
+                                            ('deleted', 'concepts/b.md', 'B', 'dedup'),
+                                            ('retired', 'concepts/c.md', 'C', 'lifecycle:no_source_revisions')):
+            self.assertTrue(workspace.append_activity(self.project, action, path, title, bound, reason=reason))
+        rows = [r for r in event_log.read(self.state) if r.get('event') == 'wiki']
+        self.assertEqual([(r['outcome'], r['reason'], r['path']) for r in rows], [
+            ('created', 'compile', 'concepts/a.md'), ('deleted', 'dedup', 'concepts/b.md'),
+            ('retired', 'lifecycle:no_source_revisions', 'concepts/c.md')])
+        self.assertEqual(rows[-1]['title'], 'C')
+        self.assertTrue(all(r['install'] == self.decision['installId'] for r in rows))
+
     def test_logging_failure_preserves_original_exception(self):
         self.consent(True)
         for target in ('memvane.diagnostics.api.emit', 'memvane.diagnostics.api.capture'):
