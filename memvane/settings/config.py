@@ -70,9 +70,19 @@ DEFAULT_REASONING_EFFORT = {
 # ---------------------------------------------------------------------------
 # Minimal settings model
 #
-# 프로젝트 settings는 name, skipPaths, diagnostics만 받는다. 나머지
-# effective 설정은 플러그인이 유도한다.
-MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths", "diagnostics"})
+# 프로젝트 settings는 name, skipPaths, diagnostics와 학습 프로필 블록
+# contextLearning·sharedLearning만 받는다. 나머지 effective 설정은 플러그인이 유도한다.
+MINIMAL_SETTINGS_KEYS = frozenset({"name", "skipPaths", "diagnostics",
+                                   "contextLearning", "sharedLearning"})
+# 학습 블록은 learning_profile이 쓰는 필드만 담는 닫힌 모양이다. 모양이 틀리면 두 블록을
+# 모두 버리고 학습 기본값을 쓰며, 정규화된 config의 `settingsNotes`에 사유를 남긴다.
+LEARNING_BLOCK_FIELDS = {
+    "contextLearning": {"capture": bool, "autoCycle": bool},
+    "sharedLearning": {"enabled": bool, "root": str, "profile": str, "autoApply": bool},
+}
+LEARNING_PROFILE_SCHEMA = "qmd-local-learning-profile-v1"
+LEARNING_SETTINGS_INVALID = "learning_settings_invalid"
+MINIMAL_CONTEXT_LEARNING = {"capture": True, "autoCycle": True}
 MINIMAL_SETTINGS_MODEL = "minimal"
 MINIMAL_RAW_COLLECTION_PATH = "."
 MINIMAL_WIKI_COLLECTION_PATH = ".memvane/wiki"
@@ -104,11 +114,31 @@ def _minimal_skip_paths(value):
     return list(value)
 
 
+def _learning_blocks(raw):
+    """minimal settings의 학습 블록 → (검증된 블록 사본, 사유). 블록이 없으면 ({}, None).
+
+    `sharedLearning.root`는 절대 경로, `profile`은 학습 프로필 스키마만 받는다.
+    한 블록이라도 틀리면 두 블록 모두 쓰지 않는다.
+    """
+    blocks = {key: raw[key] for key in LEARNING_BLOCK_FIELDS if key in raw}
+    for key, value in blocks.items():
+        fields = LEARNING_BLOCK_FIELDS[key]
+        if (not isinstance(value, dict) or not set(value) <= set(fields)
+                or any(type(item) is not fields[name] for name, item in value.items())):
+            return {}, LEARNING_SETTINGS_INVALID
+    shared = blocks.get("sharedLearning", {})
+    if (("root" in shared and not Path(shared["root"]).is_absolute())
+            or ("profile" in shared and shared["profile"] != LEARNING_PROFILE_SCHEMA)):
+        return {}, LEARNING_SETTINGS_INVALID
+    return {key: dict(value) for key, value in blocks.items()}, None
+
+
 def is_minimal_settings(raw):
-    """name과 선택적인 skipPaths·diagnostics만 가진 유효한 settings인가.
+    """name과 선택적인 skipPaths·diagnostics·contextLearning·sharedLearning만 가진 유효한 settings인가.
 
     `name`이 없거나 slug가 비거나 `skipPaths`가 비어 있지 않은 문자열 목록이 아니면
-    minimal이 아니며 프로젝트 설정으로 사용하지 않는다.
+    minimal이 아니며 프로젝트 설정으로 사용하지 않는다. 학습 블록의 모양은 여기서 보지
+    않는다 — 틀린 학습 블록은 학습만 기본값으로 둔다(`_learning_blocks`).
     """
     return (isinstance(raw, dict) and "name" in raw
             and set(raw) <= MINIMAL_SETTINGS_KEYS
@@ -130,7 +160,8 @@ def expand_minimal_settings(raw, folder=None):
     펼친 결과는 legacy 소비자(resolve_paths, update.sh `--raw`, laya route 검사)가 읽는
     모양이다. 프로젝트 루트 전체가 raw(wiki 생성 원천), `<folder>/wiki`가 wiki이고,
     검색은 wiki 전용, compile은 host builtin extractor의 auto-wiki, 학습은 켜짐이다.
-    indexing은 settings 파일이 있으면 켜짐이다. `folder`는 프로젝트의 활성 폴더
+    유효한 학습 블록은 학습 기본값 위에 적힌 필드를 얹고(`sharedLearning`은 그대로),
+    틀린 학습 블록은 버린다. indexing은 settings 파일이 있으면 켜짐이다. `folder`는 프로젝트의 활성 폴더
     이름(`project_dir.active_name`)이고, 생략하면 `.memvane`이다.
     """
     if not is_minimal_settings(raw):
@@ -151,8 +182,12 @@ def expand_minimal_settings(raw, folder=None):
             "triggers": list(MINIMAL_COMPILE_TRIGGERS),
             "extractor": {"builtins": list(MINIMAL_EXTRACTOR_BUILTINS)},
         },
-        "contextLearning": {"capture": True, "autoCycle": True},
+        "contextLearning": dict(MINIMAL_CONTEXT_LEARNING),
     }
+    learning, _ = _learning_blocks(raw)
+    expanded["contextLearning"].update(learning.get("contextLearning", {}))
+    if "sharedLearning" in learning:
+        expanded["sharedLearning"] = learning["sharedLearning"]
     # 진단 동의는 그대로 전달만 한다(해석은 `diagnostics_config`). 키가 없으면 펼친
     # 모양도 예전과 바이트 단위로 같다.
     if "diagnostics" in raw:
@@ -670,10 +705,13 @@ def normalize_config(input_config, folder=None):
     minimal 펼침과 `wikiPath` 기본값은 `.memvane`이고 적힌 값은 그대로다."""
     minimal = is_minimal_settings(input_config)
     if minimal:
+        _, learning_reason = _learning_blocks(input_config)
         input_config = expand_minimal_settings(input_config, folder)
     config = _normalize_expanded_config(input_config)
     if minimal:
         config["settingsModel"] = MINIMAL_SETTINGS_MODEL
+        if learning_reason is not None:
+            config["settingsNotes"] = [learning_reason]
     return _rebase_folder(config, folder)
 
 
