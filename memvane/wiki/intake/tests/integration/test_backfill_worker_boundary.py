@@ -116,3 +116,52 @@ class BackfillWorkerBoundary(FixtureCase):
         self.assertEqual(child.returncode, 0, child.stderr)
         self.assertEqual(calls.read_text().splitlines(), ['codex'])
         self.assertEqual(backfill.summary(backfill._load(decision))['dispatched'], 1)
+
+    def test_unknown_host_uses_real_attempts_once_then_records_successful_producer(self):
+        import json
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'A durable synthetic source fact.\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        decision = install.select()
+        revision = hashlib.sha256(source.read_bytes()).hexdigest()
+        snapshot = {project.raw_name + '/docs/note.md': revision}
+        config = expanded(project, compile={'mode': 'auto-wiki',
+                          'triggers': ['post_sync_source'], 'extractor': {'builtins': ['codex']}})
+        row = backfill.discover(decision, snapshot, config, ('sync',), {'sync': 'unknown'})
+        backfill.dispatch(decision, row, snapshot, config, recheck=lambda: None)
+        calls = self.home / 'calls.txt'
+        scripts = {}
+        for engine in ('codex', 'claude', 'hermes'):
+            fake = self.home / ('fake-' + engine)
+            success = {'candidates': [{'title': 'Synthetic Durable Fact',
+                       'summary': 'A durable synthetic source fact.', 'confidence': 'high',
+                       'suggestedType': 'concept', 'targetPath': '.memvane/wiki/concepts/synthetic.md'}]}
+            body = ('sys.exit(127)\n' if engine == 'codex'
+                    else 'print(' + repr(json.dumps(success)) + ')\n')
+            fake.write_text('#!/usr/bin/env python3\nimport os,sys\n'
+                            'open(os.environ["FIXTURE_CALLS"], "a").write(' + repr(engine + '\n') + ')\n' + body)
+            fake.chmod(0o700)
+            scripts[engine] = str(fake)
+        root = Path(__file__).resolve().parents[5]
+        env = {**os.environ, 'QMD_ENGINE': '', 'FIXTURE_CALLS': str(calls),
+               'QMD_EXTRACTOR_CODEX_BIN': scripts['codex'], 'QMD_EXTRACTOR_CLAUDE_BIN': scripts['claude'],
+               'QMD_EXTRACTOR_HERMES_BIN': scripts['hermes']}
+        child = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'),
+                                'wiki-compile-worker', '--cwd', str(project.root), '--json', '--flush-all'],
+                               cwd=str(project.root), env=env, capture_output=True, text=True, timeout=90)
+        self.assertEqual(child.returncode, 0, child.stderr)
+        called = calls.read_text().splitlines()
+        self.assertEqual(called[:2], ['codex', 'claude'])
+        self.assertEqual(called.count('codex'), 1)
+        self.assertNotIn('hermes', called)
+        candidates = project.root / '.memvane/compile/candidates.jsonl'
+        records = [json.loads(line) for line in candidates.read_text().splitlines()]
+        attempts = [record for record in records if record.get('reason') == 'selected']
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(attempts[0]['attemptedEngines'], ['codex', 'claude'])
+        self.assertEqual(attempts[0]['selectedEngine'], 'claude')
+        self.assertEqual(backfill.summary(backfill._load(decision))['settled'], 1)
+        card = project.wiki / 'concepts/synthetic.md'
+        self.assertTrue(card.exists(), child.stdout + child.stderr)
