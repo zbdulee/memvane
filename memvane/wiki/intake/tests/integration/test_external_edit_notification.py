@@ -127,14 +127,14 @@ class ExternalEditNotification(FixtureCase):
         self.assertEqual(self.notify(self.source)['failed'], 1)
         self.assertEqual(outside.read_text(), '{}')
 
-    def drain(self, recheck=lambda: None):
+    def drain(self, recheck=lambda: None, *, config=None, proof=None):
         from memvane.wiki.workspace import api as workspace
         from tests.support.settings_fake import expanded, use_config
-        use_config(self, self.project, expanded(self.project, compile={
+        use_config(self, self.project, config or expanded(self.project, compile={
             'mode': 'auto-wiki', 'triggers': ['post_tool_source'],
             'extractor': {'builtins': ['claude', 'codex']}}))
         with patch.object(journal, 'verify_selected_route_for_write',
-                          return_value={'productRouteAllowed': True}), \
+                          return_value=proof or {'productRouteAllowed': True}), \
              patch.object(journal, 'select_route', return_value=self.decision), \
              patch.object(workspace, 'selected', return_value=(self.decision, {'productRouteAllowed': True})), \
              patch.object(workspace, 'request_compile'):
@@ -238,3 +238,31 @@ class ExternalEditNotification(FixtureCase):
         current = external._revision(self.source)[0]
         self.assertEqual([row['blob'] for row in self.box()['edits']], [current])
         self.assertEqual(self.queue_rows(), [])
+
+    def test_failed_owner_proof_keeps_hint_for_retry(self):
+        self.notify(self.source)
+        with self.assertRaisesRegex(ValueError, 'external_edit_owner_unproved'):
+            self.drain(proof={'productRouteAllowed': False})
+        self.assertEqual(len(self.box()['edits']), 1)
+        self.assertEqual(self.queue_rows(), [])
+        self.drain()
+        self.assertEqual([row['source']['path'] for row in self.queue_rows()], ['docs/note.md'])
+
+    def test_compile_consent_off_never_compiles(self):
+        from tests.support.settings_fake import expanded
+        self.notify(self.source)
+        cfg = expanded(self.project, compile={'mode': 'auto-wiki', 'triggers': []})
+        self.drain(config=cfg)
+        self.assertEqual(self.queue_rows(), [])
+        self.notify(self.source)
+        self.assertEqual([row['path'] for row in self.box()['edits']], ['docs/note.md'])
+
+    def test_oversize_hint_does_not_block_a_valid_hint(self):
+        self.notify(self.source)
+        second = self.project.write_note('docs/valid.md', 'valid\n')
+        self.notify(second)
+        self.source.write_bytes(b'x' * (external.MAX_FILE_BYTES + 1))
+        self.drain()
+        self.assertEqual([row['source']['path'] for row in self.queue_rows()], ['docs/valid.md'])
+        self.assertEqual(self.box()['edits'], [])
+        self.assertNotIn('docs/note.md', [row['path'] for row in self.box()['seen']])
