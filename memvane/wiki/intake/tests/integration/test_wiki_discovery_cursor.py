@@ -254,3 +254,25 @@ class DiscoveryCursor(FixtureCase):
         self.assertEqual((result['state'], result['reason']), ('pending', 'no_accepted_grant'))
         self.assertEqual(len(queue.read_text().splitlines()), 1)
         self.assertEqual(discovery.observe_grants(self.decision)['grants']['sync'], [])
+
+    def test_per_wake_cap_requires_a_fresh_grant_for_deferred_tail(self):
+        import os
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        second = self.project.write_note('docs/second.md', 'other source\n')
+        snapshot = {self.key: hashlib.sha256(self.source.read_bytes()).hexdigest(),
+                    self.project.raw_name + '/docs/second.md': hashlib.sha256(second.read_bytes()).hexdigest()}
+        self.accept()
+        queue = self.root / workspace.rel(workspace_types.SOURCE_QUEUE)
+        with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '1'}):
+            first = self.drain('g2', snapshot)
+            self.assertEqual((first['queued'], first['pending']), (1, 1))
+            self.assertEqual(len(queue.read_text().splitlines()), 1)
+            without_grant = self.drain('g2', snapshot)
+            self.assertEqual((without_grant['reason'], without_grant['pending']),
+                             ('no_accepted_grant', 1))
+            self.assertEqual(len(queue.read_text().splitlines()), 1)
+            self.accept()
+            resumed = self.drain('g2', snapshot)
+        self.assertEqual((resumed['queued'], resumed['pending']), (1, 0))
+        self.assertEqual(len(queue.read_text().splitlines()), 2)
