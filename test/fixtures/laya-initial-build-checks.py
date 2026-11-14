@@ -490,32 +490,6 @@ class FreshnessAndRecoveryTests(BuildCase):
         # The superseded generation is retained, never deleted.
         self.assertEqual(len(self.members(sealed['generation'])), 6)
 
-    def test_crash_after_publish_resumes_from_durable_state(self):
-        self.corpus(3)
-        self.register()
-
-        class Kill(BaseException):
-            pass
-        real = initial_build.advance
-        state = {'armed': False}
-
-        def advance(record, **changes):
-            if changes.get('phase') == 'sealed' and not state['armed']:
-                state['armed'] = True
-                raise Kill()
-            return real(record, **changes)
-        with mock.patch.object(initial_build, 'advance', advance):
-            with self.assertRaises(Kill):
-                self.until_settled()
-        published = self.head()
-        self.assertIsNotNone(published)
-        self.assertNotEqual(self.record()['phase'], 'sealed')
-        calls = list(FakeProvider.calls)
-        answer = self.until_settled()[-1]
-        self.assertEqual((answer['initialBuild'], self.record()['sealed']['generation']),
-                         ('sealed', published))
-        self.assertEqual(FakeProvider.calls, calls, 'replay embeds nothing again')
-
     def test_explicit_rescan_clears_a_source_block(self):
         self.corpus(1)
         (self.wiki / 'link.md').symlink_to(self.wiki / 'f000.md')

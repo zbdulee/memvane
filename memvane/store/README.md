@@ -15,4 +15,4 @@
 - `application/view_sync.py` — sync owner의 view pass가 쓰는 store 읽기·쓰기(`read_view_baseline`, `head_same`, `compile_evidence_stored`, `linked_worktree_id`, `embedding_sets_missing`, `embedding_coverage`, `fill_plan`, `put_source_fingerprints`). 무엇을 넣고 언제 게시할지와 journal fence는 sync가 정한다.
 - 값 함수 — checkout capture(`capture_view`, `capture_matches`), provider vector spec(`provider_spec`, `register_provider_spec`, `qmd_first_pass`, `query_values`, `profile`), blob 값(`regular`, `digest`, `markdown_title`, `provenance_digests`, `relative`).
 
-route(층 2)는 store(층 3)보다 아래 층이라 `index_host_route._store_identity`의 `store_meta` 읽기는 이 api를 쓰지 않는다.
+route(층 2)는 store(층 3)보다 아래 층이라 `index_host_route._store_identity`의 `store_meta` 읽기는 이 api를 쓰지 않는다. 그래서 `store_meta`의 `singleton`(값 1인 한 행)·`incarnation`·`scope_id` 열 이름과 뜻은 route와의 계약이고, store가 바꾸려면 route도 같이 바꾼다.

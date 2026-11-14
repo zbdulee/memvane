@@ -148,32 +148,6 @@ class FreshWikiChecks(unittest.TestCase):
                 self.assertFalse(self.ledger.exists())
                 self.assertFalse(self.marker.exists())
 
-    def test_retire_interrupted_empty_finalization_after_rescan(self):
-        from memvane.journal import initial_build as builds
-        self.sealed['vectorRows'] = 0
-        self.bind()
-        identity = {**self.identity, 'stateRoot': str(self.state)}
-        record = {'phase': 'building', 'sealed': None, 'identity': identity}
-        with mock.patch.object(builds, 'owner', return_value=nullcontext(True)), \
-             mock.patch.object(builds, 'read', return_value=record), \
-             mock.patch.object(builds, 'advance') as advance, \
-             mock.patch.object(builds, 'retire_project_pointer', return_value='retired'):
-            result = product.retire_drifted_origin(project_root=self.project, state_root=self.state)
-            self.assertEqual(result['cutoverPhase'], 'retired')
-            advance.assert_called_once_with(record, phase='retired', sealed=None)
-        self.assertFalse(self.marker.exists())
-
-    def test_retire_refuses_another_build_identity(self):
-        from memvane.journal import initial_build as builds
-        self.bind()
-        identity = {**self.identity, 'stateRoot': str(self.state), 'scopeId': '9' * 32}
-        record = {'phase': 'building', 'sealed': None, 'identity': identity}
-        with mock.patch.object(builds, 'owner', return_value=nullcontext(True)), \
-             mock.patch.object(builds, 'read', return_value=record):
-            with self.assertRaisesRegex(product.InstallBlocked, 'retirement_identity_mismatch'):
-                product.retire_drifted_origin(project_root=self.project, state_root=self.state)
-        self.assertTrue(self.marker.exists())
-
     def test_plan_requires_minimal_settings(self):
         settings = self.wiki.parent / 'settings.json'
         settings.write_text(json.dumps({

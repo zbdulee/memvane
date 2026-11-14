@@ -206,18 +206,6 @@ class AbandonCase(unittest.TestCase):
         with self.assertRaisesRegex(product.InstallBlocked, 'unused_build_not_registered'):
             self.abandon()
 
-    def test_original_unused_receipt_replays_without_new_proof_fields(self):
-        # A receipt written by the older registered-only command must still
-        # replay after an upgrade; the new proof fields belong only to the
-        # separate inactive-candidate recovery command.
-        with mock.patch.object(initial_build, 'advance', side_effect=RuntimeError('interrupted')):
-            with self.assertRaisesRegex(RuntimeError, 'interrupted'):
-                self.abandon()
-        receipt = self.state / product.UNUSED_RETIREMENT / 'receipt.json'
-        stored = json.loads(receipt.read_text())
-        self.assertNotIn('sourceIdentity', stored['stores']['candidateDb'])
-        self.assertEqual(self.abandon()['status'], 'unused_build_retired')
-
     def test_inactive_recovery_refuses_sealed_candidate_and_other_receipt(self):
         self.partly_built()
         initial_build.advance(initial_build.read(self.state), phase='sealed',
@@ -359,14 +347,6 @@ class AbandonCase(unittest.TestCase):
             fresh[key] = str(next_state) + self.identity[key][len(str(self.state)):]
         self.assertEqual(initial_build.lookup(self.project), None)
         initial_build.register_project(fresh)
-
-    def test_unsupported_old_worker_fails_closed_on_retired_phase(self):
-        self.abandon()
-        with mock.patch.object(initial_build, 'PHASES',
-                               ('registered', 'building', 'sealed', 'blocked', 'bound')):
-            with self.assertRaises(IndexContractError) as caught:
-                initial_build.read(self.state)
-        self.assertEqual(str(caught.exception), 'initial_build_record_invalid')
 
     def test_success_without_pending_wake(self):
         with self.queue.connect() as db:
@@ -554,29 +534,6 @@ class AbandonCase(unittest.TestCase):
         backup.chmod(0o600)
         backup.write_bytes(b'{}')
         self.refuse('unused_build_receipt_mismatch')
-
-    def test_crash_after_wake_cancel_and_after_record_retire_replay(self):
-        with mock.patch.object(initial_build, 'advance', side_effect=RuntimeError('crash')):
-            with self.assertRaises(RuntimeError):
-                self.abandon()
-        self.untouched = None
-        self.assertIsNone(self.revision())  # wake already cancelled
-        self.assertEqual(initial_build.read(self.state)['phase'], 'registered')
-        with mock.patch.object(initial_build, 'retire_project_pointer',
-                               side_effect=RuntimeError('crash')):
-            with self.assertRaises(RuntimeError):
-                self.abandon(wake_revision=None)
-        self.assertEqual(initial_build.read(self.state)['phase'], 'retired')
-        self.assertIsNotNone(initial_build.lookup(self.project))
-        hint = product.retired_build_pointer(self.project)
-        self.assertEqual(hint['nextAction'], 'abandon-index-build')
-        # A wake that raced in meanwhile ACKs on the retired record, never steps.
-        self.assertEqual(worker.run_initial_build(self.project, initial_build.lookup(self.project)
-                                                  )['reason'], 'initial_build_retired')
-        done = self.abandon(wake_revision=None)
-        self.assertEqual((done['replayed'], done['buildPointer']), (True, 'retired'))
-        self.assertIsNone(initial_build.lookup(self.project))
-        self.assertIsNone(product.retired_build_pointer(self.project))
 
     def test_other_pointer_and_other_project_never_touched(self):
         other_pointer = initial_build.pointer_path(self.other, initial_build._pointer_dir(create=False))

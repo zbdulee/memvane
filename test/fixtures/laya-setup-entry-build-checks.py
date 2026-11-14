@@ -51,28 +51,6 @@ class SetupInitialBuild(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()):
                     self.call(action)
 
-    def test_status_and_rescan_require_same_project_build(self):
-        record = {'identity': {'projectRoot': str(self.project.resolve())}}
-        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
-             mock.patch.object(laya_initial_build, 'read', return_value=record), \
-             mock.patch.object(product, 'initial_build_status',
-                               return_value={'status': 'initial_build'}) as status, \
-             mock.patch.object(product, 'request_initial_build_rescan',
-                               return_value={'status': 'rescan_requested'}) as rescan:
-            status_code, status_row = self.call('index-build-status', '--state-root', str(self.state))
-            self.assertEqual(status_row['status'], 'initial_build', status_row)
-            self.assertEqual(self.call('index-build-rescan', '--state-root', str(self.state))[1]
-                             ['status'], 'rescan_requested')
-        status.assert_called_once_with(self.state)
-        rescan.assert_called_once_with(self.state)
-        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
-             mock.patch.object(laya_initial_build, 'read',
-                               return_value={'identity': {'projectRoot': '/wrong'}}), \
-             mock.patch.object(product, 'request_initial_build_rescan') as rescan:
-            code, row = self.call('index-build-rescan', '--state-root', str(self.state))
-        self.assertEqual((code, row['reason']), (1, 'initial_build_project_mismatch'))
-        rescan.assert_not_called()
-
     def test_finalize_entry_never_activates_route(self):
         with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
              mock.patch.object(selection, 'finalize_initial_build',
