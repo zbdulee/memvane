@@ -175,6 +175,88 @@ test('strict G9 flags SQL naming a table created by another domain', t => {
   assert.deepEqual(report.metrics.table_owners, {fts_x: ['store'], store_meta: ['store'], wakes: ['runtime']});
 });
 
+test('strict G1 limits api handles to the members their types.py Protocol declares', t => {
+  const report = scan(t, {
+    'memvane/store/api.py': 'def open_store(path, *, reader=False):\n    return path\n',
+    'memvane/store/types.py': [
+      'from typing import Protocol',
+      '',
+      'class ViewStoreHandle(Protocol):',
+      '    def head(self, handle): ...',
+      '    def search(self, pin, limit, *, work=5): ...',
+      '    def close(self, extra=None): ...',
+      ''].join('\n'),
+    'memvane/store/view/view_store.py': [
+      'from memvane.store.view.mixin import ReaderMixin',
+      '',
+      'class ViewStore(ReaderMixin):',
+      '    def head(self, handle):',
+      '        return handle',
+      '    def close(self):',
+      '        return None',
+      ''].join('\n'),
+    'memvane/store/view/mixin.py': [
+      'DEFAULT_WORK = 5',
+      '',
+      'class ReaderMixin:',
+      '    def search(self, pin, limit, *, work=DEFAULT_WORK):',
+      '        return pin',
+      ''].join('\n'),
+    'memvane/journal/api.py': 'def pin_schema3(record):\n    return record\n',
+    'memvane/sync/worker.py': [
+      'from memvane.store import api as store_api',
+      'from memvane.journal.api import pin_schema3',
+      '',
+      'def a():',
+      '    store = store_api.open_store("p", reader=True)',
+      '    store.head(1)',
+      '    store.verify()',
+      '    store._session',
+      '    store.head(1).anything',
+      '    return store.close',
+      '',
+      'def b(record):',
+      '    with pin_schema3(record) as (store, handle, pin):',
+      '        store.search(pin, 3)',
+      '        store.vectors(1)',
+      '        return handle.view_id, pin.gen_id, pin._token',
+      ''].join('\n'),
+  });
+  const file = 'memvane/sync/worker.py';
+  assert.deepEqual(rows(report, 'G1'), [
+    `${file}:journal:private_attr:pin_schema3()._token`,
+    `${file}:journal:undeclared_handle_member:pin_schema3().vectors`,
+    `${file}:store:private_attr:open_store()._session`,
+    `${file}:store:undeclared_handle_member:open_store().verify`,
+    // close repeats no signature: the class method has no ``extra``; search's
+    // default names a module constant whose value the Protocol repeats.
+    'memvane/store/types.py:store:handle_signature:ViewStoreHandle.close',
+  ].sort());
+});
+
+test('strict G9 excuses only the listed read of another domain table', t => {
+  const store = "DDL = 'CREATE TABLE store_meta (k TEXT)'\n";
+  const report = scan(t, {
+    'memvane/store/schema.py': store,
+    'memvane/route/index_host_route.py': [
+      "READ = 'SELECT incarnation,scope_id FROM store_meta WHERE singleton=1'",
+      "WRITE = 'DELETE FROM store_meta'",
+      "COPY = 'INSERT INTO log SELECT k FROM store_meta'",
+      ''].join('\n'),
+    'memvane/route/other.py': "READ = 'SELECT k FROM store_meta'\n",
+  });
+  assert.deepEqual(rows(report, 'G9'), [
+    'memvane/route/index_host_route.py:store:delete from:store_meta',
+    'memvane/route/index_host_route.py:store:from:store_meta',
+    'memvane/route/other.py:store:from:store_meta',
+  ]);
+  const unused = scan(t, {
+    'memvane/store/schema.py': store,
+    'memvane/route/index_host_route.py': "OTHER = 'SELECT 1'\n",
+  });
+  assert.deepEqual(rows(unused, 'G9'), ['memvane/route/index_host_route.py:store:unused_read_exception:store_meta']);
+});
+
 test('the product guard reports strict rules separately and filters them by rule and domain', t => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'mv-guard-cli-')));
   t.after(() => rmSync(home, {recursive: true, force: true}));

@@ -171,6 +171,28 @@ _API_NAME_LIMITS = {'journal': 51}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')
+# Resource handles (S4b rule 2): an object holding a connection or lock may cross
+# the boundary when its owner declares the public members in types.py as a
+# typing.Protocol. Each api function below hands out such a handle: its result
+# (a str value) or the listed positions of the tuple it yields. Members of a
+# handle outside the Protocol are findings; '_' members stay findings. Each
+# Protocol names the class whose method signatures it must repeat.
+_HANDLE_SOURCES = {
+    'memvane.store.api.open_store': 'memvane.store.types.ViewStoreHandle',
+    'memvane.journal.api.pin_schema3': ('memvane.store.types.ViewStoreHandle', None, None),
+}
+_HANDLE_CLASSES = {'memvane.store.types.ViewStoreHandle': 'memvane.store.view.view_store.ViewStore'}
+# Direct reads of another domain's table that the layer order keeps off that
+# domain's api (S4b rule 3). Only a FROM/JOIN in a string that writes nothing
+# is excused; an exception that matches no string is itself a finding.
+_G9_READ_EXCEPTIONS = {
+    # route (layer 2) reads (incarnation, scope_id) from the store header while it
+    # classifies a local single-store route (_store_identity). store is layer 3 and
+    # imports route, so route cannot call memvane.store.api without a layer
+    # violation and an import cycle.
+    ('memvane/route/index_host_route.py', 'store_meta'),
+}
+_SQL_WRITE = re.compile(r'\b(INSERT|UPDATE|DELETE|REPLACE|UPSERT|CREATE|DROP|ALTER)\b', re.I)
 
 
 def _dunder(name):
@@ -191,6 +213,29 @@ def _class_getattr(node):
                and item.name in ('__getattr__', '__getattribute__') for item in node.body)
 
 
+def _protocols(tree):
+    """``{class name: {member names}}`` of the module's ``typing.Protocol`` classes."""
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and any(
+                (isinstance(b, ast.Name) and b.id == 'Protocol')
+                or (isinstance(b, ast.Attribute) and b.attr == 'Protocol') for b in node.bases):
+            members = set()
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    members.add(item.name)
+                elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                    members.add(item.target.id)
+            found[node.name] = {m for m in members if not _dunder(m)}
+    return found
+
+
+def _protocol_members(apis, dotted):
+    """Members of a declared Protocol ``module.Class``; empty (all refused) when undeclared."""
+    module, _, name = dotted.rpartition('.')
+    return frozenset(apis.get(module, {}).get('protocols', {}).get(name, ()))
+
+
 def _api_modules(trees, contexts):
     """Describe each domain api.py/types.py: defined names, proxies, module __getattr__."""
     result = {}
@@ -206,6 +251,7 @@ def _api_modules(trees, contexts):
                 instances.update(t.id for t in node.targets if isinstance(t, ast.Name))
         result[_module_name(path)] = {
             'path': path, 'domain': contexts[path], 'symbols': _symbol_table(tree),
+            'module': _module_name(path), 'protocols': _protocols(tree),
             'proxies': instances | proxies,
             'module_getattr': any(isinstance(n, ast.FunctionDef) and n.name == '__getattr__' for n in tree.body)}
     return result
@@ -335,7 +381,17 @@ def _g1_strict(trees, contexts, apis):
                 return ('value', base[1], base[2] + '.' + expr.attr)
             if isinstance(expr, ast.Call):
                 base = classify(expr.func, env)
-                return ('value', base[1], base[2] + '()') if base else None
+                if base is None:
+                    return None
+                spec = None
+                if base[0] == 'value' and base[2] and '.' not in base[2] and '(' not in base[2]:
+                    spec = _HANDLE_SOURCES.get(base[1]['module'] + '.' + base[2])
+                if isinstance(spec, str):
+                    return ('handle', base[1], base[2] + '()', _protocol_members(apis, spec))
+                if spec is not None:
+                    return ('handles', base[1], base[2] + '()',
+                            tuple(None if item is None else _protocol_members(apis, item) for item in spec))
+                return ('value', base[1], base[2] + '()')
             if isinstance(expr, (ast.Subscript, ast.Await, ast.Starred)):
                 base = classify(expr.value, env)
                 return ('value', base[1], base[2]) if base else None
@@ -382,12 +438,20 @@ def _g1_strict(trees, contexts, apis):
                     desc = classify(value, env)
                     if desc is None:
                         continue
-                    if not isinstance(target, ast.Name):
-                        desc = ('value', desc[1], desc[2])
-                    for name in _bound_names(target):
-                        if name not in env:
-                            env[name] = desc
-                            changed = True
+                    if (desc[0] == 'handles' and isinstance(target, (ast.Tuple, ast.List))
+                            and len(target.elts) == len(desc[3])):
+                        bound = [(element, ('value', desc[1], desc[2]) if members is None
+                                  else ('handle', desc[1], desc[2], members))
+                                 for element, members in zip(target.elts, desc[3])]
+                    else:
+                        bound = [(target, desc)]
+                    for element, item in bound:
+                        if not isinstance(element, ast.Name) or item[0] == 'handles':
+                            item = ('value', item[1], item[2])
+                        for name in _bound_names(element):
+                            if name not in env:
+                                env[name] = item
+                                changed = True
             for node in nodes:
                 if not isinstance(node, ast.Attribute):
                     continue
@@ -398,6 +462,8 @@ def _g1_strict(trees, contexts, apis):
                 label = (base[2] + '.' if base[2] else '') + attr
                 if _private(attr) and attr not in _TUPLE_ATTRS:
                     kind = 'private_attr'
+                elif base[0] == 'handle' and attr not in base[3]:
+                    kind = 'undeclared_handle_member'
                 elif base[0] == 'module' and attr not in api['symbols']:
                     kind = 'getattr_forward'
                 elif base[0] == 'proxy':
@@ -409,6 +475,88 @@ def _g1_strict(trees, contexts, apis):
                 visit(item, env)
 
         visit(tree, {})
+    return findings
+
+
+def _signature(function, constants):
+    """Parameter kinds, names and defaults (module constants resolved), annotations ignored."""
+    args = function.args
+
+    def default(node):
+        if node is None:
+            return None
+        if isinstance(node, ast.Name) and node.id in constants:
+            return repr(constants[node.id])
+        return ast.unparse(node)
+    positional = args.posonlyargs + args.args
+    defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    shape = [('positional', a.arg, default(d)) for a, d in zip(positional, defaults)]
+    shape += [('vararg', args.vararg.arg, None)] if args.vararg else []
+    shape += [('keyword', a.arg, default(d)) for a, d in zip(args.kwonlyargs, args.kw_defaults)]
+    shape += [('kwarg', args.kwarg.arg, None)] if args.kwarg else []
+    return shape
+
+
+def _handle_signatures(trees, contexts, apis):
+    """Each handle Protocol member must repeat its class method's signature (S4b rule 2)."""
+    modules = {_module_name(path): (path, tree) for path, tree in trees.items()}
+    findings = []
+
+    def find_class(module, name, seen):
+        entry = modules.get(module)
+        if entry is None or (module, name) in seen:
+            return None
+        seen.add((module, name))
+        for node in entry[1].body:
+            if isinstance(node, ast.ClassDef) and node.name == name:
+                return module, node
+        for node in entry[1].body:
+            if isinstance(node, ast.ImportFrom):
+                base = _resolve_from(node, module, entry[0].endswith('/__init__.py'))
+                for item in node.names:
+                    if (item.asname or item.name) == name:
+                        return find_class(base, item.name, seen)
+        return None
+
+    def method(module, cls, name, seen):
+        """Depth-first over bases, first definition wins (the mixin order ViewStore uses)."""
+        for item in cls.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name:
+                return module, item
+        for base in cls.bases:
+            if isinstance(base, ast.Name):
+                found = find_class(module, base.id, set())
+                if found and (found[0], found[1].name) not in seen:
+                    seen.add((found[0], found[1].name))
+                    hit = method(found[0], found[1], name, seen)
+                    if hit:
+                        return hit
+        return None
+
+    def constants(module):
+        tree = modules[module][1]
+        return {t.id: n.value.value for n in tree.body if isinstance(n, ast.Assign)
+                and isinstance(n.value, ast.Constant) for t in n.targets if isinstance(t, ast.Name)}
+
+    for protocol, implementation in sorted(_HANDLE_CLASSES.items()):
+        module, _, name = protocol.rpartition('.')
+        if module not in modules:
+            continue
+        path, tree = modules[module]
+        node = next((n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == name), None)
+        domain = contexts.get(path, '')
+        if node is None:
+            findings.append(_finding('G1', 'handle_protocol_missing', path, 1, domain, domain, name))
+            continue
+        cls_module, _, cls_name = implementation.rpartition('.')
+        found = find_class(cls_module, cls_name, set())
+        for item in node.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            hit = method(found[0], found[1], item.name, set()) if found else None
+            if hit is None or _signature(item, {}) != _signature(hit[1], constants(hit[0])):
+                findings.append(_finding('G1', 'handle_signature', path, item.lineno, domain, domain,
+                                         name + '.' + item.name))
     return findings
 
 
@@ -504,15 +652,23 @@ def _g9_strict(trees, contexts):
     for path, node in strings:
         for table in _CREATE_TABLE.findall(node.value):
             owners.setdefault(table, set()).add(contexts[path])
-    findings = []
+    findings, excused = [], set()
     for path, node in strings:
         source = contexts[path]
         for keyword, table in _TABLE_USE.findall(node.value):
             owned = owners.get(table)
+            if (owned and source not in owned and (path, table) in _G9_READ_EXCEPTIONS
+                    and keyword.upper() in ('FROM', 'JOIN') and not _SQL_WRITE.search(node.value)):
+                excused.add((path, table))
+                continue
             if owned and source not in owned:
                 for owner in sorted(owned):
                     findings.append(_finding('G9', ' '.join(keyword.split()).lower(), path, node.lineno,
                                              source, owner, table))
+    for path, table in sorted(_G9_READ_EXCEPTIONS - excused):
+        if path in contexts:
+            for owner in sorted(owners.get(table, ())) or [contexts[path]]:
+                findings.append(_finding('G9', 'unused_read_exception', path, 1, contexts[path], owner, table))
     return findings, {table: sorted(domains) for table, domains in sorted(owners.items())}
 
 
@@ -521,7 +677,7 @@ def strict_checks(trees, contexts):
     apis = _api_modules(trees, contexts)
     g5, attributes = _g5_strict(trees, contexts)
     g9, owners = _g9_strict(trees, contexts)
-    findings = _g1_strict(trees, contexts, apis) + g5 + g9
+    findings = _g1_strict(trees, contexts, apis) + _handle_signatures(trees, contexts, apis) + g5 + g9
     unique = {(f['rule'], f['kind'], f['file'], f['line'], f['name'], f['target']): f for f in findings}
     ordered = sorted(unique.values(), key=lambda f: (f['rule'], f['target'], f['file'], f['line'], f['kind'], f['name']))
     return ordered, {'api_attributes': attributes, 'table_owners': owners}
