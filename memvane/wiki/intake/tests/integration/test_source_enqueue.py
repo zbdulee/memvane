@@ -90,6 +90,27 @@ class SourceEnqueue(FixtureCase):
             'contentRevision': hashlib.sha256(path.read_bytes()).hexdigest(),
         }])
 
+    def test_session_rows_with_known_revisions_keep_the_other_fields(self):
+        import hashlib
+        with patch.object(enqueue, '_utc_now', return_value='2026-10-17T00:00:00Z'):
+            self.assertEqual(self.run_enqueue(session_start=True)['queued'], 4)
+            without_revision = self.rows()
+            self.queue.unlink()
+            expected = {}
+            for entry in self.changed.values():
+                entry['revisions'] = {}
+                for rel in entry['created'] + entry['updated']:
+                    path = self.project.root / entry['root'] / rel
+                    if path.is_file():
+                        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                        entry['revisions'][rel] = digest
+                        expected[path.relative_to(self.project.root).as_posix()] = digest
+            self.assertEqual(self.run_enqueue(session_start=True)['queued'], 4)
+        revised = self.rows()
+        for row in revised:
+            self.assertEqual(row.pop('contentRevision'), expected[row['source']['path']])
+        self.assertEqual(revised, without_revision)
+
     def test_cap_defers_the_tail_and_cap_zero_writes_nothing(self):
         with patch.dict(os.environ, {'QMD_SYNC_COMPILE_MAX': '0'}):
             result = self.run_enqueue()
