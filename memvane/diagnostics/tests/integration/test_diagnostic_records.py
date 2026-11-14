@@ -18,6 +18,27 @@ class DiagnosticRecordTests(FixtureCase):
     def rows(self, path):
         return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
 
+    def test_concurrent_successful_appends_survive_rotation(self):
+        import subprocess
+        import sys
+        writers, per = 4, 100
+        code = ('import json,sys; from memvane.diagnostics import api,event_log; '
+                'event_log.LOG_LIMIT=70000; '
+                'print(json.dumps([n for n in range(int(sys.argv[3])) '
+                'if api.emit("c",state_root=sys.argv[1],writer=sys.argv[2],n=n,pad="x"*120)]))')
+        children = [subprocess.Popen([sys.executable, '-B', '-c', code, str(self.state), str(i), str(per)],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    for i in range(writers)]
+        written = set()
+        for i, child in enumerate(children):
+            out, err = child.communicate(timeout=60)
+            self.assertEqual(child.returncode, 0, err)
+            written.update((str(i), n) for n in json.loads(out))
+        rows = [(row['writer'], row['n']) for row in event_log.read(self.state) if row['event'] == 'c']
+        self.assertTrue((self.state / 'events.jsonl.1').exists())
+        self.assertEqual(len(rows), len(set(rows)))
+        self.assertEqual(set(rows), written)
+
     def test_busy_rotation_lock_refuses_without_writing(self):
         import fcntl
         import subprocess
@@ -70,6 +91,28 @@ class DiagnosticRecordTests(FixtureCase):
             self.assertEqual(result.stdout.strip(), 'False')
         finally:
             os.close(fd)
+
+    def test_reader_prefers_newest_rows_within_byte_budget(self):
+        for index in range(100):
+            self.assertTrue(api.emit('old', state_root=self.state, n=index, pad='y' * 200))
+        os.replace(self.state / event_log.NAME, self.state / (event_log.NAME + '.2'))
+        for index in range(5):
+            self.assertTrue(api.emit('new', state_root=self.state, n=index))
+        with patch.object(event_log, 'READ_LIMIT', 2000):
+            rows = event_log.read(self.state)
+        self.assertEqual([row['event'] for row in rows][-5:], ['new'] * 5)
+        self.assertLess(len(rows), 20)
+        self.assertEqual(len(event_log.read(self.state)), 105)
+
+    def test_cached_state_root_is_revalidated_for_changed_permissions(self):
+        with patch.object(event_log, 'open_state_dir', wraps=event_log.open_state_dir) as walk:
+            for _ in range(5):
+                self.assertTrue(api.emit('x', state_root=self.state))
+        self.assertEqual(walk.call_count, 1)
+        self.state.chmod(0o755)
+        self.assertFalse(api.emit('x', state_root=self.state))
+        self.state.chmod(0o700)
+        self.assertTrue(api.emit('x', state_root=self.state))
 
     def test_fifo_generation_is_skipped_by_reader(self):
         import subprocess

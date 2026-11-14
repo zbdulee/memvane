@@ -12,10 +12,11 @@ class ConfigContractTests(unittest.TestCase):
         self.assertEqual(cfg['wikiPath'], '.memvane/wiki')
 
     def test_unknown_collection_role_is_fail_closed(self):
-        cfg = api.normalize_config({'name': 'Demo', 'collectionRoles': {'demo': 'mystery'}})
-        self.assertEqual(api.collection_role(api.role_map(cfg), 'demo'), 'raw')
-        invalid = api.normalize_config({'name': 'Demo', 'collectionRoles': {'demo': 'mystery'}})
-        self.assertNotIn('demo', invalid['collectionRoles'])
+        self.assertEqual(api.collection_role({}, 'demo'), 'raw')
+        self.assertEqual(api.collection_role({'demo': 'mystery'}, 'demo'), 'invalid')
+        normalized = api.normalize_config({'collections': ['demo'],
+                                           'collectionRoles': {'demo': 'mystery'}})
+        self.assertEqual(api.collection_role(api.role_map(normalized), 'demo'), 'invalid')
 
     def test_numeric_values_are_coerced_and_clamped(self):
         cfg = api.normalize_config({'name': 'Demo', 'topN': '7', 'queryTimeout': 'bad'})

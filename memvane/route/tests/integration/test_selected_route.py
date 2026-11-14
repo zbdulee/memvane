@@ -41,6 +41,12 @@ class SelectedRouteTests(FixtureCase):
         decision = api.classify_v4(project.root, project.settings_path, record)
         self.assertEqual(decision['state'], 'candidate')
         self.assertEqual(decision['installId'], install.install_id)
+        for action in ('recall', 'update', 'update-queued', 'gate', 'posttool',
+                       'index', 'compile', 'file-change-event'):
+            with self.subTest(action=action):
+                selected = journal.select_route(str(project.root), action=action, linked=False)
+                self.assertEqual(selected['state'], 'candidate', selected)
+                self.assertEqual(selected['installId'], install.install_id)
 
         for field, bad_value, reason in (
             ('projectRoot', str(self.tmp / 'other'), 'route_project_mismatch'),
