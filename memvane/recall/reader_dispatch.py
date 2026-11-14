@@ -1,6 +1,5 @@
 """Internal read-only adapter for the selected view."""
 import copy
-from dataclasses import dataclass
 from contextlib import contextmanager
 from contextvars import ContextVar
 import math
@@ -10,17 +9,7 @@ import subprocess
 import time
 
 from memvane.journal import api as journal
-
-@dataclass(frozen=True)
-class ReaderResult:
-    store_format: str
-    endpoint_id: str
-    reader_epoch: int
-    data_generation: str
-    rows: list
-    semantic_status: str
-    title_only: frozenset
-    source_locations: dict
+from memvane.recall.types import ReaderResult
 
 _approved_vectors=ContextVar('schema3_approved_vectors',default=())
 _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch','provider_result_invalid',

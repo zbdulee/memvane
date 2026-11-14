@@ -1,4 +1,4 @@
-"""Recall result limits and fixed diagnostic errors."""
+"""Recall result limits, result values and fixed diagnostic errors."""
 from __future__ import annotations
 
 
@@ -10,6 +10,41 @@ MAX_ROWS = 5
 HYBRID_LIST_LIMIT = 20
 RRF_K = 60
 ROW_KEYS = frozenset({"scope", "generation", "path", "hash", "body", "score"})
+
+
+class ReaderResult:
+    """One read of the selected view (``api.query_endpoint``); frozen, equal by fields.
+
+    ``rows`` are the fused rows in rank order; ``data_generation`` the pinned
+    generation they come from; ``semantic_status`` how the semantic list ran;
+    ``title_only`` the paths answered by title only; ``source_locations`` the
+    stored source spans by card path.
+    """
+
+    __slots__ = ('store_format', 'endpoint_id', 'reader_epoch', 'data_generation', 'rows',
+                 'semantic_status', 'title_only', 'source_locations')
+
+    def __init__(self, store_format, endpoint_id, reader_epoch, data_generation, rows,
+                 semantic_status, title_only, source_locations):
+        values = (store_format, endpoint_id, reader_epoch, data_generation, rows,
+                  semantic_status, title_only, source_locations)
+        for name, value in zip(self.__slots__, values):
+            object.__setattr__(self, name, value)
+
+    def __setattr__(self, name, value):
+        raise AttributeError(f'cannot assign to field {name!r}')
+
+    def __delattr__(self, name):
+        raise AttributeError(f'cannot delete field {name!r}')
+
+    def _values(self):
+        return tuple(getattr(self, name) for name in self.__slots__)
+
+    def __eq__(self, other):
+        return self._values() == other._values() if type(other) is ReaderResult else NotImplemented
+
+    def __hash__(self):
+        return hash(self._values())
 
 
 class HostResponseError(ValueError):

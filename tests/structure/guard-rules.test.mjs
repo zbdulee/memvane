@@ -234,6 +234,170 @@ test('strict G1 limits api handles to the members their types.py Protocol declar
   ].sort());
 });
 
+test('strict G1 treats the journal writer scope as a handle with declared members', t => {
+  const report = scan(t, {
+    'memvane/journal/api.py': [
+      'def build_writer_scope(decision, *, queue_owner):',
+      '    return decision',
+      '',
+      'def selected_v1_writer_scope(decision, *, queue_owner):',
+      '    return decision',
+      ''].join('\n'),
+    'memvane/journal/types.py': [
+      'from typing import Protocol',
+      '',
+      'class WriterHandle(Protocol):',
+      '    def admission_proof(self): ...',
+      '    def store(self): ...',
+      '    def mark_new_write(self): ...',
+      '    def validate(self, *, deadline=None): ...',
+      '',
+      'class WriterToken:',
+      '    def admission_proof(self):',
+      '        return 1',
+      '    def store(self):',
+      '        return 2',
+      '    def mark_new_write(self):',
+      '        return 3',
+      '    def validate(self, *, deadline=5):',
+      '        return 4',
+      ''].join('\n'),
+    'memvane/sync/worker.py': [
+      'from memvane.journal import api as journal_api',
+      'from memvane.journal.api import build_writer_scope',
+      '',
+      'def a(decision, owner):',
+      '    with journal_api.selected_v1_writer_scope(decision, queue_owner=owner) as writer:',
+      '        writer.validate()',
+      '        writer.mark_new_write()',
+      '        writer.forge_proof()',
+      '        return writer._context',
+      '',
+      'def b(decision, owner):',
+      '    with build_writer_scope(decision, queue_owner=owner) as writer:',
+      '        return writer.admission_proof(), writer.store(), writer.lifetime',
+      ''].join('\n'),
+  });
+  const file = 'memvane/sync/worker.py';
+  assert.deepEqual(rows(report, 'G1'), [
+    `${file}:journal:private_attr:selected_v1_writer_scope()._context`,
+    `${file}:journal:undeclared_handle_member:build_writer_scope().lifetime`,
+    `${file}:journal:undeclared_handle_member:selected_v1_writer_scope().forge_proof`,
+    // validate's default differs from WriterToken's.
+    'memvane/journal/types.py:journal:handle_signature:WriterHandle.validate',
+  ].sort());
+});
+
+test('strict G1 limits reader values to the fields their types.py dataclass or slots declare', t => {
+  const report = scan(t, {
+    'memvane/journal/api.py': [
+      'def resolve_endpoint(project, *, action, host_root):',
+      '    return project',
+      '',
+      'def reader_selection(endpoint):',
+      '    return endpoint',
+      ''].join('\n'),
+    'memvane/journal/types.py': [
+      'from dataclasses import dataclass',
+      'from typing import Protocol',
+      '',
+      'class WriterHandle(Protocol):',
+      '    pass',
+      '',
+      '@dataclass(frozen=True, eq=False, init=False)',
+      'class VerifiedEndpoint:',
+      '    endpoint_id: str',
+      '    record: dict',
+      '',
+      '@dataclass(frozen=True, eq=False, init=False)',
+      'class ReaderSelection:',
+      '    epoch: int',
+      '    preferred_endpoint: str',
+      ''].join('\n'),
+    'memvane/recall/api.py': 'def query_endpoint(endpoint, *, checkout):\n    return endpoint\n',
+    'memvane/recall/types.py': [
+      'class ReaderResult:',
+      "    __slots__ = ('data_generation', 'rows')",
+      ''].join('\n'),
+    'memvane/wiki/compile/retrieval.py': [
+      'from memvane.journal import api as lease',
+      'from memvane.recall import api as dispatch',
+      '',
+      'def a(project):',
+      '    with lease.resolve_endpoint(project, action="recall", host_root=None) as endpoint:',
+      '        endpoint.record.get("store_format")',
+      '        endpoint.raw_bytes',
+      '        selected = lease.reader_selection(endpoint)',
+      '        result = dispatch.query_endpoint(endpoint, checkout=project)',
+      '    return (selected.epoch, selected.preferred_endpoint, selected.transition,',
+      '            result.rows, result.data_generation, result.cursor)',
+      ''].join('\n'),
+  });
+  const file = 'memvane/wiki/compile/retrieval.py';
+  assert.deepEqual(rows(report, 'G1'), [
+    `${file}:journal:undeclared_value_member:reader_selection().transition`,
+    `${file}:journal:undeclared_value_member:resolve_endpoint().raw_bytes`,
+    `${file}:recall:undeclared_value_member:query_endpoint().cursor`,
+  ].sort());
+});
+
+test('strict G1 follows a handle passed as an argument into the same module', t => {
+  const report = scan(t, {
+    'memvane/store/api.py': 'def open_store(path, *, reader=False):\n    return path\n',
+    'memvane/store/types.py': [
+      'from typing import Protocol',
+      '',
+      'class ViewStoreHandle(Protocol):',
+      '    def head(self, handle): ...',
+      ''].join('\n'),
+    'memvane/store/view/view_store.py': [
+      'class ViewStore:',
+      '    def head(self, handle):',
+      '        return handle',
+      ''].join('\n'),
+    'memvane/sync/worker.py': [
+      'from memvane.store import api as store_api',
+      'from memvane.store.types import ViewStoreHandle',
+      '',
+      'def run(path, rows):',
+      '    store = store_api.open_store(path)',
+      '    _publish(store, 1)',
+      '    _keyword(path, handle=store)',
+      '    _spread(*rows, store)',
+      '    return store',
+      '',
+      'def _publish(store, n):',
+      '    store.head(n)',
+      '    store.verify()',
+      '    _chained(store)',
+      '    return store._session',
+      '',
+      'def _chained(target):',
+      '    return target.rewind',
+      '',
+      'def _keyword(path, *, handle):',
+      '    return handle.seal',
+      '',
+      'def _spread(first, second):',
+      '    return second.untracked',
+      '',
+      'def _annotated(store: ViewStoreHandle):',
+      '    return store.head(1), store.compact',
+      '',
+      'def _plain(store):',
+      '    return store.anything',
+      ''].join('\n'),
+  });
+  const file = 'memvane/sync/worker.py';
+  assert.deepEqual(rows(report, 'G1'), [
+    `${file}:store:private_attr:open_store()._session`,
+    `${file}:store:undeclared_handle_member:ViewStoreHandle.compact`,
+    `${file}:store:undeclared_handle_member:open_store().rewind`,
+    `${file}:store:undeclared_handle_member:open_store().seal`,
+    `${file}:store:undeclared_handle_member:open_store().verify`,
+  ].sort());
+});
+
 test('strict G9 excuses only the listed read of another domain table', t => {
   const store = "DDL = 'CREATE TABLE store_meta (k TEXT)'\n";
   const report = scan(t, {

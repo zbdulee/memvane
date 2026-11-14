@@ -200,6 +200,8 @@ _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:ma
 # Protocol names the class whose method signatures it must repeat.
 _HANDLE_SOURCES = {
     'memvane.store.api.open_store': 'memvane.store.types.ViewStoreHandle',
+    'memvane.journal.api.build_writer_scope': 'memvane.journal.types.WriterHandle',
+    'memvane.journal.api.selected_v1_writer_scope': 'memvane.journal.types.WriterHandle',
     'memvane.journal.api.pin_schema3': ('memvane.store.types.ViewStoreHandle', None, None),
     'memvane.runtime.api.coordinator': 'memvane.runtime.types.CoordinatorHandle',
     'memvane.runtime.api.wake_queue': 'memvane.runtime.types.WakeQueueHandle',
@@ -209,6 +211,7 @@ _HANDLE_SOURCES = {
 }
 _HANDLE_CLASSES = {
     'memvane.store.types.ViewStoreHandle': 'memvane.store.view.view_store.ViewStore',
+    'memvane.journal.types.WriterHandle': 'memvane.journal.types.WriterToken',
     'memvane.runtime.types.CoordinatorHandle': 'memvane.runtime.resource_coordination.Coordinator',
     'memvane.runtime.types.WakeQueueHandle': 'memvane.runtime.runtime_work.WakeQueue',
     'memvane.runtime.types.SupervisorHandle': 'memvane.runtime.runtime_monitor.Supervisor',
@@ -216,6 +219,18 @@ _HANDLE_CLASSES = {
     'memvane.provider.types.ReviewedProviderHandle':
         'memvane.provider.adapters.local_embed_provider.ReviewedLocalQmdProvider',
 }
+# Value objects other domains read from an api result: the dataclass or
+# __slots__ class in the owner's types.py declares their fields, and only those
+# fields (and methods) may be read outside the owner. A ``with`` over the call binds the yielded value.
+_VALUE_SOURCES = {
+    'memvane.journal.api.resolve_endpoint': 'memvane.journal.types.VerifiedEndpoint',
+    'memvane.journal.api.reader_selection': 'memvane.journal.types.ReaderSelection',
+    'memvane.recall.api.query_endpoint': 'memvane.recall.types.ReaderResult',
+}
+# Runtime surface (rereview 3.1): other domains call 59 runtime names, the 42
+# api names plus the 17 methods of its four handles (coordinator 9, wake queue 3,
+# supervisor 2, training guard 3), and read two handle attributes
+# (coordinator root, supervisor status).
 # Direct reads of another domain's table that the layer order keeps off that
 # domain's api (S4b rule 3). Only a FROM/JOIN in a string that writes nothing
 # is excused; an exception that matches no string is itself a finding.
@@ -247,14 +262,39 @@ def _class_getattr(node):
                and item.name in ('__getattr__', '__getattribute__') for item in node.body)
 
 
+def _dataclass(node):
+    for item in node.decorator_list:
+        target = item.func if isinstance(item, ast.Call) else item
+        if (isinstance(target, ast.Name) and target.id == 'dataclass') or (
+                isinstance(target, ast.Attribute) and target.attr == 'dataclass'):
+            return True
+    return False
+
+
+def _slots(node):
+    """The string names of a class body's ``__slots__`` tuple or list, or None."""
+    for item in node.body:
+        if (isinstance(item, ast.Assign) and any(isinstance(t, ast.Name) and t.id == '__slots__'
+                                                 for t in item.targets)
+                and isinstance(item.value, (ast.Tuple, ast.List))):
+            return {e.value for e in item.value.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+    return None
+
+
 def _protocols(tree):
-    """``{class name: {member names}}`` of the module's ``typing.Protocol`` classes."""
+    """``{class name: {member names}}`` of the module's declared shapes.
+
+    A declared shape is a ``typing.Protocol``, a dataclass or a ``__slots__``
+    class; its members are its methods, annotated names and slots.
+    """
     found = {}
     for node in tree.body:
-        if isinstance(node, ast.ClassDef) and any(
+        slots = _slots(node) if isinstance(node, ast.ClassDef) else None
+        if isinstance(node, ast.ClassDef) and (slots is not None or _dataclass(node) or any(
                 (isinstance(b, ast.Name) and b.id == 'Protocol')
-                or (isinstance(b, ast.Attribute) and b.attr == 'Protocol') for b in node.bases):
-            members = set()
+                or (isinstance(b, ast.Attribute) and b.attr == 'Protocol') for b in node.bases)):
+            members = set(slots or ())
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     members.add(item.name)
@@ -417,11 +457,14 @@ def _g1_strict(trees, contexts, apis):
                 base = classify(expr.func, env)
                 if base is None:
                     return None
-                spec = None
+                spec, kind = None, 'handle'
                 if base[0] == 'value' and base[2] and '.' not in base[2] and '(' not in base[2]:
-                    spec = _HANDLE_SOURCES.get(base[1]['module'] + '.' + base[2])
+                    source = base[1]['module'] + '.' + base[2]
+                    spec = _HANDLE_SOURCES.get(source)
+                    if spec is None and source in _VALUE_SOURCES:
+                        spec, kind = _VALUE_SOURCES[source], 'shape'
                 if isinstance(spec, str):
-                    return ('handle', base[1], base[2] + '()', _protocol_members(apis, spec))
+                    return (kind, base[1], base[2] + '()', _protocol_members(apis, spec))
                 if spec is not None:
                     return ('handles', base[1], base[2] + '()',
                             tuple(None if item is None else _protocol_members(apis, item) for item in spec))
@@ -431,14 +474,51 @@ def _g1_strict(trees, contexts, apis):
                 return ('value', base[1], base[2]) if base else None
             return None
 
+        def typed(annotation, env):
+            """A parameter annotated with a declared handle Protocol or value type of another domain."""
+            desc = classify(annotation, env) if annotation is not None else None
+            if desc is None or desc[0] != 'value' or not desc[2] or '.' in desc[2] or '(' in desc[2]:
+                return None
+            dotted = desc[1]['module'] + '.' + desc[2]
+            if dotted in _HANDLE_CLASSES:
+                return ('handle', desc[1], desc[2], _protocol_members(apis, dotted))
+            if dotted in _VALUE_SOURCES.values():
+                return ('shape', desc[1], desc[2], _protocol_members(apis, dotted))
+            return None
+
+        def record_calls(nodes, env, local, top):
+            """Handles and values passed to a top-level function of this module seed its parameters."""
+            for node in nodes:
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id in functions and (top or node.func.id not in local)):
+                    continue
+                target = functions[node.func.id]
+                params = [a.arg for a in target.args.posonlyargs + target.args.args]
+                named = set(params) | {a.arg for a in target.args.kwonlyargs}
+                passed = []
+                for index, arg in enumerate(node.args):
+                    if isinstance(arg, ast.Starred):
+                        break
+                    if index < len(params):
+                        passed.append((params[index], arg))
+                passed += [(k.arg, k.value) for k in node.keywords if k.arg in named]
+                for param, value in passed:
+                    desc = classify(value, env)
+                    if desc is not None and desc[0] in ('handle', 'shape'):
+                        state['calls'].setdefault(target, {}).setdefault(param, desc)
+
         def visit(scope, inherited):
             nodes, nested = _scope_children(scope)
-            local = set()
+            local, seeds = set(), {}
             if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 args = scope.args
                 for arg in args.posonlyargs + args.args + args.kwonlyargs + [args.vararg, args.kwarg]:
                     if arg is not None:
                         local.add(arg.arg)
+                        desc = typed(getattr(arg, 'annotation', None), inherited)
+                        if desc is not None:
+                            seeds[arg.arg] = desc
+                seeds = {**state['seeds'].get(scope, {}), **seeds}
             pairs, env = [], {}
             for node in nodes:
                 if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -464,7 +544,7 @@ def _g1_strict(trees, contexts, apis):
             for item in nested:
                 if not isinstance(item, ast.Lambda):
                     local.add(item.name)
-            env = {**{k: v for k, v in inherited.items() if k not in local}, **env}
+            env = {**{k: v for k, v in inherited.items() if k not in local}, **seeds, **env}
             changed = True
             while changed:
                 changed = False
@@ -498,17 +578,34 @@ def _g1_strict(trees, contexts, apis):
                     kind = 'private_attr'
                 elif base[0] == 'handle' and attr not in base[3]:
                     kind = 'undeclared_handle_member'
+                elif base[0] == 'shape' and attr not in base[3]:
+                    kind = 'undeclared_value_member'
                 elif base[0] == 'module' and attr not in api['symbols']:
                     kind = 'getattr_forward'
                 elif base[0] == 'proxy':
                     kind = 'proxy_attr'
                 else:
                     continue
-                findings.append(_finding('G1', kind, path, node.lineno, source, api['domain'], label))
+                state['findings'].append(_finding('G1', kind, path, node.lineno, source, api['domain'], label))
+            record_calls(nodes, env, local, scope is tree)
             for item in nested:
                 visit(item, env)
 
-        visit(tree, {})
+        functions = {node.name: node for node in tree.body
+                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        state = {'seeds': {}}
+        while True:
+            state.update(findings=[], calls={})
+            visit(tree, {})
+            grown = False
+            for target, params in state['calls'].items():
+                for param, desc in params.items():
+                    if param not in state['seeds'].setdefault(target, {}):
+                        state['seeds'][target][param] = desc
+                        grown = True
+            if not grown:
+                break
+        findings.extend(state['findings'])
     return findings
 
 
@@ -913,7 +1010,7 @@ def main():
                       'strict_counts': {k: len(v) for k, v in strict_issues.items()},
                       'strict_issues': strict_issues, 'strict_by_domain': by_domain,
                       'strict_metrics': strict_metrics,
-                      'limitations': ['G1 and G2 cover resolved import statements in classified source modules; test imports and nonliteral dynamic imports are not yet classified', 'G6 closure follows static top-level imports and requires hook target verification', 'G7 adapter relative imports and indirect I/O require further analysis', 'G8 examines statically identifiable Python patch calls; JavaScript embedded Python and dynamic targets require further analysis', 'strict G1 follows names bound from another domain api through assignment, call, subscript, with and for within a scope; values passed as arguments or returned through other modules are not followed', 'strict G9 reads Python string literals only; table names built at run time and SQL in JavaScript are not checked'],
+                      'limitations': ['G1 and G2 cover resolved import statements in classified source modules; test imports and nonliteral dynamic imports are not yet classified', 'G6 closure follows static top-level imports and requires hook target verification', 'G7 adapter relative imports and indirect I/O require further analysis', 'G8 examines statically identifiable Python patch calls; JavaScript embedded Python and dynamic targets require further analysis', 'strict G1 follows names bound from another domain api through assignment, call, subscript, with and for within a scope, into parameters annotated with a declared handle Protocol or value type, and into the parameters of a top-level function of the same module that a call passes a handle or value to (positional before any *args, or by keyword); methods, nested functions, other modules and returned values are not followed', 'strict G9 reads Python string literals only; table names built at run time and SQL in JavaScript are not checked'],
                       'metrics': snapshot['metrics']}, ensure_ascii=False, sort_keys=True))
     failing = any(issues.values()) or (args.strict and any(strict_issues.values()))
     return 1 if failing else 0

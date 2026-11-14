@@ -15,6 +15,7 @@ from types import MappingProxyType, SimpleNamespace
 import weakref
 
 from memvane.journal import install_journal as journal
+from memvane.journal.types import ReaderSelection, VerifiedEndpoint
 from memvane.kernel.persistent_identity import persistent_node_equal
 
 _JOURNAL = 'journal.sqlite'
@@ -63,31 +64,11 @@ def stable_fields(first, second):
 
 
 @dataclass(frozen=True, eq=False, init=False)
-class VerifiedEndpoint:
-    endpoint_id: str
-    record: MappingProxyType
-
-    def __init__(self):
-        raise ValueError('reader_endpoint_not_issued')
-
-
-@dataclass(frozen=True, eq=False, init=False)
 class InstallerSeal:
     endpoint: VerifiedEndpoint
 
     def __init__(self):
         raise ValueError('reader_installer_not_issued')
-
-
-@dataclass(frozen=True, init=False)
-class ReaderSelection:
-    epoch: int
-    preferred_endpoint: str
-    previous_endpoint: str | None
-    transition_id: str
-
-    def __init__(self):
-        raise ValueError('reader_selection_not_issued')
 
 
 def _need(value, reason):
