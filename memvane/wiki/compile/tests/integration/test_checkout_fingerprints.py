@@ -171,6 +171,32 @@ class CheckoutFingerprints(FixtureCase):
         self.assertEqual(stored['scanId'], observed['fingerprints'][0]['scan_id'])
         self.assertEqual(stored['observedNs'], observed['fingerprints'][0]['observed_ns'])
 
+    def test_model_cannot_replace_queue_authority_or_compiler_owned_revision(self):
+        forged = {'title': 'Source', 'summary': 'Synthetic fact', 'engine': 'decoy',
+                  'trigger': 'explicit_user_approval', 'sourceRevisions': [{'path': 'decoy'}],
+                  'authoritativeSources': [{'kind': 'file', 'path': 'decoy'}],
+                  'sources': [{'kind': 'file', 'path': 'docs/decoy.md'},
+                              {'kind': 'file', 'path': 'docs/source.md', 'collection': 'decoy'}]}
+        with patch.object(engines, 'run_extractor', return_value=({'candidates': [forged]}, None, 0)):
+            self.assertEqual(self.process(), (True, False, []))
+        candidate = self.candidates[-1]
+        self.assertEqual((candidate['engine'], candidate['trigger']), ('claude', 'post_tool_source'))
+        self.assertEqual([item['path'] for item in candidate['sources']],
+                         ['docs/source.md', 'docs/decoy.md'])
+        self.assertEqual([item['path'] for item in candidate['authoritativeSources']], ['docs/source.md'])
+        self.assertEqual(candidate['sourceRevisions'][0]['sha256'],
+                         hashlib.sha256(self.source.read_bytes()).hexdigest())
+
+    def test_source_change_during_extraction_preserves_job_without_writing(self):
+        def extract(argv, payload, timeout, root):
+            self.source.write_text('changed during extraction\n')
+            return {'candidates': [{'title': 'Source', 'summary': 'Synthetic fact'}]}, None, 0
+        with patch.object(engines, 'run_extractor', side_effect=extract):
+            processed, preserve, _ = self.process()
+        self.assertFalse(processed)
+        self.assertTrue(preserve)
+        self.assertEqual(self.candidates, [])
+
     def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
         for case in ('non-git', 'unborn'):
             with self.subTest(case=case):
