@@ -106,3 +106,19 @@ class RecoveryChecks(FixtureCase):
              patch.object(owner.time, 'time', return_value=1333):
             service._load(project, decision, proof, 'selected', self.manifest, key, 'seal')
         self.assertEqual((len(calls), len(attests), worker.state), (4, 4, 'ready'))
+
+    def test_repeated_moved_selection_deferrals_back_off_as_start_failures(self):
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        service = svc.Service(root, bundle={'version': '1.0.0'})
+        moved = ResourceDeferred('worker_selection_changed')
+        busy = ResourceDeferred('writer_proof_physical_busy')
+        delays = [service._deferred_retry('/project', self.manifest, moved)
+                  for _ in range(svc.MOVED_DEFER_LIMIT + 2)]
+        state = owner.read_owner_state(self.manifest)
+        self.assertEqual(len(set(delays[:svc.MOVED_DEFER_LIMIT])), 1)
+        self.assertGreater(delays[-1], delays[-2])
+        self.assertEqual((state['reason'], state['attempts'], state['terminal']),
+                         ('startup_failed', 2, False))
+        self.assertEqual(service._deferred_retry('/other', self.manifest, busy), delays[0])
+        self.assertNotIn('/other', service.moved)
