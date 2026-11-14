@@ -215,7 +215,6 @@ class WikiDbProvenance(unittest.TestCase):
                 ('memvane.provider.embed_runtime.sealed_files_sha256', lambda *_a, **_k: 'c' * 64),
                 ('memvane.journal.install_journal._v1_provider_manifest', _provider_proof),
                 ('memvane.sync.product_sync_worker.ReviewedLocalQmdProvider', _FixtureProvider),
-                ('memvane.sync.product_sync_worker._higher_priority_wake', lambda _controller: False),
                 ('memvane.sync.product_sync_worker._initial_build_waiting',
                  lambda _controller, _project: False),
                 ('memvane.wiki.verify.wiki_verify_worker.plan_verify_attempts',

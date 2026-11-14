@@ -193,6 +193,7 @@ class WakeQueue:
 
     def pending(self):
         with self.connect() as db:
+            _drop_retired(db,self.root,time.time())
             _promote_overflow(db,time.time())
             return [dict(row) for row in db.execute('SELECT * FROM wakes ORDER BY due,id')]
 
@@ -272,6 +273,16 @@ def _leave_for_other_host(db,root,row,step,now):
     else:
         db.execute("UPDATE wakes SET status='pending',due=MAX(due,?) WHERE id=? AND status='running'",
                    (until,row['id']))
+
+
+def _drop_retired(db,root,now):
+    """Drop rows of ``RETIRED_KINDS`` (queued by a pre-release build) with a recorded reason."""
+    retired=tuple(sorted(wake_policy.RETIRED_KINDS));marks=','.join('?'*len(retired))
+    for row in db.execute('SELECT * FROM wakes WHERE kind IN (%s)'%marks,retired).fetchall():
+        db.execute('DELETE FROM wakes WHERE id=? AND revision=?',(row['id'],row['revision']))
+        _record_drop(root,dict(row),{'drop':wake_policy.RETIRED_DROP_REASON,'count':0},None,now)
+    if db.execute('SELECT 1 FROM wake_overflow WHERE kind IN (%s) LIMIT 1'%marks,retired).fetchone():
+        db.execute('DELETE FROM wake_overflow WHERE kind IN (%s)'%marks,retired)
 
 
 def _promote_overflow(db,now):

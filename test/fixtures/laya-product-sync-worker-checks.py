@@ -63,26 +63,6 @@ class WorkerChecks(unittest.TestCase):
                     'providerManifest':{'synthetic':True},'vectorProfile':self.profile}
         self.refreshed={**self.proof,'selectionEpoch':8}
 
-    def test_repeatedly_failing_qmd_wake_does_not_starve_selected_sync(self):
-        from memvane.runtime import runtime_work; import memvane.app.wiring as runtime_work_wiring
-        controller=Coordinator();controller.root=self.project
-        queue=runtime_work.WakeQueue(self.project)
-        queue.put('index','',now=0)
-        self.assertTrue(worker._higher_priority_wake(controller))
-        def failed(_row):return False
-        for wall in (100,200,300):
-            runtime_work.drain(queue,execute=failed,ready=lambda:True,clock=lambda:0,
-                               wall=lambda wall=wall:wall,sleep=lambda _s:None,max_runs=1)
-        row,=queue.pending()
-        self.assertEqual(row['attempts'],3)
-        self.assertLessEqual(row['due'],time.time())
-        # Due, but already failing on its own backoff: the sync keeps going.
-        self.assertFalse(worker._higher_priority_wake(controller))
-        queue.put('update','0'*32,now=time.time()+3600)
-        self.assertFalse(worker._higher_priority_wake(controller))
-        queue.put('update','1'*32,now=0)
-        self.assertTrue(worker._higher_priority_wake(controller))
-
     def test_build_attempt_reason_is_fixed_and_non_sensitive(self):
         self.assertEqual(worker._build_attempt_reason(
             IndexContractError('provider_start_failed')), 'provider_start_failed')
@@ -196,15 +176,6 @@ class WorkerChecks(unittest.TestCase):
             result=worker.run(self.project,coordinator=controller,start_service=start)
         self.assertEqual((result['state'],result['reason'],result.get('detail')),
                          ('deferred','learning_deferred_resource','memory_reserve'))
-
-    def test_new_index_wake_yields_before_sync_and_stops_service(self):
-        runtime_work.WakeQueue(self.project).put('index','',now=0)
-        def forbidden(*_args,**_kwargs):self.fail('priority work reached sync')
-        controller,service,_calls,start,patches=self.wiring(sync=forbidden)
-        with self._patches(patches):
-            result=worker.run(self.project,coordinator=controller,start_service=start)
-        self.assertEqual(result,{'state':'deferred','reason':'laya_sync_yield_priority'})
-        service.stop.assert_called_once_with()
 
     def test_runtime_wake_retains_deferred_selected_sync(self):
         with patch('memvane.app.runtime_dispatch.run',return_value={'state':'deferred'}):

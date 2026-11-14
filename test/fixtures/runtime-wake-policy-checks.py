@@ -68,19 +68,17 @@ class PolicyDecisions(unittest.TestCase):
                                        kind='laya-compile')['count'], 1)
 
     def test_fixed_kinds_and_priority_classes(self):
-        self.assertEqual(policy.KINDS, {'index': 0, 'update': 1, 'cleanup': 2,
-                                        'laya-sync': 2, 'laya-compile': 2,
+        self.assertEqual(policy.KINDS, {'laya-sync': 2, 'laya-compile': 2,
                                         'learning': 3, 'auto': 3})
 
     def test_validate_accepts_only_fixed_shapes(self):
-        for kind, target in (('index', ''), ('update', HEX), ('learning', '/synthetic/a'),
-                             ('auto', '/synthetic/a'), ('cleanup', '/synthetic/a'),
+        for kind, target in (('learning', '/synthetic/a'),
+                             ('auto', '/synthetic/a'),
                              ('laya-sync', '/synthetic/a'),
                              ('laya-compile', '/synthetic/a')):
             policy.validate_wake(kind, target)
-        bad = (('unknown', ''), ('index', 'x'), ('index', None), ('update', HEX[:31]),
-               ('update', HEX.upper()), ('learning', 'relative'), ('learning', ''),
-               ('cleanup', '/a\x00b'), ('auto', '/' + 'a' * 4096))
+        bad = (('unknown', ''), ('learning', 'relative'), ('learning', ''),
+               ('auto', '/' + 'a' * 4096))
         for kind, target in bad:
             with self.assertRaises(ValueError, msg=(kind, target)) as caught:
                 policy.validate_wake(kind, target)
@@ -92,8 +90,7 @@ class PolicyDecisions(unittest.TestCase):
         self.assertEqual(len(policy.wake_key('index', '')), 64)
 
     def test_capacity_reserves_one_slot_for_index(self):
-        self.assertEqual(policy.capacity_limit('index'), 256)
-        for kind in ('update', 'cleanup', 'laya-sync', 'laya-compile', 'learning', 'auto'):
+        for kind in ('laya-sync', 'laya-compile', 'learning', 'auto'):
             self.assertEqual(policy.capacity_limit(kind), 255)
 
     def test_backoff_table_is_unchanged(self):
@@ -107,19 +104,10 @@ class PolicyDecisions(unittest.TestCase):
         for status in ('ok', 'trained', 'skipped', 'disabled'):
             self.assertTrue(policy.handler_done(status), status)
 
-    def test_cleanup_ack_predicate(self):
-        self.assertFalse(policy.cleanup_done({'reason': 'resource_deferred'}))
-        self.assertTrue(policy.cleanup_done({'reason': 'cooldown'}))
-        self.assertTrue(policy.cleanup_done({}))
-
     def test_next_row_orders_by_kind_class_then_due_then_id(self):
-        rows = [{'kind': 'learning', 'due': 0, 'id': 'a'}, {'kind': 'laya-sync', 'due': 9, 'id': 'b'},
-                {'kind': 'index', 'due': 9, 'id': 'z'}, {'kind': 'update', 'due': 0, 'id': 'c'}]
-        self.assertEqual(policy.next_row(rows)['kind'], 'index')
         same = [{'kind': 'auto', 'due': 2, 'id': 'a'}, {'kind': 'learning', 'due': 1, 'id': 'b'},
                 {'kind': 'learning', 'due': 1, 'id': 'a'}]
         self.assertEqual(policy.next_row(same), {'kind': 'learning', 'due': 1, 'id': 'a'})
-        self.assertEqual(policy.due_rows(rows, 5), [rows[0], rows[3]])
 
     def test_idle_wait_never_passes_deadline(self):
         self.assertEqual([policy.idle_wait(r) for r in (60, 5, 2.5, 0, -1)], [5, 5, 2.5, 0, 0])
@@ -210,7 +198,7 @@ class DrainThroughSeam(unittest.TestCase):
         return self.queue.pending()
 
     def test_schema_is_unchanged(self):
-        self.queue.put('index', '', now=0)
+        self.queue.put('laya-sync', '/synthetic/b', now=0)
         with sqlite3.connect(self.queue.path) as db:
             columns = [row[1] for row in db.execute('PRAGMA table_info(wakes)')]
         self.assertEqual(columns, ['id', 'kind', 'target', 'revision', 'status', 'due', 'attempts', 'reason'])
@@ -321,8 +309,6 @@ runtime._handoff_worker(queue,fd)
             self.assertIsNotNone(self.queue.put('learning', '/synthetic/%d' % n, now=0))
         self.assertIsNone(self.queue.put('auto', '/synthetic/extra', now=0))
         self.assertTrue((self.root / 'runtime-wake-overflow.json').exists())
-        self.assertIsNotNone(self.queue.put('index', '', now=0))
-        self.assertIsNone(self.queue.put('update', HEX, now=0))
         # An existing wake still coalesces at capacity.
         self.assertIsNotNone(self.queue.put('learning', '/synthetic/0', now=0))
 
@@ -386,7 +372,7 @@ runtime._handoff_worker(queue,fd)
         spawned.clear()
         self.assertTrue(self.lease_free())
         # Once a row is due, the same wake starts exactly one worker.
-        self.queue.put('index', '', now=now - 1)
+        self.queue.put('laya-sync', '/synthetic/b', now=now - 1)
         self.assertTrue(runtime.wake())
         self.assertEqual([argv[3] for argv in spawned], ['worker'])
 
@@ -625,7 +611,7 @@ runtime._handoff_worker(queue,fd)
         self.assertEqual(self.rows()[0]['attempts'], 0)
 
     def test_exception_records_type_name(self):
-        self.queue.put('cleanup', '/synthetic/a', now=0)
+        self.queue.put('laya-sync', '/synthetic/a', now=0)
 
         def boom(_):
             raise RuntimeError('handler')
@@ -634,10 +620,10 @@ runtime._handoff_worker(queue,fd)
         self.assertEqual((row['reason'], row['attempts'], row['due']), ('RuntimeError', 1, 105))
 
     def test_ack_deletes_only_the_claimed_revision(self):
-        self.queue.put('index', '', now=0)
+        self.queue.put('laya-sync', '/synthetic/b', now=0)
 
         def rerequest(_):
-            self.queue.put('index', '', now=0)
+            self.queue.put('laya-sync', '/synthetic/b', now=0)
             return True
         self.drain(rerequest, wall=50)
         row, = self.rows()
@@ -827,13 +813,13 @@ runtime._handoff_worker(queue,fd)
                       [item['detail'] for item in kept.values()])
 
     def test_drain_goes_through_policy_settle(self):
-        self.queue.put('index', '', now=0)
+        self.queue.put('laya-sync', '/synthetic/b', now=0)
         with patch.object(policy, 'retry_delay', return_value=42):
             self.drain(lambda _: False, wall=100)
         self.assertEqual(self.rows()[0]['due'], 142)
 
     def test_busy_lease_returns_without_running(self):
-        self.queue.put('index', '', now=0)
+        self.queue.put('laya-sync', '/synthetic/b', now=0)
         fd = _lock(self.root / 'runtime-worker.lock')
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -843,7 +829,7 @@ runtime._handoff_worker(queue,fd)
         self.assertEqual(len(self.rows()), 1)
 
     def test_resource_deferred_admission_waits_then_runs(self):
-        self.queue.put('index', '', now=0)
+        self.queue.put('laya-sync', '/synthetic/b', now=0)
         signals = iter([ResourceDeferred('synthetic'), True])
         slept = []
 
@@ -856,30 +842,6 @@ runtime._handoff_worker(queue,fd)
                                wall=lambda: 1, sleep=slept.append, max_runs=1, max_seconds=60)
         self.assertEqual(result, {'status': 'drained', 'runs': 1})
         self.assertEqual(slept, [5])
-
-    def test_index_update_and_laya_sync_dispatch_without_learning_admission(self):
-        self.queue.put('learning', '/synthetic/a', now=0)
-        self.queue.put('update', HEX, now=0)
-        self.queue.put('index', '', now=0)
-        self.queue.put('laya-sync', '/synthetic/a', now=0)
-        calls=[]
-        with patch.object(runtime, 'sample', side_effect=AssertionError('learning admission sampled')):
-            result=runtime.drain(self.queue, execute=lambda row: calls.append(row['kind']) or True,
-                                 clock=lambda: 0, wall=lambda: 1, sleep=lambda _: None,
-                                 max_runs=3)
-        self.assertEqual(result, {'status':'pending','runs':3})
-        self.assertEqual(calls, ['index','update','laya-sync'])
-        self.assertEqual([row['kind'] for row in self.rows()], ['learning'])
-
-    def test_running_rows_are_recovered_and_index_runs_first(self):
-        self.queue.put('learning', '/synthetic/a', now=0)
-        self.queue.put('index', '', now=1)
-        with self.queue.connect() as db:
-            db.execute("UPDATE wakes SET status='running'")
-        calls = []
-        self.drain(lambda row: calls.append(row['kind']) or True, max_runs=2)
-        self.assertEqual(calls, ['index', 'learning'])
-        self.assertEqual(self.rows(), [])
 
     def test_bounded_worker_rewakes_retained_rows_even_after_failure(self):
         self.queue.put('learning', '/synthetic/a', now=0)

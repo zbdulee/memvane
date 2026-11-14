@@ -94,15 +94,3 @@ test('hooks and skills no longer reach a QMD runtime, daemon or legacy recall', 
     }
   }
 });
-
-test('wakes of retired QMD kinds are acknowledged instead of retried forever', () => {
-  const result = spawnSync('python3', ['-B', '-c', `
-import json, sys
-sys.path.insert(0, '.')
-import runtime_handlers
-print(json.dumps([runtime_handlers.dispatch({'kind': kind, 'target': '/nonexistent'})
-                  for kind in ('index', 'update', 'cleanup')]))
-`], { encoding: 'utf8', env: { ...process.env, QMD_SETUP_GUARD_FIXTURE: '1' } });
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), [true, true, true]);
-});

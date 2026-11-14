@@ -9,9 +9,10 @@ development execution guard is separate; see
 
 ## Connected runtime paths
 
-- Retired wake kinds: `index`, `update` and `cleanup` rows that an older
-  installed bundle queued are acknowledged once by `runtime_handlers.retired`
-  without any work.
+- Retired wake kinds: no 1.x host serves `index`, `update` or `cleanup`. A row
+  of one that a pre-release build queued is dropped when the queue is read
+  (reason `retired_kind` in `runtime-wake-drops.json`); a row of any other
+  unknown kind stays for the newer host that knows it.
 - `LocalTrainer.call` also admits old explicit adapter calls through the shared
   compute lease. Already coordinated v2 adapters skip that outer lease and use
   their existing per-group TrainingGuard, avoiding recursive acquisition.
@@ -138,11 +139,9 @@ development execution guard is separate; see
 - A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
-- A selected sync yields (`laya_sync_yield_priority`) to a due `index` or
-  `update` wake that has failed fewer than 3 times (those retired kinds are
-  acknowledged on dispatch without work), and, between rounds, to another
-  project's initial build whose recent attempt ended deferred on a busy sync
-  owner (`_initial_build_waiting`); that build's existing wake is pulled to
+- A selected sync yields (`laya_sync_yield_priority`), at each provider call
+  and between rounds, to another project's initial build whose recent attempt
+  ended deferred on a busy sync owner (`_initial_build_waiting`); that build's existing wake is pulled to
   due 0 first. An initial build waits up to `SYNC_OWNER_WAIT_SECONDS` for the
   owner on each round.
 - Selected Laya route queries: `embed_resident.admit_query` checks

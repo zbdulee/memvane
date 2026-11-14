@@ -114,8 +114,7 @@ class BuildCase(unittest.TestCase):
                     'pendingRouteSha256': self.journal['pendingRouteSha256'],
                     'providerManifest': {'synthetic': True}}),
                 ('ReviewedLocalQmdProvider', FakeProvider),
-                ('resource_report', lambda *_a, **_k: {'synthetic': True}),
-                ('_higher_priority_wake', lambda _controller: False)):
+                ('resource_report', lambda *_a, **_k: {'synthetic': True})):
             patcher = mock.patch.object(worker, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -244,23 +243,6 @@ class BuildProgressTests(BuildCase):
         self.assertEqual(FakeProvider.calls, ['wiki/f000.md'])
         self.assertEqual(self.coordinator.lanes, ['provider'])
         self.assertEqual(self.service_log, [])
-
-    def test_cached_backfill_gets_bounded_turn_while_model_work_yields(self):
-        self.corpus(1)
-        self.register()
-        observed = []
-
-        def cached(_runtime, _identity, _profile_id, **options):
-            observed.append(options['should_yield']())
-            return {'state': 'complete', 'reason': 'incremental_backfill_complete'}
-
-        with mock.patch('laya_incremental_docs.backfill_cached', cached), \
-                mock.patch.object(worker, '_higher_priority_wake', return_value=True):
-            result = self.wake()
-        self.assertEqual(observed, [False])
-        self.assertEqual((result['state'], result['reason']),
-                         ('deferred', 'laya_sync_yield_priority'))
-        self.assertEqual(FakeProvider.calls, [])
 
     def test_registered_build_progresses_in_bounded_wakes_to_a_sealed_candidate(self):
         self.corpus(12)

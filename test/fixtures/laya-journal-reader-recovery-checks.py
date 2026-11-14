@@ -83,7 +83,6 @@ with mock.patch.object(controller,'_admit',return_value={'ready':True}), \
      mock.patch.object(worker_install_journal,'verify_selected_route_for_write',side_effect=selected), \
      mock.patch.object(worker,'cas_mark_new_write',side_effect=mark), \
      mock.patch.object(incremental,'_verified',return_value=True), \
-     mock.patch.object(worker,'_higher_priority_wake',return_value=False), \
      mock.patch.object(worker,'sync_step',return_value={'state':'pending','reason':'scan_pending'}), \
      mock.patch.object(vectors,'pending_vector_fill_step',side_effect=pause):
     result,_=worker._run_capacity(decision,proof,wiki_index_roots(decision['collections']),

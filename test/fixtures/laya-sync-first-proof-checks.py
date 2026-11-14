@@ -362,7 +362,6 @@ class SyncFirstProofChecks(unittest.TestCase):
                     mock.patch.object(self.worker, 'ReviewedLocalQmdProvider', return_value=provider), \
                     mock.patch.object(self.worker, '_selected_service', return_value=service), \
                     mock.patch.object(self.worker, 'prepare_candidate_batch_off_hook', return_value={}), \
-                    mock.patch.object(self.worker, '_higher_priority_wake', return_value=False), \
                     mock.patch.object(self.worker, 'sync_full', side_effect=publish), \
                     mock.patch.object(laya_external_edits, 'drain', return_value={}), \
                     mock.patch.object(self.W, 'pending_count', return_value=1), \
@@ -405,7 +404,6 @@ class SyncFirstProofChecks(unittest.TestCase):
                     mock.patch.object(self.worker, 'qa_sync_barrier', return_value=None), \
                     mock.patch.object(self.worker, 'ReviewedLocalQmdProvider', return_value=provider), \
                     mock.patch.object(self.worker, '_selected_service', return_value=service), \
-                    mock.patch.object(self.worker, '_higher_priority_wake', return_value=False), \
                     mock.patch.object(ClaimQueue, 'enqueue_next', new=enqueue), \
                     mock.patch.object(laya_external_edits, 'drain', return_value={}), \
                     mock.patch.object(self.J, 'validate_production_provider_attestation',

@@ -9,7 +9,7 @@
 ### 설치 / cleanup
 Claude·Codex는 marketplace plugin install이 제품 경로다. 제품용 `install.sh`/`uninstall.sh`는 없다. AGY는 공식 PostToolUse payload adapter 전까지 자동 hook을 설치하지 않는다.
 
-live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service는 실행 플러그인 루트가 Claude 또는 Codex의 `plugins/cache/<marketplace>/memvane/<version>`이나 Hermes의 `~/.hermes/plugins/memvane`일 때만 연다(`memvane/kernel/memvane_execution_guard.py`). `MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT=1`은 격리 시험 전용이고 `MEMVANE_TEST_RUNTIME_ROOT`가 함께 있을 때만 인정한다.
+live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service는 실행 플러그인 루트가 Claude 또는 Codex의 `plugins/cache/<marketplace>/memvane/<version>`이나 Hermes의 `~/.hermes/plugins/memvane`일 때만 연다(`memvane/kernel/memvane_execution_guard.py`). 호스트 루트는 실제 경로로 판정한다: 계정 홈과 `HOME`, 그리고 `CLAUDE_CONFIG_DIR`·`CODEX_HOME`·`HERMES_HOME`이 가리키는 재배치 루트도 같은 캐시 모양만 인정한다. `MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT=1`은 격리 시험 전용이고 `MEMVANE_TEST_RUNTIME_ROOT`가 함께 있을 때만 인정한다.
 
 설치 기록(provider attestation, journal, 프로젝트의 `route.json`·`selection.json`)은 옆 파일에 완성해 fsync한 뒤 덮어쓰지 않는 rename으로 게시한다. 중단된 생성은 기록을 남기지 않고, 같은 단계의 재실행이 남은 조각을 지우고 다시 만든다.
 

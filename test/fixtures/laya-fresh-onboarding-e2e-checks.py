@@ -88,8 +88,7 @@ class FreshOnboarding(BUILD['BuildCase']):
         self.coordinator = BUILD['Coordinator']()
         self.service_log = []
         for name, value in (('ReviewedLocalQmdProvider', BUILD['FakeProvider']),
-                            ('resource_report', lambda *_a, **_k: {'synthetic': True}),
-                            ('_higher_priority_wake', lambda _controller: False)):
+                            ('resource_report', lambda *_a, **_k: {'synthetic': True})):
             patcher = mock.patch.object(worker, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)

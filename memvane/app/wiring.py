@@ -11,15 +11,6 @@ from pathlib import Path
 from memvane.runtime.types import Dropped, TargetMissing
 
 
-def retired(row):
-    """ACK a wake of a kind no handler serves any more (QMD index, update, cleanup).
-
-    Older bundles queued these kinds. Acknowledging them drops the row once
-    instead of retrying a missing handler forever.
-    """
-    return True
-
-
 def _missing_target(row):
     """None while the project directory exists, else the missing outcome.
 
@@ -77,7 +68,7 @@ def learning(row):
         if not ready(project):return False
         # A hook-persisted full (teacher+trainer) request, else a training-only
         # retry (no teacher, no fresh captures), runs only in its owned child;
-        # this dispatcher returns at once so index/update wakes keep priority.
+        # this dispatcher returns at once so Laya wakes keep priority.
         # The wake stays until that request settles.
         step=shared.learning_worker_step(root,project,row['revision'])
     return step['status'] not in ('running','started')
@@ -102,8 +93,7 @@ def stall_event(*args, **kwargs):
     return implementation(*args, **kwargs)
 
 
-HANDLERS={'index':'retired','update':'retired','cleanup':'retired',
-          'laya-sync':'laya_sync','laya-compile':'laya_compile','learning':'learning','auto':'auto'}
+HANDLERS={'laya-sync':'laya_sync','laya-compile':'laya_compile','learning':'learning','auto':'auto'}
 
 
 def dispatch(row):

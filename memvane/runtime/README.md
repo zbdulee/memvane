@@ -1,10 +1,10 @@
 # 런타임
 
-wake 큐, admission, lease와 자원 정책을 다룬다. 알 수 없는 wake kind는 보존한다.
+wake 큐, admission, lease와 자원 정책을 다룬다. wake kind는 `laya-sync`·`laya-compile`·`learning`·`auto`다. 알 수 없는 wake kind는 보존하고, 출시 전 빌드가 남긴 `index`·`update`·`cleanup` 행만 큐를 읽을 때 `retired_kind` 사유(`runtime-wake-drops.json`)로 지운다.
 
 구현: `qa_model_budget.py`, `resource_controls.py`, `resource_platform.py`, `runtime_admission.py`, `runtime_cpu.py`, `runtime_handlers.py`, `runtime_lease.py`, `runtime_monitor.py`, `runtime_wake_policy.py`, `runtime_work.py`, `wake_cancel.py`.
 
-`wake_cancel.py`는 소유가 증명된 pending wake 한 행을 검증된 백업 뒤 한 트랜잭션으로 CAS 삭제하고 큐 DB의 `wake_cancellations`에 감사 행을 남긴다. 소유 증명은 호출자(install)가 하고, 트랜잭션 안의 재증명은 호출자가 넘긴 콜백으로 한다.
+`wake_cancel.py`는 한 (kind, target)의 wake 행과 overflow 여부, 큐 DB에 남아 있을 수 있는 `wake_cancellations` 감사 행을 읽기 전용으로 보여 준다(install의 `build-wake-status`). wake 행을 지우는 경로는 없다.
 
 다른 도메인이 쓰는 자원 핸들(`Coordinator`, `WakeQueue`, `Supervisor`, `TrainingGuard`)의 공개 멤버는 `types.py`의 Protocol에 적힌 것뿐이다.
 

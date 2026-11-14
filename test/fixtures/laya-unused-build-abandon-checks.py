@@ -111,9 +111,8 @@ class AbandonCase(unittest.TestCase):
         qroot.mkdir(mode=0o700)
         self.queue = runtime_work.WakeQueue(qroot)
         self.key = wake_policy.wake_key('laya-sync', str(self.project))
-        self.update_target = hashlib.sha256(str(self.project).encode()).hexdigest()[:32]
         self.queue.offer('laya-sync', str(self.project))
-        self.queue.offer('update', self.update_target)
+        self.queue.offer('laya-compile', str(self.project))
         self.other = base / 'other-project'
         self.other.mkdir()
         self.queue.offer('laya-sync', str(self.other))
@@ -121,7 +120,7 @@ class AbandonCase(unittest.TestCase):
     # -- helpers ---------------------------------------------------------------
 
     def revision(self, kind='laya-sync', target=None):
-        owner = self.update_target if kind == 'update' else str(target or self.project)
+        owner = str(target or self.project)
         key = wake_policy.wake_key(kind, owner)
         with self.queue.connect() as db:
             row = db.execute('SELECT revision FROM wakes WHERE id=?', (key,)).fetchone()
@@ -167,7 +166,7 @@ class AbandonCase(unittest.TestCase):
             self.assertEqual(db.execute('SELECT body FROM content').fetchone()[0], 'wiki card')
         self.assertEqual(self.abandon_inactive(wake_revision=None)['replayed'], True)
         self.assertIsNotNone(self.revision('laya-sync', self.other))
-        self.assertIsNotNone(self.revision('update'))
+        self.assertIsNotNone(self.revision('laya-compile'))
 
     def test_partly_built_generation_fts_is_backed_up_without_deleting_content(self):
         self.partly_built()
@@ -288,7 +287,7 @@ class AbandonCase(unittest.TestCase):
         self.assertEqual(record['phase'], 'registered')
         self.assertIsNotNone(initial_build.lookup(self.project))
         self.assertIsNotNone(self.revision('laya-sync', self.other))
-        self.assertIsNotNone(self.revision('update'))
+        self.assertIsNotNone(self.revision('laya-compile'))
 
     def refuse(self, reason, **over):
         with self.assertRaises(product.InstallBlocked) as caught:
@@ -322,10 +321,10 @@ class AbandonCase(unittest.TestCase):
             self.assertEqual(product._sha256_file(receipt_dir / name), digest, name)
         with closing(sqlite3.connect(receipt_dir / 'journal.sqlite')) as db:
             self.assertEqual(db.execute('PRAGMA quick_check').fetchone()[0], 'ok')
-        # Only this project's laya-sync wake went; other project and update stay.
+        # Only this project's laya-sync wake went; other project and laya-compile stay.
         self.assertIsNone(self.revision())
         self.assertIsNotNone(self.revision('laya-sync', self.other))
-        self.assertIsNotNone(self.revision('update'))
+        self.assertIsNotNone(self.revision('laya-compile'))
         self.assertEqual(len(wake_cancel.status(str(self.project), queue=self.queue)['cancellations']), 1)
         # A worker that knows the phase ACKs; the record is terminal.
         self.assertEqual(worker.run_initial_build(self.project, record)['state'], 'unchanged')

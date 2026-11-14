@@ -941,7 +941,7 @@ QA-only barrier (`memvane/sync/product_sync_worker.py`):
      duplicate wake during dispatch, and bounded queue capacity without
      losing an existing learning job. Repeat cooperative yield at least four
      times to show it never counts as a terminal failure or blocks the job.
-     Enqueue a higher-priority index/update wake while training is active,
+     Enqueue a higher-priority Laya sync/compile wake while training is active,
      then record when it is serviced; ordering only at dispatch start is not
      proof that active training yielded.
   5. At OS warning or failed monitor/cleanup proof, stop through the owned

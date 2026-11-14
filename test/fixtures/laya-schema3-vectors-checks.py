@@ -81,7 +81,6 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         for patch in (mock.patch.object(self.VV, 'provider_specs', new=specs),
                       mock.patch.object(self.worker, '_schema3_worker_manifest',
                                         new=lambda decision, proof: proof['providerManifest']),
-                      mock.patch.object(self.worker, '_higher_priority_wake', return_value=False),
                       mock.patch.object(self.worker, 'ReviewedLocalQmdProvider', new=self.stub_provider())):
             patch.start(); self.addCleanup(patch.stop)
         self.spec = self.VV.provider_spec({'providerPath': 'x'}, self.case.route['vectorProfile'])
@@ -1059,14 +1058,14 @@ class Schema3VectorChecks(seed_module.Schema3ConsumerChecks):
         project = str(self.case.project)
         passes, probes = [], []
 
-        def priority(_controller):
-            # A due higher-priority wake appears once one provider call ran.
+        def priority(_controller, _project):
+            # Another project's initial build starts waiting once one provider call ran.
             probes.append(True)
             return len(probes) > 1
         execute = self.sync_execute(project, passes)
         with self.wake_queue() as (queue, clock, drain):
             self.assertEqual(queue.offer('laya-sync', project), 'queued')
-            with mock.patch.object(self.worker, '_higher_priority_wake', side_effect=priority):
+            with mock.patch.object(self.worker, '_initial_build_waiting', side_effect=priority):
                 drain(execute)
             row, = queue.pending()
             first, first_calls = passes[0]

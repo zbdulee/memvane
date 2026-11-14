@@ -55,7 +55,6 @@ MAX_CAPACITY_ROUNDS = 64
 # Wall-clock bound of one initial-build wake (checked between rounds). The
 # rest stays durable in the catalog, fill cursor and claim queue.
 BUILD_WAKE_SECONDS = 45
-PRIORITY_YIELD_MAX_ATTEMPTS = 3
 
 
 def _deferred(exc):
@@ -81,20 +80,6 @@ def _embed_with_budget(provider, body, path):
     if _large_initial_document(body):
         return provider.embed_document_chunks(body, path, timeout=270)
     return provider.embed_document_chunks(body, path)
-
-
-def _higher_priority_wake(controller):
-    """Yield for due QMD work; preserve an unavailable probe as a distinct deferral."""
-    from memvane.runtime.api import wake_queue as WakeQueue
-    try:
-        rows = WakeQueue(controller.root).pending()
-        return any(row['kind'] in ('index', 'update') and row['due'] <= time.time()
-                   and row['attempts'] < PRIORITY_YIELD_MAX_ATTEMPTS
-                   for row in rows)
-    except (OSError, ValueError, sqlite3.Error) as exc:
-        # Keep the fail-closed behavior, but never label a queue access error
-        # as an observed higher-priority job. No queue row is recorded.
-        raise ResourceDeferred('laya_sync_priority_probe_unavailable') from exc
 
 
 # An initial build is small and bounded, but it takes the same per-user sync
@@ -891,11 +876,10 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
 
         def call(method, *args):
             # At each provider-call boundary, as the v6 capacity path does
-            # between rounds: due QMD work, or another project's initial build
-            # waiting on the owner this pass holds. Sets already committed stay
-            # (a pass that added some reports progress and is re-offered).
-            if (_higher_priority_wake(controller)
-                    or _initial_build_waiting(controller, Path(decision['projectRoot']))):
+            # between rounds: another project's initial build waiting on the
+            # owner this pass holds. Sets already committed stay (a pass that
+            # added some reports progress and is re-offered).
+            if _initial_build_waiting(controller, Path(decision['projectRoot'])):
                 raise ResourceDeferred('laya_sync_yield_priority')
             context['calls'] += 1
             try:

@@ -15,10 +15,13 @@ from memvane.runtime.types import (DROP_REASONS, Dropped, TargetMissing,
                                    RETRY, DISPATCH_REASONS, DispatchFailure)
 
 # Lower value runs first. learning and auto share a class on purpose: both are
-# best-effort background work that must never starve index/update/cleanup.
-KINDS = {'index': 0, 'update': 1, 'cleanup': 2, 'laya-sync': 2,
-         'laya-compile': 2,
-         'learning': 3, 'auto': 3}
+# best-effort background work that must never starve Laya sync/compile.
+KINDS = {'laya-sync': 2, 'laya-compile': 2, 'learning': 3, 'auto': 3}
+# Kinds a pre-release build queued that no 1.x host serves: such a row is
+# dropped (``RETIRED_DROP_REASON``) instead of waiting for a host forever.
+# Any other unknown kind is left for the newer 1.x host that knows it.
+RETIRED_KINDS = frozenset(('index', 'update', 'cleanup'))
+RETIRED_DROP_REASON = 'retired_kind'
 # Handler statuses meaning "not done yet, keep the wake and back off".
 MAX_WAKES = 256
 # Capacity-deferred wakes kept for promotion when a slot frees; coalesced by
@@ -44,7 +47,6 @@ MISSING_DROP_SECS = 86400
 MISSING_DROP_MIN_OBSERVATIONS = 3
 # Reason recorded when a handler returns falsy without raising.
 NOT_DONE_REASON = 'pending'
-CLEANUP_DEFERRED_REASON = 'resource_deferred'
 # A target that has just started (or is still loading) its detached owner is
 # waiting on that owner, not failing. Its wake returns after a fixed delay and
 # does not grow the failure backoff. The query path starts the owner itself,
@@ -66,13 +68,7 @@ def validate_wake(kind, target):
     """Raise ValueError('invalid_runtime_wake') unless (kind, target) is fixed-shape."""
     if kind not in KINDS or not isinstance(target, str) or len(target.encode()) > MAX_TARGET_BYTES:
         raise ValueError('invalid_runtime_wake')
-    if kind == 'index':
-        if target:
-            raise ValueError('invalid_runtime_wake')
-    elif kind == 'update':
-        if len(target) != 32 or any(c not in '0123456789abcdef' for c in target):
-            raise ValueError('invalid_runtime_wake')
-    elif not PurePath(target).is_absolute() or '\x00' in target:
+    if not PurePath(target).is_absolute() or '\x00' in target:
         raise ValueError('invalid_runtime_wake')
 
 
@@ -82,15 +78,15 @@ def wake_key(kind, target):
 
 
 def capacity_limit(kind, max_wakes=MAX_WAKES):
-    """Row count at which a *new* wake is refused; one slot stays reserved for index."""
-    return max_wakes if kind == 'index' else max_wakes - 1
+    """Row count at which a *new* wake is refused (one below ``max_wakes`` for every kind)."""
+    return max_wakes - 1
 
 
 def needs_compute_admission(kind):
     """Only learning/auto wait for the shared compute admission before dispatch.
 
-    The wake is only a dispatch hint. Index/update/cleanup and Laya work have
-    their own admission and retained content queues in their handlers, so a
+    The wake is only a dispatch hint. Laya sync/compile work has its own
+    admission and retained content queues in its handlers, so a
     training-sized memory reserve must not hold those wakes here.
     """
     return kind in ('learning', 'auto')
@@ -118,11 +114,6 @@ def idle_wait(remaining):
 def handler_done(status):
     """ACK predicate for status-returning handlers (learning, auto)."""
     return status not in RETRY
-
-
-def cleanup_done(answer):
-    """ACK predicate for orphan_reclaim --json output (only resource deferral retries)."""
-    return answer.get('reason') != CLEANUP_DEFERRED_REASON
 
 
 def retry_delay(attempts):

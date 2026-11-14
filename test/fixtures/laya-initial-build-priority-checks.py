@@ -143,8 +143,7 @@ class SelectedSync(Base):
         steps = mock.Mock(return_value={'state': 'unchanged', 'generation': None,
                                         'claim': None})
         probe = mock.Mock(return_value=waiting)
-        with mock.patch.object(worker, '_higher_priority_wake', return_value=False), \
-                mock.patch.object(worker, '_initial_build_waiting', probe), \
+        with mock.patch.object(worker, '_initial_build_waiting', probe), \
                 mock.patch.object(worker, 'sync_step', steps), \
                 mock.patch('laya_vector_capacity.provider_profile_id', return_value='p'):
             try:
@@ -185,7 +184,6 @@ class BuildRounds(Base):
                                         'claim': None})
         with mock.patch.object(worker, 'sync_owner', owner), \
                 mock.patch.object(worker, 'sync_step', steps), \
-                mock.patch.object(worker, '_higher_priority_wake', return_value=False), \
                 mock.patch('laya_vector_capacity.provider_profile_id', return_value='p'):
             result = worker._build_rounds(runtime, object(), lambda *_a: None,
                                           self.controller, lambda: False, lambda: True,

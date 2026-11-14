@@ -79,14 +79,6 @@ class ServiceFailure(ValueError):
         self.timing = timing or {}
 
 
-# The wake row fields a cancel's verified backup and CAS DELETE must match.
-CANCEL_ROW_VERSION = ('id', 'kind', 'target', 'revision', 'status', 'due', 'attempts', 'reason')
-
-
-class CancelRefused(ValueError):
-    """A wake cancel refused before its queue commit; the reason is the message."""
-
-
 # Resource handles. These objects hold owner-private lock files, the wake
 # queue database or a monitor child, so they cross the domain boundary as
 # handles. Only the members below may be used outside ``memvane.runtime``;
