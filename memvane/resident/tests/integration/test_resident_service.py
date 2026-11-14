@@ -458,3 +458,45 @@ class ServiceChecks(Fixture):
             thread.join(10)
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, ['provider_unavailable'])
+
+    def test_full_attestation_runs_once_per_installation_and_only_to_bind(self):
+        projects = [self.project(name) for name in ('alpha', 'beta')]
+        for project, _manifest in projects:
+            svc.register(project, root=self.root)
+        attested = []
+        service = self.service(start=False)
+        service.attest = lambda decision, _proof, _mode: attested.append(decision['projectRoot'])
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
+        for _project, manifest in projects:
+            self.wait(lambda item=manifest: self.ready(item))
+        for _ in range(10):
+            service.tick()
+        self.assertEqual(sorted(attested), sorted(project for project, _manifest in projects))
+        self.assertEqual(len(self.loads), 1)
+
+    def test_busy_window_during_attestation_defers_without_a_terminal_state(self):
+        projects = [self.project(name) for name in ('alpha', 'beta')]
+        attempts = {project: 0 for project, _manifest in projects}
+        service = self.service(start=False)
+
+        def attest(decision, _proof, _mode):
+            project = decision['projectRoot']
+            attempts[project] += 1
+            if attempts[project] == 1:
+                raise ResourceDeferred('writer_proof_physical_busy')
+
+        service.attest = attest
+        self.assertTrue(service.acquire(wait=5))
+        with patch.object(resident, '_failure_decision', return_value=None):
+            service.start()
+            for project, manifest in projects:
+                svc.register(project, root=self.root)
+                self.wait(lambda p=project: attempts[p] >= 1)
+                state = resident.read_owner_state(manifest)
+                self.assertFalse((state or {}).get('terminal', False))
+                service.retry.pop(project, None)
+                service.wake.set()
+                self.wait(lambda m=manifest: self.ready(m))
+                self.assertGreaterEqual(attempts[project], 2)
+        self.assertEqual(len(self.loads), 1)
