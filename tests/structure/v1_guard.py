@@ -16,9 +16,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import structure_guard as old_guard
 
 
+def _top_statements(body):
+    """Statements that bind module (or class) names, including inside top-level try/if blocks."""
+    for node in body:
+        if isinstance(node, ast.Try):
+            for block in (node.body, node.orelse, node.finalbody, *[h.body for h in node.handlers]):
+                yield from _top_statements(block)
+        elif isinstance(node, ast.If):
+            yield from _top_statements(node.body)
+            yield from _top_statements(node.orelse)
+        else:
+            yield node
+
+
 def _symbol_table(tree):
     result = set()
-    for node in tree.body:
+    for node in _top_statements(tree.body):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             result.add(node.name)
         elif isinstance(node, ast.Import):
