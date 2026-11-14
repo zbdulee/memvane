@@ -493,6 +493,46 @@ class FixtureOnboarding(unittest.TestCase):
                                                state_root=str(self.state))['status'], 'selected')
         self.assertIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
 
+    def cli(self, entry, argv):
+        """Run one setup CLI ``main`` past the installed-plugin live-write check."""
+        out = io.StringIO()
+        with redirect_stdout(out), mock.patch(
+                'memvane.kernel.memvane_execution_guard.require_cached_plugin_for_live_write',
+                lambda *_a, **_k: None):
+            code = entry.main(argv)
+        return code, json.loads(out.getvalue()) if out.getvalue().strip() else None
+
+    def test_recover_without_ledger_never_abandons(self):
+        """Verify R1: with no ledger, recover refuses unless an abandon already began."""
+        from memvane.app import setup_entry, setup_workflow
+        from memvane.install import api as install, initial_build
+        self.install(1, onboard=False)
+        self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+        self.build()
+        recover = lambda: install.select_origin(project_root=str(self.project),
+                                                state_root=str(self.state), recover=True)
+        for _ in range(2):
+            self.blocked('initial_build_not_finalized', recover)
+        code, row = self.cli(setup_entry, ['recover-index-origin', '--project', str(self.project),
+                                           '--state-root', str(self.state)])
+        self.assertEqual((code, row['status'], row['reason']),
+                         (1, 'rejected', 'initial_build_not_finalized'))
+        self.blocked('initial_build_not_finalized', lambda: self.cli(setup_workflow, [
+            'recover', '--project-root', str(self.project), '--state-root', str(self.state),
+            '--route-file', str(self.state / 'route.json')]))
+        self.assertEqual((self.journal_row()['state'], self.build_record()['phase']), ('prepared', 'ready'))
+        self.assertIsNotNone(self.build_pointer())
+        self.assertFalse((self.state / 'ledger.json').exists())
+        # An abandon that stopped after the journal said restored: recover finishes it.
+        with mock.patch('memvane.install.initial_build.retire_project_pointer',
+                        _crash_once(initial_build.retire_project_pointer)):
+            with self.assertRaises(_Crash):
+                self.restore()
+        self.assertEqual(self.journal_row()['state'], 'restored')
+        self.assertEqual(recover(), {'status': 'restored', 'changesApplied': 1})
+        self.assertEqual(recover(), {'status': 'restored', 'changesApplied': 0})
+        self.assertEqual((self.build_pointer(), self.build_record()), (None, None))
+
     # -- proof/state review --------------------------------------------------------------
     def write_pointer(self, name, record):
         """Replace one project pointer with ``record``'s canonical bytes; returns them."""

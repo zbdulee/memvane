@@ -26,6 +26,7 @@ const METHODS = [
   'test_pointer_of_another_major_answers_without_hook_work',
   'test_interrupted_record_creation_reruns',
   'test_finalize_takes_the_sync_dispatch_check_as_a_port',
+  'test_recover_without_ledger_never_abandons',
 ];
 
 for (const method of METHODS) {

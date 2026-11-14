@@ -250,11 +250,20 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
 
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
-    """Finish the same partially published or withdrawn v1 selection."""
+    """Finish the same partially published or withdrawn v1 selection.
+
+    Without a ledger (finalize never completed) recover only finishes an
+    abandon that already began: the journal says ``restored``. Any other
+    unfinalized install refuses with ``initial_build_not_finalized``;
+    abandoning it takes the approved restore.
+    """
     from memvane.install.ledger_common import _read_json
+    from memvane.journal.api import inspect_journal
     state = Path(journal_path).parent
     ledger_path = state / 'ledger.json'
     ledger = _read_json(ledger_path) if os.path.lexists(ledger_path) else None
+    if ledger is None and inspect_journal(state / 'journal.sqlite')['state'] != 'restored':
+        _fail('initial_build_not_finalized')
     if not isinstance(ledger, dict) or ledger.get('phase') in ('restoring', 'restored'):
         return _restore_v1_locked(_checked_project(project_root), state)
     return activate_origin_selection(project_root, journal_path, route_bytes)
