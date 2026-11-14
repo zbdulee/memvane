@@ -756,15 +756,22 @@ def _accept_wiki_grant(decision: dict, kind: str, grant: str) -> None:
 
 
 def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict:
-    """Leave recall empty while the initial build has no selected head."""
-    if action != 'recall' or host not in ('claude', 'codex', 'hermes'):
-        _fail('initial_preview_action_unsupported')
-    if not isinstance(payload, dict):
-        _fail('invalid_hook_payload')
-    prompt = payload.get('prompt')
-    if not isinstance(prompt, str) or not prompt.strip():
-        _fail('invalid_query_prompt')
-    return host_payload(host, '')
+    """Leave recall empty while the initial build has no selected head.
+
+    Like every selected-route hook call it writes one event line: recall,
+    ``empty``/``initial_build_preview`` (or the refusal), ``degraded: preview``.
+    """
+    with _event_scope(action, host, decision, payload):
+        _trace_fields(degraded='preview')
+        if action != 'recall' or host not in ('claude', 'codex', 'hermes'):
+            _fail('initial_preview_action_unsupported')
+        if not isinstance(payload, dict):
+            _fail('invalid_hook_payload')
+        prompt = payload.get('prompt')
+        if not isinstance(prompt, str) or not prompt.strip():
+            _fail('invalid_query_prompt')
+        _trace_final('initial_build_preview')
+        return host_payload(host, '')
 
 
 class _EventTrace(RecallTrace):
