@@ -9,15 +9,11 @@ import sys
 
 from memvane.install import api as _install
 from memvane.install.types import InstallBlocked
-from memvane.journal.api import inspect_journal
-from memvane.app.setup_activation import (activate_origin_selection, finalize_initial_build,
-                                          recover_origin_selection)
+from memvane.app.setup_activation import finalize_initial_build
 
-_fail = _install.refuse
-_checked_project = _install.checked_project
 _install_lock = _install.install_lock
-_private_parent = _install.private_parent
-_read_private = _install.read_private
+activate_origin_selection = _install.activate_origin_selection
+recover_origin_selection = _install.recover_origin_selection
 plan_fresh_wiki_origin = _install.plan_fresh_wiki_origin
 review_local_provider = _install.review_local_provider
 prepare_fresh_wiki_origin = _install.prepare_fresh_wiki_origin
@@ -76,9 +72,6 @@ def main(argv=None):
         from memvane.kernel.memvane_execution_guard import require_cached_plugin_for_live_write
         require_cached_plugin_for_live_write()
     root = _installed_root()
-    state_root = (_private_parent(args.state_root)
-                  if args.action in ('status', 'activate', 'recover') else None)
-    journal = state_root / 'journal.sqlite' if state_root else None
     if args.action == 'plan-fresh-wiki':
         result = plan_fresh_wiki_origin(args.project_root)
     elif args.action == 'build-status':
@@ -100,22 +93,18 @@ def main(argv=None):
             accepted_provider_sha256=args.accepted_provider_sha256,
             model_path=args.model_file, dimension=args.dimension)
     elif args.action == 'status':
-        result = {'journal': inspect_journal(journal)}
+        result = {'journal': _install.index_origin_status(args.state_root)['journal']}
     elif args.action == 'restore':
         if not args.approve_restore:
-            _fail('restore_approval_required')
+            raise InstallBlocked('restore_approval_required')
         result = restore_origin_selection(project_root=args.project_root,
                                           state_root=args.state_root)
     else:
-        project = _checked_project(args.project_root)
-        route = _read_private(args.route_file, 8192)
-        with _install_lock(state_root):
-            if args.action == 'activate':
-                if not args.approve_activation:
-                    _fail('activation_approval_required')
-                result = activate_origin_selection(project, journal, route)
-            else:
-                result = recover_origin_selection(project, journal, route)
+        if args.action == 'activate' and not args.approve_activation:
+            raise InstallBlocked('activation_approval_required')
+        result = _install.select_origin(project_root=args.project_root, state_root=args.state_root,
+                                        route_file=args.route_file,
+                                        recover=args.action == 'recover')
     print(json.dumps(result, sort_keys=True, ensure_ascii=False))
     if args.action == 'restore' and result.get('status') in ('blocked', 'recovery_required'):
         return 2

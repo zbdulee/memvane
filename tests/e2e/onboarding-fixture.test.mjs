@@ -25,6 +25,7 @@ const METHODS = [
   'test_foreign_route_is_replaced_by_a_new_onboarding',
   'test_pointer_of_another_major_answers_without_hook_work',
   'test_interrupted_record_creation_reruns',
+  'test_finalize_takes_the_sync_dispatch_check_as_a_port',
 ];
 
 for (const method of METHODS) {

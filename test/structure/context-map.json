@@ -1678,6 +1678,11 @@
       "context": "install",
       "layer": "application",
       "pinned": false
+    },
+    "memvane/install/application/onboarding_activation.py": {
+      "context": "install",
+      "layer": "application",
+      "pinned": false
     }
   },
   "pinned_paths": [

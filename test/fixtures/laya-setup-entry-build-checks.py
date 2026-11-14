@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.journal import initial_build as laya_initial_build
 from memvane.install import api as product
 from memvane.app import setup_activation as selection
+from memvane.install.application import onboarding_workflow as workflow
 from memvane.app import setup_entry
 
 
@@ -52,7 +53,7 @@ class SetupInitialBuild(unittest.TestCase):
 
     def test_status_and_rescan_require_same_project_build(self):
         record = {'identity': {'projectRoot': str(self.project.resolve())}}
-        with mock.patch.object(product, 'private_parent', return_value=self.state), \
+        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
              mock.patch.object(laya_initial_build, 'read', return_value=record), \
              mock.patch.object(product, 'initial_build_status',
                                return_value={'status': 'initial_build'}) as status, \
@@ -64,7 +65,7 @@ class SetupInitialBuild(unittest.TestCase):
                              ['status'], 'rescan_requested')
         status.assert_called_once_with(self.state)
         rescan.assert_called_once_with(self.state)
-        with mock.patch.object(product, 'private_parent', return_value=self.state), \
+        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
              mock.patch.object(laya_initial_build, 'read',
                                return_value={'identity': {'projectRoot': '/wrong'}}), \
              mock.patch.object(product, 'request_initial_build_rescan') as rescan:
@@ -73,17 +74,17 @@ class SetupInitialBuild(unittest.TestCase):
         rescan.assert_not_called()
 
     def test_finalize_entry_never_activates_route(self):
-        with mock.patch.object(product, 'private_parent', return_value=self.state), \
+        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
              mock.patch.object(selection, 'finalize_initial_build',
                                return_value={'status': 'freshness_pending'}) as finalize, \
-             mock.patch.object(selection, 'activate_origin_selection') as activate:
+             mock.patch.object(product, 'activate_origin_selection') as activate:
             code, row = self.call('finalize-index-origin', '--state-root', str(self.state))
         self.assertEqual((code, row['status']), (0, 'freshness_pending'))
         finalize.assert_called_once_with(project_root=str(self.project), state_root=self.state)
         activate.assert_not_called()
 
     def test_restore_entry_requires_explicit_approval_and_reports_outcome(self):
-        with mock.patch.object(product, 'private_parent', return_value=self.state), \
+        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
              mock.patch.object(product, 'restore_origin_selection') as restore:
             code, row = self.call('restore-index-origin', '--state-root', str(self.state))
             self.assertEqual((code, row['status'], row['reason'], row['changesApplied']),
@@ -100,7 +101,7 @@ class SetupInitialBuild(unittest.TestCase):
                                                 state_root=self.state)
 
     def test_retire_entry_requires_approval(self):
-        with mock.patch.object(product, 'private_parent', return_value=self.state), \
+        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
              mock.patch.object(product, 'retire_drifted_origin',
                                return_value={'status': 'fresh_wiki_binding_retired'}) as retire:
             code, row = self.call('retire-index-origin', '--state-root', str(self.state))
@@ -114,14 +115,14 @@ class SetupInitialBuild(unittest.TestCase):
                                            state_root=self.state)
 
     def test_activate_and_recover_entries_use_the_syncing_product_paths(self):
-        with mock.patch.object(product, 'private_parent', return_value=self.state), \
-             mock.patch.object(product, 'read_private', return_value=b'{}'), \
+        with mock.patch.object(workflow, '_private_parent', return_value=self.state), \
+             mock.patch.object(workflow, '_read_private', return_value=b'{}'), \
              mock.patch.object(product, 'install_lock',
                                side_effect=lambda _state: contextlib.nullcontext()), \
-             mock.patch.object(selection, 'activate_origin_selection',
+             mock.patch.object(product, 'activate_origin_selection',
                                return_value={'phase': 'active',
                                              'syncWake': {'status': 'queued'}}) as activate, \
-             mock.patch.object(selection, 'recover_origin_selection',
+             mock.patch.object(product, 'recover_origin_selection',
                                return_value={'phase': 'prepared'}) as recover:
             code, row = self.call('activate-index-origin', '--state-root', str(self.state))
             self.assertEqual((code, row['reason']),

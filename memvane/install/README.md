@@ -30,9 +30,13 @@ live `v1/`에 쓰는 setup·writer·wake 큐·sync owner lock·resident service�
 
 `runtime_wake_cancel.py`는 설치의 초기 빌드 wake 취소에서 소유 증명을 맡는다. 큐 백업, CAS 삭제와 감사 행 기록은 runtime api(`cancel_pending_wake`, `wake_cancel_status`)가 한 트랜잭션으로 처리한다.
 
+## 온보딩 use case
+
+plan·prepare·finalize·activate·recover·restore는 모두 `install.api`에 있다. 설치 ledger(`ledger.json`, `memvane-install-ledger-v1`)는 install만 쓴다(`application/onboarding_activation.py`의 finalize·activate, `application/onboarding_restore.py`의 restore). finalize는 원문 관측(`wiki.intake.api.schema3_wiki_cards`·`schema3_sources`)을 직접 부르고, 위 층의 sync dispatch 확인 하나만 `resolve_sync_target` keyword port로 받는다. `activate_origin_selection`·`recover_origin_selection`은 호출자가 state root의 `install_lock`을 쥔 채 부르고, `select_origin`은 route를 읽고 그 lock을 직접 잡는 CLI용 입구다.
+
 ## 온보딩 단계의 재실행
 
-`application/onboarding_workflow.py`(plan·provider review·prepare·build status·rescan), `application/onboarding_restore.py`(restore·abandon·foreign pointer 교체)와 `memvane/app/setup_activation.py`(finalize·activate·recover)의 각 단계는 임의 지점에서 멈춘 뒤 같은 명령을 다시 실행하면 같은 결과로 수렴한다.
+`application/onboarding_workflow.py`(plan·provider review·prepare·build status·rescan), `application/onboarding_restore.py`(restore·abandon·foreign pointer 교체)와 `application/onboarding_activation.py`(finalize·activate·recover)의 각 단계는 임의 지점에서 멈춘 뒤 같은 명령을 다시 실행하면 같은 결과로 수렴한다.
 
 - `prepare`는 raw 원문을 sync와 같은 상한(4,096 파일·64 MB)으로 먼저 스캔하고, 넘으면 빌드 전에 `raw_scan_limit_exceeded`로 거절한다.
 - 영속 기록(`route.json`의 `stateNode`·`storeNode`, reader 기록의 `*_node`)은 재실행에서 inode로 대조하고 기록된 `st_dev` 바이트를 유지한다. plan의 `scopeId` seed는 프로젝트 `st_dev`를 그대로 쓴다.

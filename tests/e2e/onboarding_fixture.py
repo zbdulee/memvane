@@ -144,11 +144,11 @@ class FixtureOnboarding(unittest.TestCase):
                                                state_root=str(self.state))
 
     def activate(self):
-        from memvane.app import setup_activation as workflow
-        route = workflow._read_private(self.state / 'route.json', 8192)
-        with workflow._install_lock(self.state):
-            return workflow.activate_origin_selection(self.project, self.state / 'journal.sqlite',
-                                                      route)
+        from memvane.install import api as install
+        route = (self.state / 'route.json').read_bytes()
+        with install.install_lock(self.state):
+            return install.activate_origin_selection(self.project, self.state / 'journal.sqlite',
+                                                     route)
 
     def restore(self):
         from memvane.install.application import onboarding_restore as workflow
@@ -293,7 +293,7 @@ class FixtureOnboarding(unittest.TestCase):
 
     def test_source_change_between_finalize_and_activate_reseals(self):
         """F3: a raw edit after finalize (and after an activation stopped past its seed) converges."""
-        from memvane.app import setup_activation as activation
+        from memvane.install.application import onboarding_activation as activation
         self.install(1, onboard=False)
         self.assertEqual(self.prepare()['status'], 'initial_build_registered')
         self.build()
@@ -416,7 +416,7 @@ class FixtureOnboarding(unittest.TestCase):
         self.build()
         self.assertEqual(self.finalize()['status'], 'initial_build_finalized')
         route_file = self.project / '.memvane' / 'route.json'
-        from memvane.app import setup_activation as activation
+        from memvane.install.application import onboarding_activation as activation
         # 1. Marker written, route not yet.
         with mock.patch.object(activation, '_write_or_verify_private',
                                _crash_once(activation._write_or_verify_private,
@@ -459,6 +459,39 @@ class FixtureOnboarding(unittest.TestCase):
             self.assertFalse((self.state / 'journal.sqlite').exists())
         shutil.rmtree(bulk)
         self.assertEqual(self.prepare()['status'], 'initial_build_registered')
+
+    # -- install use cases (rereview C1) ---------------------------------------------------
+    def test_finalize_takes_the_sync_dispatch_check_as_a_port(self):
+        """C1: finalize lives in install.api; its one app-level check comes in as a port."""
+        from memvane.install import api as install
+        self.install(1, onboard=False)
+        self.assertEqual(install.prepare_fresh_wiki_origin(
+            project_root=str(self.project), plugin_root=str(base.ROOT), state_root=str(self.state),
+            expected_proposal_sha256=install.plan_fresh_wiki_origin(self.project)['proposalSha256'],
+            install_id=self.install_id, accepted_provider_sha256=base.REVIEW_SHA,
+            dimension=base.DIMENSION)['status'], 'initial_build_registered')
+        self.build()
+        before = self.journal_row()
+        calls = []
+
+        def refused(project):
+            calls.append(project)
+            raise RuntimeError('dispatch_refused')
+        for _ in range(2):
+            with self.assertRaises(RuntimeError):
+                install.finalize_initial_build(project_root=str(self.project), state_root=str(self.state),
+                                               resolve_sync_target=refused)
+        self.assertEqual(calls, [str(self.project)] * 2)
+        self.assertEqual(self.journal_row(), before, 'a refused dispatch check seals nothing')
+        self.assertFalse((self.state / 'ledger.json').exists())
+        finalized = install.finalize_initial_build(project_root=str(self.project),
+                                                   state_root=str(self.state),
+                                                   resolve_sync_target=calls.append)
+        self.assertEqual((finalized['status'], len(calls)), ('initial_build_finalized', 3))
+        self.assertEqual(json.loads((self.state / 'ledger.json').read_text())['phase'], 'prepared')
+        self.assertEqual(install.select_origin(project_root=str(self.project),
+                                               state_root=str(self.state))['status'], 'selected')
+        self.assertIn('zqheronx', self.recall('what marker does the heron protocol keep?'))
 
     # -- proof/state review --------------------------------------------------------------
     def write_pointer(self, name, record):

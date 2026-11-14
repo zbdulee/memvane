@@ -27,44 +27,9 @@ def build_owner(state_root):
     return implementation(state_root)
 
 
-def build_create_v1(identity):
-    from memvane.install.initial_build import create_v1 as implementation
-    return implementation(identity)
-
-
-def build_register_project(identity):
-    from memvane.install.initial_build import register_project as implementation
-    return implementation(identity)
-
-
-def build_read_v1(state_root):
-    from memvane.install.initial_build import read_v1 as implementation
-    return implementation(state_root)
-
-
 def build_advance_v1(record, *, phase, reason=None):
     from memvane.install.initial_build import advance_v1 as implementation
     return implementation(record, phase=phase, reason=reason)
-
-
-def build_retire_project_pointer(identity):
-    from memvane.install.initial_build import retire_project_pointer as implementation
-    return implementation(identity)
-
-
-def ledger_read_json(path):
-    from memvane.install.ledger_common import _read_json as implementation
-    return implementation(path)
-
-
-def ledger_write(path, value, *, replace):
-    from memvane.install.ledger_common import _write as implementation
-    return implementation(path, value, replace=replace)
-
-
-def ledger_fsync_dir(path):
-    from memvane.install.ledger_common import _fsync_dir as implementation
-    return implementation(path)
 
 
 def plan_fresh_wiki_origin(project_root):
@@ -91,64 +56,49 @@ def prepare_fresh_wiki_origin(*, project_root, plugin_root, state_root, expected
                           model_path=model_path, dimension=dimension)
 
 
-def initial_build_status(state_root):
+def index_origin_status(state_root):
+    """``{status: 'inspected', journal, routeFile[, initialBuild]}`` of one install state root."""
+    from memvane.install.application.onboarding_workflow import index_origin_status as implementation
+    return implementation(state_root)
+
+
+def initial_build_status(state_root, *, project_root=None):
+    """The build's ``{status, phase, reason, epoch}``; ``project_root`` must own the build when given."""
     from memvane.install.application.onboarding_workflow import initial_build_status as implementation
-    return implementation(state_root)
+    return implementation(state_root, project_root=project_root)
 
 
-def request_initial_build_rescan(state_root):
+def request_initial_build_rescan(state_root, *, project_root=None):
     from memvane.install.application.onboarding_workflow import request_initial_build_rescan as implementation
-    return implementation(state_root)
+    return implementation(state_root, project_root=project_root)
+
+
+def finalize_initial_build(*, project_root, state_root, resolve_sync_target):
+    """Seal a ready build; ``resolve_sync_target(project)`` is the caller's sync dispatch check."""
+    from memvane.install.application.onboarding_activation import finalize_initial_build as implementation
+    return implementation(project_root=project_root, state_root=state_root,
+                          resolve_sync_target=resolve_sync_target)
+
+
+def activate_origin_selection(project_root, journal_path, route_bytes):
+    """Publish the proved selection; the caller holds the state root's ``install_lock``."""
+    from memvane.install.application.onboarding_activation import activate_origin_selection as implementation
+    return implementation(project_root, journal_path, route_bytes)
+
+
+def recover_origin_selection(project_root, journal_path, route_bytes):
+    """Finish a started activation or abandon; the caller holds the ``install_lock``."""
+    from memvane.install.application.onboarding_activation import recover_origin_selection as implementation
+    return implementation(project_root, journal_path, route_bytes)
+
+
+def select_origin(*, project_root, state_root, route_file=None, recover=False):
+    """Activate (``recover=True``: recover) from a state root under its install lock."""
+    from memvane.install.application.onboarding_activation import select_origin as implementation
+    return implementation(project_root=project_root, state_root=state_root,
+                          route_file=route_file, recover=recover)
 
 
 def restore_origin_selection(*, project_root, state_root):
     from memvane.install.application.onboarding_restore import restore_origin_selection as implementation
     return implementation(project_root=project_root, state_root=state_root)
-
-
-def restore_selection_locked(project, state):
-    """Restore under an install lock the caller already holds."""
-    from memvane.install.application.onboarding_restore import _restore_v1_locked as implementation
-    return implementation(project, state)
-
-
-def refuse(reason):
-    """Raise ``InstallBlocked(reason)``."""
-    from memvane.install.application.onboarding_workflow import _fail as implementation
-    return implementation(reason)
-
-
-def unique_keys(pairs):
-    """``json`` object hook that refuses a duplicate key."""
-    from memvane.install.application.onboarding_workflow import _unique as implementation
-    return implementation(pairs)
-
-
-def checked_project(project_root):
-    from memvane.install.application.onboarding_workflow import _checked_project as implementation
-    return implementation(project_root)
-
-
-def private_parent(path):
-    from memvane.install.application.onboarding_workflow import _private_parent as implementation
-    return implementation(path)
-
-
-def read_private(path, limit):
-    from memvane.install.application.onboarding_workflow import _read_private as implementation
-    return implementation(path, limit)
-
-
-def write_or_verify_private(path, raw):
-    from memvane.install.application.onboarding_workflow import _write_or_verify_private as implementation
-    return implementation(path, raw)
-
-
-def project_pointers_present(project_root):
-    from memvane.install.application.onboarding_workflow import _project_pointers_present as implementation
-    return implementation(project_root)
-
-
-def request_build_wake(project_root):
-    from memvane.install.application.onboarding_workflow import _request_build_wake as implementation
-    return implementation(project_root)

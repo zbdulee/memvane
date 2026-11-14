@@ -1,9 +1,8 @@
 """Public wiki intake operations."""
 from __future__ import annotations
 
-from memvane.wiki.intake.types import (RAW_SCAN_MAX_FILES, RAW_SCAN_MAX_BYTES, QUEUE_SCAN_MAX_BYTES,
-                                        SESSION_START_ACCEPTED_TRIGGERS, GrantUncertain,
-                                        HOOK_LOCK_SECONDS, POST_TOOL_TRIGGER)
+from memvane.wiki.intake.types import (QUEUE_SCAN_MAX_BYTES, SESSION_START_ACCEPTED_TRIGGERS,
+                                        GrantUncertain, HOOK_LOCK_SECONDS, POST_TOOL_TRIGGER)
 
 
 def scan_collections(roots, scope, index, max_files=200, max_bytes=5000000, *, wiki_only=False):
@@ -14,6 +13,29 @@ def scan_collections(roots, scope, index, max_files=200, max_bytes=5000000, *, w
 def collection_roots(roots):
     from memvane.wiki.intake.source_scan import _collection_roots as implementation
     return implementation(roots)
+
+
+def schema3_wiki_cards(root):
+    """``(sorted card paths, skipped count)`` of the regular ``.md`` cards under a wiki root.
+
+    Dot segments, the root meta pages and links are not cards; a file the
+    store would not admit (not owned, linked, over ``MAX_BODY``) is counted in
+    ``skipped`` and never read. More than ``MAX_MEMBERS`` cards raises
+    ``IndexContractError('schema3_wiki_too_many_cards')``.
+    """
+    from memvane.wiki.intake.source_scan import schema3_wiki_cards as implementation
+    return implementation(root)
+
+
+def schema3_sources(decision, handle, deadline, *, raw_scan=None):
+    """``{project-relative path: (sha256, byte_length, tracked_state)}`` of the raw roots.
+
+    ``tracked_state`` is ``tracked``, ``untracked`` or ``unknown``. A completed
+    scan also sets ``raw_scan['snapshot']`` (``{collection/relative: sha256}``);
+    a scan over its bounds returns ``{}`` and sets no snapshot.
+    """
+    from memvane.wiki.intake.source_scan import schema3_sources as implementation
+    return implementation(decision, handle, deadline, raw_scan=raw_scan)
 
 
 

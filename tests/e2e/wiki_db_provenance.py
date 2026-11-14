@@ -249,10 +249,11 @@ class WikiDbProvenance(unittest.TestCase):
         finalized = activation.finalize_initial_build(project_root=str(self.project),
                                                     state_root=str(self.state))
         self.assertEqual(finalized['status'], 'initial_build_finalized', finalized)
-        route = activation._read_private(self.state / 'route.json', 8192)
-        with activation._install_lock(self.state):
-            selected = activation.activate_origin_selection(self.project, self.state / 'journal.sqlite',
-                                                          route)
+        from memvane.install import api as install
+        route = (self.state / 'route.json').read_bytes()
+        with install.install_lock(self.state):
+            selected = install.activate_origin_selection(self.project, self.state / 'journal.sqlite',
+                                                         route)
         self.assertEqual(selected['status'], 'selected', selected)
         self.decision = select_route(str(self.project), action='recall')
         self.assertEqual(self.decision.get('state'), 'candidate', self.decision)

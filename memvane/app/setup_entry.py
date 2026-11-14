@@ -56,11 +56,6 @@ def _exception_detail(exc):
     return None
 
 
-def _read_v1_build(state):
-    from memvane.journal.api import build_read_v1
-    return build_read_v1(state)
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
@@ -160,43 +155,29 @@ def main(argv=None):
                     install_id=args.install_id,
                     model_path=args.provider_model_file,
                     dimension=args.provider_dimension)
+            elif args.action == 'index-origin-status':
+                result = product.index_origin_status(args.state_root)
+            elif args.action == 'index-build-status':
+                result = product.initial_build_status(args.state_root, project_root=args.project)
+            elif args.action == 'index-build-rescan':
+                result = product.request_initial_build_rescan(args.state_root,
+                                                              project_root=args.project)
+            elif args.action == 'finalize-index-origin':
+                result = selection.finalize_initial_build(
+                    project_root=args.project, state_root=args.state_root)
+            elif args.action == 'restore-index-origin':
+                # Abandons an unselected install, withdraws a selection before its
+                # first selected write, or releases one whose provider changed; deletes no DB.
+                if not args.approve_index_origin_restore:
+                    raise ValueError('index_origin_restore_approval_required')
+                result = product.restore_origin_selection(
+                    project_root=args.project, state_root=args.state_root)
             else:
-                state = product.private_parent(args.state_root)
-                journal = state / 'journal.sqlite'
-                if args.action == 'index-origin-status':
-                    from memvane.journal.api import inspect_journal
-                    result = {'status': 'inspected', 'journal': inspect_journal(journal),
-                              'routeFile': str(state / 'route.json')}
-                    if _read_v1_build(state) is not None:
-                        result['initialBuild'] = product.initial_build_status(state)
-                elif args.action in ('index-build-status','index-build-rescan'):
-                    build = _read_v1_build(state)
-                    if build is None or build['identity']['projectRoot'] != str(Path(args.project).resolve()):
-                        raise ValueError('initial_build_project_mismatch')
-                    result = (product.initial_build_status(state)
-                              if args.action == 'index-build-status' else
-                              product.request_initial_build_rescan(state))
-                elif args.action == 'finalize-index-origin':
-                    result = selection.finalize_initial_build(
-                        project_root=args.project, state_root=state)
-                elif args.action == 'restore-index-origin':
-                    # Abandons an unselected install, withdraws a selection before its
-                    # first selected write, or releases one whose provider changed; deletes no DB.
-                    if not args.approve_index_origin_restore:
-                        raise ValueError('index_origin_restore_approval_required')
-                    result = product.restore_origin_selection(
-                        project_root=args.project, state_root=state)
-                else:
-                    route = product.read_private(state / 'route.json', 8192)
-                    with product.install_lock(state):
-                        if args.action == 'activate-index-origin':
-                            if not args.approve_index_origin_activation:
-                                raise ValueError('index_origin_activation_approval_required')
-                            result = selection.activate_origin_selection(
-                                Path(args.project), journal, route)
-                        else:
-                            result = selection.recover_origin_selection(
-                                Path(args.project), journal, route)
+                if (args.action == 'activate-index-origin'
+                        and not args.approve_index_origin_activation):
+                    raise ValueError('index_origin_activation_approval_required')
+                result = product.select_origin(project_root=args.project, state_root=args.state_root,
+                                               recover=args.action == 'recover-index-origin')
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         else:result=select_learning(args)
     except Exception as exc:

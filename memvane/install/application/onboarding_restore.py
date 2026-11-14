@@ -135,19 +135,18 @@ def _restored_without_build(journal, project, state):
 
 
 def _restore_v1_locked(project, state):
-    from memvane.install import api as install_api
+    from memvane.install import initial_build
     from memvane.journal import api as journal
     from memvane.journal.api import restore_selection
     from memvane.route.types import SELECTION_SCHEMA_V1
-    from memvane.install.api import (ledger_read_json as _read_json, ledger_write as _write,
-                                     ledger_fsync_dir as _fsync_dir)
+    from memvane.install.ledger_common import _read_json, _write, _fsync_dir
     from memvane.journal.api import reader_lifetime
     from memvane.runtime.api import sync_owner
     from memvane.wiki.workspace import api as workspace_files
-    with install_api.build_owner(state) as owned:
+    with initial_build.owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = install_api.build_read_v1(state)
+        record = initial_build.read_v1(state)
         if record is None:
             return _restored_without_build(journal, project, state)
         if record['identity']['projectRoot'] != str(project):
@@ -208,7 +207,7 @@ def _restore_v1_locked(project, state):
                         _fail('restore_project_pointer_changed')
                     target.unlink()
                     _fsync_dir(target.parent)
-                install_api.build_retire_project_pointer(identity)
+                initial_build.retire_project_pointer(identity)
                 if ledger is not None and ledger['phase'] != 'restored':
                     ledger = {**ledger, 'phase': 'restored', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)

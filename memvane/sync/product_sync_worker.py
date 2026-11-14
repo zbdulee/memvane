@@ -26,6 +26,8 @@ from memvane.kernel.errors import IndexContractError
 from memvane.journal.api import select_route
 from memvane.route.api import selected_collection_roots, wiki_index_roots
 from memvane.wiki.intake.api import collection_roots as _collection_roots
+from memvane.wiki.intake.api import (schema3_sources as _schema3_sources,
+                                     schema3_wiki_cards as _schema3_wiki_cards)
 from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
 from memvane.journal.api import build_read_v1
@@ -357,7 +359,6 @@ SCHEMA3_TRANSIENT_REASONS = frozenset(('checkout_changed', 'fts_deadline_exceede
                                        'wiki_admission_changed', 'wiki_card_changed',
                                        'wiki_member_changed', 'wiki_card_unavailable',
                                        'source_file_changed', 'reader_snapshot_deadline'))
-_SCHEMA3_ROOT_META = frozenset(('SCHEMA.md', 'index.md', 'log.md'))
 
 
 def _run_schema3(decision, proof, *, coordinator=None, report=None,
@@ -393,36 +394,6 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
             return result, proof
     except ResourceDeferred as exc:
         return _deferred(exc), proof
-
-
-def _schema3_wiki_cards(root):
-    """Sorted card paths under the bound wiki root: regular ``.md`` files only.
-
-    Dot segments, root meta pages and links are not cards; a file the store
-    would refuse to admit (not owned, linked, too large) is counted, not read.
-    """
-    cards, skipped = [], 0
-    for base, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(name for name in dirs if not name.startswith('.'))
-        relative = os.path.relpath(base, root)
-        for name in sorted(files):
-            if name.startswith('.') or not name.endswith('.md'):
-                continue
-            path = name if relative == '.' else relative.replace(os.sep, '/') + '/' + name
-            if path in _SCHEMA3_ROOT_META:
-                continue
-            try:
-                info = os.lstat(os.path.join(base, name))
-            except FileNotFoundError:
-                continue
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_nlink != 1 or info.st_size > store_types.MAX_BODY):
-                skipped += 1
-                continue
-            cards.append(path)
-            if len(cards) > store_types.MAX_MEMBERS:
-                raise IndexContractError('schema3_wiki_too_many_cards')
-    return sorted(cards), skipped
 
 
 # Linked git worktrees whose own views one pass may publish after the main
@@ -842,56 +813,6 @@ def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, 
     writer.validate()
     store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
     return generation, vector
-
-
-# Raw source observation of one view (design D2): the same bounded raw scan
-# v6 discovery runs (laya_wiki_discovery._raw_snapshot), recorded as observed
-# source fingerprints of this view's worktree, branch and HEAD. Only names,
-# hashes and lengths are kept.
-def _schema3_sources(decision, handle, deadline, *, raw_scan=None):
-    """``{project-relative path: (sha256, byte_length, tracked_state)}`` of the raw roots.
-
-    A completed scan also leaves ``raw_scan['snapshot']`` (``{collection/relative:
-    sha256}``, the discovery snapshot shape); a scan over its bounds leaves
-    none, so discovery scans (and blocks) on its own.
-    """
-    from memvane.kernel import paths as git_branch_safety
-    from memvane.wiki.intake.api import scan_collections
-    from memvane.wiki.intake.types import RAW_SCAN_MAX_BYTES, RAW_SCAN_MAX_FILES
-    project = Path(decision['projectRoot'])
-    roots = {item['name']: item['sourceRoot'] for item in decision['collections'] if item.get('role') == 'raw'}
-    if not roots:
-        return {}
-    try:
-        scan = scan_collections(roots, decision['scopeId'], None, max_files=RAW_SCAN_MAX_FILES,
-                                max_bytes=RAW_SCAN_MAX_BYTES)
-    except (IndexContractError, ValueError, OSError):
-        # Over the scan bounds or unreadable: the generation names no
-        # sources (as before D2) instead of holding the wiki publish.
-        return {}
-    if raw_scan is not None:
-        raw_scan['snapshot'] = {item.path: item.sha256 for item in scan.files if item.eligible}
-    observed = {}
-    for item in scan.files:
-        name, rel = item.path.split('/', 1)
-        try:
-            path = (Path(roots[name]) / rel).relative_to(project).as_posix()
-        except ValueError:
-            continue  # a raw root outside the project names no project-relative source
-        observed[path] = [item.sha256, len(item.data), 'unknown']
-    if handle.branch_key != 'non-git' and observed:
-        try:
-            # Literal pathspecs (git_branch_safety); output is relative to the project.
-            specs = sorted({Path(root).relative_to(project).as_posix() for root in roots.values()
-                            if Path(root) == project or project in Path(root).parents})
-            listed = git_branch_safety.run_git(['ls-files', '-z', '--', *specs], project,
-                                               deadline=deadline)
-            tracked = set(listed.stdout.decode('utf-8', 'surrogateescape').split('\0'))
-            for path, value in observed.items():
-                value[2] = 'tracked' if path in tracked else 'untracked'
-        except (git_branch_safety.GitUnavailable, OSError, ValueError):
-            pass  # unknown tracked state: observed, never deletion authority
-    return {path: tuple(value) for path, value in observed.items()}
 
 
 class _VectorMemberBlocked(Exception):
