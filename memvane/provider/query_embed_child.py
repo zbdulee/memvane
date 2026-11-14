@@ -23,6 +23,12 @@ def main():
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
     from memvane.kernel.errors import IndexContractError
     request = json.load(sys.stdin)
+    # A test runtime root's fixture spec answers instead (``fixture_port.active``).
+    from memvane.provider.fixture_port import active
+    port = active()
+    if port is not None:
+        print(json.dumps(port.query_result(request), allow_nan=False, separators=(',', ':')))
+        return
     try:
         value = ReviewedLocalQmdProvider(request['manifest'])._embed('query', request['prompt'],
                                                                      timeout=request['timeout'])

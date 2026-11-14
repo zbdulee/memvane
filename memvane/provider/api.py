@@ -97,9 +97,17 @@ def fixture_port(port=None):
 
 
 def is_reviewed_provider(value):
-    """True when ``value`` is exactly a reviewed provider (no subclass, no stand-in)."""
+    """True when ``value`` is exactly a reviewed provider (no subclass, no stand-in).
+
+    While the test runtime root holds a fixture spec (``fixture_port.active``)
+    exactly its fixture handle also counts.
+    """
     from memvane.provider.adapters.local_embed_provider import ReviewedLocalQmdProvider
-    return type(value) is ReviewedLocalQmdProvider
+    if type(value) is ReviewedLocalQmdProvider:
+        return True
+    from memvane.provider.fixture_port import active
+    port = active()
+    return port is not None and port.is_handle(value)
 
 
 def query_embed_child_argv():
