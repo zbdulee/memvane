@@ -13,6 +13,45 @@ from tests.support.settings_fake import expanded, use_config
 
 
 class DiscoverySyncBoundary(FixtureCase):
+    def test_discovery_failure_after_publish_preserves_grant_for_retry(self):
+        from memvane.wiki.intake import api as intake
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('changed source\n')
+        project.write_card('concepts/new.md', title='New', body='a newly published card\n')
+        decision = install.select()
+        grant = discovery.record_grant(decision, 'sync', engine='claude')
+        self.assertTrue(discovery.activate_grant(decision, 'sync', grant))
+        cursor = discovery._paths(decision)[0]
+        before = discovery._read(cursor)
+        published = []
+        def crash_after_publish(*args, **kwargs):
+            published.append(kwargs['view_generation'])
+            raise RuntimeError('synthetic failure after publish')
+        with patch.object(intake, 'drain_after_sync', side_effect=crash_after_publish):
+            with self.assertRaisesRegex(RuntimeError, 'synthetic failure after publish'):
+                install.run_sync()
+        self.assertEqual(len(published), 1)
+        self.assertTrue(published[0])
+        self.assertEqual(discovery._read(cursor), before)
+        self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [grant])
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        self.assertFalse(queue.exists() and queue.read_text().strip())
+        retried = install.run_sync()
+        self.assertEqual(retried['state'], 'unchanged', retried)
+        self.assertEqual(retried['generation'], published[0])
+        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        self.assertEqual([(job['source']['path'], job['contentRevision']) for job in jobs],
+                         [('docs/note.md', hashlib.sha256(source.read_bytes()).hexdigest())])
+        self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [])
+
     def test_unlabelled_grant_preserves_unknown_engine_for_worker_fallback(self):
         project = make_project(self.home)
         source = project.write_note('docs/note.md', 'initial source\n')
