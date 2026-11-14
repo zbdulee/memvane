@@ -162,3 +162,49 @@ class DiscoveryCursor(FixtureCase):
         self.assertEqual((result['state'], result['reason']), ('blocked', 'state_unreadable'))
         self.assertTrue(path.is_symlink())
         self.assertEqual(outside.read_text(), '{}')
+
+    def test_blocked_run_retires_observed_grant_but_preserves_provisional_and_later(self):
+        from memvane.wiki.intake.types import DiscoveryBlocked
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        self.drain('g2', {self.key: changed})
+        first = self.accept()
+        provisional = discovery.record_grant(self.decision, 'sync')
+        observed = discovery.observe_grants(self.decision)
+        later = discovery.record_grant(self.decision, 'session_start')
+        self.assertTrue(discovery.activate_grant(self.decision, 'session_start', later))
+        with patch.object(discovery, '_project_config', side_effect=DiscoveryBlocked('settings_changed')):
+            result = discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
+                                                view_generation='g2', raw_snapshot={self.key: changed})
+        self.assertEqual((result['state'], result['reason']), ('blocked', 'settings_changed'))
+        grants = discovery.observe_grants(self.decision)
+        self.assertNotIn(first, grants['grants']['sync'])
+        self.assertEqual(grants['provisional']['sync'], [provisional])
+        self.assertEqual(grants['grants']['session_start'], [later])
+        self.assertEqual(discovery._read(discovery._paths(self.decision)[0])['pending'], {self.key: changed})
+
+    def test_revoke_after_snapshot_is_not_used_by_that_run(self):
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        grant = self.accept()
+        observed = discovery.observe_grants(self.decision)
+        self.assertTrue(discovery.revoke_grant(self.decision, grant))
+        result = discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
+                                           view_generation='g2', raw_snapshot={self.key: changed})
+        self.assertEqual((result['state'], result['reason'], result['pending']),
+                         ('pending', 'no_accepted_grant', 1))
+        self.assertFalse((self.root / workspace.rel(workspace_types.SOURCE_QUEUE)).exists())
+
+    def test_observed_provisional_grant_can_activate_before_drain(self):
+        discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
+        self.source.write_text('changed\n')
+        changed = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        grant = discovery.record_grant(self.decision, 'sync', engine='codex')
+        observed = discovery.observe_grants(self.decision)
+        self.assertTrue(discovery.activate_grant(self.decision, 'sync', grant))
+        with patch.object(workspace, 'selected', return_value=None):
+            result = discovery.drain_after_sync(self.decision, observed, recheck=lambda: None,
+                                               view_generation='g2', raw_snapshot={self.key: changed})
+        self.assertEqual((result['state'], result['queued']), ('drained', 1))
