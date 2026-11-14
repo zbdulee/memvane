@@ -196,14 +196,16 @@ class WorktreeRouteBoundary(FixtureCase):
         self.assertIsNone(workspace.claim_lifecycle(self.project.root))
 
     def test_failed_lifecycle_child_does_not_leave_the_request_pending(self):
+        import subprocess
         from unittest.mock import patch
         from memvane.wiki.compile import api as compile_api
-        from memvane.wiki.lifecycle import api as lifecycle_api
+        from memvane.wiki.lifecycle import wiki_lifecycle_request
         from memvane.wiki.workspace import api as workspace
         from memvane.runtime import api as runtime
         with patch.object(runtime, 'request', return_value={'status': 'queued'}):
             self.assertEqual(workspace.request_lifecycle(self.install.select(), 'session_start'), 'recorded')
-            with patch.object(lifecycle_api, 'run_lifecycle', return_value={'state': 'failed', 'reason': 'TimeoutExpired'}) as child:
+            with patch.object(wiki_lifecycle_request.subprocess, 'run',
+                              side_effect=subprocess.TimeoutExpired('lifecycle', 1)) as child:
                 result = compile_api.run(self.project.root)
         child.assert_called_once()
         self.assertEqual(result, {'state': 'drained', 'processed': 0})
