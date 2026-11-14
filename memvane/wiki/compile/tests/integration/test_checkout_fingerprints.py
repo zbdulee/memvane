@@ -96,3 +96,30 @@ class CheckoutFingerprints(FixtureCase):
         checkout = SimpleNamespace(capture=unavailable, matches=lambda value: False)
         self.assertEqual(self.process(checkout), (False, True, []))
         self.assertEqual(self.calls, [])
+
+    def test_git_tracking_failure_stays_unknown_but_source_is_compiled(self):
+        from memvane.wiki.lifecycle import api as lifecycle
+        with patch.object(lifecycle, 'tracked_states', return_value={'docs/source.md': 'unknown'}):
+            self.assertEqual(self.process(), (True, False, []))
+        row = self.candidates[0]['sourceFingerprints']['fingerprints'][0]
+        self.assertEqual(row['tracked_state'], 'unknown')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
+        for case in ('non-git', 'unborn'):
+            with self.subTest(case=case):
+                project = make_project(self.home, name=case, dirname=case, git=False)
+                source = project.write_note('docs/note.md', 'synthetic source\n')
+                if case == 'unborn':
+                    project.git('init', '-q', '-b', 'main')
+                binding = store.observe_binding(self.tmp / (case + '.sqlite'), scope_id='d' * 32,
+                                                create_root=str(project.root))
+                repo, worktree = binding['repository'], binding['worktree']
+                capture = store.capture_view(str(project.root), repo, worktree, fresh=True)
+                checkout = SimpleNamespace(matches=lambda value: store.capture_matches(value, repo, worktree,
+                                                                                       fresh=True))
+                revision = {'path': 'docs/note.md', **card.snapshot_bytes(source)[0]}
+                spec = worker.source_fingerprints(project.root, checkout, capture, [revision], 1)
+                row = spec['fingerprints'][0]
+                self.assertEqual((row['head_oid'], row['tracked_state']), (None, 'untracked'))
+                self.assertEqual(row['branch_key'], 'non-git' if case == 'non-git' else 'refs/heads/main')
