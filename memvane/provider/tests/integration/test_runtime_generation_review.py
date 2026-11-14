@@ -210,3 +210,33 @@ class NamedGeneration(Machine):
                   runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
         self.assertEqual(runtime.ensure_for_attestation(record, self.home), self.first)
         self.assertEqual(runtime.select(self.home), self.first)
+
+    def test_review_uses_named_generation_and_rejects_invalid_targets(self):
+        from memvane.install import api as install_api
+        from memvane.install.types import InstallBlocked
+        from memvane.kernel import memvane_paths
+        plugin = Path(__file__).resolve().parents[4]
+        state = memvane_paths.install_root('4' * 32, self.home)
+        source = Path(self.first['generation'])
+        outside = self.home / 'outside' / source.name
+        shutil.copytree(source, outside)
+        alias = runtime.root(self.home) / 'generations' / ('g-' + 'f' * 32)
+        alias.symlink_to(outside, target_is_directory=True)
+        with patch('platform.system', return_value='Darwin'), \
+             patch('platform.machine', return_value='arm64'):
+            result = install_api.review_local_provider(plugin_root=plugin, state_root=state,
+                dimension=2, runtime_generation=str(source))
+            self.assertEqual(result['status'], 'review_required')
+            self.assertEqual(result['embedRuntimeGeneration'], str(source))
+            for value in (source.name, str(outside), str(alias), self.first):
+                with self.subTest(value=str(value)):
+                    with self.assertRaises(InstallBlocked):
+                        install_api.review_local_provider(plugin_root=plugin, state_root=state,
+                            dimension=2, runtime_generation=value)
+                    self.assertEqual(self.pointer.read_bytes(), self.before)
+            dependency = next(source.rglob('isexe/index.js'))
+            dependency.write_bytes(dependency.read_bytes() + b' modified')
+            with self.assertRaises(InstallBlocked):
+                install_api.review_local_provider(plugin_root=plugin, state_root=state,
+                    dimension=2, runtime_generation=str(source))
+        self.assertEqual(self.pointer.read_bytes(), self.before)
