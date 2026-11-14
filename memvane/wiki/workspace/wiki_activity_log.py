@@ -18,8 +18,7 @@ from pathlib import Path
 from memvane.diagnostics import api as event_log
 from memvane.diagnostics.types import MEASURE_REASONS
 
-TAIL_CHARS = event_log.WIKI_TAIL_CHARS
-from memvane.wiki.workspace.types import UNRESOLVED_BINDING as _UNRESOLVED
+from memvane.wiki.workspace.types import ACTIVITY_TAIL_CHARS as TAIL_CHARS, UNRESOLVED_BINDING as _UNRESOLVED
 
 REASON_CODES = {
     'card_measure': MEASURE_REASONS,

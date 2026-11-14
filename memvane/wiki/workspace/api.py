@@ -1,7 +1,7 @@
 """Public wiki workspace operations."""
 from __future__ import annotations as _annotations
 
-from memvane.wiki.workspace.types import UNRESOLVED_BINDING
+from memvane.wiki.workspace.types import ACTIVITY_TAIL_CHARS, LOG_MAX_BYTES, UNRESOLVED_BINDING
 
 
 def card_write_lock(root, *, folder=None):
@@ -139,9 +139,9 @@ def write_state_atomic(path, snapshot):
     return implementation(path, snapshot)
 
 
-def trim_jsonl(path):
+def trim_jsonl(path, max_bytes=LOG_MAX_BYTES):
     from memvane.wiki.workspace.atomic_io import trim_jsonl as implementation
-    return implementation(path)
+    return implementation(path, max_bytes)
 
 
 def mutation_lock(root):
@@ -159,6 +159,6 @@ def append_activity(root, action, rel, title, bound=UNRESOLVED_BINDING, *, reaso
     return implementation(root, action, rel, title, bound, reason=reason)
 
 
-def activity_tail(root, bound):
+def activity_tail(root, bound=UNRESOLVED_BINDING, limit=ACTIVITY_TAIL_CHARS):
     from memvane.wiki.workspace.wiki_activity_log import tail as implementation
-    return implementation(root, bound)
+    return implementation(root, bound, limit)
