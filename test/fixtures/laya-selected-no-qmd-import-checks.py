@@ -64,7 +64,7 @@ class SelectedNoQmdImport(unittest.TestCase):
             import memvane.route.index_host_route as laya_index_host_route; import memvane.host.host_response as laya_host_response; import memvane.app.wake_entry as laya_wake_entry
             import memvane.app.runtime_dispatch as laya_runtime_dispatch; import memvane.sync.product_sync_worker as laya_product_sync_worker; import memvane.wiki.workspace.wiki_selected_laya as wiki_selected_laya
             import laya_bundle_upgrade; import memvane.resident.resident_service as laya_resident_service; import memvane.runtime.runtime_work as runtime_work
-            import memvane.wiki.card.wiki_card as wiki_card; import memvane.wiki.compile.wiki_compile as wiki_compile; import memvane.wiki.compile.wiki_verify_worker as wiki_verify_worker; import memvane.wiki.dedup.wiki_dedup_resolve as wiki_dedup_resolve
+            import memvane.wiki.card.wiki_card as wiki_card; import memvane.wiki.compile.wiki_compile as wiki_compile; import memvane.wiki.verify.wiki_verify_worker as wiki_verify_worker; import memvane.wiki.dedup.wiki_dedup_resolve as wiki_dedup_resolve
             import memvane.wiki.lifecycle.wiki_lifecycle as wiki_lifecycle; import memvane.wiki.card.wiki_source_missing as wiki_source_missing; import memvane.wiki.compile.wiki_extract as wiki_extract; import memvane.wiki.dedup.wiki_dedup_scan as wiki_dedup_scan
             import memvane.learning.context_learning.learning; import memvane.learning.context_learning as context_learning
             report(loaded=loaded())

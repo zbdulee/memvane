@@ -26,7 +26,7 @@ export function wikiTrustState(projectDir, cardRel) {
   ].join('\n'), projectDir, cardRel], { cwd: process.cwd(), encoding: 'utf8' }));
 }
 
-// 기계 검수 통과를 흉내내지 않고 **실제 유일한 writer**(`wc.stamp_verification`)로 찍는다.
+// 기계 검수 통과를 흉내내지 않고 **실제 유일한 writer**(`verification_stamp.stamp_verification`)로 찍는다.
 // 갓 컴파일된 카드는 `generated`이므로 신뢰 판정을 관통시키려면 이 전이가 필요하고,
 // frontmatter 를 손으로 고치면 status 만 있고 증명 필드가 없는 그 라이브 형태를 테스트가
 // 스스로 만들어낸다.
@@ -35,7 +35,7 @@ export function stampVerified(projectDir, cardRel, engine = 'codex', mode = 'cro
     'import sys',
     'from pathlib import Path',
     'sys.path.insert(0, ".")',
-    'import memvane.wiki.compile.wiki_compile as wc',
+    'import memvane.wiki.verify.verification_stamp as vs',
     'import memvane.wiki.card.yaml_scalars as ys',
     'root = Path(sys.argv[1]).resolve()',
     'card = root / sys.argv[2]',
@@ -43,7 +43,7 @@ export function stampVerified(projectDir, cardRel, engine = 'codex', mode = 'cro
     // 헬퍼가 None 을 넘기면 결속 없는 legacy 카드를 만들어 이 결속을 테스트에서
     // 구조적으로 우회하게 된다.
     'body_hash = ys.card_body_hash(card.read_text(encoding="utf-8"))',
-    'print(wc.stamp_verification(card, "verified", sys.argv[3], sys.argv[4], body_hash))',
+    'print(vs.stamp_verification(card, "verified", sys.argv[3], sys.argv[4], body_hash))',
   ].join('\n'), projectDir, cardRel, engine, mode], { cwd: process.cwd(), encoding: 'utf8' }).trim();
   if (out !== 'True') throw new Error(`stamp_verification failed: ${out}`);
 }

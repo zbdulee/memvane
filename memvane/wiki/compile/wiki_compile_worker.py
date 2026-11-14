@@ -29,7 +29,7 @@ from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.wiki.engines.api import (builtin_adapter_argv as _builtin_adapter_argv, extractor_engine_pool,
     plan_engine_order, load_engine_cooldowns, cooling_engines,
-    reasoning_effort_audit, resolve_extractor_argv, run_extractor)
+    reasoning_effort_audit, resolve_extractor_argv, run_extractor, budget_of, decode_source_bounded)
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.kernel import cooldown as qmd_cooldown
 from memvane.settings import api as source_text
@@ -37,8 +37,10 @@ from memvane.settings.api import select_collections
 from memvane.wiki.intake.api import append_source_jobs
 from memvane.wiki.intake.api import source_record as _source_record
 from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path,
-                                        requeue_lines, append_jsonl, read_queue, claim_queue)
+                                        requeue_lines, append_jsonl, read_queue, claim_queue,
+                                        parse_ts as _parse_ts)
 from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.verify import api as wiki_verify
 from memvane.learning.api import card_prompt_budget, emit_card_budget
 from memvane.wiki.card import api as wiki_freshness, types as wiki_markers
 from memvane.wiki.card import api as yaml_scalars
@@ -52,17 +54,6 @@ DEFAULT_SOURCE_QUEUE = cp.rel(ct.SOURCE_QUEUE)
 # 불가 argv)가 스키마에서 사라진 뒤 남은 유일한 쓰임은 빈 key에 대한 폴백이다 —
 # `entries[""]`가 되면 그 항목이 "모든 엔진"처럼 읽히므로 이름을 붙여 둔다.
 _EXTRACTOR_BUDGET = ContextVar('wiki_extractor_budget', default=None)
-
-
-def budget_of(compile_cfg: dict) -> dict:
-    """`compile.budget` (유료 호출 수 상한 블록). dict가 아니면 빈 dict.
-
-    예전에는 이 값들이 `batch.maxPerRun`·`maxCardsPerSource`·`verify.maxPerRun`·
-    `semanticDedup.judge.maxPairs*`로 네 서브트리에 흩어져 있었다. 한 run의 호출
-    총량은 이들의 곱이므로 한 곳에서 읽는다.
-    """
-    raw = compile_cfg.get("budget") if isinstance(compile_cfg, dict) else None
-    return raw if isinstance(raw, dict) else {}
 
 
 
@@ -213,17 +204,15 @@ def verify_suppression_hash(root: Path, compile_cfg: dict, rel: str) -> str | No
 
     A match means re-extracting would almost certainly repeat that verdict, so the
     caller skips before spawning any host CLI — every retry bills the user's own
-    account. Lazy import mirrors _run_verify_pass (wiki_verify_worker imports this
-    module). Any failure returns None: a broken cost guard must fail OPEN and let
+    account. Any failure returns None: a broken cost guard must fail OPEN and let
     the compile run rather than silently starve the wiki.
     """
     vcfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
     if not vcfg.get("enabled", True):
         return None
     try:
-        from memvane.wiki.compile import wiki_verify_worker
-        path = wiki_verify_worker.verify_skipped_path(root, vcfg)
-        return wiki_verify_worker.load_verify_suppressions(path).get(rel)
+        path = wiki_verify.verify_skipped_path(root, vcfg)
+        return wiki_verify.load_verify_suppressions(path).get(rel)
     except Exception:
         return None
 
@@ -415,15 +404,6 @@ def read_source_bounded(path: Path, max_chars: int) -> tuple[str, bool] | None:
     return text[:max_chars], len(text) > max_chars
 
 
-def decode_source_bounded(data: bytes, max_chars: int) -> tuple[str, bool] | None:
-    """Decode and bound one already-stable source snapshot."""
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    return text[:max_chars], len(text) > max_chars
-
-
 def read_text_bounded(path: Path, max_chars: int) -> str | None:
     result = read_source_bounded(path, max_chars)
     return None if result is None else result[0]
@@ -551,15 +531,6 @@ def _job_key(job: dict) -> tuple:
     # appear distinct across macOS' /var -> /private/var spelling (and after a
     # moved checkout), defeating crash-recovery coalescing.
     return (source.get("path", ""), source.get("collection", ""))
-
-
-def _parse_ts(value) -> float | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
 
 
 def dedup_jobs(rows: list) -> tuple[list, list]:
@@ -866,7 +837,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     # produced a card the verifier could not adjudicate and that was deleted. Retrying
     # would reproduce the verdict and re-bill the user. Edit the source and the hash
     # changes, so the source is compiled again on its own.
-    if verify_suppression_hash(root, compile_cfg, rel) == wc.source_body_hash(content):
+    if verify_suppression_hash(root, compile_cfg, rel) == wiki_verify.source_body_hash(content):
         append_jsonl(cpath, bounded_failure("skipped", job, "verify_inconclusive_suppressed"))
         return True, False, []
     # Cost guard (selected Laya only), also BEFORE any extractor spawn: a trusted
@@ -1370,8 +1341,7 @@ def _run_verify_pass(
     run's own cards stayed `generated` and invisible to recall.
     """
     try:
-        from memvane.wiki.compile import wiki_verify_worker
-        wiki_verify_worker.run(root, config, compile_cfg, produced_targets=produced_targets or [])
+        wiki_verify.run(root, config, compile_cfg, produced_targets=produced_targets or [])
     except Exception as exc:
         # Exception class and failing frame only; the message may name paths.
         from memvane.diagnostics import api as event_log

@@ -1396,7 +1396,7 @@ test('compact_manifest: 압축해도 줄지 않으면 stamp 사이드카가 다�
 import sys
 sys.path.insert(0, '.')
 from pathlib import Path
-import memvane.wiki.compile.wiki_compile as w
+import memvane.wiki.workspace.manifest_ledger as w
 
 calls = {"n": 0}
 orig_read_jsonl = w.read_jsonl
@@ -1442,6 +1442,7 @@ import hashlib, json, sys
 from pathlib import Path
 sys.path.insert(0, '.')
 import memvane.wiki.card.source_spans as source_spans; import memvane.wiki.compile.wiki_compile as wc; import memvane.wiki.card.yaml_scalars as ys
+import memvane.wiki.verify.verification_stamp as vs
 root = Path(${JSON.stringify(work)})
 (root / 'docs').mkdir()
 src = root / 'docs' / 'a.md'
@@ -1456,7 +1457,7 @@ card.write_text(wc.markdown_page(candidate, 'port is 8080', 'generated', [], 'aa
 item = source_spans.evidence_item('docs/a.md', rev['sha256'], data, len(data))
 spans = source_spans.derive_spans([{'supported': True, 'quote': 'port is 8080', 'sourcePath': 'docs/a.md'}],
                                   {'docs/a.md': item})
-assert wc.stamp_verification(card, 'verified', 'codex', 'cross-engine',
+assert vs.stamp_verification(card, 'verified', 'codex', 'cross-engine',
                              ys.card_body_hash(card.read_text(encoding='utf-8')), source_spans=spans)
 stamped = card.read_text(encoding='utf-8')
 assert 'startLine: 3, endLine: 3' in stamped, stamped

@@ -44,7 +44,7 @@ test('verify route propagates verify effort and persists only bounded audit meta
   const out = run(`
 import json, os, shutil, tempfile
 from pathlib import Path
-import memvane.settings.config as config; import memvane.wiki.compile.wiki_verify_worker as v
+import memvane.settings.config as config; import memvane.wiki.verify.wiki_verify_worker as v
 root = Path(tempfile.mkdtemp(prefix='effort-verify-')).resolve()
 try:
     os.environ['QMD_DIRTY_QUEUE'] = str(root / 'dirty-queue')
@@ -58,12 +58,12 @@ try:
     def fake_run(argv, payload, timeout, project):
         seen['payload'] = payload
         return {'verdict':'pass','claims':[{'claim': 'c', 'supported': True, 'quote': 'q', 'sourcePath': 'docs/source.md'}],'reasons':[], '_qmd': {'reasoningEffort': {'requested':'high','applied':'high','status':'applied','reason':'capability_flag'}}}, None, 0
-    old = v.wcw.run_extractor
-    v.wcw.run_extractor = fake_run
+    old = v.engines.run_extractor
+    v.engines.run_extractor = fake_run
     try:
         v.process_verify_job(root, cfg, cfg['compile'], cfg['compile']['verify'], {'targetPath':'.auto-context/wiki/concepts/test.md','sources':[{'kind':'file','path':'docs/source.md','collection':'docs'}],'sourceHash':'h','engine':'claude'}, root / 'verify-log.jsonl')
     finally:
-        v.wcw.run_extractor = old
+        v.engines.run_extractor = old
     row = json.loads((root / 'verify-log.jsonl').read_text(encoding='utf-8').strip())
     print(json.dumps({'requested': seen['payload']['_qmd']['reasoningEffort']['requested'], 'audit': row['_qmd'], 'hasBody': 'Claim.' in json.dumps(row)}))
 finally:

@@ -10,6 +10,10 @@ def parse_frontmatter(text):
     from memvane.wiki.card.ownership import parse_frontmatter as implementation
     return implementation(text)
 
+def render_frontmatter_fields(text, updates, blocks=None):
+    from memvane.wiki.card.frontmatter_render import _render_frontmatter_fields as implementation
+    return implementation(text, updates, blocks)
+
 def auto_writable_text(text):
     from memvane.wiki.card.ownership import auto_writable_text as implementation
     return implementation(text)

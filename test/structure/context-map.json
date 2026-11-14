@@ -1609,9 +1609,39 @@
       "layer": "domain",
       "pinned": false
     },
-    "memvane/wiki/compile/wiki_verify_worker.py": {
-      "context": "wiki/compile",
+    "memvane/wiki/verify/wiki_verify_worker.py": {
+      "context": "wiki/verify",
       "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/verification_stamp.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/verify_ledger.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/manifest_ledger.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/wiki_collection.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/frontmatter_render.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/call_budget.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
       "pinned": false
     },
     "memvane/app/setup_activation.py": {

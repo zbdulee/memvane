@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 import time
 import uuid
@@ -216,3 +217,12 @@ def claim_queue(path: Path, *, receipt_writer=None) -> Path | None:
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     return claimed
+
+
+def _parse_ts(value) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None

@@ -50,3 +50,13 @@ def run_extractor(argv, payload, timeout, root):
 def set_engine_cooldown(path, key, seconds, *, _queue_lock_path, write_text_atomic):
     from memvane.wiki.engines.execution import set_engine_cooldown as implementation
     return implementation(path, key, seconds, _queue_lock_path=_queue_lock_path, write_text_atomic=write_text_atomic)
+
+
+def budget_of(compile_cfg):
+    from memvane.wiki.engines.call_budget import budget_of as implementation
+    return implementation(compile_cfg)
+
+
+def decode_source_bounded(data, max_chars):
+    from memvane.wiki.engines.call_budget import decode_source_bounded as implementation
+    return implementation(data, max_chars)

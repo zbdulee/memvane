@@ -96,7 +96,7 @@ class SelectedWikiChecks(unittest.TestCase):
         self.assertEqual(rows, [])
 
     def test_old_verify_job_from_excluded_source_never_loads_model(self):
-        from memvane.wiki.compile import wiki_verify_worker as verifier
+        from memvane.wiki.verify import wiki_verify_worker as verifier
         self.decision['recallSettings']['skipPaths'] = ['build']
         job = {'targetPath': '.auto-context/wiki/mixed.md',
                'sourceRevisions': [{'path': 'docs/build/a.md'}]}
@@ -113,7 +113,7 @@ class SelectedWikiChecks(unittest.TestCase):
         snapshot.assert_not_called()
 
     def test_verify_rejects_excluded_card_revision_with_crlf(self):
-        from memvane.wiki.compile import wiki_verify_worker as verifier
+        from memvane.wiki.verify import wiki_verify_worker as verifier
         self.decision['recallSettings']['skipPaths'] = ['build']
         def revision(path):
             return {'kind': 'file', 'path': path, 'collection': 'raw',
@@ -147,8 +147,8 @@ class SelectedWikiChecks(unittest.TestCase):
             request.assert_not_called()
 
     def test_verify_reindex_queues_laya_only(self):
-        from memvane.wiki.compile import wiki_verify_worker
-        with patch('memvane.wiki.compile.wiki_compile.find_wiki_collection', return_value=('wiki', '.auto-context/wiki')), \
+        from memvane.wiki.verify import wiki_verify_worker
+        with patch('memvane.wiki.workspace.api.find_wiki_collection', return_value=('wiki', '.auto-context/wiki')), \
              patch.object(selected, 'selected', return_value=(self.decision, self.proof)), \
              patch.object(selected, 'request_sync') as sync:
             wiki_verify_worker.reindex_wiki(self.root, {})

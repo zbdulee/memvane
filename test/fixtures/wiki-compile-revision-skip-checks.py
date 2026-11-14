@@ -18,6 +18,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.verify import verification_stamp
 from memvane.wiki.compile import wiki_compile_worker as worker
 from memvane.wiki.card import wiki_freshness
 from memvane.wiki.workspace import wiki_selected_laya
@@ -100,7 +101,7 @@ class RevisionSkipChecks(unittest.TestCase):
 
     def verify(self, card):
         body_hash = ys.card_body_hash(card.read_text(encoding='utf-8'))
-        self.assertTrue(wc.stamp_verification(card, 'verified', 'codex', 'cross-engine', body_hash))
+        self.assertTrue(verification_stamp.stamp_verification(card, 'verified', 'codex', 'cross-engine', body_hash))
 
     def job(self, trigger):
         return {

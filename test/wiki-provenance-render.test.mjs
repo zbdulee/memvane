@@ -14,14 +14,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, '.')
-import memvane.wiki.compile.wiki_compile as wc
+import memvane.wiki.verify.verification_stamp as vs
 card = Path.home() / 'card.md'
 original = '---\\ntitle: Test\\nstatus: generated\\n---\\nbody\\n'
 card.write_text(original, encoding='utf8')
-assert hasattr(wc, 'render_verification'), 'deterministic render is missing'
+assert hasattr(vs, 'render_verification'), 'deterministic render is missing'
 now = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
-first = wc.render_verification(card, 'verified', 'claude', 'self', 'a' * 64, None, now)
-second = wc.render_verification(card, 'verified', 'claude', 'self', 'a' * 64, None, now)
+first = vs.render_verification(card, 'verified', 'claude', 'self', 'a' * 64, None, now)
+second = vs.render_verification(card, 'verified', 'claude', 'self', 'a' * 64, None, now)
 assert first == second and first is not None
 assert '2026-01-02T03:04:05.000000Z' in first
 assert card.read_text(encoding='utf8') == original

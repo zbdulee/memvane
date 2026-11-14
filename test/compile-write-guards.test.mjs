@@ -377,13 +377,13 @@ test('a mid-run ledger failure leaves a trace instead of an rc=1 traceback', () 
     const py = `import json, sys, pathlib
 sys.argv = ['wiki_verify_worker.py', '--cwd', ${JSON.stringify(dir)}, '--json']
 sys.path.insert(0, ${JSON.stringify(process.cwd())})
-import memvane.wiki.compile.wiki_verify_worker as v
-real = v.wc.append_jsonl
+import memvane.wiki.verify.wiki_verify_worker as v
+real = v.append_jsonl
 def boom(path, payload):
     if 'verify-deleted' in str(path):
         raise OSError('ENOSPC')
     return real(path, payload)
-v.wc.append_jsonl = boom
+v.append_jsonl = boom
 v.ledger_writable = lambda path: True   # pass the preflight, fail at write time
 v.main()
 `;
@@ -412,13 +412,13 @@ test('inconclusive: 억제 원장 쓰기 실패면 카드를 지우지 않는다
     const py = `import sys
 sys.argv = ['wiki_verify_worker.py', '--cwd', ${JSON.stringify(dir)}, '--json']
 sys.path.insert(0, ${JSON.stringify(process.cwd())})
-import memvane.wiki.compile.wiki_verify_worker as v
-real = v.wc.append_jsonl
+import memvane.wiki.verify.wiki_verify_worker as v
+real = v.append_jsonl
 def boom(path, payload):
     if 'verify-skipped' in str(path):
         raise OSError('ENOSPC')
     return real(path, payload)
-v.wc.append_jsonl = boom
+v.append_jsonl = boom
 v.ledger_writable = lambda path: True   # preflight 통과 → 쓰기 시점에서 실패
 v.main()
 `;
@@ -488,7 +488,7 @@ test('cp.ledger가 None을 내도 verify 원장 경로는 None이 아니라 기�
     const out = execFileSync('python3', ['-c', `import sys, pathlib, json
 sys.path.insert(0, ${JSON.stringify(process.cwd())})
 import memvane.wiki.workspace.compile_paths as cp
-import memvane.wiki.compile.wiki_verify_worker as v
+import memvane.wiki.verify.wiki_verify_worker as v
 root = pathlib.Path(${JSON.stringify(dir)}).resolve()
 print(json.dumps({
   'ledgerRefused': cp.ledger(root, cp.VERIFY_SKIPPED) is None and cp.ledger(root, cp.VERIFY_DELETED) is None,
@@ -527,7 +527,7 @@ test('load_sources는 MAX_SOURCES와 무관하게 authoritativeSources를 읽는
     };
     const out = execFileSync('python3', ['-c', `import sys, json, pathlib
 sys.path.insert(0, ${JSON.stringify(process.cwd())})
-import memvane.wiki.compile.wiki_verify_worker as v
+import memvane.wiki.verify.wiki_verify_worker as v
 job = json.loads(sys.stdin.read())
 loaded = v.load_sources(pathlib.Path(${JSON.stringify(dir)}).resolve(), job, 12000)
 print(json.dumps([s['path'] for s in loaded]))
@@ -545,7 +545,7 @@ print(json.dumps([s['path'] for s in loaded]))
 });
 
 test('compiler and verifier sources contain no reviewed-state decision branches', () => {
-  for (const file of ['memvane/wiki/compile/wiki_compile.py', 'memvane/wiki/compile/wiki_verify_worker.py']) {
+  for (const file of ['memvane/wiki/compile/wiki_compile.py', 'memvane/wiki/verify/wiki_verify_worker.py']) {
     const text = readFileSync(file, 'utf8');
     assert.doesNotMatch(text, /meta\.get\(["']reviewed["']\)/, file);
   }

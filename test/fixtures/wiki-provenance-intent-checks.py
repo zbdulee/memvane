@@ -23,7 +23,7 @@ spec.loader.exec_module(seed)
 
 class IntentAckChecks(unittest.TestCase):
     def test_replay_rejects_symlinked_card_before_intent_ack(self):
-        verify = importlib.import_module('memvane.wiki.compile.wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         reader = importlib.import_module('memvane.journal.journal_reader')
         ledger = importlib.import_module('memvane.install.ledger_common')
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
@@ -48,7 +48,7 @@ class IntentAckChecks(unittest.TestCase):
             self.assertFalse(path.with_name(path.stem + '.superseded.json').exists())
 
     def test_existing_ack_is_never_overwritten(self):
-        verify = importlib.import_module('memvane.wiki.compile.wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             path = Path(directory) / 'compile-a.json'
             ack = path.with_name('compile-a.superseded.json')
@@ -60,7 +60,7 @@ class IntentAckChecks(unittest.TestCase):
             self.assertEqual(ack.read_text(encoding='utf8'), 'old')
 
     def test_replaced_source_path_is_never_acknowledged(self):
-        verify = importlib.import_module('memvane.wiki.compile.wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         with tempfile.TemporaryDirectory(dir=str(Path.home())) as directory:
             path = Path(directory) / 'compile-a.json'
             old = path.with_name('original.json')
@@ -173,7 +173,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                         initial_sqlite=False):
         checkout = importlib.import_module('memvane.store.checkout.checkout_view')
         compiler = importlib.import_module('memvane.wiki.compile.wiki_compile_worker')
-        verify = importlib.import_module('memvane.wiki.compile.wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         locks = importlib.import_module('memvane.wiki.workspace.compile_paths')
@@ -227,14 +227,14 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                     error = sqlite3.OperationalError('fixture reader busy') if sqlite_failure else OSError('git unavailable')
                     patches.enter_context(mock.patch.object(observed, 'capture', side_effect=error))
                 if fail_stamp:
-                    patches.enter_context(mock.patch.object(verify.wc, 'write_rendered_verification',
+                    patches.enter_context(mock.patch.object(verify, 'write_rendered_verification',
                                                             return_value=False))
                 if crash:
                     Path(os.environ['QMD_TEST_CRASH_MARKER']).write_text(json.dumps({
                         'target': str(target), 'state': str(self.case.state)}), encoding='utf8')
                     def kill_before_stamp(*_args, **_kwargs):
                         os.kill(os.getpid(), signal.SIGKILL)
-                    patches.enter_context(mock.patch.object(verify.wc, 'write_rendered_verification',
+                    patches.enter_context(mock.patch.object(verify, 'write_rendered_verification',
                                                             side_effect=kill_before_stamp))
                 claims = [{'claim': float('nan') if malformed else 'Synthetic claim'}]
                 if through_process:
@@ -250,7 +250,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
                     patches.enter_context(mock.patch.object(verify, 'plan_verify_attempts', return_value=(
                         [{'engine': 'claude', 'argv': ['synthetic'], 'mode': 'self', 'key': 'claude'}],
                         'prefer', None)))
-                    patches.enter_context(mock.patch.object(verify.wcw, 'run_extractor', return_value=(
+                    patches.enter_context(mock.patch.object(verify.engines, 'run_extractor', return_value=(
                         {'verdict': 'pass', 'claims': claims, 'reasons': []}, None, 0)))
                     result = verify.process_verify_job(project, config, {}, {}, job, project / 'verify-log.jsonl')
                 else:
@@ -323,7 +323,7 @@ class ProvenanceIntentChecks(seed.Schema3WriterPlanChecks):
     def run_pending_replay(self, mode):
         checkout_module = importlib.import_module('memvane.store.checkout.checkout_view')
         compiler = importlib.import_module('memvane.wiki.compile.wiki_compile_worker')
-        verify = importlib.import_module('memvane.wiki.compile.wiki_verify_worker')
+        verify = importlib.import_module('memvane.wiki.verify.wiki_verify_worker')
         selected = importlib.import_module('memvane.wiki.workspace.wiki_selected_laya')
         worker = importlib.import_module('memvane.sync.product_sync_worker')
         freshness = importlib.import_module('memvane.wiki.card.wiki_freshness')

@@ -293,6 +293,7 @@ import memvane.settings.config as qmd_config
 import memvane.wiki.compile.wiki_compile as wc
 import memvane.wiki.compile.wiki_compile_worker as worker
 import memvane.wiki.card.wiki_freshness as wiki_freshness
+import memvane.wiki.verify.api as wiki_verify
 root = pathlib.Path(${JSON.stringify(project)}).resolve()
 source = root / 'docs/source.md'
 real_snapshot = wiki_freshness.snapshot_bytes
@@ -306,7 +307,7 @@ def aba_snapshot(path):
 wiki_freshness.snapshot_bytes = aba_snapshot
 wc.append_jsonl(root / '.auto-context/compile/verify-skipped.jsonl', {
     'sourcePath': 'docs/source.md',
-    'sourceBodyHash': wc.source_body_hash(${JSON.stringify(sourceB)}),
+    'sourceBodyHash': wiki_verify.source_body_hash(${JSON.stringify(sourceB)}),
 })
 found = qmd_config.find_project_config(str(root))
 job = json.loads((root / '.auto-context/compile/source-queue.jsonl').read_text().splitlines()[0])

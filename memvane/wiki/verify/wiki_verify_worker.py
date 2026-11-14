@@ -54,21 +54,21 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.atomic_rename import fsync_dir, canonical_json_bytes
-from memvane.kernel.paths import now_iso
+from memvane.kernel.paths import now_iso, read_jsonl
 from memvane.wiki.verify.api import supersede_compile_intent as _supersede_compile_intent, compile_intent_id as _compile_intent_id
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.workspace import api as cp, types as ct
 from memvane.settings import api as qmd_config, types as settings_types
-from memvane.wiki.compile import wiki_compile as wc
-from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.engines import api as engines
 from memvane.wiki.card import api as wiki_freshness
 from memvane.wiki.card import api as wsm
 from memvane.wiki.card import api as source_spans
-from memvane.wiki.card.api import card_sources_allowed
+from memvane.wiki.card.api import card_sources_allowed, parse_frontmatter
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
+from memvane.wiki.verify.verify_ledger import ledger_writable, source_body_hash
+from memvane.wiki.verify.verification_stamp import stamp_verification, render_verification, write_rendered_verification
 # 경로는 전부 `compile_paths` 상수 테이블에서 온다(설정 키 4개는 제거됐다 —
 # `skippedPath`/`deletedPath` 오타가 유료 과금 루프의 입구였던 실패 클래스가 함께 사라진다).
 VERIFY_QUEUE_DEFAULT = cp.rel(ct.VERIFY_QUEUE)
@@ -101,7 +101,7 @@ def verify_engine_pool(compile_cfg: dict, vcfg: dict) -> list[str]:
     """
     picked = [e for e in (vcfg.get("builtins") or []) if isinstance(e, str) and e]
     if not picked:
-        # 상속 목록은 `wcw.extractor_engine_pool`이 SSOT다(dedup judge도 같은 함수를 쓴다).
+        # 상속 목록은 `engines.extractor_engine_pool`이 SSOT다(dedup judge도 같은 함수를 쓴다).
         picked = engines.extractor_engine_pool(compile_cfg)
     ordered = []
     for engine in picked:
@@ -166,7 +166,7 @@ def plan_verify_attempts(
         # 어느 후보도 "생성 엔진과 다르다"를 증명할 수 없다 → 약속을 지킬 수 없으므로 거부.
         return [], mode, "cross_engine_unavailable"
 
-    # 순서 규칙은 dedup judge와 공용이다(`wcw.plan_engine_order`가 SSOT). 여기 남는 것은
+    # 순서 규칙은 dedup judge와 공용이다(`engines.plan_engine_order`가 SSOT). 여기 남는 것은
     # verify 고유의 것들 — argv 해석, 식힘 건너뛰기, mode 라벨, 빈 계획의 사유다.
     order = engines.plan_engine_order(pool, producing, mode, producing_attributable)
 
@@ -213,7 +213,7 @@ def engine_cooldown_path(root: Path) -> Path:
     return cp.under(root, ct.VERIFY_ENGINE_COOLDOWN)
 
 
-# 엔진 단위 식힘 저장소의 구현은 `wcw`가 SSOT다(dedup judge가 자기 파일로 같은 헬퍼를
+# 엔진 단위 식힘 저장소의 구현은 `engines`가 SSOT다(dedup judge가 자기 파일로 같은 헬퍼를
 # 쓴다 — flock read-modify-write·만료 클램프·원자 쓰기 반환값 확인을 두 벌 두지 않는다).
 # 여기 남는 것은 **경로**뿐이고, 그것이 verify와 dedup을 분리하는 유일한 차이다.
 def load_engine_cooldowns(root: Path) -> dict:
@@ -237,7 +237,7 @@ def set_engine_cooldown(root: Path, key: str, seconds: int) -> bool:
 
 def log_verdict(log_path: Path, payload: dict) -> None:
     append_jsonl(log_path, payload)
-    wc.trim_jsonl(log_path)
+    cp.trim_jsonl(log_path)
 
 
 def verify_skipped_path(root: Path, vcfg: dict) -> Path:
@@ -263,11 +263,6 @@ def verify_deleted_path(root: Path, vcfg: dict) -> Path:
     남으므로 폴백도 남는다.
     """
     return qmd_config.ledger(root, ct.VERIFY_DELETED) or cp.under(root, ct.VERIFY_DELETED)
-
-
-# 유료 호출 전 원장 쓰기 가능성 판정. 정의는 `wiki_compile`이 SSOT다 — dedup scan도 같은
-# 판정을 쓰므로 여기서 재구현하면 게이트가 두 벌이 된다(같은 클래스가 그렇게 재발했다).
-ledger_writable = wc.ledger_writable
 
 
 def preflight_block_reason(root: Path, vcfg: dict) -> str:
@@ -303,7 +298,7 @@ def load_verify_suppressions(path: Path | None) -> dict[str, str]:
     suppressions: dict[str, str] = {}
     if path is None:
         return suppressions
-    for row in wc.read_jsonl(path):
+    for row in read_jsonl(path):
         source_path = row.get("sourcePath")
         body_hash = row.get("sourceBodyHash")
         if not (isinstance(source_path, str) and source_path and isinstance(body_hash, str) and body_hash):
@@ -326,15 +321,15 @@ def record_machine_delete(root: Path, compile_cfg: dict, record: dict, verdict: 
         return
     # targetPath만 담아 same_generated_identity가 이 카드에만 매칭되게 한다
     # (sourceHash/canonicalKey를 넣으면 다른 카드까지 잘못 매칭될 수 있음).
-    wc.append_jsonl(path, {
+    append_jsonl(path, {
         "ts": now_iso(),
-        "action": wc.MACHINE_DELETE_ACTION,
+        "action": ct.MACHINE_DELETE_ACTION,
         "status": "deleted",
         "targetPath": record.get("targetPath", ""),
         "verdict": verdict,
         "engine": record.get("engine", ""),
     })
-    wc.compact_manifest(path)
+    cp.compact_manifest(path)
 
 
 def record_verify_deletion(
@@ -362,7 +357,7 @@ def record_verify_deletion(
     # "흔적은 남는다"가 성립하지 않았다. 여기서 잡으면 호출자의 fail-closed 분기가
     # `delete_blocked` 줄을 남기고 잡을 보존한다(= 관측 가능 + 카드 보존).
     try:
-        wc.append_jsonl(path, {
+        append_jsonl(path, {
             "targetPath": record.get("targetPath", ""),
             "verdict": verdict,
             "engine": record.get("engine", ""),
@@ -414,9 +409,9 @@ def record_verify_suppression(
         # **예외도 실패로 접는다**(삭제 감사 원장과 같은 이유): `append_jsonl`이 OSError를
         # 전파하면 standalone worker가 traceback으로 죽어 어디에도 흔적이 남지 않는다.
         try:
-            wc.append_jsonl(path, {
+            append_jsonl(path, {
                 "sourcePath": rel,
-                "sourceBodyHash": wc.source_body_hash(content),
+                "sourceBodyHash": source_body_hash(content),
                 "targetPath": record.get("targetPath", ""),
                 "verdict": verdict,
                 "reasons": record.get("reasons", []),
@@ -430,7 +425,7 @@ def record_verify_suppression(
 
 
 def reindex_wiki(root: Path, config: dict) -> None:
-    collection, collection_path = wc.find_wiki_collection(config)
+    collection, collection_path = cp.find_wiki_collection(config)
     if collection and collection_path:
         from memvane.wiki.workspace import api as wiki_selected_laya
         selected = wiki_selected_laya.selected(root)
@@ -548,11 +543,11 @@ def card_state(target: Path) -> tuple[str | None, dict, str, str]:
         text = target.read_text(encoding="utf-8")
     except OSError:
         return None, {}, "", ""
-    meta, ok = wc.parse_frontmatter(text)
+    meta, ok = parse_frontmatter(text)
     if not ok:
         meta = {}
     status = str(meta.get("status") or "").strip() or "generated"
-    match = wc.AUTO_START_RE.search(text)
+    match = wiki_markers.AUTO_START_RE.search(text)
     return text, meta, status, (match.group(1) if match else "")
 
 
@@ -657,7 +652,7 @@ def snapshot_revision_evidence(
         revision, data = snapshot
         if revision["sha256"] != expected["sha256"]:
             return [], {"state": wiki_markers.STALE, "reason": "content_hash_mismatch"}, {}
-        bounded = wcw.decode_source_bounded(data, max_chars)
+        bounded = engines.decode_source_bounded(data, max_chars)
         if bounded is None:
             return [], {"state": wiki_markers.UNKNOWN, "reason": "source_decode_failed"}, {}
         content, truncated = bounded
@@ -878,9 +873,9 @@ def apply_verify_verdict_locked(
         intent_path = None
         rendered = None
         if checkout is not None and isinstance(job.get('sourceFingerprints'), dict):
-            rendered = wc.render_verification(target, 'verified', engine, verified_mode,
-                                               yaml_scalars.card_body_hash(payload_text),
-                                               bound or None, datetime.now(timezone.utc))
+            rendered = render_verification(target, 'verified', engine, verified_mode,
+                                            yaml_scalars.card_body_hash(payload_text),
+                                            bound or None, datetime.now(timezone.utc))
             if rendered is not None:
                 capture, gate_reason = _provenance_gate(job, checkout)
                 if capture is not None:
@@ -907,10 +902,10 @@ def apply_verify_verdict_locked(
                         gate_reason = 'provenance_value_invalid'
                 if gate_reason:
                     log_verdict(log_path, {**base_record(job), 'result': 'skipped', 'reason': gate_reason})
-        stamped = (wc.stamp_verification(target, 'verified', engine, verified_mode,
-                                         yaml_scalars.card_body_hash(payload_text), source_spans=bound or None)
+        stamped = (stamp_verification(target, 'verified', engine, verified_mode,
+                                      yaml_scalars.card_body_hash(payload_text), source_spans=bound or None)
                    if rendered is None and (checkout is None or not isinstance(job.get('sourceFingerprints'), dict)) else
-                   rendered is not None and wc.write_rendered_verification(target, rendered, fresh_text))
+                   rendered is not None and write_rendered_verification(target, rendered, fresh_text))
         if not stamped:
             if intent_path is not None:
                 _supersede_compile_intent(intent_path)
@@ -1346,7 +1341,7 @@ def apply_negative_verdict(
         # 남아 recall에서 빠지므로(비가시) 조용히 넘기면 안 된다. 이 함수는 (processed,
         # preserve)를 돌려주지 않으므로 실패 사실을 로그로만 표면화한다 — 다음 소스 변경이
         # 카드를 재생성하고 다시 검수 대상이 된다.
-        if not wc.stamp_verification(target, "contested", engine, verified_mode, body_hash):
+        if not stamp_verification(target, "contested", engine, verified_mode, body_hash):
             log_verdict(log_path, {**record, "result": "stamp_failed", "stampStatus": "contested"})
             return False
         reindex_wiki(root, config)
@@ -1368,7 +1363,7 @@ def _dedup_by_target(rows: list, root: Path | None = None) -> list:
         if job is None:
             continue
         key = job.get("targetPath", "")
-        ts = wcw._parse_ts(job.get("ts")) or 0.0
+        ts = cp.parse_ts(job.get("ts")) or 0.0
         if key not in latest:
             order.append(key)
             latest[key] = (raw_line, job, ts)
@@ -1609,7 +1604,7 @@ def run(
     kept = _dedup_by_target([(raw, job) for raw, job in rows
                               if not isinstance(job, dict) or '_pendingCleanup' not in job], root)
     max_per_run = max(1, min(
-        int(wcw.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), settings_types.MAX_VERIFY_PER_RUN
+        int(engines.budget_of(compile_cfg).get("verifyPerRun", 3) or 3), settings_types.MAX_VERIFY_PER_RUN
     ))
     produced = {t for t in (produced_targets or []) if isinstance(t, str) and t}
     budget = max(max_per_run, min(len(produced), settings_types.VERIFY_PRODUCED_HARD_CAP))

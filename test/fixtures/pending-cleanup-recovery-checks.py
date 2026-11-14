@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from memvane.wiki.compile import wiki_verify_worker as verify
+from memvane.wiki.verify import wiki_verify_worker as verify
 from memvane.wiki.workspace import wiki_selected_laya
 
 class PendingRecovery(unittest.TestCase):
@@ -76,7 +76,7 @@ class PendingRecovery(unittest.TestCase):
         later={**self.job,'targetPath':str(other.relative_to(self.root)),
                'pendingPath':str(next_pending.relative_to(self.root)),'sourceHash':'b'*16}
         self.queue.write_text(json.dumps(self.job)+'\n'+json.dumps(later)+'\n{malformed\n')
-        with mock.patch.object(verify.wcw,'budget_of',return_value={'verifyPerRun':1}), \
+        with mock.patch.object(verify.engines,'budget_of',return_value={'verifyPerRun':1}), \
              mock.patch.object(verify,'process_verify_job',return_value=(True,False)):
             verify.run(self.root,self.cfg,self.compile)
         rows=[]
@@ -114,7 +114,7 @@ class PendingRecovery(unittest.TestCase):
         first={**self.job,'targetPath':str(other.relative_to(self.root)),'pendingPath':str(other.with_name('.other.md.pending-'+'b'*16).relative_to(self.root)),'sourceHash':'b'*16}
         (self.root/first['pendingPath']).write_text('candidate')
         self.queue.write_text(json.dumps(first)+'\n'+json.dumps(retry)+'\n'+json.dumps(recovered)+'\n')
-        with mock.patch.object(verify.wcw,'budget_of',return_value={'verifyPerRun':1}), \
+        with mock.patch.object(verify.engines,'budget_of',return_value={'verifyPerRun':1}), \
              mock.patch.object(verify,'process_verify_job',return_value=(True,False)):
             verify.run(self.root,self.cfg,self.compile)
         rows=[json.loads(line) for line in self.queue.read_text().splitlines() if line]

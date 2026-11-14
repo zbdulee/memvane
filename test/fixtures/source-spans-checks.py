@@ -15,6 +15,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from memvane.wiki.card import source_spans
 from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.verify import verification_stamp
 from memvane.wiki.card import yaml_scalars
 
 SOURCE = (
@@ -215,7 +216,7 @@ class StampChecks(unittest.TestCase):
         self.temp.cleanup()
 
     def stamp(self, status="verified", spans=None):
-        return wc.stamp_verification(self.card, status, "codex", "cross-engine",
+        return verification_stamp.stamp_verification(self.card, status, "codex", "cross-engine",
                                      self.body_hash, source_spans=spans)
 
     def frontmatter(self):

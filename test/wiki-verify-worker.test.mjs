@@ -254,7 +254,7 @@ test('an append to an already claimed queue remains queued and preserves its pen
     writeFileSync(join(project,pending(a)),cardText('generated').replaceAll(HASH,a));
     const script=[
       'import json,sys', 'from pathlib import Path', 'from unittest import mock',
-      'sys.path.insert(0,".")', 'import memvane.wiki.compile.wiki_verify_worker as v; import memvane.settings.config as config',
+      'sys.path.insert(0,".")', 'import memvane.wiki.verify.wiki_verify_worker as v; import memvane.settings.config as config',
       'root=Path(sys.argv[1]).resolve(); job=json.loads(sys.argv[2]); content=sys.argv[3]',
       'cfg=config.find_project_config(str(root))["config"]; orig=v.read_queue; fired=[False]',
       'def read(path):',
@@ -304,7 +304,7 @@ test('a transient unlink error retries cleanup without another verifier call', (
     writeFileSync(join(project,pending),cardText('generated').replaceAll(HASH,hash));
     const script=[
       'import sys', 'from pathlib import Path', 'from unittest import mock',
-      'sys.path.insert(0,".")', 'import memvane.wiki.compile.wiki_verify_worker as v; import memvane.settings.config as config',
+      'sys.path.insert(0,".")', 'import memvane.wiki.verify.wiki_verify_worker as v; import memvane.settings.config as config',
       'root=Path(sys.argv[1]).resolve(); target=root/sys.argv[2]',
       'cfg=config.find_project_config(str(root))["config"]; orig=Path.unlink',
       'def unlink(self,*args,**kwargs):',
@@ -535,7 +535,7 @@ print(json.dumps({'verdict': 'pass', 'claims': [{'claim': 'c', 'supported': True
 import pathlib, sys
 sys.path.insert(0, '.')
 import memvane.wiki.card.wiki_freshness as wiki_freshness
-import memvane.wiki.compile.wiki_verify_worker as worker
+import memvane.wiki.verify.wiki_verify_worker as worker
 root = pathlib.Path(${JSON.stringify(project)}).resolve()
 source = root / 'docs/source.md'
 real_snapshot = wiki_freshness.snapshot_bytes
@@ -1426,7 +1426,7 @@ test('verify.builtins를 좁혀도 prefer에서 생성 엔진은 최후 후보�
   try {
     const plan = execFileSync('python3', ['-c', `
 import json, sys; sys.path.insert(0, '.')
-import memvane.wiki.compile.wiki_verify_worker as w
+import memvane.wiki.verify.wiki_verify_worker as w
 cfg = {"extractor": {"builtins": ["claude", "codex"], "backends": {}}}
 attempts, mode, reason = w.plan_verify_attempts(cfg, {"builtins": ["codex"], "crossEngine": "prefer"}, "claude")
 print(json.dumps([[a["engine"], a["mode"]] for a in attempts]))
@@ -1603,7 +1603,7 @@ function changedDuringVerify({ jobHash, status = 'generated', createdBy = 'qmd-a
                               payloadText = 'card-text', freshText = 'card-text' }) {
   const py = `import json, sys
 sys.path.insert(0, ".")
-import memvane.wiki.compile.wiki_verify_worker as vw
+import memvane.wiki.verify.wiki_verify_worker as vw
 args = json.loads(sys.argv[1])
 print(json.dumps(vw.card_changed_during_verify(
     args["jobHash"], {"createdBy": args["createdBy"]}, args["status"], args["freshHash"],

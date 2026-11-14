@@ -40,3 +40,10 @@ DEFERRED_REASONS = frozenset(('owner_busy', 'writer_proof_deadline',
                               'reader_lifetime_busy', 'writer_proof_physical_busy'))
 
 LOG_MAX_BYTES = 256 * 1024
+
+# Manifest action written by wiki_verify_worker when IT deleted the card
+# (verify.onFail / verify.onInconclusive = delete). Delete-detection below reads a
+# missing file as "the user threw this card away" and tombstones it forever; a
+# machine deletion must not mean that, or "fix the source and it regenerates" —
+# the whole premise of deleting instead of keeping contested cards — never holds.
+MACHINE_DELETE_ACTION = "verify-deleted"

@@ -16,15 +16,17 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from memvane.kernel.paths import safe_managed_dir, read_jsonl
-from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl
+from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl, compact_manifest, find_wiki_collection
 from memvane.wiki.workspace import api as workspace_files
 from memvane.wiki.workspace import api as cp, types as ct
+from memvane.wiki.workspace.types import MACHINE_DELETE_ACTION
 from memvane.settings import api as qmd_config, types as settings_types
 from memvane.settings import api as source_text
 from memvane.wiki.dedup import api as wiki_dedup_judge
 from memvane.wiki.card import types as wiki_markers
 from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
 from memvane.wiki.card.api import parse_frontmatter, auto_writable_text
+from memvane.wiki.card.api import render_frontmatter_fields as _render_frontmatter_fields
 from memvane.wiki.card import api as yaml_scalars
 
 ALLOWED_TYPES = {
@@ -418,19 +420,6 @@ def source_hash(candidate: dict) -> str:
     return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
-def source_body_hash(text: str) -> str:
-    """Content hash of the *bounded* source text that was fed to the extractor.
-
-    verify-skipped.jsonl suppression keys on this, so both sides must hash the
-    same bytes: wiki_compile_worker hashes read_source_bounded() output and
-    wiki_verify_worker hashes the same maxSourceChars-bounded slice. Exact
-    content, no normalization — any real source edit must retry, and whitespace
-    is cheap to hash correctly here (unlike wiki_dedup_scan.body_hash, which
-    normalizes because it compares two independently authored pages).
-    """
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
-
-
 def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict:
     findings = []
     title = str(candidate.get("title") or "").strip()
@@ -463,68 +452,6 @@ def effort_audit(candidate: dict) -> dict:
     return {"reasoningEffort": engines.reasoning_effort_audit(effort)}
 
 
-def ledger_writable(path: Path) -> bool:
-    """이 원장에 append할 수 있는가 — **유료 host CLI 호출 전에** 확인하는 preflight.
-
-    fail-closed 원장(쓸 수 없으면 그 판정을 적용하지 않는다)은 옳지만 **종점이 없으면
-    과금 루프**가 된다: 유료 판정 1회 → 원장 쓰기 실패 → 작업 보존 → 다음 run 재판정(유료).
-    cooldown이나 억제 마커로 끊는 방법도 있지만 그 파일들 역시 같은 디렉터리에 쓰므로
-    "아무것도 못 쓰는 상태"에서는 함께 실패한다. **가장 확실한 종점은 유료 호출을 아예
-    하지 않는 것**이고, 그래서 판정 전에 여기서 막는다(호출 0회 = 루프 없음).
-
-    **원장 파일을 만들지는 않는다.** 기록이 없었으면 파일도 없어야 한다(원장의 존재 자체가
-    "이 프로젝트에서 그 일이 있었다"로 읽히고 기존 테스트도 그 계약을 고정한다). 그래서
-    부모 디렉터리에 임시 파일을 만들어 지우는 방식으로 쓰기 가능성만 확인하고(디렉터리
-    부재·권한·ENOSPC를 모두 잡는다), 목표 경로가 이미 있으면 **일반 파일인지** 따로 본다
-    (디렉터리를 원장 경로로 적은 경우가 실측된 실패 모드다).
-
-    `wiki_verify_worker`(삭제 감사·inconclusive 억제 원장)와 `wiki_dedup_scan`
-    (`dedup-skipped.jsonl` 억제 원장)이 같은 판정을 쓴다 — 유료 호출 전 게이트가 두 벌이
-    되면 한쪽만 고쳐지고 다른 쪽에서 같은 루프가 남는다(실제로 그렇게 재발했다).
-    """
-    try:
-        if path.exists() and not path.is_file():
-            return False
-        path.parent.mkdir(parents=True, exist_ok=True)
-        probe = path.with_name(f".{path.name}.probe-{os.getpid()}")
-        with open(probe, "w", encoding="utf-8"):
-            pass
-        probe.unlink(missing_ok=True)
-        return True
-    except OSError:
-        return False
-
-
-
-
-from memvane.wiki.workspace.types import LOG_MAX_BYTES
-
-
-
-
-def write_jsonl_atomic(path: Path, rows: list[dict]) -> None:
-    """temp + os.replace 원자적 재작성 (부분 쓰기/유실 방지)."""
-    tmp = path.with_suffix(path.suffix + ".compact.tmp")
-    try:
-        with tmp.open("w", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-        os.replace(tmp, path)
-    except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-
-
-# Manifest action written by wiki_verify_worker when IT deleted the card
-# (verify.onFail / verify.onInconclusive = delete). Delete-detection below reads a
-# missing file as "the user threw this card away" and tombstones it forever; a
-# machine deletion must not mean that, or "fix the source and it regenerates" —
-# the whole premise of deleting instead of keeping contested cards — never holds.
-MACHINE_DELETE_ACTION = "verify-deleted"
-
-
 def same_generated_identity(row: dict, record: dict) -> bool:
     if row.get("targetPath") and row.get("targetPath") == record.get("targetPath"):
         return True
@@ -538,116 +465,8 @@ def same_generated_identity(row: dict, record: dict) -> bool:
     return False
 
 
-def _compact_stamp_path(path: Path) -> Path:
-    return path.with_suffix(path.suffix + ".compact-stamp")
-
-
-def _read_compact_stamp(path: Path) -> int | None:
-    try:
-        return int(_compact_stamp_path(path).read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
-
-
-def _write_compact_stamp(path: Path, size: int) -> None:
-    try:
-        _compact_stamp_path(path).write_text(str(size), encoding="utf-8")
-    except OSError:
-        pass
-
-
-COMPACT_STAMP_GROWTH_RATIO = 1.25
-
-
-def compact_manifest(path: Path, max_bytes: int = LOG_MAX_BYTES) -> None:
-    """generated-manifest 무한 누적 방지. size trim은 특정 카드 엔트리를 통째
-    날려 삭제감지(previous 조회)를 깨므로 쓰지 않고, same_generated_identity로
-    서로 매칭되는 오래된 중복만 접는다 — 각 identity의 최신 엔트리는 원순서로
-    보존해 previous[-1]/previousStatus 계약을 유지. 임계 초과 시에만 원자적
-    replace. worst case(동시 append와 cross-process race로 엔트리 1개 유실)는
-    그 카드가 다음 재컴파일 때 재생성되며 self-heal.
-
-    same_generated_identity(row, record)의 대칭 합집합 관계
-    (same(i,j) or same(j,i))는 정리하면 "targetPath 일치, 또는 (i·j 중
-    하나라도 explicit이 아닐 때) sourceHash/canonicalKey 일치"이므로, 최신
-    행부터 역순으로 훑으며 seen-set을 유지하는 O(n) 스캔으로 치환할 수
-    있다. seen_hashes_any/seen_keys_any는 이후(더 오래된) explicit이 아닌
-    행이 매치할 대상(최신 쪽 explicit 여부 무관), seen_*_nonexplicit는 이후
-    explicit 행이 매치할 대상(최신 쪽도 non-explicit이어야 함)이다.
-
-    "압축해도 줄지 않는" 상태의 재시도 폭주를 막기 위해 마지막 처리 후
-    파일 크기를 사이드카(.compact-stamp)에 기록해두고, 그 이후 크기가
-    COMPACT_STAMP_GROWTH_RATIO 이상 자라기 전까지는 재스캔을 건너뛴다.
-    사이드카 유실은 스캔 1회 추가로만 이어지므로 self-heal 성질을 해치지
-    않는다."""
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return
-    if size <= max_bytes:
-        return
-    stamp = _read_compact_stamp(path)
-    if stamp is not None and stamp > 0 and size < stamp * COMPACT_STAMP_GROWTH_RATIO:
-        return
-    rows = read_jsonl(path)
-    n = len(rows)
-    keep = [True] * n
-    seen_target_paths: set = set()
-    seen_hashes_any: set = set()
-    seen_keys_any: set = set()
-    seen_hashes_nonexplicit: set = set()
-    seen_keys_nonexplicit: set = set()
-    for i in range(n - 1, -1, -1):  # 최신 -> 과거 순
-        row = rows[i]
-        target_path = row.get("targetPath")
-        source_hash = row.get("sourceHash")
-        canonical_key = row.get("canonicalKey")
-        is_explicit = row.get("targetResolution") == "explicit"
-        if target_path and target_path in seen_target_paths:
-            keep[i] = False
-        elif is_explicit:
-            if (source_hash and source_hash in seen_hashes_nonexplicit) or (
-                canonical_key and canonical_key in seen_keys_nonexplicit
-            ):
-                keep[i] = False
-        else:
-            if (source_hash and source_hash in seen_hashes_any) or (
-                canonical_key and canonical_key in seen_keys_any
-            ):
-                keep[i] = False
-        if target_path:
-            seen_target_paths.add(target_path)
-        if source_hash:
-            seen_hashes_any.add(source_hash)
-            if not is_explicit:
-                seen_hashes_nonexplicit.add(source_hash)
-        if canonical_key:
-            seen_keys_any.add(canonical_key)
-            if not is_explicit:
-                seen_keys_nonexplicit.add(canonical_key)
-    kept = [rows[i] for i in range(n) if keep[i]]
-    if len(kept) != n:
-        # **의도적으로 결과를 보지 않는다**(분류: 실패 방향이 안전). write_jsonl_atomic은
-        # 반환값이 없고 OSError를 내부에서 삼키는데, 실패하면 압축이 일어나지 않을 뿐
-        # 원본 manifest는 온전하다(temp + os.replace). 아래 compact-stamp가 "압축해도 줄지
-        # 않는" 상태의 재시도 폭주를 막으므로 다음 회차 재시도로 자연히 수렴한다.
-        write_jsonl_atomic(path, kept)
-    try:
-        new_size = path.stat().st_size
-    except OSError:
-        new_size = size
-    _write_compact_stamp(path, new_size)
-
-
 def yaml_scalar(value) -> str:
     return yaml_scalars.dump(value)
-
-
-def frontmatter_patch_scalar(key: str, value) -> str:
-    text = str(value)
-    if key == "status" and text in settings_types.WIKI_STATUSES and re.fullmatch(r"[A-Za-z0-9_-]+", text):
-        return text
-    return yaml_scalar(value)
 
 
 def source_flow_entries(sources) -> list:
@@ -946,147 +765,6 @@ def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = No
         return False
     patched = _render_frontmatter_fields(text, updates, blocks)
     return patched is not None and write_text_atomic(path, patched)
-
-
-def _render_frontmatter_fields(text: str, updates: dict, blocks: dict | None = None) -> str | None:
-    blocks = dict(blocks or {})
-    if "status" in updates:
-        blocks.setdefault(SOURCE_SPANS_KEY, None)
-    match = FRONTMATTER_RE.match(text)
-    if not match:
-        return None
-    lines = match.group(1).splitlines()
-    seen = set()
-    new_lines = []
-    in_block = False
-    for line in lines:
-        if in_block:
-            if not line.strip() or line[0].isspace():
-                continue
-            in_block = False
-        # 블록 헤더 판정은 읽는 쪽(`yaml_scalars.closed_block_entries`)과 같은 규칙이다.
-        if line and not line[0].isspace() and yaml_scalars.load(line.split(":", 1)[0].strip()) in blocks:
-            in_block = True
-            continue
-        key = None
-        if line and not line.startswith(" ") and ":" in line:
-            key = line.split(":", 1)[0].strip()
-        if key in updates:
-            seen.add(key)
-            if updates[key] is None:
-                continue
-            new_lines.append(f"{key}: {frontmatter_patch_scalar(key, updates[key])}")
-        else:
-            new_lines.append(line)
-    for key, value in updates.items():
-        if key not in seen and value is not None:
-            new_lines.append(f"{key}: {frontmatter_patch_scalar(key, value)}")
-    for key, entries in blocks.items():
-        if entries:
-            new_lines.append(f"{key}:")
-            new_lines.extend(f"  - {entry}" for entry in entries)
-    new_frontmatter = "\n".join(new_lines)
-    return text[: match.start(1)] + new_frontmatter + text[match.end(1) :]
-
-
-@workspace_files.guard_path
-def stamp_verification(path: Path, status: str, engine: str, mode: str,
-                       body_hash: str | None, source_spans: list | None = None) -> bool:
-    """Write a machine-review outcome — status AND all three proof fields together.
-
-    Single writer so a status can never land without its proof. The live corpus shows
-    what the split costs: 27 `status: verified` cards carry no `verifiedAt` at all
-    (all of them `verifiedBy: agent-full-source`, a string this codebase never
-    writes — a hand/agent backfill that stamped the status and skipped the proof).
-
-    `verifiedMode` records WHO checked relative to who wrote (see
-    wiki_verify_worker.VERIFIED_MODE_*): a card verified by the same engine that
-    produced it is a self-review, and self-preference bias makes that a weaker
-    claim than a cross-engine pass. The field is absent on every card verified
-    before this existed — absence therefore means "unknown, most likely self"
-    (measured 655/688), never "cross-engine".
-
-    `source_spans` (verifier-cited line spans, `source_spans.derive_spans`) are
-    written in the **same atomic write** as the status, and only on `verified`.
-    Every stamp without spans removes an existing list — contested, a pass with
-    no locatable quote, and every other writer of this function alike — so a
-    span list always belongs to the verdict stamped next to it. The list must be
-    complete and bound to this card's own `sourceRevisions`; otherwise nothing is
-    written (no partial proof).
-    """
-    expected_text = None
-    if source_spans:
-        try:
-            expected_text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            return False
-    rendered = render_verification(path, status, engine, mode, body_hash, source_spans,
-                                   datetime.now(timezone.utc))
-    if expected_text is not None:
-        try:
-            if path.read_text(encoding="utf-8") != expected_text:
-                return False
-        except (OSError, UnicodeError):
-            return False
-    return rendered is not None and write_text_atomic(path, rendered)
-
-
-def render_verification(path: Path, status: str, engine: str, mode: str,
-                        body_hash: str | None, source_spans: list | None, now: datetime) -> str | None:
-    """Render one verification stamp without mutating the card."""
-    try:
-        expected_text = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    except UnicodeError:
-        if source_spans:
-            return None
-        raise
-    emitted = None
-    if source_spans:
-        emitted = yaml_scalars.dump_source_spans(source_spans)
-        if status != "verified" or not emitted:
-            return None
-        from memvane.wiki.card import api as spans_module
-        if not spans_module.bound_to_revisions(
-                yaml_scalars.load_source_spans(emitted) or [],
-                spans_module.card_revisions(expected_text)):
-            return None
-    return _render_frontmatter_fields(expected_text, {
-        "status": status,
-        "verifiedBy": str(engine or "unknown"),
-        # Pending-refresh events retain microseconds. Verification stamps need
-        # the same precision so the index worker can distinguish a completed
-        # card from a sibling written during an unfinished event.
-        "verifiedAt": now.isoformat(
-            timespec="microseconds").replace("+00:00", "Z"),
-        "verifiedMode": mode if mode in settings_types.VERIFIED_MODES else settings_types.VERIFIED_MODE_UNKNOWN,
-        # 검증기가 실제로 읽은 본문의 지문. **호출자가 넘긴다** — 여기서 파일을 다시 읽어
-        # 계산하면 검수 중에 본문이 바뀐 경우 "검증되지 않은 새 본문"에 verified 가 찍힌다.
-        # 호출자 값이면 그 경우 디스크와 불일치해 recall 이 fail-closed 로 거른다.
-        # None 이면 키를 쓰지 않는다(`patch_frontmatter_fields` 규약) = 결속 없는 legacy
-        # 형태이고, 그것이 필요한 경로는 지금 없다(양 호출부 모두 값을 넘긴다).
-        "verifiedBodyHash": body_hash,
-    }, blocks={SOURCE_SPANS_KEY: emitted})
-
-
-def write_rendered_verification(path: Path, rendered: str, expected_text: str) -> bool:
-    """Write the previously rendered stamp only while its input remains current."""
-    try:
-        if path.read_text(encoding='utf8') != expected_text:
-            return False
-    except (OSError, UnicodeError):
-        return False
-    return write_text_atomic(path, rendered)
-
-
-def find_wiki_collection(config: dict) -> tuple[str | None, str | None]:
-    roles = qmd_config.role_map(config)
-    paths = config.get("collectionPaths") if isinstance(config.get("collectionPaths"), dict) else {}
-    for name in config.get("collections", []):
-        if qmd_config.collection_role(roles, name) == settings_types.COLLECTION_ROLE_WIKI:
-            return name, paths.get(name, config.get("wikiPath", settings_types.WIKI_REL))
-    return None, None
 
 
 def shared_collection_owned(root: Path, config: dict, collection: str) -> bool:

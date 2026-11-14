@@ -245,7 +245,7 @@ test('wiki_extract: 검수가 읽는 파일 소스 폭은 wiki_verify_worker.MAX
   const values = JSON.parse(execFileSync('python3', ['-c', [
     'import json, sys',
     'sys.path.insert(0, ".")',
-    'import memvane.wiki.compile.wiki_extract as we; import memvane.wiki.compile.wiki_verify_worker as vw',
+    'import memvane.wiki.compile.wiki_extract as we; import memvane.wiki.verify.wiki_verify_worker as vw',
     'print(json.dumps([we.MAX_PROVENANCE_FILE_SOURCES, vw.MAX_SOURCES]))',
   ].join('\n')], { cwd: process.cwd(), encoding: 'utf8' }));
   assert.equal(values[0], values[1]);

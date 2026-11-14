@@ -174,18 +174,21 @@ _API_PARTS = ('api', 'types')
 # that scripts/development_guard.py imports; wake queue/sync owner serve host,
 # app, sync, wiki, journal and install; the QA ledger trio serves the wiki CLI).
 # No two names forward to the same callee, so no merge keeps behavior.
-# wiki/workspace excepted at its exact count: 32 functions, each one distinct
-# workspace implementation (card/run/mutation locks, queue paths and claims,
-# lifecycle requests, the selected-route proof and checkout, scan cursors,
-# atomic writes, the activity log) with a caller in wiki/compile, wiki/dedup,
-# wiki/intake, wiki/lifecycle, host, sync or app; no two share a callee.
-# wiki/card excepted at its exact count: 48 functions, each forwarding to a
-# distinct card implementation (frontmatter and body parsing, YAML scalar
+# wiki/workspace excepted at its exact count: 35 functions, each one distinct
+# workspace implementation (card/run/mutation locks, queue paths, claims and job
+# timestamps, lifecycle requests, the selected-route proof and checkout, scan
+# cursors, atomic writes, generated-manifest compaction, the declared wiki
+# collection, the activity log) with a caller in wiki/compile, wiki/verify,
+# wiki/dedup, wiki/intake, wiki/lifecycle, host, sync or app; no two share a
+# callee.
+# wiki/card excepted at its exact count: 49 functions, each forwarding to a
+# distinct card implementation (frontmatter parsing and field rendering, body
+# parsing, YAML scalar
 # dump/load, recall trust, declared sources, source freshness and pending
-# refreshes, source spans) and each called from wiki/compile, wiki/lifecycle,
-# wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
+# refreshes, source spans) and each called from wiki/compile, wiki/verify,
+# wiki/lifecycle, wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
 # card contract every wiki writer and reader shares; no two names share a callee.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 32, 'wiki/card': 48}
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 35, 'wiki/card': 49}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')

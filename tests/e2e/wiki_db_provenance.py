@@ -218,11 +218,11 @@ class WikiDbProvenance(unittest.TestCase):
                 ('memvane.sync.product_sync_worker._higher_priority_wake', lambda _controller: False),
                 ('memvane.sync.product_sync_worker._initial_build_waiting',
                  lambda _controller, _project: False),
-                ('memvane.wiki.compile.wiki_verify_worker.plan_verify_attempts',
+                ('memvane.wiki.verify.wiki_verify_worker.plan_verify_attempts',
                  lambda *_a, **_k: ([attempt], 'prefer', None)),
                 ('memvane.wiki.engines.api.run_extractor', lambda *_a, **_k: (copy.deepcopy(verdict), None, 0)),
-                ('memvane.wiki.compile.wiki_verify_worker.reindex_wiki', lambda *_a, **_k: None),
-                ('memvane.wiki.compile.wiki_verify_worker.wake_pending_retirement',
+                ('memvane.wiki.verify.wiki_verify_worker.reindex_wiki', lambda *_a, **_k: None),
+                ('memvane.wiki.verify.wiki_verify_worker.wake_pending_retirement',
                  lambda *_a, **_k: None)):
             stack.enter_context(mock.patch(target, value))
         stack.enter_context(mock.patch('memvane.resident.embed_resident.admit_query',
@@ -315,7 +315,7 @@ class WikiDbProvenance(unittest.TestCase):
 
     def verify(self):
         from memvane.settings import api as settings
-        from memvane.wiki.compile import wiki_verify_worker as verifier
+        from memvane.wiki.verify import wiki_verify_worker as verifier
         config = settings.load_project_config(str(self.project))
         return verifier.process_verify_job(self.project, config, {}, {}, copy.deepcopy(self.job), self.log)
 
@@ -479,7 +479,7 @@ class WikiDbProvenance(unittest.TestCase):
     def test_intent_without_stamp_waits_without_store_write(self):
         self.compile_card()
         generated = self.card.read_bytes()
-        with mock.patch('memvane.wiki.compile.wiki_compile.write_rendered_verification',
+        with mock.patch('memvane.wiki.verify.wiki_verify_worker.write_rendered_verification',
                         side_effect=_Crash('killed_before_stamp')):
             with self.assertRaises(_Crash):
                 self.verify()

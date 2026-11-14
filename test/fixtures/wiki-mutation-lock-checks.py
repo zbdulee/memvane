@@ -8,6 +8,7 @@ import time
 
 sys.path.insert(0, str(Path.cwd()))
 from memvane.wiki.compile import wiki_compile as wc
+from memvane.wiki.verify import verification_stamp
 from memvane.wiki.workspace import wiki_mutation_lock as wl
 
 with tempfile.TemporaryDirectory(prefix='qmd-wiki-mutation-lock-') as temporary:
@@ -22,12 +23,13 @@ with tempfile.TemporaryDirectory(prefix='qmd-wiki-mutation-lock-') as temporary:
 from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 import memvane.wiki.compile.wiki_compile as wc
+import memvane.wiki.verify.verification_stamp as vs
 Path(sys.argv[3]).write_text('started')
 path=Path(sys.argv[2])
 if sys.argv[4]=='compile':
  assert wc.write_text_atomic(path,'after\\n')
 else:
- assert wc.stamp_verification(path,'verified','synthetic','self',None)
+ assert vs.stamp_verification(path,'verified','synthetic','self',None)
 '''
     for action, path, before in (
         ('compile', index, 'before\n'),
@@ -52,7 +54,7 @@ else:
     # same project lock; this must reuse the local fd rather than self-deadlock.
     with wl.lock(root):
         assert wc.write_text_atomic(path=index, text='nested\n')
-        assert wc.stamp_verification(path=card, status='contested', engine='synthetic', mode='self', body_hash=None)
+        assert verification_stamp.stamp_verification(path=card, status='contested', engine='synthetic', mode='self', body_hash=None)
     assert index.read_text() == 'nested\n'
     assert 'status: contested' in card.read_text()
     print(json.dumps({'compileBlocked': True, 'verifyBlocked': True,
