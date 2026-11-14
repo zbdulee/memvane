@@ -89,3 +89,40 @@ class ExternalEditNotification(FixtureCase):
         self.assertEqual(self.box()['edits'], [])
         self.proof_mock.assert_not_called()
         self.wake.assert_not_called()
+
+    def test_origin_host_is_preserved_and_inbox_keeps_no_source_body(self):
+        for host in ('claude', 'codex', 'hermes'):
+            with self.subTest(host=host):
+                self.source.write_text('secret marker ' + host + '\n')
+                self.assertEqual(self.notify(self.source, host=host)['owners'], 1)
+                inbox = external._inbox_path(self.decision)
+                self.assertEqual(self.box()['edits'][0]['host'], host)
+                self.assertNotIn('secret marker', inbox.read_text())
+                self.assertEqual(inbox.stat().st_mode & 0o777, 0o600)
+
+    def test_inbox_cap_preserves_existing_rows_and_overflow_still_wakes(self):
+        sources = [self.project.write_note('docs/n%d.md' % n, 'note %d\n' % n)
+                   for n in range(3)]
+        with patch.object(external, 'MAX_INBOX_EDITS', 2):
+            for path in sources[:2]:
+                self.assertEqual(self.notify(path)['owners'], 1)
+            before = self.box()['edits']
+            self.wake.reset_mock()
+            result = self.notify(sources[2])
+            self.assertEqual(result, {'owners': 1, 'failed': 0, 'overflow': 1})
+            self.assertEqual(self.box()['edits'], before)
+            self.wake.assert_called_once_with('laya-sync', str(self.root))
+
+    def test_backslash_filename_cannot_poison_owner_inbox(self):
+        unsupported = self.project.write_note('docs/a\\\\b.md', 'not a portable path\n')
+        self.assertEqual(self.notify(unsupported)['failed'], 1)
+        self.assertEqual(self.notify(self.source)['owners'], 1)
+        self.assertEqual([row['path'] for row in self.box()['edits']], ['docs/note.md'])
+
+    def test_symlinked_inbox_does_not_modify_target(self):
+        inbox = external._inbox_path(self.decision)
+        outside = self.home / 'outside.json'
+        outside.write_text('{}')
+        inbox.symlink_to(outside)
+        self.assertEqual(self.notify(self.source)['failed'], 1)
+        self.assertEqual(outside.read_text(), '{}')
