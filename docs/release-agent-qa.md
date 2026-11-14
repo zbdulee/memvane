@@ -361,13 +361,13 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 
 ## 8. Fixture
 
-Use [`test/fixtures/release-qa-fixture.py`](../test/fixtures/release-qa-fixture.py).
+Use [`tests/support/release_qa_fixture.py`](../tests/support/release_qa_fixture.py).
 It is an operator tool only; it never runs QA itself.
 
 - **Location.** It writes only below a caller-provided new or empty directory
   under `/tmp` or the current workspace. It refuses a location inside host or
   runtime state, and one whose ancestors hold MemVane project settings (upward
-  config discovery would contaminate opt-in). Prefer `/tmp`.
+  config discovery would contaminate opt-in; refusal `ancestor_has_memvane_config`). Prefer `/tmp`.
 - **Git isolation.** Git runs with fixture-local config, an empty fixture-local
   `core.hooksPath` and the file protocol only. That local config persists, so
   an agent's own Git commands inside the fixture also skip the QA account's
@@ -377,10 +377,10 @@ It is an operator tool only; it never runs QA itself.
   only after it verifies the owner marker.
 
 ```bash
-python3 -B test/fixtures/release-qa-fixture.py create  /tmp/qmd-rqa-<runId>-<host>-<scenario>
-python3 -B test/fixtures/release-qa-fixture.py show    <fixture>              # tokens and event log
-python3 -B test/fixtures/release-qa-fixture.py stage   <fixture> <action>     # simulated user action
-python3 -B test/fixtures/release-qa-fixture.py cleanup <fixture>
+python3 -B tests/support/release_qa_fixture.py create  /tmp/qmd-rqa-<runId>-<host>-<scenario>
+python3 -B tests/support/release_qa_fixture.py show    <fixture>              # tokens and event log
+python3 -B tests/support/release_qa_fixture.py stage   <fixture> <action>     # simulated user action
+python3 -B tests/support/release_qa_fixture.py cleanup <fixture>
 ```
 
 **Layout.**
