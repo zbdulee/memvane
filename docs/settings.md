@@ -212,7 +212,6 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `wikiPath` | `".memvane/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. 프로젝트의 `.memvane/` 경로를 사용합니다. |
 | `compile.mode` | `"off"` | **compile의 유일한 활성 스위치이자 쓰기 정책**입니다. `off`·`candidates`·`guarded`·`auto-wiki` → [compile.mode](#compilemode) |
 | `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. SessionStart가 감지한 파일의 위키 생성에는 별도 `session_start_source` 동의가 필요합니다. |
-| `compile.defaultStatus` | `"generated"` | 새 카드의 status입니다. `generated`·`tentative`만 허용합니다(`verified`를 넣으면 검수를 우회합니다). |
 | `compile.recallVerifiedOnly` | `true` | `true`면 미검수(`generated`·`tentative`) 카드를 recall에 아예 내지 않습니다. |
 | `compile.excludeStatusesFromRecall` | `["discarded","contested"]` | recall에서 제외할 wiki status입니다. |
 | `compile.lowPriorityStatuses` | `["generated","tentative"]` | `topN` 절단 **전에** 검수 카드 뒤로 강등할 status입니다. |
@@ -223,7 +222,6 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `compile.reasoningEffort.semanticDedup` | `"medium"` | dedup 판정 단계 reasoning effort입니다. |
 | `compile.reasoningEffort.engines` | `{}` | 엔진별 override입니다(`{"codex": {"verify": "high"}}` 형태). |
 | `compile.extractor.builtins` | `[]` | 런타임에 해석되는 adapter 엔진 이름입니다(`claude`·`codex`·`hermes`). 경로를 적지 마십시오. |
-| `compile.extractor.backends` | `{}` | 엔진 → 명시 argv입니다. builtins로 안 되는 경우의 escape hatch입니다. |
 | `compile.extractor.timeout` | `120` | extractor 호출 1회의 timeout(초)입니다. |
 | `compile.extractor.cooldownSeconds` | `600` | extractor 실패 뒤 재시도 cooldown입니다. **24h로 클램프**됩니다 → [cooldown·lock의 "영구 정지" 방어](#cooldownlock의-영구-정지-방어) |
 | `compile.budget.extractorPerRun` | `10` | run당 extractor 호출 상한입니다(50 클램프). 초과분은 requeue → [compile.budget](#compilebudget--한-run의-유료-호출-총량) |
@@ -237,16 +235,12 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `compile.semanticDedup.maxPairsPerScan` | `10` | retroactive scan 1회가 `dedup-needed.jsonl`에 넣는 쌍 상한입니다(1~100) → [Retroactive scan](#retroactive-scan) |
 | `compile.semanticDedup.candidateMinScore` | `0.3` | judge에 넘길 후보의 retrieval floor입니다. **판정 임계가 아닙니다** → [Semantic Dedup](#semantic-dedup) |
 | `compile.semanticDedup.judge.enabled` | `true` | LLM 본문 대조 판정을 씁니다. 끄면 레거시 무료 score 게이트로 degrade합니다. |
-| `compile.semanticDedup.judge.crossEngine` | `"prefer"` | 판정 엔진을 생산 엔진과 분리합니다(`prefer`·`require`·`off`). **write-time gate에만 적용됩니다** → [판정 엔진 분리 (dedup)](#판정-엔진-분리-dedup) |
 | `compile.semanticDedup.judge.timeout` | `120` | judge 호출 1회의 timeout(초)입니다. |
 | `compile.semanticDedup.judge.cooldownSeconds` | `600` | judge 실패 뒤 cooldown입니다(24h 클램프). |
 | `compile.semanticDedup.judge.maxCharsPerPage` | `6000` | judge에 넘길 카드 1장당 본문 상한입니다. |
 | `compile.verify.enabled` | `true` | 기계 검수를 켜고 끕니다. |
 | `compile.verify.timeout` | `120` | 검수 호출 1회의 timeout(초)입니다. |
-| `compile.verify.onFail` | `"delete"` | 검증 실패(원문과 모순) 시 동작입니다(`delete`·`contested`·`none`). |
-| `compile.verify.onInconclusive` | `"delete"` | 판정 불가 시 동작입니다. 값 집합은 `onFail`과 같습니다 → [`onInconclusive` 기본값이 `delete`인 이유](#oninconclusive-기본값이-delete인-이유) |
-| `compile.verify.crossEngine` | `"prefer"` | 검수 엔진을 카드를 만든 엔진과 분리합니다(`prefer`·`require`·`off`) → [검수 엔진 분리 (`crossEngine`)](#검수-엔진-분리-crossengine) |
-| `compile.verify.builtins` | `[]` | 검수 후보 엔진입니다. 비면 `compile.extractor` 풀을 물려받습니다. |
+| `compile.verify.builtins` | `[]` | 생산 엔진 이름을 argv로 해석할 때 `compile.extractor.builtins`에 더하는 adapter 이름입니다. 다른 엔진으로 검수하지 않습니다 → [검수 엔진](#검수-엔진-verifiedmode-self) |
 | `compile.verify.cooldownSeconds` | `600` | 검수 실패 뒤 cooldown입니다(24h 클램프). |
 | `compile.sourceScan.enabled` | `true` | **wiki 수명 주기 조치**(원문 소실·지문 없음 카드 삭제, 해시 변경 재생성 enqueue)를 켜고 끕니다(provenance 결측 집계는 끄지 않습니다). **`true`/`false`만** 유효하고, `"false"`처럼 bool이 아닌 값은 기본값(유지)으로 폴백합니다 → [wiki 수명 주기](#wiki-수명-주기-원문-소실변경) |
 | `compile.sourceScan.maxCardsPerScan` | `300` | 수명 주기가 한 회차에 원문 해시를 대조할 카드 수입니다(5000 클램프). 초과분은 순환 커서가 다음 회차에 이어 봅니다. `QMD_SOURCE_SCAN_MAX`가 이 값을 덮습니다. |
@@ -255,11 +249,6 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 ### compile.mode
 
 compile의 활성 여부와 쓰기 정책을 **한 값**으로 정합니다. `mode != "off"`가 곧 활성입니다.
-
-`compile.enabled`(bool)와 `compile.autoWrite`(bool)는 이 값으로 합쳐진 deprecated 키입니다.
-값은 끄는 방향으로만 존중하고 켜는 방향은 무시합니다: `enabled: false`는 `mode`를 `off`로,
-`autoWrite: false`는 `auto-wiki`·`guarded`를 `candidates`로 낮춥니다. 원하는 동작은 `mode`
-하나로 다시 적으십시오.
 
 | 값 | 동작 |
 |---|---|
@@ -318,9 +307,7 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
 ### compile.budget — 한 run의 유료 호출 총량
 
 `compile.budget`은 **사용자 계정에 청구되는 host CLI 호출 수**를 정하는 값만 모은
-블록입니다. `batch.maxPerRun`·`maxCardsPerSource`·`verify.maxPerRun`·
-`semanticDedup.judge.maxPairsPer*`는 이 블록으로 옮겨간 deprecated 키입니다(값 처리는 아래
-[설정할 수 없는 값](#설정할-수-없는-값) 끝의 예외를 보십시오).
+블록입니다.
 
 > **⚠ 총량은 이 값들의 합이 아니라 일부의 곱입니다.** 한 run이 쓰는 카드 수는
 > `budget.extractorPerRun × budget.cardsPerSource`이고 dedup judge는 카드당 1회이므로,
@@ -350,17 +337,6 @@ repository-config evidence 또는 runtime-current proof를 주장하지 않습�
   "설정 오류나 모델 출력이 과금 규모를 정하지 못한다"를 보장하는 자리라 설정으로
   열지 않습니다.
 
-제거된 키가 파일에 남아 있으면 그 값은 무시됩니다. 옮겨간 키의 행선지는
-`memvane/settings/config.py`의 `deprecated_keys`가 정합니다. 그 키를 지우거나 새 위치에 다시 적으십시오.
-
-**예외 하나 — `compile.maxCardsPerSource`는 값이 잠정 반영됩니다.** 새 키
-`compile.budget.cardsPerSource`를 **적지 않은 경우에만** 옛 값이 그 자리를 대신하고
-(같은 50 클램프를 통과합니다), 새 키를 적으면 새 키가 이깁니다. 잠정 반영이지 스키마가
-아니니 새 위치로 옮겨 적으십시오. **옮겨간 나머지 4키
-(`batch.maxPerRun`·`verify.maxPerRun`·`semanticDedup.judge.maxPairsPer*`)는 반영되지
-않습니다**. 이 비대칭은 의도된 것입니다: 그 4키를 반영하면 그 키를 적어 둔 프로젝트의
-**유료 호출 예산이 플러그인 업그레이드만으로 올라가는데**,
-`maxCardsPerSource`는 이 키를 적는 동기 자체가 카드 수를 **줄이는** 것(비용 감소 방향)입니다.
 
 ---
 
@@ -860,11 +836,8 @@ backlog에 예산을 다 쓰고 새 카드는 `generated`로 남습니다. 그�
 한 run의 verify 유료 호출 상한은 `예산 + 1`입니다(기본값 `30 + 1 = 31`). 위
 [처리량과 유료 호출 예산](#처리량과-유료-호출-예산) 절의 총량 셈이 이 `+1`을 포함합니다.
 
-`crossEngine: "require"`는 엔진별 `backends`/`builtins`가 있어야 만족됩니다 — 엔진에
-귀속되지 않는 카드(생산 엔진이 기록되지 않은 잡)는 `unknown`이라 fail-closed입니다.
-`off`에서도 그 엔진이 귀속 불가면 풀의 첫 후보로 폴백합니다(폐기하면 그 카드가 영원히
-검수되지 않습니다). `verify.builtins`를 좁혀도 **카드를 만든 엔진은 `prefer`의 최후
-후보로 남습니다** — 목록을 좁히거나 이름을 잘못 적어도 self 폴백이 사라지지 않습니다.
+생산 엔진이 기록되지 않은 잡(`unknown`)이나 argv로 해석되지 않는 엔진 라벨은 다른 CLI로 대신 검수하지
+않고 `producing_engine_unavailable`로 잡을 보존합니다(카드는 `generated`로 남고 삭제되지 않습니다).
 
 **검수를 통과한 카드는 index에 출처 기록을 남깁니다.** memvane-db가 선택된 프로젝트에서
 검수가 통과하면, 카드를 만든 compile이 읽은 원문 지문(경로·해시·크기·브랜치·HEAD)과 인용
@@ -874,116 +847,77 @@ attestation으로 기록합니다. 카드 frontmatter의 `sourceRevisions`·`sou
 않고, 켜고 끄는 설정은 없습니다. 브랜치가 compile과 검수 사이에 바뀌었거나 git이 답하지
 못하면 기록 없이 검수만 진행합니다.
 
-#### `onInconclusive` 기본값이 `delete`인 이유
+#### 판정 불가(`inconclusive`)도 삭제하는 이유
 
 이 플러그인은 **사람 검수를 전제하지 않습니다.** 사람의 개입은 승인이 아니라 삭제이고,
 불변식은 "살아있는 카드 = 기계 검수를 통과한 카드"입니다. `recallVerifiedOnly` 기본값이
 `true`이므로 `generated`로 남은 카드는 recall에서 영구 제외되고, 사람 검수가 없으면
 그 상태를 벗어날 경로는 소스 변경뿐입니다. inconclusive로 남긴 카드는 전부 이 상태에
-머뭅니다. 그래서 `onFail`과 같이 삭제합니다.
+머뭅니다. 그래서 `fail`과 같이 삭제합니다. 선택된 Laya route는 삭제하지 않고(`none`) 카드를
+`generated`로 남깁니다.
 
-inconclusive 카드를 `generated`로 남기려면 `"onInconclusive": "none"`을 명시하십시오.
+#### 검수 엔진 (`verifiedMode: self`)
 
-#### 검수 엔진 분리 (`crossEngine`)
-
-LLM 자기 검수는 성능을 떨어뜨립니다(Huang et al. ICLR'24: GPT-4 GSM8K 95.5% → 91.5% →
-89.0%, self-preference bias −38%~+90%). 문헌이 제시한 완화법은 **생성 모델과 판정 모델의
-분리**입니다. `recallVerifiedOnly` 기본값이 `true`이므로 `verified` 카드가 "인용 가능한
-캐논"이고, 같은 엔진이 만들고 검수하면 캐논 판정의 근거가 self-preference bias에 그대로
-노출됩니다.
-
-기본값 `prefer`는 카드를 만든 엔진을 후보 목록의 **마지막**으로 밉니다. 제외하지 않는
-이유는 degrade가 파괴적이기 때문입니다 — 다른 엔진 CLI가 없는 머신에서 "반드시 다른 엔진"을
-강제하면 아무 카드도 검수되지 않고, `recallVerifiedOnly` 기본값 아래에서 **wiki 전체가
-recall에서 사라집니다.** 사람 검수를 전제하지 않으므로 복구 경로도 없습니다. 그래서 기능을
-지키고 약점을 드러내는 쪽을 택했습니다: 같은 엔진으로 검수하되 카드에
-`verifiedMode: self`를 남깁니다.
+카드를 만든 엔진이 **별도 호출로** 그 카드를 검수합니다. 다른 설치된 CLI로 대신 검수하지
+않습니다 — 대신 부르면 카드 한 장에 두 엔진의 유료 호출이 들고, 생산 엔진이 특정되지 않은
+카드에서는 어느 쪽이 자기검증인지도 증명할 수 없습니다. 검수한 카드에는 `verifiedMode: self`가
+남습니다.
 
 | 카드 frontmatter | 뜻 |
 |---|---|
-| `verifiedMode: cross-engine` | 카드를 만든 엔진과 **다른** 엔진이 검수했습니다. |
-| `verifiedMode: self` | 다른 엔진 CLI가 없어 같은 엔진이 검수했습니다(약한 근거). |
-| `verifiedMode: unknown` | 엔진 귀속이 불가합니다 — 카드를 만든 엔진이 기록되지 않은 잡이거나, 풀에서 엔진별 argv로 해석되지 않는 라벨입니다. |
-| 필드 없음 | 검수 엔진 관계가 기록되지 않은 카드입니다. **자기검증일 수 있습니다.** 없음은 `cross-engine`을 뜻하지 않습니다. |
+| `verifiedMode: self` | 카드를 만든 엔진이 별도 호출로 검수했습니다. |
+| 필드 없음 | 검수 엔진 관계가 기록되지 않은 카드입니다. |
 
-**dedup judge도 분리됩니다(write-time 한정).** 중복 판정(`wiki_dedup_judge`)은 신규
-후보를 만든 엔진을 **피할 대상**으로 받습니다(`compile.semanticDedup.judge.crossEngine`,
-아래 dedup 절 참고). `plan_verify_attempts`를 그대로 재사용하지는 않습니다 — dedup은 카드
-**두 장**을 비교하고 그 둘의 생산자가 다르거나 불명일 수 있어 무엇이 자기검증인지 확정되지
-않습니다. 공용화한 것은 **순서 규칙 하나**(`wiki_compile_worker.plan_engine_order`)입니다.
+생산 엔진 라벨은 **큐 잡이 SSOT**입니다. `candidate.engine`은 extractor(모델) 출력이므로 값을
+신뢰하지 않고 worker가 잡의 값으로 덮어씁니다. 잡에 생산 엔진이 없거나(sentinel `"unknown"`)
+그 라벨이 `compile.extractor.builtins`·`compile.verify.builtins`로 해석되지 않으면 검수하지 않고
+잡을 보존합니다(`producing_engine_unavailable`).
 
 로그 키의 의미는 고정입니다: `producedBy`는 **생성** 엔진, `engine`은 **검수** 엔진(시도가
-있는 행에만), `verifiedMode`는 **달성된** 관계(판정이 실제로 나온 행에만), `attemptedMode`는
-시도했던 관계(실패 행 포함)입니다. 실패 행에 `verifiedMode`를 쓰지 않는 이유는 노출 집계가
-"교차검증됨"으로 오독되기 때문입니다.
+있는 행에만), `verifiedMode`는 판정이 실제로 나온 행에만 씁니다.
 
-**recall은 `verifiedMode`를 읽지 않습니다.** `self`도 `cross-engine`과 동일하게 캐논급으로
-주입됩니다. 주입에 신뢰 하향 배지를 붙이지 않는 이유는 —
-recall에서 내리지 않기로 한 카드에 하향 표식을 붙이는 것은 자기모순이고, 배지는 주입마다
-토큰을 먹어 이 플러그인의 목표(토큰 절감)와 반대로 갑니다. 노출을 재는 수단은 주입이
-아니라 frontmatter 그리고 `verify-log.jsonl`의 `verifiedMode`/`producedBy`/`enginesAttempted`
-입니다(삭제는 `verify-deleted.jsonl`에도 같은 두 필드가 남습니다 — 자기검증이 내린 삭제는
-교차검증이 내린 삭제보다 약한 근거입니다).
+**recall은 `verifiedMode`를 읽지 않습니다.** 주입에 신뢰 배지를 붙이지 않는 이유는 배지가
+주입마다 토큰을 먹어 이 플러그인의 목표(토큰 절감)와 반대로 가기 때문입니다. 검수 관계는
+frontmatter와 `verify-log.jsonl`의 `verifiedMode`/`producedBy`로 관측합니다(삭제는
+`verify-deleted.jsonl`에도 같은 두 필드가 남습니다).
 
 **`pass`는 근거를 요구합니다.** verifier가 `pass`를 내면서 `claims`를 비워 보내거나 항목이
 전부 퇴화한 값(`null`·`""`·`{}`)이면 `pass`로 처리하지 않고 **`invalid_verdict`**(= 못 쓸
 출력)로 다룹니다. `pass`가 `status: verified`의 유일한 입구이고 `verified` 카드는 recall에서
 캐논급으로 주입되므로, 근거 0인 `pass`를 받아들이면 원문과 무관한 요약이 신뢰 카드가 됩니다.
 이때 카드는 **삭제되지 않고 `generated`로 남습니다**(= recall 비가시) — `fail`/`inconclusive`
-로 강등하면 기본 동작이 삭제인데, 근거 없는 `pass`는 "원문과 모순"도 "판정 불가"도 아니라
-그 방향이 틀립니다. 소스를 고치면 재컴파일→재검수가 다시 열립니다. `claims` 항목의
-`supported`/`quote` 값까지는 검사하지 않습니다(그것은 프롬프트가 모델에 맡긴 판정 규칙이고,
-모양 검사는 퇴화한 출력만 걸러낼 수 있습니다).
+로 강등하면 삭제인데, 근거 없는 `pass`는 "원문과 모순"도 "판정 불가"도 아니라 그 방향이
+틀립니다. 소스를 고치면 재컴파일→재검수가 다시 열립니다. `claims` 항목의 `supported`/`quote`
+값까지는 검사하지 않습니다(그것은 프롬프트가 모델에 맡긴 판정 규칙이고, 모양 검사는 퇴화한
+출력만 걸러낼 수 있습니다).
 
-**실패 분류 경계**: 후보 엔진 사이를 넘어가는 조건은 **exit 127(host CLI 부재)뿐**입니다.
-127은 CLI를 실행하지도 못한 상태라 토큰이 들지 않으므로 다음 후보 시도가 공짜입니다.
-timeout·비127 실패는 이미 CLI를 호출한 것이므로 다음 엔진으로 넘기지 않습니다(같은 카드에
-대한 이중 과금) — cooldown + 큐 보존입니다. 어느 경로도 verdict를 만들지 않으므로
-**transient가 `inconclusive`(=삭제)로 흐를 수 없다**는 계약이 유지됩니다.
-`crossEngine: "require"`에서 다른 엔진이 없으면 잡을 **보존**합니다(카드는 `generated`로
-남고 삭제되지 않으며, 두 번째 CLI가 설치되면 검수됩니다).
+**실패 분류 경계**: exit 127(host CLI 부재)은 CLI를 실행하지도 못한 상태라 토큰이 들지 않고,
+잡을 보존해 CLI가 설치되면 다시 시도합니다. timeout·비127 실패는 이미 CLI를 호출한 것이므로
+cooldown + 큐 보존입니다. 어느 경로도 verdict를 만들지 않으므로 **transient가
+`inconclusive`(=삭제)로 흐를 수 없다**는 계약이 유지됩니다.
 
 **기존 카드는 자동으로 재검증되지 않습니다.** 재검증은 카드 1장당 host CLI 호출 1회 =
 사용자 계정 청구입니다(카드 1장당 카드 본문 + 소스 최대 3개 × `maxSourceChars` 12,000자
-≈ 입력 9K 토큰). 새로 컴파일되는 카드부터 교차 검증됩니다.
-전량 재검증을 원하면 명시적 opt-in으로만 하십시오 — `verify-queue.jsonl`에 대상 카드의
-`{targetPath, sources, sourceHash, engine}` 행을 직접 append하고 `status`를 `generated`로
-되돌린 뒤 worker가 verify 예산씩 드레인하게 하는 방식입니다.
+≈ 입력 9K 토큰). 전량 재검증을 원하면 명시적 opt-in으로만 하십시오 — `verify-queue.jsonl`에
+대상 카드의 `{targetPath, sources, sourceHash, engine}` 행을 직접 append하고 `status`를
+`generated`로 되돌린 뒤 worker가 verify 예산씩 드레인하게 하는 방식입니다.
 
-#### 교차검증 주장의 조건 (귀속)
+#### 엔진 cooldown (`verify-engine-cooldown.json`)
 
-"다른 엔진이 검수했다"는 주장은 **카드를 만든 엔진이 특정될 때만** 성립합니다. `producing`
-라벨이 현재 풀에서 엔진별 argv로 해석되지 않으면 — sentinel `"unknown"`(호스트를 알 수 없을 때
-enqueue가 쓰는 값)이나 풀 밖 라벨 — 어떤 후보도 "생성 엔진과
-다르다"를 증명할 수 없습니다. 그때는 모든 시도가 `verifiedMode: unknown`이고 `require`는
-**fail-closed**(검수하지 않고 잡 보존)입니다.
+**한 카드에 대한 유료 호출은 run 당 1회**입니다. 생산 엔진의 유료 호출이 실패하면(인증 안 된
+CLI, verdict 미출력, timeout) 그 엔진을 `cooldownSeconds` 동안
+`.memvane/compile/verify-engine-cooldown.json`에 기록하고, 식힘 중인 동안 그 엔진이 만든 카드의
+잡은 `engines_cooling`으로 보존합니다. 매 run이 같은 실패를 다시 청구하지 않게 하는 장치이고,
+한 엔진의 실패가 다른 엔진이 만든 카드의 검수를 막지 않습니다. 만료 항목은 쓰기 시 정리되어
+파일이 무계로 커지지 않습니다.
 
-생성 엔진 라벨은 **큐 잡이 SSOT**입니다. `candidate.engine`은 extractor(모델) 출력이므로 값을
-신뢰하지 않고 worker가 잡의 값으로 덮어씁니다 — 그러지 않으면 모델이 스키마 밖 필드 하나로
-자기검증을 `cross-engine`으로 승격시킬 수 있습니다.
-
-#### 후보 단위 cooldown (`verify-engine-cooldown.json`)
-
-**한 카드에 대한 유료 호출은 run 당 1회**입니다. 그래서 다음 후보로 넘어가는 조건은
-exit 127(host CLI 부재, 토큰 0)뿐이고 timeout·비127 실패는 그 run 에서 다른 엔진을 부르지
-않습니다. 그런데 그것만으로는 **선호 엔진이 계속 같은 이유로 실패하면(인증 안 된 CLI, verdict
-미출력, timeout) 검수가 영구 정지**합니다 — 실패를 전역 cooldown 하나로만 기억하면 그
-상태가 되고, `recallVerifiedOnly` 기본값 아래에서 그것은 wiki가 recall에서 사라지는 것과 같습니다.
-
-그래서 실패는 **후보 단위로 기억**합니다: 실패한 후보를 `cooldownSeconds` 동안
-`.memvane/compile/verify-engine-cooldown.json`에 기록하고, 다음 run 의 후보 선정에서
-건너뜁니다. 결과적으로 run 당 유료 호출은 여전히 1회이고, run 을 넘어가면 다음 후보로 →
-최종적으로 생성 엔진(self)까지 degrade 합니다. 전역 cooldown과 달리 한 엔진의 실패가 다른
-카드·다른 엔진의 검수를 막지 않습니다. 엔진에 귀속되지 않는 argv는 `(unattributed)` 키로
-따로 식히므로 그 엔진의 adapter가 함께 막히지 않습니다. 만료 항목은 쓰기 시 정리되어 파일이 무계로 커지지 않습니다.
-
-이 파일은 **이 degrade의 복구 메커니즘**이므로 쓰기 실패를 삼키지 않습니다. 기록이 남지
-않으면 다음 run이 같은 후보를 다시 불러 영구 정지가 그대로 재발하므로, 실패는 로그 행의
+이 파일은 **식힘의 유일한 기록**이므로 쓰기 실패를 삼키지 않습니다. 기록이 남지
+않으면 다음 run이 같은 엔진을 다시 불러 같은 실패를 청구하므로, 실패는 로그 행의
 `cooldownWriteFailed: true`로 표면화됩니다. 쓰기는 원자적이고(`write_text_atomic`) 같은
 이유로 read-modify-write를 sidecar `flock`으로 직렬화합니다 — 정상 경로는 `claim_queue`가
 프로젝트 단위로 직렬화하므로 경합이 드물고 손실 등급도 원장(줄 유실 = 감사 유실)보다 낮지만,
 잃는 것이 하필 이 복구 메커니즘이라 기존 헬퍼를 재사용하는 값싼 방어를 생략할 이유가 없습니다.
-만료값은 24시간으로 클램프합니다(손상·주입된 값이 후보를 영구 배제하지 못하게 — 상한을 넘는
+만료값은 24시간으로 클램프합니다(손상·주입된 값이 엔진을 영구 배제하지 못하게 — 상한을 넘는
 항목은 식힘으로 보지 않습니다).
 
 읽기 실패·손상은 fail-open(식힘 없음)입니다: 식힘 기록을 못 읽는 것이 검수를 막는 이유가 되면
@@ -995,14 +929,13 @@ worker가 발견하면 지웁니다.
 | 실패 유형 | host CLI 호출 | 카드 | 큐 | cooldown | 로그 |
 |---|---|---|---|---|---|
 | `pass` verdict | 1(유료) | `verified` 스탬프 | 소비 | — | `verified` |
-| `fail` verdict | 1(유료) | `onFail`(기본 삭제) | 소비 | — | `deleted`/`contested`/`kept` + `verify-deleted.jsonl` |
-| `inconclusive` verdict | 1(유료) | `onInconclusive`(기본 삭제) | 소비 | — | 같음 + `verify-skipped.jsonl` |
-| exit 127 (후보 전원 부재) | 0(무료) | 불변(`generated`) | **보존** | 없음(설치 즉시 재시도) | `deferred`/`extractor_unavailable` |
-| timeout·비127 실패 | 1(유료) | 불변(`generated`) | **보존** | **그 후보만** | `deferred` + `cooledKey` |
-| 출력이 판정 불가(`invalid_extractor_json`·`invalid_verdict`) — 남은 후보 있음 | 1(유료) | 불변(`generated`) | **보존** | 그 후보만 | `deferred` |
-| 같은 사유 — 후보 소진 | 1(유료) | 불변(`generated`) | 폐기(종점) | 그 후보만 | `skipped` |
-| 후보 전원 식힘 중 | 0 | 불변(`generated`) | **보존** | 유지 | `deferred`/`engines_cooling` |
-| `require` + 귀속 불가/후보 없음 | 0 | 불변(`generated`) | **보존** | — | `deferred`/`cross_engine_unavailable` |
+| `fail` verdict | 1(유료) | 삭제(선택 route는 보존) | 소비 | — | `deleted`/`kept` + `verify-deleted.jsonl` |
+| `inconclusive` verdict | 1(유료) | 삭제(선택 route는 보존) | 소비 | — | 같음 + `verify-skipped.jsonl` |
+| exit 127 (생산 엔진 CLI 부재) | 0(무료) | 불변(`generated`) | **보존** | 없음(설치 즉시 재시도) | `deferred`/`extractor_unavailable` |
+| timeout·비127 실패 | 1(유료) | 불변(`generated`) | **보존** | **그 엔진** | `deferred` + `cooledKey` |
+| 출력이 판정 불가(`invalid_extractor_json`·`invalid_verdict`) | 1(유료) | 불변(`generated`) | 폐기(종점) | 그 엔진 | `skipped` |
+| 생산 엔진 식힘 중 | 0 | 불변(`generated`) | **보존** | 유지 | `deferred`/`engines_cooling` |
+| 생산 엔진 미기록·해석 불가 | 0 | 불변(`generated`) | **보존** | — | `deferred`/`producing_engine_unavailable` |
 | extractor 설정 없음 | 0 | 불변(`generated`) | 폐기 | — | `skipped`/`missing_extractor` |
 | 소스 전멸 | 0 | 불변(`generated`, 정리는 수명 주기) | 소비 | — | `skipped`/`source_missing` |
 
@@ -1012,7 +945,7 @@ worker가 발견하면 지웁니다.
 
 #### 증명 필드 위생
 
-`status: verified`/`contested`는 `verifiedBy`·`verifiedAt`·`verifiedMode`와 **한 쓰기로
+`status: verified`는 `verifiedBy`·`verifiedAt`·`verifiedMode`와 **한 쓰기로
 함께** 나갑니다(`wiki_compile.stamp_verification`이 유일한 경로). `verified`인데
 `verifiedAt`이 없는 카드(예: 이 코드가 쓰지 않는 `verifiedBy: agent-full-source` 값을 가진
 수동 백필 카드)는 **소급 수정하지 않습니다**: 결측은 거짓이 아니고, 지금 타임스탬프를 채우면
@@ -1040,7 +973,7 @@ worker가 발견하면 지웁니다.
 처방입니다 — 마커는 삭제 **전에** 쓰고, 실패하면 카드를 보존한 채 검수 잡을 큐에 되돌리며
 `verify-log.jsonl`에 `delete_blocked` / `suppression_ledger_unwritable`을 남깁니다. 그리고
 fail-closed만으로는 "판정(유료) → 기록 실패 → 잡 보존 → 재판정(유료)" 루프가 남으므로,
-`onInconclusive`가 `delete`인 프로젝트에서는 **유료 호출 전에** 이 파일의 쓰기 가능성을
+`inconclusive`를 삭제하는 경로(선택된 route 밖)에서는 **유료 호출 전에** 이 파일의 쓰기 가능성을
 확인하고 불가하면 그 run의 검수를 아예 시작하지 않습니다(host CLI 호출 0회). 이 원장
 경로들은 설정이 아니라 상수라(`memvane/wiki/workspace/compile_paths.py`) 경로 오타로 마커가 유실될 경로 자체가
 없습니다.
@@ -1147,7 +1080,7 @@ agent의 Bash 명령이 성공했을 때 수명 주기 요청이 하나 남고 �
 {0.55, 0.56} / rank3 [0.40, 0.44]). 자기 본문은 항상 rank1 self-match이므로 진짜 중복은
 rank ≥ 2에만 올 수 있고, 거기서는 0.9 같은 임계에 **도달할 수 없습니다**. 그래서 임계
 레버 4종(`threshold`·`topK`·`autoMergeThreshold`·`similarPageMaxChars`)은 설정 키가 아니라
-상수입니다(파일에 적어 두면 deprecated 키로 무시됩니다). score는
+상수입니다. score는
 `semanticDedup.candidateMinScore`(후보 retrieval floor)로만 남고, "두 카드가 같은 사실을
 말하는가"는 judge가 본문 대 본문으로 판정합니다.
 
@@ -1174,21 +1107,17 @@ scan을 실행합니다. scan은 선택된 route의 memvane-db sealed head에 �
 - `compile.mode: "off"`나 `semanticDedup.enabled: false`면 돌지 않습니다. 로그는
   `~/.local/state/memvane/auto-context/logs/wiki-dedup.log`(`QMD_WIKI_DEDUP_LOG`)입니다.
 
-#### 판정 엔진 분리 (dedup)
+#### 판정 엔진 (dedup)
 
-**write-time gate만** 교차 엔진으로 동작합니다. 그 경로의 신규 후보 생산 엔진은 큐 잡이 정하는
-사실(`candidate.engine`은 worker가 잡의 값으로 덮어씁니다)이므로 "무엇이 자기검증인지"가
-확정됩니다.
+write-time gate의 judge는 **신규 후보를 만든 엔진**이 맡습니다(`judgedMode: self`). 생산 엔진은
+큐 잡이 정하는 사실이고(`candidate.engine`은 worker가 잡의 값으로 덮어씁니다), 다른 설치된 CLI로
+대신 판정하지 않습니다. 생산 엔진이 기록되지 않았거나 해석되지 않으면 판정하지 않습니다
+(`unavailable`).
 
-**호출 수는 늘지 않습니다.** judge는 쌍당 1회이고 엔진만 바뀝니다. 후보 사이를 넘어가는 조건은
-**exit 127(host CLI 부재, 토큰 0)뿐**이며, 실제로 실행된 첫 후보가 순회를 끝냅니다.
-
-**degrade의 종점.** 다른 엔진 CLI가 없으면(127) 생산 엔진으로 내려와 `self`로 기록합니다.
-선호 후보가 **유료로** 실패하면(비127·timeout) 같은 run에서 다른 엔진을 부르지 않고(이중 과금)
-그 후보만 `dedup-judge-engine-cooldown.json`에 엔진 단위로 식혀 **다음 run이 다음 후보로
-degrade**하게 합니다. 후보가 소진되면 전역 `dedup-judge-cooldown`으로 judge 전체를 식힙니다.
-두 기록이 모두 실패하면 그 사실을 `cooldownWriteFailed`로 표면화합니다 —
-식힘 기록이 degrade의 유일한 메커니즘이므로 조용히 삼키면 판정이 영구 정지합니다.
+**호출 수는 쌍당 1회입니다.** 생산 엔진의 유료 호출이 실패하면(비127·timeout) 그 엔진을
+`dedup-judge-engine-cooldown.json`에 식히고 `transient`로 돌립니다. 식힘 기록이 실패하면 그
+사실을 `cooldownWriteFailed`로 표면화합니다 — 식힘 기록이 없으면 다음 호출이 같은 실패를 다시
+청구합니다.
 
 **그 표면화의 종점은 `candidates.jsonl` 행의 `judge` 필드입니다.** `outcome`·`reason`·`engine`·
 `engineCooldown`·`cooldownWriteFailed`를 남기며, 정상 판정에는 아무것도 쓰지 않으므로 기존 행
@@ -1196,8 +1125,7 @@ degrade**하게 합니다. 후보가 소진되면 전역 `dedup-judge-cooldown`�
 
 **판정 불가 출력은 재과금되지 않습니다.** judge가 유효 verdict를 내지 못한 경우
 (`invalid_verdict` / `invalid_extractor_json` — exit 0 + 쓰레기 stdout)는 timeout과 달리 같은
-입력에서 재현되는 설정·adapter 오류이므로, 남은 후보가 있으면 그 후보만 식혀 **다음 run이 다음
-후보로 degrade**하고, 후보가 소진되면 그 쌍을 `unclear` 유효 판정으로 돌리고 judge 전체를
+입력에서 재현되는 설정·adapter 오류이므로, 그 쌍을 `unclear` 유효 판정으로 돌리고 judge를
 식힙니다. transient·식힘·CLI 부재는 **판정이 일어나지 않았으므로** 억제하지 않습니다.
 (verify의 `UNUSABLE_OUTPUT_REASONS`/`defer_or_drop`와 같은 규칙이고 종점의 모양만 다릅니다 —
 verify는 잡을 폐기, dedup은 쌍을 억제.)
