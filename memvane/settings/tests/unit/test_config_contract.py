@@ -36,6 +36,25 @@ class ConfigContractTests(unittest.TestCase):
 
 
 class ConfigFileTests(FixtureCase):
+    def test_absent_settings_return_current_project_and_empty_config(self):
+        project = self.home / 'empty-project'
+        project.mkdir()
+        result = api.find_project_config(str(project))
+        self.assertEqual(result['projectRoot'], str(project))
+        self.assertIsNone(result['configPath'])
+        self.assertEqual(result['configFormat'], 'none')
+        self.assertEqual(result['config']['collections'], [])
+
+    def test_search_exception_fails_open_to_empty_config(self):
+        from unittest.mock import patch
+        project = self.home / 'broken-search'
+        project.mkdir()
+        with patch('memvane.settings.config._find_project_config_unsafe', side_effect=PermissionError('denied')):
+            result = api.find_project_config(str(project))
+        self.assertIsNone(result['configPath'])
+        self.assertEqual(result['configFormat'], 'none')
+        self.assertEqual(result['config']['collections'], [])
+
     def test_malformed_project_settings_fail_open_to_empty_config(self):
         project = make_project(self.home, name='Broken config')
         project.settings_path.write_text('{broken', encoding='utf-8')
