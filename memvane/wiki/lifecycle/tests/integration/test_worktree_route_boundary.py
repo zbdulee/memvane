@@ -199,17 +199,22 @@ class WorktreeRouteBoundary(FixtureCase):
         import subprocess
         from unittest.mock import patch
         from memvane.wiki.compile import api as compile_api
-        from memvane.wiki.lifecycle import wiki_lifecycle_request
+        from memvane.wiki.lifecycle import wiki_lifecycle, wiki_lifecycle_request
         from memvane.wiki.workspace import api as workspace
         from memvane.runtime import api as runtime
         with patch.object(runtime, 'request', return_value={'status': 'queued'}):
             self.assertEqual(workspace.request_lifecycle(self.install.select(), 'session_start'), 'recorded')
             with patch.object(wiki_lifecycle_request.subprocess, 'run',
-                              side_effect=subprocess.TimeoutExpired('lifecycle', 1)) as child:
+                              side_effect=subprocess.TimeoutExpired('lifecycle', 1)) as child, \
+                 patch.object(wiki_lifecycle, 'log') as log:
                 result = compile_api.run(self.project.root)
         child.assert_called_once()
         self.assertEqual(result, {'state': 'drained', 'processed': 0})
         self.assertIsNone(workspace.claim_lifecycle(self.project.root))
+        log.assert_called_once_with('EXCEPTION: lifecycle child TimeoutExpired')
+        self.assertTrue((self.project.wiki / 'concepts/note.md').exists())
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+            self.assertEqual(workspace.request_lifecycle(self.install.select(), 'session_start'), 'recorded')
 
     def test_linked_worktree_session_does_not_request_lifecycle(self):
         from unittest.mock import patch
