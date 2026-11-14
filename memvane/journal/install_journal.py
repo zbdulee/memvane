@@ -815,7 +815,11 @@ def _v1_provider_manifest(record, profile, *, allow_local_unavailable=False, pro
     from memvane.provider.api import fixture_port, reviewed_provider, hash_file as _hash_file
     port = fixture_port(provider)
     if port is not None:
-        return port.provider_manifest(record, profile, allow_local_unavailable=allow_local_unavailable)
+        from memvane.provider.types import RuntimeUnavailable
+        try:
+            return port.provider_manifest(record, profile, allow_local_unavailable=allow_local_unavailable)
+        except RuntimeUnavailable as exc:
+            raise JournalEvidenceError(str(exc)) from exc
     if (not isinstance(record, dict)
             or set(record) != {'schema', 'journalPath', 'vectorProfile', 'providerManifest',
                                'dependencyClosure', RUNTIME_FILES_FIELD}

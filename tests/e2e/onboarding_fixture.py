@@ -206,6 +206,7 @@ class FixtureOnboarding(FixtureCase):
         code = ('import os,sqlite3,sys\n'
                 'db=sqlite3.connect(sys.argv[1],isolation_level=None)\n'
                 'db.execute("PRAGMA cache_size=1")\n'
+                'db.execute("PRAGMA cache_spill=1")\n'
                 'db.execute("BEGIN")\n'
                 'db.execute("CREATE TABLE fixture_killed(x)")\n'
                 'for _ in range(3000): db.execute("INSERT INTO fixture_killed VALUES(randomblob(1000))")\n'

@@ -28,6 +28,16 @@ class FixtureProof(unittest.TestCase):
                                                provider=port)
         self.assertEqual((result, port.calls), (({'fixture': True}, True), [({'r': 1}, {'p': 2}, True)]))
 
+    def test_a_port_refusal_is_journal_evidence(self):
+        from memvane.provider.types import RuntimeUnavailable
+
+        class Refusing:
+            def provider_manifest(self, record, profile, *, allow_local_unavailable=False):
+                raise RuntimeUnavailable('provider_identity_changed')
+        with self.environ(), self.assertRaises(JournalEvidenceError) as caught:
+            journal.provider_manifest({'r': 1}, {'p': 2}, provider=Refusing())
+        self.assertEqual(str(caught.exception), 'provider_identity_changed')
+
     def test_without_a_port_or_test_root_the_record_is_proved(self):
         with self.environ(), self.assertRaises(JournalEvidenceError) as caught:
             journal.provider_manifest({'r': 1}, {'p': 2})
