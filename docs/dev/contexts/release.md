@@ -7,6 +7,7 @@
 
 - store·journal DDL, application id와 `user_version`.
 - route·ledger·build·attestation JSON의 키 집합과 schema id.
+- plan `scopeId`: 배열(`"fresh-wiki-only"`, 프로젝트 경로, 프로젝트 `st_ino`, settings 파일 sha256)의 compact JSON을 sha256한 값의 앞 32 hex. `st_dev`는 넣지 않는다(APFS는 부팅마다 장치 번호를 바꿀 수 있다). 재실행한 plan과 prepare가 기록된 `scopeId`와 같은 값을 내야 한다.
 - initial build 기록 `build.json`(`memvane-initial-build-v1`)과 프로젝트 포인터 `<state base v1>/initial-builds/<프로젝트 루트 SHA-256 앞 32 hex>.json` 및 그 보관본 `retired-build-pointer.json`(`memvane-initial-build-pointer-v1`, 키 `schema`·`projectRoot`·`stateRoot`·`installId`).
 - sync owner·`sync.lock`·wiki mutation lock 및 socket의 이름과 위치. 설치별 socket은 `<state base v1>/run/<설치 id의 SHA-256 앞 16 hex>.sock`이다.
 - wake kind 집합(`laya-sync`·`laya-compile`·`learning`·`auto`)과 target 모양(절대 경로), `recipe_id`·`profile_id` 입력. 1.x 호스트는 모르는 kind의 행을 남겨 두고, 출시 전 빌드가 남긴 `index`·`update`·`cleanup` 행만 `retired_kind` 사유로 지운다.
