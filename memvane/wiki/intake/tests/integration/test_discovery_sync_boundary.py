@@ -95,3 +95,78 @@ class DiscoverySyncBoundary(FixtureCase):
             self.assertEqual(discovery._read(cursor)['pending'], before)
             queue = project.root / '.memvane/compile/source-queue.jsonl'
             self.assertFalse(queue.exists() and queue.read_text().strip())
+
+    def test_sync_before_grant_activation_gets_a_follow_up_wake(self):
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('new revision\n')
+        install.run_sync()
+        decision = install.select()
+        cursor = discovery._paths(decision)[0]
+        pending = discovery._read(cursor)['pending']
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        calls, observed = [], []
+        def request(kind, root, **kwargs):
+            if kind == 'laya-sync':
+                calls.append(kind)
+                if len(calls) == 1:
+                    observed.append(discovery.observe_grants(decision))
+                    install.run_sync()
+                    self.assertEqual(discovery._read(cursor)['pending'], pending)
+                    self.assertFalse(queue.exists() and queue.read_text().strip())
+            return {'status': 'queued'}
+        payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                   'tool_input': {'command': 'touch docs/note.md'},
+                   'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
+        with patch.object(runtime, 'request', side_effect=request), patch.object(runtime, 'hook_wake'):
+            self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, payload), {})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(observed[0]['grants']['sync'], [])
+        self.assertEqual(len(observed[0]['provisional']['sync']), 1)
+        self.assertEqual(len(discovery.observe_grants(decision)['grants']['sync']), 1)
+        install.run_sync()
+        self.assertEqual(discovery._read(cursor)['pending'], {})
+        self.assertEqual(len(queue.read_text().splitlines()), 1)
+
+    def test_grant_activation_failure_never_authorizes_sync(self):
+        from memvane.recall.types import HostResponseError
+        from memvane.wiki.intake import api as intake
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('pending revision\n')
+        install.run_sync()
+        decision = install.select()
+        cursor = discovery._paths(decision)[0]
+        pending = discovery._read(cursor)['pending']
+        payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                   'tool_input': {'command': 'touch docs/note.md'},
+                   'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
+        cases = ((discovery.DiscoveryBusy('lock_busy'), 'selected_wiki_grant_failed', 0),
+                 (intake.GrantUncertain('grant_uncertain'), 'selected_wiki_grant_revoke_failed', 1))
+        for error, reason, provisional in cases:
+            with self.subTest(reason=reason), patch.object(intake, 'activate_grant', side_effect=error), \
+                 patch.object(runtime, 'request', return_value={'status': 'queued'}), \
+                 patch.object(runtime, 'hook_wake'):
+                with self.assertRaisesRegex(HostResponseError, reason):
+                    host.serve_selected('file-change-event', 'claude', decision, payload)
+            grants = discovery.observe_grants(decision)
+            self.assertEqual(grants['grants']['sync'], [])
+            self.assertEqual(len(grants['provisional']['sync']), provisional)
+            install.run_sync()
+            self.assertEqual(discovery._read(cursor)['pending'], pending)
+            queue = project.root / '.memvane/compile/source-queue.jsonl'
+            self.assertFalse(queue.exists() and queue.read_text().strip())
