@@ -54,3 +54,44 @@ class DiscoverySyncBoundary(FixtureCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual((jobs[0]['source']['path'], jobs[0]['engine']), ('docs/note.md', 'claude'))
         self.assertEqual(discovery.observe_grants(install.select())['grants']['sync'], [])
+
+    def test_refused_wake_withdraws_event_grant_before_later_sync(self):
+        from memvane.recall.types import HostResponseError
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('changed without an accepted grant\n')
+        install.run_sync()
+        decision = install.select()
+        cursor = discovery._paths(decision)[0]
+        before = discovery._read(cursor)['pending']
+        self.assertEqual(len(before), 1)
+        payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                   'tool_input': {'command': 'touch docs/note.md'},
+                   'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
+        for fail_followup in (False, True):
+            calls = []
+            def request(kind, root, **kwargs):
+                if kind == 'laya-sync':
+                    calls.append(kind)
+                    if not fail_followup or len(calls) == 2:
+                        return {'status': 'deferred_queue_capacity'}
+                return {'status': 'queued'}
+            expected = 'selected_wiki_wake_failed' if fail_followup else 'selected_sync_enqueue_failed'
+            with self.subTest(fail_followup=fail_followup), \
+                 patch.object(runtime, 'request', side_effect=request), patch.object(runtime, 'hook_wake'):
+                with self.assertRaisesRegex(HostResponseError, expected):
+                    host.serve_selected('file-change-event', 'claude', decision, payload)
+            grants = discovery.observe_grants(decision)
+            self.assertEqual(grants['grants']['sync'], [])
+            self.assertEqual(grants['provisional']['sync'], [])
+            install.run_sync()
+            self.assertEqual(discovery._read(cursor)['pending'], before)
+            queue = project.root / '.memvane/compile/source-queue.jsonl'
+            self.assertFalse(queue.exists() and queue.read_text().strip())
