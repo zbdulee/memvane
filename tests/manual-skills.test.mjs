@@ -32,11 +32,7 @@ test("plugin descriptions list manual skills without hint", () => {
   }
 });
 
-// The setup skill stopped naming the onboarding actions in d1e0f9ec ("remove retired
-// migration workflow"); whether the skill must name them again is open (S5 L13 report).
-test("setup skill exposes the Laya onboarding entry", {
-  todo: "skills/setup/SKILL.md names no onboarding action since d1e0f9ec (S5 L13: lead decides)",
-}, () => {
+test("setup skill exposes the Laya onboarding entry", () => {
   const skill = readFileSync("skills/setup/SKILL.md", "utf8");
   assert.match(skill, /^name: setup$/m);
   assert.match(skill, /entry\/setup\.py/);
