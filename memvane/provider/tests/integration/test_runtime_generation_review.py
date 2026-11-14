@@ -63,9 +63,13 @@ class NamedGeneration(Machine):
     def test_attested_bytes_are_copied_once_and_sha_checked(self):
         target_home = self.home / 'target'
         target_home.mkdir(mode=0o700)
+        generation_root = runtime._generations(runtime._runtime_root(target_home, create=True))
+        stale = generation_root / '.staging-interrupted'
+        stale.mkdir(mode=0o700)
         record = {'providerManifest': self.first, 'dependencyClosure': self.first['dependencyClosure'],
                   runtime.FILES_SHA: self.first[runtime.FILES_SHA]}
         copied = runtime.ensure_for_attestation(record, target_home)
+        self.assertFalse(stale.exists())
         self.assertEqual(copied[runtime.FILES_SHA], self.first[runtime.FILES_SHA])
         self.assertNotEqual(copied['generation'], self.first['generation'])
         with patch.object(runtime, '_provision', side_effect=AssertionError('unexpected copy')):
@@ -91,3 +95,11 @@ class NamedGeneration(Machine):
                                     '^laya_embed_runtime_source_unavailable$'):
             runtime.ensure_for_attestation(record, target_home)
         self.assertFalse((runtime.root(target_home) / 'active.json').exists())
+
+    def test_worker_start_rehashes_every_runtime_file(self):
+        self.assertEqual(runtime.verify_attested_files(self.first, self.first[runtime.FILES_SHA]),
+                         self.first[runtime.FILES_SHA])
+        dependency = next(Path(self.first['generation']).rglob('lifecycle-utils/dist/index.js'))
+        dependency.write_text('changed')
+        with self.assertRaises(runtime.RuntimeUnavailable):
+            runtime.verify_attested_files(self.first, self.first[runtime.FILES_SHA])
