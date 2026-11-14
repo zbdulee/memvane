@@ -20,10 +20,6 @@ SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 HANG_LIMIT = 300
 
 
-def _report(test, out):
-    return json.loads(out)
-
-
 def _all_true(*keys, zero=()):
     def check(test, out):
         report = json.loads(out)
@@ -46,10 +42,6 @@ def _equal(expected):
     return check
 
 
-def _silent(test, out):
-    test.assertEqual(out.strip(), '')
-
-
 def _proof_cache(test, out):
     result = json.loads(out)
     keys = ('freshReuseWithoutSmoke', 'ageInvalidates', 'missingDenied', 'modelChangeInvalidates',
@@ -65,13 +57,6 @@ def _proof_cache(test, out):
             test.assertIs(report[key], True, f'{host}:{key}')
         test.assertEqual(report['actualModelCalls'], 0)
         test.assertEqual(report['teacherCalls'], 0)
-
-
-def _shared_local(test, out):
-    report = json.loads(out)
-    test.assertEqual(report['shared_queue'], 'passed')
-    test.assertEqual(report['local_trial'], 'passed')
-    test.assertEqual(report['external_calls'], 0)
 
 
 # script -> (stdout check or None, extra environment)
@@ -97,6 +82,23 @@ TABLE = {
     'synthetic_rss_ceiling.py': (_equal({
         'boundary2304': 'accepted', 'measured2033': 'accepted', 'otherBoundsUnchanged': True,
         'over2305': 'setup_synthetic_measured_profile_required'}), {}),
+    'context_learning_live_selector.py': (_all_true(
+        'fullBodyInput', 'rankedSelection', 'semanticZero', 'invalidOutputFallback', 'timeoutFallback',
+        'checkpointPin', 'corpusGate', zero=('externalCalls',)), {}),
+    'context_learning_default_state_root.py': (_all_true(
+        'existingStateReused', 'differentHomes', 'spaces', 'projectIsolation', 'descendantScope',
+        'explicitRootCompatible', 'invalidExplicitDenied', 'unsafeRootsDenied',
+        'missingPreparationUnchanged', zero=('externalCalls',)), {}),
+    'context_learning_history_activation.py': (None, {}),
+    'context_learning_history_readers.py': (None, {}),
+    'context_learning_history_real_home_approval.py': (None, {}),
+    'context_learning_inference_argv.py': (_all_true(
+        'retiredAdapterRejected', 'currentAdapterHashAndViewPinned',
+        'invalidAdaptersRejectedBeforeExecution', 'trainingNotResolved'), {}),
+    'context_learning_project_scope.py': (None, {}),
+    'context_learning_proof_cache.py': (_proof_cache, {}),
+    'project_learning_recovery_lock.py': (None, {}),
+    'project_learning_setup.py': (None, {}),
 }
 
 
