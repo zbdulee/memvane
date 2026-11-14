@@ -176,8 +176,10 @@ def _identity_before(path, state):
 
 
 def _sqlite_refusal(path, exc):
-    # A killed writer's hot journal: a ro open refuses SQLite's rollback
-    # and writes nothing. The owner's next pass rolls it back (``recover``).
+    # A killed writer's hot journal: this ro open refuses SQLite's rollback
+    # and writes nothing. Route classification rolls it back when it reads
+    # the store identity before a hook's work, and so does the owner's next
+    # pass (``recover``).
     if (getattr(exc, 'sqlite_errorcode', None) == _READONLY_ROLLBACK
             and os.path.lexists(str(path) + '-journal')):
         return journal.JournalEvidenceError('reader_store_recovery_pending')

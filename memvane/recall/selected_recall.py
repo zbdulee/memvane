@@ -163,8 +163,10 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, trace, route_de
                           main_proof=None, linked=None) -> RecallAnswer:
     """Serve the journal-preferred reader endpoint (``_serve_endpoint_recall``).
 
-    A store a killed writer left with a hot journal refuses the recall as
-    ``reader_store_recovery_pending`` (recall never rolls it back); the main
+    A writer killed mid-commit leaves a hot rollback journal. Route
+    classification, which runs before the recall, rolls it back when it reads
+    the store identity. The recall itself writes nothing: a hot journal it
+    still meets refuses as ``reader_store_recovery_pending``, and the main
     checkout's recall then offers its sync wake, whose owner pass recovers it.
     """
     from memvane.recall.recall_scope import _recall_sync_wake

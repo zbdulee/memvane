@@ -844,7 +844,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
         if context['refused'] is not None:
             if context.get('blocked'):
                 raise _VectorProviderBlocked(context['refused'])
-            raise ResourceDeferred(context['refused'])
+            raise ResourceDeferred(context['refused'], context.get('refusedReport'))
         if context['provider'] is not None:
             return context['provider']
         try:
@@ -884,6 +884,7 @@ def _schema3_vector_context(decision, proof, lane, *, coordinator, report, start
             raise ResourceDeferred(context['refused']) from exc
         except ResourceDeferred as exc:
             context['refused'] = str(exc)
+            context['refusedReport'] = exc.report
             raise
 
         def call(method, *args):
@@ -1030,7 +1031,7 @@ def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
 def _schema3_vector_detail(result):
     """The main view's vector progress as one fixed code for the wake event, or None.
 
-    ``vec_<state>[_<reason>]`` with ``rem`` (targets left), ``ord`` (first
+    ``vec_<state>[_<reason>]`` with a deferral's admission criterion, ``rem`` (targets left), ``ord`` (first
     missing target), ``pms`` (slowest provider call of the pass, ms), and for a
     published vector generation ``pub`` (its prepare+publish ms) and ``res_``
     (the reader reseal). No path or body.
@@ -1044,6 +1045,8 @@ def _schema3_vector_detail(result):
     for prefix in ('schema3_vector_', 'schema3_'):
         reason = reason[len(prefix):] if reason.startswith(prefix) else reason
     parts = ['vec_' + vector['state'] + ('_' + reason if reason else '')]
+    if isinstance(vector.get('detail'), str):
+        parts.append(vector['detail'])
     for key, label in (('remaining', 'rem'), ('ordinal', 'ord'), ('providerMs', 'pms'), ('publishMs', 'pub')):
         if type(vector.get(key)) is int:
             parts.append(label + str(vector[key]))
@@ -1169,7 +1172,12 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             stopped = pending(str(exc), status['cursor'])
             if stopped['progress'] > 0:
                 return stopped
-        return {'state': 'deferred', 'reason': str(exc)}
+        # Keeps the lane's admission criterion (memory_reserve, ...) as
+        # ``detail`` when it names more than the deferral reason itself.
+        refused = _deferred(exc)
+        if refused.get('detail') == refused['reason']:
+            del refused['detail']
+        return refused
     except _VectorMemberBlocked as exc:
         return {'state': 'blocked', 'reason': str(exc)}
     except _VectorProviderBlocked as exc:
