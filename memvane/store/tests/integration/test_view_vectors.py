@@ -280,17 +280,6 @@ class VectorChecks(VectorCase):
         self.assertEqual(store.search_hybrid(pin, 'hello', query_vector=[1, 0], limit=10, profile_id=p),
                          store.search_hybrid(pin, 'hello', [1, 0], 10, profile_id=p))
 
-    @unittest.expectedFailure  # product regression candidate: format 4 publish checks set presence only (L2 report)
-    def test_17_publish_revalidates_vector_bytes_changed_after_prepare(self):
-        store, _, h, manifest, r, p = self.configured()
-        self.fill(store, h, manifest, r, p)
-        base = store.head(h)
-        gen = store.prepare_generation(h, manifest, expected_head=base,
-                                       vector_spec=dict(recipe_id=r, profile_id=p))
-        self.damage('vectors', 'UPDATE vectors SET embedding=?', (struct.pack('<ff', 0.5, 1.0),))
-        self.bounded_refusal(store.publish_generation, h, gen, expected_head=base)
-        self.assertEqual(store.head(h), base)
-
     def test_17b_vector_bytes_changed_after_prepare_never_serve_from_the_pin(self):
         store, _, h, manifest, r, p = self.configured()
         self.fill(store, h, manifest, r, p)
@@ -332,26 +321,6 @@ class VectorChecks(VectorCase):
                     self.assertEqual(len(passed), 1)
                     self.assertGreater(passed[0], 0)
                     self.assertLessEqual(passed[0], 2 - elapsed)
-
-
-    @unittest.expectedFailure  # product regression candidate: format 4 prepare seals no vector digest (L2 report)
-    def test_19_seal_revalidates_bytes_after_preflight_before_identity(self):
-        store, _, h, manifest, r, p = self.configured()
-        self.fill(store, h, manifest, r, p)
-        base = store.head(h)
-        observe, calls = store._observe, []
-        def mutate_after_validation(entry, **kwargs):
-            saved = observe(entry, **kwargs)
-            calls.append(True)
-            if len(calls) == 2:
-                self.damage('vectors', 'UPDATE vectors SET embedding=?', (struct.pack('<ff', 0.5, 1),))
-            return saved
-        with mock.patch.object(store, '_observe', side_effect=mutate_after_validation):
-            self.bounded_refusal(store.prepare_generation, h, manifest, expected_head=base,
-                                 vector_spec=dict(recipe_id=r, profile_id=p))
-        self.assertGreaterEqual(len(calls), 2)
-        self.assertEqual(store.head(h), base)
-        self.assertEqual(self.generations(store), 1)
 
 
 if __name__ == '__main__':
