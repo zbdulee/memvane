@@ -315,11 +315,12 @@ def _public(row):
 
 def _bases(home):
     from memvane.kernel import memvane_paths
-    return (('current', memvane_paths.state_base(home)),)
+    # 1.0 install roots live at installs_base()/<install id> (memvane_paths.install_root).
+    return (('current', memvane_paths.installs_base(home)),)
 
 
 def is_home_install(state, home=None):
-    """``state`` is an install root directly under a HOME state base."""
+    """``state`` is an install root directly under the HOME installs base."""
     try:
         return _home_install(Path(state), home)
     except (OSError, RuntimeError, TypeError, ValueError):
@@ -335,7 +336,7 @@ def _journal_reads(deadline):
 
 
 def _home_install(state, home):
-    """The install lives directly under a HOME state base (never a fixture root)."""
+    """The install lives directly under the HOME installs base (never a fixture root)."""
     if not _HEX32.fullmatch(state.name):
         return False
     parents = set()
