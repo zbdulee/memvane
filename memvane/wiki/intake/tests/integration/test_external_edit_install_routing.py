@@ -81,6 +81,48 @@ class ExternalInstallRouting(FixtureCase):
         wake.assert_not_called()
         self.assertFalse(external._inbox_path(self.b.select()).exists())
 
+    def test_finalized_but_inactive_install_is_not_an_external_owner(self):
+        project = make_project(self.home, name='preview', dirname='preview')
+        source = project.write_note('docs/note.md', 'preview source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project, install_id='6' * 32, upto='finalized')
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}) as wake:
+            result = external.notify([source], cwd=self.a.project.root, host='codex',
+                                     origin=str(self.a.project.root))
+        self.assertEqual(result['owners'], 0)
+        wake.assert_not_called()
+        self.assertEqual(list(install.state.glob('external-edits-*.json')), [])
+
+    def test_owner_busy_sync_preserves_hint_until_a_completed_pass(self):
+        import json
+        from tests.support.settings_fake import expanded, use_config
+        project = self.b.project
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_tool_source'],
+            'extractor': {'builtins': ['codex']}}))
+        self.b.settle()
+        source = project.write_note('docs/note.md', 'external revision\n')
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}):
+            self.assertEqual(external.notify([source], cwd=self.a.project.root, host='codex',
+                                             origin=str(self.a.project.root))['owners'], 1)
+        decision = self.b.select()
+        inbox = external._inbox_path(decision)
+        before = external._read_box(inbox, decision)['edits']
+        self.assertEqual(len(before), 1)
+        with runtime.sync_owner(self.b.store_path) as owner:
+            self.assertIsNotNone(owner)
+            result = self.b.run_sync()
+        self.assertEqual((result['state'], result['reason']), ('deferred', 'owner_busy'))
+        self.assertEqual(external._read_box(inbox, decision)['edits'], before)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        self.assertFalse(queue.exists() and queue.read_text().strip())
+        result = self.b.run_sync()
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        self.assertEqual(external._read_box(inbox, self.b.select())['edits'], [])
+        self.assertEqual([json.loads(line)['source']['path'] for line in queue.read_text().splitlines()],
+                         ['docs/note.md'])
+
     def test_unselected_disabled_or_corrupt_owner_does_not_route(self):
         import json
         import sqlite3
