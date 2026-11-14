@@ -567,3 +567,23 @@ class ServiceChecks(Fixture):
                     conn.close()
             self.wait(lambda: service.connections._value == 2)
             self.assertEqual(len(embed(manifest)), DIM)
+
+    def test_listener_fd_above_fd_setsize_still_accepts(self):
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        wanted = 1400
+        if hard != resource.RLIM_INFINITY and hard < wanted:
+            self.skipTest('hard descriptor limit below FD_SETSIZE')
+        resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, wanted), hard))
+        self.addCleanup(resource.setrlimit, resource.RLIMIT_NOFILE, (soft, hard))
+        spare = []
+        self.addCleanup(lambda: [os.close(fd) for fd in spare])
+        null = os.open(os.devnull, os.O_RDONLY)
+        spare.append(null)
+        while max(spare) < 1100:
+            spare.append(os.dup(null))
+        project, manifest = self.project('alpha')
+        svc.register(project, root=self.root)
+        self.service()
+        self.wait(lambda: self.ready(manifest), message='listener above FD_SETSIZE never served')
+        self.assertEqual(len(embed(manifest)), DIM)
