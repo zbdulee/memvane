@@ -254,11 +254,24 @@ def _own_view(root,rows,now):
 
 
 def _leave_for_other_host(db,root,row,step,now):
-    """Put a claimed row back exactly as it was and record the skip apart."""
-    db.execute("UPDATE wakes SET status='pending' WHERE id=? AND status='running'",(row['id'],))
-    _record_tail(root/DEFERRED_FILE,row['id'],{'at':now,'until':now+wake_policy.OTHER_HOST_RECHECK_SECS,
-        'revision':row['revision'],'version':_plugin_version(),'target':row['target'],
+    """Put a claimed row back exactly as it was and record the skip apart.
+
+    A skip that cannot be recorded (``DEFERRED_FILE`` not written, or this
+    host's version unknown so ``_own_view`` could not honor it) moves the
+    row's own due to the recheck time instead: this host never respawns a
+    worker for the row in a tight loop, and a newer host waits until that due.
+    """
+    until=now+wake_policy.OTHER_HOST_RECHECK_SECS
+    version=_plugin_version()
+    # Checked: a lost skip record would let this host respawn workers for the row without pause.
+    recorded=version is not None and _record_tail(root/DEFERRED_FILE,row['id'],{'at':now,'until':until,
+        'revision':row['revision'],'version':version,'target':row['target'],
         'reason':step['reason']},limit=MAX_WAKES)
+    if recorded:
+        db.execute("UPDATE wakes SET status='pending' WHERE id=? AND status='running'",(row['id'],))
+    else:
+        db.execute("UPDATE wakes SET status='pending',due=MAX(due,?) WHERE id=? AND status='running'",
+                   (until,row['id']))
 
 
 def _promote_overflow(db,now):
@@ -445,14 +458,15 @@ def _read_map(path):
 
 
 def _record_tail(path,key,entry,*,limit=FAILURE_DETAIL_MAX_ROWS):
-    """Bounded private JSON map, newest ``limit`` entries kept."""
+    """Bounded private JSON map, newest ``limit`` entries kept; False when not written."""
     try:
         rows=_read_map(path)
         rows[key]=entry
         keep=sorted(rows.items(),key=lambda item:item[1].get('at',0) if isinstance(item[1],dict) else 0)
         _atomic_json(path,dict(keep[-limit:]))
     except (OSError,ValueError,TypeError):
-        pass
+        return False
+    return True
 
 
 def _wake(queue=None):

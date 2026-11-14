@@ -1,4 +1,4 @@
-"""Proof F5: a host below writerFloor or of another major leaves the wake row as it was."""
+"""Proof F5, verify R6: a host below writerFloor or of another major leaves the wake row as it was."""
 import os
 from pathlib import Path
 import shutil
@@ -76,6 +76,32 @@ class OtherHostWakes(unittest.TestCase):
         # After the recheck time this host looks once more, still without touching the row.
         self.assertEqual(self.drain(self.refuse('writer_floor'), wall=220 + 301)['runs'], 1)
         self.assertEqual(self.row(), before)
+
+    # Verify R6: a skip that cannot be recorded keeps the recheck interval on the row.
+    def test_an_unrecorded_skip_moves_the_due_instead_of_respawning(self):
+        recheck = runtime_work.wake_policy.OTHER_HOST_RECHECK_SECS
+        failures = (('version unknown', None, lambda: None),
+                    ('deferred file not writable', '1.0.0',
+                     lambda: (self.root / runtime_work.DEFERRED_FILE).mkdir(mode=0o700)))
+        for name, version, break_record in failures:
+            with self.subTest(name):
+                self.calls.clear()
+                self.queue.offer('laya-sync', TARGET, now=100)
+                break_record()
+                with mock.patch.object(runtime_work, '_plugin_version', return_value=version):
+                    self.assertEqual(self.drain(self.refuse('writer_floor'), wall=200)['runs'], 1)
+                    row = self.row()
+                    self.assertEqual((row['due'], row['attempts'], row['reason']), (200 + recheck, 0, None))
+                    for _ in range(3):
+                        self.assertEqual(self.drain(self.refuse('writer_floor'), wall=250)['runs'], 0)
+                    with mock.patch.object(runtime_work.subprocess, 'Popen') as spawned, \
+                         mock.patch.object(runtime_work, '_arm_timer') as armed, \
+                         mock.patch('time.time', return_value=250.0):
+                        self.assertEqual(runtime_work._wake(self.queue), 'idle')
+                    self.assertEqual((spawned.call_count, armed.call_count, len(self.calls)), (0, 1, 1))
+                # Any host runs the row at that due.
+                self.assertEqual(self.drain(lambda row: True, wall=200 + recheck)['runs'], 1)
+                self.assertEqual(self.queue.pending(), [])
 
 
 if __name__ == '__main__':

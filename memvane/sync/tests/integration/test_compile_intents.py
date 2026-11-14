@@ -221,6 +221,33 @@ class CompileIntentRules(unittest.TestCase):
         self.assertEqual((result['unsafe'], result['consumed']), (1, 0))
         self.assertTrue(path.exists())
 
+    # Verify R6: an orphaned link or unopenable file is counted once, never touched.
+    def test_unsafe_files_count_once_per_name_and_inode(self):
+        orphan = self.write(self.intent('b2'.ljust(64, '0'), published=False))
+        os.link(orphan, self.state / 'dead-writer-temp')
+        target = self.intent('b3'.ljust(64, '0'), published=False)
+        os.symlink(self.state / 'elsewhere', self.dir / ('compile-' + compile_intent_id(target) + '.json'))
+        counts = [self.consume(FakeStore())['unsafe'] for _ in range(3)]
+        self.assertEqual(counts, [2, 0, 0])
+        self.assertEqual(os.stat(orphan).st_nlink, 2)
+        # The same name with another inode is a new file: counted again.
+        os.unlink(orphan)
+        orphan = self.write(self.intent('b2'.ljust(64, '0'), published=False))
+        os.link(orphan, self.state / 'dead-writer-temp-2')
+        self.assertEqual([self.consume(FakeStore())['unsafe'] for _ in range(2)], [1, 0])
+        # Once it settles it is read like any intent; the next pass drops it from the cursor.
+        os.unlink(self.state / 'dead-writer-temp-2')
+        self.members[target['targetPath']] = {'blob_sha': 'x' * 64}
+        self.members['concepts/b20000.md'] = {'blob_sha': 'b2'.ljust(64, '0')}
+        self.current['concepts/b20000.md'] = ('b2'.ljust(64, '0'), b'card')
+        result = self.consume(FakeStore())
+        self.assertEqual((result['unsafe'], result['consumed']), (0, 1))
+        self.assertEqual(self.consume(FakeStore())['unsafe'], 0)
+        from memvane.journal.api import ledger_read_json
+        kept = ledger_read_json(self.state / 'provenance-intents.cursor')['views'][VIEW]['unsafe']
+        self.assertEqual([key.split(':')[0] for key in kept],
+                         ['compile-' + compile_intent_id(target) + '.json'])
+
     # F9: a cursor that cannot be written does not end the pass.
     def test_cursor_write_failure_keeps_the_result(self):
         (self.state / 'provenance-intents.cursor').mkdir(mode=0o700)

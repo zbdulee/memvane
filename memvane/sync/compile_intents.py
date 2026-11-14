@@ -29,6 +29,8 @@ SWEEP_LIMIT = 255
 WITNESS_TRIES = 16
 # Cursor views kept; a dropped view only restarts its rotation.
 CURSOR_VIEWS = 256
+# Unsafe intent files (name and inode) a view already counted; each counts once.
+UNSAFE_SEEN_LIMIT = 512
 CONFLICT_REASONS = frozenset(('card_attestation_conflict', 'source_fingerprint_conflict'))
 # Store reasons that judge the intent's own values. Any other store failure
 # (full disk, I/O error, binding or file change, busy) ends the pass and
@@ -221,7 +223,8 @@ def consume(store, decision, handle, members, current, *, mark, validate, ingest
     end the pass with the intent pending. At most ``ingest_limit`` intents try
     a store write; waiting ones do not count. ``unsafe`` counts files (or the
     directory) that are not settled private intents: they are never opened
-    again in the pass and never renamed.
+    again in the pass and never renamed, and a file counts once per name and
+    inode (the view's cursor entry keeps them while the name is pending).
     """
     from memvane.journal import api as ledger
     from memvane.store import api as values
@@ -254,6 +257,17 @@ def consume(store, decision, handle, members, current, *, mark, validate, ingest
     last = entry.get('last') if isinstance(entry.get('last'), str) else ''
     ordered = [name for name in names if name > last] + [name for name in names if name <= last]
     attempted, last_scanned = 0, None
+    seen = entry.get('unsafe') if isinstance(entry.get('unsafe'), list) else []
+    pending = set(names)
+    seen = [key for key in seen if isinstance(key, str) and key.split(':', 1)[0] in pending]
+
+    def unsafe(name, node):
+        # An unsettled or unopenable file is never touched; it is counted once
+        # per (name, inode) so a writer's orphaned link is not reported every pass.
+        key = '%s:%s' % (name, node)
+        if key not in seen:
+            seen.append(key)
+            result['unsafe'] += 1
     for name in ordered[:max(budget, 0)]:
         if attempted >= ingest_limit:
             break
@@ -264,13 +278,17 @@ def consume(store, decision, handle, members, current, *, mark, validate, ingest
         except FileNotFoundError:
             continue
         except OSError:
-            result['unsafe'] += 1  # a symlink or unreadable file under an intent name
+            try:
+                node = os.lstat(path).st_ino
+            except OSError:
+                node = None
+            unsafe(name, node)  # a symlink or unreadable file under an intent name
             continue
         try:
             try:
                 initial = _private(fd)
             except ValueError:
-                result['unsafe'] += 1  # not settled or not private: a later pass looks again
+                unsafe(name, os.fstat(fd).st_ino)  # not settled or not private: a later pass looks again
                 continue
             outcome = reason = None
             # Only the intent's own content is judged here; a failure rejects it.
@@ -323,6 +341,10 @@ def consume(store, decision, handle, members, current, *, mark, validate, ingest
             os.close(fd)
     if last_scanned is not None:
         entry['last'] = last_scanned
+    if seen:
+        entry['unsafe'] = seen[-UNSAFE_SEEN_LIMIT:]
+    else:
+        entry.pop('unsafe', None)
     if entry != saved:
         kept = {key: value for key, value in views.items() if key != handle.view_id}
         kept = dict(sorted(kept.items())[:CURSOR_VIEWS - 1])
