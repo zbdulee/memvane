@@ -1,10 +1,15 @@
 """Manual compact input carries compiler-owned, bounded source evidence."""
 import hashlib
+import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
 from memvane.wiki.compile import wiki_extract as extract
 from tests.support.case import FixtureCase
+from tests.support.install_builder import build_install
 from tests.support.project import make_project
 
 
@@ -24,6 +29,32 @@ class ManualExtract(FixtureCase):
         self.assertNotIn('private input', repr(rejected))
         self.assertIn('[REDACTED_TRANSCRIPT]', rejected['summary'])
         self.assertEqual(extract.compact_items({'notes': 'no durable item'}), [])
+
+    def test_manual_entry_writes_card_and_verify_job_with_observed_source(self):
+        source = self.project.write_note('docs/api.md', 'synthetic source content\n')
+        self.project.git('add', '--', '.memvane/settings.json', 'docs')
+        self.project.git('commit', '-qm', 'fixture')
+        build_install(self, self.project)
+        payload = {'trigger': 'manual', 'candidates': [{'title': 'API Port',
+                   'summary': 'The synthetic API port is fixed.', 'suggestedType': 'concept',
+                   'canonicalKey': 'api-port', 'aliases': ['API alias'],
+                   'sources': [{'kind': 'file', 'path': 'docs/api.md'}],
+                   'sourceRevisions': [{'path': 'decoy.md'}]}]}
+        root = Path(__file__).resolve().parents[5]
+        result = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'), 'wiki-extract',
+                                 '--cwd', str(self.project.root)], input=json.dumps(payload),
+                                capture_output=True, text=True, timeout=60, cwd=str(root))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['action'], 'created')
+        page = self.project.wiki / 'concepts/api-port.md'
+        text = page.read_text()
+        self.assertIn('API alias', text)
+        self.assertIn(hashlib.sha256(source.read_bytes()).hexdigest(), text)
+        self.assertNotIn('decoy.md', text)
+        queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
+        job = json.loads(queue.read_text().splitlines()[-1])
+        self.assertEqual([x['path'] for x in job['authoritativeSources']], ['docs/api.md'])
+        self.assertEqual(job['sourceRevisions'][0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
 
     def test_snapshot_replaces_untrusted_caller_evidence(self):
         source = self.project.write_note('docs/api.md', 'synthetic content\n')
