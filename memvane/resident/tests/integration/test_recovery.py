@@ -1,4 +1,6 @@
 """Resident retry state and admission under a controlled clock."""
+from pathlib import Path
+
 from tests.support.case import FixtureCase
 from unittest.mock import patch
 from memvane.resident import embed_resident as owner
@@ -68,3 +70,39 @@ class RecoveryChecks(FixtureCase):
             with self.assertRaisesRegex(ResourceDeferred, 'laya_service_preparing'):
                 owner.ensure_running('/synthetic/project', self.manifest)
         adopt.assert_called_once()
+
+    def test_service_retries_after_three_start_failures(self):
+        project = str(self.base / 'project')
+        Path(project).mkdir()
+        decision = {'projectRoot': project}
+        proof = {'providerManifest': self.manifest}
+        calls, attests = [], []
+        def start_worker(*_args):
+            calls.append(1)
+            if len(calls) <= 3:
+                raise RuntimeError('synthetic_ready_timeout')
+            return object()
+        (self.base / 'svc').mkdir(mode=0o700)
+        service = svc.Service(self.base / 'svc', bundle={'version': '1.0.0', 'digest': 'a'},
+                              prove=lambda _p: (decision, proof, 'selected'),
+                              attest=lambda *_a: attests.append(1),
+                              start_worker=start_worker, admit=lambda: True,
+                              )
+        key = svc._worker_key(self.manifest)
+        worker = svc.Worker(key, str(self.base / 'worker.sock'))
+        service.workers[key] = worker
+        for now in (1000, 1011, 1032):
+            with patch.object(svc.time, 'monotonic', return_value=now), \
+                 patch.object(owner.time, 'time', return_value=now):
+                service._load_attested(project, decision, proof, 'selected',
+                                       self.manifest, worker, 'seal')
+        class InlineThread:
+            def __init__(self, *, target, args, **_kw):
+                self.target, self.args = target, args
+            def start(self):
+                self.target(*self.args)
+        with patch.object(svc.threading, 'Thread', InlineThread), \
+             patch.object(svc.time, 'monotonic', return_value=1333), \
+             patch.object(owner.time, 'time', return_value=1333):
+            service._load(project, decision, proof, 'selected', self.manifest, key, 'seal')
+        self.assertEqual((len(calls), len(attests), worker.state), (4, 4, 'ready'))
