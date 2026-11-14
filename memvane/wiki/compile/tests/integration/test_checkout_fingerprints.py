@@ -197,6 +197,34 @@ class CheckoutFingerprints(FixtureCase):
         self.assertTrue(preserve)
         self.assertEqual(self.candidates, [])
 
+    def test_permanent_invalid_output_and_transient_errors_have_distinct_queue_policy(self):
+        cases = [('invalid_extractor_json', 1, (True, False), False),
+                 ('extractor_failed', 1, (False, True), True),
+                 ('extractor_unavailable', 127, (False, True), False),
+                 ('resource_deferred', 1, (False, True), False)]
+        for reason, exit_code, expected, cooled in cases:
+            with self.subTest(reason=reason):
+                worker.cooldown_path(self.project.root).unlink(missing_ok=True)
+                with patch.object(engines, 'run_extractor', return_value=(None, reason, exit_code)):
+                    result = self.process()
+                self.assertEqual(result[:2], expected)
+                self.assertEqual(worker.cooldown_active(self.project.root), cooled)
+                self.assertEqual(self.candidates, [])
+        audit = self.project.root / '.memvane/compile/candidates.jsonl'
+        self.assertNotIn('synthetic source\n', audit.read_text())
+
+    def test_unsafe_or_non_source_paths_are_rejected_before_extractor(self):
+        self.project.write_note('.hidden/secret.md', 'secret\n')
+        self.project.write_note('docs/script.py', 'print(1)\n')
+        for rel in ('../outside.md', '.hidden/secret.md', 'docs/script.py'):
+            with self.subTest(path=rel):
+                job = self.job()
+                job['source']['path'] = rel
+                result = worker.process_job(self.project.root, self.config, self.config['compile'], job)
+                self.assertEqual(result[:2], (True, False))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.candidates, [])
+
     def test_non_git_and_unborn_checkout_have_no_head_and_untracked_source(self):
         for case in ('non-git', 'unborn'):
             with self.subTest(case=case):
