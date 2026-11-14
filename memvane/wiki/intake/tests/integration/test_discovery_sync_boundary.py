@@ -216,3 +216,78 @@ class DiscoverySyncBoundary(FixtureCase):
             self.assertEqual(discovery._read(cursor)['pending'], pending)
             queue = project.root / '.memvane/compile/source-queue.jsonl'
             self.assertFalse(queue.exists() and queue.read_text().strip())
+
+    def test_sync_inside_rejected_session_cannot_use_provisional_grant(self):
+        from memvane.recall.types import HostResponseError
+        from memvane.wiki.card import api as card
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['session_start_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('pending revision\n')
+        install.run_sync()
+        decision = install.select()
+        cursor = discovery._paths(decision)[0]
+        pending = discovery._read(cursor)['pending']
+        seen = []
+        def concurrent_sync(root):
+            seen.append(discovery.observe_grants(decision))
+            install.run_sync()
+            return None
+        payload = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
+        with patch.object(card, 'unresolved_pending_refreshes_strict', side_effect=concurrent_sync), \
+             patch.object(runtime, 'request', return_value={'status': 'queued'}), \
+             patch.object(runtime, 'hook_wake'):
+            with self.assertRaisesRegex(HostResponseError, 'wiki_pending_refresh_unknown'):
+                host.serve_selected('update-queued', 'claude', decision, payload)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]['grants']['session_start'], [])
+        self.assertEqual(len(seen[0]['provisional']['session_start']), 1)
+        grants = discovery.observe_grants(decision)
+        self.assertEqual(grants['grants']['session_start'], [])
+        self.assertEqual(grants['provisional']['session_start'], [])
+        self.assertEqual(discovery._read(cursor)['pending'], pending)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        self.assertFalse(queue.exists() and queue.read_text().strip())
+
+    def test_refused_followup_is_accepted_if_sync_already_used_the_grant(self):
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        source.write_text('pending revision\n')
+        install.run_sync()
+        decision = install.select()
+        sync_calls, in_sync = [], [False]
+        def request(kind, root, **kwargs):
+            if kind == 'laya-sync':
+                sync_calls.append(in_sync[0])
+                if len(sync_calls) == 2:
+                    in_sync[0] = True
+                    try:
+                        install.run_sync()
+                    finally:
+                        in_sync[0] = False
+                    return {'status': 'deferred_queue_capacity'}
+            return {'status': 'queued'}
+        payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                   'tool_input': {'command': 'touch docs/note.md'},
+                   'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
+        with patch.object(runtime, 'request', side_effect=request), patch.object(runtime, 'hook_wake'):
+            self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, payload), {})
+        self.assertEqual(sync_calls, [False, False, True])
+        self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [])
+        cursor = discovery._paths(decision)[0]
+        self.assertEqual(discovery._read(cursor)['pending'], {})
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        self.assertEqual(len(queue.read_text().splitlines()), 1)
