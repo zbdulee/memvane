@@ -101,7 +101,12 @@ def onboarding_lines(root: str, session: str | None) -> str:
 def main(argv):
     if len(argv) != 2:
         return 2
-    notice = onboarding_notice(argv[0], argv[1])
+    try:
+        notice = onboarding_notice(argv[0], argv[1])
+    except Exception:
+        # The notice is advisory: a fault (unreadable settings and the like)
+        # leaves SessionStart silent with exit 0, never exit 1.
+        return 0
     if notice:
         print(notice)
     return 0
