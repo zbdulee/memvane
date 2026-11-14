@@ -337,6 +337,7 @@ class BackfillWorkerBoundary(FixtureCase):
                 self.assertEqual(len(kept), 1, first.stdout + first.stderr)
                 expected = ['codex', 'claude'][:remaining]
                 self.assertEqual(kept[0]['_fallbackAttempts']['engines'], expected)
+                self.assertEqual(kept[0]['_fallbackAttempts']['selectedRoute'], kept[0]['selectedRoute'])
                 first_calls = [json.loads(line) for line in calls.read_text().splitlines()]
                 self.assertEqual(len(first_calls), 10)
                 second = subprocess.run(command, cwd=str(project.root), env=env,

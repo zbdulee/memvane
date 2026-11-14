@@ -13,6 +13,52 @@ from tests.support.settings_fake import expanded, use_config
 
 
 class DiscoverySyncBoundary(FixtureCase):
+    def test_unlabelled_grant_preserves_unknown_engine_for_worker_fallback(self):
+        project = make_project(self.home)
+        source = project.write_note('docs/note.md', 'initial source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude', 'codex', 'hermes']}}))
+        install.settle()
+        source.write_text('new revision\n')
+        decision = install.select()
+        grant = discovery.record_grant(decision, 'sync')
+        self.assertTrue(discovery.activate_grant(decision, 'sync', grant))
+        result = install.run_sync()
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        self.assertEqual([(job['source']['path'], job['engine']) for job in jobs],
+                         [('docs/note.md', 'unknown')])
+        self.assertEqual(discovery._read(discovery._paths(decision)[0])['pending'], {})
+
+    def test_wiki_only_sync_spends_grant_without_source_jobs(self):
+        project = make_project(self.home)
+        project.git('add', '--', '.memvane/settings.json')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        project.write_card('concepts/card.md', title='Card', body='only wiki changed\n')
+        decision = install.select()
+        payload = {'hook_event_name': 'PostToolUse', 'tool_name': 'Bash',
+                   'tool_input': {'command': 'touch .memvane/wiki/concepts/card.md'},
+                   'tool_response': {'exit_code': 0}, 'cwd': str(project.root)}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}), \
+             patch.object(runtime, 'hook_wake'):
+            self.assertEqual(host.serve_selected('file-change-event', 'claude', decision, payload), {})
+        result = install.run_sync()
+        self.assertIn(result['state'], ('indexed', 'unchanged'), result)
+        self.assertEqual(discovery._read(discovery._paths(decision)[0])['pending'], {})
+        self.assertEqual(discovery.observe_grants(decision)['grants']['sync'], [])
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        self.assertFalse(queue.exists() and queue.read_text().strip())
+
     def test_failed_bash_does_not_record_a_discovery_grant(self):
         project = make_project(self.home)
         project.write_note('docs/note.md', 'source\n')
