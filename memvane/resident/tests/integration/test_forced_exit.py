@@ -16,7 +16,7 @@ class ForcedExit(FixtureCase):
         root.mkdir(mode=0o700)
         driver = subprocess.Popen(
             [sys.executable, '-B', '-m', 'memvane.resident.tests.hung_driver', str(self.home)],
-            env={**os.environ, 'LAYA_SERVICE_TIME_SCALE': '0.01'},
+            env={**os.environ, 'LAYA_SERVICE_TIME_SCALE': '0.02'},
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True)
         (self.home / 'driver.pid').write_text(str(driver.pid))
@@ -45,3 +45,18 @@ class ForcedExit(FixtureCase):
         record = json.loads((root / svc.FORCED_EXIT).read_text())
         self.assertEqual((record['reason'], record['unconfirmedChildren']), ('cold_load_hung', []))
         self.assertIn(child, record['killedChildren'])
+
+    def test_drain_budget_leaves_successor_time_to_acquire(self):
+        from unittest.mock import patch
+        self.assertLessEqual(svc.DRAIN_SECONDS, svc.DRAIN_BUDGET_SECONDS)
+        budget = (svc._scaled(svc.DRAIN_BUDGET_SECONDS) + svc._exit_cleanup_seconds()
+                  + svc._scaled(svc.DRAIN_SAFETY_SECONDS))
+        self.assertLessEqual(budget, svc.SUCCESSOR_WAIT_SECONDS)
+        with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '1',
+                                     'LAYA_SERVICE_TIME_SCALE': '0.02'}):
+            budget = (svc._scaled(svc.DRAIN_BUDGET_SECONDS) + svc._exit_cleanup_seconds()
+                      + svc._scaled(svc.DRAIN_SAFETY_SECONDS))
+            self.assertLessEqual(budget, svc._scaled(svc.SUCCESSOR_WAIT_SECONDS))
+        with patch.dict(os.environ, {'QMD_SETUP_GUARD_FIXTURE': '',
+                                     'LAYA_SERVICE_TIME_SCALE': '0.01'}):
+            self.assertEqual(svc._scaled(svc.DRAIN_BUDGET_SECONDS), svc.DRAIN_BUDGET_SECONDS)
