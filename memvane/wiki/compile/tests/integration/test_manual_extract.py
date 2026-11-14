@@ -55,6 +55,21 @@ class ManualExtract(FixtureCase):
         job = json.loads(queue.read_text().splitlines()[-1])
         self.assertEqual([x['path'] for x in job['authoritativeSources']], ['docs/api.md'])
         self.assertEqual(job['sourceRevisions'][0]['sha256'], hashlib.sha256(source.read_bytes()).hexdigest())
+        bad = {'durable': {'title': 'Transcript', 'summary': 'User: private\nAssistant: reply',
+                           'canonicalKey': 'transcript', 'aliases': ['Transcript alias']}}
+        rejected = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'), 'wiki-extract',
+                                   '--cwd', str(self.project.root)], input=json.dumps(bad),
+                                  capture_output=True, text=True, timeout=60, cwd=str(root))
+        self.assertEqual(rejected.returncode, 0, rejected.stderr)
+        self.assertEqual(json.loads(rejected.stdout)['action'], 'rejected')
+        self.assertFalse((self.project.wiki / 'concepts/transcript.md').exists())
+        audit = (self.project.root / '.memvane/compile/candidates.jsonl').read_text()
+        self.assertNotIn('User: private', audit)
+        self.assertIn('Transcript alias', audit)
+        noop = subprocess.run([sys.executable, '-B', str(root / 'entry/run.py'), 'wiki-extract',
+                               '--cwd', str(self.project.root)], input=json.dumps({'notes': 'not durable'}),
+                              capture_output=True, text=True, timeout=60, cwd=str(root))
+        self.assertEqual((noop.returncode, noop.stdout), (0, ''))
 
     def test_snapshot_replaces_untrusted_caller_evidence(self):
         source = self.project.write_note('docs/api.md', 'synthetic content\n')

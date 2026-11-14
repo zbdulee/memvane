@@ -33,6 +33,10 @@ class ProvenanceDigests(unittest.TestCase):
                 self.assertNotEqual(changed[1], one[1])
         self.assertIsNone(store.provenance_digests({**verdict, 'claims': [float('nan')]}, result))
         self.assertIsNone(store.provenance_digests(verdict, {**result, 'cardSha': 'invalid'}))
+        self.assertIsNone(store.provenance_digests(verdict, {**result, 'sourceFingerprints':
+                                  {**fingerprints, 'fingerprints': [{}]}}))
+        self.assertIsNone(store.provenance_digests(verdict, {**result, 'sourceSpans':
+                                  [{'kind': 'bytes', 'start': 0, 'end': 2}]}))
 
 
 if __name__ == '__main__':
