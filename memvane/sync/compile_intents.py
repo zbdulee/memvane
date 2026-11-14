@@ -137,13 +137,15 @@ def _witness(store, handle, directory, name):
     return None
 
 
-def _sweep(store, handle, directory, names, entry, result, members):
+def _sweep(store, handle, directory, names, entry, result, members, current):
     """Supersede waiting intents not newer than one consumed intent for the same view path.
 
     Returns the files opened. ``entry`` keeps this view's witness and the
     last waiting name compared with it, so a large queue is swept over passes.
-    An intent for the card bytes this pass publishes is never superseded: it
-    is consumable now, whatever the wall clock said when each was observed.
+    An intent for the card bytes this pass publishes, or for the card's
+    current bytes on disk (``current``) that a later pass ingests, is never
+    superseded: it is or becomes consumable, whatever the wall clock said when
+    each was observed.
     """
     witnesses = sorted(item.name for item in os.scandir(directory) if _CONSUMED.fullmatch(item.name))
     if not witnesses:
@@ -173,11 +175,13 @@ def _sweep(store, handle, directory, names, entry, result, members):
             try:
                 waiting, initial = _read(fd)
                 member = members.get(waiting.get('targetPath'))
+                image = current.get(waiting.get('targetPath'))
                 if (not _named(candidate, waiting, '.json')
                         or waiting.get('viewId') != witness['viewId']
                         or waiting.get('targetPath') != witness['targetPath']
                         or waiting.get('cardSha') == witness['cardSha']
                         or (member is not None and member['blob_sha'] == waiting.get('cardSha'))
+                        or (image is not None and image[0] == waiting.get('cardSha'))
                         or waiting['sourceFingerprints']['observedNs']
                         > witness['sourceFingerprints']['observedNs']):
                     continue
@@ -246,7 +250,7 @@ def consume(store, decision, handle, members, current, *, mark, validate, ingest
     views = cursor.get('views') if isinstance(cursor, dict) and isinstance(cursor.get('views'), dict) else {}
     saved = views.get(handle.view_id)
     entry = dict(saved) if isinstance(saved, dict) else {}
-    budget = INTENT_SCAN_LIMIT - _sweep(store, handle, directory, names, entry, result, members)
+    budget = INTENT_SCAN_LIMIT - _sweep(store, handle, directory, names, entry, result, members, current)
     last = entry.get('last') if isinstance(entry.get('last'), str) else ''
     ordered = [name for name in names if name > last] + [name for name in names if name <= last]
     attempted, last_scanned = 0, None

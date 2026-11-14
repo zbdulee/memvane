@@ -182,6 +182,26 @@ class CompileIntentRules(unittest.TestCase):
         result = self.consume(FakeStore())
         self.assertEqual((result['superseded'], result['waiting']), (1, 0))
 
+    # Verify R4: stamp, death, consumption meanwhile and a delayed ingest keep the current card's intent.
+    def test_sweep_keeps_the_intent_for_the_card_bytes_on_disk_while_ingest_waits(self):
+        first = self.intent('a' * 64, observed=50)
+        target = first['targetPath']
+        self.write(first)
+        self.assertEqual(self.consume(FakeStore())['consumed'], 1)  # consumed before the job reruns
+        second = self.intent('b' * 64, observed=50, published=False)
+        second['targetPath'] = target
+        self.write(second)
+        # The card on disk is the second stamp; the pass has not ingested it yet.
+        self.members = {target: {'blob_sha': first['cardSha']}}
+        self.current = {target: (second['cardSha'], b'card')}
+        for _ in range(2):
+            result = self.consume(FakeStore())
+            self.assertEqual((result['superseded'], result['waiting'], result['consumed']), (0, 1, 0))
+        self.members = {target: {'blob_sha': second['cardSha']}}
+        result = self.consume(FakeStore())
+        self.assertEqual((result['superseded'], result['waiting'], result['consumed']), (0, 0, 1))
+        self.assertEqual(self.outcomes(), ['consumed.json', 'consumed.json'])
+
     # F7: the cursor keeps a bounded number of views.
     def test_cursor_keeps_at_most_the_view_bound(self):
         from memvane.journal.api import ledger_read_json, ledger_write
