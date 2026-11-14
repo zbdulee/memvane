@@ -18,6 +18,8 @@ from memvane.diagnostics import event_log
 from memvane.host import host_response as response
 from memvane.wiki.card import api as card_api
 from memvane.recall import api as recall_api
+from memvane.recall import recall_scope
+from memvane.recall import verified_rows
 import laya_index_vector as vector
 
 SCOPE = "6" * 32
@@ -2037,8 +2039,8 @@ class ProofRetryChecks(unittest.TestCase):
                                side_effect=incremental or
                                (lambda *_a: ([], frozenset(), {}, (), None))))
             enter(patch.object(response, 'query_selected_v2', side_effect=query_v2))
-            enter(patch.object(response, '_select_verified_cards',
-                               side_effect=lambda _d, _s, _p, rows: (rows, 'ranked', None)))
+            enter(patch.object(verified_rows, '_select_verified_cards',
+                               side_effect=lambda _d, _s, _p, rows, _t: (rows, 'ranked', None)))
             enter(patch('sys.stderr', new_callable=__import__('io').StringIO))
             try:
                 result = response.serve_selected('recall', 'codex', dict(self.decision),
@@ -2308,21 +2310,21 @@ class ProofRetryChecks(unittest.TestCase):
         outcome = {}
 
         def epoch(value):
-            response._recall_epoch({'selectionEpoch': value})
+            recall_scope._recall_epoch({'selectionEpoch': value})
 
         def once(_action, _host, decision, _payload):
             root = decision['projectRoot']
             if root == '/p/a':
                 epoch(5)
                 epoch(6)
-                response._recall_sync_wake('/p/a')
+                recall_scope._recall_sync_wake('/p/a')
                 a_ready.set()
                 b_done.wait(5)
                 # Nested recall of another project inside this one.
                 response.serve_selected('recall', 'hermes', {'projectRoot': '/p/n'},
                                         {'prompt': 'q'})
-                response._recall_sync_wake('/p/a')
-                response._recall_sync_wake('/p/a2')
+                recall_scope._recall_sync_wake('/p/a')
+                recall_scope._recall_sync_wake('/p/a2')
                 try:
                     epoch(5)
                 except response.HostResponseError as exc:
@@ -2331,11 +2333,11 @@ class ProofRetryChecks(unittest.TestCase):
             if root == '/p/b':
                 a_ready.wait(5)
                 epoch(1)
-                response._recall_sync_wake('/p/b')
-                response._recall_sync_wake('/p/b')
+                recall_scope._recall_sync_wake('/p/b')
+                recall_scope._recall_sync_wake('/p/b')
                 return {}
             epoch(0)
-            response._recall_sync_wake(root)
+            recall_scope._recall_sync_wake(root)
             return {}
 
         def run(root):
@@ -2355,12 +2357,12 @@ class ProofRetryChecks(unittest.TestCase):
             for thread in threads:
                 thread.join(10)
             # Outside any recall the wake is recorded as before, every time.
-            response._recall_sync_wake('/p/free')
-            response._recall_sync_wake('/p/free')
+            recall_scope._recall_sync_wake('/p/free')
+            recall_scope._recall_sync_wake('/p/free')
         self.assertEqual(outcome.get('a'), 'selected_proof_rolled_back')
         self.assertEqual(sorted(call.args[1] for call in wake.call_args_list),
                          ['/p/a', '/p/a2', '/p/b', '/p/free', '/p/free', '/p/n'])
-        self.assertIsNone(response._RECALL_STATE.get())
+        self.assertIsNone(recall_scope._RECALL_STATE.get())
 
     def test_non_proof_refusals_are_not_retried(self):
         def stale(_n):

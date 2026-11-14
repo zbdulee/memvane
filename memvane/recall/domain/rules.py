@@ -1,7 +1,8 @@
-"""Lexical query construction and ranked-result fusion."""
+"""Lexical query construction, ranked-result fusion and verified-card selection rules."""
 from __future__ import annotations
 
 import unicodedata
+from memvane.learning.types import SELECTOR_ANSWERS, SELECTOR_CANDIDATE_INVALID
 from memvane.recall.types import HostResponseError, HYBRID_LIST_LIMIT, MAX_ROWS, RRF_K, ROW_KEYS as _ROW_KEYS
 
 
@@ -100,3 +101,30 @@ def _fuse_verified_lists(lists: list[list[dict]], *, max_rows: int = MAX_ROWS) -
 
 def reader_reseal_candidate(code, has_route):
     return code == 'reader_endpoint_changed' and has_route
+
+
+def verified_pool(rows):
+    return rows[:15]
+
+
+def limit_selected(chosen, top_n):
+    limit = min(top_n, 3)
+    return chosen[:limit], limit
+
+
+def selection_action(reason, chosen):
+    if reason not in ('selected', 'ranked') or not chosen:
+        if reason == 'selected':
+            return 'selected_zero'
+        if reason == 'no_candidates':
+            return 'no_candidates'
+        return 'empty'
+    return 'serve'
+
+
+def selector_action(reason):
+    if reason in SELECTOR_ANSWERS:
+        return 'accept'
+    if reason == SELECTOR_CANDIDATE_INVALID:
+        return 'invalid'
+    return 'fallback'

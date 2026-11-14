@@ -36,6 +36,7 @@ CAPACITY = load('admission_capacity_fixture', 'laya-host-capacity-checks.py')
 SYNC = load('admission_sync_fixture', 'laya-product-sync-worker-checks.py')
 from memvane.resident import embed_resident as owner
 from memvane.host import host_response as response
+from memvane.recall import recall_scope
 from memvane.journal import install_journal as journal
 from memvane.provider.adapters import local_embed_provider as provider
 from memvane.learning.context_learning import shared
@@ -179,7 +180,7 @@ class AdmissionFixtureChecks(unittest.TestCase):
             stack.enter_context(patch('socket.socket', side_effect=forbidden))
             stack.enter_context(patch.object(owner, 'ensure_running', side_effect=forbidden))
             stack.enter_context(patch.object(owner, 'read_owner_state', side_effect=read_state))
-            stack.enter_context(patch.object(response, '_recall_sync_wake', return_value={'status': 'queued'}))
+            stack.enter_context(patch.object(recall_scope, '_recall_sync_wake', return_value={'status': 'queued'}))
             stack.enter_context(patch.object(owner, 'admit_query', side_effect=admit))
             stack.enter_context(patch.object(response, 'serve_selected', side_effect=serve))
             if fixture == 'capacity':

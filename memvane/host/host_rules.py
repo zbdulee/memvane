@@ -1,32 +1,5 @@
-"""Pure host response selection and action decisions."""
+"""Pure host trace and action decisions."""
 from __future__ import annotations
-
-def verified_pool(rows):
-    return rows[:15]
-
-
-def limit_selected(chosen, top_n):
-    limit = min(top_n, 3)
-    return chosen[:limit], limit
-
-
-def selection_action(reason, chosen):
-    if reason not in ('selected', 'ranked') or not chosen:
-        if reason == 'selected':
-            return 'selected_zero'
-        if reason == 'no_candidates':
-            return 'no_candidates'
-        return 'empty'
-    return 'serve'
-
-
-def selector_action(reason):
-    if reason in ('selected', 'no_candidates'):
-        return 'accept'
-    if reason == 'candidate_invalid':
-        return 'invalid'
-    return 'fallback'
-
 
 def selection_final(cards):
     return 'selected' if cards else 'no_results_after_filter'

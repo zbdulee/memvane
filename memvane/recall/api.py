@@ -43,30 +43,33 @@ def query_endpoint(endpoint, *, checkout, prompt, query_vector, deadline, snapsh
                           authority=authority, linked=linked)
 
 
-def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, prompt, deadline,
-                         main_proof, linked=None, _recall_epoch, _trace_fields, _RECALL_STATE, _fail,
-                         _recall_sync_wake, _write_selection_log, _trace_final, host_payload,
-                         _wake_provider, _proof_still_current, _serve_verified_rows):
-    from memvane.recall.selected_recall import serve_schema3_recall as implementation
-    return implementation(host, payload, endpoint=endpoint, proof=proof, decision=decision,
-                          project=project, prompt=prompt, deadline=deadline, main_proof=main_proof,
-                          linked=linked, _recall_epoch=_recall_epoch, _trace_fields=_trace_fields,
-                          _RECALL_STATE=_RECALL_STATE, _fail=_fail, _recall_sync_wake=_recall_sync_wake,
-                          _write_selection_log=_write_selection_log, _trace_final=_trace_final,
-                          host_payload=host_payload, _wake_provider=_wake_provider,
-                          _proof_still_current=_proof_still_current,
-                          _serve_verified_rows=_serve_verified_rows)
-
-
-def serve_endpoint_recall(host, payload, *, cwd, route_decision=None, main_proof=None, linked=None,
-                          _recall_epoch, _trace_fields, _RECALL_STATE, _fail, _recall_sync_wake,
-                          _write_selection_log, _trace_final, host_payload, _wake_provider,
-                          _proof_still_current, _serve_verified_rows):
+def serve_endpoint_recall(host, payload, *, cwd, trace, route_decision=None, main_proof=None,
+                          linked=None):
     from memvane.recall.selected_recall import serve_endpoint_recall as implementation
-    return implementation(host, payload, cwd=cwd, route_decision=route_decision, main_proof=main_proof,
-                          linked=linked, _recall_epoch=_recall_epoch, _trace_fields=_trace_fields,
-                          _RECALL_STATE=_RECALL_STATE, _fail=_fail, _recall_sync_wake=_recall_sync_wake,
-                          _write_selection_log=_write_selection_log, _trace_final=_trace_final,
-                          host_payload=host_payload, _wake_provider=_wake_provider,
-                          _proof_still_current=_proof_still_current,
-                          _serve_verified_rows=_serve_verified_rows)
+    return implementation(host, payload, cwd=cwd, trace=trace, route_decision=route_decision,
+                          main_proof=main_proof, linked=linked)
+
+
+def recall_scope():
+    from memvane.recall.recall_scope import recall_scope as implementation
+    return implementation()
+
+
+def set_writer_allowed(allowed):
+    from memvane.recall.recall_scope import set_writer_allowed as implementation
+    return implementation(allowed)
+
+
+def recall_epoch(proof):
+    from memvane.recall.recall_scope import _recall_epoch as implementation
+    return implementation(proof)
+
+
+def recall_sync_wake(project_root):
+    from memvane.recall.recall_scope import _recall_sync_wake as implementation
+    return implementation(project_root)
+
+
+def wake_provider(decision, proof, *, transition=False):
+    from memvane.recall.recall_scope import _wake_provider as implementation
+    return implementation(decision, proof, transition=transition)

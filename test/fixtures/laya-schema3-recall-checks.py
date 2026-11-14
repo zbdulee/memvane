@@ -218,7 +218,8 @@ class Schema3RecallChecks(unittest.TestCase):
             return 'selected_provider_preparing'
         observed = {}
         with mock.patch.object(embed, 'ReviewedLocalQmdProvider', UsableManifest), \
-                mock.patch.object(self.host, '_wake_provider', side_effect=wake):
+                mock.patch.object(importlib.import_module('memvane.recall.recall_scope'), '_wake_provider',
+                                  side_effect=wake):
             observed['unsealed'] = self.recall()
             self.assertEqual(woken, [])
             with mock.patch.object(resident, 'admit_query', side_effect=RuntimeError('pressure')):

@@ -1,4 +1,8 @@
-"""Selected view recall execution with host callbacks supplied by the caller."""
+"""Selected view recall: the journal-preferred reader endpoint and its schema3 view.
+
+Recall decides here and returns a plain ``RecallAnswer``; the caller renders
+it. Trace fields, notes and final reasons go to the caller's ``RecallTrace``.
+"""
 from __future__ import annotations
 
 from contextlib import ExitStack
@@ -7,13 +11,15 @@ import re
 import sys
 import time
 
-from memvane.recall.types import MAX_ROWS
+from memvane.recall.types import HostResponseError, MAX_ROWS, RecallAnswer
 
-def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, prompt,
-                         deadline, main_proof, linked=None, _recall_epoch, _trace_fields,
-                         _RECALL_STATE, _fail, _recall_sync_wake, _write_selection_log,
-                         _trace_final, host_payload, _wake_provider, _proof_still_current,
-                         _serve_verified_rows):
+
+def _fail(code: str):
+    raise HostResponseError(code)
+
+
+def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline, main_proof,
+                         trace, linked=None):
     """Recall from a journal-selected schema3 view; no v6 store or source file is opened.
 
     Settings, admission, provider and vector-fallback rules are the v6
@@ -31,15 +37,15 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
     from memvane.recall import api as dispatch
     from memvane.kernel.errors import IndexContractError
     from memvane.provider.api import reviewed_provider
+    from memvane.recall.recall_scope import (
+        _proof_still_current, _recall_epoch, _recall_open, _recall_sync_wake, _wake_provider)
+    from memvane.recall.verified_rows import _serve_verified_rows
     degraded = main_proof is None
     _recall_epoch(proof)
-    _trace_fields(store_format='schema3', reader_endpoint=endpoint.endpoint_id)
+    trace.fields(store_format='schema3', reader_endpoint=endpoint.endpoint_id)
     if degraded:
-        _trace_fields(degraded='worktree' if linked is not None else 'reader_endpoint')
-    if linked is not None:
-        state = _RECALL_STATE.get()
-        if state is not None:
-            state['ownView'] = True
+        trace.fields(degraded='worktree' if linked is not None else 'reader_endpoint')
+    own_view = linked is not None and _recall_open()
     settings = config.load_project_config(decision['projectRoot'])
     selected_settings = decision['recallSettings']
     if any(settings.get(key) != value for key, value in selected_settings.items()):
@@ -104,12 +110,12 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
                             _recall_sync_wake(decision['projectRoot'])
                         except Exception:
                             pass
-                    _write_selection_log(decision['projectRoot'], 'laya_view_preparing', [])
-                _trace_final(reason)
+                    trace.note('laya_view_preparing')
+                trace.final(reason)
                 print(f'[memvane] {reason}; no context from this checkout\'s view yet',
                       file=sys.stderr)
-                return host_payload(host, '')
-    _trace_fields(semantic=result.semantic_status)
+                return RecallAnswer(decision, own_view=own_view)
+    trace.fields(semantic=result.semantic_status)
     vector_fallback = None
     if provider is None:
         vector_fallback = 'selected_' + vector_off[0]
@@ -123,7 +129,7 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
         # The second case: a linked worktree view sealed lexical-first.
         vector_fallback = 'selected_view_vectors_pending'
     if vector_fallback is not None:
-        _write_selection_log(decision['projectRoot'], 'laya_vector_' + vector_fallback, [])
+        trace.note('laya_vector_' + vector_fallback)
         print(f'[memvane] {vector_fallback}; serving lexical results', file=sys.stderr)
 
     def still_current(chosen):
@@ -136,10 +142,11 @@ def serve_schema3_recall(host, payload, *, endpoint, proof, decision, project, p
                                  pin_view=False) as (_store, _handle, head):
             return head['gen_id'] == result.data_generation
     return _serve_verified_rows(
-        host, decision, payload, settings, prompt, list(result.rows), top_n=top_n,
+        decision, settings, prompt, list(result.rows), top_n=top_n,
         title_only=result.title_only, locations=dict(result.source_locations),
         generation=result.data_generation, still_current=still_current,
-        vector_fallback=vector_fallback, allow_mixed_generation=False)
+        vector_fallback=vector_fallback, allow_mixed_generation=False, trace=trace,
+        own_view=own_view)
 
 
 _RESETTLE_PENDING = 'reader_settings_resealing'
@@ -152,27 +159,19 @@ def _settings_resettle_pending(decision, project, root) -> bool:
     except Exception:
         return False
 
-def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=None,
-                          main_proof=None, linked=None, _recall_epoch, _trace_fields, _RECALL_STATE, _fail, _recall_sync_wake,
-                          _write_selection_log, _trace_final, host_payload, _wake_provider,
-                          _proof_still_current, _serve_verified_rows) -> dict:
+def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, trace, route_decision=None,
+                          main_proof=None, linked=None) -> RecallAnswer:
     """Serve the journal-preferred reader endpoint (``_serve_endpoint_recall``).
 
     A store a killed writer left with a hot journal refuses the recall as
     ``reader_store_recovery_pending`` (recall never rolls it back); the main
     checkout's recall then offers its sync wake, whose owner pass recovers it.
     """
+    from memvane.recall.recall_scope import _recall_sync_wake
     try:
-        return _serve_endpoint_recall(host, payload, cwd=cwd, route_decision=route_decision,
-                                      main_proof=main_proof, linked=linked,
-                                      _recall_epoch=_recall_epoch, _trace_fields=_trace_fields,
-                                      _RECALL_STATE=_RECALL_STATE, _fail=_fail,
-                                      _recall_sync_wake=_recall_sync_wake,
-                                      _write_selection_log=_write_selection_log,
-                                      _trace_final=_trace_final, host_payload=host_payload,
-                                      _wake_provider=_wake_provider,
-                                      _proof_still_current=_proof_still_current,
-                                      _serve_verified_rows=_serve_verified_rows)
+        return _serve_endpoint_recall(host, payload, cwd=cwd, trace=trace,
+                                      route_decision=route_decision, main_proof=main_proof,
+                                      linked=linked)
     except Exception as exc:
         if str(exc) == 'reader_store_recovery_pending' and main_proof is not None:
             try:
@@ -181,10 +180,8 @@ def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=
                 pass  # The refusal stands; a later wake still recovers it.
         raise
 
-def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=None,
-                           main_proof=None, linked=None, _recall_epoch, _trace_fields, _RECALL_STATE, _fail, _recall_sync_wake,
-                          _write_selection_log, _trace_final, host_payload, _wake_provider,
-                          _proof_still_current, _serve_verified_rows) -> dict:
+def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, trace, route_decision=None,
+                           main_proof=None, linked=None) -> RecallAnswer:
     """Serve the journal-preferred reader endpoint.
 
     ``main_proof`` is the selected route proof. ``linked`` reads only the
@@ -209,6 +206,7 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
     from memvane.kernel import hook_budget
     from memvane.journal import api as lease
     from memvane.journal import api as reader
+    from memvane.recall.recall_scope import _recall_sync_wake
     deadline = time.monotonic() + hook_budget.remaining()
     root = Path(__file__).resolve().parents[2]
     with ExitStack() as stack:
@@ -229,11 +227,11 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
                             _recall_sync_wake(route_decision['projectRoot'])
                         except Exception:
                             pass
-                    _write_selection_log(route_decision['projectRoot'], 'laya_' + _RESETTLE_PENDING, [])
-                    _trace_final(_RESETTLE_PENDING)
+                    trace.note('laya_' + _RESETTLE_PENDING)
+                    trace.final(_RESETTLE_PENDING)
                     print(f'[memvane] {_RESETTLE_PENDING}; no context until the index applies '
                           'the new recall settings', file=sys.stderr)
-                    return host_payload(host, '')
+                    return RecallAnswer(route_decision)
                 if (attempt or str(exc) != 'reader_selection_changed'
                         or time.monotonic() >= deadline):
                     raise
@@ -241,10 +239,6 @@ def _serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision
         decision = proof.get('readerDecision')
         if not isinstance(decision, dict) or decision != route_decision:
             _fail('reader_selection_unproved')
-        return serve_schema3_recall(host, payload, endpoint=endpoint, proof=proof,
-            decision=decision, project=project, prompt=prompt, deadline=deadline,
-            main_proof=main_proof, linked=linked, _recall_epoch=_recall_epoch,
-            _trace_fields=_trace_fields, _RECALL_STATE=_RECALL_STATE, _fail=_fail,
-            _recall_sync_wake=_recall_sync_wake, _write_selection_log=_write_selection_log,
-            _trace_final=_trace_final, host_payload=host_payload, _wake_provider=_wake_provider,
-            _proof_still_current=_proof_still_current, _serve_verified_rows=_serve_verified_rows)
+        return serve_schema3_recall(endpoint=endpoint, proof=proof, decision=decision,
+                                    project=project, prompt=prompt, deadline=deadline,
+                                    main_proof=main_proof, trace=trace, linked=linked)

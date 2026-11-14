@@ -132,6 +132,7 @@ class RecoveryChecks(unittest.TestCase):
 
     def test_recall_preserves_lexical_during_cooldown_and_wakes_after_it(self):
         from memvane.host import host_response as host
+        from memvane.recall import recall_scope
         from memvane.journal import install_journal as journal
         self.stamp('startup_failed')
         proof = {'providerManifest': self.manifest, 'selectionEpoch': 1}
@@ -142,9 +143,9 @@ class RecoveryChecks(unittest.TestCase):
                 probe, clock = self.cold(now)
                 with probe, clock, patch.object(svc, 'request_adopt') as adopt, \
                      patch.object(journal, 'verify_selected_route', return_value=proof), \
-                     patch.object(host, '_recall_epoch'), \
-                     patch.object(host, '_recall_sync_wake', return_value={'status': 'queued'}):
-                    self.assertEqual(host._wake_provider(decision, proof),
+                     patch.object(recall_scope, '_recall_epoch'), \
+                     patch.object(recall_scope, '_recall_sync_wake', return_value={'status': 'queued'}):
+                    self.assertEqual(recall_scope._wake_provider(decision, proof),
                                      'selected_provider_retry_wait')
                 self.assertEqual(adopt.call_count, expected_calls)
 

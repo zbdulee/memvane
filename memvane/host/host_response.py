@@ -40,7 +40,7 @@ _UNSAFE_BODY = re.compile(
 _UNSAFE_PATH = re.compile(
     r'[\x00-\x1f\x7f-\x9f\\"\u2028\u2029\u202a-\u202e\u2066-\u2069\ud800-\udfff]'
 )
-from memvane.recall.types import HostResponseError, MAX_ROWS, ROW_KEYS as _ROW_KEYS
+from memvane.recall.types import HostResponseError, MAX_ROWS, RecallTrace, ROW_KEYS as _ROW_KEYS
 _PROVIDER_RESULT_KEYS = frozenset({"profileId", "approvedProviderId",
                                    "providerArtifactSha256", "vector"})
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"})
@@ -519,79 +519,6 @@ def host_payload(host: str, context: str) -> dict:
     _fail("unsupported_host")
 
 
-def _select_verified_cards(decision, settings, prompt, rows):
-    """Card selection after the index proved published wiki rows.
-
-    Returns ``(rows, reason, fallback)``. With a prepared selector its answer
-    is final (``selected``, including a real zero-card choice). Without one,
-    or when the prepared selector cannot answer, the verified rows keep their
-    hybrid rank (``ranked``) so search never empties on selector
-    infrastructure; ``fallback`` names why. An invalid pool serves nothing.
-    """
-    from memvane.learning.api import select_published, selector_prepared
-    from memvane.route.api import wiki_index_roots
-    roots = wiki_index_roots(decision['collections'])
-    names = tuple(sorted(roots))
-    if not names:
-        _fail('selected_wiki_required')
-    project = decision['projectRoot']
-    from memvane.host.host_rules import selector_action, verified_pool
-    pool = verified_pool(rows)
-    if not pool:
-        return [], 'no_candidates', None
-    try:
-        from memvane.journal.api import inspect_journal
-        from memvane.kernel.memvane_version import plugin_version, version_key
-        selected = inspect_journal(decision['journalPath'])
-        running = version_key(plugin_version())
-        highest = version_key(selected['maxPluginVersion'])
-        if (selected['state'] != 'selected' or selected['installId'] != decision['installId']
-                or running is None or highest is None):
-            raise ValueError('selector_version_unavailable')
-        if running < highest:
-            prepared, result = True, {'reason': 'older_plugin_version', 'final_results': []}
-        else:
-            prepared, result = selector_prepared(settings, project), None
-    except Exception:
-        # Learning state unreachable (moving, sealed old root): hybrid rank.
-        prepared, result = True, {'reason': 'selector_unavailable', 'final_results': []}
-    if prepared:
-        if result is None:
-            try:
-                from memvane.resident.api import ensure_service
-                result = select_published(
-                    pool, prompt=prompt, config=settings, project_root=project,
-                    wiki_names=names, scope_id=decision['scopeId'],
-                    ensure_service=ensure_service)
-            except Exception:
-                result = {'reason': 'selector_unavailable', 'final_results': []}
-        reason = result['reason']
-        selection = selector_action(reason)
-        if selection == 'accept':
-            return result['final_results'], reason, None
-        if selection == 'invalid':
-            _write_selection_log(project, 'laya_selector_candidate_invalid', [])
-            print('[memvane] published candidates invalid; no context injected',
-                  file=sys.stderr)
-            return [], reason, None
-        fallback = 'laya_selector_' + reason
-        _write_selection_log(project, fallback, [])
-        print('[memvane] local selection unavailable (' + reason + '); serving hybrid rank',
-              file=sys.stderr)
-    else:
-        fallback = 'laya_selector_not_prepared'
-    from memvane.learning.api import published_candidate_rows
-    try:
-        # The same published-row contract the selector input must satisfy.
-        published_candidate_rows(pool, names, decision['scopeId'])
-    except ValueError:
-        _write_selection_log(project, 'laya_selector_candidate_invalid', [])
-        print('[memvane] published candidates invalid; no context injected',
-              file=sys.stderr)
-        return [], 'candidate_invalid', None
-    return pool, 'ranked', fallback
-
-
 def _verified_edit(decision: dict, payload: dict, action: str) -> None:
     _edit_targets(decision, payload, action, allow_outside=True)
 
@@ -671,6 +598,7 @@ def _request_stale_sync(decision: dict, proof: dict):
     owner and never serves the stale generation's rows.
     """
     from memvane.journal.api import verify_selected_route
+    from memvane.recall.api import recall_epoch as _recall_epoch, recall_sync_wake as _recall_sync_wake
     current = verify_selected_route(decision)
     _recall_epoch(current)
     if current != proof:
@@ -693,109 +621,8 @@ def _request_stale_sync(decision: dict, proof: dict):
 
 def _request_provider_start(decision: dict, proof: dict, *, transition=False):
     """A cold/mismatched socket wakes the off-hook owner, never a hook model."""
+    from memvane.recall.api import wake_provider as _wake_provider
     _fail(_wake_provider(decision, proof, transition=transition))
-
-
-def _wake_provider(decision: dict, proof: dict, *, transition=False) -> str:
-    """Wake the off-hook provider owner and return its vector-side state code.
-
-    Proof, owner-state integrity, terminal start failure and an identity
-    transition raise. The returned codes (resource_deferred, retry_wait,
-    preparing, wake_failed) leave recall serving its lexical lists.
-    """
-    if not _writer_floor_allowed(proof):
-        return 'writer_floor'
-    from memvane.journal.api import verify_selected_route
-    from memvane.resident.types import TRANSIENT_FAILURES as _TRANSIENT_FAILURES
-    from memvane.resident.api import failure_decision as _failure_decision, read_owner_state
-    current = verify_selected_route(decision)
-    _recall_epoch(current)
-    if current != proof:
-        _fail('selected_proof_changed')
-    try:
-        _failure_decision(proof['providerManifest'])
-    except Exception as exc:
-        from memvane.kernel.errors import IndexContractError
-        from memvane.kernel.resource_deferred import ResourceDeferred
-        if type(exc) is IndexContractError and str(exc) == 'provider_start_failed':
-            _fail('selected_provider_start_failed')
-        if not isinstance(exc, ResourceDeferred):
-            raise HostResponseError('selected_provider_state_invalid') from exc
-    try:
-        state = read_owner_state(proof['providerManifest'])
-    except Exception as exc:
-        raise HostResponseError('selected_provider_state_invalid') from exc
-    if (state is not None and state['terminal']
-            and state['reason'] not in _TRANSIENT_FAILURES):
-        _fail('selected_provider_start_failed')
-    try:
-        # A prompt that finds no vector owner brings a backed-off sync wake
-        # forward; the recorded attempts and reason stay unchanged.
-        result = _recall_sync_wake(decision['projectRoot'], pull_due=True)
-    except Exception:
-        result = None
-    refreshed = verify_selected_route(decision)
-    _recall_epoch(refreshed)
-    stable = lambda row: {key: value for key, value in row.items()
-                          if key != 'selectionEpoch'}
-    if (stable(refreshed) != stable(proof) or
-            refreshed.get('selectionEpoch', -1) < proof.get('selectionEpoch', 0)):
-        _fail('selected_proof_changed')
-    restart = None
-    if not transition:
-        # Independent of the wake queue: it also helps when that queue fails.
-        restart = _restart_withdrawn_owner(decision, proof, state)
-    if not isinstance(result, dict) or result.get('status') not in _DURABLE_WAKE_STATES:
-        if transition:
-            _fail('selected_provider_wake_failed')
-        return 'selected_provider_wake_failed'
-    if transition:
-        _fail('selected_provider_identity_transition')
-    if restart == 'laya_service_protocol_mismatch':
-        # A newer per-user service speaks another protocol: lexical until
-        # this installation's bundle upgrade catches up.
-        return 'selected_provider_protocol_mismatch'
-    if state is not None and state['reason'] == 'resource_deferred':
-        return 'selected_provider_resource_deferred'
-    if state is not None and state['reason'] in (
-            'startup_failed', 'worker_exited', 'unexpected'):
-        return 'selected_provider_retry_wait'
-    return 'selected_provider_preparing'
-
-
-def _restart_withdrawn_owner(decision: dict, proof: dict, state):
-    """Ask the per-user service to adopt a withdrawn owner without the sync wake.
-
-    After a bundle upgrade, a service replacement or a resource deferral the
-    owner state is starting/resource_deferred and its socket is gone. The
-    request returns at once; the owner state's 5s backoff bounds repeats.
-    Only the executing bundle that proved this route may ask; the service
-    proves the route again before it binds the socket. Returns the deferral
-    code, or None.
-    """
-    if state is None or state['reason'] not in (
-            'starting', 'resource_deferred', 'startup_failed', 'worker_exited'):
-        return None
-    manifest = proof['providerManifest']
-    path = manifest.get('serviceSocketPath')
-    if not isinstance(path, str) or os.path.lexists(path):
-        return None
-    from memvane.resident.api import ensure_running
-    from memvane.kernel.errors import IndexContractError
-    from memvane.kernel.resource_deferred import ResourceDeferred
-    try:
-        ensure_running(decision['projectRoot'], manifest)
-    except ResourceDeferred as exc:
-        # Best effort: the durable sync wake still retries the start.
-        return str(exc)
-    except OSError:
-        return None
-    except IndexContractError as exc:
-        if str(exc) == 'provider_start_failed':
-            _fail('selected_provider_start_failed')
-        raise HostResponseError('selected_provider_state_invalid') from exc
-    except Exception as exc:
-        raise HostResponseError('selected_provider_state_invalid') from exc
 
 
 def _request_selected_sync(action: str, decision: dict, proof: dict, *,
@@ -929,27 +756,51 @@ def serve_preview(action: str, host: str, decision: dict, payload: dict) -> dict
     return host_payload(host, '')
 
 
-# A schema3 recall whose sealed reader differs from the install only in the
-# recall settings (the owner's next sync re-seals it): empty answer, sync wake.
+class _EventTrace(RecallTrace):
+    """Recall's trace port: the event trace of the hook call in progress."""
+
+    def fields(self, **fields) -> None:
+        _trace_fields(**fields)
+
+    def note(self, reason: str) -> None:
+        _write_selection_log(None, reason, [])
+
+    def final(self, reason: str) -> None:
+        _trace_final(reason)
 
 
-
-
-
-
-
-
+_EVENT_TRACE = _EventTrace()
 
 
 def serve_endpoint_recall(host: str, payload: dict, *, cwd: str, route_decision=None,
                           main_proof=None, linked=None) -> dict:
+    """Serve the journal-preferred reader endpoint and render its answer for this host."""
+    return _render_answer(host, payload, _endpoint_answer(
+        host, payload, cwd=cwd, route_decision=route_decision, main_proof=main_proof,
+        linked=linked))
+
+
+def _endpoint_answer(host: str, payload: dict, *, cwd: str, route_decision=None,
+                     main_proof=None, linked=None):
     from memvane.recall.api import serve_endpoint_recall as implementation
-    return implementation(host, payload, cwd=cwd, route_decision=route_decision,
-        main_proof=main_proof, linked=linked, _recall_epoch=_recall_epoch,
-        _trace_fields=_trace_fields, _RECALL_STATE=_RECALL_STATE, _fail=_fail,
-        _recall_sync_wake=_recall_sync_wake, _write_selection_log=_write_selection_log,
-        _trace_final=_trace_final, host_payload=host_payload, _wake_provider=_wake_provider,
-        _proof_still_current=_proof_still_current, _serve_verified_rows=_serve_verified_rows)
+    return implementation(host, payload, cwd=cwd, trace=_EVENT_TRACE,
+                          route_decision=route_decision, main_proof=main_proof, linked=linked)
+
+
+def _render_answer(host: str, payload: dict, answer) -> dict:
+    """The host hook output of recall's answer: learning capture, context and card trace."""
+    if answer.capture is not None:
+        _set_learning_capture((host, answer.decision, payload) + tuple(answer.capture))
+    if not answer.rows:
+        return host_payload(host, '')
+    context = render_context(answer.decision, answer.rows, limit=answer.limit,
+                             ranking=answer.ranking,
+                             title_only_paths=answer.title_only_paths,
+                             source_locations=answer.source_locations,
+                             allow_mixed_generation=answer.allow_mixed_generation)
+    _log_selection(answer.decision, answer.rows, answer.selection_fallback,
+                   answer.vector_fallback)
+    return host_payload(host, context)
 
 
 def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dict:
@@ -988,10 +839,10 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
 
 def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict) -> dict:
     started = time.monotonic()
-    # Fresh state per call, bound to this thread/context only: an in-process
-    # host (Hermes) may run recalls concurrently or nested.
-    token = _RECALL_STATE.set({'epoch': None, 'wakes': {}})
-    try:
+    # Fresh recall state per call, bound to this thread/context only: an
+    # in-process host (Hermes) may run recalls concurrently or nested.
+    from memvane.recall.api import recall_scope
+    with recall_scope():
         try:
             return _serve_selected_once(action, host, decision, payload)
         except Exception as exc:
@@ -1005,53 +856,11 @@ def _serve_selected_recall(action: str, host: str, decision: dict, payload: dict
         _write_selection_log(_decision_project_root(decision), 'laya_recall_proof_retry', [],
                              retry=changed)
         return _serve_selected_once(action, host, retry, payload)
-    finally:
-        _RECALL_STATE.reset(token)
 
 
-# Per-recall state shared by both attempts: the highest journal epoch seen
-# by any proof or recheck, and the sync wake recorded per project root.
-_RECALL_STATE: contextvars.ContextVar = contextvars.ContextVar(
-    'memvane_recall_state', default=None)
 # The retry runs only when the time left after re-selection exceeds what the
 # first attempt took plus this margin.
 _RETRY_MARGIN_SECONDS = 1.0
-
-
-def _recall_epoch(proof) -> None:
-    """Raise when a proof's journal epoch is below the recall's highest one.
-
-    A journal restore moves the epoch back; neither attempt may accept it.
-    Outside a recall, or for a proof without an epoch, nothing is recorded.
-    """
-    state = _RECALL_STATE.get()
-    if state is None or not isinstance(proof, dict):
-        return
-    epoch = proof.get('selectionEpoch')
-    if type(epoch) is not int:
-        return
-    floor = state['epoch']
-    if floor is not None and epoch < floor:
-        _fail('selected_proof_rolled_back')
-    state['epoch'] = epoch if floor is None else max(floor, epoch)
-
-
-def _recall_sync_wake(project_root: str, **kwargs):
-    """Record the selected sync wake at most once per project root and recall.
-
-    Each request bumps the wake revision; a retried recall reuses the first
-    recorded result instead of asking for another sync run.
-    """
-    from memvane.runtime import api as runtime_work
-    state = _RECALL_STATE.get()
-    if state is not None and state.get('writer_allowed') is False:
-        return None
-    if state is None:
-        return runtime_work.request('laya-sync', project_root, **kwargs)
-    wakes = state['wakes']
-    if project_root not in wakes:
-        wakes[project_root] = runtime_work.request('laya-sync', project_root, **kwargs)
-    return wakes[project_root]
 
 
 def _retry_time_left(started: float) -> float:
@@ -1164,9 +973,8 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         return _major_mismatch_response(action, host)
     allowed = _writer_floor_allowed(proof)
     if action == 'recall':
-        state = _RECALL_STATE.get()
-        if state is not None:
-            state['writer_allowed'] = allowed
+        from memvane.recall.api import set_writer_allowed
+        set_writer_allowed(allowed)
     elif not allowed and action in ('compile', 'update', 'update-queued', 'index', 'file-change-event'):
         return _writer_floor_response(action, host)
     if action == "file-change-event" and not _successful_bash(payload):
@@ -1468,21 +1276,17 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         return _major_mismatch_response(action, host)
     allowed = _writer_floor_allowed(proof)
     if action == 'recall':
-        state = _RECALL_STATE.get()
-        if state is not None:
-            state['writer_allowed'] = allowed
+        from memvane.recall.api import set_writer_allowed
+        set_writer_allowed(allowed)
     elif not allowed and action in ('compile', 'update', 'update-queued', 'index', 'file-change-event'):
         return _writer_floor_response(action, host)
     _trace_fields(degraded='worktree')
     if action == 'recall':
         try:
             main_payload = {**payload, 'cwd': main['projectRoot']}
-            state = _RECALL_STATE.get()
-            if state is not None:
-                state.pop('ownView', None)
-            response = serve_endpoint_recall(host,main_payload,cwd=main['projectRoot'],
-                route_decision=main,
-                linked=decision)
+            answer = _endpoint_answer(host, main_payload, cwd=main['projectRoot'],
+                                      route_decision=main, linked=decision)
+            response = _render_answer(host, main_payload, answer)
             cwd = payload.get('cwd', decision.get('worktreeProjectRoot'))
             current = select_route(cwd, action='recall') if isinstance(cwd,str) else {}
             if current != decision:
@@ -1496,7 +1300,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         holder = response if key else response.get('hookSpecificOutput', {})
         field = key or 'additionalContext'
         if isinstance(holder, dict) and holder.get(field):
-            own = (_RECALL_STATE.get() or {}).get('ownView')
+            own = answer.own_view
             labelled = ((_worktree_view_label if own else _worktree_label)(decision) + '\n' +
                         holder[field])
             if len(labelled.encode('utf-8')) > MAX_CONTEXT_BYTES:
@@ -1525,59 +1329,6 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     # posttool/compile/index/file-change-event: the main
     # checkout's own scan owns its sources; nothing is queued from here.
     return {}
-
-
-def _proof_still_current(refreshed: dict, proof: dict) -> bool:
-    """Same route proof, allowing only the journal epoch to move forward.
-
-    A sync owner marks its first publish of a wake with one epoch advance
-    (cas_mark_new_write). The served rows stay bound to their pinned head,
-    which the selected reader checks separately. An epoch below the
-    highest one this recall has seen raises ``selected_proof_rolled_back``.
-    """
-    _recall_epoch(refreshed)
-    if refreshed == proof:
-        return True
-    stable = lambda row: {key: value for key, value in row.items()
-                          if key != 'selectionEpoch'}
-    return (isinstance(refreshed, dict) and stable(refreshed) == stable(proof) and
-            refreshed.get('selectionEpoch', -1) >= proof.get('selectionEpoch', 0))
-
-
-def _serve_verified_rows(host, decision, payload, settings, prompt, rows, *, top_n,
-                         title_only, locations, generation, still_current,
-                         vector_fallback, allow_mixed_generation):
-    """Selector, trace, learning capture, recheck and render of verified rows.
-
-    ``still_current(chosen)``
-    is the store's own proof/view recheck after selection.
-    """
-    chosen, reason, fallback = _select_verified_cards(decision, settings, prompt, rows)
-    _trace_fields(selection=reason, candidates=len(rows), generation=generation)
-    from memvane.host.host_rules import limit_selected, selection_action
-    chosen, answer_limit = limit_selected(chosen, top_n)
-    # Capture sees the verified pool and what was served: the selector's
-    # choice, or the ranked rows when no prepared selector answered.
-    _set_learning_capture((host, decision, payload, settings, rows[:15], chosen))
-    result_action = selection_action(reason, chosen)
-    if result_action != 'serve':
-        if result_action == 'selected_zero':
-            _write_selection_log(decision['projectRoot'], 'laya_selector_selected_zero', [])
-        elif result_action == 'no_candidates':
-            # The reason of a recall with no candidate rows; vector fallbacks stay notes.
-            _trace_final('no_candidates')
-        return host_payload(host, '')
-    if not still_current(chosen):
-        _fail('selected_proof_changed')
-    chosen_paths = {row['path'] for row in chosen}
-    context = render_context(decision, chosen, limit=answer_limit,
-                             ranking='laya_selection' if reason == 'selected' else 'hybrid_rrf',
-                             title_only_paths=title_only.intersection(chosen_paths),
-                             source_locations={path: spans for path, spans in locations.items()
-                                               if path in chosen_paths},
-                             allow_mixed_generation=allow_mixed_generation)
-    _log_selection(decision, chosen, fallback, vector_fallback)
-    return host_payload(host, context)
 
 
 def _reselect(cwd, action):

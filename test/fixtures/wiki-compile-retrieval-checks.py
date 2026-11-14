@@ -475,7 +475,7 @@ class PinnedChecks(capacity.HostCapacityCase):
         self.assert_normalized_pinned_match_without_vectors_or_overlay('archive', '# Record\narchives\n')
 
     def test_compile_index_query_never_calls_learning_selector_or_capture(self):
-        with patch.object(capacity.response, '_select_verified_cards', side_effect=AssertionError('learner selection')), \
+        with patch('memvane.recall.verified_rows._select_verified_cards', side_effect=AssertionError('learner selection')), \
              patch.object(capacity.response, '_capture_learning', side_effect=AssertionError('learner capture')), \
              patch('memvane.learning.context_learning.selection_read.select_published', side_effect=AssertionError('learner entry')), \
              patch('memvane.learning.context_learning.live_select.choose', side_effect=AssertionError('learner inference')), \

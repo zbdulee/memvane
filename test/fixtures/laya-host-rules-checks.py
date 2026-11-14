@@ -8,23 +8,23 @@ from memvane.host import host_rules as rules; import memvane.recall.domain.rules
 
 class RecallRulesChecks(unittest.TestCase):
     def test_pool_preserves_first_fifteen(self):
-        self.assertEqual(rules.verified_pool(list(range(20))), list(range(15)))
-        self.assertEqual(rules.verified_pool([]), [])
+        self.assertEqual(rules_rules.verified_pool(list(range(20))), list(range(15)))
+        self.assertEqual(rules_rules.verified_pool([]), [])
 
     def test_selected_limit_and_empty_reasons(self):
-        self.assertEqual(rules.limit_selected(list(range(5)), 5), ([0, 1, 2], 3))
-        self.assertEqual(rules.limit_selected(list(range(5)), 1), ([0], 1))
+        self.assertEqual(rules_rules.limit_selected(list(range(5)), 5), ([0, 1, 2], 3))
+        self.assertEqual(rules_rules.limit_selected(list(range(5)), 1), ([0], 1))
         for reason, chosen, expected in [
             ('selected', [], 'selected_zero'), ('no_candidates', [], 'no_candidates'),
             ('ranked', [], 'empty'), ('candidate_invalid', [1], 'empty'),
             ('ranked', [1], 'serve'), ('selected', [1], 'serve')]:
             with self.subTest(reason=reason, chosen=chosen):
-                self.assertEqual(rules.selection_action(reason, chosen), expected)
+                self.assertEqual(rules_rules.selection_action(reason, chosen), expected)
 
     def test_selector_answer_classification(self):
         for reason, expected in [('selected','accept'), ('no_candidates','accept'),
                                  ('candidate_invalid','invalid'), ('unavailable','fallback')]:
-            self.assertEqual(rules.selector_action(reason), expected)
+            self.assertEqual(rules_rules.selector_action(reason), expected)
 
     def test_trace_reason_precedence_and_existing_outcome(self):
         cases = [

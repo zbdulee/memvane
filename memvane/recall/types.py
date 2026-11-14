@@ -15,6 +15,57 @@ ROW_KEYS = frozenset({"scope", "generation", "path", "hash", "body", "score"})
 class HostResponseError(ValueError):
     """Fixed diagnostic code; never includes document body or source path."""
 
+
+class RecallTrace:
+    """Port for the event trace of the hook call that runs a recall.
+
+    Recall reports while it decides: ``fields`` adds trace fields, ``note``
+    one diagnostic note, ``final`` the final reason. The caller records them;
+    they never change the recall's answer. This base records nothing.
+    """
+
+    def fields(self, **fields) -> None:
+        pass
+
+    def note(self, reason: str) -> None:
+        pass
+
+    def final(self, reason: str) -> None:
+        pass
+
+
+class RecallAnswer:
+    """Plain result of one selected recall; the host renders it.
+
+    Empty ``rows``: answer with no context. Otherwise the host renders
+    ``rows`` of ``decision`` with ``limit``, ``ranking``,
+    ``title_only_paths``, ``source_locations`` and ``allow_mixed_generation``
+    and traces them with ``selection_fallback`` and ``vector_fallback``.
+    ``capture`` is ``(settings, pool, chosen)`` for learning capture when a
+    selection ran, else None. ``own_view``: the linked worktree's own view
+    answered inside a recall scope.
+    """
+
+    __slots__ = ('decision', 'rows', 'limit', 'ranking', 'title_only_paths',
+                 'source_locations', 'allow_mixed_generation', 'selection_fallback',
+                 'vector_fallback', 'capture', 'own_view')
+
+    def __init__(self, decision, *, rows=(), limit=MAX_ROWS, ranking='hybrid_rrf',
+                 title_only_paths=frozenset(), source_locations=None,
+                 allow_mixed_generation=False, selection_fallback=None,
+                 vector_fallback=None, capture=None, own_view=False):
+        self.decision = decision
+        self.rows = rows
+        self.limit = limit
+        self.ranking = ranking
+        self.title_only_paths = title_only_paths
+        self.source_locations = {} if source_locations is None else source_locations
+        self.allow_mixed_generation = allow_mixed_generation
+        self.selection_fallback = selection_fallback
+        self.vector_fallback = vector_fallback
+        self.capture = capture
+        self.own_view = own_view
+
 KO_STOPWORDS = {
     "해줘", "해주세요", "해봐", "알려줘", "보여줘", "찾아줘",
     "있나", "있어", "뭐야", "어때", "인가", "인지",

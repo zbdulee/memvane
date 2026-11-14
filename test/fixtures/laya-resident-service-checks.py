@@ -351,7 +351,7 @@ class ServiceChecks(Fixture):
             server.close()
 
     def test_query_hook_maps_protocol_mismatch_to_lexical_code(self):
-        from memvane.host import host_response as host
+        from memvane.recall import recall_scope
         from memvane.journal import install_journal as journal
         from memvane.runtime import runtime_work
         project, manifest = self.project('alpha')
@@ -369,7 +369,7 @@ class ServiceChecks(Fixture):
                     patch.object(resident, '_failure_decision'), \
                     patch.object(resident, 'ensure_running',
                                  side_effect=ResourceDeferred(raised)):
-                self.assertEqual(host._wake_provider(decision, proof), expected)
+                self.assertEqual(recall_scope._wake_provider(decision, proof), expected)
 
     def test_worker_death_mid_request_is_provider_unavailable(self):
         project, manifest = self.project('alpha')

@@ -829,6 +829,16 @@
       "layer": "application",
       "pinned": false
     },
+    "memvane/recall/recall_scope.py": {
+      "context": "recall",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/recall/verified_rows.py": {
+      "context": "recall",
+      "layer": "application",
+      "pinned": false
+    },
     "memvane/recall/types.py": {
       "context": "recall",
       "layer": "domain",
