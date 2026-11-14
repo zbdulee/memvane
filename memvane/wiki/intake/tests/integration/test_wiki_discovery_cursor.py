@@ -75,6 +75,16 @@ class DiscoveryCursor(FixtureCase):
         self.assertEqual((result['state'], result['reason']), ('blocked', 'snapshot_missing'))
         self.assertFalse(discovery._paths(self.decision)[0].exists())
 
+    def test_uninstalled_missing_cursor_starts_at_observed_head_without_backfill(self):
+        self.assertFalse(self.journal.exists())
+        self.accept()
+        result = self.drain('g3', {self.key: self.initial})
+        self.assertEqual((result['state'], result['pending']), ('drained', 0))
+        state = discovery._read(discovery._paths(self.decision)[0])
+        self.assertEqual((state['baseGen'], state['rawSnapshot'], state['pending']),
+                         ('g3', {self.key: self.initial}, {}))
+        self.assertFalse((self.root / workspace.rel(workspace_types.SOURCE_QUEUE)).exists())
+
     def test_pending_over_cap_is_bounded_and_grant_is_spent(self):
         discovery.seed_source_snapshot(self.decision, {self.key: self.initial}, generation='g1')
         self.accept()

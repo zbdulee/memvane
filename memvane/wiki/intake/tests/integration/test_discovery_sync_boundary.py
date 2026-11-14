@@ -13,6 +13,35 @@ from tests.support.settings_fake import expanded, use_config
 
 
 class DiscoverySyncBoundary(FixtureCase):
+    def test_selected_session_grant_backfills_existing_sources_once(self):
+        from memvane.wiki.intake import wiki_backfill as backfill
+        project = make_project(self.home)
+        project.write_note('docs/note.md', 'existing source\n')
+        project.git('add', '--', '.memvane/settings.json', 'docs/note.md')
+        project.git('commit', '-qm', 'fixture')
+        install = build_install(self, project)
+        use_config(self, project, expanded(project, compile={
+            'mode': 'auto-wiki', 'triggers': ['session_start_source', 'post_sync_source'],
+            'extractor': {'builtins': ['claude']}}))
+        install.settle()
+        payload = {'hook_event_name': 'SessionStart', 'cwd': str(project.root), 'session_id': 'fixture'}
+        with patch.object(runtime, 'request', return_value={'status': 'queued'}), \
+             patch.object(runtime, 'hook_wake'):
+            host.serve_selected('update-queued', 'claude', install.select(), payload)
+        first = install.run_sync()
+        decision = install.select()
+        progress = backfill.summary(backfill._load(decision))
+        self.assertEqual((progress['total'], progress['dispatched'], progress['settled']), (1, 1, 0))
+        self.assertEqual(backfill._load(decision)['engine'], 'claude')
+        queue = project.root / '.memvane/compile/source-queue.jsonl'
+        jobs = [json.loads(line) for line in queue.read_text().splitlines()]
+        self.assertEqual([(job['source']['path'], job['trigger']) for job in jobs],
+                         [('docs/note.md', 'session_start_source')])
+        self.assertIn(first['state'], ('indexed', 'unchanged'), first)
+        install.run_sync()
+        self.assertEqual([json.loads(line) for line in queue.read_text().splitlines()], jobs)
+        self.assertEqual(backfill.summary(backfill._load(decision)), progress)
+
     def test_ungranted_revision_waits_for_a_successful_bash_grant(self):
         project = make_project(self.home)
         source = project.write_note('docs/note.md', 'initial source\n')
