@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sqlite3
 import time
 
 from memvane.install.application import onboarding_workflow as _workflow
@@ -39,7 +38,6 @@ def finalize_initial_build(*, project_root, state_root, resolve_sync_target):
     from memvane.wiki.intake import api as intake
     from memvane.store import api as store_api, types as store_types
     from memvane.wiki.workspace import api as workspace_files
-    from contextlib import closing
     from memvane.store.api import regular as _regular
     from memvane.install.ledger_common import _read_json, _write
     from memvane.store.api import provider_spec
@@ -71,15 +69,11 @@ def finalize_initial_build(*, project_root, state_root, resolve_sync_target):
                 decision = journal.select_route(str(project), action='recall')
                 if decision.get('state') != 'preview':
                     _fail('initial_build_route_changed')
-                from memvane.kernel.errors import _query_only_uri
-                with closing(sqlite3.connect(_query_only_uri(Path(identity['storePath'])), uri=True)) as db:
-                    db.execute('PRAGMA query_only=ON')
-                    meta = store_api.stored_header(db)
-                    trees = store_api.stored_worktrees(db, project_root=str(project))
-                if meta is None or len(trees) != 1:
+                meta = store_api.read_header(Path(identity['storePath']), project_root=str(project))
+                if meta is None or len(meta['worktrees']) != 1:
                     _fail('initial_build_store_changed')
-                repository = json.loads(meta[0], object_pairs_hook=_unique)
-                worktree_id = trees[0][0]
+                repository = json.loads(meta['repository_json'], object_pairs_hook=_unique)
+                worktree_id = meta['worktrees'][0]['worktree_id']
                 store = store_api.open_store(identity['storePath'], repository=repository,
                                              scope_id=identity['scopeId'], reader=True)
                 try:

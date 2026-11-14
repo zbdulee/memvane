@@ -6,7 +6,6 @@ import json
 import os
 from pathlib import Path
 import re
-import sqlite3
 import stat
 
 from memvane.kernel.bundle_paths import PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH
@@ -450,20 +449,15 @@ def _create_v1_store(project_root, state_root, scope_id):
     project = _checked_project(project_root)
     path = state / 'store.sqlite'
     if path.exists() or path.is_symlink():
-        from contextlib import closing
-        from memvane.kernel.errors import _query_only_uri
         info = path.lstat()
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) & 0o077):
             _fail('initial_store_unsafe')
-        with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
-            db.execute('PRAGMA query_only=ON')
-            meta = store_api.stored_header(db)
-            rows = store_api.stored_worktrees(db, project_root=str(project), records=True)
-        if meta is None or len(rows) != 1:
+        meta = store_api.read_header(path, project_root=str(project))
+        if meta is None or len(meta['worktrees']) != 1:
             _fail('initial_store_identity_changed')
-        repository = json.loads(meta[0], object_pairs_hook=_unique)
-        worktree = json.loads(rows[0][0], object_pairs_hook=_unique)
+        repository = json.loads(meta['repository_json'], object_pairs_hook=_unique)
+        worktree = json.loads(meta['worktrees'][0]['record_json'], object_pairs_hook=_unique)
         binding = store_api.observe_binding(path, repository=repository, scope_id=scope_id,
                                             worktree_id=worktree['worktreeId'])
     else:

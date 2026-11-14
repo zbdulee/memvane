@@ -26,6 +26,13 @@ class CheckoutUnavailable(RuntimeError):
         self.reason = reason
         super().__init__(reason)
 
+# ``api.read_header`` result: the ``store_meta`` row's columns, then ``worktree``
+# (the row of the asked ``worktree_id`` or None) and ``worktrees`` (the rows of
+# the asked ``project_root``, a tuple). Each worktree row has STORE_WORKTREE_KEYS.
+STORE_HEADER_KEYS = ('incarnation', 'scope_id', 'repository_json', 'settings_policy_digest',
+                     'worktree', 'worktrees')
+STORE_WORKTREE_KEYS = ('worktree_id', 'project_root', 'binding_digest', 'record_json')
+
 MAX_MEMBERS = 20000
 STAGE_ITEM_FIELDS = ('path', 'action', 'input_sha', 'blob_sha', 'trust_digest', 'metadata_json')
 

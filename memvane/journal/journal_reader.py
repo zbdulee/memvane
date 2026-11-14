@@ -135,11 +135,7 @@ def _readonly(path, state, *, recover=False):
     ``SQLITE_READONLY_ROLLBACK``. ``query_only`` stays on, so that rollback is
     the only write; the writer's own rw connection would perform it anyway.
     """
-    before = _file(path, state)
-    for suffix in ('-wal', '-shm', '-journal'):
-        side = Path(str(path) + suffix)
-        if os.path.lexists(side):
-            _file(side, state)
+    before = _identity_before(path, state)
     try:
         from memvane.kernel.errors import _query_only_uri
         uri = Path(path).as_uri() + '?mode=rw' if recover else _query_only_uri(path)
@@ -151,12 +147,41 @@ def _readonly(path, state, *, recover=False):
             yield db
             _need(before == _file(path, state), 'reader_store_changed')
     except sqlite3.Error as exc:
-        # A killed writer's hot journal: a ro open refuses SQLite's rollback
-        # and writes nothing. The owner's next pass rolls it back (``recover``).
-        if (getattr(exc, 'sqlite_errorcode', None) == _READONLY_ROLLBACK
-                and os.path.lexists(str(path) + '-journal')):
-            raise journal.JournalEvidenceError('reader_store_recovery_pending') from exc
-        raise journal.JournalEvidenceError('reader_store_invalid') from exc
+        raise _sqlite_refusal(path, exc) from exc
+
+
+def _store_header(path, state, *, recover=False, project_root=None, worktree_id=None):
+    """``store.api.read_header`` of a private store between two file identity checks.
+
+    The same checks and refusals as ``_readonly``; ``recover`` as there.
+    """
+    from memvane.store import api as store_api
+    before = _identity_before(path, state)
+    try:
+        header = store_api.read_header(path, project_root=project_root, worktree_id=worktree_id,
+                                       recover=recover)
+    except sqlite3.Error as exc:
+        raise _sqlite_refusal(path, exc) from exc
+    _need(before == _file(path, state), 'reader_store_changed')
+    return header
+
+
+def _identity_before(path, state):
+    before = _file(path, state)
+    for suffix in ('-wal', '-shm', '-journal'):
+        side = Path(str(path) + suffix)
+        if os.path.lexists(side):
+            _file(side, state)
+    return before
+
+
+def _sqlite_refusal(path, exc):
+    # A killed writer's hot journal: a ro open refuses SQLite's rollback
+    # and writes nothing. The owner's next pass rolls it back (``recover``).
+    if (getattr(exc, 'sqlite_errorcode', None) == _READONLY_ROLLBACK
+            and os.path.lexists(str(path) + '-journal')):
+        return journal.JournalEvidenceError('reader_store_recovery_pending')
+    return journal.JournalEvidenceError('reader_store_invalid')
 
 
 def _plain(value):
@@ -199,16 +224,16 @@ def _schema3_store(state, project, proof, decision, db_path, worktree_id):
     path = Path(db_path)
     _need(path.is_absolute() and str(path) == decision.get('storePath'),
           'reader_store_path_invalid')
-    from memvane.store import api as store_api
     node = _file(path, state)
-    with _readonly(path, state) as db:
-        meta = store_api.stored_header(db, identity=True)
-        tree = store_api.stored_worktrees(db, worktree_id=worktree_id)
-    _need(meta is not None and tree is not None and meta[1] == proof['scopeId']
-          and isinstance(meta[2], str) and tree[0] == str(project), 'reader_store_changed')
-    return dict(db_path=str(path), db_node=node, incarnation=meta[0],
-                repository_digest=_repository_digest(meta[2]), worktree_id=worktree_id,
-                worktree_binding=tree[1], settings_policy_digest=meta[3])
+    meta = _store_header(path, state, worktree_id=worktree_id)
+    tree = None if meta is None else meta['worktree']
+    _need(meta is not None and tree is not None and meta['scope_id'] == proof['scopeId']
+          and isinstance(meta['repository_json'], str) and tree['project_root'] == str(project),
+          'reader_store_changed')
+    return dict(db_path=str(path), db_node=node, incarnation=meta['incarnation'],
+                repository_digest=_repository_digest(meta['repository_json']),
+                worktree_id=worktree_id, worktree_binding=tree['binding_digest'],
+                settings_policy_digest=meta['settings_policy_digest'])
 
 
 @contextmanager
@@ -233,21 +258,24 @@ def _schema3_pin(record, *, deadline, linked=None, pin_view=True):
     from memvane.store.types import BlobStoreError
     state, path = Path(record['state']), Path(record['db_path'])
     target, project = record['worktree_id'], record['project']
-    with _readonly(path, state) as db:
-        row = store_api.stored_header(db)
-        if linked is not None:
-            project = linked.get('worktreeProjectRoot')
-            _need(isinstance(project, str) and project != record['project'], 'reader_checkout_changed')
-            trees = store_api.stored_worktrees(db, project_root=project)
-    _need(row is not None and isinstance(row[0], str)
-          and _repository_digest(row[0]) == record['repository_digest'], 'reader_store_changed')
     if linked is not None:
-        _need(len(trees) <= 1 and all(tree[0] != record['worktree_id'] for tree in trees),
+        project = linked.get('worktreeProjectRoot')
+        checkout = isinstance(project, str) and project != record['project']
+    row = _store_header(path, state, project_root=project if linked is not None and checkout else None)
+    if linked is not None:
+        _need(checkout, 'reader_checkout_changed')
+    _need(row is not None and isinstance(row['repository_json'], str)
+          and _repository_digest(row['repository_json']) == record['repository_digest'],
+          'reader_store_changed')
+    if linked is not None:
+        trees = row['worktrees']
+        _need(len(trees) <= 1 and all(tree['worktree_id'] != record['worktree_id'] for tree in trees),
               'reader_store_changed')
         if not trees:
             raise BlobStoreError('view_preparing')
-        target = trees[0][0]
-    store = store_api.open_store(path, repository=json.loads(row[0]), scope_id=record['scope'],
+        target = trees[0]['worktree_id']
+    store = store_api.open_store(path, repository=json.loads(row['repository_json']),
+                                 scope_id=record['scope'],
                                  reader=True, deadline=deadline)
     try:
         identity = store_api.store_identity(store)

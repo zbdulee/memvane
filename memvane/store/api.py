@@ -94,14 +94,9 @@ def store_identity(store, handle=None):
     return implementation(store, handle)
 
 
-def stored_header(db, *, identity=False):
-    from memvane.store.application.store_ops import stored_header as implementation
-    return implementation(db, identity=identity)
-
-
-def stored_worktrees(db, *, project_root=None, worktree_id=None, records=False):
-    from memvane.store.application.store_ops import stored_worktrees as implementation
-    return implementation(db, project_root=project_root, worktree_id=worktree_id, records=records)
+def read_header(path, *, project_root=None, worktree_id=None, recover=False):
+    from memvane.store.application.store_ops import read_header as implementation
+    return implementation(path, project_root=project_root, worktree_id=worktree_id, recover=recover)
 
 
 # Pinned reads.

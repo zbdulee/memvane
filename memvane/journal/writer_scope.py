@@ -53,10 +53,9 @@ class _SelectedWriterContext:
             evidence = R._schema3_store(state, project, self.proof, self.decision,
                                         record['db_path'], record['worktree_id'])
             R._need(R.records_agree(record, evidence, tuple(evidence)), 'writer_plan_store_changed')
-            with R._readonly(Path(record['db_path']), state, recover=True) as db:
-                meta = store_api.stored_header(db)
+            meta = R._store_header(Path(record['db_path']), state, recover=True)
             R._need(meta is not None, 'writer_plan_store_changed')
-            repository = json.loads(meta[0])
+            repository = json.loads(meta['repository_json'])
             binding = store_api.observe_binding(record['db_path'], repository=repository,
                                                 scope_id=record['scope'], worktree_id=record['worktree_id'])
             R._need(binding['incarnation'] == record['incarnation']
@@ -114,9 +113,6 @@ class _BuildWriterContext:
         from memvane.journal.dispatch_target import dispatch_target
         from memvane.journal.install_journal import _attestation, _v1_provider_manifest, inspect_journal
         from memvane.store import api as store_api
-        from memvane.kernel.errors import _query_only_uri
-        import sqlite3
-        from contextlib import closing
         R._need(self.pid == os.getpid() and self.thread is threading.current_thread()
                 and not self.entered and not self.finished, 'normal_writer_reentered')
         state = Path(self.decision['stateRoot'])
@@ -140,17 +136,15 @@ class _BuildWriterContext:
                           'journalPath': identity['journalPath'], 'selectionEpoch': row['epoch'],
                           'vectorProfile': row['vectorProfile'], 'providerManifest': manifest}
             path = Path(identity['storePath'])
-            with closing(sqlite3.connect(_query_only_uri(path), uri=True)) as db:
-                db.execute('PRAGMA query_only=ON')
-                meta = store_api.stored_header(db)
-                rows = store_api.stored_worktrees(db, project_root=identity['projectRoot'])
-            R._need(meta is not None and len(rows) == 1, 'writer_plan_store_changed')
-            repository = json.loads(meta[0])
+            meta = store_api.read_header(path, project_root=identity['projectRoot'])
+            R._need(meta is not None and len(meta['worktrees']) == 1, 'writer_plan_store_changed')
+            repository = json.loads(meta['repository_json'])
+            worktree_id = meta['worktrees'][0]['worktree_id']
             binding = store_api.observe_binding(path, repository=repository, scope_id=identity['scopeId'],
-                                                worktree_id=rows[0][0])
+                                                worktree_id=worktree_id)
             R._need(binding['incarnation'] == identity['storeIncarnation'], 'writer_plan_store_changed')
             self.store = {'path': str(path), 'incarnation': binding['incarnation'],
-                          'worktree_id': rows[0][0], 'repository': repository,
+                          'worktree_id': worktree_id, 'repository': repository,
                           'worktree_binding': binding['saved']['binding_digest'],
                           'policy_digest': binding['policy_digest']}
             self.entered = True

@@ -1,8 +1,8 @@
 """Store lifecycle, identity and read use cases for other domains.
 
 Callers reach these through ``memvane.store.api``. Each function keeps the
-store's own checks; callers keep their refusal codes and their own
-connection opening (journal ``_readonly``, query_only connections).
+store's own checks; callers keep their refusal codes. ``read_header`` opens
+the store file itself; callers that compare file identity do so around it.
 """
 from __future__ import annotations
 
@@ -65,33 +65,45 @@ def store_identity(store, handle=None):
     return identity
 
 
-def stored_header(db, *, identity=False):
-    """The store header row read on the caller's connection.
+def read_header(path, *, project_root=None, worktree_id=None, recover=False):
+    """The store header and worktree rows in one query_only snapshot, or None.
 
-    ``(repository_json,)``; with ``identity=True``
-    ``(incarnation, scope_id, repository_json, settings_policy_digest)``.
+    Opens ``path`` itself: ``kernel.errors._query_only_uri`` (``mode=ro``, or
+    ``mode=rw`` where Apple's libsqlite3 needs it), or ``mode=rw`` with
+    ``recover=True`` so SQLite rolls back a hot journal a killed writer left
+    (only for reads under the queue's sync owner). ``query_only`` and
+    ``trusted_schema=OFF`` stay on, so that rollback is the only write. A
+    ``mode=ro`` open refuses a hot journal with ``SQLITE_READONLY_ROLLBACK``;
+    every ``sqlite3.Error`` reaches the caller untranslated.
+
+    Returns None when the database has no ``store_meta`` row, else a dict
+    with ``types.STORE_HEADER_KEYS``: ``worktree`` is the ``worktree_id`` row
+    (None when absent or not asked) and ``worktrees`` the ``project_root``
+    rows (empty when not asked); each row has ``types.STORE_WORKTREE_KEYS``.
     """
-    if identity:
-        return db.execute('SELECT incarnation,scope_id,repository_json,settings_policy_digest '
+    import sqlite3
+    from contextlib import closing
+    from pathlib import Path
+    from memvane.kernel.errors import _query_only_uri
+    from memvane.store.types import STORE_HEADER_KEYS, STORE_WORKTREE_KEYS
+    columns = ','.join(STORE_WORKTREE_KEYS)
+    uri = Path(path).as_uri() + '?mode=rw' if recover else _query_only_uri(path)
+    with closing(sqlite3.connect(uri, uri=True, timeout=2, isolation_level=None)) as db:
+        db.execute('PRAGMA query_only=ON')
+        db.execute('PRAGMA trusted_schema=OFF')
+        db.execute('BEGIN')
+        meta = db.execute('SELECT incarnation,scope_id,repository_json,settings_policy_digest '
                           'FROM store_meta WHERE singleton=1').fetchone()
-    return db.execute('SELECT repository_json FROM store_meta WHERE singleton=1').fetchone()
-
-
-def stored_worktrees(db, *, project_root=None, worktree_id=None, records=False):
-    """Worktree rows read on the caller's connection.
-
-    By ``worktree_id``: one ``(project_root, binding_digest)`` row or None.
-    By ``project_root``: every ``(worktree_id,)`` row, or with ``records=True``
-    every ``(record_json,)`` row.
-    """
-    if worktree_id is not None:
-        return db.execute('SELECT project_root,binding_digest FROM worktrees WHERE worktree_id=?',
-                          (worktree_id,)).fetchone()
-    if records:
-        return db.execute('SELECT record_json FROM worktrees WHERE project_root=?',
-                          (project_root,)).fetchall()
-    return db.execute('SELECT worktree_id FROM worktrees WHERE project_root=?',
-                      (project_root,)).fetchall()
+        if meta is None:
+            return None
+        tree = None if worktree_id is None else db.execute(
+            f'SELECT {columns} FROM worktrees WHERE worktree_id=?', (worktree_id,)).fetchone()
+        trees = () if project_root is None else db.execute(
+            f'SELECT {columns} FROM worktrees WHERE project_root=?', (project_root,)).fetchall()
+    def row(values):
+        return dict(zip(STORE_WORKTREE_KEYS, values))
+    return dict(zip(STORE_HEADER_KEYS, (*meta, None if tree is None else row(tree),
+                                        tuple(row(values) for values in trees))))
 
 
 def pinned_vector(store, pin):
