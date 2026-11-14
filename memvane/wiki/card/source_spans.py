@@ -35,7 +35,7 @@ MAX_QUOTE_CHARS = 4000
 MAX_SPAN_SOURCE_BYTES = 4 * 1024 * 1024
 ABSENT = "absent"
 PRESENT = "present"
-INVALID = "invalid"
+from memvane.wiki.card.types import SOURCE_SPANS_INVALID as INVALID
 
 
 def _sha256(data: bytes) -> str:

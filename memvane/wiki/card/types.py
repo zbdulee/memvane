@@ -20,6 +20,14 @@ SOURCE_KIND_FILE = "file"
 
 SOURCE_REFRESH_PENDING = "source-refresh-pending.jsonl"
 
+# Card source freshness states (wiki_freshness).
+FRESH = "fresh"
+STALE = "stale"
+UNKNOWN = "unknown"
+# The declared-sources block and the sourceSpans list failed to parse.
+SOURCES_INVALID = "invalid"
+SOURCE_SPANS_INVALID = "invalid"
+
 
 AUTO_START_OPEN = "<!-- qmd:auto:start"
 AUTO_START_TEMPLATE = '<!-- qmd:auto:start id="main" sourceHash="{source_hash}" -->'

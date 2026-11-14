@@ -99,8 +99,8 @@ from memvane.kernel import memvane_paths
 from memvane.wiki.workspace import api as scan_state
 from memvane.settings import api as source_text
 from memvane.wiki.card import api as wc
-from memvane.wiki.card.types import FRONTMATTER_RE, SOURCE_KIND_FILE
-from memvane.wiki.card.api import card_support as wsm
+from memvane.wiki.card.types import FRONTMATTER_RE, SOURCE_KIND_FILE, SOURCES_INVALID, FRESH, STALE
+from memvane.wiki.card import api as wsm
 from memvane.wiki.lifecycle import wiki_source_retire
 
 DEFAULT_MAX_CARDS = 300
@@ -273,8 +273,8 @@ def inspect_legacy(info: dict, block: str, root: Path, allow_roots: list[Path],
     """
     from memvane.wiki.card import api as wiki_card
 
-    records, parsed = wsm.source_missing.declared_source_records(block)
-    if parsed == wsm.source_missing.SOURCES_INVALID:
+    records, parsed = wsm.declared_source_records(block)
+    if parsed == SOURCES_INVALID:
         info["state"] = UNDECIDABLE
         info["reason"] = "invalid_sources"
         return info
@@ -371,16 +371,16 @@ def inspect_card(page: Path, root: Path, allow_roots: list[Path],
 
 def changed_sources(info: dict) -> list[tuple[dict, str]] | None:
     """`[(revision, current_sha)]` whose bytes differ; None when unreadable."""
-    from memvane.wiki.card.api import card_support as wiki_freshness
+    from memvane.wiki.card import api as wiki_freshness
 
     changed = []
     for revision, resolved in info["present"]:
-        state, _reason = wiki_freshness.freshness.compare_revision(resolved, revision)
-        if state == wiki_freshness.freshness.FRESH:
+        state, _reason = wiki_freshness.compare_revision(resolved, revision)
+        if state == FRESH:
             continue
-        if state != wiki_freshness.freshness.STALE:
+        if state != STALE:
             return None
-        snapshot = wiki_freshness.freshness.snapshot_file(resolved)
+        snapshot = wiki_freshness.snapshot_file(resolved)
         if snapshot is None:
             return None
         changed.append((revision, snapshot["sha256"]))
@@ -389,11 +389,11 @@ def changed_sources(info: dict) -> list[tuple[dict, str]] | None:
 
 def backfill_revisions(info: dict) -> list[dict] | None:
     """Closed-schema revisions of a BACKFILL card's current source bytes; None if unreadable."""
-    from memvane.wiki.card.api import card_support as wiki_freshness
+    from memvane.wiki.card import api as wiki_freshness
 
     revisions = []
     for source, resolved in info["present"]:
-        snapshot = wiki_freshness.freshness.snapshot_file(resolved)
+        snapshot = wiki_freshness.snapshot_file(resolved)
         if snapshot is None:
             return None
         revisions.append({**source, "sha256": snapshot["sha256"], "size": snapshot["size"],
@@ -517,7 +517,7 @@ def run(cwd: str) -> dict:
         return result
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     scan_cfg = compile_cfg.get("sourceScan") if isinstance(compile_cfg.get("sourceScan"), dict) else {}
-    wiki_root = wsm.source_missing.wiki_root_of(root, config)
+    wiki_root = wsm.wiki_root_of(root, config)
     if wiki_root is None or wiki_root.is_symlink():
         log("ABORT: unsafe wikiPath")
         return result
@@ -573,7 +573,7 @@ def run(cwd: str) -> dict:
     if total > MAX_TOTAL_BYTES:
         log(f"SKIP: wiki is {total} bytes, over MAX_TOTAL_BYTES={MAX_TOTAL_BYTES}")
         return result
-    allow_roots = wsm.source_missing.allow_roots_of(config)
+    allow_roots = wsm.allow_roots_of(config)
     known = known_collections(config)
     rels = [page.relative_to(wiki_root).as_posix() for page in pages]
     from memvane.settings import api as source_label
@@ -755,7 +755,7 @@ def dry_run(cwd: str) -> dict:
                          "legacyMissing": 0, "retire": 0, "undecidable": 0, "manual": 0},
               "undecidableReasons": {}, "held": 0, "heldReasons": {}, "gitSkip": None,
               "skip": None, "guard": None}
-    wiki_root = wsm.source_missing.wiki_root_of(root, config)
+    wiki_root = wsm.wiki_root_of(root, config)
     if wiki_root is None or wiki_root.is_symlink():
         report["skip"] = "unsafe_wiki_path"
         return report
@@ -769,7 +769,7 @@ def dry_run(cwd: str) -> dict:
         report["skip"] = f"cards_over_MAX_CARDS_{MAX_CARDS}"
     elif total > MAX_TOTAL_BYTES:
         report["skip"] = f"bytes_over_MAX_TOTAL_BYTES_{MAX_TOTAL_BYTES}"
-    allow_roots = wsm.source_missing.allow_roots_of(config)
+    allow_roots = wsm.allow_roots_of(config)
     known = known_collections(config)
     from memvane.settings import api as source_label
     label = source_label.resolver(root, config)

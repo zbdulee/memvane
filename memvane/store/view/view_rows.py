@@ -265,12 +265,12 @@ def _path_allowed(path, prefixes, exclusions):
 
 def _locators(spans):
     """Sorted line locators; any span kind but the two line kinds refuses the read."""
-    from memvane.wiki.card.api import card_support as source_spans
+    from memvane.wiki.card import api as source_spans
     for span in spans:
         if not isinstance(span, dict) or span.get('kind') not in (v.LEGACY_LINE_SPAN, v.LINE_SPAN):
             v.fail('legacy_card_trust_invalid')
     ordered = sorted(spans, key=lambda span: (span['path'], span['startLine'], span['endLine']))
-    return [source_spans.source_spans.locator(span) for span in ordered]
+    return [source_spans.locator(span) for span in ordered]
 
 
 

@@ -30,7 +30,7 @@ def _is_auto_writable_page(path: Path):
 
 @workspace_files.guard_path
 def _insert_source_revisions(path: Path, revisions: list) -> bool:
-    return wiki_card._insert_source_revisions(path, revisions)
+    return wiki_card.insert_source_revisions(path, revisions)
 
 
 _LINEAGE_CACHE: dict = {}

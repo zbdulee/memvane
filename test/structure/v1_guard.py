@@ -181,7 +181,13 @@ _API_PARTS = ('api', 'types')
 # wiki/intake, wiki/lifecycle, host, sync or app; no two share a callee. The
 # 33rd name is UNRESOLVED_BINDING, the activity-log sentinel append_activity
 # needs as its default so an omitted binding stays distinguishable from None.
-_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 33}
+# wiki/card excepted at its exact count: 48 functions, each forwarding to a
+# distinct card implementation (frontmatter and body parsing, YAML scalar
+# dump/load, recall trust, declared sources, source freshness and pending
+# refreshes, source spans) and each called from wiki/compile, wiki/lifecycle,
+# wiki/dedup, wiki/intake, store, sync, host or learning. Card is the stored
+# card contract every wiki writer and reader shares; no two names share a callee.
+_API_NAME_LIMITS = {'journal': 51, 'runtime': 42, 'wiki/workspace': 33, 'wiki/card': 48}
 _CREATE_TABLE = re.compile(r'\bCREATE\s+(?:TEMP(?:ORARY)?\s+|VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?'
                            r'(?!IF\b)["`\[]?(?:\w+\.)?(\w+)', re.I)
 _TABLE_USE = re.compile(r'\b(DELETE\s+FROM|FROM|INTO|UPDATE|JOIN)\s+["`\[]?(?:main\.)?(\w+)')

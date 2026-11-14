@@ -20,9 +20,7 @@ from memvane.settings.api import ledger
 from memvane.wiki.card.types import SOURCE_REFRESH_PENDING
 from memvane.wiki.card import yaml_scalars
 
-FRESH = "fresh"
-STALE = "stale"
-UNKNOWN = "unknown"
+from memvane.wiki.card.types import FRESH, STALE, UNKNOWN
 PENDING_REFRESH = "pending_refresh"
 RESOLVED = "resolved"
 PENDING_COMPACT_BYTES = 256 * 1024

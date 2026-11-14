@@ -194,18 +194,16 @@ def _sweep(store, handle, directory, names, entry, result, members):
 
 def _parity(intent, image):
     """The card's frontmatter claims exactly the intent's fingerprints and spans."""
-    from memvane.wiki.card import api as wiki_card
-    from memvane.wiki.card.api import card_support
-    spans_api = card_support.source_spans
-    block = spans_api._frontmatter_block(image.decode('utf8'))
+    from memvane.wiki.card import api as wiki_card, types as card_types
+    block = wiki_card.frontmatter_block(image.decode('utf8'))
     if block is None:
         return False
     revisions = wiki_card.frontmatter_source_revisions(block)
-    span_state, spans = spans_api.read_card_spans(block)
+    span_state, spans = wiki_card.read_card_spans(block)
     found = {(r['path'], r['sha256'], r['size']) for r in revisions}
     expected = {(fp['path'], fp['source_sha'], fp['byte_length'])
                 for fp in intent['sourceFingerprints']['fingerprints']}
-    return (found == expected and not spans_api.is_invalid(span_state)
+    return (found == expected and span_state != card_types.SOURCE_SPANS_INVALID
             and spans == sorted(intent['sourceSpans'], key=lambda s: (s['path'], s['startLine'], s['endLine'])))
 
 

@@ -63,11 +63,9 @@ from memvane.settings import api as qmd_config, types as settings_types
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.wiki.compile import wiki_compile_worker as wcw
 from memvane.wiki.engines import api as engines
-from memvane.wiki.card.api import card_support
-wiki_freshness = card_support.freshness
-from memvane.wiki.card.api import card_support as wsm
-from memvane.wiki.card.api import card_support as card_operations
-source_spans = card_operations.source_spans
+from memvane.wiki.card import api as wiki_freshness
+from memvane.wiki.card import api as wsm
+from memvane.wiki.card import api as source_spans
 from memvane.wiki.card.api import card_sources_allowed
 from memvane.wiki.card import api as yaml_scalars
 from memvane.wiki.workspace.api import queue_lock_path as _queue_lock_path, safe_queue_path as _safe_queue_path, requeue_lines, append_jsonl, read_queue, claim_queue
@@ -638,30 +636,30 @@ def snapshot_revision_evidence(
         return None, None, {}
     raw_revisions = job.get("sourceRevisions")
     if not isinstance(raw_revisions, list) or not raw_revisions:
-        return [], {"state": wiki_freshness.UNKNOWN, "reason": "missing_source_revisions"}, {}
+        return [], {"state": wiki_markers.UNKNOWN, "reason": "missing_source_revisions"}, {}
 
     from memvane.wiki.card import api as wiki_card
 
-    allow_roots = wsm.source_missing.allow_roots_of(config)
+    allow_roots = wsm.allow_roots_of(config)
     loaded = []
     evidence: dict[str, dict] = {}
     for raw in raw_revisions:
         expected = yaml_scalars.normalize_source_revision(raw)
         if expected is None:
-            return [], {"state": wiki_freshness.UNKNOWN, "reason": "invalid_source_revision"}, {}
+            return [], {"state": wiki_markers.UNKNOWN, "reason": "invalid_source_revision"}, {}
         resolved, reason = wiki_card.resolve_existing_source(expected["path"], root, allow_roots)
         if resolved is None:
-            state = wiki_freshness.STALE if reason == "missing" else wiki_freshness.UNKNOWN
+            state = wiki_markers.STALE if reason == "missing" else wiki_markers.UNKNOWN
             return [], {"state": state, "reason": reason or "source_unavailable"}, {}
         snapshot = wiki_freshness.snapshot_bytes(resolved)
         if snapshot is None:
-            return [], {"state": wiki_freshness.UNKNOWN, "reason": "source_snapshot_failed"}, {}
+            return [], {"state": wiki_markers.UNKNOWN, "reason": "source_snapshot_failed"}, {}
         revision, data = snapshot
         if revision["sha256"] != expected["sha256"]:
-            return [], {"state": wiki_freshness.STALE, "reason": "content_hash_mismatch"}, {}
+            return [], {"state": wiki_markers.STALE, "reason": "content_hash_mismatch"}, {}
         bounded = wcw.decode_source_bounded(data, max_chars)
         if bounded is None:
-            return [], {"state": wiki_freshness.UNKNOWN, "reason": "source_decode_failed"}, {}
+            return [], {"state": wiki_markers.UNKNOWN, "reason": "source_decode_failed"}, {}
         content, truncated = bounded
         loaded.append({
             "path": expected["path"],
@@ -674,7 +672,7 @@ def snapshot_revision_evidence(
             evidence[expected["path"]] = {}
         else:
             evidence[expected["path"]] = item
-    return loaded, {"state": wiki_freshness.FRESH, "checked": len(loaded)}, evidence
+    return loaded, {"state": wiki_markers.FRESH, "checked": len(loaded)}, evidence
 
 
 def base_record(job: dict) -> dict:
@@ -697,7 +695,7 @@ def source_freshness(root: Path, config: dict, job: dict) -> dict | None:
         return None
     revisions = job.get("sourceRevisions")
     return wiki_freshness.check_card(
-        {"sourceRevisions": revisions}, root, wsm.source_missing.allow_roots_of(config))
+        {"sourceRevisions": revisions}, root, wsm.allow_roots_of(config))
 
 
 def card_changed_during_verify(
@@ -860,7 +858,7 @@ def apply_verify_verdict_locked(
         })
         return True, False
     freshness = source_freshness(root, config, job)
-    if freshness is not None and freshness.get("state") != wiki_freshness.FRESH:
+    if freshness is not None and freshness.get("state") != wiki_markers.FRESH:
         log_verdict(log_path, {
             **base_record(job), **provenance, "result": "deferred",
             "reason": "source_changed_during_verify",
@@ -1080,7 +1078,7 @@ def process_verify_job(
     max_chars = int(compile_cfg.get("maxSourceChars", 12000) or 12000)
     snapshot_sources, freshness, span_evidence = snapshot_revision_evidence(
         root, config, job, max_chars)
-    if freshness is not None and freshness.get("state") != wiki_freshness.FRESH:
+    if freshness is not None and freshness.get("state") != wiki_markers.FRESH:
         log_verdict(log_path, {
             **base_record(job), "result": "deferred", "reason": "source_changed_before_verify",
             "freshnessReason": freshness.get("reason", ""),

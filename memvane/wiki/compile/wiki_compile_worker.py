@@ -40,8 +40,7 @@ from memvane.wiki.workspace.api import (queue_lock_path as _queue_lock_path, saf
                                         requeue_lines, append_jsonl, read_queue, claim_queue)
 from memvane.wiki.compile import wiki_compile as wc
 from memvane.learning.api import card_prompt_budget, emit_card_budget
-from memvane.wiki.card.api import card_support
-wiki_freshness = card_support.freshness
+from memvane.wiki.card import api as wiki_freshness, types as wiki_markers
 from memvane.wiki.card import api as yaml_scalars
 
 
@@ -993,7 +992,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
             }
         wiki_selected_laya.recheck(selected_route)
         freshness, _ = wiki_freshness.compare_revision(src, source_revision)
-        if reason == 'resource_deferred' or freshness != wiki_freshness.FRESH:
+        if reason == 'resource_deferred' or freshness != wiki_markers.FRESH:
             break
         if reason is None and (not isinstance(extracted, dict) or
                                not isinstance(extracted.get('candidates'), list)):
@@ -1012,7 +1011,7 @@ def process_job(root: Path, config: dict, compile_cfg: dict, job: dict, *,
     if reason == "resource_deferred":
         return False, True, []  # retain job; no failure cooldown or provider fallback
     freshness, _ = wiki_freshness.compare_revision(src, source_revision)
-    if freshness != wiki_freshness.FRESH:
+    if freshness != wiki_markers.FRESH:
         append_jsonl(cpath, bounded_failure(
             "extractor_failed", job, "source_changed_during_extract"))
         return False, True, []
@@ -1286,7 +1285,7 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
         extracted, split_reason, _ = run_extractor(argv, split_payload, timeout, root)
         wiki_selected_laya.recheck(selected_route)
         freshness, _ = wiki_freshness.compare_revision(src, source_revision)
-        if freshness != wiki_freshness.FRESH:
+        if freshness != wiki_markers.FRESH:
             append_jsonl(cpath, bounded_failure(
                 'extractor_failed', job, 'source_changed_during_extract'))
             return False

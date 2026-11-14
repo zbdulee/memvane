@@ -912,7 +912,7 @@ def write_pending_card(path: Path, text: str) -> bool:
 @workspace_files.guard_path
 @workspace_files.guard_path
 def insert_source_revisions(path: Path, revisions: list) -> bool:
-    from memvane.wiki.card.api import _insert_source_revisions as implementation
+    from memvane.wiki.card.api import insert_source_revisions as implementation
     return implementation(path, revisions)
 
 
@@ -1047,8 +1047,7 @@ def render_verification(path: Path, status: str, engine: str, mode: str,
         emitted = yaml_scalars.dump_source_spans(source_spans)
         if status != "verified" or not emitted:
             return None
-        from memvane.wiki.card.api import card_support
-        spans_module = card_support.source_spans
+        from memvane.wiki.card import api as spans_module
         if not spans_module.bound_to_revisions(
                 yaml_scalars.load_source_spans(emitted) or [],
                 spans_module.card_revisions(expected_text)):

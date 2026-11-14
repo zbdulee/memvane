@@ -38,7 +38,7 @@ def wiki_root_of(root: Path, config: dict) -> Path | None:
 
 SOURCES_OK = "ok"
 SOURCES_ABSENT = "absent"
-SOURCES_INVALID = "invalid"
+from memvane.wiki.card.types import SOURCES_INVALID
 
 
 def declared_source_records(block: str) -> tuple[list[dict], str]:
