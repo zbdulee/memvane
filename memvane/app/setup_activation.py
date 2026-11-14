@@ -10,11 +10,11 @@ import sqlite3
 import time
 
 from memvane.app import setup_workflow as _workflow
+from memvane.journal.types import V1_BUILD_FILE
 
 _checked_project = _workflow._checked_project
 _fail = _workflow._fail
 _install_lock = _workflow._install_lock
-_ledger = _workflow._ledger
 _private_parent = _workflow._private_parent
 _unique = _workflow._unique
 _read_private = _workflow._read_private
@@ -97,24 +97,24 @@ def retire_foreign_pointers(plan):
 
 def finalize_initial_build(*, project_root, state_root):
     """Seal the ready single-store head in the prepared journal and ledger."""
-    from memvane.install.api import _initial_build as build
+    from memvane.install import api as install_api
     from memvane.journal import api as journal
     from memvane.journal.api import schema3_reader_record, seal_reader
-    from memvane.app.api import _runtime_dispatch as dispatch
+    from memvane.app import runtime_dispatch as dispatch
     from memvane.sync import api as sync
     from memvane.store import api as store_api, types as store_types
     from memvane.wiki.workspace import api as workspace_files
     from contextlib import closing
     from memvane.store.api import regular as _regular
-    _read_json, _write = _ledger._read_json, _ledger._write
+    from memvane.install.api import ledger_read_json as _read_json, ledger_write as _write
     from memvane.store.api import provider_spec
     from memvane.runtime.api import sync_owner
     state = _private_parent(state_root)
     project = _checked_project(project_root)
-    with _install_lock(state), build.owner(state) as owned:
+    with _install_lock(state), install_api.build_owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = build.read_v1(state)
+        record = install_api.build_read_v1(state)
         if record is None or record['identity']['projectRoot'] != str(project):
             _fail('initial_build_project_mismatch')
         if record['phase'] != 'ready':
@@ -204,10 +204,10 @@ def finalize_initial_build(*, project_root, state_root):
 
 def _rescan_stale_build(record, project):
     """Move a ready but outdated unselected build back to ``building``; one wake."""
-    from memvane.install.api import _initial_build as build
+    from memvane.install import api as install_api
     if _workflow._project_pointers_present(project):
         _fail('initial_build_already_selected')
-    record = build.advance_v1(record, phase='building', reason='initial_build_out_of_date')
+    record = install_api.build_advance_v1(record, phase='building', reason='initial_build_out_of_date')
     return {'status': 'initial_build_pending', 'phase': record['phase'],
             'reason': 'initial_build_out_of_date', 'changesApplied': 1,
             'wake': _request_build_wake(str(project))}
@@ -215,7 +215,7 @@ def _rescan_stale_build(record, project):
 
 def activate_origin_selection(project_root, journal_path, route_bytes):
     """Publish or recover the proved v1 selection under the install lock."""
-    from memvane.install.api import _initial_build as build
+    from memvane.install import api as install_api
     from memvane.journal import api as journal_module
     from memvane.journal.api import commit_selection, pin_schema3
     from memvane.sync import api as sync
@@ -225,7 +225,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     from memvane.wiki.workspace import api as workspace_files
     from memvane.route.api import classify_v4 as _classify_v4
     from memvane.route.types import SELECTION_SCHEMA_V1
-    _read_json, _write = _ledger._read_json, _ledger._write
+    from memvane.install.api import ledger_read_json as _read_json, ledger_write as _write
     from memvane.journal.api import reader_lifetime
     from memvane.runtime.api import sync_owner
     project = _checked_project(project_root)
@@ -234,10 +234,10 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
     if journal != state / 'journal.sqlite':
         _fail('initial_build_journal_changed')
     route, digest = journal_module.route_record(route_bytes, journal)
-    with build.owner(state) as owned:
+    with install_api.build_owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = build.read_v1(state)
+        record = install_api.build_read_v1(state)
         if record is None or record['phase'] != 'ready':
             _fail('initial_build_not_ready')
         identity = record['identity']
@@ -316,7 +316,7 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
 
 def recover_origin_selection(project_root, journal_path, route_bytes):
     """Finish the same partially published or withdrawn v1 selection."""
-    _read_json = _ledger._read_json
+    from memvane.install.api import ledger_read_json as _read_json
     state = Path(journal_path).parent
     ledger_path = state / 'ledger.json'
     ledger = _read_json(ledger_path) if os.path.lexists(ledger_path) else None
@@ -368,18 +368,19 @@ def _restored_without_build(journal, project, state):
 
 
 def _restore_v1_locked(project, state):
-    from memvane.install.api import _initial_build as build
+    from memvane.install import api as install_api
     from memvane.journal import api as journal
     from memvane.journal.api import restore_selection
     from memvane.route.types import SELECTION_SCHEMA_V1
-    _read_json, _write, _fsync_dir = _ledger._read_json, _ledger._write, _ledger._fsync_dir
+    from memvane.install.api import (ledger_read_json as _read_json, ledger_write as _write,
+                                     ledger_fsync_dir as _fsync_dir)
     from memvane.journal.api import reader_lifetime
     from memvane.runtime.api import sync_owner
     from memvane.wiki.workspace import api as workspace_files
-    with build.owner(state) as owned:
+    with install_api.build_owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = build.read_v1(state)
+        record = install_api.build_read_v1(state)
         if record is None:
             return _restored_without_build(journal, project, state)
         if record['identity']['projectRoot'] != str(project):
@@ -440,11 +441,11 @@ def _restore_v1_locked(project, state):
                         _fail('restore_project_pointer_changed')
                     target.unlink()
                     _fsync_dir(target.parent)
-                build.retire_project_pointer(identity)
+                install_api.build_retire_project_pointer(identity)
                 if ledger is not None and ledger['phase'] != 'restored':
                     ledger = {**ledger, 'phase': 'restored', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)
                 # Last: a rerun without the record reads the restored journal.
-                os.unlink(state / build.V1_BUILD_FILE)
+                os.unlink(state / V1_BUILD_FILE)
                 _fsync_dir(state)
     return {'status': 'released' if released else 'restored', 'changesApplied': 1}

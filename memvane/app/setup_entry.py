@@ -140,7 +140,7 @@ def main(argv=None):
                            'finalize-index-origin',
                            'activate-index-origin','recover-index-origin',
                            'restore-index-origin'):
-            from memvane.app.api import _setup_workflow as product
+            from memvane.app import setup_workflow as product
             installed = Path(__file__).resolve(strict=True).parents[2]
             if args.action != 'plan-fresh-wiki-origin' and not args.state_root:
                 raise ValueError('state_root_required')

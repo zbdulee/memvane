@@ -16,10 +16,9 @@ import time
 from memvane.settings import api as project_dir, types as project_types
 from memvane.install.types import InstallBlocked
 from memvane.install.api import install_lock as _install_lock
-from memvane.install.api import _initial_build as initial_build
-from memvane.install.api import _ledger
 
 from memvane.journal.api import inspect_journal
+from memvane.journal.types import V1_BUILD_FILE
 
 
 _REVIEWED_MODEL_BASENAMES = frozenset((
@@ -536,9 +535,9 @@ def _create_v1_route(plan, state_root, install_id, store, vector_profile):
 
 def _register_initial_build(*, plan, reviewed_provider, state, journal, install_id):
     """Register the reviewed single-store build under the existing install lock."""
-    from memvane.install.api import _initial_build as initial_build
+    from memvane.install import api as install_api
     from memvane.journal.api import prepare_v1_journal
-    existing = initial_build.lookup(plan['projectRoot'])
+    existing = install_api.build_lookup(plan['projectRoot'])
     if existing is not None and (existing['identity']['stateRoot'] != str(state)
                                  or existing['identity']['installId'] != install_id):
         _fail('initial_build_already_registered')
@@ -563,25 +562,25 @@ def _register_initial_build(*, plan, reviewed_provider, state, journal, install_
                 'routeSha256': route_sha, 'attestationSha256': staged['attestationSha256']}
     from memvane.journal.api import prepare_reader_lifetime
     prepare_reader_lifetime(install_id)
-    with initial_build.owner(state) as owned:
+    with install_api.build_owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = initial_build.create_v1(identity)
-        pointer = initial_build.register_project(identity)
+        record = install_api.build_create_v1(identity)
+        pointer = install_api.build_register_project(identity)
     return {'status': 'initial_build_registered',
             'proposalSha256': plan['proposalSha256'], 'journalPath': str(journal),
             'pendingRouteSha256': route_sha, 'storePath': store['storePath'],
             'routeFile': str(state / 'route.json'),
-            'buildRecord': str(state / initial_build.V1_BUILD_FILE),
+            'buildRecord': str(state / V1_BUILD_FILE),
             'buildPointer': pointer, 'buildPhase': record['phase'],
             'wake': _request_build_wake(plan['projectRoot'])}
 
 
 def initial_build_status(state_root):
     """Read the single-store build's durable phase."""
-    from memvane.install.api import _initial_build as initial_build
+    from memvane.install import api as install_api
     state = _private_parent(state_root)
-    record = initial_build.read_v1(state)
+    record = install_api.build_read_v1(state)
     if record is None:
         _fail('initial_build_missing')
     return {'status': 'initial_build', 'phase': record['phase'],
@@ -595,16 +594,16 @@ def request_initial_build_rescan(state_root):
     or a selected journal exist, refreshing the index belongs to the sync
     owner, and a ``building`` record would fail every selected proof.
     """
-    from memvane.install.api import _initial_build as initial_build
+    from memvane.install import api as install_api
     state = _private_parent(state_root)
-    with _install_lock(state), initial_build.owner(state) as owned:
+    with _install_lock(state), install_api.build_owner(state) as owned:
         if not owned:
             _fail('initial_build_busy')
-        record = initial_build.read_v1(state)
+        record = install_api.build_read_v1(state)
         if record is None:
             _fail('initial_build_missing')
         _require_unselected(record['identity'])
-        record = initial_build.advance_v1(record, phase='building')
+        record = install_api.build_advance_v1(record, phase='building')
     return {'status': 'rescan_requested', 'phase': record['phase'],
             'wake': _request_build_wake(record['identity']['projectRoot'])}
 

@@ -170,7 +170,7 @@ class FixtureOnboarding(unittest.TestCase):
         return build_read_v1(self.state)
 
     def build_pointer(self):
-        from memvane.install.api import _initial_build as initial_build
+        from memvane.install import initial_build
         return initial_build.registered_pointer_path(str(self.project))
 
     def project_pointers(self):
@@ -255,7 +255,7 @@ class FixtureOnboarding(unittest.TestCase):
 
     def test_abandon_releases_unselected_installs_for_a_new_prepare(self):
         """F2: abandon before finalize and after finalize; each lets the next prepare start."""
-        from memvane.install.api import _initial_build as initial_build
+        from memvane.install import initial_build
         self.install(1, onboard=False)
         self.assertEqual(self.prepare()['status'], 'initial_build_registered')
         self.assertIsNotNone(self.build_pointer())
@@ -332,7 +332,7 @@ class FixtureOnboarding(unittest.TestCase):
     def test_provider_change_releases_a_written_selection(self):
         """F5: after the first selected write a changed provider still exits through restore."""
         from memvane.app import setup_workflow as workflow
-        from memvane.install.api import _initial_build as initial_build
+        from memvane.install import initial_build
         from memvane.journal.types import JournalEvidenceError
         self.install(1)
         self.write_card('lantern')
