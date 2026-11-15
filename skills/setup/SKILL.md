@@ -35,7 +35,7 @@ A project inside an already selected project cannot be onboarded as a separate n
 
 The user asks in natural language; the actions below are internal maintenance steps of this skill, run in this order. Every action except `plan-fresh-wiki-origin` takes `--state-root "$STATE_ROOT"`, where a new install's state root is `~/.local/state/memvane/v1/installs/<install id>` with a fresh 32-hex install ID (any other new path refuses as `unsupported_state_root_creation`). Report each step's `status` (and `reason` on a refusal) before the next one.
 
-1. `plan-fresh-wiki-origin` (read-only) returns `review_required` with the plan's collections and a `proposalSha256`. Show the plan and ask for approval.
+1. `plan-fresh-wiki-origin` creates `.memvane/wiki` if absent and returns `review_required` with the plan's collections and a `proposalSha256`. Show the plan and ask for approval.
 2. `review-index-provider --provider-dimension <n>` (read-only, optional `--provider-model-file`) returns `review_required` with the provider identity and its own `proposalSha256`. Show the runtime, model and worker identity.
 3. `prepare-fresh-wiki-origin --install-id <id> --accepted-origin-sha256 <plan proposalSha256> --accepted-provider-sha256 <review proposalSha256> --provider-dimension <n>` runs only on the user's approval of both proposals and returns `initial_build_registered`. The initial build then runs in the background.
 4. `index-build-status` reports the build `phase`; wait for `ready`. `index-origin-status` shows the install record.

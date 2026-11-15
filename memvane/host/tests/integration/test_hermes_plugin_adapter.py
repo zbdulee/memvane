@@ -44,6 +44,15 @@ class PluginFiles(unittest.TestCase):
 
 
 class NoRoute(FixtureCase):
+    def test_blocked_reason_is_carried_to_the_next_turn(self):
+        cwd = str(self.home)
+        result = mock.Mock(returncode=0, stdout='blocked\n',
+                           stderr='[memvane] route_blocked: route_settings_changed\n')
+        with mock.patch.dict(os.environ, QUIET), mock.patch.object(bridge.subprocess, 'run', return_value=result):
+            bridge.session_update(cwd=cwd)
+            answer = bridge.recall_context(user_message='q', cwd=cwd)
+        self.assertIn('route_settings_changed', answer['context'])
+
     def test_lookup_error_is_quiet_and_session_notice_does_not_offer_onboarding(self):
         cwd = str(self.home)
         with mock.patch.dict(os.environ, QUIET), mock.patch.object(bridge, '_laya_route_state', return_value='error'):

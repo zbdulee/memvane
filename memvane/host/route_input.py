@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 from memvane.route.api import pairs as _pairs, read_regular as _read_regular
@@ -80,5 +81,9 @@ def main(argv: list[str] | None = None) -> int:
         # and setup refuse through their own route proofs.
         print("legacy")
         return 0
+    if decision['state'] == 'blocked':
+        reason = decision.get('reason')
+        if isinstance(reason, str) and re.fullmatch(r'[a-z0-9_]{1,80}', reason):
+            print('[memvane] route_blocked: ' + reason, file=sys.stderr)
     print(decision["state"])
     return 0

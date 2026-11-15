@@ -106,7 +106,7 @@ def _write_or_verify_private(path, raw):
         _fail('private_route_requires_recovery')
 
 
-# Origin planning reads settings only; the initial build scans the wiki.
+# Planning creates the wiki root when absent; the initial build scans it.
 def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     """Review a new wiki-only Laya generation from minimal project settings.
 
@@ -150,6 +150,16 @@ def plan_fresh_wiki_origin(project_root, *, _bound_marker=False):
     # A new selection starts only from minimal ``{name, skipPaths}`` settings.
     if not config.is_minimal_settings(parsed):
         _fail('minimal_settings_required')
+    directory = os.open(auto, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.mkdir(project_types.WIKI, 0o755, dir_fd=directory)
+        except FileExistsError:
+            pass
+        else:
+            os.fsync(directory)
+    finally:
+        os.close(directory)
     source_settings = config.expand_minimal_settings(parsed, project_types.CURRENT)
     cfg = config.load_project_config(str(project))
     names = tuple(sorted(cfg.get('collections', ())))

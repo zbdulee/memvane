@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -104,6 +105,14 @@ def _laya_route_state(action: str, cwd: str) -> str:
             )
             allowed = {"legacy", "candidate", "blocked", "worktree", "error"}
         state = result.stdout.strip()
+        if state == 'blocked':
+            match = re.search(r'\[memvane\] route_blocked: ([a-z0-9_]{1,80})\b', result.stderr)
+            if match:
+                notice = '[memvane] route_blocked: ' + match.group(1)
+                if action == 'update':
+                    _remember_notice(cwd, notice)
+                else:
+                    logger.warning(notice)
         return state if result.returncode == 0 and state in allowed else "error"
     except (OSError, subprocess.TimeoutExpired):
         return "error"

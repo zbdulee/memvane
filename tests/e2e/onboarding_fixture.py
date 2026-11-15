@@ -192,6 +192,21 @@ class FixtureOnboarding(FixtureCase):
         context = self.recall('emerald heron reed pond')
         self.assertNotIn('zq', context)
 
+    def test_plan_creates_a_missing_wiki_root_without_following_a_symlink(self):
+        from memvane.install.application import onboarding_workflow as workflow
+        self.install(0, onboard=False)
+        wiki = self.fixture.wiki
+        wiki.rmdir()
+        self.assertEqual(workflow.plan_fresh_wiki_origin(self.project)['status'], 'review_required')
+        self.assertTrue(wiki.is_dir())
+        wiki.rmdir()
+        outside = self.home / 'outside'
+        outside.mkdir()
+        wiki.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            workflow.plan_fresh_wiki_origin(self.project)
+        self.assertEqual(list(outside.iterdir()), [])
+
     def test_project_with_thirty_cards_recalls_the_matching_card(self):
         self.install(30)
         context = self.recall('what marker does the glacier protocol keep?')

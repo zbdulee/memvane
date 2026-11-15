@@ -40,6 +40,17 @@ def run_entry(argv, *, payload=None, inject='', env=None, cwd=None):
 
 
 class SelectedHookServe(HostInstallCase):
+    def test_blocked_route_reports_the_sanitized_reason(self):
+        settings = self.fixture.settings_path
+        data = json.loads(settings.read_text(encoding='utf-8'))
+        data['name'] = 'different-name'
+        settings.write_text(json.dumps(data), encoding='utf-8')
+        payload = self.tmp / 'blocked.json'
+        payload.write_text(json.dumps({'cwd': str(self.project)}), encoding='utf-8')
+        code, out, err = run_entry(['hook-classify', 'recall', str(payload), str(self.project)])
+        self.assertEqual((code, out), (0, 'blocked\n'))
+        self.assertIn('route_blocked: route_settings_changed', err)
+
     def recall_payload(self, session):
         return {'session_id': session, 'cwd': str(self.project), 'hook_event_name': 'UserPromptSubmit',
                 'prompt': PROMPT}

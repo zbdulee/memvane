@@ -12,6 +12,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SCRIPT = join(ROOT, 'tests', 'e2e', 'onboarding_fixture.py');
 const METHODS = [
   'test_project_without_cards_onboards_and_recall_adds_no_card',
+  'test_plan_creates_a_missing_wiki_root_without_following_a_symlink',
   'test_project_with_thirty_cards_recalls_the_matching_card',
   'test_hot_store_journal_rolls_back_at_classification',
   'test_abandon_releases_unselected_installs_for_a_new_prepare',
