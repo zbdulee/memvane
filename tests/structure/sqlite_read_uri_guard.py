@@ -1,4 +1,4 @@
-"""Reject direct SQLite read-only URI modes in product Python code."""
+"""Reject direct SQLite read-only URI modes in product code."""
 import ast
 import json
 from pathlib import Path
@@ -12,7 +12,11 @@ JOURNAL_EXCEPTION = ROOT / 'memvane/journal/install_journal.py'
 
 
 def inspect(path):
-    tree = ast.parse(path.read_text(encoding='utf8'), filename=str(path))
+    text = path.read_text(encoding='utf8')
+    if path.suffix != '.py':
+        return ([f'{path}:{number}' for number, line in enumerate(text.splitlines(), 1)
+                 if not line.lstrip().startswith(('#', '//', '*')) and DIRECT_MODE.search(line)], [])
+    tree = ast.parse(text, filename=str(path))
     docstrings = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -39,8 +43,11 @@ def product_files():
     for name in ('memvane', 'entry', 'hermes_adapter', 'hooks', 'skills', 'scripts'):
         root = ROOT / name
         if root.exists():
-            for path in sorted(root.rglob('*.py')):
-                if 'tests' not in path.relative_to(root).parts:
+            for path in sorted(root.rglob('*')):
+                relative = path.relative_to(root)
+                if (path.is_file() and not {'tests', '__pycache__', 'node_modules'} & set(relative.parts)
+                        and (path.suffix in ('.py', '.js', '.mjs', '.sh')
+                             or (name == 'hooks' and not path.suffix))):
                     yield path
 
 

@@ -45,9 +45,11 @@ test('the SQLite URI check catches direct read-only modes', t => {
   const sample = join(dir, 'sample.py');
   writeFileSync(sample, '"""Documentation may mention mode=ro."""\n' +
     "uri = path.as_uri() + '?mode=ro'\n");
-  const {result} = run(t, 'sqlite_read_uri_guard.py', [sample]);
+  const javascript = join(dir, 'sample.mjs');
+  writeFileSync(javascript, '// mode=ro in a comment\nconnect("file:x?mode=ro");\n');
+  const {result} = run(t, 'sqlite_read_uri_guard.py', [sample, javascript]);
   assert.equal(result.status, 1, result.stdout);
-  assert.deepEqual(JSON.parse(result.stdout).findings, [`${sample}:2`]);
+  assert.deepEqual(JSON.parse(result.stdout).findings, [`${sample}:2`, `${javascript}:2`]);
 });
 
 test('no product module reads a name that no scope binds', t => {
