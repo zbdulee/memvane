@@ -477,11 +477,16 @@ class ContentFillChecks(helpers.BlobStoreCase):
         self.mutate_claim(lambda _: self.store.close())
 
     def test_30_expired_callback_result_cannot_publish_embedding_set(self):
+        clock = [0.0]
+        calls = []
         def slow(inputs, profile):
             self.assertFalse(self.store._db.in_transaction)
-            time.sleep(0.04)
+            calls.append(1)
+            clock[0] = 2.0
             return [[1, 2] for _ in inputs]
-        self.refused(self.fill, embedder=slow, deadline_seconds=0.02)
+        with mock.patch('memvane.store.blob.blob_fill.time.monotonic', side_effect=lambda: clock[0]):
+            self.refused(self.fill, embedder=slow, deadline_seconds=1)
+        self.assertEqual(calls, [1])
         self.no_embedding()
 
     def test_31_cache_validation_cannot_return_success_after_deadline(self):

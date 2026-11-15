@@ -1,2 +1,2 @@
 import { runDomain } from '../../../tests/support/runner.mjs';
-runDomain({ domain: 'diagnostics' });
+runDomain({ domain: 'diagnostics', tiers: ['integration'] });

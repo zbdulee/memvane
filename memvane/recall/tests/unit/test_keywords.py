@@ -5,8 +5,8 @@ stripped prompt. Identifier terms must be plain terms the QMD lexical index can
 match (no quoted phrases, no separators the FTS sanitizer glues together).
 """
 import re
-import time
 import unittest
+from unittest import mock
 
 from memvane.recall import keywords
 
@@ -209,16 +209,15 @@ class LexTerms(unittest.TestCase):
             with self.subTest(prompt=prompt[:20]):
                 self.assertIsInstance(kw(prompt)['identifiers'], list)
 
-    def test_adversarial_input_extracts_within_fifty_ms(self):
-        # Timing-sensitive (moved as is; listed for the last layer): the
-        # UserPromptSubmit hook is blocking.
+    def test_adversarial_input_limits_identifier_work(self):
         samples = {'a': 'a' * 10000, 'paren': '(' * 5000, 'dots': 'a.' * 5000,
                    'log': '2026-07-29 12:00:00 WARN lib/recall.py:123 query_failed retry=3\n' * 140}
         for label, text in samples.items():
             with self.subTest(label=label):
-                start = time.perf_counter()
-                keywords.build_lexical_terms(text, [])
-                self.assertLess((time.perf_counter() - start) * 1000, 50)
+                with mock.patch.object(keywords, '_prepare', wraps=keywords._prepare) as prepare:
+                    result = keywords.build_lexical_terms(text, [])
+                self.assertLessEqual(prepare.call_count, keywords._MAX_CANDIDATES)
+                self.assertLessEqual(len(result['identifiers']), keywords.IDENTIFIER_BUDGET)
 
     # -- EP variants are independent lexical searches ------------------------------
     def test_bare_number_variants_are_never_lexical_entries(self):

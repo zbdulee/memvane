@@ -20,11 +20,13 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         super().setUp()
         if view._cache_filesystem(self.root) is None:
             self.skipTest('fast path requires APFS')
+        now_ns = time.time_ns
+        clock = mock.patch.object(view.time, 'time_ns', side_effect=lambda: now_ns() + 2_000_000_000)
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def test_stable_checkout_avoids_repeating_git_after_full_proof(self):
         repository, worktree = self.bind(self.root)
-        # A recent write must first leave the filesystem timestamp tick.
-        time.sleep(1.1)
         baseline = self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as git:
             observed = self.cap(self.root, repository, worktree)
@@ -33,7 +35,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_ref_index_and_operation_changes_force_a_fresh_capture(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         baseline = self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as warm:
             self.cap(self.root, repository, worktree)
@@ -43,7 +44,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
             changed = self.cap(self.root, repository, worktree)
         self.assertGreater(cold.call_count, 0)
         self.assertNotEqual(changed['headOid'], baseline['headOid'])
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         (self.root / 'a.txt').write_text('staged change\n', encoding='utf8')
         self.git(self.root, 'add', '--', 'a.txt')
@@ -51,7 +51,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
             staged = self.cap(self.root, repository, worktree)
         self.assertGreater(cold.call_count, 0)
         self.assertNotEqual(staged['checkoutDigest'], changed['checkoutDigest'])
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         (self.root / '.git' / 'MERGE_HEAD').write_text(changed['headOid'] + '\n', encoding='ascii')
         with mock.patch.object(view, '_git', wraps=view._git) as cold:
@@ -61,7 +60,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_recent_same_tick_and_packed_head_cache_invalidation(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         head = self.root / '.git' / 'HEAD'
         head.touch()
@@ -71,14 +69,12 @@ class CheckoutCacheChecks(existing.CheckoutCase):
                 self.cap(self.root, repository, worktree)
         self.assertGreater(recent.call_count, 0)
         self.git(self.root, 'pack-refs', '--all', '--prune')
-        time.sleep(1.1)
         expected = self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as packed:
             actual = self.cap(self.root, repository, worktree)
         self.assertEqual(actual, expected)
         self.assertEqual(packed.call_count, 0)
         self.commit(self.root, 'a.txt', 'new packed revision\n')
-        time.sleep(1.1)
         newer = self.cap(self.root, repository, worktree)
         self.assertNotEqual(newer['headOid'], expected['headOid'])
         self.git(self.root, 'pack-refs', '--all', '--prune')
@@ -89,7 +85,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_mutating_returned_capture_does_not_mutate_cache(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         expected = self.cap(self.root, repository, worktree)
         changed = self.cap(self.root, repository, worktree)
         changed['evidence']['branchKey'] = 'caller-tampered'
@@ -102,7 +97,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         repository, worktree = self.bind(self.root)
         with (self.root / '.git' / 'config').open('a', encoding='utf8') as out:
             out.write('\n[include]\n    path = absent-fixture.conf\n')
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as cold:
             self.cap(self.root, repository, worktree)
@@ -110,7 +104,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_missing_head_object_cannot_reuse_cached_proof(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         baseline = self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as warm:
             self.cap(self.root, repository, worktree)
@@ -129,7 +122,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_future_timestamp_and_clock_reversal_force_cold_path(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         with mock.patch.object(view.time, 'time_ns', return_value=1),                 mock.patch.object(view, '_git', wraps=view._git) as backwards:
             self.cap(self.root, repository, worktree)
@@ -144,7 +136,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_symlinked_reference_parent_cannot_use_fast_path(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         baseline = self.cap(self.root, repository, worktree)
         self.assertEqual(baseline['branchKey'], 'refs/heads/main')
         heads = self.root / '.git' / 'refs' / 'heads'
@@ -170,7 +161,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_publication_can_require_a_fresh_git_proof(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         baseline = self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as git:
             self.assertTrue(view.capture_matches(baseline, repository, worktree, fresh=True))
@@ -178,7 +168,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_unknown_filesystem_uses_the_full_git_path(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_cache_filesystem', return_value=None), \
                 mock.patch.object(view, '_git', wraps=view._git) as cold:
@@ -196,7 +185,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         replacement = oid + ' refs/replace/' + '0' * 40 + '\n'
         with packed.open('a', encoding='ascii') as out:
             out.write(replacement)
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as packed_git:
             self.cap(self.root, repository, worktree)
@@ -207,7 +195,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
         alternate = self.base / 'alternate-objects'
         alternate.mkdir()
         (info / 'alternates').write_text(str(alternate) + '\n', encoding='utf8')
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         with mock.patch.object(view, '_git', wraps=view._git) as alternate_git:
             self.cap(self.root, repository, worktree)
@@ -215,7 +202,6 @@ class CheckoutCacheChecks(existing.CheckoutCase):
 
     def test_new_process_does_not_inherit_cached_proof(self):
         repository, worktree = self.bind(self.root)
-        time.sleep(1.1)
         self.cap(self.root, repository, worktree)
         payload = json.dumps([str(self.root), repository, worktree])
         program = """import json,sys; from unittest import mock
