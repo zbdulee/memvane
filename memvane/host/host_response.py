@@ -975,7 +975,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         return _major_mismatch_response(action, host)
     from memvane.journal.api import verify_selected_route
     proof = verify_selected_route(decision)
-    if proof.get('providerAvailable') is False:
+    if proof.get('providerAvailable') is False and action != 'recall':
         return _provider_mismatch_response(action, host)
     # Failure must not reach QMD.
     if proof.get("productRouteAllowed") is not True:
@@ -1280,7 +1280,7 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
     if main.get('routeSchema') == 'memvane-route-v4' and not _major_allowed(main):
         return _major_mismatch_response(action, host)
     proof = recheck(main)
-    if proof.get('providerAvailable') is False:
+    if proof.get('providerAvailable') is False and action != 'recall':
         return _provider_mismatch_response(action, host)
     if proof.get('productRouteAllowed') is not True:
         _fail('worktree_selection_unapproved')

@@ -101,6 +101,22 @@ class SelectedActions(HostInstallCase):
         self.assertTrue(all(line['cards'] and set(line['prompt']) == {'sha256', 'chars'}
                             for line in lines), lines)
 
+    def test_changed_provider_artifact_serves_lexical_and_session_advises_restore(self):
+        from memvane.provider.api import fixture_port
+        provider_type = type(fixture_port())
+        original = provider_type.provider_manifest
+        def changed(port, record, profile, *, allow_local_unavailable=False):
+            value = original(port, record, profile, allow_local_unavailable=allow_local_unavailable)
+            return (value[0], False) if allow_local_unavailable else value
+        with mock.patch.object(provider_type, 'provider_manifest', changed):
+            for host in ('claude', 'codex', 'hermes'):
+                answer = self.serve('recall', {'prompt': PROMPT, 'hook_event_name': 'UserPromptSubmit'}, host)
+                self.assertIn('zqheronx', context(answer, host))
+                session = self.serve('update-queued', {'hook_event_name': 'SessionStart'}, host)
+                notice = session['notice'] if host == 'hermes' else context(session, host)
+                self.assertIn('복원한 뒤 다시 온보딩', notice)
+            self.assertNotIn('laya-sync', self.wakes.kinds())
+
     def test_session_start_records_sync_wakes_and_returns_the_queued_notice(self):
         epoch = self.install.epoch()
         for host, action in (('claude', 'update-queued'), ('codex', 'update'),
