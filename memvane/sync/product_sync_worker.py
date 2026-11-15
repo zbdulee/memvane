@@ -429,8 +429,7 @@ def _publish_schema3(decision, proof, writer, vectors=None):
                 if exc.reason not in SCHEMA3_LINKED_HELD:
                     raise
                 outcome = {'state': 'held', 'reason': exc.reason}
-            if outcome['state'] == 'deferred' and outcome['reason'] in (
-                    'schema3_binding_changed', 'schema3_mass_removal_held'):
+            if outcome['state'] == 'deferred' and outcome['reason'] == 'schema3_binding_changed':
                 # Retrying cannot clear these; that view keeps its last head.
                 outcome = {**outcome, 'state': 'held'}
             linked.append({'root': str(project), **{k: outcome[k] for k in
@@ -581,7 +580,6 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
     """
     import hashlib
     from memvane.store import api as v
-    from memvane.wiki.card.types import MASS_DELETE_FRACTION, MASS_DELETE_MIN
     from memvane.store.api import regular as _regular
     import uuid
     if vectors is None:
@@ -612,10 +610,6 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                 raise store_types.BlobStoreError('wiki_card_unavailable')
             current[path] = (hashlib.sha256(raw).hexdigest(), raw)
         changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
-        if (len(removed) > MASS_DELETE_MIN
-                and len(removed) > MASS_DELETE_FRACTION * len(old)):
-            return {'state': 'deferred', 'reason': 'schema3_mass_removal_held',
-                    'storeFormat': 'schema3', 'removed': len(removed)}
         scanned = {}
         observed = _schema3_sources(decision, handle, deadline, raw_scan=scanned)
         if raw_scan is not None and 'snapshot' in scanned:

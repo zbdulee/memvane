@@ -3,7 +3,7 @@
 One project onboarded through the 1.0 install use cases (``SyncCase``); each
 pass runs ``sync.api.run``. A pass ingests only the cards whose bytes changed
 (an unchanged member keeps its trust), publishes the lexical generation and
-then the vector generation, holds a mass removal, never publishes a partial
+then the vector generation, publishes removals, never publishes a partial
 cold view, and leaves the journal untouched when nothing changed. Every check
 counts rows, epochs and pass results.
 """
@@ -103,7 +103,7 @@ class SyncPublish(SyncCase):
                          ('unchanged', (edited['generation'], start[1] + 2), epoch + 1), idle)
 
     # -- removals ----------------------------------------------------------------
-    def test_removed_card_leaves_the_generation_and_mass_removal_is_held(self):
+    def test_removed_cards_leave_the_generation_without_touching_remaining_files(self):
         start = self.head()
         members = sorted(self.members(start[0]))
         (self.wiki / 'concepts/kestrel-perch.md').unlink()
@@ -111,15 +111,15 @@ class SyncPublish(SyncCase):
         self.assertEqual((one['state'], one['removed'], one['ingested']), ('indexed', 1, 0), one)
         self.assertEqual(sorted(self.members(one['generation'])),
                          [p for p in members if p != 'concepts/kestrel-perch.md'])
-        held_head, epoch = self.head(), self.epoch()
+        remaining_file = self.wiki / 'keep.txt'
+        remaining_file.write_text('preserved', encoding='utf-8')
         for path in members:
             if path != 'concepts/kestrel-perch.md':
                 (self.wiki / path).unlink()
-        held = self.run_pass()
-        self.assertEqual((held['state'], held['reason'], held['removed']),
-                         ('deferred', 'schema3_mass_removal_held', len(members) - 1), held)
-        self.assertEqual((self.head(), self.epoch()), (held_head, epoch))
-        self.assertEqual(len(self.members(held_head[0])), len(members) - 1)
+        result = self.run_pass()
+        self.assertEqual((result['state'], result['removed']), ('indexed', len(members) - 1), result)
+        self.assertEqual(len(self.members(result['generation'])), 0)
+        self.assertEqual(remaining_file.read_text(encoding='utf-8'), 'preserved')
 
     # -- settings ----------------------------------------------------------------
     def test_settings_bytes_and_skip_paths_edits_publish_and_recall_waits_for_the_reseal(self):
