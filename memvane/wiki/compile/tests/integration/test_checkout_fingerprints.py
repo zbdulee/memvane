@@ -164,7 +164,7 @@ class CheckoutFingerprints(FixtureCase):
              patch.object(compiler, 'find_wiki_semantic_match', return_value=(None, None)), \
              redirect_stdout(io.StringIO()):
             self.assertEqual(compiler._compile_locked(self.project.root, self.config,
-                             self.config['compile'], 'auto-wiki', self.project.wiki, candidate, False), 0)
+                             self.config['compile'], self.project.wiki, candidate, False), 0)
         request_sync.assert_called_once_with(self.project.root, self.bound)
         queue = self.project.root / '.memvane/compile/verify-queue.jsonl'
         job = json.loads(queue.read_text().splitlines()[0])

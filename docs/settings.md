@@ -227,7 +227,7 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 | `sessionStartSync` | `true` | SessionStart 스냅샷 동기화 스위치입니다. 값은 정규화되지만 이 값을 읽는 경로가 없습니다. 선택된 Laya route의 sync는 full-scan worker가 맡습니다 → [Git checkout·worktree 정책](git-worktree-search-sync-policy.md) |
 | `lexicalPatterns` | `[]` | 특수 lexical pattern입니다. 현재 쓰이는 값은 `ep` 하나입니다. |
 | `wikiPath` | `".memvane/wiki"` | wiki 카드 루트입니다. 프로젝트 밖(심볼릭 링크·`../`)을 가리키면 거부됩니다. 프로젝트의 `.memvane/` 경로를 사용합니다. |
-| `compile.mode` | `"off"` | **compile의 유일한 활성 스위치이자 쓰기 정책**입니다. `off`·`candidates`·`guarded`·`auto-wiki` → [compile.mode](#compilemode) |
+| `compile.mode` | 파생 값 | 내부 compile 상태입니다. minimal settings는 `auto-wiki`로 유도하며 직접 설정할 수 없습니다 → [compile.mode](#compilemode) |
 | `compile.triggers` | `[]` | compile source를 만들 trigger 목록입니다. 보통 `post_tool_source`·`post_sync_source`·`manual`. SessionStart가 감지한 파일의 위키 생성에는 별도 `session_start_source` 동의가 필요합니다. |
 | `compile.recallVerifiedOnly` | `true` | `true`면 미검수(`generated`·`tentative`) 카드를 recall에 아예 내지 않습니다. |
 | `compile.excludeStatusesFromRecall` | `["discarded","contested"]` | recall에서 제외할 wiki status입니다. |
@@ -265,13 +265,11 @@ legacy 파일 스키마의 전부입니다(61개). [minimal settings](#minimal-s
 
 ### compile.mode
 
-compile의 활성 여부와 쓰기 정책을 **한 값**으로 정합니다. `mode != "off"`가 곧 활성입니다.
+compile 활성 여부는 내부 파생 값으로 정합니다. minimal settings는 `auto-wiki`로 유도하며, 사용자가 `compile.mode`를 직접 설정하지 않습니다.
 
 | 값 | 동작 |
 |---|---|
 | `off` | 아무것도 하지 않습니다(기본값). enqueue·worker·검수가 전부 멈춥니다. |
-| `candidates` | 후보를 `candidates.jsonl`에 기록만 하고 wiki 카드를 쓰지 않습니다. 파이프라인을 관찰할 때 씁니다. |
-| `guarded` | `confidence: "high"` 후보만 카드로 씁니다. 나머지는 candidate로 강등됩니다. |
 | `auto-wiki` | clean candidate를 wiki Markdown으로 직접 씁니다. minimal settings의 유도 값입니다. |
 
 미지 값(오타 포함)은 `off`로 fail-closed 처리됩니다 — 유료 파이프라인이 오타 하나로

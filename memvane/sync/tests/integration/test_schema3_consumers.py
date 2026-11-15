@@ -73,7 +73,7 @@ class ViewConsumers(SyncCase):
         (self.wiki / 'concepts/kestrel-twin.md').write_bytes((self.wiki / self.CARDS[3][0]).read_bytes())
         result = self.run_pass()
         self.assertEqual(result['vector']['state'], 'published', result)
-        use_config(self, self.fixture, expanded(self.fixture, compile={'mode': 'guarded'}))
+        use_config(self, self.fixture, expanded(self.fixture, compile={'mode': 'auto-wiki'}))
         scanned = dedup.run(str(self.project))
         self.assertEqual(scanned['state'], 'scanned', scanned)
         self.assertEqual(scanned['cards'], len(self.members(result['generation'])), scanned)

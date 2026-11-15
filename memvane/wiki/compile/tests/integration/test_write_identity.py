@@ -49,7 +49,7 @@ class WriteIdentity(FixtureCase):
              patch.object(workspace, 'recheck'), patch.object(workspace, 'request_sync'), \
              patch.object(workspace, 'append_activity'), redirect_stdout(output):
             compiler._compile_locked(self.project.root, self.config, self.config['compile'],
-                                     'auto-wiki', self.project.wiki, candidate, False)
+                                     self.project.wiki, candidate, False)
         return json.loads(output.getvalue())
 
     def test_unrelated_source_is_audited_without_overwriting_card(self):

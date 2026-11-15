@@ -5,6 +5,12 @@ from memvane.settings import api
 
 
 class ConfigContractTests(unittest.TestCase):
+    def test_compile_mode_accepts_only_off_and_auto_wiki(self):
+        self.assertEqual(api.compile_mode({'mode': 'auto-wiki'}), 'auto-wiki')
+        for mode in ('off', 'candidates', 'guarded', 'unknown'):
+            with self.subTest(mode=mode):
+                self.assertEqual(api.compile_mode({'mode': mode}), 'off')
+
     def test_minimal_settings_expands_with_raw_and_wiki_roles(self):
         cfg = api.normalize_config({'name': 'Demo', 'skipPaths': ['drafts/']}, '.memvane')
         self.assertEqual(cfg['collectionRoles'], {'demo': 'raw', 'demo-wiki': 'wiki'})

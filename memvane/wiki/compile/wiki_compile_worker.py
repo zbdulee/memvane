@@ -1211,8 +1211,7 @@ def _split_expected(compile_round, splittable: list[dict], extracted_qmd) -> str
     """The single outcome every split part must reach: the original's own.
 
     ``--check`` on the originals; the over-budget hold does not run in a check,
-    so this is what the original's final-pass write would reach (``written``, or
-    ``candidate`` in guarded mode below ``high`` confidence).
+    so this is what the original's final-pass write would reach.
     """
     originals = json.loads(json.dumps([card['_candidate'] for card in splittable],
                                       ensure_ascii=False))
@@ -1238,8 +1237,7 @@ def _split_over_budget(root: Path, job: dict, cpath: Path, splittable: list[dict
     logs ``wiki.card over_budget_written``) only when they all fit the slots and
     the writer predicts for every part the outcome it predicts for the original
     (``--check``; ``merge-needed``/``rejected``/``conflict`` never qualify). A
-    guarded-mode original that would itself become a ``candidate`` keeps that
-    normal outcome. Otherwise, or when the split cannot run
+    If the parts do not qualify, or when the split cannot run
     (run budget exhausted, no slot left, extractor failure or
     ``resource_deferred``, empty answer), the original cards are written on the
     final pass with that reason. Nothing here is retried: the revision ends

@@ -42,7 +42,7 @@ MAX_INJECT_SOURCE_PATHS_PER_CARD = 10
 # 코퍼스보다 크면 `rotate`가 전량을 돌려주므로 이 상한은 "전량 스캔"을 막지 않는다.
 MAX_SOURCE_SCAN_CARDS = 5000
 
-COMPILE_MODES = {"off", "candidates", "guarded", "auto-wiki"}
+COMPILE_MODES = {"off", "auto-wiki"}
 
 
 COMPILE_TRIGGERS = {

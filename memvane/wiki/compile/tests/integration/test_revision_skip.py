@@ -38,7 +38,7 @@ class RevisionSkipChecks(FixtureCase):
             'collectionRoles': {'proj-docs': 'raw', 'proj-wiki': 'wiki'},
             'wikiPath': '.memvane/wiki',
             'compile': {
-                'mode': 'guarded', 'defaultStatus': 'generated',
+                'mode': 'auto-wiki', 'defaultStatus': 'generated',
                 'triggers': ['post_tool_source', 'manual'], 'maxSourceChars': 12000,
                 'extractor': {'builtins': ['claude'], 'timeout': 30},
             },

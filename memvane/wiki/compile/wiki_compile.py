@@ -991,7 +991,6 @@ def main() -> int:
     compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
     if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):
         return 0
-    mode = qmd_config.compile_mode(compile_cfg)
     wiki_rel = config.get("wikiPath", settings_types.WIKI_REL)
     if args.check:
         # Side-effect free: no directory, lock or ledger is created or touched,
@@ -999,7 +998,7 @@ def main() -> int:
         wiki_root = existing_managed_dir(root, wiki_rel)
         if wiki_root is None:
             return _checked("rejected", ["unsafe_managed_path"])
-        return _compile_locked(root, config, compile_cfg, mode, wiki_root, candidate,
+        return _compile_locked(root, config, compile_cfg, wiki_root, candidate,
                                args.regenerate, check=True)
     wiki_root = safe_managed_dir(root, wiki_rel)
     compile_dir = safe_managed_dir(root, settings_types.COMPILE_REL)
@@ -1010,14 +1009,14 @@ def main() -> int:
     try:
         with cp.card_write_lock(root), workspace_files.mutation_lock(root):
             return _compile_locked(
-                root, config, compile_cfg, mode, wiki_root, candidate, args.regenerate,
+                root, config, compile_cfg, wiki_root, candidate, args.regenerate,
                 budget_final=args.budget_final)
     except OSError:
         print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
         return 1
 
 
-def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
+def _compile_locked(root: Path, config: dict, compile_cfg: dict,
                     wiki_root: Path, candidate: dict, regenerate: bool, *,
                     budget_final: str | None = None, check: bool = False) -> int:
     from memvane.wiki.workspace import api as wiki_selected_laya
@@ -1137,21 +1136,6 @@ def _compile_locked(root: Path, config: dict, compile_cfg: dict, mode: str,
         record["action"] = "tombstoned"
         append_jsonl(candidate_path, record)
         print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
-        return 0
-
-    if check and (mode == "candidates"
-                  or (mode == "guarded" and candidate.get("confidence") != "high")):
-        return _checked("candidate")
-    if mode == "candidates":
-        record["action"] = "candidate"
-        append_jsonl(candidate_path, record)
-        print(json.dumps({"action": "candidate", "targetPath": record["targetPath"]}, ensure_ascii=False))
-        return 0
-
-    if mode == "guarded" and candidate.get("confidence") != "high":
-        record["action"] = "candidate"
-        append_jsonl(candidate_path, record)
-        print(json.dumps({"action": "candidate", "targetPath": record["targetPath"]}, ensure_ascii=False))
         return 0
 
     # Card body budget before the paid duplicate judge (wiki_card_budget): an
