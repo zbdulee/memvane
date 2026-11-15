@@ -13,6 +13,7 @@
 - sync owner·`sync.lock`·wiki mutation lock 및 socket의 이름과 위치. 설치별 socket은 `<state base v1>/run/<설치 id의 SHA-256 앞 16 hex>.sock`이다.
 - wake kind 집합(`laya-sync`·`laya-compile`·`learning`·`auto`)과 target 모양(절대 경로), `recipe_id`·`profile_id` 입력. 1.x 호스트는 모르는 kind의 행을 남겨 두고, 출시 전 빌드가 남긴 `index`·`update`·`cleanup` 행만 `retired_kind` 사유로 지운다.
 - vector recipe의 chunker 입력(`laya_qmd_chunking.mjs` 바이트와 `CHUNK_RULES`).
+- 모듈 이름에서 `laya_` 접두를 제거하는 규칙의 예외로, 보호 파일·attestation에 기록된 `laya_local_embed_worker.mjs`와 vector recipe에 묶인 `laya_qmd_chunking.mjs`는 파일 이름을 유지한다.
 - 사용자당 resident `service/`의 `service.lock`·`control.sock`·`successor.lock`·`service.pid.json`, protocol `1`, worker socket `w-<24 hex>.sock`.
 - wake 큐 `runtime-wakes.sqlite3`의 위치·DDL과 `runtime-worker.lock`·`runtime-worker-handoff.lock`·`runtime-wake-timer.lock`.
 - journal reader record의 필수 키 집합과 `store_format: schema3`·`schema3-ro-v1`·`selected-main-schema3-v1`.
