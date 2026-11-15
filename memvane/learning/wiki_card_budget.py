@@ -247,9 +247,6 @@ def count_exact_detailed(texts: list[str], tokenizer: tuple[str, str] | None
     return counts, None
 
 
-def count_exact(texts: list[str], tokenizer: tuple[str, str] | None) -> list[int] | None:
-    """Selector token counts of ``texts`` through the selector runtime, or None."""
-    return count_exact_detailed(texts, tokenizer)[0]
 
 
 def _candidates(tokenizers) -> list[tuple[str, str]]:

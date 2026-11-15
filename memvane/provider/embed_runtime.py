@@ -85,20 +85,16 @@ MAX_FILES = 50_000
 MAX_PACKAGES = 2_000
 FLAGS = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_CLOEXEC', 0)
 
-
 def _fail(reason):
     raise RuntimeUnavailable(reason)
-
 
 def _canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=False,
                       separators=(',', ':')).encode('utf-8')
 
-
 def root(home=None):
     from memvane.kernel import memvane_paths
     return memvane_paths.state_base(home or Path.home()) / 'embed-runtime'
-
 
 def _owner_dir(path):
     info = Path(path).lstat()
@@ -106,11 +102,9 @@ def _owner_dir(path):
             stat.S_IMODE(info.st_mode) & 0o077):
         _fail('laya_embed_runtime_unsafe')
 
-
 def _account_home():
     import pwd
     return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
-
 
 def _runtime_root(home=None, *, create=False):
     base = Path(home or Path.home())
@@ -135,7 +129,6 @@ def _runtime_root(home=None, *, create=False):
     _owner_dir(cursor)
     return cursor
 
-
 @contextmanager
 def _lock(runtime):
     fd = os.open(runtime / '.lock', os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0),
@@ -152,7 +145,6 @@ def _lock(runtime):
         yield
     finally:
         os.close(fd)
-
 
 def _hash(path, limit=None):
     """sha256 and size of one regular, non-symlinked file."""
@@ -172,14 +164,12 @@ def _hash(path, limit=None):
     finally:
         os.close(fd)
 
-
 def _no_symlink_ancestor(path):
     cursor = Path('/')
     for part in Path(path).parts[1:]:
         cursor = cursor / part
         if cursor.is_symlink():
             _fail('laya_embed_runtime_source_unsafe')
-
 
 # ------------------------------------------------------------------ select
 
@@ -198,7 +188,6 @@ def _read_json(path, limit):
         return json.loads(raw.decode('utf-8')), raw
     except (UnicodeError, ValueError) as exc:
         raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
-
 
 def _manifest_valid(manifest):
     if (not isinstance(manifest, dict) or
@@ -226,12 +215,10 @@ def _manifest_valid(manifest):
             {NODE, manifest['moduleEntry'], MODEL} <= names and
             any(name.startswith(manifest['nativePackage'] + '/') for name in names))
 
-
 def _relative_ok(value, tail):
     return (isinstance(value, str) and value.startswith('node_modules/') and
             value.endswith(tail) and '\\' not in value and '\x00' not in value and
             not any(part in ('', '.', '..') for part in value.split('/')))
-
 
 def _verify_generation(generation):
     """Every file of one sealed generation against runtime.json; returns its manifest.
@@ -272,11 +259,9 @@ def _verify_generation(generation):
     cache.flush()
     return manifest
 
-
 def files_sha256(manifest):
     """Digest of every sealed file row; independent of the generation's location."""
     return hashlib.sha256(_canonical(manifest['files'])).hexdigest()
-
 
 def generation_of(path):
     """The Laya runtime generation directory a file path lies in, or None.
@@ -292,7 +277,6 @@ def generation_of(path):
             return Path(*parts[:index + 1])
     return None
 
-
 def _sealed_manifest(generation):
     """A generation's runtime.json, checked against its content-addressed name."""
     try:
@@ -307,7 +291,6 @@ def _sealed_manifest(generation):
         _fail('laya_embed_runtime_corrupt')
     return manifest
 
-
 def sealed_files_sha256(path):
     """``runtimeFilesSha256`` of the generation holding ``path``; None when not one.
 
@@ -318,7 +301,6 @@ def sealed_files_sha256(path):
     if generation is None:
         return None
     return files_sha256(_sealed_manifest(generation))
-
 
 def verify_attested_files(manifest, expected=None):
     """Full re-hash of every file a provider manifest executes, before a start.
@@ -345,7 +327,6 @@ def verify_attested_files(manifest, expected=None):
         _fail('laya_embed_runtime_mismatch')
     return digest
 
-
 def _described(generation, manifest):
     by_name = {row[0]: row for row in manifest['files']}
     native = sorted(row for row in manifest['files']
@@ -363,7 +344,6 @@ def _described(generation, manifest):
             'dependencyClosure': [{'path': str(generation / row[0]), 'sha256': row[1],
                                    'bytes': row[2]} for row in native]}
 
-
 def _pointer(path, *, missing_ok=False):
     """The generation name a pointer file names, or None when absent and allowed."""
     try:
@@ -379,7 +359,6 @@ def _pointer(path, *, missing_ok=False):
             not GENERATION.fullmatch(pointer['generation'])):
         _fail('laya_embed_runtime_corrupt')
     return pointer['generation']
-
 
 def _activate(runtime, name):
     """Point ``active.json`` at ``name``; the replaced one becomes ``previous.json``.
@@ -400,7 +379,6 @@ def _activate(runtime, name):
         _write_private(runtime / PREVIOUS, _canonical({'schema': SCHEMA, 'generation': current}))
     _write_private(runtime / ACTIVE, _canonical({'schema': SCHEMA, 'generation': name}))
 
-
 def select(home=None):
     """The active generation, fully re-verified; refuses otherwise."""
     runtime = _runtime_root(home)
@@ -413,7 +391,6 @@ def select(home=None):
     except OSError as exc:
         raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
     return _described(generation, manifest)
-
 
 def select_generation(generation, home=None):
     """Fully verify one named owned generation without reading selection pointers."""
@@ -440,12 +417,10 @@ def select_generation(generation, home=None):
         raise RuntimeUnavailable('laya_embed_runtime_corrupt') from exc
     return _described(chosen, manifest)
 
-
 # ------------------------------------------------------------- provisioning
 
 def _package_dir(base, name):
     return base.joinpath(*name.split('/'))
-
 
 def _resolve(package, name, top):
     """Node's lookup: ``node_modules/<name>`` from ``package`` up to ``top``.
@@ -461,7 +436,6 @@ def _resolve(package, name, top):
         if cursor == top:
             return None
         cursor = cursor.parent
-
 
 def _package_closure(module_pkg, top):
     """node-llama-cpp plus every package its runtime imports resolve to."""
@@ -489,7 +463,6 @@ def _package_closure(module_pkg, top):
                 continue
             queue.append(resolved)
     return found
-
 
 def _source_layout(module_entry):
     """(outermost node_modules, module package, native package) for an entry.

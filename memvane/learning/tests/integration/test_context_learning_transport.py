@@ -4,11 +4,11 @@ import copy
 import io
 import json
 import os
+import select
 from pathlib import Path
 import sys
 import tempfile
 import subprocess
-import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -16,7 +16,7 @@ from unittest.mock import patch
 from memvane.learning.context_learning.contracts import digest, request
 from memvane.learning.context_learning.store import capture, database, canonical
 from memvane.learning.context_learning.offline import save_provisional_batch, review_view, approve_review, delete_case, build_manifest
-from memvane.learning.context_learning.jobs import JobLease, label_job, job_status, cancel_job
+from memvane.learning.context_learning.jobs import JobLease, label_job, job_status
 from memvane.learning.context_learning.transport import run_teacher, label_request, _SERIAL
 from memvane.learning import context_learning_cli as cli
 from memvane.learning.tests.support import REPO
@@ -55,6 +55,8 @@ if mode=='hang-input':time.sleep(10)
 if mode=='unsupported':
  sys.stderr.write('unknown option: '+SECRET);sys.exit(2)
 sample=json.loads(sys.stdin.read())['sample']
+if mode=='slow':
+ with open(READY_FIFO,'w') as ready:ready.write('ready')
 if mode=='timeout':time.sleep(10)
 if mode=='descendant':
  child=subprocess.Popen([sys.executable,'-c',"import time;from pathlib import Path;time.sleep(.7);Path("+repr(CHILD_MARKER)+").write_text('survived')"])
@@ -95,7 +97,7 @@ if mode=='after-completion':emit({'type':'item.started','item':{'type':'command_
 if mode=='closed-pipes':
  os.close(1);os.close(2);time.sleep(10)
 if mode=='nonzero':sys.exit(2)
-'''.replace('MODE',repr(mode)).replace('PID_FILE',repr(str(self.root/'child.pid'))).replace('CHILD_MARKER',repr(str(self.root/'owned-alive'))).replace('SECRET',repr(SECRET))
+'''.replace('MODE',repr(mode)).replace('PID_FILE',repr(str(self.root/'child.pid'))).replace('CHILD_MARKER',repr(str(self.root/'owned-alive'))).replace('READY_FIFO',repr(str(self.root/'ready.fifo'))).replace('SECRET',repr(SECRET))
         path=self.root/host
         path.write_text(script)
         path.chmod(0o700)
@@ -262,14 +264,16 @@ if mode=='nonzero':sys.exit(2)
         # The one process boundary: a second CLI process cancels or deletes a running job.
         args=['label-request','fixture','--host','codex','--enable-teacher','--optional-hooks-audited','--timeout','8']
         argv=[sys.executable,'-B','-m','memvane.learning.context_learning_cli','--state-dir',str(self.state),*args]
+        fifo=self.root/'ready.fifo'
+        os.mkfifo(fifo,0o600)
         for deleted in (False,True):
+            ready_fd=os.open(fifo,os.O_RDONLY|os.O_NONBLOCK)
             p=subprocess.Popen(argv,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,start_new_session=True,cwd=REPO)
             try:
-                deadline=time.monotonic()+3
-                while time.monotonic()<deadline:
-                    if job_status(self.state,'fixture')['status']=='running':break
-                    time.sleep(.02)
-                else:self.fail('mock job did not start')
+                readable,_,_=select.select([ready_fd],[],[],8)
+                self.assertEqual(readable,[ready_fd], 'mock CLI did not receive the request')
+                self.assertEqual(os.read(ready_fd,64),b'ready')
+                self.assertEqual(job_status(self.state,'fixture')['status'],'running')
                 self.assertEqual(self.command(*args)['reason'],'job_busy')
                 if deleted:delete_case(self.state,'fixture')
                 else:self.assertEqual(self.command('cancel-job','fixture')['status'],'cancel_requested')
@@ -278,6 +282,7 @@ if mode=='nonzero':sys.exit(2)
                 self.assertEqual(json.loads(out)['reason'],'cancelled')
                 with database(self.state) as db:self.assertEqual(db.execute('SELECT count(*) FROM labels').fetchone()[0],0)
             finally:
+                os.close(ready_fd)
                 if p.poll() is None:
                     os.killpg(p.pid,15);p.communicate(timeout=2)
 

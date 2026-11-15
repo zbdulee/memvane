@@ -21,8 +21,6 @@ import hashlib
 import re
 
 NAME = 'memvane'
-DISPLAY_NAME = 'MemVane'
-DB_NAME = 'memvane-db'
 PLUGIN_ID = 'memvane'
 MARKETPLACE = 'memvane-marketplace'
 REPOSITORY = 'zbdulee/memvane'
@@ -47,8 +45,6 @@ def state_base(home=None):
 
 
 
-def support_root(home=None):
-    return _home(home).joinpath(*_support_parts(NAME))
 
 
 def install_root(install_id, home=None):
@@ -131,14 +127,8 @@ def ensure_state_layout(home=None):
 
 
 
-def config_root(home=None):
-    return _home(home) / '.config' / NAME
 
 
-def cache_root(home=None):
-    if sys.platform == 'darwin':
-        return _home(home) / 'Library' / 'Caches' / NAME
-    return _home(home) / '.cache' / NAME
 
 
 def auto_context_state(home=None):

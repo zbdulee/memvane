@@ -42,7 +42,10 @@ class ServiceChecks(Fixture):
         projects = [self.project(name) for name in ('alpha', 'beta', 'gamma')]
         for project, _manifest in projects:
             svc.register(project, root=self.root)
-        self.service()
+        service = self.service(start=False)
+        service.start_worker = lambda manifest, admit: self.start_worker(manifest, admit, delay=0)
+        self.assertTrue(service.acquire(wait=5))
+        service.start()
         for _project, manifest in projects:
             self.wait(lambda m=manifest: self.ready(m), message='project never adopted')
         # Each installation keeps its own owner lease and state record.

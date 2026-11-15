@@ -291,7 +291,7 @@ sources are Astral uv's managed Python distribution and `laya==0.3.20` from
 PyPI; `managed_install_plan()` records the proposed exact dependency pins.
 Staging installs generations under
 `~/Library/Application Support/memvane/runtimes/laya/generations/`.
-The lock is `core/context_learning/locks/laya-macos-arm64-py312.lock` (SHA-256
+The lock is `memvane/learning/context_learning/locks/laya-macos-arm64-py312.lock` (SHA-256
 `354c3c985a390d5045019e98871cc8a223237f25d891f36525e49f9a42e46447`), and
 wheels are synced with `uv pip sync --require-hashes --no-build` against
 `https://pypi.org/simple`. Staging alone writes no Laya `active.json`, project

@@ -16,14 +16,11 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
-import subprocess
-import threading
 import time
 import unicodedata
 
 from memvane.kernel.bundle_paths import (PROVIDER_RELATIVE_PATH, WORKER_RELATIVE_PATH, bundle_file,
                                          is_provider_relative_path)
-from memvane.kernel.errors import IndexContractError
 from memvane.journal.types import JournalEvidenceError
 from memvane.journal.api import select_route
 
@@ -598,8 +595,6 @@ def inspect_journal(journal_path):
 
 
 
-# Test seam: called with each conversion step name inside the transaction.
-_conversion_step = None
 
 
 
@@ -616,16 +611,12 @@ _conversion_step = None
 
 
 
-RELOCATED_ROUTE_FIELDS = frozenset(('journalPath', 'dbPath', 'queuePath'))
-RELOCATED_ATTESTATION_PATHS = (('journalPath',), ('providerManifest', 'serviceSocketPath'))
 
 
 
 
 
 
-def _executing_root():
-    return Path(__file__).resolve().parents[2]
 
 
 # (ledger phase, journal state) pairs an interrupted activate or restore leaves.

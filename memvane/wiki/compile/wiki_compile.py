@@ -69,7 +69,6 @@ SECRET_LITERAL_PATTERNS = [
 # _NON_SECRET_VALUE_RE below.
 SECRET_KEYWORD_PATTERN = re.compile(r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*(?P<value>[^\s]+)")
 # Kept as the full pattern list for compatibility; prefer secret_matches()/redact().
-SECRET_PATTERNS = SECRET_LITERAL_PATTERNS + [SECRET_KEYWORD_PATTERN]
 # Values that cannot be a credential under any reading: placeholders, references to a
 # value stored elsewhere, type names, booleans. A keyword match on one of these is
 # dropped instead of rejecting the whole card. This narrows false positives only — an
@@ -333,8 +332,7 @@ def classify_explicit_target(raw: str, wiki_root: Path, suggested_type: str) -> 
     """Decide how to treat an extractor-provided targetPath.
 
     Extractors sometimes emit wiki-root-relative paths (``concepts/foo.md``)
-    instead of project-root-relative ones (``.memvane/wiki/concepts/foo.md``; a
-    ``.auto-context/wiki/...`` path is read as the same card).
+    instead of project-root-relative ones (``.memvane/wiki/concepts/foo.md``).
     Returns one of:
     - ("use", path): wiki-root-relative path, normalized under wiki_root
     - ("fallback", None): looks wiki-root-relative but untrusted (bad extension,

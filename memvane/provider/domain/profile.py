@@ -1,5 +1,4 @@
 """Vector profile identity and exact vector codec."""
-import functools
 import hashlib
 import json
 import math
@@ -49,9 +48,6 @@ def _blob(vector, dimension):
     return blob, values
 
 
-@functools.lru_cache(maxsize=8)
-def _vector_struct(dimension):
-    return struct.Struct('<' + 'f' * dimension)
 
 
 def _sum_squares(values):
@@ -66,15 +62,3 @@ def _sum_squares(values):
         return math.fsum(map(operator.mul, values, values))
     except (OverflowError, ValueError):
         return math.inf
-
-
-def _unpack(blob, dimension):
-    if not isinstance(blob, bytes) or len(blob) != dimension * 4:
-        raise IndexContractError('vector_blob_invalid')
-    values = _vector_struct(dimension).unpack(blob)
-    total = _sum_squares(values)
-    if not math.isfinite(total) or total <= 0:
-        raise IndexContractError('vector_blob_invalid')
-    return values
-
-

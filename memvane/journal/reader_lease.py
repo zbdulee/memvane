@@ -1,4 +1,4 @@
-"""UID-wide reader lifetime leases and steady, fully proved v5 endpoints.
+"""UID-wide reader lifetime leases and proved v1 endpoints.
 
 Readers never create coordination files. This module grants no writer role.
 """
@@ -8,7 +8,6 @@ import fcntl
 import os
 from pathlib import Path
 import stat
-import time
 import weakref
 
 from memvane.journal import journal_reader as reader
@@ -169,19 +168,6 @@ def reader_lifetime(install_id, *, exclusive):
             os.close(parent_fd)
 
 
-def _forward_image(before, after):
-    """Admit only an exact immutable prefix followed by reader-only CAS steps."""
-    old_bundle, old, old_stored, prefix, endpoints, _ = before
-    bundle, selected, _stored, transitions, current, records = after
-    _need(bundle == old_bundle and selected.epoch > old.epoch
-          and transitions[:len(prefix)] == prefix
-          and all(current.get(key) == value for key, value in endpoints.items()),
-          'reader_store_changed')
-    for key, record in records.items():
-        fields = reader.stable_fields(record, old_stored)
-        _need(reader.records_agree({name: record.get(name) for name in fields}, old_stored, fields)
-              and current[key][1] == endpoints[old.preferred_endpoint][1],
-              'reader_install_changed')
 
 
 @contextmanager

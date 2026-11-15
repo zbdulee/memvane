@@ -222,12 +222,8 @@ class _StartupReservation:
             finally:os.close(fd)
 
 
-def startup_pending():
-    if _STARTUP.get() is not None:_STARTUP.get().pending()
 
 
-def startup_settled():
-    if _STARTUP.get() is not None:_STARTUP.get().settled()
 
 
 class _Preparation:

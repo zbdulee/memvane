@@ -31,13 +31,6 @@ def active(root, policy, adapter, *, reviewed_adapter_sha256):
     return value
 
 
-def effective_argv(root, policy, adapter, *, reviewed_adapter_sha256):
-    """Resolve only the reviewed host adapter while a grant is current."""
-    if active(root, policy, adapter,
-              reviewed_adapter_sha256=reviewed_adapter_sha256) is None:
-        return policy['trainerArgv']
-    return [policy['trainerArgv'][0], str(Path(adapter).resolve(strict=True)),
-            policy['trainerArgv'][2]]
 
 
 def require_operation(root, policy, operation, *, approval_sha256=None):

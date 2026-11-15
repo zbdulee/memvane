@@ -12,7 +12,6 @@ import re
 import selectors
 import signal
 import subprocess
-import sys
 import time
 
 from memvane.runtime.types import DispatchFailure
@@ -26,7 +25,6 @@ STDERR_TAIL = 4096
 # step/queue policies still decide normal progress; this loose backstop detects
 # a stuck delegated child without imposing a short QA-only product timeout.
 SYNC_SECONDS = 86400
-QA_BARRIER_SECONDS = 600
 COMPILE_SECONDS = 86400
 STOP_GRACE_SECONDS = 2
 STABLE_TARGET_FIELDS = ('project', 'installId', 'scopeId', 'storeIncarnation',
@@ -53,7 +51,7 @@ def _child_env():
     # Keep only the authorized local runtime, QA ceiling and guard envelope.
     keys = ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER', 'QMD_QA_CALL_LEDGER',
             'QMD_QA_CALL_LIMIT', 'QMD_DEVELOPMENT_GUARD_RUN',
-            'QMD_DEVELOPMENT_GUARD_NONCE', 'LAYA_QA_SYNC_BARRIER',
+            'QMD_DEVELOPMENT_GUARD_NONCE',
             'MEMVANE_TEST_RUNTIME_ROOT', 'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
     env = {key: os.environ[key] for key in keys if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
@@ -376,9 +374,7 @@ def _run_target(kind, value, target, owner_fd):
     try:
         options = {'owner_fd': owner_fd} if owner_fd is not None else {}
         child = _run_child(argv, target['project'],
-                           (SYNC_SECONDS + (QA_BARRIER_SECONDS
-                                            if os.environ.get('LAYA_QA_SYNC_BARRIER') else 0)
-                            if kind == 'laya-sync' else COMPILE_SECONDS), **options)
+                           SYNC_SECONDS if kind == 'laya-sync' else COMPILE_SECONDS, **options)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise DispatchFailure('target_launch_failed') from exc
     except ValueError as exc:

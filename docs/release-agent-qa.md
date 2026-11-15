@@ -134,9 +134,7 @@ Operator rules:
   Do not set test-only
   variables such as `QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE` or
   `QMD_SANDBOX`. If any is present, the run is
-  invalid. `LAYA_QA_SYNC_BARRIER` is allowed only in the RQA-RACE-01 Part B
-  session, with that part's arm file. In any other scenario it invalidates
-  the run.
+  invalid.
 - **Fresh session.** A host process started after the candidate install and
   host reload completed, with its working directory equal to the scenario's
   checkout.
@@ -710,63 +708,7 @@ same fixture).
 
 The sync owner serializes selected writers. Publication rechecks the view capture and head before committing, and recall pins the selected view.
 
-QA-only barrier (`memvane/sync/product_sync_worker.py`):
-
-- **Default.** Without `LAYA_QA_SYNC_BARRIER`, no file is read and nothing
-  waits.
-- **Variable value.** With the variable set, it must name
-  `<fixture>/.qa-laya-sync-barrier.json`. `<fixture>` is the resolved
-  `root` from the fixture `MANIFEST.json`, for example `/private/tmp/...` on
-  macOS.
-- **Arm file contents.** The arm file is mode 0600 and must match the
-  fixture owner marker. It names the exact selected project
-  (`paths.project`), `scopeId`, `dbIncarnation` (from the installer
-  `status`), a fresh 32-hex `nonce` and `timeoutSeconds` (1–600).
-- **Validation.** A project outside that fixture is untouched. A malformed or
-  unsafe arm, or the right project with a different scope or DB, fails that
-  sync with `qa_sync_barrier_invalid` before the model starts.
-- **Hold.** The first matching attempt holds after its complete vector batch
-  is built and before anything is enqueued. It writes `.qa-laya-sync-barrier-<nonce>.held`
-  (source manifest, pid, time).
-- **Release.** It waits for a regular file `.qa-laya-sync-barrier-<nonce>.release`
-  that the operator creates.
-- **Outcome record.** It then writes `.done` (release time, finish time,
-  state/generation or refusal reason). A timeout writes `.done` with
-  `laya_qa_barrier_timeout` and leaves the wake pending.
-- **Later attempts.** Later attempts with the same nonce never wait.
-- **Scope of the variable.** The variable is valid only in the Part B host
-  session. It invalidates every other scenario (section 3).
-
-1. Preconditions: Claude Code; selected fixture at S-main, indexed; no
-   runtime dispatcher process alive for the QA UID. Start the fresh host
-   session with the variable naming the as-yet-absent arm path. Wait until
-   its SessionStart `laya-sync` wake has finished and S-main remains current.
-   Only then write the arm file. A missing arm file is ignored, so this
-   SessionStart attempt cannot consume the nonce.
-2. Ask "git switch qa/feature 실행해줘". The successful Bash PostToolUse wakes
-   `laya-sync`. Wait for `.held`; record its source manifest, pid and both
-   Git HEADs (fixture `stage` events or `git rev-parse`).
-3. Ask "git switch main 실행해줘". Read-only, confirm the `laya-sync` wake
-   revision advanced. Probe Q-alpha and Q-feature while the old attempt is
-   still held.
-4. Create the release file. Wait for `.done`, then for the retained wake to
-   settle. Probe Q-alpha and Q-feature immediately and again at T_LATE.
-5. Copy the barrier records into `$EVID` before fixture cleanup. End the
-   session and confirm that no process of the QA UID still carries the
-   variable before the next scenario.
-6. Expected:
-   - `.held` `sourceManifest` is the S-feature manifest. An S-main hold is
-     `BLOCKED`, even if the later probes appear correct.
-   - `.done` `finishedAt` is later than the switch-main event and `releasedAt`.
-   - The old attempt reports a refusal (`vector_batch_stale`, `index_stale`
-     or a replan) and never `indexed` with the held feature manifest.
-     `laya_sync_yield_priority` is inconclusive: repeat with a new nonce.
-   - The installer `status` head ends at a generation whose manifest is S-main.
-   - S-main is current at every probe after the second switch. `FEATURE_ONLY`
-     and `ALPHA_FEATURE` are never injected.
-   - A missing `.held` (for example, a dispatcher without the variable)
-     means the race did not run: `BLOCKED`, repeat with a new nonce. A fast
-     flip-flop without the records cannot be `PASS`.
+The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a deterministic way to hold the worker is available; a fast flip-flop alone does not establish this race.
 
 **Part C: I/O retry.**
 
@@ -1055,7 +997,7 @@ Scenarios respect domain ownership. Two rules apply:
 | `memvane/sync/sync_owner_lock.py`, `memvane/sync/product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
 | `memvane/wiki/**`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
 | `memvane/learning/**` | RES-01, RES-02 |
-| `memvane/app/setup_entry.py`, `memvane/app/setup_workflow.py`, `memvane/provider/embed_runtime.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
+| `memvane/app/setup_entry.py`, `memvane/provider/embed_runtime.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
 | `memvane/runtime/runtime_work.py`, `memvane/runtime/runtime_wake_policy.py`, resource coordination modules | RES-01, RES-02, RACE-01 |
 | `memvane/settings/config.py`, `memvane/route/index_host_route.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
 | Version strings only | INST-01, INST-02 |

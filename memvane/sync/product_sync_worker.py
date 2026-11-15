@@ -9,14 +9,9 @@ from memvane.resident.types import EMBED_POLICY
 from memvane.store import types as store_types
 
 from collections.abc import Mapping
-from contextlib import contextmanager
-import json
-import os
 from pathlib import Path
 import re
-import socket
 import sqlite3
-import stat
 import time
 
 from memvane.kernel.resource_deferred import ResourceDeferred
@@ -31,30 +26,11 @@ from memvane.wiki.intake.api import (schema3_sources as _schema3_sources,
 from memvane.runtime.api import sync_owner
 from memvane.journal.types import JournalEvidenceError, V1_BUILD_SCHEMA
 from memvane.journal.api import build_read_v1
-from memvane.journal.api import inspect_journal, selected_project_proof as _selected
+from memvane.journal.api import selected_project_proof as _selected
 # ReviewedLocalQmdProvider(manifest) builds a reviewed provider handle (a test
 # runtime root's fixture provider port answers through provider.api).
 from memvane.provider.api import reviewed_provider as ReviewedLocalQmdProvider
 from memvane.provider.api import start_owned_embed_service
-
-# A conservative cold-start proxy, not a measured GGUF/native peak. The
-# installed-candidate resource QA must measure and review this envelope.
-
-# RQA-RACE-01 Part B only. Unset (the product default) reads no file and
-# never waits. Set, it names `<fixture>/.qa-laya-sync-barrier.json` beside a
-# release QA fixture owner marker; see docs/release-agent-qa.md.
-QA_BARRIER_ENV = 'LAYA_QA_SYNC_BARRIER'
-QA_BARRIER_ARM = '.qa-laya-sync-barrier.json'
-QA_BARRIER_SCHEMA = 'laya-qa-sync-barrier-v1'
-QA_FIXTURE_SCHEMA = 'qmd-release-qa-fixture-v1'
-QA_BARRIER_MAX_SECONDS = 600
-
-# sync_step/vector_fill_step rounds in one wake; more remaining stays pending
-# and the dispatcher retains the wake.
-MAX_CAPACITY_ROUNDS = 64
-# Wall-clock bound of one initial-build wake (checked between rounds). The
-# rest stays durable in the catalog, fill cursor and claim queue.
-BUILD_WAKE_SECONDS = 45
 
 
 def _deferred(exc):
@@ -1021,11 +997,6 @@ SCHEMA3_LINKED_LIST_SECONDS = 5
 SCHEMA3_FILL_DEADLINES = frozenset(('content_fill_deadline', 'fill_deadline_exceeded'))
 
 
-def _schema3_resume(store, targets, cursor, recipe_id, profile_id):
-    """Index of the first target from ``cursor`` without its embedding set, when its chunk set is stored."""
-    from memvane.store import api as v
-    first = v.embedding_coverage(store, targets, recipe_id, profile_id, first_from=cursor)
-    return first[0] if first is not None and first[1] else None
 
 
 def _schema3_vector_detail(result):

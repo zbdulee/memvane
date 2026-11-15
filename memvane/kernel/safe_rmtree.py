@@ -90,18 +90,6 @@ def open_at(parent_fd, name, *, uid=None):
     return fd
 
 
-def open_path(root_fd, parts, *, uid=None):
-    """Walk ``parts`` below ``root_fd``; the caller closes the returned fd."""
-    fd = os.dup(root_fd)
-    try:
-        for name in parts:
-            child = open_at(fd, name, uid=uid)
-            os.close(fd)
-            fd = child
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
 
 
 def _dev(info):

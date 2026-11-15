@@ -52,12 +52,6 @@ def settings_identity_digest(project_root, collections) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def route_collections(record: dict) -> list:
-    """The ``{name, role, sourceRoot}`` collections a v1 or v2 route binds."""
-    if record.get("schema") == SCHEMA:
-        return [{"name": record["collectionName"], "role": "raw",
-                 "sourceRoot": record["sourceRoot"]}]
-    return record["collections"]
 
 
 def wiki_index_roots(collections):

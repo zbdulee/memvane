@@ -8,7 +8,6 @@
 """
 
 from __future__ import annotations
-import sys
 from pathlib import Path
 from memvane.settings import types as project_types
 from memvane.wiki.card import wiki_card
@@ -19,7 +18,6 @@ from memvane.wiki.card import yaml_scalars
 # 파싱 실패·루트 밖·길이 초과는 "없다"가 아니라 "판정 불가"이므로 소실로 세지 않는다 —
 # 미지원 표기(block mapping·여러 줄 flow)를 소실로 분류하면 "카드를 고치면 되는 표기
 # 문제"와 "원문이 사라졌다"가 섞인다.
-IGNORED_ENTRY_REASONS = wiki_card.NON_FILE_SOURCE_REASONS
 
 
 def wiki_root_of(root: Path, config: dict) -> Path | None:
@@ -90,84 +88,12 @@ def missing_key(paths) -> list[str]:
     return sorted({p for p in paths if isinstance(p, str) and p})
 
 
-def classify_entries(entries, project_root: Path, allow_roots: list[Path]) -> dict:
-    """sources 표기 목록 → {present, missing, unknown, entries}.
-
-    항목별 판정은 `wiki_card.classify_source_entry` 하나만 쓴다(주입과 같은 판정).
-    """
-    present: list[str] = []
-    missing: list[str] = []
-    unknown: dict[str, int] = {}
-    for entry in entries:
-        resolved, reason, raw_path = wiki_card.classify_source_entry(
-            entry, project_root, allow_roots)
-        if resolved is not None:
-            present.append(raw_path)
-        elif reason == "missing":
-            missing.append(raw_path)
-        elif reason in IGNORED_ENTRY_REASONS:
-            continue
-        else:
-            unknown[reason] = unknown.get(reason, 0) + 1
-    return {"present": present, "missing": missing, "unknown": unknown,
-            "entries": len(entries)}
 
 
-def classify_card(text: str, project_root: Path, allow_roots: list[Path]) -> dict:
-    """카드 본문 전체 → 소스 상태. frontmatter가 없으면 판정하지 않는다."""
-    block = frontmatter_block(text)
-    if block is None:
-        return {"present": [], "missing": [], "unknown": {"frontmatter_missing": 1},
-                "entries": 0}
-    return classify_entries(
-        wiki_card.frontmatter_source_entries(block), project_root, allow_roots)
 
 
-def classify_records(sources, project_root: Path, allow_roots: list[Path]) -> dict:
-    """`sources` **레코드(dict) 목록** → 같은 판정.
-
-    큐 잡(`wiki_verify_worker`)·candidate는 frontmatter 문자열이 아니라 dict를 들고 있다.
-    표기 파싱만 건너뛰고 존재 판정은 동일 함수(`wiki_card.resolve_existing_source`)를 쓴다.
-    """
-    present: list[str] = []
-    missing: list[str] = []
-    unknown: dict[str, int] = {}
-    entries = 0
-    if not isinstance(sources, list):
-        return {"present": present, "missing": missing, "unknown": unknown, "entries": 0}
-    for src in sources:
-        if not isinstance(src, dict):
-            continue
-        entries += 1
-        if src.get("kind") != wiki_card.SOURCE_KIND_FILE:
-            continue
-        raw_path = src.get("path")
-        if not isinstance(raw_path, str) or not raw_path:
-            continue
-        resolved, reason = wiki_card.resolve_existing_source(
-            raw_path, project_root, allow_roots)
-        if resolved is not None:
-            present.append(raw_path)
-        elif reason == "missing":
-            missing.append(raw_path)
-        else:
-            unknown[reason] = unknown.get(reason, 0) + 1
-    return {"present": present, "missing": missing, "unknown": unknown, "entries": entries}
 
 
-def all_sources_missing(info: dict) -> bool:
-    """"소스 전부 소실" 판정 — 규칙은 `wiki_card.sources_all_missing`(SSOT)에 있다.
-
-    소실 항목이 하나 이상이고, 살아 있는 파일 소스가 하나도 없고, 판정 불가 항목도 없을
-    때만 참이다. **일부만 소실은 대상이 아니다**(살아 있는 원문으로 대조가 가능하므로
-    "stale 링크가 유일 진실"이 성립하지 않는다). 소스 항목이 0인 메타 카드
-    (SCHEMA/index/log)도 대상이 아니다 — 소실이 0이라 자동으로 빠진다.
-    이 경로는 항목을 **전부** 조사하므로 recall의 stat 예산 절단이 없다(그 차이는
-    `wiki_card.sources_all_missing` docstring 참고).
-    """
-    return wiki_card.sources_all_missing(
-        len(info.get("missing") or ()), len(info.get("present") or ()),
-        sum((info.get("unknown") or {}).values()))
 
 
 def allow_roots_of(config: dict) -> list[Path]:

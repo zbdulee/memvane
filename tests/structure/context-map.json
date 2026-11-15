@@ -409,11 +409,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/learning/context_learning/adaptive_pool.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/learning/context_learning/automatic_cohort.py": {
       "context": "learning",
       "layer": "adapter",
@@ -639,11 +634,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/learning/context_learning/selection_metrics.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/learning/context_learning/selection_port.py": {
       "context": "learning",
       "layer": "adapter",
@@ -710,16 +700,6 @@
       "pinned": false
     },
     "memvane/learning/context_learning_cli.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/learning/context_learning_host_ack.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/learning/context_learning_shared.py": {
       "context": "learning",
       "layer": "adapter",
       "pinned": false
@@ -1150,16 +1130,6 @@
       "pinned": false
     },
     "memvane/store/checkout/checkout_view.py": {
-      "context": "store",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/store/checkout/worktree_query_slice.py": {
-      "context": "store",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/store/checkout/worktree_wiki_membership.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false
@@ -1610,11 +1580,6 @@
       "pinned": false
     },
     "memvane/app/api.py": {
-      "context": "app",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/app/setup_workflow.py": {
       "context": "app",
       "layer": "adapter",
       "pinned": false

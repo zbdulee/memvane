@@ -13,7 +13,6 @@ import fcntl
 import json
 import math
 import os
-from pathlib import Path
 import socket
 import stat
 import tempfile
@@ -153,16 +152,6 @@ def _failure_decision(manifest, *, own_lock=False):
         raise ResourceDeferred('laya_service_backoff')
 
 
-def _record_failure(manifest, reason, *, terminal=False, count=True):
-    prior = read_owner_state(manifest)
-    if reason == 'resource_deferred':
-        attempts = 0
-    elif prior is not None and prior['reason'] in ('starting', 'ready'):
-        attempts = prior['attempts']  # launch was counted before the child ran
-    else:
-        attempts = min(_MAX_FAILURES, (prior['attempts'] if prior else 0) + int(count))
-    _write_state(manifest, reason, terminal=terminal or attempts >= _MAX_FAILURES,
-                 attempts=attempts)
 
 
 def probe(manifest):

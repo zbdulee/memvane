@@ -29,17 +29,10 @@ import os
 from pathlib import Path
 import stat
 import subprocess
-import sys
 import time
 
 POLICY = 'live-selector.json'
-ATTESTATION = 'laya-synthetic-attestation.json'
 PREPARE_SECONDS = 120
-# Reasons a recall reports that this heal can clear.
-HEALABLE = frozenset(('adapter_anchor_missing', 'unsupported_adapter',
-                      'inference_attestation_required'))
-# Reasons a cold resident service reports; a worker run warms the selector.
-WARMABLE = frozenset(('resident_service_deadline_expired', 'resident_service_starting'))
 
 
 class HealRefused(RuntimeError):
@@ -432,25 +425,3 @@ def warm(project, *, home=None, state=None):
         return {'status': 'selector_warm'}
     finally:
         os.close(fd)
-
-
-def selector_projects(home=None):
-    """Projects of installs that have a prepared selector."""
-    from memvane.kernel import memvane_paths
-    from memvane.journal.api import build_read_v1
-    found = []
-    for base in (memvane_paths.installs_base(home),):
-        try:
-            names = sorted(os.listdir(base))
-        except FileNotFoundError:
-            continue
-        for name in names:
-            try:
-                record = build_read_v1(base / name)
-            except Exception:
-                continue
-            project = record['identity']['projectRoot'] if record else None
-            if (isinstance(project, str) and project not in found and
-                    (namespace(project, home) / POLICY).is_file()):
-                found.append(project)
-    return found

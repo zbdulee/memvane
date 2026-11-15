@@ -5,7 +5,7 @@ prove the complete installed plugin before this module opens the runtime.
 """
 from __future__ import annotations
 
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager
 import contextvars
 import hashlib
 import json
@@ -29,7 +29,6 @@ MAX_CONTEXT_BYTES = 32768
 # eligible rows than the answer needs is capped, not refused: the eligible
 # rows of a ranked top-100 are the exact head of the eligible ranking, only
 # shorter. A corpus may hold many historical cards that rank but are ineligible.
-EXCLUSION_FETCH_LIMIT = 100
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _COLLECTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
@@ -41,8 +40,6 @@ _UNSAFE_PATH = re.compile(
     r'[\x00-\x1f\x7f-\x9f\\"\u2028\u2029\u202a-\u202e\u2066-\u2069\ud800-\udfff]'
 )
 from memvane.recall.types import HostResponseError, MAX_ROWS, RecallTrace, ROW_KEYS as _ROW_KEYS
-_PROVIDER_RESULT_KEYS = frozenset({"profileId", "approvedProviderId",
-                                   "providerArtifactSha256", "vector"})
 _EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch"})
 _PATCH_PATH = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$|^\*\*\* Move to: (.+)$")
 _LOCATOR = re.compile(r"([^#]+)#L([1-9][0-9]{0,7})-L([1-9][0-9]{0,7})")
@@ -108,18 +105,8 @@ def _fail(code: str):
 
 
 
-class _SealedManifestMismatch(Exception):
-    """Cause marker: a completed live scan differs from the pinned seal.
-
-    Only this cause may wake the sync owner. Scan budget, unreadable source,
-    row/seal corruption and query errors keep their existing failure.
-    """
 
 
-def _is_sealed_manifest_stale(exc: BaseException) -> bool:
-    from memvane.kernel.errors import IndexContractError
-    return (type(exc) is IndexContractError and str(exc) == 'index_stale'
-            and type(exc.__cause__) is _SealedManifestMismatch)
 
 
 def _successful_bash(payload: dict) -> bool:
@@ -603,38 +590,8 @@ def _successful_edit(payload: dict) -> bool:
             and response.get("success", True) is not False)
 
 
-def _request_stale_sync(decision: dict, proof: dict):
-    """Record one durable full-scan wake for a stale view; always raises.
-
-    The wake key coalesces repeated recalls. The hook never waits for the
-    owner and never serves the stale generation's rows.
-    """
-    from memvane.journal.api import verify_selected_route
-    from memvane.recall.api import recall_epoch as _recall_epoch, recall_sync_wake as _recall_sync_wake
-    current = verify_selected_route(decision)
-    _recall_epoch(current)
-    if current != proof:
-        _fail("selected_proof_changed")
-    try:
-        result = _recall_sync_wake(decision["projectRoot"])
-    except Exception:
-        result = None
-    refreshed = verify_selected_route(decision)
-    _recall_epoch(refreshed)
-    stable = lambda row: {key: value for key, value in row.items()
-                          if key != "selectionEpoch"}
-    if (stable(refreshed) != stable(proof)
-            or refreshed.get("selectionEpoch", -1) < proof.get("selectionEpoch", 0)):
-        _fail("selected_proof_changed")
-    if not isinstance(result, dict) or result.get("status") not in _DURABLE_WAKE_STATES:
-        _fail("index_stale_sync_unavailable")
-    _fail("index_stale_sync_queued")
 
 
-def _request_provider_start(decision: dict, proof: dict, *, transition=False):
-    """A cold/mismatched socket wakes the off-hook owner, never a hook model."""
-    from memvane.recall.api import wake_provider as _wake_provider
-    _fail(_wake_provider(decision, proof, transition=transition))
 
 
 def _request_selected_sync(action: str, decision: dict, proof: dict, *,

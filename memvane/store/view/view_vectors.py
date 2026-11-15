@@ -256,19 +256,6 @@ def _left(deadline):
         v.fail(DEADLINE_EXCEEDED)
 
 
-def _filters(prefixes, exclusions):
-    conditions, args = [], []
-    if prefixes is not None:
-        if not prefixes:
-            conditions.append('0')
-        else:
-            conditions.append('(' + ' OR '.join('(m.path=? OR substr(m.path,1,?)=?)' for _ in prefixes) + ')')
-            for path in prefixes:
-                args.extend((path, len(path) + 1, path + '/'))
-    if exclusions:
-        conditions.append('m.path NOT IN (' + ','.join('?' for _ in exclusions) + ')')
-        args.extend(exclusions)
-    return ''.join(' AND ' + clause for clause in conditions), args
 
 
 def _set_score(query, rows, dimension, deadline):

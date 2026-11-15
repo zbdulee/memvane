@@ -410,9 +410,6 @@ def read_source_bounded(path: Path, max_chars: int) -> tuple[str, bool] | None:
     return text[:max_chars], len(text) > max_chars
 
 
-def read_text_bounded(path: Path, max_chars: int) -> str | None:
-    result = read_source_bounded(path, max_chars)
-    return None if result is None else result[0]
 
 
 def is_hidden_source_path(rel_path: str) -> bool:

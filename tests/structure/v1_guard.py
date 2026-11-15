@@ -252,7 +252,6 @@ _TEST_G1_EXCEPTIONS = {
     ('tests/e2e/onboarding_fixture.py', 'memvane.journal.journal_reader'): 'reader transition interruption',
     ('tests/e2e/onboarding_fixture.py', 'memvane.journal.install_journal'): 'journal transaction interruption',
     ('tests/e2e/onboarding_fixture.py', 'memvane.app.setup_entry'): 'setup CLI dispatch',
-    ('tests/e2e/onboarding_fixture.py', 'memvane.app.setup_workflow'): 'setup CLI fault boundary',
     ('tests/e2e/onboarding_fixture.py', 'memvane.host.onboarding_notice'): 'onboarding notice state',
     # Provenance E2E exercises worker entry and a real stamp failure boundary.
     ('tests/e2e/wiki_db_provenance.py', 'memvane.wiki.compile.wiki_compile_worker'): 'compile fingerprint producer',

@@ -29,13 +29,6 @@ _COLLECTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _WIKI_LOG_HEADER = '# Auto-context Wiki Log\n\n'
 
 
-def generated_wiki_log_text(body: str) -> bool:
-    """The exact header earlier releases wrote when they created the root log.
-
-    A partially appended event must not turn this maintenance file into a
-    wiki card. The caller must also prove the path is the bound wiki root.
-    """
-    return isinstance(body, str) and body.startswith(_WIKI_LOG_HEADER)
 
 
 

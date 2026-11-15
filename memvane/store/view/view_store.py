@@ -28,8 +28,6 @@ from memvane.store.view.view_reader import ReaderMixin
 from memvane.store.view.view_rows import RowsMixin
 from memvane.store.view.view_vectors import VectorMixin
 
-# Publication cut budget; only an O(1) source identity and the commit run under it.
-_CUT_SECONDS = 1.0
 
 
 def _apply_card_delta(db, view_id, ordinal, old, new):

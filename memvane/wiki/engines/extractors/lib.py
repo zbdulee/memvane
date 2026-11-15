@@ -470,9 +470,6 @@ def _run_isolated_admitted(cmd: list[str], timeout: int) -> tuple[str | None, in
         shutil.rmtree(workdir, ignore_errors=True)
 
 
-def run_isolated(cmd: list[str], timeout: int) -> tuple[str | None, int]:
-    out, code, _stderr = run_isolated_detailed(cmd, timeout)
-    return out, code
 
 
 def _qmd_reasoning_effort(payload: dict, *, applied=None, status="unsupported", reason="not_requested") -> dict:

@@ -1,8 +1,7 @@
-"""Installer-owned reader selection in a v5 journal. No index writer authority."""
+"""Installer-owned reader selection in the v1 journal. No index writer authority."""
 from __future__ import annotations
 
 from contextlib import closing, contextmanager, ExitStack
-from contextvars import ContextVar
 from dataclasses import dataclass
 import hashlib
 import json
@@ -10,8 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
-import re
-from types import MappingProxyType, SimpleNamespace
+from types import MappingProxyType
 import weakref
 
 from memvane.journal import install_journal as journal
@@ -22,16 +20,10 @@ _JOURNAL = 'journal.sqlite'
 _issued = weakref.WeakKeyDictionary()
 _read_only = weakref.WeakSet()
 _v1_readers = weakref.WeakSet()
-_retained = weakref.WeakSet()
-_upgrade_readers = weakref.WeakSet()
-_bootstrap_endpoints = weakref.WeakSet()
-_bootstrap_installers = weakref.WeakSet()
 
 # Installation identity: every endpoint of one install shares these fields.
 INSTALL_IDENTITY = ('scope', 'install_id', 'project', 'project_node', 'state', 'state_node',
                     'attestation_sha256', 'profile', 'settings', 'roots')
-# v6 endpoints keep their existing stricter comparison with one another.
-_V6_STABLE = INSTALL_IDENTITY + ('incarnation', 'checkout_policy')
 SCHEMA3_CAPABILITY = 'schema3-ro-v1'
 SCHEMA3_POLICY = 'selected-main-schema3-v1'
 # Store identity of a persisted schema3 endpoint. No generation is pinned: each
@@ -56,11 +48,6 @@ def records_agree(first, second, keys):
                else first[k] == second[k] for k in keys)
 
 
-def stable_fields(first, second):
-    """Fields two endpoints of one install must share."""
-    if 'schema3' in (first.get('store_format'), second.get('store_format')):
-        return INSTALL_IDENTITY
-    return _V6_STABLE
 
 
 @dataclass(frozen=True, eq=False, init=False)
@@ -414,14 +401,6 @@ def selected_reader(journal_path):
     return _sha(b'memvane-reader-endpoint-v1\0' + _raw(record)), row['epoch'], record
 
 
-def _insert_endpoint(db, endpoint, record, raw):
-    row = (_raw(record).decode('utf8'), raw)
-    existing = db.execute('SELECT record,attestation FROM read_endpoints WHERE endpoint_id=?',
-                          (endpoint.endpoint_id,)).fetchone()
-    if existing is None:
-        db.execute('INSERT INTO read_endpoints VALUES(?,?,?)', (endpoint.endpoint_id, *row))
-    else:
-        _need(existing == row, 'reader_endpoint_conflict')
 
 
 _RESETTLED = frozenset(('settings', 'vector_profile', 'vector_recipe'))
@@ -448,24 +427,6 @@ def resettled_pair(old, new):
         return False
 
 
-def _adopted_vector_spec(record, proof, *, deadline):
-    """The current main head's vector spec when it is the install provider's, else None."""
-    from memvane.store.api import provider_spec, pinned_vector
-    expected = provider_spec(proof.get('providerManifest'), proof.get('vectorProfile'))
-    if expected is None:
-        return None
-    from memvane.store.types import BlobStoreError
-    try:
-        unbound = dict(record, vector_profile=None, vector_recipe=None)
-        with _schema3_pin(unbound, deadline=deadline) as (store, _handle, pin):
-            vector = pinned_vector(store, pin)
-    except BlobStoreError:
-        # Best effort: a cold view, a moving checkout or a busy store leaves
-        # the record as it is; the owner's next pass adopts the spec.
-        return None
-    if vector is None or {k: vector[k] for k in ('recipe_id', 'profile_id')} != expected:
-        return None
-    return expected
 
 
 def resettle_selection(decision, owner):
@@ -553,5 +514,3 @@ def settings_resettle_pending(state, project, executing_root) -> bool:
         return saved['settings'] != _sha(_raw(proof['readerDecision']['recallSettings']))
     except Exception:
         return False
-
-

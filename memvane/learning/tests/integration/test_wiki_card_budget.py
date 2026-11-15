@@ -151,16 +151,21 @@ class MeasureChecks(FixtureCase):
         }
 
     def test_each_count_failure_has_its_own_reason_code(self):
-        runtimes = self.failing_runtimes()
         text = card_text('\nshort body\n')
         seen = {}
-        for expected, pair in runtimes.items():
-            # Only the hanging runtime gets a short limit; every other runtime
-            # ends on its own and keeps the product limit, so machine load can
-            # never turn its own failure into runtime_timeout.
-            limit = 0.5 if expected == 'runtime_timeout' else budget.EXACT_TIMEOUT_SECONDS
-            with patch.object(budget, 'EXACT_TIMEOUT_SECONDS', limit):
-                measured = budget.measure_card(text, pair)
+        failures = {
+            'runtime_spawn_failed': OSError('synthetic spawn failure'),
+            'runtime_timeout': subprocess.TimeoutExpired('synthetic', 1),
+            'runtime_exit': subprocess.CompletedProcess([], 3, '', STDERR_MARKER),
+            'output_undecodable': UnicodeDecodeError('utf8', b'\xff', 0, 1, 'synthetic'),
+            'output_not_json': subprocess.CompletedProcess([], 0, STDERR_MARKER, ''),
+            'output_shape_invalid': subprocess.CompletedProcess([], 0, '["x"]', ''),
+            'count_mismatch': subprocess.CompletedProcess([], 0, '[1, 2]', ''),
+        }
+        for expected, result in failures.items():
+            with patch.object(budget.subprocess, 'run', side_effect=result if isinstance(result, Exception) else None,
+                              return_value=None if isinstance(result, Exception) else result):
+                measured = budget.measure_card(text, self.p.tokenizer)
             self.assertEqual((measured['method'], measured['reason']),
                              (budget.METHOD_FAILED, 'measure_failed'), expected)
             self.assertEqual(measured['failure'], expected)

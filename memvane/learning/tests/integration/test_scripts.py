@@ -73,7 +73,6 @@ TABLE = {
         'manifestRequired', 'unsafePathsDenied', 'policyAndCheckpointUnchanged', 'realTrainerConstructor',
         'exactPathCompatible', 'deadlineBounded', 'claudeScopesUnambiguous',
         zero=('modelCalls', 'providerCalls')), {}),
-    'context_learning_adaptive_pool.py': (_all_true('adaptive', 'moreThanFifteen'), {}),
     'context_learning_auto_staging.py': (_all_true(
         'staged_train', 'backlog_preserved', 'evaluation_no_pointer', 'revoke_blocks'),
         {'QMD_SKIP_BACKGROUND_WORKER': '1'}),

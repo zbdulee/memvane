@@ -76,7 +76,7 @@ Approvals recorded before the run (reference, date, scope, cap):
 | Laya readiness evidence, independent of QMD | |
 | Selected store generation | |
 | Network state (online / restricted) | |
-| Forbidden test env vars absent (`QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE`, `QMD_SANDBOX`; `LAYA_QA_SYNC_BARRIER` outside the RQA-RACE-01 Part B session) | yes / no |
+| Forbidden test env vars absent (`QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE`, `QMD_SANDBOX`) | yes / no |
 
 ### Preflight (spec section 3, before functional QA)
 

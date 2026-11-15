@@ -19,8 +19,6 @@ _PROVIDER_ERRORS=frozenset(('provider_unavailable','provider_identity_mismatch',
     'provider_artifact_hash_mismatch','provider_model_not_gguf','vector_profile_mismatch'))
 
 
-def reader_capabilities():
-    return frozenset(('schema3-ro-v1',))
 
 
 def _approved_profile_matches(candidate, proof):

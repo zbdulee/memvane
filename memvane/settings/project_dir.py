@@ -22,8 +22,6 @@ def is_folder_name(name) -> bool:
     return name == CURRENT
 
 
-def is_folder(path) -> bool:
-    return Path(path).name == CURRENT
 
 
 def runtime_file(project, name) -> Path:

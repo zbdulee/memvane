@@ -23,8 +23,6 @@ from memvane.settings.types import (DEFAULT_CONFIG, DEDUP_AUTO_MERGE_THRESHOLD, 
 
 
 # The project folder is `.memvane/` (project_dir).
-CONFIG_DIR_NAME = project_dir.CURRENT
-SETTINGS_FILE_NAME = "settings.json"
 
 # injectSummaryMaxChars 상한. 이 값은 카드 파일 읽기 창까지 키우므로(recall의
 # wiki_card_read_limit) 상한 없이 두면 사용자 설정이 blocking hook의 I/O·CPU 예산을
@@ -452,25 +450,10 @@ def is_compile_source_collection(roles, collection):
     return collection_role(roles, collection) in COMPILE_SOURCE_ROLES
 
 
-def wiki_collections(collections, roles):
-    return [c for c in collections if isinstance(c, str) and is_wiki_collection(roles, c)]
 
 
-def indexed_collections(collections, roles):
-    """qmd에 등록·질의되는 collection만. `source` role은 여기서 빠진다."""
-    return [c for c in collections if isinstance(c, str) and is_indexed_collection(roles, c)]
 
 
-def recall_raw_collections(collections, roles):
-    """hierarchical raw backfill 대상 = **인덱싱되는 non-wiki** collection.
-
-    `!= "wiki"` 여집합을 쓰면 안 되는 대표 지점이다 — `source`는 qmd에 등록조차
-    되지 않으므로 backfill 질의에 넣으면 그 컬렉션 이름이 데몬에서 무의미해진다.
-    """
-    return [
-        c for c in collections
-        if isinstance(c, str) and collection_role(roles, c) in RECALL_RAW_ROLES
-    ]
 
 
 def compile_mode(compile_cfg):
@@ -690,10 +673,6 @@ def diagnostics_config(value):
     return {"enabled": enabled}
 
 
-def invalid_session_start_sync(input_config):
-    """A present non-boolean opt-out is invalid and must not become default-on."""
-    return (isinstance(input_config, dict) and "sessionStartSync" in input_config
-            and not isinstance(input_config["sessionStartSync"], bool))
 
 
 def normalize_config(input_config, folder=None):
@@ -841,16 +820,6 @@ def _project_search_dirs(cwd):
     return search
 
 
-def project_identity_root(cwd):
-    """Return the repo-level root used for local per-user decisions."""
-    path = Path(cwd).resolve()
-    home = Path.home().resolve()
-    if path == home or not _is_within(path, home):
-        return path
-    for candidate in _project_search_dirs(path):
-        if (candidate / ".git").exists():
-            return candidate
-    return path
 
 
 def _candidate_configs(directory):

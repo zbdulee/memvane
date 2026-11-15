@@ -18,7 +18,7 @@
 - 기존 event 4096 bytes/line·4 MiB rotation·0600/no-follow·best-effort 및 host output/exit 계약을 유지한다.
 - 상세 최대 16 KiB, base64 조각 240자 이하·최대 96개. header는 version·ID·count·byte length·SHA-256·truncated를 갖는다.
 - 통합 대상 최대 64개, 총 읽기 최대 16 MiB. registry는 `$XDG_CONFIG_HOME/memvane/log-targets.json` 또는 `~/.config/memvane/log-targets.json`, owner-only·0600·no-follow.
-- 보호 파일 `core/laya_local_embed_provider.py`, `core/laya_local_embed_worker.mjs`, `hooks/hooks-codex.json`, `scripts/development_guard.py`와 resident service 구현을 변경하지 않는다.
+- 보호 파일 `memvane/provider/adapters/local_embed_provider.py`, `memvane/provider/adapters/laya_local_embed_worker.mjs`, `hooks/hooks-codex.json`, `scripts/development_guard.py`와 resident service 구현을 변경하지 않는다.
 - 전역 development guard 사용, 일반 검사는 순차, 리뷰는 검사 종료 뒤 단독. 실제 모델·운영 데이터를 시험에 쓰지 않는다.
 - 각 단위는 base RED와 기존 REG를 남기고 수정 뒤 Python 3.13·3.9 GREEN을 기록한다. 알려진 py3.9 환경 실패와 시간 민감 실패는 계획된 절차대로 분리한다.
 
@@ -32,10 +32,10 @@
 
 ## File Map
 
-- `core/config.py`: `diagnostics.enabled` 정규화와 기존 minimal 설정 보존.
-- `core/event_log.py`, 신규 `core/diagnostic_trace.py`: 동의 판정·유계 예외/경고 캡처·조각 및 연결. 새로운 hook action·wake kind는 만들지 않는다.
-- `core/laya_host_response.py`, `core/hook_main.py`, `core/laya_runtime_dispatch.py`, `core/wiki_compile_worker.py`, `hermes_adapter/core_bridge.py`: 기존 오류·경고 경계에서 진단을 연결한다. resident는 기존 이벤트 경계에서 정보가 남을 때만 캡처한다.
-- 신규 `core/log_targets.py`, `skills/logs/scripts/logs.py`, `skills/logs/SKILL.md`: 소유자 registry, 안전한 통합 조회와 명시적 상세 표시.
+- `memvane/settings/config.py`: `diagnostics.enabled` 정규화와 기존 minimal 설정 보존.
+- `memvane/diagnostics/event_log.py`, 신규 `memvane/diagnostics/diagnostic_trace.py`: 동의 판정·유계 예외/경고 캡처·조각 및 연결. 새로운 hook action·wake kind는 만들지 않는다.
+- `memvane/host/host_response.py`, `entry/run.py`, `memvane/app/runtime_dispatch.py`, `memvane/wiki/compile/wiki_compile_worker.py`, `hermes_adapter/core_bridge.py`: 기존 오류·경고 경계에서 진단을 연결한다. resident는 기존 이벤트 경계에서 정보가 남을 때만 캡처한다.
+- 신규 `memvane/registry/log_targets.py`, `skills/logs/scripts/logs.py`, `skills/logs/SKILL.md`: 소유자 registry, 안전한 통합 조회와 명시적 상세 표시.
 - `memvane/diagnostics/tests/run.test.mjs`; 기존 이벤트·host·worker 테스트를 필요한 범위에서 보강한다.
 - `docs/settings.md`, `docs/architecture.md`, 사용자 안내: 현재 동작·보안·운영 설정과 조회를 설명한다.
 
@@ -45,7 +45,7 @@
 
 - [ ] RED: minimal/full 설정에서 누락·false·true·문자열 `"true"`·손상·읽기 실패를 검사하고 오직 boolean true만 켜진다고 단정한다. main/linked worktree·stale route·설정 재읽기·진행 중 writer 경계를 시험한다.
 - [ ] 관련 기존 config/route 테스트를 base에서 통과시키고 RED를 실행해 기대 실패를 기록한다.
-- [ ] `core/config.py`, `core/diagnostic_trace.py`에 설정과 fail-closed 동의 판정을 구현한다. route identity·collection digest와 reader 설정 선택은 바꾸지 않는다.
+- [ ] `memvane/settings/config.py`, `memvane/diagnostics/diagnostic_trace.py`에 설정과 fail-closed 동의 판정을 구현한다. route identity·collection digest와 reader 설정 선택은 바꾸지 않는다.
 - [ ] `npm run test:focused -- memvane/settings/tests/run.test.mjs memvane/route/tests/run.test.mjs memvane/diagnostics/tests/run.test.mjs`를 양 Python에서 순차 실행하고 명시 경로만 commit한다. 새 진단 옵션이 collection identity와 reader 설정 봉인을 바꾸지 않는지 확인한다.
 
 ## Task 2: 유계 traceback 조각과 복원

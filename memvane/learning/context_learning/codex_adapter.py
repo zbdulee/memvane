@@ -5,7 +5,6 @@ Mandatory instructions, policy hooks and normal authentication remain intact.
 """
 
 MODEL = 'gpt-6-luna'
-EFFORT = 'low'
 MAX_RESPONSE_BYTES = 32768
 
 import re

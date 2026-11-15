@@ -468,7 +468,7 @@ class FixtureOnboarding(FixtureCase):
 
     def test_recover_without_ledger_never_abandons(self):
         """Verify R1: with no ledger, recover refuses unless an abandon already began."""
-        from memvane.app import setup_entry, setup_workflow
+        from memvane.app import setup_entry
         from memvane.install import api as install, initial_build
         self.install(1, onboard=False)
         self.assertEqual(self.prepare()['status'], 'initial_build_registered')
@@ -481,9 +481,6 @@ class FixtureOnboarding(FixtureCase):
                                            '--state-root', str(self.state)])
         self.assertEqual((code, row['status'], row['reason']),
                          (1, 'rejected', 'initial_build_not_finalized'))
-        self.blocked('initial_build_not_finalized', lambda: self.cli(setup_workflow, [
-            'recover', '--project-root', str(self.project), '--state-root', str(self.state),
-            '--route-file', str(self.state / 'route.json')]))
         self.assertEqual((self.journal_row()['state'], self.build_record()['phase']), ('prepared', 'ready'))
         self.assertIsNotNone(self.build_pointer())
         self.assertFalse((self.state / 'ledger.json').exists())

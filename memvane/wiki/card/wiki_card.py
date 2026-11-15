@@ -25,11 +25,6 @@ MAX_FRESHNESS_SOURCE_REVISIONS_PER_CARD = 10
 # ``is_auto_trusted_card`` also requires qmd ownership and source revisions.
 TRUSTED_WIKI_STATUSES = {"verified"}
 
-# 카드 본문 주입 상한 기본값(문자). docs/settings.md에 근거를 남긴다 — 요약:
-# dogfooding 두 코퍼스(service-engineering 731장, novel 118장)의 주입 대상 본문 길이가
-# median 206~261자, p95 483~595자, max 1574자다. 600이면 카드의 95%+가 무절단으로
-# 들어가고(절단이 예외), topN 기본 3에서 최악 1800자로 유계다.
-DEFAULT_INJECT_SUMMARY_MAX_CHARS = 600
 # 카드 파일 읽기 상한(문자)의 하한. 849장 중 최대 파일이 2938자라 8192는 2.8배 여유다.
 # read()에 그대로 넘겨 **실제 I/O를 유계로** 만든다(예전엔 파일 전체를 읽고 잘라서
 # 164KB log.md를 전량 디코딩한 뒤 버렸다). 사용자가 injectSummaryMaxChars를 올리면
@@ -38,7 +33,6 @@ WIKI_CARD_READ_BASE_CHARS = 8192
 # 절단 표시. 모델이 "여기서 잘렸다 → 필요하면 카드를 열어라"를 알 수 있어야 한다.
 from memvane.wiki.card.types import SUMMARY_TRUNCATION_MARK, SOURCE_KIND_FILE
 # 주입 title 상한. frontmatter title은 자동 생성이라 길이 보장이 없다.
-MAX_TITLE_CHARS = 160
 # 카드당 주입할 원문 경로(`sources[].path`) 개수 상한 기본값. 0이면 원문 경로를 끈다.
 # 근거(dogfooding 849장 전수): sources path가 1개인 카드 830장(97.8%), 2개 12장, 3개 6장,
 # 4개 1장 — median 1 / p95 1 / max 4. 3이면 848/849(99.9%)가 무절단이고, topN 기본 3에서
@@ -56,33 +50,6 @@ COLLAPSE_BLANKS_RE = re.compile(r"\n{3,}")
 CONTROL_OR_SPACE_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\ufeff]+")
 
 
-def read_card_text_full(path: Path, *, bounded_shadow=False) -> str | None:
-    """카드 전문을 **본문 지문 대조와 같은 정규화로** 읽는다(창 상한 없음).
-
-    본문 지문(`yaml_scalars.card_body_hash`)은 "LF 로 접힌 디코딩 텍스트"에 대한 해시이고
-    쓰는 쪽(`wiki_verify_worker.card_state` = `read_text`, universal newlines)과 읽는 쪽이
-    **같은 결과**를 내야 한다. 그래서 여기서도 `newline=""` 로 열고 `normalize_newlines`
-    로 명시 정규화한다(io 기본 변환에 의존하지 않는 이 파일의 관례와 같다).
-
-    `errors="replace"` 인 이유: 비UTF-8 카드에서 훅 전체가 죽지 않게 한다. 그런 카드는
-    `card_state` 의 `read_text` 가 예외를 내 애초에 검수를 통과할 수 없으므로
-    `verifiedBodyHash` 를 가질 수 없다 — 즉 이 경로에서 대체문자로 인한 오탐은 구조적으로
-    생기지 않는다.
-
-    본문 읽기(`read_wiki_meta`)의 창 상한을 여기서 풀어도 되는 근거: 이 읽기는 카드에
-    `verifiedBodyHash` 가 **있을 때만** 일어나고, 그때도 창을 소진한 카드에서만 일어난다.
-    라이브 1,491장 실측 median 1.6KB / p99 6.2KB / max 11.6KB, 창은 8,192자라 대부분은
-    첫 읽기로 이미 전문을 가진다. 전문 read+sha256 실측 0.113ms/장이다.
-    """
-    try:
-        if bounded_shadow:
-            from memvane.wiki.card.snapshot import bounded_snapshot as _snapshot
-            snapshot = _snapshot(path)
-            return normalize_newlines(snapshot[1].decode('utf-8', errors='replace')) if snapshot else None
-        with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
-            return normalize_newlines(handle.read())
-    except (OSError, ValueError):
-        return None
 
 
 def wiki_card_read_limit(summary_max_chars: int) -> int:
@@ -208,103 +175,18 @@ def extract_card_body(text: str, body_start: int) -> tuple[str, bool]:
     return build_card_body(*_split_auto_block(text[body_start:]))
 
 
-def line_start_offset(text: str, line_no: int) -> int | None:
-    """1-based 줄 번호 → text 안의 문자 오프셋. 창 밖이면 None.
-
-    데몬 결과의 `line`은 **파일 줄 번호**이고 우리는 이미 카드 파일을 읽어 두었으므로,
-    데몬의 `snippet`(diff 형식 문자열)을 파싱하지 않고 여기서 직접 위치를 잡는다.
-    """
-    if not isinstance(line_no, int) or isinstance(line_no, bool) or line_no <= 1:
-        # line 1은 파일 선두라 "앞부분부터"와 같다(재배치할 이유가 없다).
-        return None
-    offset = 0
-    for _ in range(line_no - 1):
-        newline = text.find("\n", offset)
-        if newline == -1:
-            return None
-        offset = newline + 1
-    return offset
 
 
-def paragraph_start(text: str, offset: int, floor: int) -> int:
-    """offset이 속한 문단(빈 줄 구분)의 시작. floor 밑으로는 내려가지 않는다.
-
-    매칭 줄 하나만 뽑지 않고 문단 단위로 올라가는 이유: 한 줄만 떼면 주어·조건절이
-    앞줄에 있는 카드에서 사실이 뒤집혀 읽힌다.
-    """
-    boundary = text.rfind("\n\n", floor, offset)
-    return floor if boundary == -1 else boundary + 2
 
 
 # 매칭 위치부터 인용할 때 앞을 건너뛴 사실을 알리는 표식. 없으면 모델이 카드의 서두를
 # 읽고 있다고 오해한다(절단 표식과 같은 이유로 필요하다).
-SUMMARY_LEAD_ELISION_MARK = "… (앞부분 생략)"
 
 
-def match_positioned_body(text: str, body_start: int, match_line, limit: int) -> str | None:
-    """데몬 `line`이 auto 블록 **안**이면 그 문단부터 인용한 본문을 만든다. 아니면 None.
-
-    적용 조건 두 가지 모두를 만족할 때만 재배치한다:
-    - 매칭 줄이 auto 블록 안이다. frontmatter/블록 밖이면 기존 앞부분 인용이 옳다
-      (실측: `"n8n 멀티팀"` → line 2 = frontmatter, title이 이미 주입되므로 무용).
-    - 매칭 문단이 원문 기준 `limit`보다 뒤에 있다. 즉 앞부분 인용이었다면 **확실히**
-      잘려 나갔을 위치다. 가공 후 본문은 원문 슬라이스보다 짧아질 뿐이므로
-      (상투구·HTML 주석 제거) 이 비교는 한쪽으로만 틀린다 — 앞부분에 이미 들어갔을
-      매칭을 버리는 일은 없다.
-    상한(limit)은 바꾸지 않는다 — 이것은 토큰 절감이 아니라 정확도 변경이다.
-    """
-    offset = line_start_offset(text, match_line)
-    if offset is None or offset < body_start:
-        return None
-    body = text[body_start:]
-    rel = offset - body_start
-    auto_start, auto_end, manual_start, closed = _auto_block_bounds(body)
-    if not (auto_start <= rel < auto_end):
-        return None
-    para = paragraph_start(body, rel, auto_start)
-    if para - auto_start <= limit:
-        return None
-    summary, _ = build_card_body(body[para:auto_end], body[manual_start:], closed)
-    if not summary:
-        return None
-    return SUMMARY_LEAD_ELISION_MARK + "\n" + summary
 
 
-def _sentence_boundary(head: str, floor: int) -> int:
-    """head 안에서 floor 이상인 마지막 문장 끝 인덱스. 없으면 -1.
-
-    종결부호 뒤에 공백(또는 문자열 끝)이 오는 것만 문장 끝으로 본다 — 그러지 않으면
-    `v0.7`·`settings.json`·`0.22.2` 중간을 문장 끝으로 오인해 식별자를 반으로 자른다.
-    """
-    for index in range(len(head) - 1, floor - 1, -1):
-        char = head[index]
-        if char == "\n":
-            return index
-        if char in ".!?。" and (index + 1 >= len(head) or head[index + 1].isspace()):
-            return index
-    return -1
 
 
-def truncate_summary(text: str, limit: int) -> tuple[str, bool]:
-    """카드 본문을 limit 문자로 자르고 (결과, 내용 손실 여부)를 반환한다. limit 0이면 끈다.
-
-    절단 표시는 상한 **안**에 들어간다(표시 길이를 예산에서 미리 뺀다). 문장 경계에서
-    자르는 이유는 _sentence_boundary 참고. 경계가 예산의 60% 앞이면(= 버리는 양이
-    과하면) 문자 단위로 자른다.
-    마크다운 구조 보정(fence 닫기 등)은 여기서 하지 않는다 — 프레임 보호는 주입 시점의
-    줄 단위 인용 접두(quote_body_lines)가 담당한다. 블록 종류별 규칙(fence 문자·길이,
-    HTML 블록 종료 토큰, setext, 표)을 개별로 흉내내는 방식은 세 라운드 연속 구멍이 났다.
-    """
-    if limit <= 0 or not text:
-        return "", False
-    if len(text) <= limit:
-        return text, False
-    budget = max(1, limit - len(SUMMARY_TRUNCATION_MARK))
-    head = text[:budget]
-    boundary = _sentence_boundary(head, int(budget * 0.6))
-    if boundary >= 0:
-        head = head[:boundary + 1]
-    return head.rstrip() + SUMMARY_TRUNCATION_MARK, True
 
 
 def sanitize_inline(text: str) -> str:
@@ -526,9 +408,6 @@ def pending_refresh_cutoffs(project_root: Path) -> dict[str, int] | None:
 # 같은 판정(`src.get("kind") != "file"`)을 쓴다 — **두 곳이 갈리면 안 된다**: 한쪽은 원문을
 # 검증에 쓰고 다른 한쪽은 그 경로를 모델에게 제시하므로, 서로 다른 집합을 보면 "검증되지
 # 않은 종류의 소스"가 주입된다.
-# "파일 소스가 아니다"(= 소실 판정에서 무시) 사유. `wiki_source_missing`이 이 집합을
-# 그대로 쓴다 — 소실 판정이 두 벌이 되지 않게 한다.
-NON_FILE_SOURCE_REASONS = ("kind_not_file", "no_path")
 # 주입할 경로 문자열 상한. title(160)·본문(600)에는 상한이 있는데 경로만 무제한이면
 # 토큰 절감 목표에 구멍이 남는다(실측: 822자 경로가 축자 주입됐다. 최악 topN 3 × 상한
 # 3경로 × 1000자 ≈ 9KB). 근거: 실코퍼스 876항목의 경로 길이는 상대 median 53 / p95 69 /
@@ -704,21 +583,6 @@ def collect_source_paths(block: str, project_root: Path, cwd: str, limit: int,
     return paths, len(entries), reasons, present
 
 
-def sources_all_missing(missing: int, present: int, undecidable: int) -> bool:
-    """"소스 전부 소실" 판정의 **단일 구현**.
-
-    소실 1건 이상 + 살아 있는 파일 소스 0 + 판정 불가 0. `wiki_source_missing`의
-    카드/레코드 분류와 이 모듈의 로그 카운터가 **이 함수 하나**를 호출한다 —
-    예전엔 같은 규칙을 두 곳이 각자 구현해 `over_scan_budget`이 있는 카드에서 답이
-    갈렸고(한쪽 True, 한쪽 False) 주석은 "같은 규칙"이라고 말했다.
-
-    입력 완전성은 호출부마다 다르고 그것이 유일한 차이다: 스캐너는 항목 전부를 조사하고,
-    recall은 카드당 stat 예산이 있어(`over_scan_budget`) 미조사 항목을 판정 불가로 센다 —
-    그래서 항목이 예산보다 많은 카드에서 recall이 세지 않는 쪽으로(과소) 갈린다. 이는
-    규칙의 차이가 아니라 조사 범위의 차이이고, 주입 경로의 상한을 지키기 위한 의도된
-    보수성이다(로그 카운터가 있다고 stat을 무제한 늘리지 않는다).
-    """
-    return missing > 0 and present == 0 and undecidable == 0
 
 
 # 카드 본문 프레임 보호: **줄 단위 인용 접두**.
@@ -746,26 +610,3 @@ def sources_all_missing(missing: int, present: int, undecidable: int) -> bool:
 # 실제로 줄 앞에 붙는 문자열 전체. 안내문도 **이 상수**를 인용한다 — 안내문이 실제와
 # 다른 접두를 선언하는 것이 "안내문 불일치" 클래스의 잔재였다(빈 줄은 rstrip으로
 # `  |`가 되므로 안내문은 그 형태까지 덮는 표현을 쓴다).
-BODY_LINE_PREFIX = "  | "
-BODY_LINE_PREFIX_MARK = BODY_LINE_PREFIX.rstrip()
-
-# 원문 경로 줄의 접두. 같은 원리로 고른 리터럴이다 — 줄 선두 `↳`는 CommonMark에서 어떤
-# 블록도 열지 않으므로 프레임 밖으로 새지 않는다. 경로 하나에 한 줄을 쓰는 이유: 여러
-# 경로를 한 줄에 구분자로 이어 붙이면 구분자를 담은 경로(POSIX는 `,`·공백을 허용한다)에서
-# 모델이 경계를 오해해 **존재하지 않는 경로를 Read**하게 된다. 줄 하나에 값 하나면
-# 경계 판정이 필요 없다(본문 인용 접두와 같은 판단).
-SOURCE_LINE_PREFIX = "  ↳ "
-SOURCE_LINE_PREFIX_MARK = SOURCE_LINE_PREFIX.rstrip()
-
-
-def quote_body_lines(summary: str) -> list[str]:
-    """본문 각 줄에 인용 접두를 붙여 반환한다(빈 줄도 접두를 받는다).
-
-    빈 줄에도 붙이는 이유: 접두 없는 줄이 하나라도 있으면 그 지점에서 프레임과 본문의
-    구분이 사라지고, 다음 줄이 블록을 열 수 있다.
-    `rstrip()`은 **후행 공백을 지운다** — 접두를 붙이는 것 외에 본문을 건드리지 않는다는
-    설명의 유일한 예외다(후행 공백만 있는 줄은 `  |`가 되어 원문 복원이 불가능하다).
-    실카드 849장에서 후행 공백이 있는 본문 줄은 0건이고, 남기면 주입문에 눈에 보이지 않는
-    공백이 쌓이므로 이쪽을 택했다.
-    """
-    return [f"{BODY_LINE_PREFIX}{line}".rstrip() for line in summary.split("\n")]

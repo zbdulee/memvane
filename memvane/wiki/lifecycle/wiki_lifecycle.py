@@ -121,7 +121,6 @@ STATE_VERSION = 1
 
 KEEP = "keep"
 MISSING = "missing"
-CHANGED = "changed"
 UNPROVEN = "unproven"
 UNDECIDABLE = "undecidable"
 BACKFILL = "backfill"

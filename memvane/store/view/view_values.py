@@ -225,13 +225,3 @@ def view_fields(handle):
 def gen_id(build_id, binding_digest):
     v.identifier(build_id, v.UUID); v.identifier(binding_digest)
     return f'g-{build_id}-b{binding_digest}'
-
-
-def generation_fields(stage_value, ordinal, binding_digest, capture):
-    view, value = stage_value['view'], stage_value['manifest']
-    return dict(ordinal=ordinal, gen_id=gen_id(stage_value['build_id'], binding_digest),
-                view_id=view['view_id'], parent_gen=stage_value['base']['gen_id'],
-                head_oid=view['head_oid'], checkout_digest=view['checkout_digest'],
-                checkout_evidence=v.canonical(capture), scan_id=value['scan_id'],
-                policy_digest=view['policy_digest'], revocation_epoch=value['revocation_epoch'],
-                binding_digest=binding_digest)

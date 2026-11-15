@@ -240,16 +240,6 @@ class Results(DispatchCase):
         with self.dispatch_target(self.target, advanced), self.child():
             self.assertEqual(dispatch.run('laya-sync', self.project), {'state': 'indexed'})
 
-    def test_the_qa_barrier_adds_time_only_when_armed(self):
-        budgets = []
-        for armed in ('', str(self.home / 'arm')):
-            with mock.patch.dict(os.environ, {'LAYA_QA_SYNC_BARRIER': armed}), self.dispatch_target(), \
-                    self.child(completed(b'{"state":"unchanged"}')):
-                dispatch.run('laya-sync', self.project)
-                budgets.append(self.children[0][2])
-        self.assertEqual(budgets, [dispatch.SYNC_SECONDS, dispatch.SYNC_SECONDS + dispatch.QA_BARRIER_SECONDS])
-
-
 class OwnedChild(DispatchCase):
     def test_the_owner_fd_reaches_the_child_and_output_is_capped(self):
         owner = runtime.coordination_lock(self.home / 'child-owner.lock')

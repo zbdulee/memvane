@@ -1280,14 +1280,6 @@ def _cleanup_job_key(job: dict) -> str:
     """Bind a cleanup receipt to one exact verify job, including its timestamp."""
     original = {key: value for key, value in job.items()
                 if key not in ('_pendingCleanup', '_requeue_count')}
-    # Both folder spellings name the same logical card across project moves.
-    for key in ('targetPath', 'pendingPath'):
-        value = original.get(key)
-        if isinstance(value, str):
-            for prefix in ('.auto-context/', '.memvane/'):
-                if value.startswith(prefix):
-                    original[key] = '.memvane/' + value[len(prefix):]
-                    break
     return hashlib.sha256(json.dumps(original, ensure_ascii=True, sort_keys=True,
                                      separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
