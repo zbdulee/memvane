@@ -124,5 +124,3 @@ def _qmd_fts_text(text, *, deadline=None):
 def _digest(scope, entries):
     return hashlib.sha256(json.dumps([scope, sorted(entries)], ensure_ascii=False,
                                      separators=(',', ':')).encode('utf-8')).hexdigest()
-
-

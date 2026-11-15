@@ -56,4 +56,3 @@ def is_source_text(name: str, extensions: tuple[str, ...] = SOURCE_TEXT_EXTENSIO
 def is_denied_source_path(rel_path: str) -> bool:
     """True when any path segment is a denied directory name."""
     return any(part in DENIED_SOURCE_SEGMENTS for part in PurePosixPath(rel_path).parts)
-

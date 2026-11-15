@@ -86,4 +86,3 @@ class WeakPublishedVectors(FixtureCase):
             result = execution.wiki_matches(project.root, project.wiki, 'unmentionedxyz', 20, 12000,
                                             bound=bound)
             self.assertEqual(result, [])
-

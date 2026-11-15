@@ -75,5 +75,3 @@ def poll_stop(fd):
             os.read(fd,1)  # A stop byte OR parent EOF is a one-way yield request.
             raise ValueError('learning_yield')
     except OSError:raise ValueError('learning_yield') from None
-
-

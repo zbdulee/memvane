@@ -88,4 +88,3 @@ def context(answer, host='claude'):
     if host == 'hermes':
         return (answer or {}).get('context', '')
     return ((answer or {}).get('hookSpecificOutput') or {}).get('additionalContext', '')
-

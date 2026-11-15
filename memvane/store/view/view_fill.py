@@ -116,4 +116,3 @@ class FillMixin:
                                     write_fence=write_fence, expected_cursor=expected_cursor,
                                     max_files=max_files, max_bytes=max_bytes,
                                     deadline_seconds=deadline_seconds)
-

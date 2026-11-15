@@ -210,5 +210,3 @@ class RenamedRawLabelRetirement(RetireFixture):
         card = self.card(label='raw-docs', path='notes/gone.md')
         self.assertEqual(self.run_retire(self.CONFIG, rel='notes/gone.md')[0], 'retired')
         self.assertTrue(card.exists())
-
-

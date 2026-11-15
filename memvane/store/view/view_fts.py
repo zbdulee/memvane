@@ -411,7 +411,3 @@ def head_proof(db,view_id,rows,deadline=None,*,expected_storage=None,logical=Tru
     finally:cursor.close()
     _deadline(deadline)
     return (None if digest is None else digest.hexdigest()),physical
-
-
-
-

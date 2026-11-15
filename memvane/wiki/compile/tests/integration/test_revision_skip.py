@@ -580,4 +580,3 @@ class RevisionSkipChecks(FixtureCase):
                 (True, False, []))
         self.assertEqual(captured[0]['sources'], [
             {'kind': 'file', 'path': 'docs/source.md', 'collection': 'proj-docs'}])
-

@@ -36,4 +36,3 @@ def status(kind, target, *, queue=None):
         return {'wake': _row(db, key), 'overflow': overflow, 'cancellations': audits}
     finally:
         db.close()
-

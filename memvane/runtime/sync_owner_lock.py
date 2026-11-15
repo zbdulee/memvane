@@ -302,5 +302,3 @@ def borrow_sync_owner(queue_path: Path, claim=None):
             # Revocation stops new writes, but cannot expose an in-flight
             # claim's retry cleanup to another owner before this call unwinds.
             pin.close()
-
-

@@ -52,4 +52,3 @@ test('CI installs the declared Node versions and runs the deterministic suite', 
   assert.equal(scripts.test, 'npm run test:part1 && npm run test:part2 && npm run test:part3');
   assert.match(workflow, /python3/);
 });
-

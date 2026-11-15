@@ -32,4 +32,3 @@ def registered_pointer_path(project_root):
 
 def retire_project_pointer(identity):
     return _journal.build_retire_project_pointer(identity)
-

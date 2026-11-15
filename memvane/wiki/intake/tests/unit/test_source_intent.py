@@ -74,4 +74,3 @@ class PurePlanning(FixtureCase):
         self.assertIsNone(I.revision_key(row('/p', 'post_tool_source')))
         self.assertIsNone(I.revision_key(row('/p', 'session_start_source', contentRevision='')))
         self.assertIsNone(I.revision_key(['not', 'a', 'row']))
-

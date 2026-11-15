@@ -538,4 +538,3 @@ class ViewStore(RowsMixin, FillMixin, VectorMixin, ReaderMixin, BlobStore):
     def publish_generation(self, handle, gen_id, *, expected_head, deadline=None):
         return self._rows_publish(handle, gen_id, expected_head=expected_head,
                                   deadline=deadline)
-
