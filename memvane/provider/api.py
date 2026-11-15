@@ -42,6 +42,11 @@ def verify_attested_files(manifest, expected=None):
     return implementation(manifest, expected)
 
 
+def verification_scope():
+    from memvane.provider.verification_scope import verification_scope as implementation
+    return implementation()
+
+
 def hash_file(path):
     from memvane.provider.adapters.local_embed_provider import _hash_file as implementation
     return implementation(path)

@@ -797,7 +797,8 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
             and not _major_allowed(version_route)):
         return _major_mismatch_response(action, host)
     from memvane.journal.types import JournalEvidenceError
-    with _event_scope(action, host, decision, payload):
+    from memvane.provider.api import verification_scope
+    with _event_scope(action, host, decision, payload), verification_scope():
         try:
             if action != 'recall':
                 return _serve_selected_once(action, host, decision, payload)

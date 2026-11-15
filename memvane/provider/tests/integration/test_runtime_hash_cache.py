@@ -93,6 +93,27 @@ class RuntimeHashCache(unittest.TestCase):
             return real(path, *args, **kwargs)
         return reads, mock.patch.object(R, '_hash', count)
 
+    def test_one_hook_walks_once_checks_each_attestation_and_forgets_afterwards(self):
+        real_walk = os.walk
+        walks = []
+        def counted_walk(path, *args, **kwargs):
+            if Path(path) == self.generation:
+                walks.append(path)
+            return real_walk(path, *args, **kwargs)
+        with mock.patch.object(R.os, 'walk', counted_walk):
+            with provider.verification_scope():
+                self.assertEqual(R.verify_attested_files(self.attested, self.digest), self.digest)
+                self.assertEqual(R.verify_attested_files(self.attested, self.digest), self.digest)
+                with self.assertRaises(R.RuntimeUnavailable):
+                    R.verify_attested_files(self.attested, '0' * 64)
+                self.assertEqual(len(walks), 1)
+            with provider.verification_scope():
+                self.assertEqual(R.verify_attested_files(self.attested, self.digest), self.digest)
+            self.assertEqual(len(walks), 2)
+            (self.generation / R.MODEL).write_bytes(b'tampered')
+            with provider.verification_scope(), self.assertRaises(R.RuntimeUnavailable):
+                R.verify_attested_files(self.attested, self.digest)
+
     def test_second_proof_reads_no_unchanged_file(self):
         reads, patch = self.counted()
         with patch:

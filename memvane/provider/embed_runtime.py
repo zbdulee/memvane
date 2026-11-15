@@ -223,6 +223,10 @@ def _relative_ok(value, tail):
 def _verify_generation(generation):
     """Every file of one sealed generation against runtime.json; returns its manifest.
     Unchanged files reuse their digests (``runtime_digests``)."""
+    from memvane.provider.verification_scope import current
+    verified = current()
+    if verified is not None and generation in verified:
+        return verified[generation]
     from memvane.provider.runtime_digests import cache_for, digest
     cache = cache_for(generation)
     _owner_dir(generation)
@@ -257,6 +261,8 @@ def _verify_generation(generation):
     if found != set(expected):
         _fail('laya_embed_runtime_corrupt')
     cache.flush()
+    if verified is not None:
+        verified[generation] = manifest
     return manifest
 
 def files_sha256(manifest):
@@ -492,7 +498,6 @@ def _source_layout(module_entry):
             _fail('laya_embed_runtime_source_version_changed')
     return outer, module_pkg, native
 
-
 def _copy_file(source, target, executable):
     """Stream one regular file into a new private file; returns (sha, size)."""
     fd = os.open(source, FLAGS)
@@ -521,7 +526,6 @@ def _copy_file(source, target, executable):
     finally:
         os.close(fd)
 
-
 def _copy_package(package, outer, staging, rows):
     """Copy one package's own files (not its nested ``node_modules``)."""
     base = staging / 'node_modules' / package.relative_to(outer)
@@ -547,17 +551,14 @@ def _copy_package(package, outer, staging, rows):
             if len(rows) > MAX_FILES:
                 _fail('laya_embed_runtime_source_unsafe')
 
-
 def _private_tree(path):
     for directory, dirs, _files in os.walk(path):
         for name in dirs:
             os.chmod(Path(directory) / name, 0o700)
 
-
 def _remove_staging(path):
     if path.name.startswith('.staging-') and path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
-
 
 def _fsync_dir(path):
     fd = os.open(path, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
@@ -565,7 +566,6 @@ def _fsync_dir(path):
         os.fsync(fd)
     finally:
         os.close(fd)
-
 
 def _fsync_tree(path):
     """fsync every directory of a renamed tree (files were fsynced on copy)."""
