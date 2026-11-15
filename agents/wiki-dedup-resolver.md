@@ -31,7 +31,7 @@ short summary at the end (step 5).
    `python3 "$ROOT/entry/run.py" wiki-dedup-resolve --cwd <cwd> --recover-queue`.
    It reclaims dead-owner `dedup-needed.jsonl.claimed.*` files under the queue
    lock. Then read `.memvane/compile/dedup-needed.jsonl` in the target
-   project (`.auto-context/compile/dedup-needed.jsonl` when it has no `.memvane/`). Empty or missing → release the run-lock and stop; nothing to do.
+   project. Empty or missing → release the run-lock and stop; nothing to do.
 3. Before resolving ANY entry, read the whole queue and group entries into clusters: two entries
    belong to the same cluster when they share a page (e.g. (A,B) and (B,C) share B → one cluster
    {A,B,C}). An entry sharing no page with any other entry is its own cluster and needs nothing
@@ -70,9 +70,7 @@ short summary at the end (step 5).
       `  - {kind: "file", path: "docs/a.md"}`. `memvane/host/host_response.py` injects `sources[].path` as the
       link back to the original document and reads only that form (plus quoted keys, single
       quotes, trailing comments). A block mapping (`- kind: file` with `path:` on the next line)
-      or an inline sequence (`sources: [{…}]`) parses to nothing, so that page loses every source
-      link — the loss is silent to the user and only shows up as `block_mapping`/`inline_sequence`
-      in `source_drop_reasons` (`docs/settings.md`). Keep identifiers
+      or an inline sequence (`sources: [{…}]`) parses to nothing, so that page loses every source link. Keep identifiers
       (numbers, percentages, field names, queries) verbatim — they are the lexical search surface —
       and close the section with an HTML comment naming the page you merged from. Folded text
       follows the bundled card-writing rules (`$ROOT/memvane/wiki/card/rules/default.md`, or
@@ -113,9 +111,7 @@ short summary at the end (step 5).
       step 4.a's stale `--action skip` requests the sync before acknowledging
       the pair. The sync rebuilds membership from current source files: the
       deleted card leaves the next search generation, the edited keeper is
-      reembedded, and unchanged chunk vectors can be reused. Do not send the
-      selected project to the legacy QMD dirty queue or write the memvane-db search
-      queue directly.
+      reembedded, and unchanged chunk vectors can be reused. Do not write the memvane-db search queue directly.
    f. If any CLI call exits non-zero or prints non-JSON: STOP the whole run — do not process
       further entries. You cannot tell whether the queue mutated before the failure, and
       continuing risks double-processing against stale indices. Release the run-lock; whatever

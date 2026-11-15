@@ -50,7 +50,7 @@ All applicable data-safety rows remain mandatory.
 
 | Level | What runs | Can it satisfy this gate? |
 |---|---|---|
-| L0 source verification | `npm test`, focused tests, synthetic fixtures, direct `core/*.py` calls in the source checkout | **No.** L0 is a prerequisite only (see [release.md](release.md)). |
+| L0 source verification | `npm test`, focused tests, synthetic fixtures, direct `entry/` maintainer calls in the source checkout | **No.** L0 is a prerequisite only (see [release.md](release.md)). |
 | L1 installed-candidate QA (this gate) | Host marketplace install of the exact candidate, then fresh host sessions in which the real hooks fire, with natural-language requests and exposed skills | Yes. This is the only level that counts. |
 
 Hook-path evidence cannot be replaced by a direct script call. A cached plugin
@@ -61,7 +61,7 @@ Operator rules:
 
 - Product interaction uses natural-language requests or the exposed skills
   (`setup`, `query`, `update`, `wiki-compile`). The
-  operator must not run `core/*` or `skills/*/scripts/*` directly to make a
+  operator must not run `entry/*` or `skills/*/scripts/*` directly to make a
   scenario progress. Doing so invalidates
   that scenario's run. The scenario must restart from its preconditions.
 - Outside the product, the operator may do only three kinds of work: actions
@@ -219,6 +219,8 @@ Run hashing from the source checkout through the shared development lock:
 `npm run dev:guard -- --kind hash -- bash "$EVID/identity.sh"`. Record each
 output file's SHA-256 in `$EVID/evidence-index.sha256`.
 
+The artifact manifest digest below is a QA evidence identifier, not a runtime attestation.
+
 Candidate identity (Git 2.36+ for `--format`):
 
 ```bash
@@ -246,7 +248,7 @@ diff "$EVID/candidate-blobs.txt" "$EVID/installed-blobs-$HOST.txt" > "$EVID/iden
 - Every tracked path must match: same blob id, same executable bit.
 - Any extra file must be named in the run record's host-metadata allowlist
   with a justification. Extra files must not be executable, hook-related or
-  under `core/`, `hooks/`, `skills/`, `locks/` or `hermes_adapter/`. A
+  under `memvane/`, `entry/`, `hooks/`, `skills/`, `locks/` or `hermes_adapter/`. A
   symlink difference is shown in the diff and must be explained.
 - Also record the host-reported plugin version and commit. For Claude Code,
   this is the installed-plugin registry entry; for Codex, the plugin list.
@@ -346,7 +348,7 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 | T_LATE | T_FRESH + 120 s | Recheck that a late worker did not republish stale results |
 | T_GIT | 30 s | Each fixture helper action (enforced by the helper) |
 | T_INSTALL | 30 min | Install or update: plan, prepare and apply on the fixture |
-| T_ROLLBACK | 10 min | Rollback, or a recovery status request |
+| T_RESTORE | 10 min | Release an installation selection or request recovery status |
 | T_WIKI | 15 min | Compile and verify of one source revision |
 | T_SCENARIO | 45 min (60 min for RQA-RES-02) | Whole scenario |
 | T_CELL | 8 h | One matrix cell |
@@ -703,8 +705,7 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 **Part B: late worker flip-flop (selected memvane-db engine).**
 
 memvane-db owns search and indexing in this release. Part B therefore runs on
-a fixture whose route was selected through setup onboarding (LI-MIG in the
-same fixture).
+a fixture whose route was selected through setup onboarding.
 
 The sync owner serializes selected writers. Publication rechecks the view capture and head before committing, and recall pins the selected view.
 
@@ -737,8 +738,7 @@ The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a
   - The extractor and verifier engines are available.
   - A fresh fixture, selected.
 - **Steps:**
-  1. Ask "wiki compile 켜줘. SessionStart에서 감지한 원문도 wiki 대상으로 해줘."
-     Expected: `compile.mode` is on, and the triggers include
+  1. Confirm that the selected project uses the built-in compile policy for
      `post_tool_source` and `session_start_source`.
   2. Record the wiki-owned baseline: queue and ledger entries, card files and
      hashes.
@@ -793,35 +793,6 @@ The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a
 - **Evidence:** card bytes and hash, source hashes, probes, `recall` event
   `card_read_*` and `sources_*` fields.
 - **Timeout:** T_WIKI + T_SCENARIO.
-- **Cleanup:** clean up the fixture.
-
-### RQA-WIKI-03 Wiki compile OFF
-
-- **Purpose:** when compile is off, no wiki work and no paid calls happen,
-  while file indexing still works.
-- **Owner:** wiki; file sync and search for the contrast check.
-- **Hosts:** Claude Code, Codex.
-- **Preconditions:** a fixture where compile was on (an RQA-WIKI-01 fixture,
-  or freshly enabled).
-- **Steps:**
-  1. Ask "wiki compile 꺼줘". Expected: `compile.mode: "off"`.
-  2. Record the wiki baseline.
-  3. Ask the agent to edit `wiki-source.md`.
-  4. Start a fresh session.
-  5. Request a sync.
-  6. Repeat the sync and fresh SessionStart once to exercise retry paths.
-  7. Delete `wiki-source.md` through an agent edit and repeat the sync and
-     fresh SessionStart. Probe Q-wiki and the deletion state.
-- **Expected:**
-  - No new queue or ledger entries.
-  - No extractor or verifier invocation.
-  - Card bytes unchanged.
-  - Wiki indexing still works, but the changed raw-only content creates no Laya document or search hit;
-    the unchanged card is never presented as a fresh revision of that source.
-    Compile remains OFF across retry and deletion.
-- **Evidence:** wiki listings before and after, probes, absence of compile
-  activity in the logs.
-- **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture.
 
 ### RQA-RES-01 Ordinary work is not blocked (no learning)
@@ -936,25 +907,9 @@ The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture; restore the account state.
 
-### memvane-db 전환 필수 행 (LI-*)
+### 1.0 selected-install checks
 
-memvane-db로 QMD backend를 교체하는 릴리스에는 위 RQA 행에 더해 **설치된 정확한 후보**에서 다음을 필수로 기록한다. 임시 Git full-plugin 복사본과 합성 attestation·이관 리허설은 marketplace 설치 후보의 fresh-host 증거가 아니다. L0 통과로 이 행을 대체할 수 없다.
-
-| 행 | 설치 후보에서 확인할 실제 결과 |
-|---|---|
-| LI-INST | exact-commit bundle·설치 소유 journal·현재 파일 identity·DB/queue incarnation을 새 Claude/Codex 세션이 검증하고, 일치하지 않으면 QMD로 fallback하지 않고 차단한다. |
-| LI-MIG | minimal settings(`{name, skipPaths}`) 프로젝트의 fresh-wiki 온보딩(`plan-fresh-wiki-origin` → `review-index-provider` → `prepare-fresh-wiki-origin` → `finalize-index-origin` → `activate-index-origin`)이 **위키 문서만** membership·본문·FTS·벡터로 색인하고 원본 원문은 출처·최신성 증거로만 확인한다. settings 파일은 다시 쓰지 않는다. 불일치/중단 시 이전 선택이 유지되고, QMD-origin ledger(`qmd-cutover.json`)가 남은 state root는 `qmd_origin_detach_required`로 거부된다. |
-| LI-SCOPE | 미온보딩 프로젝트 무작업, linked worktree 읽기 전용, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
-| LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
-| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
-| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
-
-모델/벡터 재생성이 필요한 경우 provenance 또는 명시 승인·자원/비용 gate를 함께 기록한다. 필수 행의 `NOT RUN`/`BLOCKED`/`FAIL`은 전환 릴리스를 막는다.
-
-Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선택 검토 항목이다.
-학습 작업의 운영 부하 큐와 admission·중지/재개 검증은 `RQA-RES-02`의
-필수 조건이다. 이 구분은 검색·임베딩 기능 자체를 제품 범위에서 제외하지
-않는다.
+For each installed candidate, verify reviewed provider and worker digests, fresh onboarding, published wiki-only recall, linked worktree isolation, sync after edits and removals, and restore followed by a new onboarding plan. A real-model run uses the model-test resource guard. Record unavailable checks as `NOT RUN` or `BLOCKED`; fixture results do not substitute for a real-model run.
 
 ## 10. Domain ownership
 

@@ -22,7 +22,7 @@ memvane-db route; only a selected route does work. It coordinates:
 
 The main architectural rule is:
 
-> Domain behavior lives in `core/`. Host adapters stay thin and translate host
+> Domain behavior lives in `memvane/`. Host adapters stay thin and translate host
 > events into the shared core JSON contract.
 
 ## Design Principles
@@ -39,10 +39,10 @@ The main architectural rule is:
   there is no fallback to another search path. Empty recall results stay a
   valid no-result state.
 - **One core, many hosts.** Claude/Codex command hooks and Hermes Python hooks call
-  the same `core/` route classifier and `memvane/host/host_response.py`.
+  the same `memvane/` route classifier and `memvane/host/host_response.py`.
 - **User-facing control is agent-mediated.** Public docs should guide users to
   ask the host agent in natural language or through exposed skills. Direct
-  `core/` and `skills/` shell commands are maintainer/debugging interfaces
+  `memvane/` and `skills/` shell commands are maintainer/debugging interfaces
   unless a user explicitly asks for them.
 - **Queue first, work later.** Hooks record durable wakes and queue rows; off-hook
   workers do embedding, sync, compile and verify.
@@ -53,11 +53,11 @@ The main architectural rule is:
 ## Repository Map
 
 ```text
-core/
-  Platform-neutral behavior: route classification, selected-route host
-  responses, memvane-db install/sync/upgrade, embedding runtime, runtime wake
+memvane/
+  Domain behavior: route classification, selected-route host
+  responses, memvane-db install and sync, embedding runtime, runtime wake
   queue and resource admission, wiki compile/verify/dedup, extractor adapters,
-  context learning, owner legacy cleanup.
+  context learning.
 
 hooks/
   Claude/Codex command hook manifests plus the shared dispatcher. The
@@ -96,7 +96,7 @@ flowchart TD
     Wakes[runtime wake queue memvane/runtime/runtime_work.py]
     Sync[memvane/sync/product_sync_worker.py]
     Resident[memvane/resident/resident_service.py]
-    Embed[~/.local/state/memvane/embed-runtime]
+    Embed[~/.local/state/memvane/v1/embed-runtime]
     Index[(memvane-db, published generations)]
     CompileQ[.memvane/compile/source-queue.jsonl]
     Wiki[.memvane/wiki]
@@ -145,7 +145,6 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | `candidate`, `preview`, `worktree` | `exec memvane/host/host_response.py serve-stdin` |
 | `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
 | `blocked` or lookup failure | exit 3, no fallback |
-| `upgrading` (recall only) | A fenced recall exits 0 without context; route or proof transition errors in the 30-second transition window do the same. Other proof errors remain exit 3. |
 
 A linked worktree reads its own published view. With no published head it
 returns `view_preparing` without context or fallback to another view.
@@ -193,7 +192,7 @@ The project file is:
 A project uses `.memvane/settings.json`
 (see [Project folder](#project-folder)).
 
-Onboarding accepts only the minimal shape `{name, skipPaths}`; any other shape
+Onboarding accepts `name` and optional `skipPaths`, `diagnostics`, `contextLearning`, and `sharedLearning`; any other top-level shape
 refuses as `minimal_settings_required`. `memvane/settings/config.py` expands it: the project
 root is the raw collection `<slug>` (wiki generation input), `.memvane/wiki`
 is the wiki collection `<slug>-wiki`, recall is wiki-only, compile runs the
@@ -220,7 +219,7 @@ hooks/run-hook update-queued <engine>
 
 The hook records only a durable wake. The owner worker
 (`memvane/sync/product_sync_worker.py`) performs resource admission, document
-embedding through the resident service and the journal-fenced full-scan sync,
+embedding through the resident service and the full-scan sync,
 then discovers changed raw sources for wiki compile
 (`memvane/wiki/intake/wiki_discovery.py`).
 ### State roots
@@ -347,13 +346,9 @@ not create or read wiki-root `SCHEMA.md`, `index.md` or `log.md`; such files lef
 earlier releases stay on disk, are never treated as cards or card targets, are never served
 by search, and keep their existing index rows.
 
-Extractor config is intentionally symbolic by default. The worker resolves
-extractors in this order:
-
-1. legacy `compile.extractor.argv`;
-2. `compile.extractor.backends[engine]`;
-3. symbolic `compile.extractor.builtins`;
-4. `compile.extractor.default`.
+The minimal settings model uses the built-in host extractors. The worker
+selects the originating host's adapter when known and otherwise tries the
+supported host adapters within the configured internal budget.
 
 Built-in adapters run in an isolated temporary cwd with `QMD_SANDBOX=1` so a
 nested host CLI does not recursively trigger qmd hooks. Claude and Codex
@@ -374,8 +369,8 @@ equivalent persistence-off flag.
 - enqueues successful generated writes to the auto-verify queue;
 - logs merge-needed or rejected candidates under `.memvane/compile`.
 
-Compiler create/update, verifier stamp/delete, source retirement, dedup merge
-and the project-folder move share one project `CARD_WRITE_LOCK`. Each holds it
+Compiler create/update, verifier stamp/delete, source retirement and dedup merge
+share one project `CARD_WRITE_LOCK`. Each holds it
 from the card state read through the decision and atomic replace/unlink, so
 their individually atomic writes cannot be composed from stale revisions.
 
@@ -521,7 +516,7 @@ embedding worker for each vector profile and serves every adopted
 install through its sealed socket under `<state base v1>/run/`.
 Hooks never load a model.
 
-The embedding runtime lives in `~/.local/state/memvane/embed-runtime`
+The embedding runtime lives in `~/.local/state/memvane/v1/embed-runtime`
 (`memvane/provider/embed_runtime.py`): `active.json`, `previous.json` and immutable
 generations holding Node, node-llama-cpp, the native build and the GGUF model.
 A generation comes from an explicit provisioning action. Maintainer
@@ -559,7 +554,7 @@ clear isolation and lock ownership.
 ### Host State Isolation
 
 Host adapters pass only normalized JSON payloads, `cwd`, and an engine label into
-`core/`. Core scripts must not rely on a host's private in-memory state. Host
+`memvane/`. Core scripts must not rely on a host's private in-memory state. Host
 differences belong at the adapter boundary:
 
 - command hook dispatch and sandbox guards in `hooks/run-hook`;
@@ -575,8 +570,7 @@ protocol itself requires different handling.
 | Surface | Owner | Purpose |
 |---|---|---|
 | runtime worker lease | `memvane/runtime/runtime_work.py` (`runtime-worker.lock`) | One UID-global wake dispatcher; it holds only its dispatch lease while waiting. |
-| card write lock | `CARD_WRITE_LOCK` (`memvane/wiki/workspace/compile_paths.py`) | Serializes compiler writes, verifier stamp/delete, source retirement, dedup merge and the project-folder move per project. |
-| installer operation lock | `laya-qmd-cutover-operation.lock` (`memvane/install/ledger_common.py`) | Serializes installer ledger operations; older installed bundles lock the same file. |
+| card write lock | `CARD_WRITE_LOCK` (`memvane/wiki/workspace/compile_paths.py`) | Serializes compiler writes, verifier stamp/delete, source retirement and dedup merge per project. |
 
 A failed or deferred sync attempt leaves its wake for the dispatcher to retry
 rather than dropping it.
@@ -613,7 +607,7 @@ version; it does not pin the exact version. Before release, run `npm test`.
 
 | Skill | Path |
 |---|---|
-| `setup` | `memvane/app/setup_entry.py` (onboarding, embedding runtime, learning profile, owner legacy cleanup) |
+| `setup` | `memvane/app/setup_entry.py` (onboarding, embedding runtime, learning profile) |
 | `query` | `skills/query/scripts/query.sh` → selected-route recall |
 | `update` | `skills/update/scripts/update.sh` → full-scan laya-sync wake |
 | `wiki-compile` | `memvane/wiki/compile/wiki_extract.py` and `memvane/wiki/compile/wiki_compile.py` (selected route only) |
@@ -813,7 +807,7 @@ npm run test:focused -- tests/structure/static.test.mjs
 
 When changing architecture-sensitive code, check these boundaries:
 
-- Does the change keep host adapters thin and `core/` as the source of truth?
+- Does the change keep host adapters thin and `memvane/` as the source of truth?
 - Does it preserve quiet hook stdout?
 - Does sandbox/headless mode exit before side effects?
 - Does a project without a selected route still get no work apart from the one

@@ -26,8 +26,8 @@ development execution guard is separate; see
   `runtime_wake_policy.KINDS`; `needs_compute_admission` is false for them
   because their handlers own admission. `runtime_handlers.laya_sync` and
   `laya_compile` call `runtime_dispatch.run`, which routes the wake into the
-  sealed installed bundle with the wake's lease FD; the target process repeats
-  the full owner proof before any model or store work.
+  installed worker with the wake's lease FD; the target process repeats
+  the selected-route proof before model or store work.
 - Selected view sync: a schema3-selected `laya-sync` pass
   takes the same provider activity only when a view's vector fill has content no
   stored set holds (`_schema3_vectors`); one pass embeds content shared by two
@@ -70,24 +70,9 @@ development execution guard is separate; see
   learning demand, memory/pressure admission: under 10% free memory refuses)
   and never holds the provider lane. The service-wide load lock is held from
   that check until the worker is ready, so two loads never pass one check.
-  Every new worker start (a restart included) first proves the installation's
-  full attestation. A v5 installation's attestation re-proves its journal
-  before and after hashing the runtime files, each time under the queue
-  owner and the v5 lifetime and physical windows of the journal-bound root
-  (the hashing holds neither); a busy owner or window defers the start
-  without marking the attestation invalid. A selection that moved is not
-  bad evidence either. An epoch alone (a sync's first write) is not a move:
-  the attestation goes on with the fresh proof. A step that fails or differs
-  while the route, or the bundle journal row epoch aside, moved from what the
-  last accepted step saw (a bundle upgrade to another plugin root, its
-  fence, a restore, another attestation) defers the start for a fresh
-  attempt. A failure on an unmoved selection, or one whose route or journal
-  cannot be read, stays an attestation failure. After three consecutive
-  moved-selection deferrals of one installation and provider fingerprint,
-  further ones count as transient start failures (``startup_failed`` with
-  growing attempts and the usual backoff and cooldown). The
-  read-only proof of a drifted installation takes the same queue owner and
-  v5 windows of the journal-bound root. Client connections are capped service-wide (16) before
+  Every worker start verifies the selected installation's provider and runtime
+  attestation. A changed selection defers work for a fresh proof; an invalid
+  provider identity prevents that provider from starting. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a
   backlog of 8, and a full backlog refuses the connect (macOS; on Linux the
   connect waits for the client's own timeout), which the provider reads as
@@ -166,23 +151,12 @@ development execution guard is separate; see
   sessions and user workloads without scanning or terminating them. See the
   platform policy section below for estimate provenance and compatibility.
 
-## Hosted learning and project-folder moves
+## Hosted learning
 
-Hosted learning uses the resident's ordinary version/replacement policy. A ready
-host whose ready learning service has a different signature returns the existing
-version-mismatch fallback without polling to the request deadline. Starting or
-replacing services keep their bounded preparation wait. A host protocol mismatch
-uses the same fallback with its fixed `host_reason` retained in diagnostics.
-
-A project-folder move holds the operation, compile-run, settings and card locks
-for every existing folder in a fixed order. Compile-run locks precede discovery
-and card locks; a busy compile defers the move before its fence. Rename preserves
-the legacy inode without creating the destination, while adoption holds the
-destination inode during merges. Changed folder membership or dev/ino defers the
-move. Current settings/card writers recheck the named inode and active path after
-flock; this check does not retrofit older installed writers. A compile worker
-rechecks its route, configuration, queue and named lock after acquiring the run
-lock, before recovering or claiming work.
+Hosted learning uses the resident's version and replacement policy. A ready
+host with a different learning-service signature returns the version-mismatch
+fallback without waiting to the request deadline. Starting or replacing
+services keep their bounded preparation wait.
 
 ## Durable wake and restart behavior
 
@@ -364,7 +338,7 @@ pipe and reaps only the monitor it created, with bounded cleanup.
 
 The child checks registered durable wake hints every5seconds when work exists;
 a due `laya-sync`/`laya-compile` wake is woken without the learning admission
-check (the target bundle admits its own work), learning/auto wakes wait for it;
+check (the target worker admits its own work), learning/auto wakes wait for it;
 with an empty queue it waits30seconds and performs no OS pressure probe or worker
 spawn. Observations occur before the nonblocking coordination check. Healthy
 recovery requires the task/reserve budget, load below65% of its configured
@@ -617,16 +591,10 @@ from injected analytical tests; the shared OS reporter always attaches it.
   protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
   A learning client of the same version that needs its trainer interpreter
   replaces the service under that interpreter, which is then remembered.
-- An installation still owned by a per-project resident of an earlier bundle
-  is adopted after the shared worker is ready: the service signals only the
-  one Python process whose real argv (macOS `KERN_PROCARGS2`, Linux
-  `/proc/<pid>/cmdline`, never a space-joined `ps` string) is exactly that
-  installation's `embed_resident.py serve <project> <socket>` owner,
-  re-verified by UID, executable and argv just before SIGTERM.
 - Learning: the hosted inference service refuses the socket `shutdown`
   command; an idle learning-only service of an earlier bundle is retired.
 - Embedding runtime: the embedding worker runs the Laya embedding runtime under
-  `~/.local/state/memvane/embed-runtime` (`active.json`, `previous.json`,
+  `~/.local/state/memvane/v1/embed-runtime` (`active.json`, `previous.json`,
   content-addressed `generations/g-<id>/`). On a new machine the owner
   runs `memvane/app/setup_entry.py provision-index-runtime
   --approve-index-runtime-download [--provider-model-file <local gguf>]`

@@ -10,15 +10,9 @@ For an onboarded project, the wiki cards under `.memvane/wiki` are indexed
 into a local memvane-db index under the install's private state directory. Raw
 project files are read to generate wiki cards and to track path and hash
 freshness; their bodies are not indexed. Embeddings are computed on the machine
-by the local embedding runtime (`~/.local/state/memvane/embed-runtime`, Node with
+by the local embedding runtime (`~/.local/state/memvane/v1/embed-runtime`, Node with
 node-llama-cpp and a local GGUF model), and recall queries are answered from
 that local index.
-
-The same private state directory holds a second local copy of the published wiki
-cards in the newer index format (`shadow-candidate*.sqlite`), built in the
-background and later used by recall. It holds wiki card bodies, their
-embeddings and path/hash metadata of raw sources, never raw source bodies. An
-index reader rollback deletes neither copy.
 
 Preparing the embedding runtime on a new machine downloads packages from the
 npm registry and the model file from its pinned Hugging Face URL, and only after
@@ -51,11 +45,8 @@ machine.
 A line records which hook action or background step ran and how it ended:
 outcome and fixed reason codes, elapsed time, the host session id, recall
 diagnostics with the injected card paths and content hashes, wiki card paths and
-titles written by compile and verification, index publication, and bundle
-upgrade status. Index format migration lines carry only the step name, fixed
-outcome and reason codes, byte counts for the disk-space check, and opaque
-migration ids. A hook failure records the exception class and code location,
-never the message.
+titles written by compile and verification, and index publication. A hook failure records
+the exception class and code location, never the message.
 
 The log holds no prompt text or document bodies. A prompt is recorded as its
 SHA-256 hash and character count, and extractor stderr the same way. Fields
@@ -65,7 +56,7 @@ secret, credential, API key, authorization, cookie) are dropped from every line.
 ## Controls
 
 - Keep a project inactive by not onboarding it. A memvane-db index selection can be
-  withdrawn on request until the selected index takes its first write.
+  withdrawn on request, including after selected writes; the old install directory remains.
 - Decline the SessionStart onboarding notice for a project, or skip it for one
   session. The answer is kept per project under
   `~/.local/state/memvane/onboarding/`, outside the repository, and never

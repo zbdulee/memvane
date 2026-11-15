@@ -17,7 +17,6 @@ const ALLOWED = {
   'memvane/wiki/dedup/wiki_dedup_scan.py': [/^BANNER_RE = /],
   'memvane/install/README.md': [/읽는 쪽은 `qmd-auto-context`도 같은 소유로 본다/],
   'memvane/wiki/verify/README.md': [/이전 플러그인 이름 `qmd-auto-context`/],
-  'docs/settings.md': [/이전 플러그인 이름 `qmd-auto-context`/],
   'docs/architecture.md': [/earlier plugin name/, /^`qmd-auto-context`, non-empty$/],
   'docs/continual-learning.md': [/earlier `qmd-auto-context` support directory/],
   'docs/release-agent-qa.md': [/`qmd-auto-context` plugin in either host/,
