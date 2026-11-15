@@ -18,7 +18,9 @@ class Provisioning(FixtureCase):
         def fetch(_url, target):
             target.write_bytes(b'GGUF synthetic unapproved bytes')
 
-        with patch.object(runtime, '_install_module', return_value=self.home / 'entry'):
+        with patch.object(runtime, '_npm_cli'), \
+                patch.object(runtime, '_relocatable_node', return_value=True), \
+                patch.object(runtime, '_install_module', return_value=self.home / 'entry'):
             with self.assertRaisesRegex(runtime.RuntimeUnavailable,
                                         '^laya_embed_runtime_model_sha_mismatch$'):
                 runtime.provision_new(home=self.home, approve_download=True,

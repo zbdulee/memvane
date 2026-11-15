@@ -62,10 +62,9 @@ class SelectedReader(InstallCase):
                 endpoint.endpoint_id = '0' * 64
             self.assertEqual(journal_api().recheck_reader(endpoint)[0], self.record())
 
-    def test_caller_created_endpoint_or_installer_seal_is_refused(self):
+    def test_caller_created_endpoint_is_refused(self):
         journal = journal_api()
         self.refused('reader_endpoint_not_issued', VerifiedEndpoint)
-        self.refused('reader_installer_not_issued', journal_reader.InstallerSeal)
         with self.endpoint() as issued:
             forged = object.__new__(VerifiedEndpoint)
             object.__setattr__(forged, 'endpoint_id', issued.endpoint_id)

@@ -107,7 +107,8 @@ class SelectedRoute(HermesCase, HostInstallCase):
             self.assertIsNone(self.invoke('post_tool_call', working_directory=str(self.project),
                                           result='{}', status='ok', **EDIT)[0])
         self.assertEqual([record.getMessage() for record in logs.records],
-                         ['[memvane] selected route unavailable; request refused'] * 2)
+                         ['[memvane] route_blocked: selection_marker_invalid',
+                          '[memvane] selected route unavailable; request refused'] * 2)
         self.assertEqual(self.wakes.calls, [])
 
     def test_a_marker_without_its_route_recalls_nothing(self):
