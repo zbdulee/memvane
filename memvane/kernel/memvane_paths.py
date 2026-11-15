@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import pwd
 import stat
 import sys
 import tempfile
@@ -133,4 +134,37 @@ def ensure_state_layout(home=None):
 
 def auto_context_state(home=None):
     """Per-user logs and scan state outside any install."""
+    runtime = os.environ.get('MEMVANE_TEST_RUNTIME_ROOT') if home is None else None
+    if runtime is not None:
+        candidate = Path(runtime)
+        account = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        resolved = candidate.resolve()
+        if not candidate.is_absolute() or resolved == account or account in resolved.parents:
+            raise OSError('fixture_runtime_root_unsafe')
+        return resolved / 'auto-context'
+    if home is None and os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1':
+        account = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        resolved = _home().resolve()
+        if resolved == account or account in resolved.parents:
+            raise OSError('fixture_home_unsafe')
     return state_base(home) / 'auto-context'
+
+
+def auto_context_path(relative, override=None):
+    """Resolve wiki state without allowing fixture overrides into the account home."""
+    default = auto_context_state() / relative
+    if override is None:
+        return default
+    candidate = Path(override)
+    home = _home().resolve()
+    temp_roots = [Path('/tmp').resolve(), Path('/var/tmp').resolve()]
+    if sys.platform == 'darwin':
+        temp_roots.append(Path('/private/var/folders'))
+    if (os.environ.get('MEMVANE_TEST_RUNTIME_ROOT') is not None
+            or os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
+            or any(home == root or root in home.parents for root in temp_roots)):
+        account = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+        resolved = candidate.resolve()
+        if not candidate.is_absolute() or resolved == account or account in resolved.parents:
+            return default
+    return candidate

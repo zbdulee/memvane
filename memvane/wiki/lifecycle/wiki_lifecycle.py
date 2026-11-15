@@ -133,9 +133,8 @@ DELETING = (MISSING, LEGACY_MISSING, UNPROVEN)
 
 
 def log_path() -> Path:
-    return Path(os.environ.get(
-        "QMD_WIKI_LIFECYCLE_LOG",
-        str(memvane_paths.auto_context_state() / "logs" / "wiki-lifecycle.log")))
+    return memvane_paths.auto_context_path(
+        "logs/wiki-lifecycle.log", os.environ.get("QMD_WIKI_LIFECYCLE_LOG"))
 
 
 def log(message: str) -> None:

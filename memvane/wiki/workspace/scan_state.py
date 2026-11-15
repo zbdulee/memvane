@@ -12,10 +12,8 @@ from memvane.kernel import memvane_paths
 
 
 def state_dir(explicit=None):
-    return Path(explicit) if explicit is not None else Path(os.environ.get(
-        "QMD_SYNC_STATE_DIR",
-        str(memvane_paths.auto_context_state() / "scan-state"),
-    ))
+    return memvane_paths.auto_context_path(
+        "scan-state", explicit if explicit is not None else os.environ.get("QMD_SYNC_STATE_DIR"))
 
 
 def project_key(project_root, config_path):

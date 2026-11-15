@@ -119,9 +119,8 @@ def load_skip_suppressions(skipped_path: Path | None) -> dict[tuple[str, str], t
 
 
 def log_path() -> Path:
-    return Path(os.environ.get(
-        "QMD_WIKI_DEDUP_LOG",
-        str(memvane_paths.auto_context_state() / "logs" / "wiki-dedup.log")))
+    return memvane_paths.auto_context_path(
+        "logs/wiki-dedup.log", os.environ.get("QMD_WIKI_DEDUP_LOG"))
 
 
 def log(message: str) -> None:
