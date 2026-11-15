@@ -117,7 +117,14 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
                 return RecallAnswer(decision, own_view=own_view)
     trace.fields(semantic=result.semantic_status)
     vector_fallback = None
-    if provider is None:
+    if result.semantic_status == 'embedding_set_invalid':
+        if main_proof is not None:
+            try:
+                _recall_sync_wake(decision['projectRoot'])
+            except Exception:
+                pass
+        vector_fallback = 'selected_embedding_set_invalid'
+    elif provider is None:
         vector_fallback = 'selected_' + vector_off[0]
     elif vector_off and degraded:
         vector_fallback = 'selected_reader_endpoint_' + vector_off[0]

@@ -12,6 +12,7 @@ from contextlib import closing
 import json
 import os
 import sqlite3
+import struct
 import sys
 import threading
 import unittest
@@ -43,6 +44,21 @@ class CheckoutMoved(Exception):
 
 class Schema3Recall(RecallInstallCase):
     CARDS = 2
+
+    def test_corrupt_vector_set_keeps_lexical_recall_and_requests_owner(self):
+        self.install.provider.admit_queries()
+        with closing(sqlite3.connect(self.install.state / 'store.sqlite')) as db, db:
+            trigger = db.execute("SELECT sql FROM sqlite_master WHERE name='vectors_update'").fetchone()[0]
+            db.execute('DROP TRIGGER vectors_update')
+            db.execute('UPDATE vectors SET embedding=? WHERE rowid=(SELECT min(rowid) FROM vectors)',
+                       (struct.pack('<ff', 0.0, 1.0),))
+            db.execute(trigger)
+        context, err, event = self.recall(PROMPT)
+        self.assertIn('zqheronx', context)
+        self.assertEqual((event['outcome'], event['semantic'], event['vector_fallback']),
+                         ('served', 'embedding_set_invalid', 'selected_embedding_set_invalid'))
+        self.assertIn('selected_embedding_set_invalid', err)
+        self.assertEqual([kind for kind, _target, _kw in self.wakes], ['laya-sync'])
 
     def opened(self, call):
         _OPENED.append([])

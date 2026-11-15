@@ -258,9 +258,12 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                                                       profile_id=vector['profile_id'],
                                                       deadline_seconds=left()))
                 except BlobStoreError as exc:
-                    if exc.reason not in DEFERRED:
+                    if exc.reason == 'embedding_set_invalid':
+                        status = 'embedding_set_invalid'
+                    elif exc.reason not in DEFERRED:
                         raise
-                    status=DEFERRED[exc.reason]
+                    else:
+                        status=DEFERRED[exc.reason]
 
             def fused(lists):
                 return _fuse_verified_lists(lists,max_rows=15) if any(lists) else []
