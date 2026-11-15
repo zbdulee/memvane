@@ -23,6 +23,7 @@ import threading
 import time
 import secrets
 from memvane.diagnostics.api import telemetry_emit
+from memvane.kernel.errors import _query_only_uri
 
 from .compact_input import derive
 from .contracts import digest, validate_label, validate_request
@@ -214,7 +215,7 @@ def _db(root, *, home=None):
             if path.is_symlink() or not path.is_file():raise ValueError('unsafe_shared_database')
             info=path.stat()
             if info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077:raise ValueError('unsafe_shared_database')
-            with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=1)) as db:
+            with closing(sqlite3.connect(_query_only_uri(path),uri=True,timeout=1)) as db:
                 db.execute('PRAGMA query_only=ON');yield db
         return
     from .history_activation import writer_access

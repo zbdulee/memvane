@@ -29,6 +29,27 @@ test('every product module and entry script imports under a synthetic HOME', t =
   assert.deepEqual(readdirSync(home), [], 'importing must not write under HOME');
 });
 
+test('product SQLite readers use the common query-only URI', t => {
+  const {result} = run(t, 'sqlite_read_uri_guard.py');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.ok(report.files > 250);
+  assert.deepEqual(report.findings, []);
+  assert.equal(report.exceptions.length, 1);
+  assert.match(report.exceptions[0], /memvane\/journal\/install_journal\.py:\d+$/);
+});
+
+test('the SQLite URI check catches direct read-only modes', t => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'mv-uri-')));
+  t.after(() => rmSync(dir, {recursive: true, force: true}));
+  const sample = join(dir, 'sample.py');
+  writeFileSync(sample, '"""Documentation may mention mode=ro."""\n' +
+    "uri = path.as_uri() + '?mode=ro'\n");
+  const {result} = run(t, 'sqlite_read_uri_guard.py', [sample]);
+  assert.equal(result.status, 1, result.stdout);
+  assert.deepEqual(JSON.parse(result.stdout).findings, [`${sample}:2`]);
+});
+
 test('no product module reads a name that no scope binds', t => {
   const {result} = run(t, 'free_names.py');
   assert.equal(result.status, 0, result.stdout);

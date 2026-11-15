@@ -4,6 +4,8 @@ Reads need the selected route, journal, ledger, attestation and provider
 identity; writes also need a running plugin at or above the journal's writer
 floor (D4). The highest plugin version only rises, under the sync owner.
 """
+from contextlib import closing
+import sqlite3
 import unittest
 
 from memvane.journal.tests.support import InstallCase, file_state
@@ -20,6 +22,10 @@ def running_version():
 
 
 class WriterFloor(InstallCase):
+    def test_install_journal_uses_rollback_journal_mode(self):
+        with closing(sqlite3.connect(str(self.install.journal))) as db:
+            self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0].lower(), 'delete')
+
     def test_writer_floor_above_the_running_plugin_refuses_writes_only(self):
         journal = journal_api()
         store = file_state(self.install.store_path)

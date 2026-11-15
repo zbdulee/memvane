@@ -30,6 +30,23 @@ API = {'create', 'open', 'register_worktree', 'ingest_card', 'ingest_attested_ca
 
 
 class BlobStoreChecks(BlobStoreCase):
+    def test_sqlite_error_retains_its_cause_and_reason(self):
+        store, _repository, _wid = self.create()
+        for message, reason in (('disk I/O error', 'candidate_io_failed'),
+                                ('database is locked', 'candidate_busy'),
+                                ('database or disk is full', 'candidate_storage_full')):
+            with self.subTest(reason=reason):
+                original = sqlite3.OperationalError(message)
+                fake = mock.Mock()
+                fake.execute.side_effect = original
+                with mock.patch.object(store, '_db', fake):
+                    with self.assertRaises(self.Error) as caught:
+                        with store._session(write=True):
+                            self.fail('failed transaction was entered')
+                self.assertEqual(caught.exception.reason, reason)
+                self.assertIs(caught.exception.__cause__, original)
+                fake.rollback.assert_called_once()
+
     def test_writer_enters_while_reader_holds_a_snapshot(self):
         store, repository, _wid = self.create()
         store.close()

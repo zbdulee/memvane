@@ -22,6 +22,8 @@ import sys
 import tempfile
 import time
 
+from memvane.kernel.errors import _query_only_uri
+
 from .history_migration import _inventory, _regular_owner_file, verify_prepared
 from . import history_fence
 from .storage_layout import root as learning_root
@@ -107,8 +109,7 @@ def writer_access(legacy_database, *, home=None):
 def read_database(legacy_database, *, home=None, timeout=.02):
     """Read the selected store while holding the same cutover barrier."""
     with writer_access(legacy_database, home=home) as selected:
-        with closing(sqlite3.connect(selected.as_uri() + '?mode=ro',
-                                     uri=True, timeout=timeout)) as db:
+        with _read_only(selected, timeout=timeout) as db:
             yield db
 
 
@@ -693,8 +694,7 @@ def _verify_source_pair(databases, manifest):
 
 def _verify_fences(paths, manifest):
     for path, tables in zip(paths, _source_tables(manifest)):
-        with closing(sqlite3.connect(Path(path).as_uri() + '?mode=ro',
-                                     uri=True)) as db:
+        with _read_only(path) as db:
             history_fence.verify(db, tables)
 
 
@@ -712,8 +712,12 @@ def schema_digest(db):
                           .encode('utf8')).hexdigest()
 
 
-def _read_only(path):
-    return closing(sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True))
+@contextmanager
+def _read_only(path, *, timeout=5):
+    sealed = _file_mode(path) == SEALED_MODE
+    with closing(sqlite3.connect(_query_only_uri(path, sealed=sealed), uri=True, timeout=timeout)) as db:
+        db.execute('PRAGMA query_only=ON')
+        yield db
 
 
 def _file_mode(path):
@@ -936,7 +940,7 @@ def activate(generation, *, host_roots=None, home=None, lock_timeout=5,
             if not verified['sources_current']:
                 raise ValueError('history_sources_changed')
             target = _regular_owner_file(manifest_path.with_name('history.sqlite3'))
-            with closing(sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)) as db:
+            with _read_only(target) as db:
                 if db.execute('PRAGMA foreign_key_check').fetchone() is not None:
                     raise ValueError('history_foreign_key_mismatch')
                 if _inventory(db) != manifest['history_tables']:
@@ -1036,7 +1040,7 @@ def recover(*, host_roots=None, home=None):
     paths = (pointer['source_shared'], pointer['source_private'])
     _verify_fences(paths, manifest)
     _verify_seal(paths, (_read_state(home) or {}).get('seal'))
-    with closing(sqlite3.connect(target.as_uri() + '?mode=ro', uri=True)) as db:
+    with _read_only(target) as db:
         if (db.execute('PRAGMA quick_check').fetchone()[0] != 'ok'
                 or db.execute('PRAGMA foreign_key_check').fetchone() is not None
                 or db.execute('SELECT value FROM history_metadata WHERE key=\'generation\'').fetchone()

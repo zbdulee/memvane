@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from memvane.kernel.errors import _query_only_uri
 from memvane.runtime import runtime_wake_policy as wake_policy
 
 
@@ -22,8 +23,9 @@ def status(kind, target, *, queue=None):
     key = wake_policy.wake_key(kind, target)
     if not queue.path.exists():
         return {'wake': None, 'cancellations': []}
-    db = sqlite3.connect(queue.path.as_uri() + '?mode=ro', uri=True, timeout=.2)
+    db = sqlite3.connect(_query_only_uri(queue.path), uri=True, timeout=.2)
     try:
+        db.execute('PRAGMA query_only=ON')
         db.row_factory = sqlite3.Row
         audits = []
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='wake_cancellations'").fetchone():

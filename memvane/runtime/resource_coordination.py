@@ -13,6 +13,7 @@ import select
 import sqlite3
 import stat
 import time
+from memvane.kernel.errors import _query_only_uri
 from memvane.kernel.resource_deferred import ResourceDeferred
 from memvane.kernel.atomic_rename import atomic_json as _atomic_json, canonical_json_bytes
 from memvane.runtime.private_json import read_private_json
@@ -248,7 +249,8 @@ class Coordinator:
         if (not stat.S_ISREG(info.st_mode) or info.st_uid!=os.getuid()
                 or info.st_mode&0o077 or info.st_nlink!=1):return True
         try:
-            with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.1)) as db:
+            with closing(sqlite3.connect(_query_only_uri(path),uri=True,timeout=.1)) as db:
+                db.execute('PRAGMA query_only=ON')
                 return db.execute("SELECT 1 FROM wakes WHERE kind IN ('laya-sync','laya-compile') "
                                   "AND status IN ('pending','running') AND due<=? LIMIT 1",
                                   (time.time(),)).fetchone() is not None
