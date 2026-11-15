@@ -67,7 +67,7 @@ test('the free-name check flags unbound names and missing module attributes', t 
   const sample = join(dir, 'sample.py');
   writeFileSync(sample, 'from memvane.kernel import bundle_paths\n\n' +
     'def a():\n    from pathlib import Path\n    return Path, bundle_paths.entry_path\n\n' +
-    'def b(config):\n    return Path(1), json, config.get, bundle_paths.removed_name\n\n' +
+    'def b(config):\n    return Path(1), json, config.get, bundle_paths.removed_name, __conditional_annotations__\n\n' +
     'def c():\n    bundle_paths = {}\n    return bundle_paths.get\n\n' +
     'def d():\n    from memvane.runtime import api as build\n    return build.resource_report, build.removed_op\n\n' +
     'def e():\n    import os\n    from memvane.runtime import api as os\n    return os.getcwd\n\n' +
@@ -76,7 +76,7 @@ test('the free-name check flags unbound names and missing module attributes', t 
   const {result} = run(t, 'free_names.py', [sample]);
   assert.equal(result.status, 1, result.stdout);
   const names = JSON.parse(result.stdout).findings.map(x => x.split(':').pop()).sort();
-  assert.deepEqual(names, ['Path', 'build.removed_op', 'bundle_paths.removed_name', 'json', 'os.getcwd',
+  assert.deepEqual(names, ['Path', '__conditional_annotations__', 'build.removed_op', 'bundle_paths.removed_name', 'json', 'os.getcwd',
     'reader.journal.removed_row']);
 });
 

@@ -1,4 +1,5 @@
 import unittest
+import urllib.request  # Load platform-specific proxy support before mocking sys.platform.
 from unittest.mock import patch
 from memvane.kernel import errors
 

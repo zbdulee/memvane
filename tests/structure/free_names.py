@@ -62,6 +62,9 @@ def check_source(source, filename):
     for table in _tables(top):
         for symbol in table.get_symbols():
             name = symbol.get_name()
+            # Python 3.14 symtable can synthesize this without a source reference.
+            if name == '__conditional_annotations__' and name not in lines:
+                continue
             if not symbol.is_referenced() or name in bound or name in IMPLICIT:
                 continue
             if table is top or symbol.is_global():
