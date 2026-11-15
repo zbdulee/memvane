@@ -30,7 +30,6 @@ NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 LEGACY_ENGINE_IDENTITY = 'memvane:v6-reader'
 LEGACY_RESULT_SCHEMA = 'memvane-legacy-card-evidence-v1'
 
-
 def legacy_card_evidence(row, decision):
     """Describe the existing reader's trust evidence, without granting authority."""
     from memvane.wiki.card import api as card_api
@@ -47,7 +46,6 @@ def legacy_card_evidence(row, decision):
     revisions = wiki_card.frontmatter_source_revisions(block)
     _, spans = source_spans.read_card_spans(block)
     return {'revisions': revisions, 'spans': spans, 'locators': list(locators)}
-
 
 def current_revision_evidence(evidence, current_sources):
     """The evidence a writer ingest attests when ``current_sources`` observed this pass's raw files.
@@ -77,7 +75,6 @@ def current_revision_evidence(evidence, current_sources):
     from memvane.wiki.card import api as source_spans
     return {'revisions': kept, 'spans': spans, 'locators': [source_spans.locator(span) for span in spans]}
 
-
 def _current_sources(value):
     if value is None:
         return None
@@ -90,13 +87,11 @@ def _current_sources(value):
             v.fail('current_sources_invalid')
     return value
 
-
 def legacy_scan(provenance_scan):
     v.exact(provenance_scan, ('id', 'observed_ns'))
     v.identifier(provenance_scan['id'], v.UUID)
     v.integer(provenance_scan['observed_ns'])
     return provenance_scan
-
 
 def _database_path(value):
     try:

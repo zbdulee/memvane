@@ -95,14 +95,14 @@ test('product modules satisfy structure rules G1 to G7 and strict G1, G5, G9', t
   }
 });
 
-// Report-only until the last S5 layer: old tests still carry G8 findings and
-// tests/ still names internal modules. The counts are printed, not asserted.
-test('test files report G8 and test G1 counts (report only)', t => {
+// Cross-boundary fault injection uses the explicit, reasoned test exceptions.
+test('test files satisfy G1 and G8 with no unresolved patch targets', t => {
   const {result} = run(t, 'v1_guard.py', ['--tests', '--rules', 'G1,G8']);
   const {counts, by_dir: folders} = JSON.parse(result.stdout).tests;
-  for (const key of ['G1', 'G8', 'unresolved_patch_targets', 'external_patch_targets']) {
-    assert.equal(typeof counts[key], 'number', key);
+  for (const key of ['G1', 'G8', 'unresolved_patch_targets']) {
+    assert.equal(counts[key], 0, key);
   }
+  assert.equal(typeof counts.external_patch_targets, 'number');
   t.diagnostic(`test G1 ${counts.G1}, G8 ${counts.G8}, unresolved patch targets ${counts.unresolved_patch_targets}`);
   for (const [folder, row] of Object.entries(folders).sort()) {
     t.diagnostic(`${folder}: G1 ${row.G1}, G8 ${row.G8}, unresolved ${row.unresolved_patch_targets}`);

@@ -37,9 +37,8 @@ def _query_only_uri(path, *, sealed=False):
 
     Apple's libsqlite3 (macOS system Python 3.9, and any Python linked to it)
     cannot open a WAL database left without ``-wal``/``-shm`` with
-    ``mode=ro``, so there the file opens ``mode=rw``. On Apple SQLite, a
-    read-only connection holding the first shared lock can also make a writer
-    in this process fail to acquire its reserved lock with ``SQLITE_IOERR_LOCK``.
+    ``mode=ro``, so the file opens ``mode=rw``. A read-only shared lock can also
+    cause a same-process writer to fail with ``SQLITE_IOERR_LOCK``.
     ``sealed=True`` is only for a verified read-only file with no live writer.
     """
     apple = sys.platform == 'darwin' and (sys.version_info[:2] == (3, 9) or _apple_sqlite())

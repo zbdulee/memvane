@@ -274,14 +274,12 @@ class WikiDbProvenance(FixtureCase):
         self.assertFalse(path.exists())
         self.assertTrue(path.with_name(path.stem + '.consumed.json').is_file())
 
-        from memvane.store.blob import blob_values
         rows = self.compiled_rows(intent['cardSha'])
         self.assertEqual(len(rows), 1)
         trust, engine, receipt_json, source_count = rows[0]
         self.assertNotEqual(trust, before['member'][1])  # evidence row, not the member's trust
         self.assertEqual(engine, intent['producingEngine'])
         receipt = json.loads(receipt_json)
-        self.assertEqual(set(receipt), set(blob_values.RECEIPT_V2_FIELDS))
         self.assertEqual(receipt, {'schema': 'memvane-card-evidence-v2', 'verdict': 'verified',
                                    'result_digest': intent['result_digest'], 'prior_trust': None,
                                    'verdict_digest': intent['verdict_digest'],

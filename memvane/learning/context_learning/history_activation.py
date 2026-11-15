@@ -29,7 +29,6 @@ from . import history_fence
 from .storage_layout import root as learning_root
 from .store import canonical
 
-
 PROTOCOL = 'qmd-history-active-v1'
 STATE_PROTOCOL = 'qmd-history-state-v1'
 HOSTS = ('claude', 'codex')
@@ -44,7 +43,6 @@ HOST_FILES = tuple(sorted({str(path.relative_to(_PLUGIN_ROOT)) for pattern in
                             'hooks/run-hook', 'hooks/*.json',
                             '.claude-plugin/*.json', '.codex-plugin/*.json')
                            for path in _PLUGIN_ROOT.glob(pattern) if path.is_file()}))
-
 
 def _owner_lock(path):
     path = Path(path)
@@ -61,10 +59,8 @@ def _owner_lock(path):
         raise ValueError('history_lock_unsafe')
     return fd
 
-
 def _lock_path(database):
     return Path(database).parent / '.qmd-history-writer.lock'
-
 
 @contextmanager
 def _locks(databases, *, exclusive, timeout=5):

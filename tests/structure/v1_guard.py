@@ -171,6 +171,7 @@ def _g8_targets(tree, aliases, names, wide):
 
 def _patch_checks(root, trees, paths):
     names = {_module_name(path): path for path in trees}
+    known_modules = set(names) | {_module_name(path) for path in paths}
     symbols = {path: _symbol_table(tree) | {'__file__', '__name__', '__package__'} for path, tree in trees.items()}
     bad, unknown = [], []
     for relative in paths:
@@ -189,7 +190,7 @@ def _patch_checks(root, trees, paths):
                     aliases[item.asname or item.name] = node.module + '.' + item.name
         # Outside the old test/ tree G8 also reads mock.patch('...') and whole dotted
         # memvane strings (patch target tables); test/ keeps its S4 reading.
-        for lineno, target in _g8_targets(tree, aliases, names, not relative.startswith('test/')):
+        for lineno, target in _g8_targets(tree, aliases, known_modules, not relative.startswith('test/')):
             if not isinstance(target, str) or '.' not in target:
                 continue
             parts = target.split('.')
@@ -234,7 +235,29 @@ def _patch_checks(root, trees, paths):
 _TEST_G1_EXEMPT_DIRS = ('tests/structure/',)
 # Each entry: (test file, dotted name it may name) -> reason. An entry whose file
 # exists but never names it is itself a finding (unused_exception).
-_TEST_G1_EXCEPTIONS = {}
+_TEST_G1_EXCEPTIONS = {
+    # Host entry tests exercise the real entry/adapter boundary in process.
+    ('memvane/diagnostics/tests/integration/test_compile_worker_diagnostics.py', 'entry.run'): 'compile entry diagnostics boundary',
+    ('memvane/diagnostics/tests/integration/test_dispatch_worker_diagnostics.py', 'entry.run'): 'dispatch entry diagnostics boundary',
+    ('memvane/diagnostics/tests/integration/test_hermes_diagnostics.py', 'hermes_adapter.core_bridge.recall_context'): 'Hermes adapter diagnostics boundary',
+    ('memvane/diagnostics/tests/integration/test_recall_retry_event.py', 'entry.run'): 'recall entry retry event boundary',
+    # Onboarding E2E injects interruption at durable write and transition boundaries.
+    ('tests/e2e/onboarding_fixture.py', 'memvane.host.route_input.main'): 'hook classification entry',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.host.host_response.main'): 'hook response entry',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.install.initial_build'): 'build pointer interruption',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.install.ledger_common'): 'ledger interruption evidence',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.install.application.onboarding_activation'): 'activation write interruption',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.install.application.onboarding_workflow'): 'prepare and build interruption',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.install.application.onboarding_restore'): 'restore interruption',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.journal.journal_reader'): 'reader transition interruption',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.journal.install_journal'): 'journal transaction interruption',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.app.setup_entry'): 'setup CLI dispatch',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.app.setup_workflow'): 'setup CLI fault boundary',
+    ('tests/e2e/onboarding_fixture.py', 'memvane.host.onboarding_notice'): 'onboarding notice state',
+    # Provenance E2E exercises worker entry and a real stamp failure boundary.
+    ('tests/e2e/wiki_db_provenance.py', 'memvane.wiki.compile.wiki_compile_worker'): 'compile fingerprint producer',
+    ('tests/e2e/wiki_db_provenance.py', 'memvane.wiki.verify.wiki_verify_worker'): 'verify worker and stamp fault',
+}
 _EMBEDDED_FROM = re.compile(r'\bfrom[ \t]+([A-Za-z_][\w.]*)[ \t]+import[ \t]*(?:\(([^)]*)\)|([\w \t,]+))')
 _EMBEDDED_IMPORT = re.compile(r'(?<![\w.])import[ \t]+([A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?'
                               r'(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?)*)')

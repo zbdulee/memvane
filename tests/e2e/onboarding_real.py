@@ -67,7 +67,7 @@ def card_text(title, marker, revision_line):
 def make_project(name, cards):
     """A git project with minimal settings, one raw note and ``cards`` verified cards."""
     import hashlib
-    from memvane.settings.config import minimal_collection_names
+    from memvane.settings.api import normalize_config
     from memvane.wiki.card.api import dump_source_revisions
     project = HOME / name
     wiki = project / '.memvane' / 'wiki' / 'concepts'
@@ -79,7 +79,7 @@ def make_project(name, cards):
     git(project, 'init', '-q')
     git(project, 'add', '-A')
     git(project, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-qm', 'notes')
-    revision = {'kind': 'file', 'path': 'notes.md', 'collection': minimal_collection_names(name)[0],
+    revision = {'kind': 'file', 'path': 'notes.md', 'collection': normalize_config({'name': name})['collections'][0],
                 'sha256': hashlib.sha256(raw.read_bytes()).hexdigest(), 'size': raw.stat().st_size,
                 'mtimeNs': raw.stat().st_mtime_ns}
     line = dump_source_revisions([revision])[0]

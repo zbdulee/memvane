@@ -474,6 +474,7 @@ const g1Rows = report => report.G1.map(x => x.split(':')).map(([file, , ...rest]
 test('G8 reads patch targets in tests/ and memvane/**/tests/ next to the old test/ tree', t => {
   const report = scanTests(t, {
     ...testProduct,
+    'memvane/store/tests/unit/runner.py': 'VALUE = 1\n',
     'memvane/store/tests/unit/test_patch.py': [
       'from unittest import mock',
       'from unittest.mock import patch',
@@ -482,6 +483,7 @@ test('G8 reads patch targets in tests/ and memvane/**/tests/ next to the old tes
       "mock.patch('memvane.store.missing_mod.thing')",
       "TABLE = (('memvane.store.api.removed', None), ('memvane.store.api.open_store', None))",
       "MODULE = 'memvane.store.view.view_store'",
+      "MODULE_RUNNER = 'memvane.store.tests.unit.runner'",
       ''].join('\n'),
     'tests/e2e/flow.py': "from unittest.mock import patch\npatch('memvane.journal.api.removed')\n",
     'test/old_checks.py': [
