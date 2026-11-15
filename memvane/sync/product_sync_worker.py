@@ -613,6 +613,15 @@ def _schema3_card_source_match(path, raw, decision, current_sources):
         return None
 
 
+def _schema3_reclassified(paths, changed, old, current, decision, sources):
+    result = {}
+    for path in set(paths) - changed:
+        verdict = _schema3_card_source_match(path, current[path][1], decision, sources)
+        if verdict is not None and verdict[0] != bool(old[path]['trust_digest']):
+            result[path] = verdict
+    return result
+
+
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
                           vectors=None, *, raw_scan=None, window=False):
     """One view's pass: ingest changed cards and recheck observed source revisions.
@@ -669,13 +678,9 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         current_sources = ({source: (sha, length) for source, (sha, length, _tracked) in observed.items()}
                            if 'snapshot' in scanned else None)
         same_observation = not cold and v.head_same(store, head, baseline, observed, handle)
-        reclassified = {}
-        if current_sources is not None and not same_observation:
-            for path in set(paths) - changed:
-                verdict = _schema3_card_source_match(path, current[path][1], decision, current_sources)
-                if verdict is not None and verdict[0] != bool(old[path]['trust_digest']):
-                    reclassified[path] = verdict
-            changed.update(reclassified)
+        reclassified = (_schema3_reclassified(paths, changed, old, current, decision, current_sources)
+                        if current_sources is not None and not same_observation else {})
+        changed.update(reclassified)
         if (not changed and not removed and not excluded and not cold
                 and same_observation):
             provenance = _consume_compile_intents(store, writer, proof, marks, decision, handle, old, current)

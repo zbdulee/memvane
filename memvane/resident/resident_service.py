@@ -1129,7 +1129,6 @@ class Service:
             if seen == fingerprint:
                 count += 1
             else:
-                # An allowed retry after restart retains a partial failure budget.
                 previous = read_owner_state(manifest)
                 attempts = (previous['attempts'] if previous is not None
                             and previous['reason'] == 'startup_failed'

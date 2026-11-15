@@ -19,6 +19,7 @@ from memvane.sync import product_sync_worker as worker
 from memvane.sync.tests.support import SyncCase, sha
 from tests.support import sqlite_hot_journal as hot
 from tests.support.project import settle_index
+from tests.support.gc_fixture import GC_HELD_CHILD
 
 
 class _Store:
@@ -36,7 +37,6 @@ class _Store:
 
 class SyncPublish(SyncCase):
     def test_recall_hook_during_gc_pass(self):
-        from memvane.store.tests.integration.test_s_incremental_publish import GC_HELD_CHILD
         ready, release = self.home / 'gc-ready', self.home / 'gc-release'
         samples = []
         def collect(real, handle, **kwargs):

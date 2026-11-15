@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 from memvane.store.tests import support as seed
+from tests.support.gc_fixture import GC_HELD_CHILD
 
 REPO = Path(__file__).resolve().parents[4]
 
@@ -60,25 +61,6 @@ else:
     stop()
 '''
 
-GC_HELD_CHILD = r'''
-import json, os, sys, time
-from pathlib import Path
-args = json.loads(sys.argv[1])
-import memvane.store.view.view_store as views
-store = views.ViewStore.open(args['db'], repository=args['repository'], scope_id=args['scope'])
-handle = store.capture_view(args['worktree_id'])
-def before_commit(sql):
-    if sql.strip().upper() == 'COMMIT':
-        Path(args['ready']).touch()
-        end = time.monotonic() + 20
-        while not Path(args['release']).exists() and time.monotonic() < end:
-            time.sleep(.01)
-        if not Path(args['release']).exists():
-            os._exit(19)
-store._db.set_trace_callback(before_commit)
-store.collect_view_rows(handle, limit=64)
-store.close()
-'''
 
 
 class IncrementalPublicationChecks(seed.GenerationCase):
