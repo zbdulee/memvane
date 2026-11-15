@@ -32,15 +32,18 @@ def _apple_sqlite():
     return _APPLE_SQLITE
 
 
-def _query_only_uri(path):
+def _query_only_uri(path, *, sealed=False):
     """URI for reading existing SQLite data; callers set ``PRAGMA query_only``.
 
     Apple's libsqlite3 (macOS system Python 3.9, and any Python linked to it)
     cannot open a WAL database left without ``-wal``/``-shm`` with
-    ``mode=ro``, so there the file opens ``mode=rw``.
+    ``mode=ro``, so there the file opens ``mode=rw``. On Apple SQLite, a
+    read-only connection holding the first shared lock can also make a writer
+    in this process fail to acquire its reserved lock with ``SQLITE_IOERR_LOCK``.
+    ``sealed=True`` is only for a verified read-only file with no live writer.
     """
     apple = sys.platform == 'darwin' and (sys.version_info[:2] == (3, 9) or _apple_sqlite())
-    return Path(path).as_uri() + '?mode=' + ('rw' if apple else 'ro')
+    return Path(path).as_uri() + '?mode=' + ('rw' if apple and not sealed else 'ro')
 
 
 def _qmd_title(body, path):

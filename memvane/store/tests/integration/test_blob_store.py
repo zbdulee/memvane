@@ -30,6 +30,20 @@ API = {'create', 'open', 'register_worktree', 'ingest_card', 'ingest_attested_ca
 
 
 class BlobStoreChecks(BlobStoreCase):
+    def test_writer_enters_while_reader_holds_a_snapshot(self):
+        store, repository, _wid = self.create()
+        store.close()
+        reader = self.track(self.Store._open(self.db, repository=repository, scope_id=self.scope,
+                                            reader_only=True))
+        writer = self.reopen(repository)
+        with contextlib.ExitStack() as stack:
+            with reader._session():
+                db = stack.enter_context(writer._session(write=True))
+                db.execute('INSERT INTO chunk_recipes (recipe_id, canonical_spec) VALUES (?, ?)',
+                           ('a' * 64, '{}'))
+        self.assertEqual(writer._db.execute('SELECT count(*) FROM chunk_recipes WHERE recipe_id=?',
+                                            ('a' * 64,)).fetchone()[0], 1)
+
     def test_01_separate_application_create_reopen_and_no_clobber(self):
         store, repository, wid = self.create()
         sha = store.ingest_card(wid, 'cards/a.md')

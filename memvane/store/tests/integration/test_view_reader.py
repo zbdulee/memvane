@@ -64,7 +64,7 @@ class ReaderChecks(GenerationCase):
                     with self.assertRaisesRegex(ValueError,'generation_capture_invalid'):
                         store._sealed_handle(store._db,forged)
 
-    def test_reader_factory_never_opens_writable_or_enables_writes(self):
+    def test_reader_factory_uses_query_only_and_never_enables_writes(self):
         store,repository,handle,generation=self.published()
         before=store._path.read_bytes()
         opened=[]
@@ -77,7 +77,8 @@ class ReaderChecks(GenerationCase):
                                            deadline=time.monotonic()+10)
         self.addCleanup(reader.close)
         self.assertTrue(opened)
-        self.assertTrue(all('?mode=ro' in path for path in opened),opened)
+        from memvane.kernel.errors import _query_only_uri
+        self.assertTrue(all(path == _query_only_uri(store._path) for path in opened), opened)
         self.assertEqual(reader._db.execute('PRAGMA query_only').fetchone()[0],1)
         checkout=importlib.import_module('memvane.store.checkout.checkout_view')
         actual_capture=checkout.capture_view

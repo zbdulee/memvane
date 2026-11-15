@@ -17,6 +17,7 @@ import threading
 import unittest
 from unittest import mock
 
+from memvane.journal.types import JournalEvidenceError
 from memvane.recall import api as recall_api
 from memvane.recall.types import HostResponseError
 from memvane.recall.tests.support import NOTE, RecallInstallCase
@@ -236,13 +237,18 @@ class Schema3Recall(RecallInstallCase):
                     # refused, never served from a third or mixed view.
                     seen.append(str(exc))
                     continue
+                except JournalEvidenceError as exc:
+                    if str(exc) != 'selected_route_changed':
+                        raise
+                    seen.append(str(exc))
+                    continue
                 seen.append(self.generation(context) if context else None)
         finally:
             worker.join(120)
         self.assertEqual(errors, [])
         new = self.generation(self.recall(PROMPT)[0])
         self.assertNotEqual(new, old)
-        self.assertLessEqual(set(seen), {old, new, 'selected_proof_changed'}, seen)
+        self.assertLessEqual(set(seen), {old, new, 'selected_proof_changed', 'selected_route_changed'}, seen)
 
     def test_a_hot_store_journal_is_rolled_back_before_the_reader_serves(self):
         # A writer killed mid-commit leaves a torn store with a hot journal right

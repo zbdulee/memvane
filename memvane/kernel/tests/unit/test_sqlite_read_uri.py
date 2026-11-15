@@ -23,3 +23,9 @@ class SQLiteReadUriTests(unittest.TestCase):
                 patch.object(errors, '_apple_sqlite', return_value=True):
             uri = errors._query_only_uri('/tmp/fixture.sqlite')
         self.assertTrue(uri.endswith('?mode=rw'))
+
+    def test_verified_sealed_file_stays_read_only_on_apple(self):
+        with patch.object(errors.sys, 'platform', 'darwin'), \
+                patch.object(errors.sys, 'version_info', (3, 9, 0)):
+            uri = errors._query_only_uri('/tmp/sealed.sqlite', sealed=True)
+        self.assertTrue(uri.endswith('?mode=ro'))

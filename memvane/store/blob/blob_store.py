@@ -16,6 +16,7 @@ import stat
 import time
 import uuid
 
+from memvane.kernel.errors import _query_only_uri
 from memvane.store.blob import blob_schema as schema
 from memvane.store.blob import blob_values as v
 from memvane.store.blob.blob_values import BlobStoreError
@@ -472,7 +473,7 @@ class BlobStore:
             remaining = 2 if deadline is None else deadline - time.monotonic()
             if remaining <= 0:
                 v.fail('fts_deadline_exceeded')
-            ro = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=min(2,remaining), isolation_level=None, cached_statements=0)
+            ro = sqlite3.connect(_query_only_uri(path), uri=True, timeout=min(2,remaining), isolation_level=None, cached_statements=0)
             try:
                 if deadline is not None:
                     ro.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
@@ -546,8 +547,12 @@ class BlobStore:
                         or (type(sqlite_code) is int and sqlite_code & 0xff == getattr(sqlite3, 'SQLITE_FULL', 13))
                         or (isinstance(exc, sqlite3.OperationalError)
                             and str(exc) == 'database or disk is full')):
-                    v.fail('candidate_storage_full')
-                v.fail('candidate_busy' if 'locked' in str(exc) or 'busy' in str(exc) else 'candidate_io_failed')
+                    reason = 'candidate_storage_full'
+                elif 'locked' in str(exc) or 'busy' in str(exc):
+                    reason = 'candidate_busy'
+                else:
+                    reason = 'candidate_io_failed'
+                raise BlobStoreError(reason) from exc
             raise
 
     def register_worktree(self, project_root, worktree):
