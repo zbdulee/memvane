@@ -59,6 +59,7 @@ def _exception_detail(exc):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('plan-learning-profile','activate-learning-profile',
+                                          'activate-learning-runtime',
                                           'gc-index-runtime',
                                           'plan-fresh-wiki-origin',
                                           'index-runtime-status', 'provision-index-runtime',
@@ -77,6 +78,9 @@ def main(argv=None):
     parser.add_argument('--learning-migration',choices=('new','preserve'),default='preserve')
     parser.add_argument('--learning-expires-at-unix-ms',type=int)
     parser.add_argument('--accepted-learning-profile')
+    parser.add_argument('--learning-runtime-executable')
+    parser.add_argument('--learning-model-dir')
+    parser.add_argument('--approve-learning-runtime-activation', action='store_true')
     parser.add_argument('--state-root')
     parser.add_argument('--install-id')
     parser.add_argument('--accepted-origin-sha256')
@@ -91,7 +95,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.project is None and args.action not in (
             'index-runtime-status',
-            'provision-index-runtime', 'gc-index-runtime'):
+            'provision-index-runtime', 'gc-index-runtime', 'activate-learning-runtime'):
         parser.error('--project is required for ' + args.action)
     try:
         read_only = (args.action in ('plan-learning-profile', 'plan-fresh-wiki-origin',
@@ -178,6 +182,13 @@ def main(argv=None):
                     raise ValueError('index_origin_activation_approval_required')
                 result = product.select_origin(project_root=args.project, state_root=args.state_root,
                                                recover=args.action == 'recover-index-origin')
+        elif args.action == 'activate-learning-runtime':
+            if not args.approve_learning_runtime_activation:
+                raise ValueError('learning_runtime_activation_approval_required')
+            if not args.learning_runtime_executable or not args.learning_model_dir:
+                raise ValueError('learning_runtime_inputs_required')
+            from memvane.learning.api import activate_managed_runtime
+            result = activate_managed_runtime(args.learning_runtime_executable, args.learning_model_dir)
         elif args.action=='plan-learning-profile':result=learning_plan(args)
         else:result=select_learning(args)
     except Exception as exc:

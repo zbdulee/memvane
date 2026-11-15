@@ -57,6 +57,16 @@ Each linked git worktree reads its own published view of its wiki cards. The mai
 
 ## Explicit local learning profile
 
+To activate an already staged managed learning runtime, review the staged
+generation executable and local model directory with the user. On explicit
+approval run `activate-learning-runtime --learning-runtime-executable <absolute
+venv python> --learning-model-dir <absolute model directory>
+--approve-learning-runtime-activation`. The setup command checks resource
+admission and performs the existing synthetic compatibility proof before
+selecting the generation. A `deferred` result is not activation; report its
+reason and retry only when resources permit. Runtime activation does not
+prepare or activate a project's learning profile or selector.
+
 For an explicitly requested profile, run `plan-learning-profile --project "$PROJECT_ROOT" --learning-namespace "$APPROVED_NAMESPACE" --learning-choice local-auto-apply --learning-migration new --learning-expires-at-unix-ms "$REVIEWED_EXPIRY"`. Explain the choices in natural language: local learning plus validated candidate application, staged local learning only (`local-staged`), or disabled (`off`). A profile requires an already prepared private namespace, local runtime/model and inference identity, and a separate current train/evaluate execution grant. Missing preparation or corpus authorization remains review-required; do not create a grant, import data, download weights or call a teacher to satisfy it. Use `preserve` migration for an existing learning configuration; never switch to `new` to escape existing false choices. Show the proposal's actual settings changes, project/source/cohort and runtime/model scope, resource/batch/disk limits, expiry and application authority.
 
 Only on acceptance of that exact proposal, use `activate-learning-profile` with identical options plus `--accepted-learning-profile` equal to its `proposalSha256`. Never infer acceptance from the recommendation, onboarding approval, a prior train/evaluate grant or live selection. An interrupted profile activation resumes with the identical accepted options; changed scope/expiry/settings require review. Report selected, waiting, deferred, blocked, staged and applied states separately. A selected profile is not evidence that real training, model replacement or host-hook operation passed.
