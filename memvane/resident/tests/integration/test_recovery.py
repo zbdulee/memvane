@@ -122,3 +122,95 @@ class RecoveryChecks(FixtureCase):
                          ('startup_failed', 2, False))
         self.assertEqual(service._deferred_retry('/other', self.manifest, busy), delays[0])
         self.assertNotIn('/other', service.moved)
+
+    def test_moved_deferral_budget_isolated_by_installation_socket(self):
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        service = svc.Service(root, bundle={'version': '1.0.0'})
+        moved = ResourceDeferred('worker_selection_changed')
+        for _ in range(svc.MOVED_DEFER_LIMIT + 2):
+            service._deferred_retry('/project', self.manifest, moved)
+        other = dict(self.manifest, serviceSocketPath=str(self.base / 'other.sock'))
+        self.assertEqual(service._deferred_retry('/project', other, moved), 5)
+        self.assertIsNone(owner.read_owner_state(other))
+
+    def test_other_deferral_breaks_consecutive_moved_sequence(self):
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        service = svc.Service(root, bundle={'version': '1.0.0'})
+        moved = ResourceDeferred('worker_selection_changed')
+        for _ in range(svc.MOVED_DEFER_LIMIT):
+            service._deferred_retry('/project', self.manifest, moved)
+        service._deferred_retry('/project', self.manifest, ResourceDeferred('writer_proof_physical_busy'))
+        self.assertEqual(service._deferred_retry('/project', self.manifest, moved), 5)
+        self.assertIsNone(owner.read_owner_state(self.manifest))
+
+    def test_moved_deferral_preserves_prior_attempt_after_restart(self):
+        self.stamp('startup_failed', terminal=False, attempts=2)
+        root = self.home / 'service'
+        root.mkdir(mode=0o700)
+        service = svc.Service(root, bundle={'version': '1.0.0'})
+        with patch.object(owner.time, 'time', return_value=1011):
+            delay = service._deferred_retry('/project', self.manifest,
+                                            ResourceDeferred('worker_selection_changed'))
+        self.assertGreater(delay, 5)
+        self.assertEqual(owner.read_owner_state(self.manifest)['attempts'], 3)
+
+    def test_restart_preserves_previous_startup_failure_count(self):
+        self.stamp('startup_failed', terminal=False, attempts=2)
+        project = str(self.base / 'project')
+        Path(project).mkdir()
+        root = self.base / 'svc'
+        root.mkdir(mode=0o700)
+        service = svc.Service(root, bundle={'version': '1.0.0'})
+        class ParkedThread:
+            def __init__(self, **_kwargs):
+                pass
+            def start(self):
+                pass
+        key = svc._worker_key(self.manifest)
+        with patch.object(svc.threading, 'Thread', ParkedThread), \
+             patch.object(owner.time, 'time', return_value=1011):
+            service._load(project, {'projectRoot': project}, {}, 'selected',
+                          self.manifest, key, 'seal')
+        self.assertEqual(service.workers[key].failures, 2)
+        self.assertEqual(owner.read_owner_state(self.manifest)['attempts'], 2)
+
+    def test_resource_deferral_does_not_erase_prior_failures(self):
+        project = str(self.base / 'project')
+        Path(project).mkdir()
+        root = self.base / 'svc'
+        root.mkdir(mode=0o700)
+        decision = {'projectRoot': project}
+        proof = {'providerManifest': self.manifest}
+        service = svc.Service(root, bundle={'version': '1.0.0'},
+                              prove=lambda _p: (decision, proof, 'selected'),
+                              admit=lambda: False)
+        worker = svc.Worker(svc._worker_key(self.manifest), str(self.base / 'worker.sock'))
+        worker.failures = 2
+        service._load_attested(project, decision, proof, 'selected', self.manifest, worker, 'seal')
+        row = owner.read_owner_state(self.manifest)
+        self.assertEqual((row['reason'], row['attempts'], worker.failures),
+                         ('resource_deferred', 2, 2))
+
+    def test_warm_attach_respects_existing_failure_cooldown(self):
+        self.stamp('startup_failed', terminal=False, attempts=3)
+        project = str(self.base / 'project')
+        Path(project).mkdir()
+        root = self.base / 'svc'
+        root.mkdir(mode=0o700)
+        proof = {'providerManifest': self.manifest}
+        attest_calls = []
+        def defer(*_args):
+            attest_calls.append(1)
+            raise ResourceDeferred('worker_selection_changed')
+        service = svc.Service(root, bundle={'version': '1.0.0'},
+                              prove=lambda _p: ({'projectRoot': project}, proof, 'selected'),
+                              attest=defer)
+        worker = svc.Worker(svc._worker_key(self.manifest), str(self.base / 'worker.sock'))
+        worker.alive = lambda: True
+        service.workers[worker.identity] = worker
+        with patch.object(owner, '_owner_identity', return_value={'id': 'synthetic'}), \
+             patch.object(owner.time, 'time', return_value=1001):
+            service._adopt(project)
+        self.assertEqual(attest_calls, [])
