@@ -144,7 +144,8 @@ sandbox/headless no-op guards, and classifies the event cwd with
 |---|---|
 | `candidate`, `preview`, `worktree` | `exec memvane/host/host_response.py serve-stdin` |
 | `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
-| `blocked` or lookup failure | exit 3, no fallback |
+| `blocked` | exit 3, no fallback |
+| `error` (route lookup failure) | recall exits 0 without context; SessionStart reports the lookup failure and does not offer onboarding |
 
 A linked worktree reads its own published view. With no published head it
 returns `view_preparing` without context or fallback to another view.

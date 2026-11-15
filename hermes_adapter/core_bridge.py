@@ -85,9 +85,7 @@ def _laya_route_state(action: str, cwd: str) -> str:
     selector = _PLUGIN_ROOT / "entry" / "run.py"
     try:
         if action == "recall":
-            # Only the hook classifier distinguishes an upgrade fence from an
-            # ordinary blocked route. Its event file has the same bounded
-            # payload contract as the command-hook dispatcher.
+            # Recall uses the same bounded payload as the command-hook dispatcher.
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as payload:
                 json.dump({"cwd": cwd}, payload)
                 payload.flush()
@@ -95,22 +93,20 @@ def _laya_route_state(action: str, cwd: str) -> str:
                     [sys.executable, str(selector), "hook-classify", action,
                      payload.name, cwd],
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                    # Recall classification may wait up to 1.5s for an
-                    # upgrade fence, in addition to Python process startup.
                     timeout=3.0, env=_env(), check=False,
                 )
-            allowed = {"legacy", "candidate", "preview", "blocked", "worktree"}
+            allowed = {"legacy", "candidate", "preview", "blocked", "worktree", "error"}
         else:
             result = subprocess.run(
                 [sys.executable, str(selector), "classify", action, cwd],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
                 timeout=2.0, env=_env(), check=False,
             )
-            allowed = {"legacy", "candidate", "blocked", "worktree"}
+            allowed = {"legacy", "candidate", "blocked", "worktree", "error"}
         state = result.stdout.strip()
-        return state if result.returncode == 0 and state in allowed else "blocked"
+        return state if result.returncode == 0 and state in allowed else "error"
     except (OSError, subprocess.TimeoutExpired):
-        return "blocked"
+        return "error"
 
 
 def _result_has_error(result: Any, status: Optional[str] = None) -> bool:
@@ -231,6 +227,8 @@ def recall_context(
             serve = serve_preview if route_state == "preview" else serve_selected
             return _with_session_notice(selected_cwd, serve(
                 "recall", "hermes", decision, {"prompt": prompt, "cwd": selected_cwd}))
+        if route_state == "error":
+            return _with_session_notice(_cwd(cwd, **kwargs), None)
         if route_state != "legacy":
             return _with_session_notice(_cwd(cwd, **kwargs), {
                 "context": "[memvane] selected route unavailable; request refused"})
@@ -262,6 +260,10 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
                                     {"hook_event_name": "SessionStart", "cwd": selected_cwd})
             if isinstance(answer, dict):
                 _remember_notice(selected_cwd, answer.get("notice"))
+            return None
+        if route_state == "error":
+            _remember_notice(_cwd(cwd, **kwargs),
+                             '[memvane] 프로젝트 경로를 확인하지 못했습니다. 설정과 접근 권한을 확인한 뒤 다시 시작하세요.')
             return None
         if route_state != "legacy":
             logger.warning("[memvane] selected route unavailable; request refused")

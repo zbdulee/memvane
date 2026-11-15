@@ -44,6 +44,15 @@ class PluginFiles(unittest.TestCase):
 
 
 class NoRoute(FixtureCase):
+    def test_lookup_error_is_quiet_and_session_notice_does_not_offer_onboarding(self):
+        cwd = str(self.home)
+        with mock.patch.dict(os.environ, QUIET), mock.patch.object(bridge, '_laya_route_state', return_value='error'):
+            self.assertIsNone(bridge.recall_context(user_message='q', cwd=cwd))
+            self.assertIsNone(bridge.session_update(cwd=cwd))
+            result = bridge.recall_context(user_message='q', cwd=cwd)
+        self.assertIn('프로젝트 경로를 확인하지 못했습니다', result['context'])
+        self.assertNotIn('온보딩', result['context'])
+
     def test_hooks_do_nothing_for_a_project_without_a_selected_route(self):
         project = self.home / 'project'
         (project / '.memvane').mkdir(parents=True)

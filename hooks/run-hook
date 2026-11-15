@@ -50,8 +50,22 @@ _laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" ||
 trap 'rm -f "$_laya_route_payload"' EXIT
 cat >"$_laya_route_payload" || { echo '[memvane] route payload unavailable' >&2; exit 3; }
 _laya_route_fallback="$PWD"
-_laya_route_state="$(python3 "$_qmd_code_root/entry/run.py" hook-classify "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
+_laya_route_state="$(python3 "$_qmd_code_root/entry/run.py" hook-classify "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=error
 case "$_laya_route_state" in
+  error)
+    if [ "$ACTION" = recall ]; then exit 0; fi
+    if [ "$ACTION" = update-queued ] || [ "$ACTION" = update ]; then
+      _laya_error='[memvane] 프로젝트 경로를 확인하지 못했습니다. 설정과 접근 권한을 확인한 뒤 다시 시작하세요.'
+      if [ "$ENGINE" = codex ]; then
+        printf '%s' "$_laya_error" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
+      else
+        printf '%s\n' "$_laya_error"
+      fi
+      exit 0
+    fi
+    echo '[memvane] route lookup failed; request refused' >&2
+    exit 3
+    ;;
   legacy)
     # No selected route: the project is not onboarded and gets no index,
     # recall, compile or learning work. SessionStart names onboarding once.

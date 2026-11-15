@@ -24,14 +24,35 @@ function setup({ settings = true } = {}) {
   return { fixture, project };
 }
 
-function hook(action, engine, fixture, project) {
+function hook(action, engine, fixture, project, extraEnv = {}) {
   return spawnSync('bash', [join(ROOT, 'hooks', 'run-hook'), action, engine], {
     cwd: ROOT,
     input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: project, prompt: '설정 파일은 어디에 있어?' }),
     encoding: 'utf8', timeout: 60000,
-    env: fixtureEnv(fixture, { QMD_SANDBOX: '', CODEX_SANDBOX: '', CLAUDE_SANDBOX: '', CLAUDE_HEADLESS: '' }),
+    env: fixtureEnv(fixture, { QMD_SANDBOX: '', CODEX_SANDBOX: '', CLAUDE_SANDBOX: '', CLAUDE_HEADLESS: '', ...extraEnv }),
   });
 }
+
+test('a route lookup failure is quiet for recall and explains SessionStart without onboarding', () => {
+  const { fixture, project } = setup();
+  try {
+    const bin = join(fixture.home, 'bin');
+    mkdirSync(bin);
+    const realPython = spawnSync('which', ['python3'], { encoding: 'utf8' }).stdout.trim();
+    writeFileSync(join(bin, 'python3'), '#!/bin/sh\nif [ "$2" = hook-classify ]; then echo error; exit 0; fi\nexec "$REAL_PYTHON" "$@"\n', { mode: 0o700 });
+    const env = { PATH: `${bin}:${process.env.PATH}`, REAL_PYTHON: realPython };
+    for (const engine of ['claude', 'codex']) {
+      const recall = hook('recall', engine, fixture, project, env);
+      assert.equal(recall.status, 0);
+      assert.equal(recall.stdout, '');
+      const session = hook('update-queued', engine, fixture, project, env);
+      assert.equal(session.status, 0);
+      const notice = engine === 'codex' ? JSON.parse(session.stdout).hookSpecificOutput.additionalContext : session.stdout;
+      assert.match(notice, /프로젝트 경로를 확인하지 못했습니다/);
+      assert.doesNotMatch(notice, /온보딩/);
+    }
+  } finally { removeTemp(fixture.home); }
+});
 
 /** Every path under `dir` with its size and mtime: a later write shows as a difference. */
 function tree(dir, found = {}) {

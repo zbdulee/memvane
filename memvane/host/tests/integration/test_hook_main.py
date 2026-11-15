@@ -117,9 +117,17 @@ class UnselectedEntries(FixtureCase):
             import memvane.journal.api as journal
             mock.patch.object(journal, 'select_route', side_effect=LookupError('x')).start()
         ''')
-        # run-hook refuses anything but a known state, so the fault answers legacy.
-        self.assertEqual((code, out), (0, 'legacy\n'), err)
+        self.assertEqual((code, out), (0, 'error\n'), err)
         self.assertIn('route_lookup_failed', err)
+
+    def test_selection_value_error_is_a_lookup_error_not_onboarding(self):
+        code, out, err = run_entry(['hook-classify', 'update-queued', str(self.payload), str(self.project)],
+                                   inject='''
+            import memvane.journal.api as journal
+            mock.patch.object(journal, 'select_route', side_effect=ValueError('synthetic')).start()
+        ''')
+        self.assertEqual((code, out), (0, 'error\n'), err)
+        self.assertNotIn('onboarding', out)
 
     def test_onboarding_notice_names_onboarding_for_a_project_with_settings(self):
         code, out, err = run_entry(['onboarding-notice', str(self.payload), str(self.project)])
