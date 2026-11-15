@@ -120,7 +120,9 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
     if result.semantic_status == 'embedding_set_invalid':
         if main_proof is not None:
             try:
-                _recall_sync_wake(decision['projectRoot'])
+                from memvane.diagnostics.api import vector_damage_seen
+                if not vector_damage_seen(decision):
+                    _recall_sync_wake(decision['projectRoot'])
             except Exception:
                 pass
         vector_fallback = 'selected_embedding_set_invalid'

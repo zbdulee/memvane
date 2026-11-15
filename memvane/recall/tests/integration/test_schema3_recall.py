@@ -59,6 +59,19 @@ class Schema3Recall(RecallInstallCase):
                          ('served', 'embedding_set_invalid', 'selected_embedding_set_invalid'))
         self.assertIn('selected_embedding_set_invalid', err)
         self.assertEqual([kind for kind, _target, _kw in self.wakes], ['laya-sync'])
+        for _ in range(2):
+            again, _err, event = self.recall(PROMPT)
+            self.assertIn('zqheronx', again)
+            self.assertEqual(event['vector_fallback'], 'selected_embedding_set_invalid')
+        self.assertEqual([kind for kind, _target, _kw in self.wakes], ['laya-sync'])
+        from memvane.host.api import serve_selected
+        from memvane.journal.api import select_route
+        decision = select_route(str(self.project), action='update')
+        answer = serve_selected('update-queued', 'claude', decision,
+                                {'cwd': str(self.project), 'hook_event_name': 'SessionStart'})
+        notice = answer['hookSpecificOutput']['additionalContext']
+        self.assertIn('임베딩 데이터가 손상돼 어휘 검색만 씁니다', notice)
+        self.assertIn('restore → setup', notice)
 
     def opened(self, call):
         _OPENED.append([])

@@ -683,6 +683,16 @@ def read(state_root, *, generations: bool = True, max_bytes=_UNRESOLVED, strict=
         os.close(dfd)
 
 
+def vector_damage_seen(decision):
+    """Use existing recall events as the bounded record of a damaged vector set."""
+    root = state_root_for_decision(decision)
+    if root is None:
+        raise ValueError('no_selected_route')
+    return any(row.get('event') == 'recall'
+               and row.get('vector_fallback') == 'selected_embedding_set_invalid'
+               for row in read(root, max_bytes=None, strict=True))
+
+
 # ------------------------------------------------------------ wiki activity
 
 def wiki(state_root, action: str, rel: str, title: str, *, reason=None, install=None) -> bool:

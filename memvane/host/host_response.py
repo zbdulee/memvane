@@ -968,6 +968,18 @@ def _learning_settings_notice(decision, notice, host, payload):
     return notice + '\n' + line if notice else line
 
 
+def _session_health_notice(decision, notice, host, payload):
+    notice = _learning_settings_notice(decision, _wiki_recovery_notice(decision, notice), host, payload)
+    try:
+        if event_log.vector_damage_seen(decision):
+            line = ('[memvane] 임베딩 데이터가 손상돼 어휘 검색만 씁니다. '
+                    '복원 후 다시 온보딩(restore → setup)하면 해결됩니다.')
+            return notice + '\n' + line if notice else line
+    except (OSError, ValueError):
+        pass
+    return notice
+
+
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
@@ -1116,7 +1128,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action == "update-queued":
             _reconcile_registry(decision)
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
-        move_notice = _learning_settings_notice(decision, _wiki_recovery_notice(decision, move_notice), host, payload)
+        move_notice = _session_health_notice(decision, move_notice, host, payload)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":

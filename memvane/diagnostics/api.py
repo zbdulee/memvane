@@ -71,6 +71,11 @@ def wiki_tail(state_root, limit=WIKI_TAIL_CHARS):
     return implementation(state_root, limit)
 
 
+def vector_damage_seen(decision):
+    from memvane.diagnostics.event_log import vector_damage_seen as implementation
+    return implementation(decision)
+
+
 def capture(decision, *, event, reason, exc=None, warning=False, child_stderr=None, consent=None):
     from memvane.diagnostics.diagnostic_trace import capture as implementation
     return implementation(decision, event=event, reason=reason, exc=exc, warning=warning,
