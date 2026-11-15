@@ -379,6 +379,24 @@ def _check_rollback_file(path):
             os.close(fd)
 
 
+def _hot_journal_readonly(exc, path):
+    code = getattr(exc, 'sqlite_errorcode', None)
+    if code is not None:
+        return code == getattr(sqlite3, 'SQLITE_READONLY_ROLLBACK', 776)
+    # Python 3.9 does not expose SQLite's extended error code. A rollback
+    # header plus this SQLite error identifies the deferred recovery case.
+    if str(exc) != 'attempt to write a readonly database':
+        return False
+    try:
+        fd = os.open(str(path) + '-journal', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            return os.read(fd, 8) == bytes.fromhex('d9d505f920a163d7')
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+
+
 def _open(path, *, write):
     if write and _reader_no_recovery.get():
         _fail('reader_journal_read_only')
@@ -404,7 +422,18 @@ def _open(path, *, write):
             _fail('journal_schema_unknown')
         return path, db
     except (OSError, sqlite3.Error) as exc:
+        if not write and isinstance(exc, sqlite3.OperationalError) and _hot_journal_readonly(exc, path):
+            raise JournalEvidenceError('journal_recovery_required') from exc
         raise JournalEvidenceError('journal_unavailable') from exc
+
+
+def recover_hot_journal(decision, owner):
+    """Recover a hot journal only under the selected store's sync owner."""
+    from memvane.runtime.api import validate_sync_owner
+    validate_sync_owner(owner, Path(decision['storePath']))
+    _, db = _open(decision['journalPath'], write=True)
+    db.close()
+    validate_sync_owner(owner, Path(decision['storePath']))
 
 
 def journal_version(journal_path):

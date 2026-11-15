@@ -1,7 +1,7 @@
 """Which install a wake target names: a selected route or a registered initial build.
 
-Read-only. ``app.runtime_dispatch.resolve`` asks before it runs a child; an
-initial-build writer and a preview proof recheck the same answer in-process.
+``app.runtime_dispatch.resolve`` asks before it runs a child; a sync wake
+may recover a hot journal under the sync owner before the proof is read.
 """
 from __future__ import annotations
 
@@ -26,9 +26,21 @@ def dispatch_target(project, *, build):
         # A pointer of another major: only a host of that major serves it.
         raise DispatchTargetError('state_format_mismatch')
     if route.get('state') == 'candidate':
-        from memvane.journal.install_journal import verify_dispatch_target
+        from memvane.journal.install_journal import verify_dispatch_target, recover_hot_journal
         try:
-            proof = verify_dispatch_target(route)
+            try:
+                proof = verify_dispatch_target(route)
+            except ValueError as exc:
+                if not build or str(exc) != 'journal_recovery_required':
+                    raise
+                from memvane.runtime.api import sync_owner
+                with sync_owner(Path(route['storePath']), wait=False) as owner:
+                    if owner is None:
+                        raise DispatchTargetError('owner_busy')
+                    recover_hot_journal(route, owner)
+                proof = verify_dispatch_target(route)
+        except DispatchTargetError:
+            raise
         except (OSError, RuntimeError, ValueError) as exc:
             if str(exc) == 'state_format_mismatch':
                 raise DispatchTargetError('state_format_mismatch') from exc

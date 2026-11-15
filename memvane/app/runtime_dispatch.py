@@ -32,7 +32,7 @@ STABLE_TARGET_FIELDS = ('project', 'installId', 'scopeId', 'storeIncarnation',
 
 
 def resolve(kind, value):
-    """Verify an active route or registered inactive build without executing it."""
+    """Verify a target; a sync wake may recover its journal under the owner."""
     if kind not in KINDS:
         raise DispatchFailure('kind_invalid')
     project = Path(value)

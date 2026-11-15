@@ -46,6 +46,21 @@ class SelectedActions(HostInstallCase):
         self.assertEqual(notice.count('restore 후 setup'), 1)
         self.assertFalse((wiki / '.memvane-root').exists())
 
+    def test_hot_journal_recall_queues_owner_recovery_without_context(self):
+        from memvane.journal.api import dispatch_target
+        from tests.support.sqlite_hot_journal import kill_mid_write
+        journal = self.install.state / 'journal.sqlite'
+        _before, sidecar = kill_mid_write(journal)
+        answer = self.serve('recall', {'prompt': PROMPT, 'hook_event_name': 'UserPromptSubmit'})
+        self.assertEqual(context(answer), '')
+        self.assertEqual(self.wakes.kinds().count('laya-sync'), 1)
+        self.assertTrue(sidecar.exists(), 'the hook must not recover the journal')
+        target = dispatch_target(self.project, build=True)
+        self.assertFalse(target['terminal'])
+        self.assertFalse(sidecar.exists(), 'the sync owner recovers the hot journal')
+        self.assertIn('zqheronx', context(self.serve('recall', {'prompt': PROMPT,
+                                                              'hook_event_name': 'UserPromptSubmit'})))
+
     def edit(self, rel, tool='Write', event='PostToolUse', **response_fields):
         payload = {'hook_event_name': event, 'tool_name': tool,
                    'tool_input': {'file_path': rel, 'content': 'x'}}

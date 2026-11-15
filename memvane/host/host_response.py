@@ -803,6 +803,15 @@ def serve_selected(action: str, host: str, decision: dict, payload: dict) -> dic
                 return _serve_selected_once(action, host, decision, payload)
             return _serve_selected_recall(action, host, decision, payload)
         except JournalEvidenceError as exc:
+            if str(exc) == 'journal_recovery_required' and action == 'recall':
+                try:
+                    from memvane.runtime.api import request
+                    route = decision.get('mainRoute', decision)
+                    request('laya-sync', route['projectRoot'])
+                except (OSError, ValueError, KeyError):
+                    pass
+                _trace_final('journal_recovery_required')
+                return host_payload(host, '')
             if str(exc) == 'selection_transition_pending' and action == 'recall':
                 # An interrupted activate/restore: no context, exit 0.
                 _trace_final('selection_transition_pending')
