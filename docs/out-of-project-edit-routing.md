@@ -20,7 +20,7 @@
 - `verify_notification_target`은 B의 journal·route·번들·봉인된 attestation
   메타데이터를 검증한다. B의 색인·claim DB를 열거나 provider·모델을 실행하지
   않는다. 반환값의 `notificationOnly`는 작업 권한을 부여하지 않는다.
-- 성공한 sync 뒤 B 워커가 `laya_external_edits.drain`을 호출한다. discovery grant가
+- 성공한 sync 뒤 B 워커가 `external_edits.drain`을 호출한다. discovery grant가
   없어도 알림을 읽으며 실제 enqueue 전에 기존 전체 write 증명, 현재 설정과 파일
   버전을 다시 확인한다. 증명이 바뀌면 알림을 남겨 재시도한다.
 
@@ -44,7 +44,7 @@ owner는 현재 blob이 같은 원문만 B의 편집 이벤트 compile 정책으
 편집 호스트를 compile 행에 보존한다. 삭제는 기존 위키 수명 주기에 요청한다.
 원문 소실 판정과 카드 퇴역에는 기존 Git 계보·대량 삭제 가드가 적용된다.
 
-미온보딩·preview·연결 worktree·blocked·bundle drift 대상은 알림을 받지 않는다.
+미온보딩·preview·연결 worktree·blocked 대상은 알림을 받지 않는다.
 숨김 경로·도구 메타데이터·wiki·`skipPaths` 경로·symlink 탈출도 제외한다.
 onboarding never/skip은 안내만 숨기므로 이미 선택된 프로젝트를 비활성화하지 않는다.
 

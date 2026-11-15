@@ -18,7 +18,7 @@
 - 기존 event 4096 bytes/line·4 MiB rotation·0600/no-follow·best-effort 및 host output/exit 계약을 유지한다.
 - 상세 최대 16 KiB, base64 조각 240자 이하·최대 96개. header는 version·ID·count·byte length·SHA-256·truncated를 갖는다.
 - 통합 대상 최대 64개, 총 읽기 최대 16 MiB. registry는 `$XDG_CONFIG_HOME/memvane/log-targets.json` 또는 `~/.config/memvane/log-targets.json`, owner-only·0600·no-follow.
-- 보호 파일 `core/laya_local_embed_provider.py`, `core/laya_local_embed_worker.mjs`, `hooks/hooks-codex.json`, `scripts/development_guard.py`와 resident service·shadow migration 구현을 변경하지 않는다.
+- 보호 파일 `memvane/provider/adapters/local_embed_provider.py`, `memvane/provider/adapters/laya_local_embed_worker.mjs`, `hooks/hooks-codex.json`, `scripts/development_guard.py`와 resident service 구현을 변경하지 않는다.
 - 전역 development guard 사용, 일반 검사는 순차, 리뷰는 검사 종료 뒤 단독. 실제 모델·운영 데이터를 시험에 쓰지 않는다.
 - 각 단위는 base RED와 기존 REG를 남기고 수정 뒤 Python 3.13·3.9 GREEN을 기록한다. 알려진 py3.9 환경 실패와 시간 민감 실패는 계획된 절차대로 분리한다.
 
@@ -32,11 +32,11 @@
 
 ## File Map
 
-- `core/config.py`: `diagnostics.enabled` 정규화와 기존 minimal 설정 보존.
-- `core/event_log.py`, 신규 `core/diagnostic_trace.py`: 동의 판정·유계 예외/경고 캡처·조각 및 연결. 새로운 hook action·wake kind는 만들지 않는다.
-- `core/laya_host_response.py`, `core/hook_main.py`, `core/laya_runtime_dispatch.py`, `core/wiki_compile_worker.py`, `core/laya_bundle_upgrade.py`, `hermes_adapter/core_bridge.py`: 기존 오류·경고 경계에서 진단을 연결한다. resident·shadow는 기존 이벤트 경계에서 정보가 남을 때만 캡처한다.
-- 신규 `core/log_targets.py`, `skills/logs/scripts/logs.py`, `skills/logs/SKILL.md`: 소유자 registry, 안전한 통합 조회와 명시적 상세 표시.
-- 신규 `test/diagnostic-trace.test.mjs`, `test/fixtures/diagnostic-trace-checks.py`, `test/diagnostic-targets.test.mjs`, `test/fixtures/diagnostic-targets-checks.py`; 기존 이벤트·host·worker 테스트를 필요한 범위에서 보강한다.
+- `memvane/settings/config.py`: `diagnostics.enabled` 정규화와 기존 minimal 설정 보존.
+- `memvane/diagnostics/event_log.py`, 신규 `memvane/diagnostics/diagnostic_trace.py`: 동의 판정·유계 예외/경고 캡처·조각 및 연결. 새로운 hook action·wake kind는 만들지 않는다.
+- `memvane/host/host_response.py`, `entry/run.py`, `memvane/app/runtime_dispatch.py`, `memvane/wiki/compile/wiki_compile_worker.py`, `hermes_adapter/core_bridge.py`: 기존 오류·경고 경계에서 진단을 연결한다. resident는 기존 이벤트 경계에서 정보가 남을 때만 캡처한다.
+- 신규 `memvane/registry/log_targets.py`, `skills/logs/scripts/logs.py`, `skills/logs/SKILL.md`: 소유자 registry, 안전한 통합 조회와 명시적 상세 표시.
+- `memvane/diagnostics/tests/run.test.mjs`; 기존 이벤트·host·worker 테스트를 필요한 범위에서 보강한다.
 - `docs/settings.md`, `docs/architecture.md`, 사용자 안내: 현재 동작·보안·운영 설정과 조회를 설명한다.
 
 ## Task 1: opt-in 설정과 동의 주체
@@ -45,8 +45,8 @@
 
 - [ ] RED: minimal/full 설정에서 누락·false·true·문자열 `"true"`·손상·읽기 실패를 검사하고 오직 boolean true만 켜진다고 단정한다. main/linked worktree·stale route·설정 재읽기·진행 중 writer 경계를 시험한다.
 - [ ] 관련 기존 config/route 테스트를 base에서 통과시키고 RED를 실행해 기대 실패를 기록한다.
-- [ ] `core/config.py`, `core/diagnostic_trace.py`에 설정과 fail-closed 동의 판정을 구현한다. route identity·collection digest와 reader 설정 선택은 바꾸지 않는다.
-- [ ] `npm run test:focused -- test/config.test.mjs test/laya-index-host-route.test.mjs test/diagnostic-trace.test.mjs`를 양 Python에서 순차 실행하고 명시 경로만 commit한다. 새 진단 옵션이 collection identity와 reader 설정 봉인을 바꾸지 않는지 확인한다.
+- [ ] `memvane/settings/config.py`, `memvane/diagnostics/diagnostic_trace.py`에 설정과 fail-closed 동의 판정을 구현한다. route identity·collection digest와 reader 설정 선택은 바꾸지 않는다.
+- [ ] `npm run test:focused -- memvane/settings/tests/run.test.mjs memvane/route/tests/run.test.mjs memvane/diagnostics/tests/run.test.mjs`를 양 Python에서 순차 실행하고 명시 경로만 commit한다. 새 진단 옵션이 collection identity와 reader 설정 봉인을 바꾸지 않는지 확인한다.
 
 ## Task 2: 유계 traceback 조각과 복원
 
@@ -55,7 +55,7 @@
 - [ ] RED: 중첩 예외와 warning caller stack에서 type·file·function·line·raw message 및 ID 연결을 확인한다. off·중간 off 전환에서는 원문 sentinel이 이벤트 파일에 없음을 확인한다.
 - [ ] RED: 16 KiB 초과·UTF-8 분할·96개 상한·4096-byte 행·중복/누락/순서/digest 오류·header 유실·rotation을 주입해 `truncated` 또는 `incomplete`를 단정한다. locals·별도 prompt/body는 기록하지 않는다.
 - [ ] 기존 `event_log` REG를 base에서 통과시키고 RED를 기록한다. `capture`는 수집 전과 쓰기 직전에 동의를 확인한다. ID·조각은 기존 event logger와 lock·rotation을 재사용하며 exception code·host 결과에 영향을 주지 않는다.
-- [ ] `npm run test:focused -- test/event-log.test.mjs test/diagnostic-trace.test.mjs`를 양 Python에서 실행, 실수로 수집된 실제 민감 데이터 없이 합성값으로만 검증 후 commit한다.
+- [ ] `npm run test:focused -- memvane/diagnostics/tests/run.test.mjs`를 양 Python에서 실행, 실수로 수집된 실제 민감 데이터 없이 합성값으로만 검증 후 commit한다.
 
 ## Task 3: 오류·경고 경계 연결
 
@@ -65,7 +65,7 @@
 - [ ] RED: sync/compile 자식 비정상 종료에서 기존 tail 4096 bytes의 범위를 명시하고 전체 traceback이라고 주장하지 않는다. exception이 없는 vector/selector fallback은 origin stack, `target_preparing`은 warning, 정상 `no_candidates`·migration gate 대기는 오류가 아니다.
 - [ ] RED: verify·bundle·Hermes 경계에서 실패 예외와 진단 기록 실패를 주입해 원래 처리 결과가 같고 각 예외 체인이 보존됨을 단정한다. resident·shadow의 이미 삼킨 예외는 없음으로 표시한다.
 - [ ] 기존 host/adapter/worker REG를 base에서 기록하고 지정 경계에 최소 연결한다. protected 파일·resident·shadow 구현은 바꾸지 않는다.
-- [ ] `npm run test:focused -- test/event-log.test.mjs test/laya-host-response.test.mjs test/laya-bundle-auto-upgrade.test.mjs test/hermes-plugin-adapter.test.mjs test/diagnostic-trace.test.mjs`를 실제 파일 존재 여부를 확인한 뒤 양 Python에서 실행하고 commit한다.
+- [ ] `npm run test:focused -- memvane/host/tests/run.test.mjs memvane/diagnostics/tests/run.test.mjs`를 실제 파일 존재 여부를 확인한 뒤 양 Python에서 실행하고 commit한다.
 
 ## Task 4: 소유자 registry
 
@@ -74,7 +74,7 @@
 - [ ] RED: 임시 HOME의 9개 합성 설치 등록, alias 동일 install 중복 제거, 요청별 stale·미온보딩·누락·64개 초과를 단정한다. 한 설치가 실패해도 다른 설치는 반환한다.
 - [ ] RED: `XDG_CONFIG_HOME` 경로·owner·mode·symlink·hardlink·변경 경쟁을 주입한다. registry에는 프로젝트 root와 expected install ID 외 메시지·본문이 없다.
 - [ ] registry 쓰기는 owner-only·0600, no-follow, 유계·원자적 업데이트로 구현하고 읽을 때 현재 route와 install binding을 재검증한다. 손상·부분 등록은 명시한다. registry는 각 행이 version·upsert/remove·canonical root·install ID를 담는 유계 UTF-8 JSONL이다. registry 파일 자체의 안정된 inode에 flock을 잡고 유효 행을 append·fsync하며 별도 lock 파일이나 inode 교체는 하지 않는다. 중단으로 마지막 행이 불완전하면 lock 아래 그 꼬리만 제거하고 이전 완전 행을 보존한다. 중간 손상·한도 초과는 fail-closed로 표시하고, 9개 등록은 항목별 결과를 보고해 부분 등록을 숨기지 않는다. 동시 등록과 중단 복구를 합성 fixture로 고정한다.
-- [ ] `npm run test:focused -- test/diagnostic-targets.test.mjs`를 양 Python에서 실행 후 commit한다.
+- [ ] `npm run test:focused -- memvane/diagnostics/tests/run.test.mjs`를 양 Python에서 실행 후 commit한다.
 
 ## Task 5: 통합 조회·원문 공개 경계
 
@@ -83,7 +83,7 @@
 - [ ] RED: 9개 로그를 UTC 시각순으로 합치고 호스트·설치·작업·사유·진단 ID를 보여준다. 16 MiB 예산을 공평하게 나누고 손상·누락·권한 거절을 설치별로 표시한다.
 - [ ] RED: 일반 텍스트·JSON에서 raw sentinel이 없고 상세 요청에서만 복원된다. ANSI·제어 문자는 화면에서 무해하게 인코딩하고 저장 바이트는 변하지 않는다. 부분 조각은 `incomplete`다.
 - [ ] 기존 logs skill REG를 base에서 확인하고 registry·`reassemble`을 연결한다. 자동 추출 wiki tail과 외부 전송에 raw가 들어가지 않게 한다.
-- [ ] `npm run test:focused -- test/event-log.test.mjs test/diagnostic-targets.test.mjs test/diagnostic-trace.test.mjs`를 양 Python에서 실행 후 commit한다.
+- [ ] `npm run test:focused -- memvane/diagnostics/tests/run.test.mjs`를 양 Python에서 실행 후 commit한다.
 
 ## Task 6: 범위 감사·문서·운영 증거
 

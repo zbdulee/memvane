@@ -24,8 +24,8 @@ MemVane은 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
 MemVane injects relevant project wiki context into Claude Code, Codex,
 and Hermes Agent sessions. Install this plugin for your host, then ask the
 `setup` skill to onboard the project onto its memvane-db index. Onboarding reads a
-minimal `.memvane/settings.json` (`{name, skipPaths}`; a project that only has
-`.auto-context/` is read from there), shows reviewed plans, and applies only on
+minimal `.memvane/settings.json` (required `name`; optional `skipPaths`, `diagnostics`,
+`contextLearning`, and `sharedLearning`), shows reviewed plans, and applies only on
 explicit request. Projects that are not onboarded get no indexing, recall,
 compile or learning work; their SessionStart shows one short onboarding notice
 (plus one line of answer commands for the agent) when they have `.memvane/settings.json`. The user can skip that notice for the
@@ -104,13 +104,6 @@ Codex는 `codex plugin marketplace upgrade memvane-marketplace` 후
 `/plugins`에서 설치본을 확인하고 호스트가 제공하는 갱신 절차를 따릅니다.
 새 실행 코드의 훅 신뢰를 다시 검토하세요.
 
-호스트 플러그인이 갱신되면 SessionStart의 백그라운드 작업이 선택된 프로젝트의
-설치를 새 번들로 옮깁니다. 옮기는 동안 검색은 마지막으로 게시된 색인을 읽기
-전용으로 쓰고, 동기화·wiki compile은 업그레이드가 끝날 때까지 기다립니다.
-임베딩 provider가 바뀌어 다시 빌드해야 하면 SessionStart 안내가 그 사유를
-보여 줍니다. 이때는 에이전트에게 안내 내용을 설명하고 다음 단계를 제안해
-달라고 요청하세요.
-
 플러그인 자체를 제거할 때는 호스트의 공식 명령인
 `claude plugin uninstall memvane@memvane-marketplace --scope project`
 또는 `codex plugin remove memvane@memvane-marketplace`를
@@ -118,103 +111,9 @@ Codex는 `codex plugin marketplace upgrade memvane-marketplace` 후
 Codex 설치는 다른 프로젝트에도 영향을 줄 수 있으므로 제거 전에 사용 범위를
 확인하세요.
 
-### `qmd-auto-context` 플러그인에서 옮기기
-
-`qmd-auto-context@qmd-auto-context-marketplace`가 설치된 호스트는 새 플러그인
-`memvane@memvane-marketplace`를 설치하고, 프로젝트를 한 번 연 뒤 이전 플러그인을
-제거합니다. 새 번들은 SessionStart에서 이전 플러그인 id의 번들에 묶인 설치를 일반
-플러그인 업데이트와 같은 경로로 넘겨받습니다. 넘겨받은 route는 이전 번들이 읽지 않는
-형식이라 이전 번들은 그 설치를 되가져가지 못합니다. 대신 제거 전까지 이전 플러그인의
-훅이 그 프로젝트에서 exit 3으로 끝나 훅 오류가 표시됩니다(작업을 막지는 않습니다).
-그래서 넘겨받기를 확인한 직후 이전 플러그인을 제거합니다. 이전 플러그인을 먼저 제거하고
-새 플러그인을 설치해도 됩니다. 그때는 오류 표시가 없고, 새 플러그인이 설치되기 전까지
-그 프로젝트에 recall이 들어가지 않습니다.
-
-```bash
-# Claude Code (프로젝트 범위 설치 예시. 사용자 범위면 --scope를 뺍니다)
-claude plugin marketplace add zbdulee/memvane --scope project
-claude plugin install memvane@memvane-marketplace --scope project
-#   → 대상 프로젝트를 열어 SessionStart 안내로 넘겨받기를 확인합니다
-claude plugin uninstall qmd-auto-context@qmd-auto-context-marketplace --scope project
-claude plugin marketplace remove qmd-auto-context-marketplace
-
-# Codex
-codex plugin marketplace add zbdulee/memvane --sparse .agents/plugins
-codex plugin add memvane@memvane-marketplace
-#   → 대상 프로젝트를 열어 넘겨받기를 확인합니다
-codex plugin remove qmd-auto-context@qmd-auto-context-marketplace
-codex plugin marketplace remove qmd-auto-context-marketplace
-```
-
-Hermes Agent를 쓰면 이전 플러그인부터 제거합니다. 이전 Hermes 플러그인은 새 route를
-읽지 못하고 그 프로젝트의 편집을 막습니다(Claude·Codex의 이전 훅은 오류만 표시하고 막지
-않습니다). 그래서 이전 Hermes 플러그인이 설치돼 있는 동안 새 플러그인은 설치를 넘겨받지
-않고 마지막 색인을 읽기 전용으로 씁니다. SessionStart 안내가 그 사유를 보여 줍니다.
-비활성화만으로는 부족하고 제거해야 합니다.
-
-```bash
-hermes plugins remove qmd-auto-context
-hermes plugins install zbdulee/memvane
-hermes plugins enable memvane
-```
-
-모든 설치의 상태 디렉터리는 `~/.local/state/memvane/<install id>`입니다. 이전
-플러그인이 `~/.local/state/laya/<install id>`에 만든 설치는 그 프로젝트의 다음
-SessionStart 뒤 백그라운드 워커가 같은 볼륨 안에서 `~/.local/state/memvane`으로
-옮깁니다. 옮기는 동안 SessionStart가 안내 한 줄을 보여 주고 검색은 계속 결과를
-돌려줍니다. 공유 디렉터리(`embed-runtime`, `service`, `auto-context`,
-`initial-builds`)는 마지막 설치가 옮겨지고 아무것도 참조하지 않을 때 정리되며, 그때
-`~/.local/state/laya`도 사라집니다. 업데이트 직후 sync가 돌고 있으면 이동은 다음
-세션으로 미뤄집니다. 남은 항목과 사유는 아래 명령으로 보고, 열지 않은 프로젝트까지
-지금 옮기려면 `move-state-roots`를 씁니다. `ROOT`는 설치된 플러그인 캐시
-(예: `~/.claude/plugins/cache/memvane-marketplace/memvane/<버전>`)이며, 저장소
-checkout에서 실행하면 번들 단계가 `host_layout_unknown`으로 거절됩니다.
-
-```bash
-python3 -B "$ROOT/core/setup_entry.py" state-root-status
-python3 -B "$ROOT/core/setup_entry.py" move-state-roots
-```
-
-학습 상태(이전 플러그인 지원 디렉터리의 `live-selection`, `laya-inference`)도
-같은 워커가 한 번 `~/Library/Application Support/memvane`으로 옮깁니다. 옮기는 동안
-resident service가 잠시 멈추고 검색은 lexical 결과를 돌려줍니다. 준비된 local
-selector는 업데이트 뒤 워커가 어댑터 앵커·synthetic attestation·inference 준비를
-다시 돌려 스스로 복구합니다(각 120초 이내). 학습 profile을 승인한 프로젝트는
-앵커가 바뀌면 다시 승인해야 합니다.
-
 ### 프로젝트 폴더 `.memvane/`
 
 프로젝트별 설정·위키 카드·런타임 파일은 프로젝트 루트의 `.memvane/`에 있습니다.
-`.auto-context/`만 있는 선택된 프로젝트는 다음 SessionStart 뒤 백그라운드 워커가
-폴더 이름을 `.memvane/`로 한 번 바꾸고(색인은 다시 임베딩하지 않습니다), 그동안
-검색은 계속 결과를 돌려줍니다. 옮긴 뒤 SessionStart 안내가 보여 주는 대로 이름
-변경을 커밋합니다.
-
-```bash
-git add -A .memvane .auto-context
-```
-
-프로젝트 `.gitignore`에 `.auto-context` 줄이 있으면 같은 안내가 대응하는
-`.memvane/...` 줄을 보여 줍니다. 플러그인은 `.gitignore`를 고치지 않으므로 그 줄을
-직접 추가합니다. 폴더를 옮기기 전 브랜치를 체크아웃하거나 병합해 두 폴더가 함께
-있으면 MemVane은 `.memvane/`를 쓰고, SessionStart 안내가 정리 방법을 알려 줍니다.
-
-### 예전 QMD backend 정리
-
-이전 버전이 설치한 QMD daemon, managed LaunchAgent, 플러그인 QMD runtime과
-공유 store는 소유자가 한 번 정리합니다. Claude와 Codex 호스트 캐시가 모두 이
-버전을 읽고, 모든 설치가 이 번들로 옮겨져 MemVane 임베딩 런타임으로 재증명된 뒤에
-요청하세요.
-
-```text
-예전 QMD backend 정리 계획 보여줘.
-계획대로 정리해줘.
-```
-
-계획은 읽기 전용이며 대상 프로세스·LaunchAgent·폴더와 크기, 정리를 막는
-사유를 보여 줍니다. `~/.cache/qmd`와 `~/.config/qmd`에는 사용자가 직접 쓰는
-QMD 색인·설정·모델 캐시도 들어 있으므로, 이 둘은 별도로 포함을 승인한 경우에만
-지웁니다.
 
 ## 프로젝트에서 켜기
 
@@ -222,8 +121,7 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 프로젝트는 아무 것도 색인하지 않습니다.
 
 온보딩은 `.memvane/settings.json`의 minimal 형식만 읽습니다
-([minimal settings](docs/settings.md#minimal-settings)). `.auto-context/`만 있는
-프로젝트는 그 폴더의 같은 파일을 읽습니다.
+([minimal settings](docs/settings.md#minimal-settings)).
 
 ```json
 {
@@ -234,9 +132,10 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 
 이 형식에서는 프로젝트 루트 전체가 위키 생성 원천이고 검색은 위키만 합니다.
 `.`으로 시작하는 폴더와 `skipPaths`에 걸리는 폴더로는 위키를 만들지 않습니다.
-`.memvane/wiki`의 위키 카드는 검색 대상입니다. 두 키 외의 키가 있으면
-온보딩은 `minimal_settings_required`로 거부하고, 에이전트는 파일을 대신 고치지
-않습니다. 파일이 준비되면 에이전트에게 요청하세요.
+`.memvane/wiki`의 위키 카드는 검색 대상입니다. 허용 키는 필수 `name`과
+선택 항목 `skipPaths`, `diagnostics`, `contextLearning`, `sharedLearning`입니다.
+그 밖의 키나 잘못된 `name`·`skipPaths`는 `minimal_settings_required`로 거부하며,
+에이전트는 파일을 대신 고치지 않습니다. 파일이 준비되면 에이전트에게 요청하세요.
 
 ```text
 이 프로젝트 auto-context 온보딩해줘.
@@ -273,38 +172,30 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 이 프로젝트 MemVane 인덱스 전환을 되돌려줘.
 ```
 
-선택된 색인이 아직 새 쓰기를 받지 않았을 때만 되돌립니다. 이미 새 쓰기가
-있으면 `rollback_forward_only`로 선택이 유지됩니다.
-
-### 새 색인 형식으로의 전환
-
-온보딩된 프로젝트는 백그라운드 동기화가 끝나면 위키 색인을 새 형식으로 조금씩 복사하고,
-복사본의 검색 결과가 기존 색인과 일치하는지 확인합니다. 남은 복사는 30초 간격으로 스스로
-이어 가므로 편집이 없어도 확인까지 진행됩니다. 그동안 검색은 기존 색인을 그대로 씁니다. 확인이 끝난 뒤 같은 플러그인 버전의 Claude Code와 Codex가 이
-프로젝트에서 각각 질문을 한 번 이상 처리하면, 이어지는 동기화가 검색을 새 형식으로 옮깁니다.
-두 호스트가 같은 시간대에 함께 쓰일 필요는 없습니다. 한쪽의 기록은 플러그인 버전과 선택된
-색인이 그대로인 동안 최대 24시간 유효하고, 그 사이 다른 쪽이 질문을 처리하면 됩니다. 두
-호스트 중 하나만 쓰거나 Hermes Agent용 플러그인이 설치된 계정에서는 전환하지 않고 기존 색인을
-계속 씁니다.
-
-상태 확인과 되돌리기도 자연어로 요청합니다.
-
-```text
-색인 전환 상태 보여줘.
-이전 색인 형식으로 되돌려줘.
-```
-
-되돌리면 검색은 전환 시점의 기존 색인으로 돌아가고, 바로 이어지는 동기화가 그 뒤의 변경을
-반영합니다. 파일은 지우지 않습니다. 새 형식을 다시 쓰려면 따로 요청해야 하며, 그때 복사를
-처음부터 다시 합니다. 이 되돌리기는 위의 온보딩 선택 되돌리기와 다른 작업입니다.
+활성화 전이면 준비 중인 설치를 버리고, 활성화 뒤에는 새 쓰기가 있어도 프로젝트의 선택을 해제합니다. 이후 setup으로 다시 온보딩할 수 있습니다. 이전 설치 디렉터리와 색인 DB는 지우지 않습니다.
 
 ### git worktree
 
-새 형식으로 전환된 프로젝트의 git worktree는 그 worktree에 있는 위키 카드로 만든 자기
+온보딩된 프로젝트의 git worktree는 그 worktree에 있는 위키 카드로 만든 자기
 색인을 검색합니다. 이 색인은 main checkout의 백그라운드 동기화가 채웁니다. 처음 연
 worktree나 브랜치를 바꾼 직후에는 그 worktree에서 세션을 시작하거나 파일을 편집해 동기화가
-끝날 때까지 검색 결과가 붙지 않습니다. 전환 전 프로젝트의 worktree는 main checkout의 마지막
-색인을 읽기 전용으로 검색합니다. 위키 생성은 두 경우 모두 main checkout에서만 합니다.
+끝날 때까지 검색 결과가 붙지 않습니다. 위키 생성은 main checkout에서만 합니다.
+
+온보딩이 끝나면 위키 폴더 유지 파일과 설치 포인터가 Git의 추적 대상이 되지
+않도록 프로젝트 `.gitignore`에 다음 세 줄을 추가하세요. 플러그인은 이 파일을
+수정하지 않습니다. 이미 Git이 추적 중인 파일은 별도로 추적을 해제해야 합니다.
+
+```gitignore
+.memvane/route.json
+.memvane/selection.json
+.memvane/wiki/.memvane-root
+```
+
+`.memvane/wiki/.memvane-root`가 추적되지 않은 상태여야 브랜치 전환 시 위키
+폴더가 유지됩니다. 프로젝트 폴더를 옮기거나 이름을 바꿨다면, 이전 설치를
+복원하려면 원래 위치로 되돌린 뒤 restore를 요청하고, 다시 옮겨 온보딩하세요. 이동한 위치에서 바로
+다시 온보딩하려면 그 폴더의 `.memvane/route.json`과 `.memvane/selection.json`을
+삭제한 뒤 setup을 요청하세요. 이 경우 이전 설치의 state는 남습니다.
 
 ## 에이전트에서 쓰는 흐름
 
@@ -318,6 +209,10 @@ worktree나 브랜치를 바꾼 직후에는 그 worktree에서 세션을 시작
 
 검색 결과가 없으면 훅은 컨텍스트 없이 끝납니다. 선택된 경로의 증명이 실패하면
 훅은 다른 검색 경로로 넘어가지 않고 실패로 끝납니다.
+provider 또는 worker 파일의 해시가 맞지 않으면 게시된 색인을 어휘 검색으로 제공하고,
+SessionStart에서 기존 설치를 복원한 뒤 다시 온보딩하도록 안내합니다.
+임베딩 데이터가 손상된 경우에도 해당 view는 어휘 검색으로 답합니다. SessionStart의
+안내에 따라 restore 후 setup으로 다시 온보딩하면 새 색인을 만들 수 있습니다.
 
 ## 편집 전 gate
 
@@ -358,11 +253,9 @@ minimal settings로 색인 활성화가 끝난 프로젝트는 다음 세션 시
 처음 성공한 CLI를 생성·검증 엔진으로 기록합니다. 별도 시험 프롬프트는 보내지 않습니다.
 실패한 시도도 run당 추출 호출 예산에 포함됩니다. 예산이 중간에 끝나면 같은
 소스 지문과 시도한 CLI 목록을 큐에 보존하고 다음 run에서 남은 CLI만 이어갑니다.
-같은 엔진의 검증은
-`self`로 기록하며, 명시적으로 설정한 교차 엔진 검증 정책은 별도로 유지됩니다.
+같은 엔진의 검증은 `self`로 기록합니다.
 모델은 각 CLI의 기본 선택을 사용합니다. 추론 강도 제어를 지원하지 않는 Hermes
 adapter에서는 `low` 요청과 지원 불가 사실을 기록하며 실제 적용을 주장하지 않습니다.
-legacy 설정에서 세션 시작·동기화 trigger를 명시적으로 끈 경우에는 그 선택을 따릅니다.
 
 진행은 “초기 위키 생성 진행 상태 보여줘”처럼 로그 확인을 요청하면 볼 수 있습니다.
 `wiki.backfill`의 `pending`은 미투입, `dispatched`는 큐에서 처리 중,
@@ -374,8 +267,9 @@ legacy 설정에서 세션 시작·동기화 trigger를 명시적으로 끈 경�
 유료 호출을 반복하지 않습니다. 이후 명시적인 소스 이벤트나 수동 재시도로 다시
 시도할 수 있습니다.
 
-`.memvane/wiki`에는 카드만 있습니다. 카드 작성 규칙은 플러그인 번들의
-`core/wiki_card_rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
+`.memvane/wiki`에는 카드와 Git에서 추적하지 않는 폴더 유지 파일이 있습니다.
+카드 작성 규칙은 플러그인 번들의
+`memvane/wiki/card/rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
 생성·수정·삭제 기록은 설치 state 디렉터리 이벤트 로그(`events.jsonl`)의 `wiki`
 이벤트입니다. 이전 버전이
 만든 `SCHEMA.md`·`index.md`·`log.md`가 wiki 루트에 남아 있어도 카드로 취급하지
@@ -385,9 +279,8 @@ legacy 설정에서 세션 시작·동기화 trigger를 명시적으로 끈 경�
 `.agents`, `.claude`, `.codex`, `.github`, `.memvane`처럼 점으로 시작하는
 도구/메타데이터 경로는 자동 compile 대상에서 제외됩니다.
 
-자동 검증이 실패하면 기본 설정에서는 해당 생성 문서를 삭제합니다. 검증기가
-없거나 timeout이 나거나 판단이 불확실한 경우에는 큐나 `generated` 상태가
-보존됩니다. `generated` 카드처럼 자동 신뢰 조건(`status: verified`,
+선택된 색인에서 자동 검증이 실패하거나 판단이 불확실해도 카드 파일은 삭제하지
+않습니다. 검증기가 없거나 timeout이 나면 큐나 `generated` 상태가 보존됩니다. `generated` 카드처럼 자동 신뢰 조건(`status: verified`,
 `createdBy: memvane` 또는 이전 플러그인 이름 `qmd-auto-context`, 비어 있지 않은 `sourceRevisions`)을 갖추지 못한
 카드는 `recallVerifiedOnly` 값과 관계없이 recall에 주입되지 않습니다.
 
@@ -403,9 +296,7 @@ legacy 설정에서 세션 시작·동기화 trigger를 명시적으로 끈 경�
 | `이 질문에 어떤 문서가 recall되는지 확인해줘.` | recall 결과 확인 |
 | `인덱스 새로고침해줘.` | 선택된 색인의 전체 스캔 동기화 큐잉 |
 | `MemVane 임베딩 런타임 상태 보여줘.` | 임베딩 런타임 확인·준비·정리 |
-| `예전 QMD backend 정리 계획 보여줘.` | 예전 QMD backend 정리 점검 |
-| `MemVane 로그 보여줘.` / `왜 recall이 비었는지 로그 확인해줘.` | 설치 이벤트 로그 요약(recall·오류·업그레이드) |
-| `색인 전환 상태 보여줘.` / `이전 색인 형식으로 되돌려줘.` | 새 색인 형식 전환 상태 확인·명시적 되돌리기 |
+| `MemVane 로그 보여줘.` / `왜 recall이 비었는지 로그 확인해줘.` | 설치 이벤트 로그 요약(recall·오류·동기화) |
 
 ## 문제 해결
 
@@ -415,7 +306,7 @@ legacy 설정에서 세션 시작·동기화 trigger를 명시적으로 끈 경�
 
 - 프로젝트가 아직 온보딩되지 않음
 - 확인하려는 변경이 아직 게시된 색인에 반영되지 않음
-- 새 색인 형식으로 전환된 프로젝트의 git worktree에서 그 worktree 색인이 아직 채워지지 않음
+- 프로젝트의 git worktree에서 그 worktree 색인이 아직 채워지지 않음
 - 검색 결과가 필터를 통과하지 못함
 - sandbox/headless 환경이라 훅이 비활성화됨
 

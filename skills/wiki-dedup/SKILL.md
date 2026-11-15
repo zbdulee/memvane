@@ -5,9 +5,8 @@ description: Use when the user asks to clean up, dedupe, merge, or consolidate n
 
 # Wiki Dedup
 
-Drain `.memvane/compile/dedup-needed.jsonl` (`.auto-context/compile/` in a project without
-`.memvane/`) — pairs of **already-existing** wiki pages that
-`core/wiki_dedup_scan.py`'s retroactive scan found similar enough (cosine similarity of 0.9 or more
+Drain `.memvane/compile/dedup-needed.jsonl` — pairs of **already-existing** wiki pages that
+`memvane/wiki/dedup/wiki_dedup_scan.py`'s retroactive scan found similar enough (cosine similarity of 0.9 or more
 between the cards' stored memvane-db vectors) to be worth consolidating. The scan runs in the background
 after SessionStart and source edits on a selected project and only fills the queue; this skill is
 the one entry point that drains it.
@@ -22,7 +21,7 @@ each queued pair autonomously.
 
    ```bash
    ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(git rev-parse --show-toplevel)}}"
-   DIR="$PWD/.memvane"; [ -d "$DIR" ] || DIR="$PWD/.auto-context"
+   DIR="$PWD/.memvane"
    cat "$DIR/compile/dedup-needed.jsonl" 2>/dev/null
    ```
 
@@ -37,7 +36,7 @@ each queued pair autonomously.
 
    - **Claude Code**: spawn the bundled agent with the Agent tool, `subagent_type:
      'memvane:wiki-dedup-resolver'`. Its system prompt already carries the full workflow
-     (run-lock, cluster handling, fold-then-delete, `core/wiki_dedup_resolve.py` calls) — just tell
+     (run-lock, cluster handling, fold-then-delete, `memvane/wiki/dedup/wiki_dedup_resolve.py` calls) — just tell
      it the target project root and the plugin root (`$ROOT`).
    - **Codex / Hermes Agent** (no bundled agent-role field in their manifests): read the workflow
      block (delimited by the WORKFLOW start/end markers) out of `"$ROOT/agents/wiki-dedup-resolver.md"`
@@ -51,8 +50,8 @@ each queued pair autonomously.
 ## Safety
 
 - Read-only for the queue in step 1 (`cat` and claimed-file existence check); every mutation goes through the resolver's
-  `core/wiki_dedup_resolve.py` calls — never edit the queue file or the resolver scripts directly.
-- The resolver acquires a per-project run-lock (`~/.local/state/memvane/auto-context/dedup-resolve-lock/<project_key>`);
+  `memvane/wiki/dedup/wiki_dedup_resolve.py` calls — never edit the queue file or the resolver scripts directly.
+- The resolver acquires a per-project run-lock (`~/.local/state/memvane/v1/auto-context/dedup-resolve-lock/<project_key>`);
   if one is already active it will stop on its own. Don't bypass it by editing pages by hand.
 - Cards with `status: generated` (unreviewed) are valid targets — the resolver handles them.
 - For a selected MemVane project, the resolver CLI keeps a private copy of each

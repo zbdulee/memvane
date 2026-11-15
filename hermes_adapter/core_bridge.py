@@ -2,7 +2,7 @@
 
 This module is intentionally thin: it adapts Hermes hook callback shapes to the
 same JSON payloads used by Claude/Codex dispatchers and hands them to
-core/laya_host_response.py. A project without a selected Laya route gets no
+memvane/host/host_response.py. A project without a selected Laya route gets no
 work; index, recall, compile and learning logic stays in core/.
 """
 
@@ -11,11 +11,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+_PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+if str(_PLUGIN_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_ROOT))
 
 logger = logging.getLogger(__name__)
 
@@ -78,35 +83,39 @@ def _is_noop_env() -> bool:
 
 def _laya_route_state(action: str, cwd: str) -> str:
     """Read the installed adapter's own selector before any QMD side effect."""
-    selector = Path(__file__).resolve().parent.parent / "core" / "laya_index_host_route.py"
+    selector = _PLUGIN_ROOT / "entry" / "run.py"
     try:
         if action == "recall":
-            # Only the hook classifier distinguishes an upgrade fence from an
-            # ordinary blocked route. Its event file has the same bounded
-            # payload contract as the command-hook dispatcher.
+            # Recall uses the same bounded payload as the command-hook dispatcher.
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as payload:
                 json.dump({"cwd": cwd}, payload)
                 payload.flush()
                 result = subprocess.run(
-                    [sys.executable, str(selector), "classify-hook", action,
+                    [sys.executable, str(selector), "hook-classify", action,
                      payload.name, cwd],
                     stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                    # Recall classification may wait up to 1.5s for an
-                    # upgrade fence, in addition to Python process startup.
                     timeout=3.0, env=_env(), check=False,
                 )
-            allowed = {"legacy", "candidate", "preview", "blocked", "worktree", "upgrading", "reader"}
+            allowed = {"legacy", "candidate", "preview", "blocked", "worktree", "error"}
         else:
             result = subprocess.run(
                 [sys.executable, str(selector), "classify", action, cwd],
                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
                 timeout=2.0, env=_env(), check=False,
             )
-            allowed = {"legacy", "candidate", "blocked", "worktree"}
+            allowed = {"legacy", "candidate", "blocked", "worktree", "error"}
         state = result.stdout.strip()
-        return state if result.returncode == 0 and state in allowed else "blocked"
+        if state == 'blocked':
+            match = re.search(r'\[memvane\] route_blocked: ([a-z0-9_]{1,80})\b', result.stderr)
+            if match:
+                notice = '[memvane] route_blocked: ' + match.group(1)
+                if action == 'update':
+                    _remember_notice(cwd, notice)
+                else:
+                    logger.warning(notice)
+        return state if result.returncode == 0 and state in allowed else "error"
     except (OSError, subprocess.TimeoutExpired):
-        return "blocked"
+        return "error"
 
 
 def _result_has_error(result: Any, status: Optional[str] = None) -> bool:
@@ -166,18 +175,20 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
         return
     token = None
     try:
-        import event_log
-        import diagnostic_trace
+        from memvane.diagnostics import api as event_log
+        from memvane.diagnostics import api as diagnostic_trace
         token = event_log.bind(decision=decision, host="hermes")
         reason = None
         try:
-            from laya_host_response import _refusal_code
-            reason = _refusal_code(exc)
+            from memvane.host.api import refusal_code
+            reason = refusal_code(exc)
         except Exception:
             reason = "unexpected_exception"
         try:
+            from memvane.settings.api import diagnostic_enabled
             diagnostic_id = diagnostic_trace.capture(
-                decision, event="recall.selected", reason=reason, exc=exc)
+                decision, event="recall.selected", reason=reason, exc=exc,
+                consent=diagnostic_enabled)
         except Exception:
             diagnostic_id = None
         fields = {"diagnostic_id": diagnostic_id} if diagnostic_id else {}
@@ -192,7 +203,7 @@ def _log_recall_failure(decision: Any, exc: BaseException) -> None:
     finally:
         if token is not None:
             try:
-                import event_log
+                from memvane.diagnostics import api as event_log
                 event_log.unbind(token)
             except Exception:
                 pass
@@ -212,51 +223,21 @@ def recall_context(
             return None
         prompt = user_message or kwargs.get("message") or ""
         route_state = _laya_route_state("recall", _cwd(cwd, **kwargs))
-        if route_state == 'reader':
-            selected_route = True
-            core = Path(__file__).resolve().parent.parent / 'core'
-            if str(core) not in sys.path:
-                sys.path.insert(0,str(core))
-            from laya_host_response import serve_endpoint_recall
-            selected_cwd = _cwd(cwd, **kwargs)
-            return _with_session_notice(selected_cwd, serve_endpoint_recall(
-                'hermes', {'prompt':prompt,'cwd':selected_cwd}, cwd=selected_cwd))
-        if route_state == "upgrading":
-            return None
         if route_state in ("candidate", "worktree", "preview"):
             selected_route = True
             # The installed core rechecks the route and the installer-owned
             # journal before opening the selected DB. Never start QMD here.
-            core = Path(__file__).resolve().parent.parent / "core"
-            if str(core) not in sys.path:
-                sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
-            from laya_host_response import (serve_selected, serve_preview,
-                                            _upgrade_recall_notice, _refusal_code)
+            from memvane.journal.api import select_route
+            from memvane.host.api import serve_selected, serve_preview
             selected_cwd = _cwd(cwd, **kwargs)
             decision = select_route(selected_cwd, action="recall")
             if decision.get("state") != route_state:
-                import laya_fresh_wiki_origin as fresh
-                if fresh.upgrade_fenced(selected_cwd):
-                    from laya_index_host_route import select_route_settled
-                    hinted = select_route_settled(selected_cwd, action='recall')
-                    if hinted.get('state') == 'reader':
-                        from laya_host_response import serve_endpoint_recall
-                        route_state = 'reader'
-                        return _with_session_notice(selected_cwd, serve_endpoint_recall(
-                            'hermes', {'prompt': prompt, 'cwd': selected_cwd}, cwd=selected_cwd))
-                if _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
-                                           'selected_route_changed') is not None:
-                    return None
                 return {"context": "[memvane] selected route changed; request refused"}
-            if os.environ.get('MEMVANE_BRIDGE_PREFLIGHT'):
-                from laya_bridge_readiness import registered_response
-                challenge = registered_response({'prompt': prompt}, 'hermes', decision, core.parent)
-                if challenge is not None:
-                    return {'context': json.dumps(challenge)}
             serve = serve_preview if route_state == "preview" else serve_selected
             return _with_session_notice(selected_cwd, serve(
                 "recall", "hermes", decision, {"prompt": prompt, "cwd": selected_cwd}))
+        if route_state == "error":
+            return _with_session_notice(_cwd(cwd, **kwargs), None)
         if route_state != "legacy":
             return _with_session_notice(_cwd(cwd, **kwargs), {
                 "context": "[memvane] selected route unavailable; request refused"})
@@ -267,16 +248,6 @@ def recall_context(
         # Rechecking is read-only; even if the marker changes, no QMD path ran.
         if selected_route:
             _log_recall_failure(decision, exc)
-            try:
-                from laya_host_response import _upgrade_recall_notice, _refusal_code
-                selected_cwd = _cwd(cwd, **kwargs)
-                if route_state != 'reader' and not getattr(exc, '_memvane_reader_attempted', False) and _upgrade_recall_notice({'cwd': selected_cwd}, selected_cwd,
-                                           _refusal_code(exc)) is not None:
-                    return None
-            except Exception:
-                # A broken core cannot escape the hook through its optional
-                # upgrade diagnostic; unproved failures keep the refusal.
-                pass
             return {"context": "[memvane] selected proof or query failed; request refused"}
     return None
 
@@ -290,11 +261,8 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
         route_state = _laya_route_state("update", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            core = Path(__file__).resolve().parent.parent / "core"
-            if str(core) not in sys.path:
-                sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
-            from laya_host_response import serve_selected
+            from memvane.journal.api import select_route
+            from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             answer = serve_selected("update-queued", "hermes",
                                     select_route(selected_cwd, action="update-queued"),
@@ -302,22 +270,12 @@ def session_update(cwd: Optional[str] = None, **kwargs: Any) -> None:
             if isinstance(answer, dict):
                 _remember_notice(selected_cwd, answer.get("notice"))
             return None
+        if route_state == "error":
+            _remember_notice(_cwd(cwd, **kwargs),
+                             '[memvane] 프로젝트 경로를 확인하지 못했습니다. 설정과 접근 권한을 확인한 뒤 다시 시작하세요.')
+            return None
         if route_state != "legacy":
-            # A project folder that needs the owner or is moving to .memvane/
-            # requests the upgrade worker here, as the command hooks do.
-            notice = None
-            try:
-                core = Path(__file__).resolve().parent.parent / "core"
-                if str(core) not in sys.path:
-                    sys.path.insert(0, str(core))
-                from laya_index_host_route import project_dir_notice_for
-                notice = project_dir_notice_for(_cwd(cwd, **kwargs))
-            except Exception as exc:  # pragma: no cover - hook isolation
-                logger.debug("memvane project folder notice failed: %s", exc)
-            if notice:
-                _remember_notice(_cwd(cwd, **kwargs), notice)
-            else:
-                logger.warning("[memvane] selected route unavailable; request refused")
+            logger.warning("[memvane] selected route unavailable; request refused")
         # Not onboarded: no index work. Hermes has no SessionStart notice channel.
     except Exception as exc:  # pragma: no cover - hook isolation
         logger.debug("memvane session update failed: %s", exc)
@@ -342,11 +300,8 @@ def pre_edit_gate(
         route_state = _laya_route_state("gate", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            core = Path(__file__).resolve().parent.parent / "core"
-            if str(core) not in sys.path:
-                sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
-            from laya_host_response import serve_selected
+            from memvane.journal.api import select_route
+            from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
             decision = select_route(selected_cwd, action="gate")
@@ -389,11 +344,8 @@ def post_edit_sync(
         route_state = _laya_route_state("posttool", _cwd(cwd, **kwargs))
         if route_state in ("candidate", "worktree"):
             selected_route = True
-            core = Path(__file__).resolve().parent.parent / "core"
-            if str(core) not in sys.path:
-                sys.path.insert(0, str(core))
-            from laya_index_host_route import select_route
-            from laya_host_response import serve_selected
+            from memvane.journal.api import select_route
+            from memvane.host.api import serve_selected
             selected_cwd = _cwd(cwd, **kwargs)
             core_tool, tool_input = mapped
             serve_selected("posttool", "hermes",

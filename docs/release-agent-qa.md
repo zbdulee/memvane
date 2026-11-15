@@ -44,13 +44,13 @@ transfers to a different artifact hash. Batch fixes before final QA, then run
 the exact installed identity/core smoke and only the affected scenario
 assertions under section 11. Do not launch a separate model turn for each ID
 when one trace proves several. No data-safety row is waived by this economy:
-LI-MIG, LI-RECOVER, LI-COEXIST and RQA-INST-04 remain mandatory.
+All applicable data-safety rows remain mandatory.
 
 ## 1. Source verification and installed-candidate QA are separate
 
 | Level | What runs | Can it satisfy this gate? |
 |---|---|---|
-| L0 source verification | `npm test`, focused tests, synthetic fixtures, direct `core/*.py` calls in the source checkout | **No.** L0 is a prerequisite only (see [release.md](release.md)). |
+| L0 source verification | `npm test`, focused tests, synthetic fixtures, direct `entry/` maintainer calls in the source checkout | **No.** L0 is a prerequisite only (see [release.md](release.md)). |
 | L1 installed-candidate QA (this gate) | Host marketplace install of the exact candidate, then fresh host sessions in which the real hooks fire, with natural-language requests and exposed skills | Yes. This is the only level that counts. |
 
 Hook-path evidence cannot be replaced by a direct script call. A cached plugin
@@ -61,7 +61,7 @@ Operator rules:
 
 - Product interaction uses natural-language requests or the exposed skills
   (`setup`, `query`, `update`, `wiki-compile`). The
-  operator must not run `core/*` or `skills/*/scripts/*` directly to make a
+  operator must not run `entry/*` or `skills/*/scripts/*` directly to make a
   scenario progress. Doing so invalidates
   that scenario's run. The scenario must restart from its preconditions.
 - Outside the product, the operator may do only three kinds of work: actions
@@ -134,13 +134,10 @@ Operator rules:
   Do not set test-only
   variables such as `QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE` or
   `QMD_SANDBOX`. If any is present, the run is
-  invalid. `LAYA_QA_SYNC_BARRIER` is allowed only in the RQA-RACE-01 Part B
-  session, with that part's arm file. In any other scenario it invalidates
-  the run.
+  invalid.
 - **Fresh session.** A host process started after the candidate install and
   host reload completed, with its working directory equal to the scenario's
-  checkout. Sessions that predate the install are "old sessions" and appear
-  only in RQA-INST-02.
+  checkout.
 
 ### Preflight before functional QA
 
@@ -222,6 +219,8 @@ Run hashing from the source checkout through the shared development lock:
 `npm run dev:guard -- --kind hash -- bash "$EVID/identity.sh"`. Record each
 output file's SHA-256 in `$EVID/evidence-index.sha256`.
 
+The artifact manifest digest below is a QA evidence identifier, not a runtime attestation.
+
 Candidate identity (Git 2.36+ for `--format`):
 
 ```bash
@@ -249,7 +248,7 @@ diff "$EVID/candidate-blobs.txt" "$EVID/installed-blobs-$HOST.txt" > "$EVID/iden
 - Every tracked path must match: same blob id, same executable bit.
 - Any extra file must be named in the run record's host-metadata allowlist
   with a justification. Extra files must not be executable, hook-related or
-  under `core/`, `hooks/`, `skills/`, `locks/` or `hermes_adapter/`. A
+  under `memvane/`, `entry/`, `hooks/`, `skills/`, `locks/` or `hermes_adapter/`. A
   symlink difference is shown in the diff and must be explained.
 - Also record the host-reported plugin version and commit. For Claude Code,
   this is the installed-plugin registry entry; for Codex, the plugin list.
@@ -349,9 +348,9 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 | T_LATE | T_FRESH + 120 s | Recheck that a late worker did not republish stale results |
 | T_GIT | 30 s | Each fixture helper action (enforced by the helper) |
 | T_INSTALL | 30 min | Install or update: plan, prepare and apply on the fixture |
-| T_ROLLBACK | 10 min | Rollback, or a recovery status request |
+| T_RESTORE | 10 min | Release an installation selection or request recovery status |
 | T_WIKI | 15 min | Compile and verify of one source revision |
-| T_SCENARIO | 45 min (60 min for RQA-INST-02/04, RQA-RES-02) | Whole scenario |
+| T_SCENARIO | 45 min (60 min for RQA-RES-02) | Whole scenario |
 | T_CELL | 8 h | One matrix cell |
 
 - Exceeding a timeout because of product behavior is `FAIL`.
@@ -362,13 +361,13 @@ scenario's installation, sync, freshness, scope, backup or recovery checks.
 
 ## 8. Fixture
 
-Use [`test/fixtures/release-qa-fixture.py`](../test/fixtures/release-qa-fixture.py).
+Use [`tests/support/release_qa_fixture.py`](../tests/support/release_qa_fixture.py).
 It is an operator tool only; it never runs QA itself.
 
 - **Location.** It writes only below a caller-provided new or empty directory
   under `/tmp` or the current workspace. It refuses a location inside host or
   runtime state, and one whose ancestors hold MemVane project settings (upward
-  config discovery would contaminate opt-in). Prefer `/tmp`.
+  config discovery would contaminate opt-in; refusal `ancestor_has_memvane_config`). Prefer `/tmp`.
 - **Git isolation.** Git runs with fixture-local config, an empty fixture-local
   `core.hooksPath` and the file protocol only. That local config persists, so
   an agent's own Git commands inside the fixture also skip the QA account's
@@ -378,10 +377,10 @@ It is an operator tool only; it never runs QA itself.
   only after it verifies the owner marker.
 
 ```bash
-python3 -B test/fixtures/release-qa-fixture.py create  /tmp/qmd-rqa-<runId>-<host>-<scenario>
-python3 -B test/fixtures/release-qa-fixture.py show    <fixture>              # tokens and event log
-python3 -B test/fixtures/release-qa-fixture.py stage   <fixture> <action>     # simulated user action
-python3 -B test/fixtures/release-qa-fixture.py cleanup <fixture>
+python3 -B tests/support/release_qa_fixture.py create  /tmp/qmd-rqa-<runId>-<host>-<scenario>
+python3 -B tests/support/release_qa_fixture.py show    <fixture>              # tokens and event log
+python3 -B tests/support/release_qa_fixture.py stage   <fixture> <action>     # simulated user action
+python3 -B tests/support/release_qa_fixture.py cleanup <fixture>
 ```
 
 **Layout.**
@@ -518,131 +517,16 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
   - Keep the install for later scenarios, or restore the clean state before
     the next host.
 
-### RQA-INST-02 Update from the previous release
-
-- **Purpose:** prove that a real update from release N-1 to the candidate
-  preserves data and old sessions, and ends routed to the candidate.
-- **Owner:** install. **Hosts:** Claude Code, Codex.
-- **Preconditions:**
-  - Clean state.
-  - The previous public release (N-1) is installed from the public
-    marketplace, with its identity recorded per section 5.
-  - The fixture was onboarded and selected under N-1. Record the selected file,
-    installed identity and consistent backup before updating; N-1 need not
-    auto-inject or answer a token found only in the raw source.
-  - The RQA-INST-03 preparation steps are done.
-- **Steps:**
-  1. Keep one N-1 session open (the "old session").
-  2. Update the plugin to the candidate through the host's update flow.
-     Reload as the host requires.
-  3. In the old session, probe Q-alpha. Record the behavior: old code may
-     still answer. Expected: no crash, no hook failure, no corruption.
-  4. Start a fresh session. Expected: at most one notice. The SessionStart
-     worker moves the fixture's install to the candidate bundle by itself;
-     until it finishes, search serves the last published index read-only and
-     the notice names the reason.
-  5. Wait for the bundle upgrade to finish. Do not run the `upgrade-*`
-     actions. A `provider_changed_rebuild_required`, `older_host_bundle` or
-     marketplace source refusal is recorded as reported.
-  6. Run RQA-ID-00 against the candidate.
-  7. Start a fresh session and probe Q-alpha.
-- **Expected:**
-  - The installed identity equals the candidate.
-  - Sync, compile and index wakes wait while the bundle upgrade is pending.
-  - After update, verify a current wiki card and its source locator on the
-    selected Laya route. A raw-only `ALPHA_MAIN` token is absent from Laya
-    results.
-  - Settings, wiki and index preserved (RQA-INST-03).
-  - The old session caused no damage.
-- **Evidence:** both identities, notices, upgrade status, probes.
-- **Timeout:** 60 min.
-- **Cleanup/recovery:** same as RQA-INST-01. The state carries over to
-  RQA-INST-03 and RQA-INST-04.
-
 ### RQA-INST-03 Settings preservation
 
-- **Purpose:** an update or migration must never drop or rewrite user
-  decisions.
-- **Owner:** install. Settings are owned by the project and user.
-- **Hosts:** Claude Code, Codex.
-- **Preconditions:** under N-1, before the update in RQA-INST-02:
-  1. As the user, add an entry to A's `skipPaths`. Expected: the route stays
-     selected (only a changed `name` blocks it as `route_settings_changed`).
-  2. Create a second fixture B and leave it without `.memvane/`.
-  3. Record the settings bytes, SHA-256 and canonical JSON for A, the
-     absence of `.memvane/` in B, and the wiki file hashes for A.
-  4. Record N-1's on-disk format/version markers and representative index,
-     wiki and install-journal identities before update. Use actual N-1 output,
-     not a hand-written imitation of the old format.
-- **Steps:**
-  1. After RQA-INST-02 completes, re-read A's settings and wiki hashes.
-  2. Start a fresh session in B and probe Q-alpha.
-- **Expected:**
-  - A's settings are byte-identical, or differ only by a migration that the
-    release notes document and that keeps every user value.
-  - A's wiki bytes are unchanged.
-  - Every prior-format index and install-journal record is either readable
-    by the candidate or migrated through a documented path with no lost
-    source identity. Record the before/after format and any
-    migration receipt. A fresh install alone cannot satisfy this check.
-  - B stays silent: no notice, nothing is injected, and no `.memvane/`
-    is created.
+- **Purpose:** onboarding preserves the user's settings and wiki.
+- **Owner:** install. **Hosts:** Claude Code, Codex.
+- **Preconditions:** record fixture A's settings bytes and wiki hashes; create fixture B without `.memvane/`.
+- **Steps:** onboard A, re-read its settings and wiki hashes, then start a fresh session in B.
+- **Expected:** A's settings and wiki bytes are unchanged. B receives no injected context and no `.memvane/` directory is created.
 - **Evidence:** before/after hashes and diff, B's session transcript.
 - **Timeout:** 20 min.
 - **Cleanup:** clean up fixture B.
-
-### RQA-INST-04 Rollback and recovery
-
-- **Purpose:** check the recovery contract of the Laya selection: preserve
-  old data, restore only before the first selected write, recover forward
-  afterwards, and never report an interrupted setup as complete.
-- **Owner:** install. **Hosts:** Claude Code, Codex.
-- **Preconditions:** RQA-INST-02 state. Record the selected route, index
-  origin status, and hashes of settings, wiki and source before applying.
-  Keep an old session.
-
-**Part A: restore and forward recovery.**
-
-1. Request the official restore of this project's Laya selection
-   ("MemVane 인덱스 전환을 되돌려줘") **before** its first selected write.
-   Expected: only the route file this selection published is withdrawn, the
-   candidate stores, ledger and marker remain intact, and a fresh session no
-   longer serves that route. After a selected write, restore reports
-   `blocked` with `rollback_forward_only` and the route stays selected;
-   owned forward recovery must work. Distinct LI-RECOVER assertions may reuse
-   the same receipts. Never delete the retained selection marker.
-2. Recheck pre-apply settings/wiki/source hashes, selected route, status and
-   Q-alpha in a fresh session.
-3. Host-level downgrade: if the host can pin N-1, reinstall N-1 and open a
-   fresh session. Expected: no hook failure, and either a working state or
-   one notice. If the host cannot pin a version, mark this step `NOT RUN`
-   with the reason.
-
-**Part B: interrupted activation.**
-
-1. Use a fresh fixture C with minimal settings and a sealed, finalized build
-   (RQA-INST-01 steps 4–6 up to activation).
-2. Ask "인덱스 활성화해줘" and stop the process executing that setup request
-   abruptly. Do not signal an unrelated shared worker or plugin child.
-   Stopping the entire host is a distinct integration observation, required
-   to claim host interruption. Record which process was stopped.
-3. In a fresh session, ask for the index origin status. Expected: an
-   incomplete, deferred or named recovery phase, never a false selected
-   result.
-4. Resolve it only through the setup skill's documented recovery path.
-   `recovery_required` reports the observed phase after one bounded attempt;
-   record it as is and do not retry in a loop. Verify settings and
-   source/wiki hashes, and Q-alpha from a fresh session once the route is
-   selected. Never accept silent partial success. A synthetic parent-process
-   test supports the recovery mechanism but alone does not prove installed
-   host behavior.
-
-- **Evidence:** status outputs before and after, hash comparisons, probes.
-- **Timeout:** T_ROLLBACK per request; 60 min overall.
-- **Cleanup/recovery:**
-  - Never delete a journal or pointer to make progress.
-  - A persistent `recovery_required` is `FAIL`. Preserve the state for
-    diagnosis, then restore the clean QA state.
 
 ### RQA-HOOK-01 Claude Code real hooks and injected search
 
@@ -821,88 +705,11 @@ cleanup/recovery. The general rules (sections 2–7) apply to every scenario.
 **Part B: late worker flip-flop (selected memvane-db engine).**
 
 memvane-db owns search and indexing in this release. Part B therefore runs on
-a fixture whose route was selected through setup onboarding (LI-MIG in the
-same fixture).
+a fixture whose route was selected through setup onboarding.
 
-How the selected engine enforces the invariant:
+The sync owner serializes selected writers. Publication rechecks the view capture and head before committing, and recall pins the selected view.
 
-- One runtime dispatcher per OS UID runs `laya-sync` wakes
-  (`core/runtime_work.py` `drain`, `runtime-worker.lock`). A wake re-put while
-  a sync runs bumps its revision and survives the revision-scoped ACK. A held
-  old attempt therefore **delays** the newer revision. The newer revision
-  cannot publish first; a second selected writer would be deferred
-  (`owner_busy`) by the queue owner lock (`core/laya_index_sync.py`
-  `_owner_lock`).
-- When the old attempt resumes, `sync_full` rescans the source. A vector
-  batch for another manifest is refused before any queue/index write
-  (`vector_batch_stale`).
-- A retained old claim is replanned against the current source.
-  `publish` checks the sealed manifest, base head and revocation epoch in one
-  transaction (`index_stale`/`stale`).
-- Every recall rescans the source against the pinned seal, so a stale head
-  fails closed rather than being injected.
-- The source test is in `test/fixtures/laya-index-sync-checks.py`
-  (`test_late_feature_attempt_after_switch_back_never_publishes`,
-  `test_dead_feature_worker_claim_and_generation_cannot_follow_newer_publish`).
-  It is L0 only.
-
-QA-only barrier (`core/laya_product_sync_worker.py`):
-
-- **Default.** Without `LAYA_QA_SYNC_BARRIER`, no file is read and nothing
-  waits.
-- **Variable value.** With the variable set, it must name
-  `<fixture>/.qa-laya-sync-barrier.json`. `<fixture>` is the resolved
-  `root` from the fixture `MANIFEST.json`, for example `/private/tmp/...` on
-  macOS.
-- **Arm file contents.** The arm file is mode 0600 and must match the
-  fixture owner marker. It names the exact selected project
-  (`paths.project`), `scopeId`, `dbIncarnation` (from the installer
-  `status`), a fresh 32-hex `nonce` and `timeoutSeconds` (1–600).
-- **Validation.** A project outside that fixture is untouched. A malformed or
-  unsafe arm, or the right project with a different scope or DB, fails that
-  sync with `qa_sync_barrier_invalid` before the model starts.
-- **Hold.** The first matching attempt holds after its complete vector batch
-  is built and before anything is enqueued. It writes `.qa-laya-sync-barrier-<nonce>.held`
-  (source manifest, pid, time).
-- **Release.** It waits for a regular file `.qa-laya-sync-barrier-<nonce>.release`
-  that the operator creates.
-- **Outcome record.** It then writes `.done` (release time, finish time,
-  state/generation or refusal reason). A timeout writes `.done` with
-  `laya_qa_barrier_timeout` and leaves the wake pending.
-- **Later attempts.** Later attempts with the same nonce never wait.
-- **Scope of the variable.** The variable is valid only in the Part B host
-  session. It invalidates every other scenario (section 3).
-
-1. Preconditions: Claude Code; selected fixture at S-main, indexed; no
-   runtime dispatcher process alive for the QA UID. Start the fresh host
-   session with the variable naming the as-yet-absent arm path. Wait until
-   its SessionStart `laya-sync` wake has finished and S-main remains current.
-   Only then write the arm file. A missing arm file is ignored, so this
-   SessionStart attempt cannot consume the nonce.
-2. Ask "git switch qa/feature 실행해줘". The successful Bash PostToolUse wakes
-   `laya-sync`. Wait for `.held`; record its source manifest, pid and both
-   Git HEADs (fixture `stage` events or `git rev-parse`).
-3. Ask "git switch main 실행해줘". Read-only, confirm the `laya-sync` wake
-   revision advanced. Probe Q-alpha and Q-feature while the old attempt is
-   still held.
-4. Create the release file. Wait for `.done`, then for the retained wake to
-   settle. Probe Q-alpha and Q-feature immediately and again at T_LATE.
-5. Copy the barrier records into `$EVID` before fixture cleanup. End the
-   session and confirm that no process of the QA UID still carries the
-   variable before the next scenario.
-6. Expected:
-   - `.held` `sourceManifest` is the S-feature manifest. An S-main hold is
-     `BLOCKED`, even if the later probes appear correct.
-   - `.done` `finishedAt` is later than the switch-main event and `releasedAt`.
-   - The old attempt reports a refusal (`vector_batch_stale`, `index_stale`
-     or a replan) and never `indexed` with the held feature manifest.
-     `laya_sync_yield_priority` is inconclusive: repeat with a new nonce.
-   - The installer `status` head ends at a generation whose manifest is S-main.
-   - S-main is current at every probe after the second switch. `FEATURE_ONLY`
-     and `ALPHA_FEATURE` are never injected.
-   - A missing `.held` (for example, a dispatcher without the variable)
-     means the race did not run: `BLOCKED`, repeat with a new nonce. A fast
-     flip-flop without the records cannot be `PASS`.
+The controlled late-worker barrier is unavailable. Mark Part B `BLOCKED` until a deterministic way to hold the worker is available; a fast flip-flop alone does not establish this race.
 
 **Part C: I/O retry.**
 
@@ -931,8 +738,7 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
   - The extractor and verifier engines are available.
   - A fresh fixture, selected.
 - **Steps:**
-  1. Ask "wiki compile 켜줘. SessionStart에서 감지한 원문도 wiki 대상으로 해줘."
-     Expected: `compile.mode` is on, and the triggers include
+  1. Confirm that the selected project uses the built-in compile policy for
      `post_tool_source` and `session_start_source`.
   2. Record the wiki-owned baseline: queue and ledger entries, card files and
      hashes.
@@ -948,7 +754,7 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
   - no second paid call.
 - **Known gap:** revision idempotency is partial. The compile queue drops a
   duplicate row only for the same `(collection, path, revision, trigger)`
-  (`core/wiki_source_intent.py` `revision_key`), and on the selected Laya route
+  (`memvane/wiki/intake/wiki_source_intent.py` `revision_key`), and on the selected Laya route
   the worker skips a revision that already has a compiled card
   (`already_compiled_revision`). The same revision arriving through a different
   trigger is still queued. Until this scenario passes, it blocks a formal
@@ -987,35 +793,6 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
 - **Evidence:** card bytes and hash, source hashes, probes, `recall` event
   `card_read_*` and `sources_*` fields.
 - **Timeout:** T_WIKI + T_SCENARIO.
-- **Cleanup:** clean up the fixture.
-
-### RQA-WIKI-03 Wiki compile OFF
-
-- **Purpose:** when compile is off, no wiki work and no paid calls happen,
-  while file indexing still works.
-- **Owner:** wiki; file sync and search for the contrast check.
-- **Hosts:** Claude Code, Codex.
-- **Preconditions:** a fixture where compile was on (an RQA-WIKI-01 fixture,
-  or freshly enabled).
-- **Steps:**
-  1. Ask "wiki compile 꺼줘". Expected: `compile.mode: "off"`.
-  2. Record the wiki baseline.
-  3. Ask the agent to edit `wiki-source.md`.
-  4. Start a fresh session.
-  5. Request a sync.
-  6. Repeat the sync and fresh SessionStart once to exercise retry paths.
-  7. Delete `wiki-source.md` through an agent edit and repeat the sync and
-     fresh SessionStart. Probe Q-wiki and the deletion state.
-- **Expected:**
-  - No new queue or ledger entries.
-  - No extractor or verifier invocation.
-  - Card bytes unchanged.
-  - Wiki indexing still works, but the changed raw-only content creates no Laya document or search hit;
-    the unchanged card is never presented as a fresh revision of that source.
-    Compile remains OFF across retry and deletion.
-- **Evidence:** wiki listings before and after, probes, absence of compile
-  activity in the logs.
-- **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture.
 
 ### RQA-RES-01 Ordinary work is not blocked (no learning)
@@ -1077,7 +854,7 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
      duplicate wake during dispatch, and bounded queue capacity without
      losing an existing learning job. Repeat cooperative yield at least four
      times to show it never counts as a terminal failure or blocks the job.
-     Enqueue a higher-priority index/update wake while training is active,
+     Enqueue a higher-priority Laya sync/compile wake while training is active,
      then record when it is serviced; ordering only at dispatch start is not
      proof that active training yielded.
   5. At OS warning or failed monitor/cleanup proof, stop through the owned
@@ -1100,10 +877,8 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
   group and cleanup proof, fresh-session transcript and hook timings. Confirm
   production runs do not set fixture/sandbox bypass flags, and show whether
   direct `shared.launch` and queued `runtime_work.dispatch` paths both obey
-  admission. Existing synthetic tests in `test/runtime_resources_test.py`,
-  `test/runtime_training_watch_test.py`,
-  `test/fixtures/runtime-wake-policy-checks.py`, and
-  `test/fixtures/context-learning-coordination-checks.py` are L0 coverage,
+  admission. Existing synthetic tests in `memvane/runtime/tests/run.test.mjs` and
+  `memvane/learning/tests/integration/test_context_learning_coordination.py` are L0 coverage,
   not this installed-candidate result.
 - **Timeout:** 60 min.
 - **Cleanup:** remove the test namespace through its approved path; preserve
@@ -1132,26 +907,9 @@ QA-only barrier (`core/laya_product_sync_worker.py`):
 - **Timeout:** T_SCENARIO.
 - **Cleanup:** clean up the fixture; restore the account state.
 
-### memvane-db 전환 필수 행 (LI-*)
+### 1.0 selected-install checks
 
-memvane-db로 QMD backend를 교체하는 릴리스에는 위 RQA 행에 더해 **설치된 정확한 후보**에서 다음을 필수로 기록한다. 임시 Git full-plugin 복사본과 합성 attestation·이관 리허설은 marketplace 설치 후보의 fresh-host 증거가 아니다. L0 통과로 이 행을 대체할 수 없다.
-
-| 행 | 설치 후보에서 확인할 실제 결과 |
-|---|---|
-| LI-INST | exact-commit bundle·설치 소유 journal·현재 파일 identity·DB/queue incarnation을 새 Claude/Codex 세션이 검증하고, 일치하지 않으면 QMD로 fallback하지 않고 차단한다. |
-| LI-MIG | minimal settings(`{name, skipPaths}`) 프로젝트의 fresh-wiki 온보딩(`plan-fresh-wiki-origin` → `review-index-provider` → `prepare-fresh-wiki-origin` → `finalize-index-origin` → `activate-index-origin`)이 **위키 문서만** membership·본문·FTS·벡터로 색인하고 원본 원문은 출처·최신성 증거로만 확인한다. settings 파일은 다시 쓰지 않는다. 불일치/중단 시 이전 선택이 유지되고, QMD-origin ledger(`qmd-cutover.json`)가 남은 state root는 `qmd_origin_detach_required`로 거부된다. |
-| LI-SCOPE | 미온보딩 프로젝트 무작업, linked worktree 읽기 전용, 삭제·rename, 중복 claim, 오래된 writer, 옛 pin 철회를 새 host 경로에서 확인한다. 다른 scope의 후보·순위·결과와 원문 독립 문서가 섞이지 않고 갱신 불가 시 명시 오류를 낸다. |
-| LI-RECOVER | 게시/ACK 및 전환 각 중단점의 재시작, 첫 새 쓰기 전 rollback, 첫 새 쓰기 뒤 자동 rollback 차단과 전진 복구를 확인한다. 실제 전원 손실은 별도의 시험 없이는 주장하지 않는다. |
-| LI-COEXIST | 사용자 QMD 자료(`~/.cache/qmd`, `~/.config/qmd`)와 별도 global QMD를 보존한다. 소유자 1회 정리의 `plan-legacy-cleanup`은 읽기 전용이고, `apply-legacy-cleanup --approve-legacy-cleanup`은 검증된 플러그인 QMD daemon, `managed-by: qmd-auto-context` LaunchAgent, 플러그인 QMD runtime·shared store·backend 트리만 제거한다. 사용자 QMD 자료는 `--include-user-qmd-data`일 때만 제거한다. install attestation이 대상 안 파일을 가리키거나(`attestation_references_legacy_path`) `~/.local/state/memvane/*/reviewed-route.json`의 `pluginRoot`가 `core/backend_manager.sh`를 가진 옛 번들이면(`older_host_bundle_bound`) 정리는 거부된다. 따라서 Claude·Codex 두 host cache가 이 릴리스를 로드하고 모든 설치가 SessionStart 번들 업그레이드로 옮겨져 Laya 임베딩 runtime으로 재증명된 뒤에만 실행한다. |
-| LI-VECTOR | 선택된 모델 파일·Node/native dependency closure·전처리/청킹 recipe의 출처와 hash, 위키 문서·질의 차원과 profile, 위키 전량 재색인 seal, scope/세대 필터 선행 및 과예산 무결과를 증명한다. 원본 원문은 문서 임베딩 대상이 아니다. 모델 실행에는 별도 승인된 자원 gate를 사용한다. |
-| LI-RECALL | 기존 QMD `rerank:false` 어휘 변형+벡터 결합과 정확한 식별자/EP를 기준으로, Laya의 **위키 카드만** 검색·선별·주입하고 검증된 원문 위치를 제공하는지 lex probe, minScore/topN, 결과 포맷을 새 Claude/Codex 세션에서 비교한다. 위키에 없는 원문 전용 표식은 Laya 결과·자동 주입에 없어야 한다. 위키 카드에 정상적으로 포함된 발췌와 링크는 유지한다. 벡터 단독 합성 검색은 이 행을 통과시키지 않는다. |
-
-모델/벡터 재생성이 필요한 경우 provenance 또는 명시 승인·자원/비용 gate를 함께 기록한다. 필수 행의 `NOT RUN`/`BLOCKED`/`FAIL`은 전환 릴리스를 막는다.
-
-Laya 검색·임베딩의 운영 부하 큐 **확장**은 v2 오픈 이후 선택 검토 항목이다.
-학습 작업의 운영 부하 큐와 admission·중지/재개 검증은 `RQA-RES-02`의
-필수 조건이다. 이 구분은 검색·임베딩 기능 자체를 제품 범위에서 제외하지
-않는다.
+For each installed candidate, verify reviewed provider and worker digests, fresh onboarding, published wiki-only recall, linked worktree isolation, sync after edits and removals, and restore followed by a new onboarding plan. A real-model run uses the model-test resource guard. Record unavailable checks as `NOT RUN` or `BLOCKED`; fixture results do not substitute for a real-model run.
 
 ## 10. Domain ownership
 
@@ -1190,13 +948,13 @@ Scenarios respect domain ownership. Two rules apply:
 
 | Changed paths | Rerun in addition to core smoke |
 |---|---|
-| `core/laya_host_response.py`, `core/laya_incremental_docs_query.py`, `core/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
-| `core/laya_index_sync.py`, `core/laya_product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
-| `core/wiki_*`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
-| `core/context_learning/**` | RES-01, RES-02 |
-| `core/setup_entry.py`, `core/laya_product_install.py`, `core/laya_embed_runtime.py`, `core/legacy_cleanup.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
-| `core/runtime_work.py`, `core/runtime_wake_policy.py`, resource coordination modules | RES-01, RES-02, RACE-01 |
-| `core/config.py`, `core/laya_index_host_route.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
+| `memvane/host/host_response.py`, `memvane/store/view/view_reader.py`, `memvane/wiki/card/wiki_freshness.py`, `skills/query/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-02 |
+| `memvane/sync/sync_owner_lock.py`, `memvane/sync/product_sync_worker.py`, `skills/update/**` | SYNC-01, GIT-01..03, RACE-01, WIKI-03 |
+| `memvane/wiki/**`, `skills/wiki-*/**`, `agents/**` | WIKI-01..03 |
+| `memvane/learning/**` | RES-01, RES-02 |
+| `memvane/app/setup_entry.py`, `memvane/provider/embed_runtime.py`, `locks/**`, `skills/setup/**` | INST-01..04, PLAT-01 |
+| `memvane/runtime/runtime_work.py`, `memvane/runtime/runtime_wake_policy.py`, resource coordination modules | RES-01, RES-02, RACE-01 |
+| `memvane/settings/config.py`, `memvane/route/index_host_route.py`, `hooks/**`, `hermes_adapter/**`, `plugin.yaml`, `__init__.py`, any host manifest or marketplace file | **All** scenarios |
 | Version strings only | INST-01, INST-02 |
 | Documentation only (`docs/**`, `README.md`; not `skills/**` or `agents/**`) | Core smoke only |
 | Any path not listed | **All** scenarios |

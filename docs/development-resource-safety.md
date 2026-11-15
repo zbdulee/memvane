@@ -15,19 +15,17 @@ completion evidence exists.
 
 ## Commands covered
 
-`npm test` and `npm run test:focused -- test/NAME.test.mjs` route through
+`npm test` and `npm run test:focused -- memvane/DOMAIN/tests/run.test.mjs` (or
+`tests/PATH.test.mjs`) route through
 `scripts/development_guard.py`, force `node --test --test-concurrency=1`, and
 preserve the existing QMD fixture/log isolation. Backup and hash work must use
 `npm run dev:guard -- --kind backup -- COMMAND ...` or `--kind hash`.
 The wrapper launches an argv directly, never constructs a shell command.
-The complete `npm test` suite has a finite1,800-second budget; focused checks
-keep the wrapper's900-second default. CI runs the suite as three
-`--test-shard=N/3` jobs per Node version so each shard stays inside that budget.
-
-The full suite runs all `laya-sync-first-proof-checks.py` cases through
-`laya-sync-first-proof.test.mjs`. Its six dedicated focused wrappers repeat a
-subset of those same cases, so `npm test` excludes only those wrapper test names.
-`npm run test:focused` continues to execute each wrapper when requested.
+`npm test` runs three exclusive guarded parts (`test:part1` sync, registry,
+host; `test:part2` journal, store, learning, recall; `test:part3` the rest),
+each with a 1,800-second budget. Focused checks keep the wrapper's 900-second
+default; run the sync and registry runners in separate focused runs. CI runs
+`npm run test:partN` as three jobs per Node version.
 
 Ordinary mock, regression and integration tests (`--kind test`, including CI),
 remote review (`--kind review`) and hash or staging work (`--kind hash`) do not
@@ -47,7 +45,7 @@ resource limits.
 and `--max-seconds` of at most 30 (otherwise `calibration_requires_short_test`).
 The envelope is a one-shot synthetic trial that expires 30 seconds after issue
 and cannot be reused (`calibration_already_consumed`); its schema, fixed policy
-values and window rules are defined in `core/context_learning/bounded_calibration.py`.
+values and window rules are defined in `memvane/runtime/bounded_calibration.py`.
 
 All kinds and all worktrees use `~/Library/Logs/qmd-development-guard/heavy.lock`
 on macOS (`~/.local/state/qmd-development-guard/heavy.lock` on Linux). The home
@@ -79,7 +77,7 @@ small Python-only safety tests, which perform no real host probes or model work.
 The 35% available-memory proposal is conservative and uncalibrated. On a 24 GiB
 machine that is approximately 8.4 GiB, but macOS `memory_pressure -Q` measures a
 different notion of headroom than free pages alone. Admission and continuation
-also require normal OS memory pressure, swap growth no greater than 1% of
+also reject critical OS memory pressure, require swap growth no greater than 1% of
 physical RAM since admission, and load per CPU no greater than 0.75.
 
 The aggregate observed child tree is limited to 15% of physical RAM

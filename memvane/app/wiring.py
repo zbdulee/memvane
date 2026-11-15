@@ -1,0 +1,98 @@
+"""Fixed per-kind wake handlers; runtime_work owns the queue, lease and retry.
+
+Each handler revalidates setup/ownership/authorization itself right before its
+side effect and returns True only when the wake may be ACKed. Owner modules are
+imported inside the handler, so importing this table never loads learning code.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from memvane.runtime.types import Dropped, TargetMissing
+
+
+def _missing_target(row):
+    """None while the project directory exists, else the missing outcome.
+
+    A missing directory in the platform temp area (a removed test fixture
+    project) is void and dropped at once. Anywhere else it may come back (an
+    unmounted volume, a re-clone): ``TargetMissing`` backs off, and the queue
+    drops the wake only after it stayed missing for a day
+    (``runtime_wake_policy.MISSING_DROP_SECS``). A route that is merely not
+    selected yet (``target_unavailable`` during a move) is not missing.
+    """
+    try:
+        if Path(row['target']).is_dir():return None
+    except (OSError, TypeError, ValueError):
+        return None
+    from memvane.runtime.api import in_platform_temp
+    if in_platform_temp(row['target']):return Dropped('target_missing')
+    raise TargetMissing()
+
+
+def laya_sync(row):
+    missing=_missing_target(row)
+    if missing is not None:return missing
+    from memvane.app.runtime_dispatch import run
+    result=run('laya-sync', row['target'], owner_fd=row.get('leaseFd'))
+    if result['state']=='indexed':
+        # The Laya publish receipt replaces the QMD claim ACK as the
+        # learning wake; it never changes this handler's own outcome.
+        try:
+            from memvane.learning.api import wake_after_index
+            wake_after_index(Path(row['target']))
+        except Exception:
+            pass
+    return result['state'] in ('indexed','unchanged')
+
+
+def laya_compile(row):
+    missing=_missing_target(row)
+    if missing is not None:return missing
+    from memvane.app.runtime_dispatch import run
+    result=run('laya-compile', row['target'], owner_fd=row.get('leaseFd'))
+    return result['state']=='drained'
+
+
+def learning(row):
+    from memvane.settings import api as config
+    from memvane.learning import api as shared
+    from memvane.learning.api import ready
+    project=Path(row['target'])
+    if not project.is_dir():return True
+    if not ready(project):return False
+    cfg=config.find_project_config(str(project))['config'];root=shared.safe_root(cfg,project)
+    if root is None:return True
+    if not ready(project):return False
+    # The owned child handles teacher and trainer work off the wake dispatcher.
+    step=shared.learning_worker_step(root,project,row['revision'])
+    return step['status'] not in ('running','started')
+
+
+def auto(row):
+    from memvane.learning.api import bind_service_starter, run_automatic_learning
+    from memvane.resident.api import ensure_service
+    bind_service_starter(ensure_service)
+    from memvane.runtime.api import handler_done
+    result=run_automatic_learning(Path(row['target']))
+    return handler_done(result['status'])
+
+
+def drop_event(*args, **kwargs):
+    from memvane.app.runtime_dispatch import drop_event as implementation
+    return implementation(*args, **kwargs)
+
+
+def stall_event(*args, **kwargs):
+    from memvane.app.runtime_dispatch import stall_event as implementation
+    return implementation(*args, **kwargs)
+
+
+HANDLERS={'laya-sync':'laya_sync','laya-compile':'laya_compile','learning':'learning','auto':'auto'}
+
+
+def dispatch(row):
+    """Fixed handlers revalidate setup/ownership/authorization themselves."""
+    handler=globals().get(HANDLERS.get(row['kind']))
+    if handler is None:raise ValueError('invalid_runtime_handler')
+    return handler(row)

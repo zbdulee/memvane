@@ -1,0 +1,444 @@
+"""Value contracts for the inactive Git-blob candidate format."""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from pathlib import Path
+import re
+import struct
+import unicodedata
+
+from memvane.store.types import BlobStoreError, MAX_BODY, MAX_CHUNKS, SHA, UUID
+from memvane.wiki.card.types import MAX_SOURCE_SPANS
+
+MAX_SET_BYTES = 16 * 1024 * 1024
+
+
+def fail(reason):
+    raise BlobStoreError(reason)
+
+
+def canonical(value):
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False,
+                          separators=(',', ':'), allow_nan=False)
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        fail('invalid_canonical_value')
+
+
+def digest(domain, value):
+    try:
+        return hashlib.sha256(domain.encode('ascii') + b'\0' +
+                              canonical(value).encode('utf8')).hexdigest()
+    except UnicodeError:
+        fail('invalid_canonical_value')
+
+
+def verification_verdict_digest(verdict):
+    try:
+        exact(verdict, ('verdict', 'claims', 'reasons'))
+        if (verdict['verdict'] not in ('pass', 'fail', 'inconclusive')
+                or type(verdict['claims']) is not list or type(verdict['reasons']) is not list):
+            fail('invalid_verdict')
+        return digest('memvane-verify-verdict-v1', verdict)
+    except (BlobStoreError, TypeError, ValueError, RecursionError):
+        return None
+
+
+def compile_result_digest(result, verdict_digest):
+    try:
+        identifier(verdict_digest)
+        exact(result, ('cardSha', 'viewId', 'targetPath', 'expectedTargetHash',
+                       'sourceFingerprints', 'sourceSpans', 'verifiedMode',
+                       'verifyEngine', 'producingEngine'))
+        identifier(result['cardSha']); identifier(result['viewId']); relative(result['targetPath'])
+        if result['expectedTargetHash'] is not None:
+            identifier(result['expectedTargetHash'])
+        from memvane.settings import types as config
+        if (type(result['sourceFingerprints']) is not dict
+                or type(result['sourceFingerprints'].get('fingerprints')) is not list
+                or type(result['sourceSpans']) is not list
+                or result['verifiedMode'] not in config.VERIFIED_MODES):
+            fail('invalid_compile_result')
+        text(result['verifyEngine']); text(result['producingEngine'])
+        observed = result['sourceFingerprints']
+        exact(observed, ('schema', 'viewId', 'checkoutDigest', 'gitObjectFormat',
+                         'scanId', 'observedNs', 'fingerprints'))
+        if (observed['schema'] != 'memvane-compile-source-fingerprints-v1'
+                or observed['viewId'] != result['viewId']
+                or observed['gitObjectFormat'] not in (None, 'sha1', 'sha256')
+                or not observed['fingerprints'] or len(observed['fingerprints']) > 64):
+            fail('invalid_compile_result')
+        identifier(observed['checkoutDigest']); identifier(observed['scanId'], UUID)
+        integer(observed['observedNs'])
+        paths, identity = {}, None
+        for row in observed['fingerprints']:
+            fingerprint(row, observed['gitObjectFormat'])
+            if (row['binding_state'] != 'observed' or row['scan_id'] != observed['scanId']
+                    or row['observed_ns'] != observed['observedNs'] or row['path'] in paths):
+                fail('invalid_compile_result')
+            current = (row['worktree_id'], row['branch_key'])
+            if identity is not None and identity != current:
+                fail('invalid_compile_result')
+            identity = current
+            paths[row['path']] = row['source_sha']
+        from memvane.wiki.card import api as yaml_scalars
+        seen = set()
+        if len(result['sourceSpans']) > MAX_SOURCE_SPANS:
+            fail('invalid_compile_result')
+        for span in result['sourceSpans']:
+            if yaml_scalars.normalize_source_span(span) != span:
+                fail('invalid_compile_result')
+            key = (span['path'], span['startLine'], span['endLine'])
+            if key in seen or paths.get(span['path']) != span['sourceSha256']:
+                fail('invalid_compile_result')
+            seen.add(key)
+        return digest('memvane-compile-result-v1', {**result, 'verdict_digest': verdict_digest})
+    except (BlobStoreError, TypeError, ValueError, RecursionError):
+        return None
+
+
+def provenance_digests(verdict, result):
+    """Commit observed verification and publication facts with separate domains."""
+    verdict_digest = verification_verdict_digest(verdict)
+    result_digest = compile_result_digest(result, verdict_digest)
+    return (verdict_digest, result_digest) if result_digest is not None else None
+
+
+def hash_bytes(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def identifier(value, pattern=SHA):
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        fail('invalid_identifier')
+    return value
+
+
+def _path(value, refused_segment):
+    if (not isinstance(value, str) or not value or len(value) > 4096
+            or any(c in value for c in '\x00\r\n\\') or value.startswith('/')
+            or any(refused_segment(p) for p in value.split('/'))):
+        fail('invalid_relative_path')
+    try:
+        value.encode('utf8')
+    except UnicodeError:
+        fail('invalid_relative_path')
+    return value
+
+
+def relative(value):
+    """A wiki, filter or binding path: no empty or dot-led segment."""
+    return _path(value, lambda p: not p or p.startswith('.'))
+
+
+def source_path(value):
+    """A project-relative raw source path (fingerprints, manifest sources).
+
+    A raw root may sit in a dot directory (``.nova/06_Sessions``) and the
+    selected reader trusts revisions there, so only empty, ``.`` and ``..``
+    segments are refused.
+    """
+    return _path(value, lambda p: p in ('', '.', '..'))
+
+
+def repository(value):
+    from memvane.store.checkout.checkout_view import REPOSITORY_FIELDS, REPOSITORY_SCHEMA, _identity
+    if (not isinstance(value, dict) or set(value) != REPOSITORY_FIELDS
+            or value.get('schema') != REPOSITORY_SCHEMA):
+        fail('invalid_repository_binding')
+    identifier(value.get('repoId'), UUID)
+    kind = value.get('kind')
+    if kind == 'git':
+        valid = (_identity(value.get('commonGitDir')) and value.get('projectRoot') is None
+                 and value.get('gitObjectFormat') in ('sha1', 'sha256'))
+    elif kind == 'non-git':
+        valid = (_identity(value.get('projectRoot')) and value.get('commonGitDir') is None
+                 and value.get('gitObjectFormat') is None)
+    else:
+        valid = False
+    project_rel = value.get('projectRelative')
+    if not valid or not isinstance(project_rel, str):
+        fail('invalid_repository_binding')
+    if project_rel != '.':
+        relative(project_rel)
+    return json.loads(canonical(value))
+
+
+def parse_canonical(text):
+    try:
+        value = json.loads(text)
+        if canonical(value) != text:
+            fail('noncanonical_json')
+        return value
+    except (ValueError, TypeError, RecursionError):
+        fail('invalid_canonical_json')
+
+
+def integer(value, lower=0, upper=2 ** 63 - 1):
+    if type(value) is not int or not lower <= value <= upper:
+        fail('invalid_integer')
+    return value
+
+
+def text(value, limit=512):
+    if (not isinstance(value, str) or not value
+            or any(unicodedata.category(c) in ('Cc', 'Cf', 'Cs', 'Zl', 'Zp') for c in value)):
+        fail('invalid_text')
+    try:
+        if len(value.encode('utf8')) > limit:
+            fail('invalid_text')
+    except UnicodeError:
+        fail('invalid_text')
+    return value
+
+
+def exact(value, keys):
+    if not isinstance(value, dict) or set(value) != set(keys):
+        fail('invalid_fields')
+
+
+RECIPE_FIELDS = frozenset(('input_recipe', 'tokenizer_sha', 'chunker_sha', 'window_tokens',
+    'overlap_tokens', 'window_search_tokens', 'offset_unit', 'heading_rule',
+    'document_template', 'synthetic_path'))
+PROFILE_FIELDS = frozenset(('model_id', 'model_sha', 'embedding_fingerprint', 'dimension',
+    'metric', 'document_input_recipe', 'query_input_recipe', 'query_template'))
+
+
+def recipe(spec):
+    exact(spec, RECIPE_FIELDS)
+    fixed = dict(input_recipe='blob-input-v1', offset_unit='utf16-code-unit',
+                 heading_rule='qmd-markdown-v1', document_template='title: {title} | text: {text}',
+                 synthetic_path='blobs/{blob_sha}.md')
+    if any(spec[k] != value for k, value in fixed.items()):
+        fail('recipe_unsupported')
+    identifier(spec['tokenizer_sha']); identifier(spec['chunker_sha'])
+    window = integer(spec['window_tokens'], 1, 8192)
+    integer(spec['overlap_tokens'], 0, window - 1)
+    integer(spec['window_search_tokens'], 0, window)
+    return json.loads(canonical(spec))
+
+
+def profile(spec):
+    exact(spec, PROFILE_FIELDS)
+    text(spec['model_id']); identifier(spec['model_sha']); identifier(spec['embedding_fingerprint'])
+    integer(spec['dimension'], 1, 2048)
+    fixed = dict(metric='cosine', document_input_recipe='blob-input-v1',
+                 query_input_recipe='qmd-query-v1', query_template='task: search result | query: {text}')
+    if any(spec[k] != value for k, value in fixed.items()):
+        fail('profile_unsupported')
+    return json.loads(canonical(spec))
+
+
+def chunks(body, rows):
+    if not isinstance(rows, (list, tuple)) or not 1 <= len(rows) <= MAX_CHUNKS:
+        fail('chunk_set_invalid')
+    source = body.encode('utf-16-le')
+    normalized, previous, total = [], -1, 0
+    for seq, row in enumerate(rows):
+        exact(row, ('seq', 'position', 'text', 'text_sha'))
+        if integer(row['seq']) != seq:
+            fail('chunk_sequence_invalid')
+        position = integer(row['position'], 0, len(source) // 2)
+        if position <= previous or not isinstance(row['text'], str) or not row['text']:
+            fail('chunk_position_invalid')
+        try:
+            raw = row['text'].encode('utf8')
+            units = row['text'].encode('utf-16-le')
+        except UnicodeError:
+            fail('chunk_text_invalid')
+        total += len(raw)
+        if total > MAX_SET_BYTES or source[position * 2:position * 2 + len(units)] != units:
+            fail('chunk_text_invalid')
+        identifier(row['text_sha'])
+        if hash_bytes(raw) != row['text_sha']:
+            fail('chunk_text_hash_mismatch')
+        normalized.append(dict(row)); previous = position
+    return normalized
+
+
+def chunk_digest(blob, recipe_id, rows):
+    return digest('memvane-chunk-set-v1', [blob, recipe_id, rows])
+
+
+def embedding_rows(rows, dimension, inputs):
+    if not isinstance(rows, (list, tuple)) or len(rows) != len(inputs) or not rows:
+        fail('embedding_set_invalid')
+    normalized = []
+    for seq, row in enumerate(rows):
+        exact(row, ('seq', 'input_sha', 'embedding'))
+        if integer(row['seq']) != seq:
+            fail('embedding_sequence_invalid')
+        identifier(row['input_sha'])
+        if row['input_sha'] != inputs[seq]:
+            fail('embedding_input_mismatch')
+        blob = row['embedding']
+        if not isinstance(blob, bytes) or len(blob) != dimension * 4:
+            fail('embedding_dimension_mismatch')
+        values = struct.unpack('<' + 'f' * dimension, blob)
+        if not all(math.isfinite(x) for x in values) or math.fsum(x * x for x in values) <= 0:
+            fail('embedding_values_invalid')
+        normalized.append(dict(row))
+    return normalized
+
+
+def vector_digest(blob, recipe_id, profile_id, row):
+    return digest('memvane-embedding-row-v1',
+                  [blob, recipe_id, profile_id, row['seq'], row['input_sha'], row['embedding'].hex()])
+
+
+def embedding_digest(blob, recipe_id, profile_id, rows):
+    return digest('memvane-embedding-set-v1', [blob, recipe_id, profile_id,
+                  [[r['seq'], r['input_sha'], r['embedding'].hex()] for r in rows]])
+
+
+# ECMAScript whitespace/line terminators, matching laya_qmd_chunking.mjs.
+# Python's \s/strip additionally treats NEL and U+001C..001F as whitespace and
+# its MULTILINE anchors do not recognize CR/LS/PS. Those alter provider inputs.
+_JS_WS = '\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
+_JS_LINE = '\n\r\u2028\u2029'
+_TITLE_START = r'(?:\A|(?<=[' + _JS_LINE + r']))'
+_TITLE_END = r'([^' + _JS_LINE + r']+)(?=\Z|[' + _JS_LINE + r'])'
+_TITLE = re.compile(_TITLE_START + r'##?[' + re.escape(_JS_WS) + r']+' + _TITLE_END)
+_SECOND_TITLE = re.compile(_TITLE_START + r'##[' + re.escape(_JS_WS) + r']+' + _TITLE_END)
+
+
+def markdown_title(body, blob_sha):
+    identifier(blob_sha)
+    match = _TITLE.search(body)
+    if match is None:
+        return blob_sha  # synthetic blobs/<sha>.md filename fallback
+    title = match.group(1).strip(_JS_WS)
+    if title in ('📝 Notes', 'Notes'):
+        second = _SECOND_TITLE.search(body)
+        if second is not None:
+            return second.group(1).strip(_JS_WS)
+    return title
+
+
+FINGERPRINT_FIELDS = frozenset(('worktree_id', 'branch_key', 'path', 'source_sha',
+    'byte_length', 'head_oid', 'tracked_state', 'binding_state', 'scan_id', 'observed_ns'))
+
+
+def fingerprint(spec, object_format):
+    exact(spec, FINGERPRINT_FIELDS)
+    identifier(spec['worktree_id'], UUID); identifier(spec['scan_id'], UUID)
+    source_path(spec['path']); identifier(spec['source_sha'])
+    integer(spec['byte_length']); integer(spec['observed_ns'])
+    if spec['tracked_state'] not in ('tracked', 'untracked', 'unknown') or spec['binding_state'] not in ('observed', 'legacy_unbound'):
+        fail('source_state_invalid')
+    branch, head = spec['branch_key'], spec['head_oid']
+    if not isinstance(branch, str) or not branch or len(branch.encode('utf8', errors='replace')) > 4096:
+        fail('source_branch_invalid')
+    if object_format is None:
+        if branch != 'non-git' or head is not None:
+            fail('source_branch_invalid')
+    else:
+        length = 40 if object_format == 'sha1' else 64
+        if head is not None and (not isinstance(head, str) or re.fullmatch('[0-9a-f]{' + str(length) + '}', head) is None):
+            fail('source_head_invalid')
+        if branch.startswith('detached:'):
+            detached_oid = branch[len('detached:'):]
+            unbound = (head is None and spec['binding_state'] == 'legacy_unbound'
+                       and spec['tracked_state'] == 'unknown')
+            if (re.fullmatch('[0-9a-f]{' + str(length) + '}', detached_oid) is None
+                    or (not unbound and branch != 'detached:' + str(head))):
+                fail('source_branch_invalid')
+        elif branch.startswith('refs/heads/'):
+            tail = branch[len('refs/heads/'):]
+            if (not tail or '..' in tail or '@{' in tail or tail.endswith(('.', '/'))
+                    or any(ord(c) < 33 or c in '\x7f~^:?*[\\' for c in tail)
+                    or any(not p or p.startswith('.') or p.endswith('.lock') for p in tail.split('/'))):
+                fail('source_branch_invalid')
+        else:
+            fail('source_branch_invalid')
+    return json.loads(canonical(spec))
+
+
+ATTESTATION_KINDS = ('compiled', 'rebound', 'legacy_verified')
+LEGACY_LINE_SPAN = 'legacy-lines-v1'
+# Reserved compiled line-span kind: the yaml_scalars span shape bound to the
+# fingerprint's path/source SHA, never an excerpt. A rebound copies its prior's
+# spans verbatim, so the compiled chain (compiled + rebound) shares one set.
+LINE_SPAN = 'lines-v1'
+LINE_SPAN_KINDS = frozenset(('compiled', 'rebound'))
+RECEIPT_V1 = 'memvane-card-evidence-v1'
+RECEIPT_V1_FIELDS = frozenset(('schema', 'verdict', 'result_digest', 'prior_trust'))
+# Reserved compile receipt: v1 plus the verifier verdict digest, verifiedMode and
+# verifier engine. Later extensions are a new schema value, never extra v2 keys.
+RECEIPT_V2 = 'memvane-card-evidence-v2'
+RECEIPT_V2_FIELDS = RECEIPT_V1_FIELDS | {'verdict_digest', 'verified_mode', 'verify_engine'}
+
+
+def _receipt(receipt, kind):
+    schema = receipt.get('schema') if isinstance(receipt, dict) else None
+    if schema == RECEIPT_V2 and kind in LINE_SPAN_KINDS:
+        exact(receipt, RECEIPT_V2_FIELDS)
+        from memvane.settings import types as config
+        identifier(receipt['verdict_digest']); text(receipt['verify_engine'])
+        if receipt['verified_mode'] not in config.VERIFIED_MODES:
+            fail('receipt_invalid')
+    elif schema == RECEIPT_V1:
+        exact(receipt, RECEIPT_V1_FIELDS)
+    else:
+        exact(receipt, RECEIPT_V1_FIELDS)
+        fail('receipt_invalid')
+    if receipt['verdict'] != 'verified':
+        fail('receipt_invalid')
+    identifier(receipt['result_digest'])
+    if kind == 'rebound':
+        identifier(receipt['prior_trust'])
+    elif receipt['prior_trust'] is not None:
+        fail('receipt_prior_invalid')
+
+
+def attestation(spec):
+    exact(spec, ('blob_sha', 'verification_kind', 'engine_identity', 'policy_digest', 'receipt', 'sources'))
+    identifier(spec['blob_sha']); text(spec['engine_identity']); identifier(spec['policy_digest'])
+    kind = spec['verification_kind']
+    if kind not in ATTESTATION_KINDS:
+        fail('verification_kind_invalid')
+    _receipt(spec['receipt'], kind)
+    sources = spec['sources']
+    if not isinstance(sources, list) or len(sources) > 64 or (kind == 'rebound' and not sources):
+        fail('attestation_sources_invalid')
+    seen, line_count = set(), 0
+    for source in sources:
+        exact(source, ('fingerprint_id', 'spans'))
+        identifier(source['fingerprint_id'])
+        if source['fingerprint_id'] in seen:
+            fail('duplicate_source_fingerprint')
+        seen.add(source['fingerprint_id'])
+        spans = source['spans']
+        if not isinstance(spans, list) or len(spans) > 256:
+            fail('source_spans_invalid')
+        end, mode, line_keys = 0, None, set()
+        for span in spans:
+            line_kind = span.get('kind') if isinstance(span, dict) else None
+            if line_kind in (LEGACY_LINE_SPAN, LINE_SPAN):
+                allowed = ('legacy_verified',) if line_kind == LEGACY_LINE_SPAN else LINE_SPAN_KINDS
+                if kind not in allowed or mode not in (None, line_kind):
+                    fail('source_spans_invalid')
+                from memvane.wiki.card import api as yaml_scalars
+                line_count += 1
+                if line_count > MAX_SOURCE_SPANS:
+                    fail('source_spans_invalid')
+                original = {key: value for key, value in span.items() if key != 'kind'}
+                if (yaml_scalars.normalize_source_span(original) != original
+                        or len(spans) > MAX_SOURCE_SPANS):
+                    fail('source_spans_invalid')
+                line_key = (original['path'], original['startLine'], original['endLine'])
+                if line_key in line_keys:
+                    fail('source_spans_invalid')
+                line_keys.add(line_key)
+                mode = line_kind
+                continue
+            if mode is not None and mode != 'bytes':
+                fail('source_spans_invalid')
+            exact(span, ('start', 'end'))
+            start, stop = integer(span['start']), integer(span['end'])
+            if start < end or stop <= start:
+                fail('source_spans_invalid')
+            end, mode = stop, 'bytes'
+    return json.loads(canonical(spec))

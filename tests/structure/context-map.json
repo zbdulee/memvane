@@ -1,0 +1,1678 @@
+{
+  "contexts": {
+    "kernel": 0,
+    "settings": 1,
+    "diagnostics": 1,
+    "runtime": 2,
+    "route": 2,
+    "wiki/card": 2,
+    "provider": 3,
+    "store": 3,
+    "wiki/engines": 3,
+    "journal": 4,
+    "resident": 6,
+    "registry": 5,
+    "wiki/workspace": 5,
+    "learning": 5,
+    "wiki/intake": 6,
+    "wiki/verify": 6,
+    "wiki/dedup": 6,
+    "install": 7,
+    "recall": 7,
+    "sync": 8,
+    "wiki/lifecycle": 8,
+    "wiki/compile": 9,
+    "host": 10,
+    "app": 11
+  },
+  "entrypoints": [
+    "entry/run.py"
+  ],
+  "modules": {
+    "__init__.py": {
+      "context": "host",
+      "layer": "entry",
+      "pinned": false
+    },
+    "entry/run.py": {
+      "context": "app",
+      "layer": "entry",
+      "pinned": true
+    },
+    "entry/setup.py": {
+      "context": "app",
+      "layer": "entry",
+      "pinned": true
+    },
+    "hermes_adapter/__init__.py": {
+      "context": "host",
+      "layer": "entry",
+      "pinned": false
+    },
+    "hermes_adapter/core_bridge.py": {
+      "context": "host",
+      "layer": "entry",
+      "pinned": true
+    },
+    "hermes_adapter/plugin.py": {
+      "context": "host",
+      "layer": "entry",
+      "pinned": false
+    },
+    "memvane/__init__.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": true
+    },
+    "memvane/app/__init__.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/entry_commands.py": {
+      "context": "app",
+      "layer": "entry",
+      "pinned": false
+    },
+    "memvane/app/runtime_dispatch.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/setup_entry.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/wake_entry.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/wiring.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/__init__.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/api.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/diagnostic_trace.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/event_log.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/job_telemetry.py": {
+      "context": "diagnostics",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/diagnostics/types.py": {
+      "context": "diagnostics",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/host/__init__.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/api.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/host_response.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/host_rules.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/onboarding_choice.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/onboarding_notice.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/route_input.py": {
+      "context": "host",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/host/types.py": {
+      "context": "host",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/install/__init__.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/api.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/initial_build.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/verification_scope.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/wiki_keeper.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/ledger_common.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/runtime_wake_cancel.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/types.py": {
+      "context": "install",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/journal/__init__.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/api.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/application/__init__.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/selected_proof.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/service_proof.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/selection_transitions.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/journal_reads.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/reader_checks.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/application/install_setup.py": {
+      "context": "journal",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/journal/build_record.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/initial_build.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/dispatch_target.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/install_journal.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/journal_paths.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/journal_reader.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/ledger_io.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/notification_route.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/preview_proof.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/reader_lease.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/reader_windows.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/route_selection.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/journal/types.py": {
+      "context": "journal",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/journal/writer_scope.py": {
+      "context": "journal",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/__init__.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/atomic_rename.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/bundle_paths.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/cooldown.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/errors.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/hook_budget.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/memvane_execution_guard.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/memvane_paths.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/memvane_version.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/package.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/paths.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/persistent_identity.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/process.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/resource_deferred.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/kernel/safe_rmtree.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/__init__.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/api.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/__init__.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/adapter.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/adapter_binding.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/automatic_cohort.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/automatic_staging.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/bounded_calibration.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/calibration.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/candidate_apply.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/capabilities.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/claude_adapter.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/codex_adapter.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/compact_input.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/contracts.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/corpus.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/cycle_policy.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/dataset.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/edit_segments.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/egress_guard.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/evaluation_queue.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/general_cohort.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/general_gold_ledger.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/general_teacher.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/inference_identity.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/inference_service.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/jobs.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/learning.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/learning_profile.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/learning_queue.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/learning_retry.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/live_select.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/local_cycle.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/offline.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/pool.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/project_scope.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/project_worker.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/raw.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/resident.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/runtime_authorization.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/runtime_installer.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/runtime_setup.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/safe_source.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/schedule.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/seam.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/selection_gold.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/selection_port.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/selection_queue.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/selection_read.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/selector_heal.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/shared.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/store.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/teacher.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/teacher_budget.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/training_cursor.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/training_watch.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/transport.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning_auto.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning_cli.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/prepare_laya_inference.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/project_learning_setup.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/selector_maintenance.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/types.py": {
+      "context": "learning",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/provider/__init__.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/adapters/__init__.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/adapters/closure.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/adapters/local_embed_provider.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": true
+    },
+    "memvane/provider/adapters/local_embed_service.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/api.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/domain/__init__.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/domain/profile.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/embed_runtime.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/fixture_port.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/query_embed_child.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/runtime_digests.py": {
+      "context": "provider",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/provider/types.py": {
+      "context": "provider",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/recall/__init__.py": {
+      "context": "recall",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/recall/api.py": {
+      "context": "recall",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/recall/domain/__init__.py": {
+      "context": "recall",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/recall/domain/rules.py": {
+      "context": "recall",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/recall/keywords.py": {
+      "context": "recall",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/recall/reader_dispatch.py": {
+      "context": "recall",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/recall/selected_recall.py": {
+      "context": "recall",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/recall/recall_scope.py": {
+      "context": "recall",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/recall/verified_rows.py": {
+      "context": "recall",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/recall/types.py": {
+      "context": "recall",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/registry/__init__.py": {
+      "context": "registry",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/registry/api.py": {
+      "context": "registry",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/registry/log_targets.py": {
+      "context": "registry",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/registry/memvane_registry.py": {
+      "context": "registry",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/registry/types.py": {
+      "context": "registry",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/resident/__init__.py": {
+      "context": "resident",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/resident/api.py": {
+      "context": "resident",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/resident/embed_resident.py": {
+      "context": "resident",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/resident/resident_service.py": {
+      "context": "resident",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/resident/types.py": {
+      "context": "resident",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/route/__init__.py": {
+      "context": "route",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/route/api.py": {
+      "context": "route",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/route/index_host_route.py": {
+      "context": "route",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/route/types.py": {
+      "context": "route",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/runtime/__init__.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/api.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/bounded_calibration.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/memory_policy.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/private_json.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/qa_model_budget.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/resource_controls.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/resource_coordination.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/resource_platform.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/resource_report.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/runtime_admission.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/runtime_cpu.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/runtime_lease.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/runtime_monitor.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/runtime_wake_policy.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/runtime_work.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/service_state.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/sync_owner_lock.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/runtime/types.py": {
+      "context": "runtime",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/runtime/wake_cancel.py": {
+      "context": "runtime",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/__init__.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/api.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/collection_match.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/config.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/diagnostic_consent.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/project_dir.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/resolve_paths.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/settings_lock.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/source_exclusion.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/source_label.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/source_text.py": {
+      "context": "settings",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/settings/types.py": {
+      "context": "settings",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/store/__init__.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/api.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/application/__init__.py": {
+      "context": "store",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/store/application/store_ops.py": {
+      "context": "store",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/store/application/view_sync.py": {
+      "context": "store",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/store/blob/__init__.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/blob/blob_fill.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/blob/blob_lease.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/blob/blob_schema.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/blob/blob_store.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/blob/blob_values.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/checkout/__init__.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/checkout/checkout_view.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/types.py": {
+      "context": "store",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/store/view/__init__.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/fill_schema.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_fill.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_fts.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_reader.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_rows.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_schema.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_store.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_values.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/view_vectors.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/sync/__init__.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/sync/api.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/sync/compile_intents.py": {
+      "context": "sync",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/sync/intent_ack.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/sync/product_sync_worker.py": {
+      "context": "sync",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/sync/types.py": {
+      "context": "sync",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/__init__.py": {
+      "context": "kernel",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/__init__.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/api.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/archive.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/ownership.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/snapshot.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/source_spans.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/trust.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/types.py": {
+      "context": "wiki/card",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/card/wiki_card.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/wiki_freshness.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/wiki_source_missing.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/yaml_scalars.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/__init__.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/api.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/selected_execution.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/types.py": {
+      "context": "wiki/compile",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/compile/wiki_compile.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/wiki_compile_defaults.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/wiki_compile_retrieval.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/wiki_compile_worker.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/wiki_extract.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/compile/wiki_init.py": {
+      "context": "wiki/compile",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/dedup/__init__.py": {
+      "context": "wiki/dedup",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/dedup/api.py": {
+      "context": "wiki/dedup",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/dedup/types.py": {
+      "context": "wiki/dedup",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/dedup/wiki_dedup_judge.py": {
+      "context": "wiki/dedup",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/dedup/wiki_dedup_resolve.py": {
+      "context": "wiki/dedup",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/dedup/wiki_dedup_scan.py": {
+      "context": "wiki/dedup",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/__init__.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/api.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/execution.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/extractors/__init__.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/extractors/claude_adapter.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/extractors/codex_adapter.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/extractors/hermes_adapter.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/extractors/lib.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/qa_model_budget.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/types.py": {
+      "context": "wiki/engines",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/intake/__init__.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/api.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/external_edits.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/posttool.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/source_scan.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/types.py": {
+      "context": "wiki/intake",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/intake/wiki_backfill.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/wiki_compile_enqueue.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/wiki_discovery.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/intake/wiki_source_intent.py": {
+      "context": "wiki/intake",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/__init__.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/api.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/git_branch_safety.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/types.py": {
+      "context": "wiki/lifecycle",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/wiki_lifecycle.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/wiki_lifecycle_request.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/lifecycle/wiki_source_retire.py": {
+      "context": "wiki/lifecycle",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/__init__.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/api.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/intent_ack.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/types.py": {
+      "context": "wiki/verify",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/__init__.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/api.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/atomic_io.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/compile_paths.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/lifecycle_requests.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/queue.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/queue_paths.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/scan_state.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/types.py": {
+      "context": "wiki/workspace",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/wiki_activity_log.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/wiki_mutation_lock.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/wiki_selected_laya.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/api.py": {
+      "context": "app",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/install/locks.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/wiki_card_budget.py": {
+      "context": "learning",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/card/source_revisions.py": {
+      "context": "wiki/card",
+      "layer": "domain",
+      "pinned": false
+    },
+    "memvane/wiki/verify/wiki_verify_worker.py": {
+      "context": "wiki/verify",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/wiki/verify/verification_stamp.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/verify/verify_ledger.py": {
+      "context": "wiki/verify",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/manifest_ledger.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/workspace/wiki_collection.py": {
+      "context": "wiki/workspace",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/card/frontmatter_render.py": {
+      "context": "wiki/card",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/wiki/engines/call_budget.py": {
+      "context": "wiki/engines",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/app/setup_activation.py": {
+      "context": "app",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/application/__init__.py": {
+      "context": "install",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/application/onboarding_workflow.py": {
+      "context": "install",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/application/onboarding_restore.py": {
+      "context": "install",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/install/application/onboarding_activation.py": {
+      "context": "install",
+      "layer": "application",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/host_inventory.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/learning_db.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    }
+  },
+  "pinned_paths": [
+    ".claude-plugin/plugin.json",
+    ".codex-plugin/plugin.json",
+    "LICENSE",
+    "README.md",
+    "plugin.json",
+    "plugin.yaml",
+    "hooks/run-hook",
+    "hooks/hooks.json",
+    "hooks/hooks-codex.json",
+    "entry/run.py",
+    "entry/setup.py",
+    "memvane/__init__.py",
+    "memvane/provider/adapters/local_embed_provider.py",
+    "memvane/provider/adapters/laya_local_embed_worker.mjs",
+    "memvane/provider/adapters/laya_qmd_chunking.mjs",
+    "hermes_adapter/core_bridge.py",
+    "scripts/development_guard.py"
+  ],
+  "size_enforce_from": "2026-11-27"
+}

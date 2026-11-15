@@ -1,0 +1,1403 @@
+#!/usr/bin/env python3
+"""Deterministic wiki compile writer for MemVane.
+
+This command intentionally accepts already-compact candidate JSON. It does not
+persist raw transcripts and it does not run from query-time recall hooks.
+"""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from memvane.kernel.paths import safe_managed_dir, read_jsonl
+from memvane.wiki.workspace.api import write_text_atomic, trim_jsonl, compact_manifest, find_wiki_collection
+from memvane.wiki.workspace import api as workspace_files
+from memvane.wiki.workspace import api as cp, types as ct
+from memvane.wiki.workspace.types import MACHINE_DELETE_ACTION
+from memvane.settings import api as qmd_config, types as settings_types
+from memvane.settings import api as source_text
+from memvane.wiki.dedup import api as wiki_dedup_judge
+from memvane.wiki.card import types as wiki_markers
+from memvane.wiki.card.api import frontmatter_sections as _frontmatter_sections
+from memvane.wiki.card.api import parse_frontmatter, auto_writable_text
+from memvane.wiki.card.api import render_frontmatter_fields as _render_frontmatter_fields
+from memvane.wiki.card import api as yaml_scalars
+
+ALLOWED_TYPES = {
+    "concept",
+    "entity",
+    "decision",
+    "session",
+    "comparison",
+    "query",
+    "character",
+    "world-rule",
+    "timeline",
+    "plot-decision",
+    "style",
+}
+TYPE_DIRS = {
+    "concept": "concepts",
+    "entity": "entities",
+    "decision": "decisions",
+    "session": "sessions",
+    "comparison": "comparisons",
+    "query": "queries",
+    "character": "characters",
+    "world-rule": "world",
+    "timeline": "timeline",
+    "plot-decision": "plot",
+    "style": "style",
+}
+TYPE_DIR_NAMES = set(TYPE_DIRS.values())
+ALLOWED_CONFIDENCE = {"high", "medium", "low"}
+# frontmatter flow mapping의 키로 허용할 형태. 모델이 준 키가 개행·구두점을 담으면
+# 매핑을 벗어나 새 줄을 만들 수 있다. 정의는 yaml_scalars(emit/parse 쌍의 SSOT)에 있다 —
+# 읽는 쪽(recall.parse_frontmatter_sources)이 같은 화이트리스트를 써야 한다.
+from memvane.wiki.card.types import SAFE_KEY_RE as SAFE_YAML_KEY_RE, SOURCE_SPANS_KEY
+SECRET_LITERAL_PATTERNS = [
+    re.compile(r"sk-[A-Za-z0-9_-]{16,}"),
+]
+# The `key: value` pattern is the one a technical card can trip merely by *naming* a
+# config key, so its value is captured separately (group "value") and checked against
+# _NON_SECRET_VALUE_RE below.
+SECRET_KEYWORD_PATTERN = re.compile(r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*(?P<value>[^\s]+)")
+# Kept as the full pattern list for compatibility; prefer secret_matches()/redact().
+# Values that cannot be a credential under any reading: placeholders, references to a
+# value stored elsewhere, type names, booleans. A keyword match on one of these is
+# dropped instead of rejecting the whole card. This narrows false positives only — an
+# opaque value never matches here, so it is still redacted/rejected as before.
+_NON_SECRET_VALUE_RE = re.compile(
+    r"""(?ix) ^ (?:
+          <[^>]*>                             # <YOUR_TOKEN>, <값>, <REDACTED>
+        | \{\{[^}]*\}\} | \{[^}]*\}           # {{token}}, {token}
+        | \$\{?[A-Za-z_][A-Za-z0-9_]*\}?      # $GITHUB_TOKEN, ${GITHUB_TOKEN}
+        | \[?REDACTED\]?
+        | \.{2,} | \*{2,} | x{3,} | _{2,} | -{2,}
+        | true|false|null|none|nil|undefined
+        | str|string|int|integer|number|float|bool|boolean|optional|required|any|object
+    ) [.,;:)\]}'"`]* $""",
+)
+
+
+def is_non_secret_value(value: str) -> bool:
+    return bool(_NON_SECRET_VALUE_RE.match(value.strip().strip("`\"'")))
+
+
+def secret_matches(text: str) -> list[re.Match]:
+    """Secret-pattern hits in `text`, excluding keyword hits on non-secret values."""
+    matches = [m for pattern in SECRET_LITERAL_PATTERNS for m in pattern.finditer(text)]
+    matches.extend(
+        m for m in SECRET_KEYWORD_PATTERN.finditer(text)
+        if not is_non_secret_value(m.group("value"))
+    )
+    return matches
+
+
+def has_secret_like(text: str) -> bool:
+    return bool(secret_matches(text))
+TRANSCRIPT_RE = re.compile(r"(?im)^\s*(user|assistant|system|human|ai)\s*:")
+# 마커 리터럴은 card/types.py가 SSOT다 — recall의 읽기 스캐너와 같은 문자열을
+# 쓰게 해서 형식 변경이 한쪽만 깨는 일을 막는다(엄격도 차이는 그 모듈 docstring 참고).
+from memvane.wiki.card.types import AUTO_START_RE, AUTO_BLOCK_RE, FRONTMATTER_RE
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def today() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def load_payload() -> dict:
+    try:
+        parsed = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def project_paths(cwd: str) -> tuple[Path, dict]:
+    found = qmd_config.find_project_config(cwd)
+    return Path(found["projectRoot"]).resolve(), found["config"]
+
+
+def existing_managed_dir(root: Path, rel: str) -> Path | None:
+    """``safe_managed_dir`` without creating the directory."""
+    path = (root / rel).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    if path.exists() and (path.is_symlink() or not path.is_dir()):
+        return None
+    return path
+
+
+
+
+def normalize_identity(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value.strip().lower())
+
+
+def slug_identity(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"[^A-Za-z0-9가-힣]+", "-", value.lower()).strip("-")
+
+
+def identity_keys(value: object) -> set[str]:
+    return {key for key in (normalize_identity(value), slug_identity(value)) if key}
+
+
+def clean_aliases(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    aliases = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        alias = item.strip()
+        if not alias:
+            continue
+        norm = normalize_identity(alias)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        aliases.append(alias)
+    return aliases
+
+
+MAX_RELATED = 20
+
+
+def clean_related(value: object, own_key: str = "") -> list[str]:
+    """Sibling card keys from a split: one line each, never the card's own key."""
+    own = normalize_identity(own_key) if own_key else ""
+    keys = [yaml_scalars.fold_inline(item)[:200] for item in clean_aliases(value)]
+    return [key for key in keys if key and normalize_identity(key) != own][:MAX_RELATED]
+
+
+def clean_canonical_key(value: object) -> str:
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+
+
+
+
+
+
+
+
+def identity_values_from_meta(meta: dict) -> list[str]:
+    values = []
+    for key in ("canonicalKey", "title"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    aliases = meta.get("aliases")
+    if isinstance(aliases, list):
+        values.extend(alias.strip() for alias in aliases if isinstance(alias, str) and alias.strip())
+    elif isinstance(aliases, str) and aliases.strip():
+        values.append(aliases.strip())
+    return values
+
+
+def build_identity_index(wiki_root: Path) -> dict[str, set[Path]]:
+    index: dict[str, set[Path]] = {}
+    if not wiki_root.exists():
+        return index
+    for page in wiki_root.rglob("*.md"):
+        # Wiki-root meta pages left by earlier releases are not cards: they never
+        # answer an identity lookup, so a card is never written over one.
+        if source_text.is_wiki_meta_page(page, wiki_root):
+            continue
+        try:
+            text = page.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        meta, ok = parse_frontmatter(text)
+        if not ok:
+            continue
+        for value in identity_values_from_meta(meta):
+            for key in identity_keys(value):
+                index.setdefault(key, set()).add(page.resolve())
+    return index
+
+
+def candidate_identity_tiers(candidate: dict) -> list[tuple[str, list[str]]]:
+    tiers = []
+    canonical = clean_canonical_key(candidate.get("canonicalKey"))
+    if canonical:
+        tiers.append(("canonicalKey", [canonical]))
+    aliases = clean_aliases(candidate.get("aliases"))
+    if aliases:
+        tiers.append(("aliases", aliases))
+    title = str(candidate.get("title") or "").strip()
+    if title:
+        tiers.append(("title", [title]))
+    return tiers
+
+
+def source_paths_of(sources) -> set[str]:
+    """`sources` 목록 → 경로 집합. **두 표기를 모두 받는다.**
+
+    candidate(모델 출력)는 dict 목록이지만, 카드 frontmatter를 `parse_frontmatter`로 읽으면
+    flow mapping이 **raw 문자열**로 남는다(`{kind: file, path: "docs/a.md"}`). 한 표기만
+    보면 카드 쪽이 항상 빈 집합이 되어 "소스가 겹치는가" 판정이 조용히 죽는다.
+    역파싱은 `yaml_scalars.load_flow_mapping`(SSOT)을 쓴다.
+    """
+    if not isinstance(sources, list):
+        return set()
+    paths = set()
+    for item in sources:
+        if isinstance(item, str):
+            fields, _issue = yaml_scalars.load_flow_mapping(item)
+            item = fields
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        if isinstance(path, str) and path.strip():
+            paths.add(path.strip())
+    return paths
+
+
+def explicit_target_agrees(target: Path, candidate: dict) -> tuple[bool, str]:
+    """Does a model-chosen `targetPath` actually name the candidate's own card?
+
+    `resolve_target` trusts `targetPath` over identity lookup, so an extractor that
+    emits an unrelated existing path sends a **different** card's page down the
+    `updated` branch. Measured consequences, both bad:
+      - verify says `inconclusive` → the card is DELETED, and anything a human wrote
+        outside `qmd:auto:end` is gone for good (verify-deleted.jsonl stores no body).
+        This is the live `지킴진단-…md` loop.
+      - verify says `pass` → only the auto block is replaced, so the body states facts
+        from source B while `sources:`/`title` still describe A. Provenance is silently
+        wrong and the injected `↳` source path points at the wrong file.
+
+    Agreement means the candidate shares an identity value (canonicalKey / alias /
+    title, via the same `identity_keys` normalisation the index uses) OR at least one
+    `sources[].path` with the page on disk. Either is enough: a re-extraction of the
+    same document legitimately renames a card, and a renamed source legitimately keeps
+    the identity. Neither → route to review instead of overwriting.
+
+    Unreadable/unparsable frontmatter returns True (fail-open): that page is already
+    handled by `is_auto_writable_page`, and blocking writes on a parse failure would
+    stall compile for a card nobody can fix from here.
+    """
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return True, ""
+    meta, ok = parse_frontmatter(text)
+    if not ok:
+        return True, ""
+    existing_keys: set[str] = set()
+    for value in identity_values_from_meta(meta):
+        existing_keys |= identity_keys(value)
+    candidate_keys: set[str] = set()
+    for _reason, values in candidate_identity_tiers(candidate):
+        for value in values:
+            candidate_keys |= identity_keys(value)
+    if existing_keys & candidate_keys:
+        return True, ""
+    if source_paths_of(meta.get("sources")) & source_paths_of(candidate.get("sources")):
+        return True, ""
+    return False, "identity_mismatch"
+
+
+def lookup_identity(candidate: dict, identity_index: dict[str, set[Path]]) -> tuple[str, list[Path]]:
+    for reason, values in candidate_identity_tiers(candidate):
+        matches = set()
+        for value in values:
+            for key in identity_keys(value):
+                matches.update(identity_index.get(key, set()))
+        if matches:
+            return reason, sorted(matches)
+    return "", []
+
+
+def classify_explicit_target(raw: str, wiki_root: Path, suggested_type: str) -> tuple[str, Path | None]:
+    """Decide how to treat an extractor-provided targetPath.
+
+    Extractors sometimes emit wiki-root-relative paths (``concepts/foo.md``)
+    instead of project-root-relative ones (``.memvane/wiki/concepts/foo.md``).
+    Returns one of:
+    - ("use", path): wiki-root-relative path, normalized under wiki_root
+    - ("fallback", None): looks wiki-root-relative but untrusted (bad extension,
+      type mismatch, escapes wiki_root) — ignore it and resolve by identity
+    - ("legacy", None): treat as project-root-relative (original behavior)
+    """
+    segments = [s for s in raw.replace("\\", "/").split("/") if s and s != "."]
+    if raw.startswith("/") or not segments:
+        return "legacy", None
+    if any(s == ".." or s.startswith(".") for s in segments):
+        return "legacy", None
+    if segments[0] not in TYPE_DIR_NAMES:
+        return "legacy", None
+    if not segments[-1].endswith(".md"):
+        return "fallback", None
+    if segments[0] != TYPE_DIRS.get(suggested_type, "concepts"):
+        return "fallback", None
+    target = wiki_root.joinpath(*segments).resolve()
+    try:
+        target.relative_to(wiki_root)
+    except ValueError:
+        return "fallback", None
+    return "use", target
+
+
+def resolve_target(root: Path, wiki_root: Path, candidate: dict, suggested_type: str, identity_index: dict[str, set[Path]]) -> tuple[Path | None, str, list[Path]]:
+    raw_target = candidate.get("targetPath")
+    if isinstance(raw_target, str) and raw_target.strip():
+        outcome, normalized = classify_explicit_target(raw_target.strip(), wiki_root, suggested_type)
+        if outcome == "use":
+            return normalized, "explicit", []
+        if outcome == "legacy":
+            target = (root / raw_target.strip()).resolve()
+            try:
+                target.relative_to(wiki_root)
+            except ValueError:
+                return None, "unsafe", []
+            if not source_text.is_wiki_meta_page(target, wiki_root):
+                return target, "explicit", []
+            # A wiki-root meta page is never a card target: resolve by identity.
+        # "fallback": untrusted wiki-relative targetPath — resolve by identity instead
+    match_reason, matches = lookup_identity(candidate, identity_index)
+    if len(matches) == 1:
+        return matches[0], match_reason, matches
+    if len(matches) > 1:
+        return None, f"ambiguous_{match_reason}", matches
+    title = str(candidate.get("title") or "wiki-page")
+    slug = re.sub(r"[^A-Za-z0-9가-힣]+", "-", title.lower()).strip("-") or "wiki-page"
+    target = (wiki_root / TYPE_DIRS.get(suggested_type, "concepts") / f"{slug}.md").resolve()
+    try:
+        target.relative_to(wiki_root)
+    except ValueError:
+        return None, "unsafe", []
+    return target, "slug", []
+
+
+def redact(text: str) -> tuple[str, list[str]]:
+    redacted = False
+    result = text
+    for pattern in SECRET_LITERAL_PATTERNS:
+        if pattern.search(result):
+            redacted = True
+            result = pattern.sub("[REDACTED]", result)
+
+    def replace_keyword(match: re.Match) -> str:
+        nonlocal redacted
+        if is_non_secret_value(match.group("value")):
+            return match.group(0)
+        redacted = True
+        return "[REDACTED]"
+
+    result = SECRET_KEYWORD_PATTERN.sub(replace_keyword, result)
+    return result, ["secret_like"] if redacted else []
+
+
+def source_hash(candidate: dict) -> str:
+    identity = clean_canonical_key(candidate.get("canonicalKey")) or str(candidate.get("title") or "")
+    stable = {
+        "identity": identity,
+        "summary": candidate.get("summary"),
+        "sources": candidate.get("sources"),
+    }
+    return hashlib.sha256(json.dumps(stable, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def lint_candidate(candidate: dict, target: Path | None, max_lines: int) -> dict:
+    findings = []
+    title = str(candidate.get("title") or "").strip()
+    summary = str(candidate.get("summary") or "").strip()
+    if not title:
+        findings.append("missing_title")
+    if not summary:
+        findings.append("missing_summary")
+    if target is None:
+        findings.append("unsafe_target_path")
+    if TRANSCRIPT_RE.search(summary):
+        findings.append("transcript_like")
+    if has_secret_like(summary) or has_secret_like(title):
+        findings.append("secret_like")
+    if len(summary.splitlines()) > max_lines:
+        findings.append("too_many_lines")
+    return {"verdict": "clean" if not findings else "reject", "findings": findings}
+
+
+def append_jsonl(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def effort_audit(candidate: dict) -> dict:
+    raw = candidate.get("_qmd") if isinstance(candidate.get("_qmd"), dict) else {}
+    effort = raw.get("reasoningEffort") if isinstance(raw.get("reasoningEffort"), dict) else {}
+    from memvane.wiki.engines import api as engines
+    return {"reasoningEffort": engines.reasoning_effort_audit(effort)}
+
+
+def same_generated_identity(row: dict, record: dict) -> bool:
+    if row.get("targetPath") and row.get("targetPath") == record.get("targetPath"):
+        return True
+    if record.get("targetResolution") == "explicit":
+        return False
+    if row.get("sourceHash") and row.get("sourceHash") == record.get("sourceHash"):
+        return True
+    canonical_key = record.get("canonicalKey")
+    if canonical_key and row.get("canonicalKey") == canonical_key:
+        return True
+    return False
+
+
+def yaml_scalar(value) -> str:
+    return yaml_scalars.dump(value)
+
+
+def source_flow_entries(sources) -> list:
+    """`sources` 후보 목록 → frontmatter에 쓸 flow mapping 표기 목록.
+
+    **`path` 키가 있으면 비어 있지 않은 문자열이어야 하고, 아니면 그 항목을 버린다.**
+    candidate는 extractor(모델) 출력이라 `{"kind": "file", "path": False}` 같은 값이 올 수
+    있고, 그러면 표기가 `path: false`로 나가 읽는 쪽에서 문자열 `"false"`가 된다 — `false`
+    라는 이름의 파일이 있으면 그것이 원문으로 주입되고 진단에는 정상(drop 0)으로 남는다.
+    `"false"`로 강제하는 것은 무의미한 경로를 만드는 것이므로 항목 자체를 버린다.
+    **`path`가 애초에 없는 항목은 그대로 쓴다** — `{kind: "session", ref: "session:local"}`
+    처럼 파일이 아닌 출처 레코드가 정상 형태다(수동 compile 경로 `wiki_extract`가 이걸
+    쓴다). 주입 대상이 아닐 뿐(읽기 쪽이 kind/path로 거른다) 카드의 출처 기록이므로
+    지우면 감사 추적이 사라진다.
+    비문자 **값 일반**의 방어는 `yaml_scalars.dump_flow_mapping`에 있다(키가 조용히 빠진다).
+    여기서 항목 단위로 한 번 더 보는 이유는, `path` 키만 조용히 빠지면 "소스가 있다고
+    주장하지만 경로가 없는" 레코드가 카드에 남기 때문이다.
+    남는 항목이 없으면 호출부가 `{kind: unknown}` 센티넬을 쓴다.
+    """
+    entries = []
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        if "path" in source:
+            path_value = source.get("path")
+            if not isinstance(path_value, str) or not path_value.strip():
+                continue
+        # 값은 yaml_scalar로 인용되지만 **키도 모델이 준다** — 개행이 든 키는 flow mapping을
+        # 벗어나 새 줄을 만들 수 있다. 키는 닫힌 스키마(kind/path/collection)이므로 안전한
+        # 식별자만 통과시킨다. emit/parse 쌍은 yaml_scalars가 SSOT다(읽는 쪽은 recall).
+        flow = yaml_scalars.dump_flow_mapping(source)
+        if flow:
+            entries.append(flow)
+    return entries
+
+
+def authoritative_sources(candidate: dict) -> list:
+    """큐 잡이 아는 **실제** 소스 목록 — 모델이 밀어낼 수 없는 검증 근거.
+
+    `sources`는 extractor(모델) 출력이 섞인 목록이고 verifier는 그 목록 앞에서
+    `MAX_SOURCES`(3)개만 읽는다. 실제 소스를 앞에 두는 것만으로도 밀려나지 않지만,
+    그 보장이 **목록 순서**라는 암묵 계약이면 다음 편집에서 조용히 깨지고 그때 깨지는
+    것은 "검증됐다"는 주장 자체다. 그래서 사실을 별도 필드로 못박는다.
+
+    **frontmatter로는 나가지 않는다** — `markdown_page`는 `sources`만 읽으므로 이 값이
+    카드에 새지 않고, 따라서 `dump_flow_mapping`의 키 화이트리스트(일반 식별자)에
+    새 키가 노출되는 문제도 없다. 값은 여기서 닫힌 스키마(kind/path/collection)로
+    재구성한다 — 큐 잡을 손으로 고친 경우에도 모델 제공 키가 그대로 흐르지 않는다.
+    비면 키를 만들지 않으므로 수동 compile 경로(`wiki_extract`)의 잡 형태는 불변이다.
+
+    `kind: "file"` 판정은 `recall.SOURCE_KIND_FILE`·`wiki_verify_worker.load_sources`와
+    **같은 집합이어야 한다**(recall.py의 그 상수 주석이 이 계약을 기록한다).
+    """
+    raw = candidate.get("authoritativeSources")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, dict) or item.get("kind") != "file":
+            continue
+        path = item.get("path")
+        if not isinstance(path, str) or not path.strip():
+            continue
+        collection = item.get("collection")
+        out.append({
+            "kind": "file",
+            "path": path,
+            "collection": collection if isinstance(collection, str) else "",
+        })
+    return out
+
+
+def source_revisions(candidate: dict) -> list[dict]:
+    """Return the complete closed-schema compiler provenance, or no proof.
+
+    ``yaml_scalars`` owns the schema.  Rejecting the whole list when one sibling
+    is malformed prevents a partial authoritative source set from looking
+    complete.
+    """
+    raw = candidate.get("sourceRevisions")
+    if not isinstance(raw, list) or not raw:
+        return []
+    normalized = [yaml_scalars.normalize_source_revision(item) for item in raw]
+    if any(item is None for item in normalized):
+        return []
+    return normalized
+
+
+def markdown_page(candidate: dict, summary: str, status: str, redactions: list[str], h: str) -> str:
+    created = today()
+    # candidate는 **extractor(모델) 출력**이다. frontmatter로 나가는 모든 모델 제공 값은
+    # 닫힌 집합으로 검증하거나 yaml_scalar를 거쳐야 한다 — raw로 방출하면 개행 하나로
+    # top-level 키를 위조할 수 있다(`trigger="promote\nstatus: verified"` → PyYAML은
+    # status를 verified로 읽고, wiki_compile.parse_frontmatter는 ok=False로 fail-close해
+    # 그 카드의 verify·dedup이 영구히 멈춘다).
+    # type·confidence·status는 닫힌 집합이라 unquoted를 유지한다(TYPE_DIRS 조회와
+    # frontmatter_patch_scalar의 status 표기 정책이 그 형태를 전제한다).
+    suggested_type = candidate.get("suggestedType") if candidate.get("suggestedType") in ALLOWED_TYPES else "concept"
+    confidence = candidate.get("confidence") if candidate.get("confidence") in ALLOWED_CONFIDENCE else "medium"
+    status = status if status in settings_types.WIKI_STATUSES else "generated"
+    sources = candidate.get("sources") if isinstance(candidate.get("sources"), list) else []
+    triggers = [candidate.get("trigger")] if isinstance(candidate.get("trigger"), str) else []
+    canonical_key = clean_canonical_key(candidate.get("canonicalKey"))
+    aliases = clean_aliases(candidate.get("aliases"))
+    # title은 한 줄 라벨이므로 여기서 접는다(모든 호출자를 덮는 단일 직렬화 지점).
+    lines = [
+        "---",
+        f"title: {yaml_scalar(yaml_scalars.fold_inline(candidate.get('title') or 'Untitled'))}",
+    ]
+    if canonical_key:
+        lines.append(f"canonicalKey: {yaml_scalar(canonical_key)}")
+    if aliases:
+        lines.append("aliases:")
+        for alias in aliases:
+            lines.append(f"  - {yaml_scalar(alias)}")
+    else:
+        lines.append("aliases: []")
+    # Sibling cards of a split (wiki_card_budget). Frontmatter only, so the
+    # cross-reference costs nothing in the selector body budget.
+    related = clean_related(candidate.get("related"), canonical_key)
+    if related:
+        lines.append("related:")
+        for key in related:
+            lines.append(f"  - {yaml_scalar(key)}")
+    lines.extend([
+        f"type: {suggested_type}",
+        f"status: {status}",
+        f"created: {created}",
+        f"updated: {created}",
+        f"createdBy: {wiki_markers.CREATED_BY}",
+        f"confidence: {confidence}",
+        "sources:",
+    ])
+    source_lines = [f"  - {flow}" for flow in source_flow_entries(sources)]
+    lines.extend(source_lines if source_lines else ["  - {kind: unknown}"])
+    revisions = yaml_scalars.dump_source_revisions(source_revisions(candidate))
+    if revisions:
+        lines.append("sourceRevisions:")
+        lines.extend(f"  - {revision}" for revision in revisions)
+    lines.append("triggers:")
+    if triggers:
+        for trigger in triggers:
+            # 모델 제공 값 — 반드시 인용한다(raw면 `promote\nstatus: verified`로
+            # top-level 키를 위조할 수 있었다).
+            lines.append(f"  - {yaml_scalar(trigger)}")
+    lines.append("redactions:")
+    if redactions:
+        for item in redactions:
+            # 현재는 내부 리터럴(`secret_like`)뿐이지만 같은 경로를 쓰므로 함께 인용한다.
+            lines.append(f"  - {yaml_scalar(item)}")
+    lines.extend([
+        "---",
+        "",
+        wiki_markers.AUTO_DISCLAIMER,
+        "",
+        wiki_markers.AUTO_START_TEMPLATE.format(source_hash=h),
+        "## Summary",
+        summary,
+        wiki_markers.AUTO_END,
+        "",
+    ])
+    return "\n".join(lines)
+
+
+
+
+@workspace_files.guard_path
+def rewrite_generated_card(path: Path, old_text: str, generated_page: str) -> bool:
+    """Atomically refresh trusted frontmatter and the managed block together.
+
+    Human-maintained frontmatter/body outside the managed block survives.  The
+    compiler-owned source lists, generated status, and verification proof are
+    replaced/cleared in the same complete text passed to ``write_text_atomic``.
+    """
+    rewritten = compose_generated_card(old_text, generated_page)
+    return rewritten is not None and write_text_atomic(path, rewritten)
+
+
+def compose_generated_card(old_text: str, generated_page: str) -> str | None:
+    """Build a replacement without changing the published wiki card."""
+    old_match = FRONTMATTER_RE.match(old_text)
+    new_match = FRONTMATTER_RE.match(generated_page)
+    old_blocks = list(AUTO_BLOCK_RE.finditer(old_text))
+    new_blocks = list(AUTO_BLOCK_RE.finditer(generated_page))
+    if old_match is None or new_match is None or len(old_blocks) != 1 or len(new_blocks) != 1:
+        return None
+    old_sections = _frontmatter_sections(old_match.group(1))
+    new_sections = _frontmatter_sections(new_match.group(1))
+    if old_sections is None or new_sections is None:
+        return None
+    new_by_key = {key: lines for key, lines in new_sections}
+    required = {"status", "sources"}
+    if not required.issubset(new_by_key):
+        return None
+
+    replaced: set[str] = set()
+    merged: list[str] = []
+    proof_keys = set(settings_types.VERIFY_PROOF_FIELDS)
+    replace_sources = new_by_key["sources"] != ["sources:", "  - {kind: unknown}"]
+    for key, lines in old_sections:
+        # 줄 span 은 옛 본문을 검수한 verifier 인용의 위치다 — 재생성된 본문에 남기면 안 된다.
+        if key in proof_keys or key in {"sourceRevisions", "reviewed", SOURCE_SPANS_KEY}:
+            continue
+        if key == "status":
+            merged.extend(new_by_key["status"])
+            replaced.add("status")
+            continue
+        if key == "related" and "related" in new_by_key:
+            merged.extend(new_by_key["related"])
+            replaced.add("related")
+            continue
+        if key == "sources":
+            merged.extend(new_by_key["sources"] if replace_sources else lines)
+            if "sourceRevisions" in new_by_key:
+                merged.extend(new_by_key["sourceRevisions"])
+            replaced.update({"sources", "sourceRevisions"})
+            continue
+        merged.extend(lines)
+    for key in ("status", "sources"):
+        if key not in replaced:
+            merged.extend(new_by_key[key])
+    if "sourceRevisions" in new_by_key and "sourceRevisions" not in replaced:
+        merged.extend(new_by_key["sourceRevisions"])
+    if "related" in new_by_key and "related" not in replaced:
+        merged.extend(new_by_key["related"])
+
+    body = old_text[old_match.end():]
+    if len(list(AUTO_BLOCK_RE.finditer(body))) != 1:
+        return None
+    body = AUTO_BLOCK_RE.sub(new_blocks[0].group(0), body, count=1)
+    rewritten = "---\n" + "\n".join(merged) + "\n---\n" + body
+    return rewritten
+
+
+def write_pending_card(path: Path, text: str) -> bool:
+    """Durably stage private candidate bytes without replacing the live card."""
+    if path.exists():
+        return path.is_file() and not path.is_symlink() and path.read_text(encoding='utf-8') == text
+    name = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                         dir=path.parent, prefix='.qmd-pending-',
+                                         delete=False) as handle:
+            name = handle.name
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return True
+    except OSError:
+        return False
+    finally:
+        if name is not None and os.path.exists(name):
+            os.unlink(name)
+
+
+@workspace_files.guard_path
+@workspace_files.guard_path
+def insert_source_revisions(path: Path, revisions: list) -> bool:
+    from memvane.wiki.card.api import insert_source_revisions as implementation
+    return implementation(path, revisions)
+
+
+@workspace_files.guard_path
+def patch_frontmatter_fields(path: Path, updates: dict, blocks: dict | None = None,
+                             expected_text: str | None = None) -> bool:
+    """Rewrite only the named top-level scalar frontmatter keys in place.
+
+    Leaves every other frontmatter line and the managed body untouched.
+
+    A value of **None removes the key** instead of writing it. Blanking a proof
+    field (`verifiedBy: ""`) leaves a residue that still reads as "this card was
+    machine-verified once" — measured on 5 live cards that had been reset to
+    `generated`. Removal is the honest state for "no verification on record".
+
+    `blocks` maps a block-list key to already-serialized entries (`None` = remove).
+    Every top-level declaration of that key — duplicates and quoted spellings
+    included — is dropped together with its indented children, so no orphan
+    child line survives; non-empty entries are appended as one new block in the
+    same atomic write. **Any `status` update also removes `sourceSpans`** unless
+    the caller passes it: spans locate quotes of one verification, and a status
+    change without a fresh list would leave them describing a different verdict.
+    `expected_text` refuses the write when the file differs from what the caller
+    validated.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if expected_text is not None and text != expected_text:
+        return False
+    patched = _render_frontmatter_fields(text, updates, blocks)
+    return patched is not None and write_text_atomic(path, patched)
+
+
+def shared_collection_owned(root: Path, config: dict, collection: str) -> bool:
+    from memvane.wiki.workspace import api as wiki_selected_laya
+    selected = wiki_selected_laya.selected(root)
+    if selected is not None:
+        return any(item['name'] == collection and item['role'] == 'wiki'
+                   for item in selected[0]['collections'])
+    return os.environ.get('QMD_SETUP_GUARD_FIXTURE') == '1'
+
+
+def query_wiki_candidates(
+    root: Path, wiki_root: Path, config: dict, candidate: dict, summary: str, min_score: float
+) -> list[tuple[Path, float]]:
+    """Resolved (path, score) selected-index hits at or above `min_score`, best first.
+
+    Retrieval only. `min_score` narrows the candidate set; it must never stand in
+    for a duplicate judgment (see wiki_dedup_judge.py). Empty list covers "no
+    selected route", "no hits", and "semanticDedup disabled" alike, so every
+    caller fails open.
+    """
+    compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
+    semantic_cfg = compile_cfg.get("semanticDedup") if isinstance(compile_cfg.get("semanticDedup"), dict) else {}
+    if not semantic_cfg.get("enabled", True):
+        return []
+    collection, _ = find_wiki_collection(config)
+    if not collection or not shared_collection_owned(root, config, collection):
+        return []
+    text = f"{candidate.get('title') or ''} {summary}".strip()
+    if not text:
+        return []
+    from memvane.wiki.workspace import api as wiki_selected_laya
+    from memvane.wiki.compile import selected_execution as compile_execution
+    selected = wiki_selected_laya.selected(root)
+    if selected is not None:
+        return [(path, score) for path, score, _ in
+                compile_execution.wiki_matches(root, wiki_root, text,
+                    settings_types.DEDUP_TOP_K,
+                    settings_types.DEDUP_SIMILAR_PAGE_MAX_CHARS, bound=selected)
+                if score >= min_score]
+    # Only a selected memvane-db index answers similarity; anything else has none.
+    return []
+
+
+def find_wiki_semantic_match(
+    root: Path, wiki_root: Path, config: dict, candidate: dict, summary: str
+) -> tuple[Path | None, float | None]:
+    """Legacy score-threshold gate: (matched_path, score) for the top hit above
+    `config.DEDUP_SCORE_THRESHOLD`, else (None, None). Used only when no LLM judge
+    is available on this machine. 임계는 상수다 — daemon score가 순위 기반이라
+    설정으로 조정할 의미가 없었고(wiki_dedup_judge 참조) judge-less 폴백의 동작을
+    예전 기본값 그대로 동결하는 것이 목적이다."""
+    threshold = settings_types.DEDUP_SCORE_THRESHOLD
+    hits = query_wiki_candidates(root, wiki_root, config, candidate, summary, threshold)
+    if not hits:
+        return None, None
+    return hits[0]
+
+
+def judge_new_page_duplicate(
+    root: Path, wiki_root: Path, config: dict, compile_cfg: dict, candidate: dict, summary: str, target: Path
+) -> tuple[Path | None, float | None, dict]:
+    """Write-time duplicate check for a page about to be CREATED.
+
+    Runs for every new page regardless of how its target path was resolved. Until
+    2026-07-29 this gate only ran for `slug`-resolved targets, so a candidate whose
+    extractor supplied an explicit `targetPath` bypassed dedup entirely — 130 of
+    133 creations (97.7%) in the measured project, which is where the surviving
+    near-duplicates came from.
+
+    Returns (matched_path, score, info). matched_path is set only on a "duplicate"
+    verdict; the caller then QUEUES the pair for review and never merges it itself.
+    info["outcome"] is "ok"/"unavailable"/"transient" (see wiki_dedup_judge).
+    """
+    semantic_cfg = compile_cfg.get("semanticDedup") if isinstance(compile_cfg.get("semanticDedup"), dict) else {}
+    engine = candidate.get("engine") if isinstance(candidate.get("engine"), str) else ""
+    budget = wiki_dedup_judge.max_pairs_per_compile(compile_cfg)
+    # Config-only availability check BEFORE the retrieval query: with no judge on
+    # this machine the caller falls back to the legacy gate, and querying the
+    # daemon here would only add latency.
+    if budget <= 0 or not wiki_dedup_judge.is_available(compile_cfg, engine):
+        return None, None, {"outcome": wiki_dedup_judge.OUTCOME_UNAVAILABLE, "reason": "judge_unavailable"}
+
+    min_score = float(semantic_cfg.get("candidateMinScore", 0.3))
+    hits = query_wiki_candidates(root, wiki_root, config, candidate, summary, min_score)
+    if not hits:
+        return None, None, {"outcome": wiki_dedup_judge.OUTCOME_OK, "reason": "no_candidates"}
+
+    target_resolved = target.resolve()
+    new_page = {
+        "path": target.relative_to(root).as_posix(),
+        "content": f"# {candidate.get('title') or ''}\n\n{summary}",
+    }
+    last_info: dict = {"outcome": wiki_dedup_judge.OUTCOME_OK, "reason": "no_duplicate"}
+    judged = 0
+    for matched, score in hits:
+        if judged >= budget:
+            break
+        if matched.resolve() == target_resolved:
+            continue
+        existing = wiki_dedup_judge.read_card(matched)
+        if existing is None:
+            continue
+        judged += 1
+        verdict, info = wiki_dedup_judge.judge_pair(
+            root, compile_cfg,
+            new_page,
+            {"path": matched.relative_to(root).as_posix(), "content": existing},
+            engine,
+        )
+        last_info = info
+        if info.get("outcome") != wiki_dedup_judge.OUTCOME_OK:
+            return None, None, info
+        if verdict == "duplicate":
+            return matched, score, info
+    return None, None, last_info
+
+
+def budget_refused(root: Path, config: dict, selected, wiki_root: Path, target: Path,
+                   record: dict, candidate_path: Path, card_text: str,
+                   floor_text: str | None = None, final_reason: str | None = None) -> bool:
+    """Whether to hold back a card whose selector body exceeds ``wiki_card_budget``.
+
+    Best effort: new and updated cards target the budget, and an over-budget card
+    is held back once so its caller can split it. ``card_text`` is the complete
+    file this compile would write (for an update, the composed card with its
+    hand-written sections). Held back, nothing is written: the candidate ledger
+    row and stdout carry ``split-required``. ``floor_text`` is the same card with
+    an empty summary; when even that does not fit, the hand-written sections alone
+    exceed the budget (``manual_section_over_budget``).
+
+    ``final_reason`` (the caller's ``--budget-final`` pass after its one split
+    attempt) writes an over-budget card anyway and logs ``wiki.card
+    over_budget_written``; the selector scores such a card by its leading part.
+    A card no selector runtime can count is written with ``measure_failed``, and
+    with no selector tokenizer on the machine with ``unmeasured``. When a runtime
+    failed before another counted, every event carries its ``measureId``,
+    ``attempts`` and ``failure`` codes, and a card that fits logs
+    ``measured_after_failure`` (nothing is logged for a fitting card otherwise).
+    """
+    from memvane.learning.api import (card_budget_failure_fields, emit_card_budget, measure_card,
+                                      selector_tokenizers)
+    tokenizer = selector_tokenizers(config, root)
+    measured = measure_card(card_text, tokenizer)
+    rel = target.relative_to(wiki_root).as_posix()
+    fields = {"size": measured["size"], "budget": measured["budget"],
+              "method": measured["method"]}
+    # A runtime that failed before another answered stays visible on every outcome.
+    failure = card_budget_failure_fields(measured)
+    if measured["reason"] in ("measure_failed", "tokenizer_unavailable"):
+        record["cardBudget"] = {**fields, "reason": measured["reason"], **failure}
+        emit_card_budget(root, "measure_failed" if measured["reason"] == "measure_failed"
+                         else "unmeasured", bound=selected, path=rel, title=record["title"],
+                         reason=measured["reason"], runtimes=len(tokenizer), **fields, **failure)
+        return False
+    if measured["fits"]:
+        if failure:
+            emit_card_budget(root, "measured_after_failure", bound=selected, path=rel,
+                             title=record["title"], reason="runtime_fallback",
+                             runtimes=len(tokenizer), **fields, **failure)
+        return False
+    reason = measured["reason"]
+    if floor_text is not None and floor_text != card_text:
+        if measure_card(floor_text, tokenizer)["reason"] == "over_budget":
+            reason = "manual_section_over_budget"
+    record["cardBudget"] = {**fields, "reason": reason, **failure}
+    if final_reason is not None:
+        record["cardBudget"]["written"] = final_reason
+        emit_card_budget(root, "over_budget_written", bound=selected, path=rel,
+                         title=record["title"], reason=final_reason, overflow=reason, **fields,
+                         **failure)
+        return False
+    record["action"] = "split-required"
+    record["lint"] = {"verdict": "needs_split", "findings": [reason]}
+    append_jsonl(candidate_path, record)
+    emit_card_budget(root, "over_budget", bound=selected, path=rel, title=record["title"],
+                     reason=reason, **fields, **failure)
+    print(json.dumps({"action": "split-required", "reason": reason,
+                      "targetPath": record["targetPath"], "title": record["title"],
+                      "canonicalKey": record["canonicalKey"], **fields}, ensure_ascii=False))
+    return True
+
+
+def _checked(outcome: str, findings=()) -> int:
+    """``--check`` result: the outcome a real compile would reach, nothing written.
+
+    ``written`` (created or updated), ``candidate``, ``merge-needed``,
+    ``rejected``, ``suppressed`` or ``tombstoned``. The paid duplicate judge and
+    selected-route pending-replacement checks do not run in a check.
+    """
+    print(json.dumps({"action": outcome, "findings": list(findings)}, ensure_ascii=False))
+    return 0
+
+
+def is_auto_writable_page(path: Path) -> tuple[bool, list[str]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False, ["unreadable_target"]
+    return auto_writable_text(text)
+
+
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cwd", default=os.getcwd())
+    parser.add_argument("--regenerate", action="store_true")
+    # The trusted final pass of the card body budget (wiki_card_budget): the
+    # caller already made its one split attempt, so an over-budget card is
+    # written. Only the compile worker and the wiki-compile skill's second run
+    # pass it; a candidate field can never request it.
+    parser.add_argument("--budget-final", default=None, metavar="REASON")
+    # Predict the outcome a real compile would reach (``_checked``); writes,
+    # creates and logs nothing.
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+
+    if os.environ.get("QMD_SANDBOX"):
+        return 0
+
+    candidate = load_payload()
+    root, config = project_paths(args.cwd)
+    compile_cfg = config.get("compile") if isinstance(config.get("compile"), dict) else {}
+    if config.get("indexing") is not True or not qmd_config.compile_active(compile_cfg):
+        return 0
+    wiki_rel = config.get("wikiPath", settings_types.WIKI_REL)
+    if args.check:
+        # Side-effect free: no directory, lock or ledger is created or touched,
+        # so a read-only project can be checked.
+        wiki_root = existing_managed_dir(root, wiki_rel)
+        if wiki_root is None:
+            return _checked("rejected", ["unsafe_managed_path"])
+        return _compile_locked(root, config, compile_cfg, wiki_root, candidate,
+                               args.regenerate, check=True)
+    wiki_root = safe_managed_dir(root, wiki_rel)
+    compile_dir = safe_managed_dir(root, settings_types.COMPILE_REL)
+    if wiki_root is None or compile_dir is None:
+        print(json.dumps({"action": "rejected", "reason": "unsafe_managed_path"}, ensure_ascii=False))
+        return 1
+
+    try:
+        with cp.card_write_lock(root), workspace_files.mutation_lock(root):
+            return _compile_locked(
+                root, config, compile_cfg, wiki_root, candidate, args.regenerate,
+                budget_final=args.budget_final)
+    except OSError:
+        print(json.dumps({"action": "rejected", "reason": "card_write_lock_unavailable"}, ensure_ascii=False))
+        return 1
+
+
+def _compile_locked(root: Path, config: dict, compile_cfg: dict,
+                    wiki_root: Path, candidate: dict, regenerate: bool, *,
+                    budget_final: str | None = None, check: bool = False) -> int:
+    from memvane.wiki.workspace import api as wiki_selected_laya
+    selected = wiki_selected_laya.selected(root)
+    if selected is not None:
+        from memvane.settings.api import excluded_source
+        skips = selected[0]['recallSettings']['skipPaths']
+        sources = candidate.get('sources')
+        source_paths = []
+        if isinstance(sources, list):
+            source_paths = [item.get('path') for item in sources
+                            if isinstance(item, dict) and item.get('kind') == 'file']
+        source_paths.extend(item['path'] for item in source_revisions(candidate))
+        if any(excluded_source(path, skips) for path in source_paths):
+            print(json.dumps({'action': 'rejected', 'reason': 'source_folder_excluded'},
+                             ensure_ascii=False))
+            return 0
+
+    suggested_type = candidate.get("suggestedType") if candidate.get("suggestedType") in ALLOWED_TYPES else "concept"
+    identity_index = build_identity_index(wiki_root)
+    target, target_reason, target_matches = resolve_target(root, wiki_root, candidate, suggested_type, identity_index)
+    if selected is not None and target is not None and target.exists():
+        from memvane.wiki.card.api import card_sources_allowed
+        try:
+            allowed_target = card_sources_allowed(
+                target.read_text(encoding='utf-8'), selected[0]['recallSettings']['skipPaths'])
+        except (OSError, UnicodeError):
+            allowed_target = False
+        if not allowed_target:
+            print(json.dumps({'action': 'rejected', 'reason': 'target_source_folder_excluded'},
+                             ensure_ascii=False))
+            return 0
+    max_lines = int(compile_cfg.get("maxAutoPageLines", 120) or 120)
+    lint = lint_candidate(candidate, target, max_lines)
+    # 한 줄 라벨이므로 개행·탭을 소스에서 접는다(dump의 이스케이프는 안전망으로 남는다).
+    title = yaml_scalars.fold_inline(candidate.get("title") or "Untitled") or "Untitled"
+    summary, redactions = redact(str(candidate.get("summary") or "").strip())
+    h = source_hash({**candidate, "summary": summary})
+
+    candidate_path = qmd_config.ledger(root, ct.CANDIDATES)
+    tombstone_path = qmd_config.ledger(root, ct.TOMBSTONES)
+    manifest_path = qmd_config.ledger(root, ct.MANIFEST)
+    merge_needed_path = qmd_config.ledger(root, ct.MERGE_NEEDED)
+    if candidate_path is None or tombstone_path is None or manifest_path is None or merge_needed_path is None:
+        print(json.dumps({"action": "rejected", "reason": "unsafe_compile_path"}, ensure_ascii=False))
+        return 1
+
+    # candidates.jsonl is a write-only audit log (every compile attempt appends a
+    # row, no reader) -- cap it up front so it can't grow unbounded.
+    if not check:
+        trim_jsonl(candidate_path)
+
+    record = {
+        "ts": now_iso(),
+        "trigger": candidate.get("trigger", "manual"),
+        "title": title,
+        "summary": summary,
+        "suggestedType": suggested_type,
+        "suggestedStatus": compile_cfg.get("defaultStatus", "generated"),
+        "confidence": candidate.get("confidence", "medium"),
+        "sources": candidate.get("sources") if isinstance(candidate.get("sources"), list) else [],
+        "sourceRevisions": source_revisions(candidate),
+        "targetPath": target.relative_to(root).as_posix() if target else str(candidate.get("targetPath") or ""),
+        "canonicalKey": clean_canonical_key(candidate.get("canonicalKey")),
+        "aliases": clean_aliases(candidate.get("aliases")),
+        "targetResolution": target_reason,
+        "targetMatches": [match.relative_to(root).as_posix() for match in target_matches],
+        "sourceHash": h,
+        "lint": lint,
+        "redactions": redactions,
+        "_qmd": effort_audit(candidate),
+    }
+
+    if check and target_reason.startswith("ambiguous_"):
+        return _checked("merge-needed", [target_reason])
+    if check and (lint["verdict"] != "clean" or target is None):
+        return _checked("rejected", lint["findings"])
+    if target_reason.startswith("ambiguous_"):
+        record["action"] = "merge-needed"
+        record["lint"] = {"verdict": "needs_review", "findings": [target_reason]}
+        append_jsonl(candidate_path, record)
+        print(json.dumps({"action": "merge-needed", "reason": target_reason, "targetMatches": record["targetMatches"]}, ensure_ascii=False))
+        return 0
+
+    if lint["verdict"] != "clean" or target is None:
+        if "transcript_like" in lint.get("findings", []):
+            record["summary"] = "[REDACTED_TRANSCRIPT]"
+            record["redactions"] = sorted(set(record.get("redactions", []) + ["transcript_like"]))
+        record["action"] = "rejected"
+        append_jsonl(candidate_path, record)
+        print(json.dumps({"action": "rejected", "findings": lint["findings"]}, ensure_ascii=False))
+        return 0
+
+    tombstones = read_jsonl(tombstone_path)
+    if any(same_generated_identity(row, record) for row in tombstones) and not regenerate:
+        if check:
+            return _checked("suppressed")
+        record["action"] = "suppressed"
+        append_jsonl(candidate_path, record)
+        print(json.dumps({"action": "suppressed", "targetPath": record["targetPath"]}, ensure_ascii=False))
+        return 0
+
+    previous = [
+        row for row in read_jsonl(manifest_path)
+        if same_generated_identity(row, record)
+    ]
+    if (
+        previous
+        and not target.exists()
+        and not regenerate
+        and previous[-1].get("action") != MACHINE_DELETE_ACTION
+    ):
+        if check:
+            return _checked("tombstoned")
+        tombstone = {**record, "action": "deleted", "status": "deleted", "previousStatus": previous[-1].get("status", "generated")}
+        append_jsonl(tombstone_path, tombstone)
+        record["action"] = "tombstoned"
+        append_jsonl(candidate_path, record)
+        print(json.dumps({"action": "tombstoned", "targetPath": record["targetPath"]}, ensure_ascii=False))
+        return 0
+
+    # Card body budget before the paid duplicate judge (wiki_card_budget): an
+    # over-budget card is held back once for a split; the caller's trusted
+    # final pass (--budget-final) writes it anyway.
+    final_reason = (re.sub(r"[^A-Za-z0-9_.:-]", "_", budget_final)[:80] or "final"
+                    if isinstance(budget_final, str) else None)
+    if check and not target.exists():
+        # The paid duplicate judge does not run in a check; its merge-needed is
+        # caught after the real write.
+        return _checked("written")
+    if not target.exists() and budget_refused(
+            root, config, selected, wiki_root, target, record, candidate_path,
+            markdown_page(candidate, summary, compile_cfg.get("defaultStatus", "generated"),
+                          redactions, h), final_reason=final_reason):
+        return 0
+
+    if not target.exists():
+        # LLM body judgment first: it covers EVERY new page, including
+        # explicit-targetPath candidates that the legacy slug-only gate skipped.
+        matched_path, score, judge_info = judge_new_page_duplicate(
+            root, wiki_root, config, compile_cfg, candidate, summary, target
+        )
+        judge_outcome = judge_info.get("outcome")
+        # **유료 judge 실패·degrade·식힘의 종점.** `_back_off`의 `engineCooldown`/
+        # `cooldownWriteFailed`를 읽는 소비자가 없던 동안, 선호 엔진이 유료로 실패하는 상태에서
+        # 두 식힘 쓰기가 모두 실패하면 compile 마다 같은 쌍을 재과금하는데 흔적이 0이었다.
+        # 무엇을 남길지는 `judge.diagnostics()`가 정한다(scan 로그와 같은 규칙 — 복제 금지).
+        # 정상 판정이거나 이 머신에 judge 설정이 아예 없으면 빈 dict 라 기존 행 모양이 그대로다.
+        judge_diag = wiki_dedup_judge.diagnostics(judge_info)
+        if judge_diag:
+            record["judge"] = judge_diag
+        if matched_path is None and judge_outcome != wiki_dedup_judge.OUTCOME_OK and target_reason == "slug":
+            # No judge on this machine (or it is cooling down) — fall back to the
+            # legacy score-threshold gate so this path never gets weaker than before.
+            matched_path, score = find_wiki_semantic_match(root, wiki_root, config, candidate, summary)
+            judge_info = {**judge_info, "fallback": "score_threshold"}
+        if matched_path is not None:
+            entry = {
+                "ts": now_iso(),
+                "candidate": record,
+                "matchedPath": matched_path.relative_to(root).as_posix(),
+                "matchedScore": score,
+            }
+            if judge_info.get("verdict"):
+                entry["judgeVerdict"] = judge_info["verdict"]
+                entry["judgeReason"] = judge_info.get("reason", "")
+                entry["judgedBy"] = judge_info.get("engine", "")
+                # 판정 엔진과 **신규 후보를 만든** 엔진의 관계. verify의 `verifiedMode`/
+                # `producedBy`와 같은 어휘·같은 목적이다 — 이 두 필드가 없으면 자기검증
+                # 노출을 사후에 셀 수 없다(실측: 기존 12건 전부 생산자 미기록이었다).
+                entry["judgedMode"] = judge_info.get("mode", "")
+                entry["producedBy"] = judge_info.get("producedBy", "")
+                entry["uniqueToCandidate"] = judge_info.get("uniqueToA", [])
+                entry["uniqueToMatched"] = judge_info.get("uniqueToB", [])
+            append_jsonl(merge_needed_path, entry)
+            record["action"] = "merge-needed"
+            append_jsonl(candidate_path, record)
+            print(json.dumps({
+                "action": "merge-needed",
+                "matchedPath": matched_path.relative_to(root).as_posix(),
+                "score": score,
+                **({"judgeVerdict": judge_info["verdict"]} if judge_info.get("verdict") else {}),
+            }, ensure_ascii=False))
+            return 0
+
+    status = compile_cfg.get("defaultStatus", "generated")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    page = markdown_page(candidate, summary, status, redactions, h)
+    action = "created"
+    if target.exists() and target_reason == "explicit":
+        # 모델이 고른 경로가 **다른 카드**를 가리키면 갱신이 아니라 검토로 보낸다. 갱신의
+        # 근거는 "같은 카드의 소스가 바뀌었다"이고, identity·source가 하나도 겹치지 않으면
+        # 그 근거가 없다. 여기서 덮으면 (a) 다음 verify가 inconclusive를 내면 카드가 삭제되고
+        # `auto:end` 밖 사람이 쓴 섹션이 영구 소실되며(원장에 본문이 없다), (b) pass를 내면
+        # 본문은 새 소스의 사실인데 frontmatter의 sources·title은 옛 카드로 남아 provenance가
+        # 조용히 틀린다(2단계 `↳` 원문 경로가 엉뚱한 파일을 가리킨다).
+        # identity 조회로 찾은 경로(`target_reason != "explicit"`)는 정의상 일치하므로 통과.
+        agrees, mismatch = explicit_target_agrees(target, candidate)
+        if check and not agrees:
+            return _checked("merge-needed", [mismatch])
+        if not agrees:
+            entry = {
+                "ts": now_iso(),
+                "candidate": record,
+                "matchedPath": record["targetPath"],
+                "matchedScore": 0,
+                "reason": mismatch,
+            }
+            if merge_needed_path is not None:
+                append_jsonl(merge_needed_path, entry)
+            record["action"] = "merge-needed"
+            record["lint"] = {"verdict": "needs_review", "findings": [mismatch]}
+            append_jsonl(candidate_path, record)
+            print(json.dumps({
+                "action": "merge-needed",
+                "reason": mismatch,
+                "targetPath": record["targetPath"],
+            }, ensure_ascii=False))
+            return 0
+    if target.exists():
+        old = target.read_text(encoding="utf-8")
+        auto_writable, findings = is_auto_writable_page(target)
+        if check:
+            return _checked("written" if auto_writable and AUTO_BLOCK_RE.search(page)
+                            else "merge-needed", findings)
+        if not auto_writable:
+            record["action"] = "merge-needed"
+            record["lint"] = {"verdict": "needs_review", "findings": findings}
+            append_jsonl(candidate_path, record)
+            print(json.dumps({"action": "merge-needed", "targetPath": record["targetPath"], "findings": findings}, ensure_ascii=False))
+            return 0
+        page_block_match = AUTO_BLOCK_RE.search(page)
+        if page_block_match is None:
+            record["action"] = "merge-needed"
+            record["lint"] = {"verdict": "needs_review", "findings": ["generated_section_missing"]}
+            append_jsonl(candidate_path, record)
+            print(json.dumps({"action": "merge-needed", "targetPath": record["targetPath"], "findings": ["generated_section_missing"]}, ensure_ascii=False))
+            return 0
+        # Every refreshed card re-enters verification regardless of a custom
+        # creation default.  The status reset and trusted provenance must land
+        # with the new managed block in one card rewrite.
+        status = "generated"
+        page = markdown_page(candidate, summary, status, redactions, h)
+        action = "updated"
+        # The selector reads the whole refreshed card, hand-written sections
+        # included. A long card is not split retroactively; its rewrite
+        # targets the budget like a new card (best effort).
+        composed = compose_generated_card(old, page)
+        floor = compose_generated_card(old, markdown_page(candidate, "", status, redactions, h))
+        if budget_refused(root, config, selected, wiki_root, target, record, candidate_path,
+                          composed if composed is not None else page, floor,
+                          final_reason=final_reason):
+            return 0
+    # 신규 생성도 같은 원자적 경로를 쓴다. `updated`는 기존 카드 파괴 방지가 이유이고,
+    # `created`는 **부분 카드가 완성된 카드처럼 보이는 것**이 이유다 — 절단된 파일도
+    # 인덱싱되고 recall이 그 본문을 완결된 요약으로 주입하며(읽기 창 안에서 끊겼는지
+    # 알 수 없다) verify는 반쪽 카드를 원문과 대조한다. 다음 회차 덮어쓰기에 의존하면
+    # 그 사이 세션이 잘린 카드를 캐논으로 본다. 실패는 아래 write_failure로 표면화한다.
+    # A selected wiki that is already verified stays published while its
+    # replacement is reviewed. The hidden pending file is a complete candidate,
+    # never part of the wiki scan. The verify worker performs the final atomic
+    # replacement after checking the old target has not changed.
+    pending_path = None
+    expected_target_hash = None
+    verify_cfg = compile_cfg.get("verify") if isinstance(compile_cfg.get("verify"), dict) else {}
+    wiki_selected_laya.recheck(selected)
+    if selected is not None and action == "updated":
+        from memvane.wiki.card.api import verified_wiki_row
+        wiki_name = next((item['name'] for item in selected[0]['collections']
+                          if item['role'] == 'wiki' and
+                          Path(item['sourceRoot']).resolve() == wiki_root.resolve()), None)
+        if wiki_name is None:
+            record['action'] = 'merge-needed'
+            record['lint'] = {'verdict': 'needs_review',
+                              'findings': ['selected_wiki_unresolved']}
+            append_jsonl(candidate_path, record)
+            return 0
+        if wiki_name is not None and verified_wiki_row(
+                {'path': wiki_name + '/' + target.relative_to(wiki_root).as_posix(),
+                 'body': old}, selected[0], current_source=False):
+            if (not verify_cfg.get("enabled", True)
+                    or qmd_config.ledger(root, ct.VERIFY_QUEUE) is None):
+                record['action'] = 'merge-needed'
+                record['lint'] = {'verdict': 'needs_review',
+                                  'findings': ['verified_replacement_requires_review']}
+                append_jsonl(candidate_path, record)
+                return 0
+            pending_page = compose_generated_card(old, page)
+            if pending_page is None:
+                record['action'] = 'merge-needed'
+                append_jsonl(candidate_path, record)
+                return 0
+            pending_path = target.with_name('.' + target.name + '.pending-' + h[:16])
+            expected_target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+            if pending_path.is_symlink() or (pending_path.exists() and
+                    (not pending_path.is_file() or
+                     pending_path.read_text(encoding='utf-8') != pending_page)):
+                record['action'] = 'merge-needed'
+                record['lint'] = {'verdict': 'needs_review',
+                                  'findings': ['pending_replacement_conflict']}
+                append_jsonl(candidate_path, record)
+                return 0
+            write_ok = write_pending_card(pending_path, pending_page)
+        else:
+            write_ok = rewrite_generated_card(target, old, page)
+    else:
+        write_ok = (rewrite_generated_card(target, old, page) if action == "updated"
+                    else write_text_atomic(target, page))
+    if not write_ok:
+        record["action"] = "write-failed"
+        append_jsonl(candidate_path, record)
+        print(json.dumps({"action": "write-failed", "targetPath": record["targetPath"]}, ensure_ascii=False))
+        return 1
+
+    record["action"] = action
+    append_jsonl(candidate_path, record)
+    append_jsonl(manifest_path, {**record, "status": status})
+    # manifest is read for delete-detection (previous lookup); compact by folding
+    # same-identity duplicates rather than size-trimming (which would drop a card's
+    # entry and break tombstoning). Threshold-gated + atomic inside.
+    compact_manifest(manifest_path)
+    # 활동 로그는 프로젝트 밖(설치 state root)에 남는다. 실패해도 카드 쓰기는 끝난 것이다.
+    if pending_path is None:
+        workspace_files.append_activity(root, action, target.relative_to(wiki_root).as_posix(),
+                                 title, bound=selected, reason='compile')
+
+    collection, collection_path = find_wiki_collection(config)
+    if pending_path is None and collection and collection_path and selected is not None:
+        wiki_selected_laya.request_sync(root, selected)
+
+    # 기계 검수(auto-verify) enqueue: generated로 쓰인 카드만 대상. verify worker가
+    # 카드 주장 vs 원문을 대조해 verified 승격 또는 (onFail) 삭제한다.
+    verify_queued = False
+    if verify_cfg.get("enabled", True) and status == "generated":
+        verify_queue_path = qmd_config.ledger(root, ct.VERIFY_QUEUE)
+        if verify_queue_path is not None:
+            verify_queued = True
+            # 실제 소스를 별도 필드로 넘긴다 — verifier가 `MAX_SOURCES` 상한과 무관하게
+            # 반드시 읽어야 하는 근거다(모델이 준 `sources` 항목이 밀어낼 수 없다).
+            authoritative = authoritative_sources(candidate)
+            observed = candidate.get('sourceFingerprints')
+            fingerprints = None
+            if selected is not None and isinstance(observed, dict):
+                rows = observed.get('fingerprints')
+                if isinstance(rows, list) and rows and all(isinstance(row, dict) for row in rows):
+                    first = rows[0]
+                    if (all(row.get('scan_id') == first.get('scan_id')
+                            and row.get('observed_ns') == first.get('observed_ns') for row in rows)
+                            and isinstance(first.get('scan_id'), str)
+                            and type(first.get('observed_ns')) is int):
+                        fingerprints = {**observed, 'scanId': first['scan_id'],
+                                        'observedNs': first['observed_ns']}
+            from memvane.wiki.intake.api import append_source_jobs as _append_jsonl
+            _append_jsonl(verify_queue_path, [{
+                "ts": now_iso(),
+                "targetPath": record["targetPath"],
+                **({'pendingPath': pending_path.relative_to(root).as_posix(),
+                    'expectedTargetHash': expected_target_hash}
+                   if pending_path is not None else {}),
+                "sources": record["sources"],
+                "sourceRevisions": record["sourceRevisions"],
+                **({"sourceFingerprints": fingerprints} if fingerprints is not None else {}),
+                **({"authoritativeSources": authoritative} if authoritative else {}),
+                "sourceHash": h,
+                "engine": candidate.get("engine") if isinstance(candidate.get("engine"), str) else "",
+                "trigger": record["trigger"],
+            }])
+
+    result = {
+        "action": action,
+        "targetPath": record["targetPath"],
+        "sourceRevisions": record["sourceRevisions"],
+    }
+    source_refresh_event_id = candidate.get("sourceRefreshEventId")
+    if isinstance(source_refresh_event_id, str) and source_refresh_event_id:
+        result["sourceRefreshEventId"] = source_refresh_event_id
+    # 이 카드가 기계 검수 큐에 실려 있는지를 호출자(compile worker)가 알아야 한다: 한 run이
+    # 만든 검수 부채만큼 같은 run의 verify 예산을 늘려 큐가 배수보다 빨리 자라지 않게 한다.
+    if verify_queued:
+        result["verifyQueued"] = True
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

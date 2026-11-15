@@ -40,7 +40,7 @@ Approvals recorded before the run (reference, date, scope, cap):
 | Candidate clean (`candidate-dirty.txt` empty) | yes / no |
 | `artifactManifestSha256` (`candidate-blobs.txt`) | |
 | `git archive` tar SHA-256 (informational) + `git --version` | |
-| Version consistency across all manifests + `test/plugin-manifest.test.mjs` | yes / no (list mismatches) |
+| Version consistency across all manifests + `tests/plugin-manifest.test.mjs` | yes / no (list mismatches) |
 | L0 source verification reference (command, commit, summary, log hash) | |
 
 ## 3. Installed identity (per host)
@@ -76,7 +76,7 @@ Approvals recorded before the run (reference, date, scope, cap):
 | Laya readiness evidence, independent of QMD | |
 | Selected store generation | |
 | Network state (online / restricted) | |
-| Forbidden test env vars absent (`QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE`, `QMD_SANDBOX`; `LAYA_QA_SYNC_BARRIER` outside the RQA-RACE-01 Part B session) | yes / no |
+| Forbidden test env vars absent (`QMD_FORCE_DEAD_PIDS`, `QMD_SETUP_GUARD_FIXTURE`, `QMD_SANDBOX`) | yes / no |
 
 ### Preflight (spec section 3, before functional QA)
 
@@ -110,12 +110,8 @@ Exact trust scope (one row per host; no wildcard or "trust all"):
 | RQA-ID-00 | Codex | NOT RUN | | | 15 min | | |
 | RQA-INST-01 | Claude | NOT RUN | | | 45 min | | |
 | RQA-INST-01 | Codex | NOT RUN | | | 45 min | | |
-| RQA-INST-02 | Claude | NOT RUN | | | 60 min | | |
-| RQA-INST-02 | Codex | NOT RUN | | | 60 min | | |
 | RQA-INST-03 | Claude | NOT RUN | | | 20 min | | |
 | RQA-INST-03 | Codex | NOT RUN | | | 20 min | | |
-| RQA-INST-04 | Claude | NOT RUN | | | 60 min | | |
-| RQA-INST-04 | Codex | NOT RUN | | | 60 min | | |
 | RQA-HOOK-01 | Claude | NOT RUN | | | 45 min | | |
 | RQA-HOOK-02 | Codex | NOT RUN | | | 45 min | | |
 | RQA-SYNC-01 | Claude | NOT RUN | | | 45 min | | |

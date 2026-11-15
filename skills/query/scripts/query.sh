@@ -16,7 +16,7 @@ payload="$(python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"Use
 
 # Only a selected Laya route answers, from its own published index, through
 # the same recall hook a host prompt uses.
-_laya_state="$(python3 "$PLUGIN_ROOT/core/laya_index_host_route.py" classify recall "$TARGET_CWD" 2>/dev/null)" || _laya_state=blocked
+_laya_state="$(python3 "$PLUGIN_ROOT/entry/run.py" classify recall "$TARGET_CWD" 2>/dev/null)" || _laya_state=blocked
 case "$_laya_state" in
   candidate|preview|worktree)
     printf '%s' "$payload" | bash "$PLUGIN_ROOT/hooks/run-hook" recall claude

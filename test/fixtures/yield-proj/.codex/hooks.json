@@ -1,1 +1,0 @@
-{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"python3 .codex/hooks/codex-qmd-recall-on-prompt.py"}]}]}}

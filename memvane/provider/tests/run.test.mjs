@@ -1,0 +1,6 @@
+// The provider domain's Python tests, one node test per tier (tests/support/runner.mjs).
+import { runDomain } from '../../../tests/support/runner.mjs';
+
+runDomain({ domain: 'provider' });
+
+import './laya-qmd-chunking.test.mjs';

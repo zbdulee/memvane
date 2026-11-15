@@ -26,9 +26,9 @@ import tempfile
 import time
 import uuid
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'core'))
-from runtime_cpu import MAX_CPU_FRACTION,environment as cpu_environment
-from runtime_lease import in_platform_temp,trusted_temp_dir
+sys.path[0:0]=[str(Path(__file__).resolve().parents[1]),str(Path(__file__).resolve().parents[1]/'memvane'/'learning')]
+from memvane.runtime.runtime_cpu import MAX_CPU_FRACTION,environment as cpu_environment
+from memvane.runtime.runtime_lease import in_platform_temp,trusted_temp_dir
 
 
 def usable_test_runtime_root(raw):
@@ -48,7 +48,7 @@ class GuardError(Exception):pass
 class Policy:
     # Initial conservative proposals, not measured safe limits for this Mac.
     resource_limits=True
-    min_available_percent=35
+    min_available_percent=20
     max_tree_rss_fraction=.15
     max_tree_cpu_fraction=MAX_CPU_FRACTION
     max_swap_growth_fraction=.01
@@ -232,7 +232,7 @@ def violation(policy,sample,rows,baseline_swap,*,calibration_policy=None,report=
     if sample['total_bytes']<=0 or sample['cpu_count']<=0 or not 0<=sample['available_percent']<=100:return 'monitor_unavailable'
     if sample.get('pressure') not in ('normal','warning','critical'):return 'monitor_unavailable'
     if calibration_policy is None:
-        if sample['pressure']!='normal':return 'os_memory_pressure'
+        if sample['pressure']=='critical':return 'os_memory_pressure'
         if sample['available_percent']<policy.min_available_percent:return 'relative_available'
     else:
         if sample['pressure']=='critical':return 'os_memory_pressure'

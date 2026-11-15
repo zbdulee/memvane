@@ -5,7 +5,7 @@
 #   file-change-event
 #   engine: claude | codex | gemini
 # 모든 action은 이벤트 cwd의 Laya route를 먼저 분류한다. 선택된 route만
-# core/laya_host_response.py가 처리하고, route가 없는 프로젝트는 아무 색인
+# memvane/host/host_response.py가 처리하고, route가 없는 프로젝트는 아무 색인
 # 작업도 하지 않는다(SessionStart에서만 온보딩 안내 한 줄).
 set -u
 
@@ -44,40 +44,33 @@ export PYTHONDONTWRITEBYTECODE=1
 
 _qmd_code_root="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
 
-# Dedicated QA retains sandbox/headless guards, but never classifies or wakes.
-if [ "${MEMVANE_BRIDGE_PREFLIGHT+x}" = x ]; then
-  case "$ACTION" in
-    recall|update-queued)
-      # The registered shebang follows PATH; QA provenance uses one system
-      # interpreter. Exec preserves event stdin and the host-owned ancestry.
-      if [ "${BASH:-}" != /bin/bash ]; then
-        exec /bin/bash "$_qmd_code_root/hooks/run-hook" "$@"
-      fi
-      python3 -B "$_qmd_code_root/core/laya_host_response.py" \
-        serve-qa-stdin "$ACTION" "$ENGINE" "$PWD"
-      _qa_status=$?
-      exit "$_qa_status"
-      ;;
-  esac
-fi
-
 # A route record is sticky. Classify the event's own cwd first; a selected
 # route enters only the installer-verified Laya service.
 _laya_route_payload="$(mktemp "${TMPDIR:-/tmp}/laya-route-payload.XXXXXXXX")" || { echo '[memvane] route lookup unavailable' >&2; exit 3; }
 trap 'rm -f "$_laya_route_payload"' EXIT
 cat >"$_laya_route_payload" || { echo '[memvane] route payload unavailable' >&2; exit 3; }
 _laya_route_fallback="$PWD"
-_laya_route_state="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" classify-hook "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=blocked
+_laya_route_state="$(python3 "$_qmd_code_root/entry/run.py" hook-classify "$ACTION" "$_laya_route_payload" "$_laya_route_fallback")" || _laya_route_state=error
 case "$_laya_route_state" in
+  error)
+    if [ "$ACTION" = recall ]; then exit 0; fi
+    if [ "$ACTION" = update-queued ] || [ "$ACTION" = update ]; then
+      _laya_error='[memvane] 프로젝트 경로를 확인하지 못했습니다. 설정과 접근 권한을 확인한 뒤 다시 시작하세요.'
+      if [ "$ENGINE" = codex ]; then
+        printf '%s' "$_laya_error" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
+      else
+        printf '%s\n' "$_laya_error"
+      fi
+      exit 0
+    fi
+    echo '[memvane] route lookup failed; request refused' >&2
+    exit 3
+    ;;
   legacy)
     # No selected route: the project is not onboarded and gets no index,
     # recall, compile or learning work. SessionStart names onboarding once.
     if [ "$ACTION" = "update-queued" ]; then
-      # A fresh installed SessionStart may acknowledge an owner-requested
-      # history cutover. It never selects history or touches project content.
-      python3 "$_qmd_code_root/core/context_learning_host_ack.py" "$ENGINE" \
-        >/dev/null 2>&1 || true
-      _laya_notice="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" onboarding-notice \
+      _laya_notice="$(python3 "$_qmd_code_root/entry/run.py" onboarding-notice \
         "$_laya_route_payload" "$_laya_route_fallback" 2>/dev/null)" || _laya_notice=""
       if [ -n "$_laya_notice" ]; then
         if [ "$ENGINE" = codex ]; then
@@ -90,7 +83,7 @@ case "$_laya_route_state" in
     fi
     exit 0
     ;;
-  candidate|preview|worktree|reader)
+  candidate|preview|worktree)
     # worktree (linked git worktree of a selected main checkout) serves a
     # published generation read-only.
     # Replace this shell with the synchronous writer/query process. A host
@@ -99,35 +92,10 @@ case "$_laya_route_state" in
     exec <"$_laya_route_payload"
     rm -f "$_laya_route_payload" || { echo '[memvane] route payload cleanup failed' >&2; exit 3; }
     trap - EXIT
-    if [ "$ACTION" = recall ] && [ -n "${MEMVANE_BRIDGE_PREFLIGHT:-}" ]; then
-      export MEMVANE_BRIDGE_HOOK_ENTRY="hooks/run-hook:recall:$ENGINE"
-    fi
-    exec python3 "$_qmd_code_root/core/laya_host_response.py" serve-stdin \
+    exec python3 "$_qmd_code_root/entry/run.py" hook-serve \
       "$ACTION" "$ENGINE" "$_laya_route_fallback"
     ;;
-  upgrading)
-    # Recall only: a bundle upgrade fences the selected route (in progress,
-    # or stopped and asked to finish). This prompt gets no context; it is
-    # not a refusal.
-    echo '[memvane] bundle upgrade pending; no context for this prompt' >&2
-    exit 0
-    ;;
   blocked)
-    if [ "$ACTION" = "update-queued" ]; then
-      # A project folder that needs the owner (an older branch checked out
-      # over .memvane/, both folders holding cards) or that is moving to
-      # .memvane/ names it once at SessionStart instead of failing silently.
-      _laya_notice="$(python3 "$_qmd_code_root/core/laya_index_host_route.py" project-dir-notice \
-        "$_laya_route_payload" "$_laya_route_fallback" 2>/dev/null)" || _laya_notice=""
-      if [ -n "$_laya_notice" ]; then
-        if [ "$ENGINE" = codex ]; then
-          printf '%s' "$_laya_notice" | python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":sys.stdin.read()}},ensure_ascii=False))'
-        else
-          printf '%s\n' "$_laya_notice"
-        fi
-        exit 0
-      fi
-    fi
     echo '[memvane] selected route unavailable; request refused' >&2
     exit 3
     ;;

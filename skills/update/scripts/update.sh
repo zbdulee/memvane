@@ -9,7 +9,7 @@ TARGET_CWD="${1:-$PWD}"
 
 # A selected Laya route queues its own durable full-scan sync wake through the
 # SessionStart hook. The wake reconciles created, changed and deleted files.
-_laya_state="$(python3 "$PLUGIN_ROOT/core/laya_index_host_route.py" classify update "$TARGET_CWD" 2>/dev/null)" || _laya_state=blocked
+_laya_state="$(python3 "$PLUGIN_ROOT/entry/run.py" classify update "$TARGET_CWD" 2>/dev/null)" || _laya_state=blocked
 case "$_laya_state" in
   candidate|preview|worktree)
     HOST_ENGINE="${2:-${MEMVANE_HOST:-${QMD_ENGINE:-}}}"

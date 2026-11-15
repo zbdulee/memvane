@@ -1,19 +1,17 @@
 # View candidate 세대와 lexical·vector reader 계약
 
-`laya_view_store.ViewStore`는 `BlobStore`를 확장하는 schema3 view store API다.
-형식은 `memvane-git-blob-candidate-v3`, application id는 `0x4d564231`, schema는 `3`다.
-candidate v1/v2와 운영 v6 파일은 읽기 전용 preflight에서 바이트 변경 없이 거절한다.
-v6 reader가 선택된 설치에서는 shadow migration이 후보 store를 만들 때만 이 API를 쓰고 recall은
-쓰지 않는다. schema3 reader가 선택된 뒤에는 recall pin, sync 게시와 vector fill, dedup retrieval이
-이 API를 쓴다.
+`view_store.ViewStore`는 `BlobStore`를 확장하는 schema3 view store API다.
+형식은 `memvane-git-blob-candidate-v4`, application id는 `0x4d564231`, schema는 `4`다.
+지원하지 않는 형식은 읽기 전용 preflight에서 거절한다. recall pin, sync 게시, vector fill과
+dedup retrieval이 이 API를 쓴다.
 `ViewStore`는 provider를 직접 부르거나 query embedding을 만들지 않는다. chunk·embedding은
 호출자 callback으로 받고, 운영 sync owner가 resident provider를 callback으로 넘긴다.
 
 내용 admission·recipe·profile·provenance 계약은
 [`development-blob-candidate.md`](development-blob-candidate.md), checkout 등록·capture는
 [`development-checkout-capture.md`](development-checkout-capture.md)에 있다.
-원문 body API는 없다. reader 선택·전환·rollback은 `laya_journal_reader`·`laya_shadow_migration`,
-운영 게시 순서는 `laya_product_sync_worker`가 소유한다. lifecycle, frontmatter 변경,
+원문 body API는 없다. reader 선택은 `journal_reader`,
+운영 게시 순서는 `product_sync_worker`가 소유한다. lifecycle, frontmatter 변경,
 retention·GC는 이 API에 없다.
 
 ## 내부 API와 수명
@@ -25,14 +23,14 @@ retention·GC는 이 API에 없다.
 | `head(handle)` | `{view_id, gen_id, epoch, incarnation}` |
 | `fill_status(handle, manifest, recipe_id, profile_id)` | 결정적인 job ID와 durable `cursor`·`complete`, 조회는 읽기 전용 |
 | `fill_view(handle, manifest, recipe_id, profile_id, *, chunker, embedder, write_fence, expected_cursor, max_files=8, max_bytes=2000000, deadline_seconds=30)` | content set을 재사용하는 유계 진행 단계 |
-| `prepare_generation(handle, manifest, *, expected_head, vector_spec=None)` | lexical-only 또는 완전 vector coverage로 봉인한 `prepared` 세대 ID |
+| `prepare_generation(handle, manifest, *, expected_head, vector_spec=None)` | lexical 또는 완전 vector coverage로 게시할 stage와 세대 ID |
 | `publish_generation(handle, gen_id, *, expected_head)` | 같은 view의 CAS 게시 후 head |
 | `pin_view(handle)` | 현재 게시 세대와 seal에 묶인 store 발급 `ViewPin` |
 | `search(pin, fts_query, limit, *, path_prefixes=None, excluded_paths=None, deadline_seconds=2)` | 고정한 세대의 lexical 결과 목록 |
 | `search_exact(pin, query_vector, limit, *, profile_id, max_float_work=4000000, deadline_seconds=2, path_prefixes=None, excluded_paths=None)` | 고정한 세대의 exact cosine 결과 목록 |
 | `search_hybrid(pin, fts_query, query_vector, limit, *, profile_id=None, max_float_work=4000000, deadline_seconds=2, path_prefixes=None, excluded_paths=None)` | 같은 pin의 `{lexical, semantic, semantic_status}` |
 | `release(pin)` | 해당 pin 해제 |
-| `verify_views()` | 저장된 세대·head·미봉인 slot 검증, 성공 시 `True` |
+| `verify_views()` | 형식 4에서 `row_format_unsupported`로 거절 |
 | `close()` | 연결 종료 및 모든 handle·pin 무효화 |
 
 handle과 pin은 frozen dataclass이며 발급 store의 registry가 정확한 객체와 필드를 확인한다.
@@ -107,19 +105,7 @@ deadline은 유한한 `0 < seconds <= 300`이며 임의 callback을 선점하지
 
 ## 준비·봉인·게시
 
-세대 상태는 `building → prepared → published` 단방향이다.
-member·source·card-source·member-vector·seal은 불변이며 head는 같은 view의 게시·봉인 세대만 가리킨다.
-prepare는 유한한 두 쓰기 transaction으로 구성한다.
-
-1. SQLite가 ordinal을 할당하는 `generation_slots`와 세대별 FTS를 기록하고 commit한다.
-2. 안정된 FTS physical commitment와 manifest·capture·membership·source·trust roots를
-   vector coverage와 함께 계산해 최종 세대 ID를 정하고 전체 행과 seal을 기록해 `prepared`로 봉인한다.
-
-slot의 stage JSON은 경로·hash·title·trust 참조·파일 및 capture metadata와
-vector 모드·recipe/profile spec을 포함한다.
-source·wiki body를 stage JSON에 넣지 않는다. FTS에는 admission을 통과한
-wiki 카드 본문을 사용한다. 미봉인 slot은 검색 head가 될 수 없으며 자동 회수하지 않는다.
-원문 scan·모델 작업은 SQLite writer transaction 안에서 실행하지 않는다.
+prepare는 head와 capture에 묶인 유계 stage에 변경 행과 vector spec을 기록한다. publish는 같은 view의 현재 head와 stage를 재확인하고 한 transaction에서 변경 행·head FTS·delta·봉인을 기록한 뒤 head를 CAS로 전진시킨다. 실패나 CAS 충돌은 기존 head를 바꾸지 않는다. 원문 scan과 모델 작업은 SQLite writer transaction 밖에서 실행한다.
 
 prepare와 publish는 원래 handle의 capture·settings·파일 관측을 다시 확인한다.
 vector 세대는 준비·봉인·게시 시 참조한 complete set의 실제 행·입력 SHA·바이트·
@@ -135,37 +121,26 @@ epoch는 같은 head 값으로 돌아오는 ABA를 구분한다. 다른 view의 
 
 ## Vector coverage와 공유 set
 
-`vector_spec=None`은 기본 `lexical-only`이며 vector 참조 행과 `vector_member_count`는 0이다.
-명시적인 spec은 정확히 `{recipe_id, profile_id}` 두 키를 가지며 `exact-complete` 모드다.
-모든 eligible member에 같은 recipe/profile의 완전한 chunk·embedding set이 필요하다.
-일부 member만 채운 partial coverage나 혼합 profile은 게시하지 않는다.
-
-`member_vectors`는 세대별 path·blob·recipe·profile과 `chunk_count`, `chunk_digest`,
-`embedding_digest`를 참조한다. vector 바이트를 세대마다 복사하지 않는다.
-원래 manifest에서 도출한 전체 coverage와 실제 저장한 참조 행을 비교하고,
-정렬한 참조·모드·spec의 `vectors_digest`와 실제 참조 수를 binding root·seal에 포함한다.
-다른 view의 동일 content는 같은 불변 set을 재사용하지만 검색 자격과 provenance는
-해당 view를 따른다. 나중에 shared set이 추가되어도 기존 lexical 세대나 pin이
-자동으로 vector 세대로 바뀌지 않는다. 새 coverage는 새 세대와 같은-view head CAS로 게시한다.
+`vector_spec=None`은 lexical coverage다. vector coverage를 게시하려면 모든 eligible 카드에 동일한 recipe/profile의 완전한 chunk·embedding set이 필요하다. set은 blob과 spec으로 공유되며 검색 자격과 provenance는 해당 view에서 판단한다. 새 coverage는 새 세대와 같은-view head CAS로 게시한다.
 
 ## FTS와 봉인의 범위
 
-각 세대는 자신의 ordinal에 속하는 FTS5와 shadow tables를 가진다.
-tokenizer는 `porter unicode61`, CJK spacing은 v6 helper를 사용한다.
+각 view는 head FTS5와 그에 따른 SQLite shadow tables를 가진다.
+tokenizer는 `porter unicode61`, CJK spacing은 공통 텍스트 helper를 사용한다.
 BM25의 path/title/body 가중치는 `1.5/4.0/1.0`이며 같은 점수는
 binary path 오름차순으로 정렬한다. FTS title과 결과의 `display_title`은
 해당 세대 manifest의 `display_title`을 사용한다. owner가 실제 경로·카드에서
 표시 제목을 정하며, 같은 path/title/body 입력의 CJK·BM25 동등성을 검증한다.
 
-고정 schema manifest와 등록 ordinal별 FTS DDL·shadow 구성을 검사한다.
+고정 schema manifest와 view별 head FTS DDL·shadow 구성을 검사한다.
 봉인 전 FTS `integrity-check`를 실행하며 logical rows와 opaque physical shadow
 commitment를 함께 봉인한다. shadow 값은 SQLite 저장 바이트의 commitment이고
 FTS 내부 형식의 해석이나 외부 신뢰 attestation이 아니다.
 
 candidate 쓰기 연결은 SQL statement cache 없이 범위가 제한된 authorizer를 설치한다.
-FTS 변경 capability는 같은 connection·generation·thread의 building 구간과
+FTS 변경 capability는 같은 connection·view·thread의 head 게시와
 commit 중 FTS sync에만 유효하다. shadow 직접 쓰기와 shadow trigger는 지원하지 않는다.
-prepared·published FTS 변경은 거절하고 reader는 physical commitment를
+범위 밖 FTS 변경은 거절하고 reader는 physical commitment를
 가상 테이블 조회보다 먼저 확인한다. 내부 connection·직접 SQL은 지원 API가 아니다.
 
 ## Pin 검색과 snapshot 상태
@@ -175,8 +150,7 @@ pin은 한 read transaction에서 head·seal·membership·source·trust·FTS를 
 같은 pin의 이후 읽기는 세대·seal 행을 다시 읽어 pin 시점 seal과 대조한다. 마지막 전체 검증 뒤
 store에 commit이 하나도 없으면(`PRAGMA data_version`·연결의 `total_changes`·`schema_version`이
 모두 같으면) 그 검증 결과를 재사용하고, commit이 있었으면 세대 전체를 다시 검증한다.
-검색 transaction도 호출에 한정하며 rollback journal을 사용한다. WAL·GC API는 없다.
-같은 view의 head가 새 세대로 바뀌어도 기존 pin은 원래 세대만 검색한다.
+검색 transaction도 호출에 한정하며 rollback journal을 사용한다. pin 이후 같은 view의 head가 바뀌면 `view_head_changed`로 거절한다. view 행 GC는 head와 직전 세대를 보존한다.
 
 reader는 세대를 봉인한 원래 capture의 정합성과 검색 caller의 현재 capture를
 별도로 검증한다. 검색 중 checkout·settings가 caller의 pin capture와 달라지면
@@ -243,9 +217,9 @@ manifest의 `sources`는 같은 pass의 raw 관측이며 관측 상한(4,096 파
 
 vector는 lexical 세대를 먼저 게시한 뒤 `fill_view` cursor로 설치 provider spec의 set을 채우고,
 완료되면 vector 세대를 새로 게시한다. view chunk는 provider의 1차 분할과 같은 위치여야 한다.
-provider가 token window로 다시 쪼개는 카드는 재현할 chunk 텍스트가 없어
-`chunk_text_unreconstructable`로 그 view의 vector fill을 막고, 그 view는 카드가 바뀔 때까지
-lexical 세대로 남는다. main view의 vector spec이 endpoint record에 봉인되기 전까지 recall은
+provider가 token window로 다시 쪼갠 카드는 view recipe가 그 chunk 위치를 재현할 수 없어 recipe의
+fallback 창(`store.types.FALLBACK_CHARS`, 600/90/135 UTF-16 단위)으로 chunk set을 만들고 창마다
+따로 embed한다(`_schema3_chunker`). 그 카드의 vector도 같은 vector 세대에 게시된다. main view의 vector spec이 endpoint record에 봉인되기 전까지 recall은
 lexical 결과만 쓴다.
 
 ## 입력 상한과 실패
@@ -274,18 +248,6 @@ deadline은 SQL progress handler와 유한한 검증 순회에 적용하며 실�
 `fts_deadline_exceeded`, `vector_coverage_incomplete`, `vector_rows_mismatch`,
 `vector_coverage_absent`, `vector_profile_mismatch`, `vector_query_invalid`,
 `vector_work_exceeded`, `vector_deadline_exceeded`다.
-거절 뒤 다른 view·운영 v6로 우회하는 API는 없다.
+거절 뒤 다른 view로 우회하는 API는 없다.
 
-검증 성공은 store의 구조·일관성에 한정된다. `pin_view`는 고정한 세대의 구조·FTS commitment를
-검증하고, 검색은 그 뒤 store에 commit이 있었을 때 같은 검증을 다시 한다. SQLite commit 없이 파일
-바이트가 바뀐 손상은 다음 commit이나 새 pin, `verify_views` 전까지 검색이 검출하지 않는다.
-서빙하지 않은 행의 변조는 `verify_views`가 검출하며, 이 검증
-범위는 `test/laya-view-reader.test.mjs`·`test/laya-view-budget.test.mjs`가 고정한다.
-합성 1,800카드·10 Git views에서 새 프로세스 30개 표본(nearest-rank, py3.13)의 p95는
-카드 본문을 공유할 때 pin 80 ms·검색 77 ms, 본문이 모두 다를 때 pin 256 ms·검색 251 ms다.
-같은 표본에서 `capture_view`(Git 호출 14회)의 p95는 280–303 ms이고 recall 비용의 큰 몫이다.
-측정은 `MEMVANE_VIEW_WARM_RED=1`일 때만 돈다.
-호스트 실행 비용에 따라 기본 2초 제한으로 `fts_deadline_exceeded`를 반환할 수 있다.
-규모 fixture는 완료 비용 측정을 위해 명시적 30초 제한을 사용하며,
-기본 제한의 거절·복구 검사는 별도로 유지한다.
-모델 품질과 v6 대비 parity는 이 검증의 범위 밖이다. parity는 shadow migration의 receipt가 봉인한다.
+검증 성공은 store의 구조·일관성에 한정된다. `pin_view`는 head의 구조와 FTS commitment를 확인하고, 이후 store에 commit이 있으면 검색 전에 다시 검증한다. 형식 4의 `verify_views`는 구현되지 않아 `row_format_unsupported`로 거절한다.

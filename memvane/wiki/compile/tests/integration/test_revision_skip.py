@@ -1,0 +1,582 @@
+"""Selected compile pays once per authoritative source revision."""
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
+import io
+import json
+import os
+import sys
+import tracemalloc
+
+from memvane.settings import api as settings
+from memvane.wiki.compile import wiki_compile as wc, wiki_compile_worker as worker
+from memvane.wiki.verify import api as verification_stamp
+from memvane.wiki.card import api as wiki_freshness, api as ys, types as card_types
+from memvane.wiki.workspace import api as wiki_selected_laya
+from memvane.wiki.intake import api as wiki_compile_enqueue
+from tests.support.case import FixtureCase
+from tests.support.project import make_project
+from tests.support.settings_fake import use_config
+
+
+class RevisionSkipChecks(FixtureCase):
+    def setUp(self):
+        super().setUp()
+        self.project = make_project(self.home, git=False)
+        self.root = self.project.root
+        self.docs = self.root / 'docs'
+        self.wiki = self.root / '.memvane' / 'wiki'
+        self.docs.mkdir(parents=True)
+        self.wiki.mkdir(parents=True, exist_ok=True)
+        (self.root / '.memvane' / 'compile').mkdir(parents=True)
+        self.source = self.docs / 'source.md'
+        self.source.write_text('# Source\n\nDurable decision: cards cite source.\n', encoding='utf-8')
+        self.config = {
+            'indexing': True,
+            'collections': ['proj-docs', 'proj-wiki'],
+            'collectionPaths': {'proj-docs': 'docs', 'proj-wiki': '.memvane/wiki'},
+            'collectionRoles': {'proj-docs': 'raw', 'proj-wiki': 'wiki'},
+            'wikiPath': '.memvane/wiki',
+            'compile': {
+                'mode': 'auto-wiki', 'defaultStatus': 'generated',
+                'triggers': ['post_tool_source', 'manual'], 'maxSourceChars': 12000,
+                'extractor': {'builtins': ['claude'], 'timeout': 30},
+            },
+        }
+        use_config(self, self.project, self.config)
+        self.decision = {
+            'state': 'candidate', 'projectRoot': str(self.root),
+            'installId': 'a' * 32, 'generation': 'g-' + 'b' * 32,
+            'scopeId': 'c' * 32, 'storeIncarnation': 'd' * 32,
+            'collections': [
+                {'name': 'proj-docs', 'role': 'raw', 'sourceRoot': str(self.docs)},
+                {'name': 'proj-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)},
+            ],
+            'collectionRoots': {'proj-docs': str(self.docs), 'proj-wiki': str(self.wiki)},
+            'recallSettings': {'skipPaths': []},
+        }
+        self.bound = (self.decision, {'productRouteAllowed': True})
+        self.extractor_calls = []
+        self.cards = []
+        self.revisions = []
+        patches = [
+            patch.dict(os.environ, {'QMD_DIRTY_QUEUE': str(self.root / 'dirty-queue')}),
+            patch.object(wiki_selected_laya, 'selected', side_effect=lambda _root: self.bound),
+            patch.object(wiki_selected_laya, 'recheck'),
+            patch.object(worker, 'run_extractor', side_effect=self.fake_extractor),
+            patch.object(worker, 'compile_candidate', side_effect=self.fake_compile),
+            patch.object(worker, 'gather_similar_pages', return_value=[]),
+        ]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def fake_extractor(self, argv, payload, timeout, root):
+        self.extractor_calls.append(payload['trigger'])
+        return {'candidates': [{'title': 'Source decision', 'summary': 'Cards cite source.'}]}, None, 0
+
+    def fake_compile(self, root, candidate):
+        card = self.wiki / 'concepts' / f'card-{len(self.cards) + 1}.md'
+        card.parent.mkdir(parents=True, exist_ok=True)
+        revisions = ys.dump_source_revisions(candidate['sourceRevisions'])
+        card.write_text('\n'.join([
+            '---', 'title: "Source decision"', 'status: generated',
+            'createdBy: qmd-auto-context', 'sources:',
+            '  - {kind: "file", path: "docs/source.md", collection: "proj-docs"}',
+            'sourceRevisions:', *(f'  - {item}' for item in revisions), '---', '',
+            'Generated wiki pages cite source markdown.', '',
+        ]), encoding='utf-8')
+        self.cards.append(card)
+        self.revisions.append(candidate['sourceRevisions'])
+        return {'action': 'created', 'sourceRevisions': candidate['sourceRevisions'],
+                'targetPath': str(card)}
+
+    def verify(self, card):
+        body_hash = ys.card_body_hash(card.read_text(encoding='utf-8'))
+        self.assertTrue(verification_stamp.stamp_verification(card, 'verified', 'codex', 'cross-engine', body_hash))
+
+    def job(self, trigger):
+        return {
+            'ts': '2026-10-19T00:00:00Z', 'trigger': trigger, 'engine': 'claude',
+            'cwd': str(self.root),
+            'source': {'kind': 'file', 'path': 'docs/source.md', 'collection': 'proj-docs'},
+            'selectedRoute': wiki_selected_laya.route_identity(self.bound),
+        }
+
+    def process(self, trigger):
+        return worker.process_job(self.root, self.config, self.config['compile'], self.job(trigger))
+
+    def skip_reasons(self):
+        path = worker.candidate_path(self.root, self.config['compile'])
+        if not path.exists():
+            return []
+        rows = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines() if line]
+        return [row for row in rows if row.get('reason') == 'already_compiled_revision']
+
+    def compile_verified_once(self):
+        self.assertEqual(self.process('post_tool_source'), (True, False, []))
+        self.assertEqual(len(self.extractor_calls), 1)
+        self.verify(self.cards[0])
+
+    def rename_raw(self):
+        """Minimal migration: raw `proj-docs` at docs/ becomes `proj` at the root."""
+        self.config = {**self.config, 'collections': ['proj', 'proj-wiki'],
+                       'collectionPaths': {'proj': '.', 'proj-wiki': '.memvane/wiki'},
+                       'collectionRoles': {'proj': 'raw', 'proj-wiki': 'wiki'}}
+        use_config(self, self.project, self.config)
+        self.decision.update({
+            'collections': [{'name': 'proj', 'role': 'raw', 'sourceRoot': str(self.root)},
+                            {'name': 'proj-wiki', 'role': 'wiki', 'sourceRoot': str(self.wiki)}],
+            'collectionRoots': {'proj': str(self.root), 'proj-wiki': str(self.wiki)}})
+
+    def renamed_job(self, trigger):
+        job = self.job(trigger)
+        job['source'] = {**job['source'], 'collection': 'proj'}
+        job['selectedRoute'] = wiki_selected_laya.route_identity(self.bound)
+        return job
+
+    def test_nested_meta_named_card_is_compile_proof(self):
+        # Only wiki-root SCHEMA.md/index.md/log.md are meta pages. A verified card
+        # at concepts/index.md proves its revision like any other card.
+        self.compile_verified_once()
+        revision = self.revisions[0][0]
+        for name in ('SCHEMA.md', 'index.md'):
+            nested = self.cards[0].with_name(name)
+            self.cards[0].rename(nested)
+            self.cards[0] = nested
+            self.assertEqual(worker.selected_compiled_revision_card(
+                self.root, self.bound, revision), 'concepts/' + name)
+            self.process('session_start')
+            self.assertEqual(len(self.extractor_calls), 1, name)
+        # The same card at the wiki root is a leftover meta page, never proof.
+        root_page = self.wiki / 'index.md'
+        self.cards[0].rename(root_page)
+        self.assertIsNone(worker.selected_compiled_revision_card(
+            self.root, self.bound, revision))
+
+    def test_old_label_card_proves_the_revision_after_a_raw_rename(self):
+        self.compile_verified_once()
+        self.rename_raw()
+        done = worker.process_job(self.root, self.config, self.config['compile'],
+                                  self.renamed_job('session_start'))
+        self.assertEqual(done, (True, False, []))
+        self.assertEqual(self.extractor_calls, ['post_tool_source'])
+        self.assertEqual(len(self.cards), 1)
+        self.assertEqual([row['card'] for row in self.skip_reasons()], ['concepts/card-1.md'])
+
+    def test_wiki_label_with_the_source_path_is_not_proof(self):
+        self.compile_verified_once()
+        card = self.cards[0]
+        card.write_text(card.read_text(encoding='utf-8').replace(
+            'collection: "proj-docs", sha256', 'collection: "proj-wiki", sha256'),
+            encoding='utf-8')
+        self.verify(card)
+        self.assertEqual(self.process('session_start'), (True, False, []))
+        self.assertEqual(len(self.extractor_calls), 2)
+
+    def test_same_revision_across_triggers_and_processed_queue_extracts_once(self):
+        self.compile_verified_once()
+        for trigger in ('session_start', 'file_change', 'post_tool_source', 'manual'):
+            self.assertEqual(self.process(trigger), (True, False, []), trigger)
+        self.assertEqual(self.extractor_calls, ['post_tool_source'])
+        skipped = self.skip_reasons()
+        self.assertEqual(len(skipped), 4)
+        self.assertEqual({row['card'] for row in skipped}, {'concepts/card-1.md'})
+        self.assertNotIn('content', json.dumps(skipped))
+
+        # Separate claims of the real queue: each run claims, processes and ACKs.
+        queue = self.root / '.memvane' / 'compile' / 'source-queue.jsonl'
+        with patch.object(worker, '_run_verify_pass'):
+            for trigger in ('session_start', 'manual'):
+                queue.write_text(json.dumps(self.job(trigger)) + '\n', encoding='utf-8')
+                out = io.StringIO()
+                with patch.object(sys, 'argv', ['wiki_compile_worker.py', '--cwd', str(self.root),
+                                                '--json', '--flush-all']), redirect_stdout(out):
+                    self.assertEqual(worker.main(), 0)
+                self.assertEqual(json.loads(out.getvalue())['processed'], 1)
+                self.assertEqual(queue.read_text(encoding='utf-8'), '')
+        self.assertEqual(len(self.extractor_calls), 1)
+
+        # Changed bytes are a new revision: one more paid extraction, then idempotent again.
+        self.source.write_text('# Source\n\nDurable decision: cards cite the source.\n', encoding='utf-8')
+        self.process('file_change')
+        self.assertEqual(len(self.extractor_calls), 2)
+        self.verify(self.cards[1])
+        self.process('session_start')
+        self.assertEqual(len(self.extractor_calls), 2)
+
+    def test_selected_excluded_source_folder_skips_old_queued_job_before_model(self):
+        excluded = self.docs / 'build' / 'source.md'
+        excluded.parent.mkdir()
+        excluded.write_text('# Excluded\n', encoding='utf-8')
+        self.decision['recallSettings']['skipPaths'] = ['build']
+        job = self.job('post_tool_source')
+        job['source']['path'] = 'docs/build/source.md'
+        self.assertEqual(worker.process_job(
+            self.root, self.config, self.config['compile'], job), (True, False, []))
+        self.assertEqual(self.extractor_calls, [])
+        ledger = worker.candidate_path(self.root, self.config['compile'])
+        self.assertEqual(json.loads(ledger.read_text().splitlines()[0])['reason'],
+                         'source_folder_excluded')
+
+    def test_selected_source_enqueue_checks_parent_folder_not_filename(self):
+        folder = self.docs / 'build'
+        folder.mkdir()
+        excluded = folder / 'source.md'
+        included = self.docs / 'build-notes.md'
+        excluded.write_text('# Excluded\n', encoding='utf-8')
+        included.write_text('# Included\n', encoding='utf-8')
+        self.decision['recallSettings']['skipPaths'] = ['build']
+        self.assertIsNone(wiki_compile_enqueue.source_record(
+            str(excluded), str(self.root), str(self.root), self.config, 'claude'))
+        record = wiki_compile_enqueue.source_record(
+            str(included), str(self.root), str(self.root), self.config, 'claude')
+        self.assertEqual(record['source']['path'], 'docs/build-notes.md')
+
+    def test_partial_failure_is_retried_even_after_a_sibling_is_verified(self):
+        calls = []
+
+        def two_candidates(argv, payload, timeout, root):
+            self.extractor_calls.append(payload['trigger'])
+            return {'candidates': [{'title': 'A', 'summary': 'a'},
+                                   {'title': 'B', 'summary': 'b'}]}, None, 0
+
+        def a_then_reject(root, candidate):
+            calls.append(candidate.get('title'))
+            if candidate.get('title') == 'B' and len(calls) <= 2:
+                return {'action': 'rejected'}
+            return self.fake_compile(root, candidate)
+        with patch.object(worker, 'run_extractor', side_effect=two_candidates), \
+                patch.object(worker, 'compile_candidate', side_effect=a_then_reject):
+            job = self.job('file_change')
+            processed, preserve, _queued = worker.process_job(
+                self.root, self.config, self.config['compile'], job)
+            self.assertEqual((processed, preserve), (False, True))
+            self.assertIs(job.get('partialCompile'), True)
+            self.verify(self.cards[0])  # A becomes trusted before the retry
+            worker.process_job(self.root, self.config, self.config['compile'], job)
+        self.assertEqual(len(self.extractor_calls), 2, 'the retry extracts again')
+        self.assertEqual(self.skip_reasons(), [])
+        self.assertIn('B', calls[2:])
+
+    def test_pending_partial_card_cannot_resolve_event_from_sibling_job(self):
+        self.assertIsNotNone(wiki_freshness.record_pending_refresh(
+            self.root, 'docs/source.md', 'claude'))
+        calls = []
+
+        def two_candidates(argv, payload, timeout, root):
+            self.extractor_calls.append(payload['trigger'])
+            return {'candidates': [{'title': 'A', 'summary': 'a'},
+                                   {'title': 'B', 'summary': 'b'}]}, None, 0
+
+        def a_then_reject(root, candidate):
+            calls.append(candidate.get('title'))
+            if candidate.get('title') == 'B' and len(calls) <= 2:
+                return {'action': 'rejected'}
+            return self.fake_compile(root, candidate)
+
+        with patch.object(worker, 'run_extractor', side_effect=two_candidates), \
+                patch.object(worker, 'compile_candidate', side_effect=a_then_reject):
+            first = self.job('post_tool_source')
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], first)[:2],
+                (False, True))
+            self.verify(self.cards[0])
+            self.assertIsNotNone(wiki_freshness.latest_unresolved_pending(
+                self.root, 'docs/source.md'))
+            sibling = self.job('session_start')  # no partialCompile flag
+            snapshot = wiki_freshness.snapshot_bytes(self.source)[0]
+            revision = {'kind': 'file', 'path': 'docs/source.md',
+                        'collection': 'proj-docs', **snapshot}
+            self.assertIsNone(worker.selected_compiled_revision_card(
+                self.root, self.bound, revision, content_only=True))
+            outcome = worker.process_job(
+                self.root, self.config, self.config['compile'], sibling)
+            self.assertEqual(outcome[:2], (True, False))
+        self.assertEqual(len(self.extractor_calls), 2)
+        self.assertIn('B', calls[2:])
+        self.assertEqual(self.skip_reasons(), [])
+
+    def test_unverified_card_does_not_skip(self):
+        self.process('post_tool_source')
+        self.process('session_start')  # card is still `generated`
+        self.assertEqual(len(self.extractor_calls), 2)
+        self.assertEqual(self.skip_reasons(), [])
+
+    def test_untrusted_sibling_for_same_revision_blocks_skip(self):
+        self.compile_verified_once()
+        # A still-`generated` card naming the same revision makes the evidence ambiguous.
+        self.fake_compile(self.root, {'sourceRevisions': self.revisions[0]})
+        self.process('manual')
+        self.assertEqual(len(self.extractor_calls), 2)
+        self.assertEqual(self.skip_reasons(), [])
+
+    def test_mtime_only_change_reuses_verified_card_but_tamper_does_not(self):
+        self.compile_verified_once()
+        stat = self.source.stat()
+        os.utime(self.source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        self.process('session_start')
+        self.assertEqual(len(self.extractor_calls), 1)
+        card = self.cards[0]
+        card.write_text(card.read_text(encoding='utf-8') + 'tampered\n', encoding='utf-8')
+        self.process('manual')  # verifiedBodyHash no longer matches
+        self.assertEqual(len(self.extractor_calls), 2)
+
+    def test_same_content_pending_refresh_is_resolved_without_extraction(self):
+        self.compile_verified_once()
+        self.assertIsNotNone(wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude'))
+        self.process('post_tool_source')
+        self.assertEqual(len(self.extractor_calls), 1)
+        self.assertEqual(len(self.skip_reasons()), 1)
+        self.assertIsNone(wiki_freshness.latest_unresolved_pending(self.root, 'docs/source.md'))
+
+    def test_changed_content_pending_refresh_still_extracts(self):
+        self.compile_verified_once()
+        self.source.write_text('# Source\nA new decision requires a wiki update.\n', encoding='utf-8')
+        self.assertIsNotNone(wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude'))
+        self.process('post_tool_source')
+        self.assertEqual(len(self.extractor_calls), 2)
+        self.assertEqual(self.skip_reasons(), [])
+
+    def test_corrupt_pending_ledger_does_not_skip(self):
+        self.compile_verified_once()
+        ledger = settings.ledger(self.root, card_types.SOURCE_REFRESH_PENDING)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text('{"torn', encoding='utf-8')
+        self.process('session_start')
+        self.assertEqual(len(self.extractor_calls), 2)
+
+    def test_symlinked_wiki_card_does_not_skip(self):
+        self.compile_verified_once()
+        outside = self.root / 'outside.md'
+        outside.write_text('# outside\n', encoding='utf-8')
+        (self.wiki / 'linked.md').symlink_to(outside)
+        self.process('session_start')
+        self.assertEqual(len(self.extractor_calls), 2)
+
+    def sparse_card(self, rel, size):
+        path = self.wiki / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'wb') as out:
+            out.truncate(size)  # sparse: cheap on disk, full-size to any reader
+        return path
+
+    def proof_peak(self, revision):
+        tracemalloc.start()
+        try:
+            card = worker.selected_compiled_revision_card(self.root, self.bound, revision)
+            return card, tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    def test_oversized_card_fails_closed_without_unbounded_read(self):
+        self.compile_verified_once()
+        revision = self.revisions[0][0]
+        self.assertEqual(worker.selected_compiled_revision_card(self.root, self.bound, revision),
+                         'concepts/card-1.md')
+        budget = worker.SELECTED_PROOF_MAX_BYTES
+        per_card = worker.SELECTED_PROOF_MAX_CARD_BYTES
+        used = self.cards[0].stat().st_size
+        fillers = []
+        while budget - used > per_card:
+            filler = self.sparse_card(f'notes/filler-{len(fillers)}.md', per_card)
+            fillers.append(filler)
+            used += per_card
+        remaining = budget - used
+        # Exactly the remaining aggregate budget still proves the revision.
+        filler = self.sparse_card('notes/last-filler.md', remaining)
+        self.assertEqual(worker.selected_compiled_revision_card(self.root, self.bound, revision),
+                         'concepts/card-1.md')
+        # One byte past the remaining aggregate (each card under the per-file cap).
+        with open(filler, 'r+b') as out:
+            out.truncate(remaining + 1)
+        card, peak = self.proof_peak(revision)
+        self.assertIsNone(card)
+        self.assertLess(peak, per_card * 3)
+        # One card alone past the per-file cap.
+        filler.unlink()
+        for item in fillers:
+            item.unlink()
+        self.sparse_card('notes/huge.md', per_card + 1)
+        card, peak = self.proof_peak(revision)
+        self.assertIsNone(card)
+        self.assertLess(peak, per_card * 3)
+        # The real worker keeps the paid path instead of skipping.
+        self.process('session_start')
+        self.assertEqual(len(self.extractor_calls), 2)
+        self.assertEqual(self.skip_reasons(), [])
+
+    def test_bounded_proof_can_cover_more_than_200_wiki_cards(self):
+        self.compile_verified_once()
+        revision = self.revisions[0][0]
+        for n in range(210):
+            self.sparse_card(f'notes/other-{n:03}.md', 0)
+        self.assertEqual(worker.selected_compiled_revision_card(
+            self.root, self.bound, revision), 'concepts/card-1.md')
+        with patch.object(worker, 'SELECTED_PROOF_MAX_CARDS', 200):
+            self.assertIsNone(worker.selected_compiled_revision_card(
+                self.root, self.bound, revision))
+
+    def test_card_growing_during_read_fails_closed(self):
+        card = self.wiki / 'grow.md'
+        card.write_bytes(b'x' * 1000)
+        real_read = os.read
+        requested = []
+
+        def growing_read(fd, n):
+            requested.append(n)
+            if len(requested) == 1:
+                with open(card, 'ab') as out:
+                    out.write(b'y' * 4096)
+            return real_read(fd, n)
+
+        with patch.object(worker.os, 'read', side_effect=growing_read):
+            self.assertIsNone(worker._read_proof_card_bounded(card, 1000))
+        self.assertLessEqual(sum(requested), 1001)  # never more than one byte past the limit
+        self.assertIsNone(worker._read_proof_card_bounded(card, 1000))  # now oversized by fstat
+        self.assertEqual(worker._read_proof_card_bounded(card, card.stat().st_size)[:1], b'x')
+
+    def run_main(self):
+        out = io.StringIO()
+        with patch.object(sys, 'argv', ['wiki_compile_worker.py', '--cwd', str(self.root),
+                                        '--json', '--flush-all']), redirect_stdout(out):
+            self.assertEqual(worker.main(), 0)
+        return json.loads(out.getvalue())
+
+    def overlapping_worker_extractions(self):
+        """A posttool edit is mid-extraction when a second trigger starts a worker.
+
+        The second worker runs inside the first one's paid call: the same kernel
+        flock conflict two processes would see, without threads or children.
+        """
+        queue = self.root / '.memvane' / 'compile' / 'source-queue.jsonl'
+        pending = wiki_freshness.record_pending_refresh(self.root, 'docs/source.md', 'claude')
+        job = {**self.job('post_tool_source'),
+               'pendingRefresh': {key: pending[key] for key in ('eventId', 'ts', 'engine')}}
+        queue.write_text(json.dumps(job) + '\n', encoding='utf-8')
+        nested = []
+
+        def extractor(argv, payload, timeout, root):
+            self.extractor_calls.append(payload['trigger'])
+            if len(self.extractor_calls) == 1:
+                nested.append(self.run_main())  # e.g. laya-compile wake beside a kick
+            return {'candidates': [{'title': 'Source decision', 'summary': 'Cards cite source.'}]}, None, 0
+
+        def compile_echo(root, candidate):
+            result = self.fake_compile(root, candidate)
+            result['sourceRefreshEventId'] = candidate.get('sourceRefreshEventId')
+            return result
+        with patch.object(worker, '_run_verify_pass'), \
+             patch.object(worker, 'run_extractor', side_effect=extractor), \
+             patch.object(worker, 'compile_candidate', side_effect=compile_echo):
+            first = self.run_main()
+            after = self.run_main()  # a later wake once the owner finished
+        return queue, nested, first, after
+
+    def test_overlapping_worker_does_not_reextract_inflight_pending_revision(self):
+        queue, nested, first, after = self.overlapping_worker_extractions()
+        self.assertEqual(self.extractor_calls, ['post_tool_source'])
+        # Busy without recovery; the in-flight event is still unresolved, so the
+        # kick path is asked for one retry instead of losing its wake.
+        self.assertEqual(nested, [{'processed': 0, 'remaining': 0, 'busy': True,
+                                   'wakeAfterSeconds': worker.RUN_LOCK_BUSY_RETRY_SECS}])
+        self.assertEqual(first['processed'], 1)
+        self.assertEqual(after['processed'], 0)
+        self.assertEqual(queue.read_text(encoding='utf-8'), '')
+        self.assertEqual(wiki_freshness.unresolved_pending_refreshes(self.root), [])
+
+    def test_overlapping_worker_without_run_lock_pays_twice(self):
+        # Control for the test above: the pre-lock behavior really re-extracts.
+        with patch.object(worker, 'try_run_lock',
+                          side_effect=lambda root: os.open(
+                              worker.cp.under(root, worker.COMPILE_RUN_LOCK),
+                              os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)):
+            _queue, nested, _first, _after = self.overlapping_worker_extractions()
+        self.assertEqual(nested[0]['processed'], 1)  # the overlap recovered E1 and paid again
+        self.assertGreaterEqual(len(self.extractor_calls), 2)
+
+    def test_busy_worker_keeps_rows_and_requests_one_retry(self):
+        queue = self.root / '.memvane' / 'compile' / 'source-queue.jsonl'
+        queue.write_text(json.dumps(self.job('session_start')) + '\n', encoding='utf-8')
+        owner = worker.try_run_lock(self.root)
+        self.assertIsNotNone(owner)
+        try:
+            report = self.run_main()
+        finally:
+            os.close(owner)
+        self.assertEqual(report['wakeAfterSeconds'], worker.RUN_LOCK_BUSY_RETRY_SECS)
+        self.assertEqual(self.extractor_calls, [])
+        self.assertEqual(len(queue.read_text(encoding='utf-8').splitlines()), 1)
+        # Lock released (as on owner exit or crash): the retained row now runs.
+        with patch.object(worker, '_run_verify_pass'):
+            self.assertEqual(self.run_main()['processed'], 1)
+        self.assertEqual(len(self.extractor_calls), 1)
+
+    def test_run_lock_rejects_hardlink_and_loose_mode(self):
+        base = self.root / '.memvane' / 'compile'
+        original = base / 'original.lock'
+        original.write_text('owned', encoding='utf-8')
+        lock = base / worker.COMPILE_RUN_LOCK
+        os.link(original, lock)
+        with self.assertRaises(OSError):
+            worker.try_run_lock(self.root)
+        self.assertEqual(original.read_text(encoding='utf-8'), 'owned')
+        lock.unlink()
+        original.chmod(0o644)
+        os.rename(original, lock)
+        with self.assertRaises(OSError):
+            worker.try_run_lock(self.root)
+
+
+    def test_shared_delete_schedules_survivor_once_and_retains_wait_marker(self):
+        from memvane.wiki.lifecycle import api as wiki_source_retire
+        gone = self.docs / 'gone.md'
+        gone.write_text('old deleted bytes', encoding='utf-8')
+        old_hash = wiki_freshness.snapshot_bytes(gone)[0]['sha256']
+        gone.unlink()
+        job = self.job('file_change')
+        job['source']['path'] = 'docs/gone.md'
+        job['contentRevision'] = old_hash
+        job['sourceDelete'] = True
+        queue = self.root / '.memvane/compile/source-queue.jsonl'
+        result = {'state': 'shared_pending',
+                  'survivors': [('proj-docs', 'docs/source.md')]}
+        with patch.object(wiki_source_retire, 'retire_deleted_source', return_value=result), \
+             patch.object(wiki_selected_laya, 'request_compile') as wake:
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], job),
+                (True, False, []))
+            rows = [json.loads(line) for line in queue.read_text().splitlines()]
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(rows[0]['forceRecompile'])
+            self.assertEqual(rows[0]['source']['path'], 'docs/source.md')
+            self.assertTrue(rows[1]['sourceDelete'])
+            self.assertTrue(rows[1]['sharedEnqueued'])
+            self.assertEqual(wake.call_count, 1)
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], rows[1]),
+                (False, True, []))
+            self.assertEqual(wake.call_count, 1,
+                             'a held deletion must not repeat a paid refresh')
+        self.assertEqual(self.extractor_calls, [])
+
+    def test_forced_survivor_refresh_drops_model_suggested_deleted_source(self):
+        captured = []
+        def extractor(*_args):
+            return {'candidates': [{
+                'title': 'Survivor', 'summary': 'Current source only',
+                'sources': [{'kind': 'file', 'path': 'docs/gone.md',
+                             'collection': 'proj-docs'}],
+            }]}, None, 0
+        def compile_card(root, candidate):
+            captured.append(candidate)
+            return self.fake_compile(root, candidate)
+        job = self.job('file_change')
+        job['forceRecompile'] = True
+        with patch.object(worker, 'run_extractor', side_effect=extractor), \
+             patch.object(worker, 'compile_candidate', side_effect=compile_card):
+            self.assertEqual(worker.process_job(
+                self.root, self.config, self.config['compile'], job),
+                (True, False, []))
+        self.assertEqual(captured[0]['sources'], [
+            {'kind': 'file', 'path': 'docs/source.md', 'collection': 'proj-docs'}])

@@ -1,0 +1,71 @@
+import unittest
+from tests.support.case import FixtureCase
+from tests.support.project import make_project
+from memvane.settings import api
+
+
+class ConfigContractTests(unittest.TestCase):
+    def test_compile_mode_accepts_only_off_and_auto_wiki(self):
+        self.assertEqual(api.compile_mode({'mode': 'auto-wiki'}), 'auto-wiki')
+        for mode in ('off', 'candidates', 'guarded', 'unknown'):
+            with self.subTest(mode=mode):
+                self.assertEqual(api.compile_mode({'mode': mode}), 'off')
+
+    def test_minimal_settings_expands_with_raw_and_wiki_roles(self):
+        cfg = api.normalize_config({'name': 'Demo', 'skipPaths': ['drafts/']}, '.memvane')
+        self.assertEqual(cfg['collectionRoles'], {'demo': 'raw', 'demo-wiki': 'wiki'})
+        self.assertEqual(cfg['skipPaths'], ['drafts/'])
+        self.assertEqual(cfg['wikiPath'], '.memvane/wiki')
+
+    def test_unknown_collection_role_is_fail_closed(self):
+        self.assertEqual(api.collection_role({}, 'demo'), 'raw')
+        self.assertEqual(api.collection_role({'demo': 'mystery'}, 'demo'), 'invalid')
+        normalized = api.normalize_config({'collections': ['demo'],
+                                           'collectionRoles': {'demo': 'mystery'}})
+        self.assertEqual(api.collection_role(api.role_map(normalized), 'demo'), 'invalid')
+
+    def test_numeric_values_are_coerced_and_clamped(self):
+        cfg = api.normalize_config({'name': 'Demo', 'topN': '7', 'queryTimeout': 'bad'})
+        self.assertEqual(cfg['topN'], 7)
+        self.assertEqual(cfg['queryTimeout'], 5.0)
+        budget = api.normalize_config({'compile': {'budget': {'extractorPerRun': 999999}}})['compile']['budget']
+        self.assertEqual(budget['extractorPerRun'], 50)
+        for value in (True, False, 1.9, 2.5):
+            with self.subTest(value=value):
+                budget = api.normalize_config({'compile': {'budget': {'extractorPerRun': value}}})['compile']['budget']
+                self.assertEqual(budget['extractorPerRun'], 10)
+
+    def test_diagnostics_requires_boolean_true(self):
+        # Consent also requires a proved selected/preview route and an exact
+        # settings file, so an incomplete decision always fails closed.
+        for decision in ({}, {'state': 'candidate'}, {'state': 'blocked'}):
+            self.assertFalse(api.diagnostic_enabled(decision))
+
+
+class ConfigFileTests(FixtureCase):
+    def test_absent_settings_return_current_project_and_empty_config(self):
+        project = self.home / 'empty-project'
+        project.mkdir()
+        result = api.find_project_config(str(project))
+        self.assertEqual(result['projectRoot'], str(project))
+        self.assertIsNone(result['configPath'])
+        self.assertEqual(result['configFormat'], 'none')
+        self.assertEqual(result['config']['collections'], [])
+
+    def test_search_exception_fails_open_to_empty_config(self):
+        from unittest.mock import patch
+        project = self.home / 'broken-search'
+        project.mkdir()
+        with patch('memvane.settings.config._find_project_config_unsafe', side_effect=PermissionError('denied')):
+            result = api.find_project_config(str(project))
+        self.assertIsNone(result['configPath'])
+        self.assertEqual(result['configFormat'], 'none')
+        self.assertEqual(result['config']['collections'], [])
+
+    def test_malformed_project_settings_fail_open_to_empty_config(self):
+        project = make_project(self.home, name='Broken config')
+        project.settings_path.write_text('{broken', encoding='utf-8')
+        found = api.find_project_config(str(project.root))
+        self.assertEqual(found['configFormat'], 'none')
+        self.assertIsNone(found['configPath'])
+        self.assertEqual(found['config']['collections'], [])

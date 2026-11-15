@@ -9,9 +9,10 @@ development execution guard is separate; see
 
 ## Connected runtime paths
 
-- Retired wake kinds: `index`, `update` and `cleanup` rows that an older
-  installed bundle queued are acknowledged once by `runtime_handlers.retired`
-  without any work.
+- Retired wake kinds: no 1.x host serves `index`, `update` or `cleanup`. A row
+  of one that a pre-release build queued is dropped when the queue is read
+  (reason `retired_kind` in `runtime-wake-drops.json`); a row of any other
+  unknown kind stays for the newer host that knows it.
 - `LocalTrainer.call` also admits old explicit adapter calls through the shared
   compute lease. Already coordinated v2 adapters skip that outer lease and use
   their existing per-group TrainingGuard, avoiding recursive acquisition.
@@ -20,21 +21,20 @@ development execution guard is separate; see
   Zero-RSS process-group rows are not live memory samples. An exited child
   keeps its original exit result; a live child without usable RSS cannot
   satisfy a required resource monitor. Missing observations remain unknown.
-- Selected Laya route wakes: `core/laya_host_response.py` queues `laya-sync` and
+- Selected Laya route wakes: `memvane/host/host_response.py` queues `laya-sync` and
   `laya-compile` through `runtime_work.request`. Both are kinds in
   `runtime_wake_policy.KINDS`; `needs_compute_admission` is false for them
   because their handlers own admission. `runtime_handlers.laya_sync` and
-  `laya_compile` call `laya_runtime_dispatch.run`, which routes the wake into the
-  sealed installed bundle with the wake's lease FD; the target process repeats
-  the full owner proof before any model or store work.
-- Schema3 reader sync and shadow migration: a schema3-selected `laya-sync` pass
+  `laya_compile` call `runtime_dispatch.run`, which routes the wake into the
+  installed worker with the wake's lease FD; the target process repeats
+  the selected-route proof before model or store work.
+- Selected view sync: a schema3-selected `laya-sync` pass
   takes the same provider activity only when a view's vector fill has content no
   stored set holds (`_schema3_vectors`); one pass embeds content shared by two
   views once, and a refused lane or service leaves the lexical generation
   published and the wake `deferred`. Before each provider call the fill
   yields (`laya_sync_yield_priority`) to another project's initial build
-  waiting on the owner (`_initial_build_waiting`, as the v6 capacity path
-  does between rounds), whose wake is pulled ahead. A pass whose main-view
+  waiting on the owner (`_initial_build_waiting`), whose wake is pulled ahead. A pass whose main-view
   fill added embedding sets but did not finish (including a stop on that
   yield or on a provider failure) is acknowledged and offers its own wake
   again 30 seconds later (`WakeQueue.offer(delay=)`), inside the worker's
@@ -53,23 +53,15 @@ development execution guard is separate; see
   once, so the last provider call can run past the pass deadline by that one
   document; that pass publishes its generation (lexical, or vector when the
   fill completed) with a fresh publish reserve. A linked view held only by
-  the pass budget after such a pass gets the same re-offer. The shadow migration driver
-  (`shadow_pass`) runs after the sync owner is released, inside the same wake,
-  about 60 seconds of steps, at most 32. A pass that can go on re-offers its own
-  wake due 30 seconds later (`WakeQueue.offer(delay=)`); the drain releases the
-  lease and the lease-free timer runs it, so the next pass takes the same sync
-  admission and owner checks. The reader switch step holds the install,
-  initial-build, operation and sync owner locks and
-  `Coordinator().quiesce_provider()` for at most 10 seconds; a busy lock is a
-  retry for a later pass, never a wait.
-- Selected Laya route sync: `laya_product_sync_worker.py` holds a Coordinator
+  the pass budget after such a pass gets the same re-offer.
+- Selected Laya route sync: `product_sync_worker.py` holds a Coordinator
   `activity('provider', EMBED_POLICY)` around embedding work and rechecks the
   policy immediately before the embed service loads its model. `EMBED_POLICY`
   (`maxRssMib` 2048, `minAvailableMib` 768, `maxLoadPerCpu` 1,
   `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
   measured peak. One per-user resident service
-  (`laya_resident_service.py`, private root
-  `<account home>/.local/state/memvane/service/`, same-owner peer check on every
+  (`resident_service.py`, private root
+  `<account home>/.local/state/memvane/v1/service/`, same-owner peer check on every
   socket) hosts the embedding model for every selected or pending
   installation and the learning inference service. It loads one exact worker
   per vector profile (provider identity, model and dimension) through
@@ -78,25 +70,9 @@ development execution guard is separate; see
   learning demand, memory/pressure admission: under 10% free memory refuses)
   and never holds the provider lane. The service-wide load lock is held from
   that check until the worker is ready, so two loads never pass one check.
-  Every new worker start (a restart included) first proves the installation's
-  full attestation; a read-only proof (bundle drift) only attaches to a
-  running worker. A v5 installation's attestation re-proves its journal
-  before and after hashing the runtime files, each time under the queue
-  owner and the v5 lifetime and physical windows of the journal-bound root
-  (the hashing holds neither); a busy owner or window defers the start
-  without marking the attestation invalid. A selection that moved is not
-  bad evidence either. An epoch alone (a sync's first write) is not a move:
-  the attestation goes on with the fresh proof. A step that fails or differs
-  while the route, or the bundle journal row epoch aside, moved from what the
-  last accepted step saw (a bundle upgrade to another plugin root, its
-  fence, a restore, another attestation) defers the start for a fresh
-  attempt. A failure on an unmoved selection, or one whose route or journal
-  cannot be read, stays an attestation failure. After three consecutive
-  moved-selection deferrals of one installation and provider fingerprint,
-  further ones count as transient start failures (``startup_failed`` with
-  growing attempts and the usual backoff and cooldown). The
-  read-only proof of a drifted installation takes the same queue owner and
-  v5 windows of the journal-bound root. Client connections are capped service-wide (16) before
+  Every worker start verifies the selected installation's provider and runtime
+  attestation. A changed selection defers work for a fresh proof; an invalid
+  provider identity prevents that provider from starting. Client connections are capped service-wide (16) before
   any byte is read; at the cap the listeners stop accepting, peers wait in a
   backlog of 8, and a full backlog refuses the connect (macOS; on Linux the
   connect waits for the client's own timeout), which the provider reads as
@@ -108,8 +84,7 @@ development execution guard is separate; see
   observations inside the seven-second maximum gap; startup-failure backoff and
   cooldown remain separate. The service adopts an installation by holding its
   `.resident.lock`/`.lock`, binding its sealed `runtime/laya-embed.sock` and
-  writing its owner state; a route change (upgrade fence, restore,
-  withdrawal) releases that installation within one second. A dead worker
+  writing its owner state; a route change (restore or withdrawal) releases that installation within one second. A dead worker
   releases its installations as `worker_exited`; the service itself re-loads
   and re-adopts them from its registry without waiting for a hook. Three
   transient start failures enter a 300-second cooldown, then a fresh retry
@@ -140,57 +115,21 @@ development execution guard is separate; see
   the installation's own log.
 - A `laya-sync` pending result with committed schema3 ingest or vector progress uses the exact detail `deferred:pending:schema3_progress_ingest` or `deferred:pending:schema3_progress_vector`. The wake retries in 30 seconds without incrementing its attempt count; pending without durable progress keeps the ordinary retry policy.
 - When no worker is ready and full proof is loading or deferred, a drifted installation waiting as `read_only_no_worker` defers reproof for up to 30 seconds. A ready worker wakes the waiting installation; the usual proof and identity checks still apply.
-- A shadow switch step has a maximum 30-second proof budget, bounded by its caller deadline. `index-reader-status --rehearse-switch` reports read-only checks and marks checks requiring writes or leases unavailable; it does not authorize a switch.
-- On the capacity path every sync wake rescans, so the pending fill offers
-  each cached member again. A member whose sidecar row is already identical,
-  or an unverified card, skips the route proof, the journal write fence and the
-  sidecar transaction (`laya_incremental_docs.publish_needed` over one
-  read-only `PublishedReader` per wake). The pending and the ordinary vector
-  fill each cross that fence once, before their first candidate write
-  (profile, content or chunk rows), so `newWriteSeen` is durable before any
-  vector commit; a step over cached members only does not cross it.
 - `chunkDocumentByTokens` returns chunks in source position order. A
   re-split first-pass chunk can end after the next overlapping chunk starts,
   and the reviewed provider accepts only strictly increasing positions; an
   already ordered document is unchanged. A sync deferred by the vector fill
   logs the member it stopped at as `path` on its `wake.sync` event (the
   fixed-code `detail` cannot carry a non-ASCII path).
-- A vector fill that ends on one member (`provider_result_invalid` or
-  `vector_member_rejected`) is a streak in `<state root>/vector-fill-block.json`
-  (`laya_vector_block`): path, content hash, cause, whether it was diagnosed
-  and wake count, logged as `vector.member blocked`. A completed sync clears
-  it; another member or a changed hash starts a new one. Every
-  read-modify-write holds `flock` on `vector-fill-block.lock` (SessionStart
-  waits at most 0.5 s). The cause of `provider_result_invalid` comes from
-  repeating that embedding once per streak in a separate `python3 -B`
-  process (`laya_vector_diagnose`) that observes the answer the provider
-  decodes and applies the provider's own rules, `_blob` included
-  (`chunk_pos_not_increasing`, `dimension_mismatch`, `zero_norm_vector`, …;
-  `unknown` when none fails). The attempt is recorded whatever it finds.
-  After 3 wakes or 30 minutes SessionStart shows one Korean line naming the
-  card and cause, once per session (sessions kept 30 days). Recall does not
-  read the streak.
-  A failed sync/compile child's last 4 KB of stderr is kept per wake in the
+- A failed sync/compile child's last 4 KB of stderr is kept per wake in the
   private `runtime-wake-failures.json` beside the wake queue; a deferred
   child result records its fixed `state`/`reason` codes there instead.
-- A v6 capacity sync marks its first write through
-  `laya_writer_scope.mark_new_write`. Validation with the first writer proof,
-  the journal image CAS with the plan recapture after it, and the reproof each
-  get their own operation deadline
-  (2 seconds for the worker writer); each proof first waits for the physical
-  windows readers hold. A proof that runs out (`writer_proof_deadline`,
-  `writer_proof_physical_busy`) ends the wake `deferred`, and its `wake.sync`
-  detail names each stage's milliseconds
-  (`p1_lock<ms>_sql<ms>:img<ms>:p2_lock<ms>_sql<ms>`: the window wait, then the
-  reads inside).
-- A selected sync yields (`laya_sync_yield_priority`) to a due `index` or
-  `update` wake that has failed fewer than 3 times (those retired kinds are
-  acknowledged on dispatch without work), and, between rounds, to another
-  project's initial build whose recent attempt ended deferred on a busy sync
-  owner (`_initial_build_waiting`); that build's existing wake is pulled to
+- A selected sync yields (`laya_sync_yield_priority`), at each provider call
+  and between rounds, to another project's initial build whose recent attempt
+  ended deferred on a busy sync owner (`_initial_build_waiting`); that build's existing wake is pulled to
   due 0 first. An initial build waits up to `SYNC_OWNER_WAIT_SECONDS` for the
   owner on each round.
-- Selected Laya route queries: `laya_embed_resident.admit_query` checks
+- Selected Laya route queries: `embed_resident.admit_query` checks
   `EMBED_POLICY` with `Coordinator.check` within the hook's two-second provider
   budget and acquires no compute lease. Refusal reports
   `laya_query_resource_deferred`, keeps the loaded model, and persists no prompt.
@@ -212,23 +151,12 @@ development execution guard is separate; see
   sessions and user workloads without scanning or terminating them. See the
   platform policy section below for estimate provenance and compatibility.
 
-## Hosted learning and project-folder moves
+## Hosted learning
 
-Hosted learning uses the resident's ordinary version/replacement policy. A ready
-host whose ready learning service has a different signature returns the existing
-version-mismatch fallback without polling to the request deadline. Starting or
-replacing services keep their bounded preparation wait. A host protocol mismatch
-uses the same fallback with its fixed `host_reason` retained in diagnostics.
-
-A project-folder move holds the operation, compile-run, settings and card locks
-for every existing folder in a fixed order. Compile-run locks precede discovery
-and card locks; a busy compile defers the move before its fence. Rename preserves
-the legacy inode without creating the destination, while adoption holds the
-destination inode during merges. Changed folder membership or dev/ino defers the
-move. Current settings/card writers recheck the named inode and active path after
-flock; this check does not retrofit older installed writers. A compile worker
-rechecks its route, configuration, queue and named lock after acquiring the run
-lock, before recovering or claiming work.
+Hosted learning uses the resident's version and replacement policy. A ready
+host with a different learning-service signature returns the version-mismatch
+fallback without waiting to the request deadline. Starting or replacing
+services keep their bounded preparation wait.
 
 ## Durable wake and restart behavior
 
@@ -300,13 +228,9 @@ private `runtime-wake-drops.json` beside the queue (newest 64), and a
 A request whose wake cannot start a worker because another one holds the lease
 starts one handoff contender (`runtime-worker-handoff.lock`, at most 180
 seconds). The contender releases that lock as soon as it holds the worker
-lease. A learning-state move writes `runtime-worker-yield.json` (an expiry
-within its attempt budget) before it waits for both locks: a draining worker
-claims no further wake, and no worker or contender is spawned, while it
-stands. A child already running is not interrupted.
+lease. A child already running is not interrupted.
 
-Learning retries recheck `laya_learning.ready` and retain the existing history
-worker fence. The runtime dispatcher starts at most one owned learning child
+Learning retries recheck `learning.ready`. The runtime dispatcher starts at most one owned learning child
 per private learning root and returns immediately, so `laya-sync` wakes
 can progress while the child runs. A general/legacy full request is persisted
 before its child starts; after a crash the request is retried under a bounded
@@ -339,41 +263,6 @@ cannot preempt an already running atomic embedding or model operation; SQLite
 contention may still affect latency. Compatibility requires all
 participating installed copies to use the same Coordinator. Explicit operator
 tools outside these plugin paths are not intercepted.
-
-## Bundle upgrade I/O
-
-A bundle upgrade (inactive, bound or selected) holds the install lock, the
-build owner or operation lock and, for a selected index, the per-user
-provider lane. Under those locks its work is O(metadata):
-
-- The backup (`inactive-upgrade-backup-*`, receipt
-  `laya-inactive-upgrade-backup-v2`) copies only the install journal with an
-  online SQLite backup. The candidate DB, claim queue, catalog, binding store
-  and incremental-docs sidecar are pinned, not copied: inode plus logical
-  evidence from one read snapshot (application id, user version, page size,
-  DDL digest, small identity tables row for row, largest rowid per rowid
-  table). No restore reads store bytes from a backup; restores rebind the
-  metadata from the intent and rewind the journal by CAS, then compare the
-  pins while the upgrade fence still stands.
-- The store check reads schema, binding rows and largest rowids; it runs no
-  `quick_check`, `integrity_check` or full `COUNT`. Only an unfinished intent
-  written by a bundle up to 0.44.15 (exact row counts, full-copy backup)
-  resumes through the earlier full inspection and copy hashes. A settled
-  intent is archived with a receipt check alone, because the same step
-  deletes its backup.
-- The claim queue and source catalog pins compare the file and schema only:
-  after a settled upgrade a sync pass scans the catalog and claims work before
-  it marks the journal's first new write. Their bindings are rechecked with
-  the other store bindings.
-- The worker keeps one backup-proof scope across its busy retries, so a proof
-  is reused while the backup files' stamps are unchanged.
-- An upgrade deletes its own backup right after its receipt is durable; a
-  backup that a live intent names is kept, and older backups stay for the
-  owner.
-- Stage lines (`bundle.upgrade` with outcomes `backup.*`, `verify.*`,
-  `activate.done`, `store_check.done`) carry the worker's `operation` and
-  `kind`; a copy or hash longer than 30 seconds adds `*.progress` lines with
-  `bytesDone`/`bytesTotal`.
 
 ## Additional entry points
 
@@ -448,7 +337,7 @@ pipe and reaps only the monitor it created, with bounded cleanup.
 
 The child checks registered durable wake hints every5seconds when work exists;
 a due `laya-sync`/`laya-compile` wake is woken without the learning admission
-check (the target bundle admits its own work), learning/auto wakes wait for it;
+check (the target worker admits its own work), learning/auto wakes wait for it;
 with an empty queue it waits30seconds and performs no OS pressure probe or worker
 spawn. Observations occur before the nonblocking coordination check. Healthy
 recovery requires the task/reserve budget, load below65% of its configured
@@ -465,7 +354,7 @@ teacher, create new training examples, broaden grants or scan arbitrary projects
 Jobs lacking a registered wake hint still need the ordinary enqueue/hook flow.
 No login/reboot service is installed; the monitor stops when its daemon stops.
 
-The real v2 trainer path is `laya_adapter.train -> run_updates -> TrainingGuard`.
+The real v2 trainer path is `adapter.train -> run_updates -> TrainingGuard`.
 Each full optimizer group holds compute through its two-slot head/RNG cursor
 commit. Resource admission can reduce microbatch2to1 while retaining effective
 batch2. The next group reevaluates system memory/load and foreground demand.
@@ -701,38 +590,12 @@ from injected analytical tests; the shared OS reporter always attaches it.
   protocol matches and otherwise reports `selected_provider_protocol_mismatch`.
   A learning client of the same version that needs its trainer interpreter
   replaces the service under that interpreter, which is then remembered.
-  Installs of one release can be bound to either host's copy: the bundle
-  upgrade binds each install to the host that ran it first and seals the
-  other host's copy as its companion. A service running from one copy proves
-  an install bound to the other copy under the same queue owner and v5
-  lifetime and physical windows as its own installs (the v5 plan captured
-  for the journal-bound root), with the hooks' full selected proof inside
-  them (the journal-bound owner copy and the executing copy proven as the
-  same sealed bundle). Writers keep the plan pinned to the root they
-  execute from. It then starts or shares that install's worker as for its
-  own installs.
-  A same-version service started from a cache the installations' journals do
-  not approve (an unsealed or unequal copy of one release) proves them only as
-  bundle drift: it attaches read-only and starts no model worker, so it
-  reports `readOnlyOnly` while no worker runs or loads and an installation
-  waits `read_only_no_worker`. A hook or wake whose own code proves that
-  installation `selected` (or `preview`) then asks it to drain
-  (`read_only_handover`; refused while any worker runs) and starts the
-  successor from its own cache. A caller that would itself attach read-only
-  never asks, so the two hosts' caches do not alternate.
-- An installation still owned by a per-project resident of an earlier bundle
-  is adopted after the shared worker is ready: the service signals only the
-  one Python process whose real argv (macOS `KERN_PROCARGS2`, Linux
-  `/proc/<pid>/cmdline`, never a space-joined `ps` string) is exactly that
-  installation's `laya_embed_resident.py serve <project> <socket>` owner,
-  re-verified by UID, executable and argv just before SIGTERM.
 - Learning: the hosted inference service refuses the socket `shutdown`
   command; an idle learning-only service of an earlier bundle is retired.
 - Embedding runtime: the embedding worker runs the Laya embedding runtime under
-  `~/.local/state/memvane/embed-runtime` (`active.json`, `previous.json`,
-  content-addressed `generations/g-<id>/`). The bundle upgrade worker fills it
-  from an install's sealed provider attestation. On a new machine the owner
-  runs `core/setup_entry.py provision-index-runtime
+  `~/.local/state/memvane/v1/embed-runtime` (`active.json`, `previous.json`,
+  content-addressed `generations/g-<id>/`). On a new machine the owner
+  runs `memvane/app/setup_entry.py provision-index-runtime
   --approve-index-runtime-download [--provider-model-file <local gguf>]`
   (network: npm registry and model host); `index-runtime-status` re-hashes the
   active generation, and `gc-index-runtime [--approve-index-runtime-gc]`

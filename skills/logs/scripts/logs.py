@@ -3,7 +3,7 @@
 
 usage: logs.py [--cwd DIR | --state-root DIR | --all] [--hours N] [--limit N]
                [--json] [--details] [--register PROJECT ...]
-               [summary|recalls|errors|upgrades|migration|events] [--event NAME]
+               [summary|recalls|errors|events] [--event NAME]
 
 The state root comes from the project's selected route (the install
 journal's directory); ``--state-root`` names one directly. ``--all`` merges
@@ -34,11 +34,11 @@ import sys
 import unicodedata
 
 sys.dont_write_bytecode = True
-CORE = Path(__file__).resolve().parents[3] / 'core'
-sys.path.insert(0, str(CORE))
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
 
-import event_log  # noqa: E402
-import log_targets  # noqa: E402
+from memvane.diagnostics import event_log  # noqa: E402
+from memvane.registry import log_targets  # noqa: E402
 
 ALL_READ_LIMIT = 16 * 1024 * 1024
 MAX_ALL_TARGETS = 128
@@ -183,7 +183,7 @@ class _View:
         if not group:
             return incomplete
         try:
-            import diagnostic_trace
+            from memvane.diagnostics import diagnostic_trace
             result = diagnostic_trace.reassemble(group, ident)
         except Exception:  # noqa: BLE001 - reported, never raised
             return {'status': 'unavailable', 'diagnostic_id': ident}
@@ -208,37 +208,11 @@ def _detail_lines(result):
         yield '    | ' + _esc(line)
 
 FAILED = frozenset(('refused', 'failed', 'error', 'interrupted', 'exited'))
-# Same order as laya_shadow_migration.MIGRATION_OPS (the driver test pins it).
-MIGRATION_OPS = ('begin', 'copy', 'verification', 'base_corpus', 'sidecar_corpus',
-                 'prepare', 'publish', 'vectors', 'parity', 'parity_seal', 'reader_ready', 'switch')
-MIGRATION_STATES = ('copying', 'caught_up', 'shadow_verified', 'reader_ready', 'switched')
-# laya_shadow_migration.rollback_reader outcomes (event ``migration.rollback``).
-ROLLBACK_OUTCOMES = ('rolled_back', 'retained', 'refused')
-MIGRATION_EVENTS = ('migration.shadow', 'migration.driver', 'migration.rollback')
-# bundle.upgrade progress rows (laya_inactive_upgrade._stage); the started row
-# and the final result row carry no dot in their outcome.
-UPGRADE_STAGES = ('backup.', 'verify.', 'activate.', 'store_check.')
-UPGRADE_FIELDS = ('kind', 'copies', 'pins', 'files', 'bytes', 'bytesDone', 'bytesTotal')
-_HEX = re.compile(r'[0-9a-f]{32}')
-_STAGE = re.compile(r'[a-z_]{1,32}')
-
-
-def _upgrade_stage(row):
-    outcome = row.get('outcome')
-    return (row.get('event') == 'bundle.upgrade' and isinstance(outcome, str) and
-            outcome.startswith(UPGRADE_STAGES))
-
-
-def _moves(row):
-    if row.get('event') != 'bundle.upgrade' or _upgrade_stage(row):
-        return ''
-    return f" {row.get('from')} -> {row.get('to')}"
-
 
 def _state_root(args):
     if args.state_root:
         return Path(args.state_root), None
-    from laya_index_host_route import select_route
+    from memvane.journal.api import select_route
     try:
         decision = select_route(str(Path(args.cwd).resolve()), action='recall')
     except Exception as exc:  # noqa: BLE001 - reported, never raised
@@ -276,28 +250,7 @@ def _short(row):
         parts.append('severity=warning')
     if row.get('ms') is not None:
         parts.append(f"{row['ms']}ms")
-    if row.get('event') == 'bundle.upgrade':
-        operation = row.get('operation')
-        if isinstance(operation, str) and re.fullmatch(r'[0-9a-f]{32}', operation):
-            parts.append(f'operation={operation}')
-        attempt = row.get('attempt')
-        if type(attempt) is int and 0 < attempt <= 1000000000:
-            parts.append(f'attempt={attempt}')
-        stage = row.get('stage')
-        if stage in ('reuse', 'host_support', 'challenge', 'observe_host', 'validate_receipts'):
-            parts.append(f'stage={stage}')
-        bridge_host = row.get('bridgeHost')
-        if bridge_host in ('claude', 'codex'):
-            parts.append(f'bridgeHost={bridge_host}')
-        if _upgrade_stage(row):
-            for key in UPGRADE_FIELDS:
-                value = row.get(key)
-                if (type(value) is int and 0 <= value) or (
-                        key == 'kind' and value in ('inactive', 'bound', 'active')):
-                    parts.append(f'{key}={value}')
-    elif row.get('event') in ('migration.shadow', 'migration.driver'):
-        parts.extend(_migration_parts(row))
-    elif row.get('event') == HEADER_EVENT:
+    if row.get('event') == HEADER_EVENT:
         if row.get('kind') in _KINDS:
             parts.append(f"kind={row['kind']}")
         if _count(row.get('parts')):
@@ -318,62 +271,8 @@ def _count(value):
     return type(value) is int and 0 <= value <= 1 << 62
 
 
-def _migration_parts(row):
-    """Only closed-set names, opaque ids and counts; never free text."""
-    parts = []
-    if row.get('op') in MIGRATION_OPS:
-        parts.append(f"op={row['op']}")
-    stage = row.get('stage')
-    if isinstance(stage, str) and _STAGE.fullmatch(stage):
-        parts.append(f'stage={stage}')
-    if row.get('migration_state') in MIGRATION_STATES:
-        parts.append(f"state={row['migration_state']}")
-    for key in ('steps', 'needed_bytes', 'free_bytes', 'sampled', 'top_hits', 'hit_rate_bp'):
-        if _count(row.get(key)):
-            parts.append(f'{key}={row[key]}')
-    quiesce = row.get('quiesce_ms')
-    if type(quiesce) in (int, float) and 0 <= quiesce < 1e9:
-        parts.append(f'quiesce_ms={quiesce}')
-    migration = row.get('migration')
-    if isinstance(migration, str) and _HEX.fullmatch(migration):
-        parts.append(f'migration={migration[:8]}')
-    return parts
 
 
-def migration_summary(window):
-    """One line: state, latest operation and reason, progress and counts."""
-    shadow = [row for row in window if row.get('event') == 'migration.shadow'
-              and row.get('outcome') != 'attempt']
-    driver = [row for row in window if row.get('event') == 'migration.driver']
-    rollbacks = [row['outcome'] for row in window if row.get('event') == 'migration.rollback'
-                 and row.get('outcome') in ROLLBACK_OUTCOMES]
-    if not shadow and not driver and not rollbacks:
-        return None
-    states = [row['migration_state'] for row in driver if row.get('migration_state') in MIGRATION_STATES]
-    state = states[-1] if states else '-'
-    parts = [f'state={state}']
-    ops = [row for row in shadow if row.get('op') in MIGRATION_OPS]
-    total = len(MIGRATION_OPS)
-    if ops:
-        last = ops[-1]
-        parts.append(f"last={last['op']} {event_log.code(last.get('outcome')) or '-'}")
-        if last.get('reason'):
-            parts.append(f"reason={event_log.code(last['reason'])}")
-        done = total if state in MIGRATION_STATES[2:] else MIGRATION_OPS.index(last['op']) + 1
-        parts.append(f'progress={done}/{total}')
-    elif state in MIGRATION_STATES[2:]:
-        parts.append(f'progress={total}/{total}')
-    outcomes = Counter(row.get('outcome') for row in shadow)
-    parts.append(f'passes={len(driver)}')
-    parts.append(f"deferred={outcomes['deferred']}")
-    parts.append(f"restarts={outcomes['restarted'] + outcomes['restart_pending']}")
-    parts.append(f"retries={sum(1 for row in driver if row.get('outcome') == 'waiting')}")
-    # Switch gates that do not hold yet are waits, not errors.
-    parts.append(f"gate_waits={outcomes['waiting']}")
-    parts.append(f"errors={outcomes['error']}")
-    if rollbacks:
-        parts.append(f'rollback={rollbacks[-1]}')
-    return 'migration: ' + ' '.join(parts)
 
 
 def _recall_line(row):
@@ -460,23 +359,16 @@ def summary(rows, args):
         if degraded:
             print('degraded recalls: ' + ', '.join(f'{_esc(k)} {v}'
                                                    for k, v in degraded.items()))
-    for name, test in (('last upgrade', lambda row: row.get('event') == 'bundle.upgrade'
-                        and row.get('outcome') != 'started' and not _upgrade_stage(row)),
-                       ('last publish', lambda row: row.get('event') == 'index.publish'),
+    for name, test in (('last publish', lambda row: row.get('event') == 'index.publish'),
                        ('last error', lambda row: row.get('severity') != 'warning' and
                         (row.get('outcome') in FAILED or row.get('event') == 'hook.error'))):
         found = [row for row in rows if test(row)]
         if found:
             row = _display(found[-1])
             detail = ''
-            if row.get('event') == 'bundle.upgrade':
-                detail = f" {row.get('from')} -> {row.get('to')}"
-            elif row.get('event') == 'index.publish':
+            if row.get('event') == 'index.publish':
                 detail = f" generation={row.get('generation')}"
             print(f'{name}: {_short(row)}{detail}')
-    migration = migration_summary(window)
-    if migration:
-        print(_esc(migration))
     dropped = sum(row.get('dropped', 0) for row in window if type(row.get('dropped')) is int)
     if dropped:
         print(f'lines a process could not write before a later one: {dropped}')
@@ -496,12 +388,6 @@ def _show(rows, args, view):
         _print([row for row in rows if row.get('severity') != 'warning' and
                 (row.get('outcome') in FAILED or row.get('event') == 'hook.error')],
                args, _short, view)
-    elif args.view == 'upgrades':
-        _print([row for row in rows if row.get('event') in ('bundle.upgrade', 'journal.v4')],
-               args, lambda row: _short(row) + _moves(row), view)
-    elif args.view == 'migration':
-        _print([row for row in rows if row.get('event') in MIGRATION_EVENTS
-                and row.get('outcome') != 'attempt'], args, _short, view)
     else:
         _print([row for row in rows if not args.event or row.get('event') == args.event],
                args, _short, view)
@@ -656,7 +542,7 @@ def _main_all(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('view', nargs='?', default=None,
-                        choices=('summary', 'recalls', 'errors', 'upgrades', 'migration', 'events'))
+                        choices=('summary', 'recalls', 'errors', 'events'))
     parser.add_argument('--cwd', default=os.getcwd())
     parser.add_argument('--state-root')
     parser.add_argument('--all', action='store_true',

@@ -7,7 +7,7 @@ PLUGIN_ROOT="$(cd "$SKILL_DIR/../.." && pwd)"
 TARGET_CWD="${1:-$PWD}"
 if [ -z "${QMD_SANDBOX:-}" ]; then
   # The writer publishes into the selected memvane-db index; it needs that route.
-  _laya_state="$(python3 "$PLUGIN_ROOT/core/laya_index_host_route.py" classify compile "$TARGET_CWD" 2>/dev/null)" || _laya_state=blocked
+  _laya_state="$(python3 "$PLUGIN_ROOT/entry/run.py" classify compile "$TARGET_CWD" 2>/dev/null)" || _laya_state=blocked
   case "$_laya_state" in
     candidate) ;;
     legacy)
@@ -26,4 +26,4 @@ for arg in "$@"; do
     *) echo "[memvane] unknown option: $arg" >&2; exit 2 ;;
   esac
 done
-python3 "$PLUGIN_ROOT/core/wiki_extract.py" --cwd "$TARGET_CWD" ${EXTRA[@]+"${EXTRA[@]}"}
+python3 "$PLUGIN_ROOT/entry/run.py" wiki-extract --cwd "$TARGET_CWD" ${EXTRA[@]+"${EXTRA[@]}"}

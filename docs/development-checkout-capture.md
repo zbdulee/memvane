@@ -1,14 +1,12 @@
 # Checkout 등록과 view capture
 
-`core/laya_checkout_view.py`는 Git checkout의 정체성과 상태를 읽는 내부 API다.
+`memvane/store/checkout/checkout_view.py`는 Git checkout의 정체성과 상태를 읽는 내부 API다.
 호출자가 보관하는 등록 JSON으로 저장소·워크트리를 식별하고, 관측한 branch에서
-view identity를 계산한다. 직접 호출자는 view store(`laya_blob_store`·`laya_view_store`·
-`laya_view_reader`), schema3 sync 게시(`laya_product_sync_worker`, 연결 워크트리 등록 포함)와
-shadow migration이다. schema3 reader가 선택된 설치의 recall은 view pin을 통해 이 capture를
+view identity를 계산한다. 직접 호출자는 view store(`blob_store`·`view_store`·
+`view_reader`)와 sync 게시(`product_sync_worker`, 연결 워크트리 등록 포함)다.
+recall은 view pin을 통해 이 capture를
 거친다. 등록 JSON은 store의 `store_meta`·`worktrees` 행이 보관하고, journal endpoint record는
 main worktree의 binding digest를 고정한다.
-shadow migration은 v6 reader가 선택된 설치의 sync wake에서 돈다. v6 recall 경로와 route 분류는
-이 API를 호출하지 않는다.
 
 ## 호출 계약
 
@@ -73,5 +71,5 @@ split index의 shared 내용까지 증명할 수 없으면 `split_index_unsuppor
 자동 fetch 차단 변수는 [Git 2.39.5의 promisor 구현](https://raw.githubusercontent.com/git/git/v2.39.5/promisor-remote.c)을 따른다.
 index framing은 [Git index format](https://git-scm.com/docs/index-format)을 따른다.
 
-검증은 `test/laya-checkout-view.test.mjs`와 임시 Git fixture를 사용한다.
-기존 호스트 route 회귀는 `test/laya-index-host-route.test.mjs`로 확인한다.
+검증은 `memvane/store/tests/integration/test_checkout_view.py`(`memvane/store/tests/run.test.mjs`)와 임시 Git fixture를 사용한다.
+호스트 route 회귀는 `memvane/route/tests/run.test.mjs`로 확인한다.
