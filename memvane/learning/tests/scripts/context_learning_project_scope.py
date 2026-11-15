@@ -206,7 +206,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-general-scope-',dir='/tmp') as fold
 # Project-effective host roots: the official CLIs are asked from the project,
 # disabled historical installs never block, every enabled entry still counts.
 from types import SimpleNamespace
-from memvane.learning.context_learning import history_activation as ha
+from memvane.learning.context_learning import host_inventory as ha
 with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as folder:
  base=Path(folder).resolve();project=base/'project';project.mkdir(mode=0o700);home=base/'home'
  plugins=home/'.claude/plugins';VER='0.2-test';OFFICIAL='memvane@memvane-marketplace';STALE='memvane@stale-qa'
@@ -242,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-effective-roots-',dir='/tmp') as fo
   if isinstance(out,int):return SimpleNamespace(returncode=out,stdout='',stderr='')
   return SimpleNamespace(returncode=0,stdout=json.dumps(out),stderr='')
  resolve=lambda:ha._project_host_roots(home,project)
- with patch('memvane.learning.context_learning.history_activation.subprocess.run',fake_run),patch.dict(os.environ,{'PATH':str(trusted)}):
+ with patch('memvane.learning.context_learning.host_inventory.subprocess.run',fake_run),patch.dict(os.environ,{'PATH':str(trusted)}):
   for name in ('CLAUDE_CONFIG_DIR','CODEX_HOME'):os.environ.pop(name,None)
   # Single effective root per host; the stale marketplace is never read.
   listing.update(claude=claude_list(),codex=codex_list(0))

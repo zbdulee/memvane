@@ -514,26 +514,6 @@
       "layer": "adapter",
       "pinned": false
     },
-    "memvane/learning/context_learning/history_activation.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/learning/context_learning/history_fence.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/learning/context_learning/history_lifecycle.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/learning/context_learning/history_migration.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
     "memvane/learning/context_learning/inference_identity.py": {
       "context": "learning",
       "layer": "adapter",
@@ -665,11 +645,6 @@
       "pinned": false
     },
     "memvane/learning/context_learning/shared.py": {
-      "context": "learning",
-      "layer": "adapter",
-      "pinned": false
-    },
-    "memvane/learning/context_learning/storage_layout.py": {
       "context": "learning",
       "layer": "adapter",
       "pinned": false
@@ -1667,6 +1642,16 @@
     "memvane/install/application/onboarding_activation.py": {
       "context": "install",
       "layer": "application",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/host_inventory.py": {
+      "context": "learning",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/learning/context_learning/learning_db.py": {
+      "context": "learning",
+      "layer": "adapter",
       "pinned": false
     }
   },

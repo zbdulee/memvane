@@ -16,7 +16,6 @@ TARGETS = {
     'classify': ('memvane.host.route_input:main', ('classify',), True),
     'onboarding-notice': ('memvane.host.onboarding_notice:main', (), True),
     'hook-serve': ('memvane.host.host_response:main', ('serve-stdin',), True),
-    'host-ack': ('memvane.app.entry_commands:host_ack', (), False),
     'setup': ('memvane.app.setup_entry:main', (), True),
     'wake': ('memvane.app.wake_entry:main', (), True),
     'selector-maintenance': ('memvane.app.entry_commands:selector_maintenance', (), False),

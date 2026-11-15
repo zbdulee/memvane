@@ -53,6 +53,21 @@ def inputs(title, chunks):
 class ViewChunker(unittest.TestCase):
     BODY = '# Kestrel\n' + ''.join('Line %03d of the kestrel perch notes.\n' % n for n in range(120))
 
+    def test_chunker_receives_body_and_path_and_seals_title_in_embedding_input(self):
+        seen = []
+        class RecordingProvider(Provider):
+            def embed_document_chunks(self, body, path, **kwargs):
+                seen.append((body, path))
+                return super().embed_document_chunks(body, path, **kwargs)
+        provider = RecordingProvider()
+        context, chunker, embedder = chunker_for(provider)
+        document = {'body': 'plain card body', 'path': 'concepts/bird.md', 'title': 'Kestrel'}
+        chunks = chunker(document, {})
+        self.assertEqual(seen, [('plain card body', 'concepts/bird.md')])
+        self.assertEqual([row['text'] for row in chunks], ['plain card body'])
+        self.assertEqual(embedder(inputs('Kestrel', chunks), None), [[0.0, 1.0]])
+        self.assertEqual(context['stash'], {})
+
     def test_provider_first_pass_positions_keep_the_vectors_of_the_one_call(self):
         provider = Provider()
         context, chunker, embedder = chunker_for(provider)

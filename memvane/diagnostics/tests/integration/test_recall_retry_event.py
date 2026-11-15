@@ -34,6 +34,9 @@ class RecallRetryEventTests(FixtureCase):
         self.assertEqual(rows[0]['retry'], 'selected_proof_changed')
         self.assertIn('laya_recall_proof_retry', rows[0]['notes'])
         self.assertEqual(rows[0]['outcome'], 'empty')
+        from memvane.kernel.memvane_version import plugin_version
+        self.assertEqual(rows[0]['pluginVersion'], plugin_version())
+        self.assertNotIn('bundle', rows[0])
 
     def test_worktree_recall_records_one_degraded_event(self):
         from memvane.journal import api as journal

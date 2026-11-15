@@ -6,7 +6,6 @@ published sync wakes learning without changing its own ACK. The learning
 handler defers while the install is in transition and runs one worker step
 inside the learning worker lease.
 """
-from contextlib import contextmanager
 import os
 import tempfile
 import unittest
@@ -66,15 +65,6 @@ class LearningHandler(FixtureCase):
         self.project = self.home / 'project'
         self.project.mkdir()
         self.row = {'kind': 'learning', 'target': str(self.project), 'revision': 1}
-        self.inside = []
-
-    @contextmanager
-    def lease(self):
-        self.inside.append(True)
-        try:
-            yield
-        finally:
-            self.inside.pop()
 
     def handler(self, *, ready=(True, True), root='SAME', step=None):
         """Run the learning handler with ``ready`` answers in turn; returns ``(ack, step calls)``."""
@@ -82,23 +72,21 @@ class LearningHandler(FixtureCase):
         calls = []
 
         def worker_step(root_, project, revision):
-            self.assertEqual(self.inside, [True], 'the worker step runs inside the lease')
             calls.append((root_, project, revision))
             return step or {'status': 'settled'}
         with mock.patch('memvane.settings.api.find_project_config', return_value={'config': {}}), \
                 mock.patch('memvane.learning.api.safe_root',
                            return_value=self.project if root == 'SAME' else root), \
                 mock.patch('memvane.learning.api.ready', side_effect=lambda _project: answers.pop(0)), \
-                mock.patch('memvane.learning.api.worker_lease', self.lease), \
                 mock.patch('memvane.learning.api.learning_worker_step', side_effect=worker_step):
             return wiring.learning(self.row), calls
 
     def test_learning_defers_while_the_install_is_in_transition(self):
         self.assertEqual(self.handler(ready=(False,)), (False, []))
-        # Readiness is checked again inside the lease.
+        # Readiness is checked again before the worker step.
         self.assertEqual(self.handler(ready=(True, False)), (False, []))
 
-    def test_learning_runs_one_worker_step_inside_the_worker_lease(self):
+    def test_learning_runs_one_worker_step(self):
         acked, calls = self.handler()
         self.assertEqual((acked, calls), (True, [(self.project, self.project, 1)]))
         for status in ('running', 'started'):

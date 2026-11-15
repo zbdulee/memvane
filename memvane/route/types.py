@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import re
 
-SCHEMA = "laya-index-route-v1"
-SCHEMA_V2 = "laya-index-route-v2"
 SCHEMA_V4 = "memvane-route-v4"
 SELECTION_SCHEMA_V1 = "memvane-selection-v1"
 RECORD = "route.json"

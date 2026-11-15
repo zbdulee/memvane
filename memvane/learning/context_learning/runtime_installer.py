@@ -247,7 +247,8 @@ def _version_key(value):
 
 def _installed_plugin_version():
     try:
-        return json.loads((Path(__file__).resolve().parents[3]/'package.json').read_text())['version']
+        from memvane.kernel.memvane_version import plugin_version
+        return plugin_version()
     except (OSError,ValueError,KeyError,TypeError):
         return None
 

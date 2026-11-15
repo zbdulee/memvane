@@ -230,8 +230,7 @@ starts one handoff contender (`runtime-worker-handoff.lock`, at most 180
 seconds). The contender releases that lock as soon as it holds the worker
 lease. A child already running is not interrupted.
 
-Learning retries recheck `learning.ready` and retain the existing history
-worker fence. The runtime dispatcher starts at most one owned learning child
+Learning retries recheck `learning.ready`. The runtime dispatcher starts at most one owned learning child
 per private learning root and returns immediately, so `laya-sync` wakes
 can progress while the child runs. A general/legacy full request is persisted
 before its child starts; after a crash the request is retried under a bounded

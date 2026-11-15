@@ -63,14 +63,9 @@ def learning(row):
     if not ready(project):return False
     cfg=config.find_project_config(str(project))['config'];root=shared.safe_root(cfg,project)
     if root is None:return True
-    from memvane.learning.api import worker_lease
-    with worker_lease():
-        if not ready(project):return False
-        # A hook-persisted full (teacher+trainer) request, else a training-only
-        # retry (no teacher, no fresh captures), runs only in its owned child;
-        # this dispatcher returns at once so Laya wakes keep priority.
-        # The wake stays until that request settles.
-        step=shared.learning_worker_step(root,project,row['revision'])
+    if not ready(project):return False
+    # The owned child handles teacher and trainer work off the wake dispatcher.
+    step=shared.learning_worker_step(root,project,row['revision'])
     return step['status'] not in ('running','started')
 
 

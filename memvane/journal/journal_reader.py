@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from contextlib import closing, contextmanager, ExitStack
-from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -48,14 +47,6 @@ def records_agree(first, second, keys):
                else first[k] == second[k] for k in keys)
 
 
-
-
-@dataclass(frozen=True, eq=False, init=False)
-class InstallerSeal:
-    endpoint: VerifiedEndpoint
-
-    def __init__(self):
-        raise ValueError('reader_installer_not_issued')
 
 
 def _need(value, reason):

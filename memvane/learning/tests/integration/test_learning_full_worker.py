@@ -21,8 +21,6 @@ from memvane.learning.context_learning.local_cycle import _atomic_json as atomic
 REAL_POPEN=subprocess.Popen
 NONCE='a'*32
 JOB={key:'' for key in shared._FULL_WORKER_JOB_KEYS}
-@contextmanager
-def no_lease():yield
 def no_inline_training(*args):
     raise AssertionError('training ran inline in the dispatcher')
 class FullWorkerChecks(unittest.TestCase):
@@ -72,11 +70,9 @@ class FullWorkerChecks(unittest.TestCase):
     @contextmanager
     def handler_env(self,train=no_inline_training):
         from memvane.settings import api as config
-        from memvane.learning.context_learning import history_lifecycle
         with patch.object(config,'find_project_config',return_value={'config':{}}), \
              patch.object(shared,'_safe_root',return_value=self.shared), \
              patch('memvane.learning.context_learning.learning.ready',return_value=True), \
-             patch.object(history_lifecycle,'worker_lease',no_lease), \
              patch.object(shared,'run_training_pending',side_effect=train), \
              patch.object(shared.subprocess,'Popen',side_effect=self.spawn):
             yield

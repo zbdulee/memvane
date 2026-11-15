@@ -235,7 +235,7 @@ def _settings_identity(root):
     value = json.loads(raw.decode('utf8'), object_pairs_hook=routes.pairs)
     if not isinstance(value, dict):
         v.fail('wiki_binding_invalid')
-    collections = routes.derived_collections({'schema': routes.SCHEMA_V2}, root, raw)
+    collections = routes.derived_collections({}, root, raw)
     routes.selected_collection_roots(root, collections)
     wiki = Path(next(iter(routes.wiki_index_roots(collections).values())))
     rows = []

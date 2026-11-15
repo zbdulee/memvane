@@ -14,9 +14,10 @@ test('calibrate exact local synthetic forward memory once', { timeout: 420000 },
       ![python, project, root, run].every(path.isAbsolute)) {
     throw new Error('synthetic_calibration_explicit_paths_and_model_guard_required');
   }
-  execFileSync(python, [fileURLToPath(new URL('../core/project_learning_setup.py', import.meta.url)),
+  execFileSync(python, ['-B', '-m', 'memvane.learning.project_learning_setup',
     'calibrate-synthetic', project, root], {
     encoding: 'utf8', timeout: 390000, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
     env: { ...process.env, QMD_SETUP_GUARD_FIXTURE: '' },
   });
 });

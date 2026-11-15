@@ -50,11 +50,6 @@ def safe_root(config, project):
     from memvane.learning.context_learning.shared import _safe_root as implementation
     return implementation(config, project)
 
-def worker_lease(*, home=None):
-    from memvane.learning.context_learning.history_lifecycle import worker_lease as implementation
-    given = {'home': home} if home is not None else {}
-    return implementation(**given)
-
 def learning_worker_step(root, project, revision, *, spawn=None):
     from memvane.learning.context_learning.shared import learning_worker_step as implementation
     given = {'spawn': spawn} if spawn is not None else {}
@@ -71,12 +66,6 @@ def run_automatic_learning(project):
 def learning_main(argv):
     from memvane.learning.context_learning.shared import main as implementation
     return implementation(argv)
-
-def acknowledge_host(engine, plugin_root, *, home=None, now=None):
-    from memvane.learning.context_learning.history_lifecycle import acknowledge_host as implementation
-    given = {key: value for key, value, default in (
-        ('home', home, None), ('now', now, None)) if value is not default}
-    return implementation(engine, plugin_root, **given)
 
 def read_private_json(path):
     from memvane.learning.context_learning.dataset import read_private_json as implementation

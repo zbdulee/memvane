@@ -207,11 +207,6 @@ do not commit a personal absolute home path to shared settings. Before removing
 an existing explicit root, verify the default resolves to the same prepared
 namespace; custom roots require retaining their explicit setting.
 
-The explicit private-to-shared history migration flow requires an
-explicit `stateRoot` binding in project settings. Omitted-root resolution here
-does not change that migration contract; a migration request without that
-binding is rejected as `project_history_binding_changed`.
-
 ## Optional external teacher
 
 No teacher call occurs during capture, local cycles or the schedule gate.

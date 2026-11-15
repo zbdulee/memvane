@@ -22,15 +22,6 @@ def runtime_work():
         return 75
 
 
-def host_ack():
-    from memvane.kernel.bundle_paths import plugin_root
-    from memvane.learning.api import acknowledge_host
-    if len(sys.argv) != 2:
-        return 2
-    acknowledge_host(sys.argv[1], plugin_root())
-    return 0
-
-
 def selector_maintenance():
     from memvane.learning.api import run_selector_maintenance as run
     if len(sys.argv) == 3 and sys.argv[2] in ('force', 'newer'):
@@ -42,12 +33,11 @@ def selector_maintenance():
 
 
 def learning_shared():
-    from memvane.learning.api import bind_service_starter, worker_lease
+    from memvane.learning.api import bind_service_starter
     from memvane.learning.api import learning_main as main
     from memvane.resident.api import ensure_service
     bind_service_starter(ensure_service)
-    with worker_lease():
-        return main(sys.argv[1:])
+    return main(sys.argv[1:])
 
 
 def registry():

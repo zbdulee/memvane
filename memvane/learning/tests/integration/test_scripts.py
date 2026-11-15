@@ -84,7 +84,6 @@ TABLE = {
     'context_learning_history_claude_directory.py': (None, {}),
     'context_learning_quality_retention.py': (_equal(
         {'aggregate': 'retained', 'project': 'retained', 'improved': 'complete'}), {}),
-    'context_learning_storage_layout.py': (None, {}),
     'synthetic_rss_ceiling.py': (_equal({
         'boundary2304': 'accepted', 'measured2033': 'accepted', 'otherBoundsUnchanged': True,
         'over2305': 'setup_synthetic_measured_profile_required'}), {}),
@@ -95,9 +94,6 @@ TABLE = {
         'existingStateReused', 'differentHomes', 'spaces', 'projectIsolation', 'descendantScope',
         'explicitRootCompatible', 'invalidExplicitDenied', 'unsafeRootsDenied',
         'missingPreparationUnchanged', zero=('externalCalls',)), {}),
-    'context_learning_history_activation.py': (None, {}),
-    'context_learning_history_readers.py': (None, {}),
-    'context_learning_history_real_home_approval.py': (None, {}),
     'context_learning_inference_argv.py': (_all_true(
         'retiredAdapterRejected', 'currentAdapterHashAndViewPinned',
         'invalidAdaptersRejectedBeforeExecution', 'trainingNotResolved'), {}),

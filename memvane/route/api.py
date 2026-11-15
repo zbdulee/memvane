@@ -1,7 +1,7 @@
 """Public route-record and collection-root operations."""
 from __future__ import annotations
 
-from memvane.route.types import SCHEMA_V2, SETTINGS_IDENTITY_SCHEMA
+from memvane.route.types import SETTINGS_IDENTITY_SCHEMA
 
 
 def classify_v4(root, settings, record, *, inspect_store=True):

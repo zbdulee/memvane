@@ -209,19 +209,16 @@ def _policy(root):
 
 @contextmanager
 def _db(root, *, home=None):
+    path = Path(root) / DATABASE_NAME
     if _READ_ONLY_VALIDATION.get():
-        from .history_activation import writer_access
-        with writer_access(Path(root)/DATABASE_NAME,home=home) as path:
-            if path.is_symlink() or not path.is_file():raise ValueError('unsafe_shared_database')
-            info=path.stat()
-            if info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077:raise ValueError('unsafe_shared_database')
-            with closing(sqlite3.connect(_query_only_uri(path),uri=True,timeout=1)) as db:
-                db.execute('PRAGMA query_only=ON');yield db
+        if path.is_symlink() or not path.is_file():raise ValueError('unsafe_shared_database')
+        info=path.stat()
+        if info.st_uid!=os.getuid() or info.st_nlink!=1 or info.st_mode&0o077:raise ValueError('unsafe_shared_database')
+        with closing(sqlite3.connect(_query_only_uri(path),uri=True,timeout=1)) as db:
+            db.execute('PRAGMA query_only=ON');yield db
         return
-    from .history_activation import writer_access
-    with writer_access(Path(root) / DATABASE_NAME, home=home) as path:
-        with _db_at(path) as db:
-            yield db
+    with _db_at(path) as db:
+        yield db
 
 
 _READ_ONLY_VALIDATION = ContextVar('qmd_shared_read_only_validation', default=False)
@@ -337,7 +334,7 @@ def _case_active(root, row, *, cfg=None, private_db=None, source_cache=None,
             return False
         if private_db is None:
             from .seam import _private_state
-            from .history_activation import read_database
+            from .learning_db import read_database
             state = _private_state(cfg, project, create=create_private_state)
             if state is None:
                 return False
@@ -676,7 +673,7 @@ def trial_eligible(root, *, deadline=None, max_seconds=.2):
         if db_path.is_symlink() or not db_path.is_file():
             return False
         with ExitStack() as stack:
-            from .history_activation import read_database
+            from .learning_db import read_database
             db = stack.enter_context(read_database(db_path))
             db.execute("PRAGMA busy_timeout=20")
             projects, private_dbs, source_cache = {}, {}, {}
@@ -798,8 +795,6 @@ def enqueue(config, project, sample, compact_sources):
                    (key, str(Path(project).resolve()), sample["request_id"], digest(encoded),
                     encoded, canonical(bodies), sample["sampling"]["index_revision"],
                     time.time(), split, canonical(families), "active", "queued"))
-        from .history_activation import record_case_mapping
-        record_case_mapping(db, project, sample)
     return "queued"
 
 

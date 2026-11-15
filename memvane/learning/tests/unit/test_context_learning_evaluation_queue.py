@@ -116,16 +116,6 @@ class Checks(unittest.TestCase):
    self.assertEqual(_queue_summary(db,'learning_jobs',own.scope),{})
    self.assertEqual(db.execute('SELECT name FROM sqlite_master ORDER BY name').fetchall(),before)
   finally:db.close()
- def test_read_only_apply_validation_reads_selected_history_not_legacy_copy(self):
-  from unittest.mock import patch
-  from memvane.learning.context_learning import shared,history_activation
-  legacy=self.root/shared.DATABASE_NAME;selected=self.root/'selected.sqlite3'
-  for path,value in ((legacy,'legacy'),(selected,'selected')):
-   conn=sqlite3.connect(path);conn.execute('CREATE TABLE marker(value TEXT)');conn.execute('INSERT INTO marker VALUES (?)',(value,));conn.commit();conn.close();path.chmod(0o600)
-  @contextmanager
-  def routed(*a,**kw):yield selected
-  with patch.object(history_activation,'writer_access',routed),shared.read_only_validation(),shared._db(self.root) as conn:
-   self.assertEqual(conn.execute('SELECT value FROM marker').fetchone()[0],'selected')
  def test_actual_shared_quality_reports_none_recall_and_irrelevant_regressions(self):
   from memvane.learning.context_learning import shared
   cases=[{'request_id':'a','input_sha256':'a','project_key':'p','selected_ids':['card'],'candidates':[{'id':'card'},{'id':'noise'}]},

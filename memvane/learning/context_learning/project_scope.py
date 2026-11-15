@@ -91,7 +91,7 @@ def _installations(project=None):
     """Project-effective enabled roots from each official host CLI run in the
     project; disabled historical installs elsewhere in the account are ignored.
     Without a project, the previous account-global inventory is kept as is."""
-    from .history_activation import _discover_host_roots,_project_host_roots
+    from .host_inventory import _discover_host_roots,_project_host_roots
     rows=[]
     if project is None:
         roots=_discover_host_roots(Path.home().resolve())

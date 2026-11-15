@@ -70,10 +70,6 @@ case "$_laya_route_state" in
     # No selected route: the project is not onboarded and gets no index,
     # recall, compile or learning work. SessionStart names onboarding once.
     if [ "$ACTION" = "update-queued" ]; then
-      # A fresh installed SessionStart may acknowledge an owner-requested
-      # history cutover. It never selects history or touches project content.
-      python3 "$_qmd_code_root/entry/run.py" host-ack "$ENGINE" \
-        >/dev/null 2>&1 || true
       _laya_notice="$(python3 "$_qmd_code_root/entry/run.py" onboarding-notice \
         "$_laya_route_payload" "$_laya_route_fallback" 2>/dev/null)" || _laya_notice=""
       if [ -n "$_laya_notice" ]; then

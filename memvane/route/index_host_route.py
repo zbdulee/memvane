@@ -26,7 +26,7 @@ from memvane.settings import api as config
 from memvane.settings import api as project_dir, types as project_types
 from memvane.route.types import (FIELDS_V4,
                                  MAX_RECORD_BYTES, MAX_SETTINGS_BYTES,
-                                 QMD_SELECTION_MARKER, RECORD, SCHEMA, SCHEMA_V2,
+                                 QMD_SELECTION_MARKER, RECORD,
                                  SCHEMA_V4, SELECTION_SCHEMA_V1,
                                  SETTINGS_IDENTITY_SCHEMA, SHA256, INCARNATION, COLLECTION_FIELDS, COLLECTION_NAME)
 VECTOR_PROFILE_FIELDS = frozenset({"profileId", "modelId", "embeddingFingerprint",
@@ -319,7 +319,7 @@ def _derived_collections(record: dict, root: Path, settings_bytes: bytes) -> lis
         raise ValueError("explicit_collection_path_required")
     roles = config.role_map(cfg)
     return [{"name": name,
-             "role": "raw" if record["schema"] == SCHEMA else roles.get(name),
+             "role": roles.get(name),
              "sourceRoot": _source_for_collection(root, mappings[name])}
             for name in sorted(names)]
 
