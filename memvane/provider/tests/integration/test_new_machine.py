@@ -8,6 +8,36 @@ from memvane.provider.tests.support import MACHO, Machine, Result, sha, write
 
 
 class NewMachineProvisioning(Machine):
+    def test_discovery_skips_node_that_cannot_start_after_copy(self):
+        first = write(self.home / 'bin/node', MACHO + b'broken-rpath', 0o755)
+        write(first.parents[1] / 'lib/node_modules/npm/bin/npm-cli.js', '// npm')
+        def run(argv, **kwargs):
+            if 'memvane-node-probe-' in argv[0] and b'broken-rpath' in Path(argv[0]).read_bytes():
+                return Result(returncode=1)
+            return self.npm(argv, **kwargs)
+        selected = self.auto_provision(str(first.parent), run=run)
+        self.assertEqual(selected['nodeSha256'], sha(self.node.read_bytes()))
+
+    def test_explicit_node_that_cannot_start_after_copy_is_refused(self):
+        def run(argv, **kwargs):
+            if 'memvane-node-probe-' in argv[0]:
+                return Result(returncode=1)
+            return self.npm(argv, **kwargs)
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_node_unavailable$'):
+            R.provision_new(approve_download=True, home=self.home, node=self.node,
+                            run=run, fetch=self.fetch, model_sha256=sha(self.model_bytes))
+        self.assertEqual(self.fetches, [])
+
+    def test_staged_node_failure_never_activates_generation(self):
+        def run(argv, **kwargs):
+            if '/.staging-' in argv[0] and argv[1:] == ['--version']:
+                return Result(returncode=1)
+            return self.npm(argv, **kwargs)
+        with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_node_unavailable$'):
+            R.provision_new(approve_download=True, home=self.home, node=self.node,
+                            run=run, fetch=self.fetch, model_sha256=sha(self.model_bytes))
+        self.assertFalse((R.root() / 'active.json').exists())
+
     def test_homebrew_libexec_npm_uses_the_selected_node(self):
         node = write(self.home / 'Cellar/node/24.14.0/bin/node', MACHO, 0o755)
         self.npm_cli.unlink()
@@ -113,7 +143,7 @@ class NewMachineProvisioning(Machine):
 
     def test_failed_npm_activates_nothing(self):
         def broken(argv, **kw):
-            return Result(returncode=1)
+            return Result(stdout='v24.14.0\n') if argv[1:] == ['--version'] else Result(returncode=1)
         with self.assertRaisesRegex(R.RuntimeUnavailable, '^laya_embed_runtime_npm_failed$'):
             R.provision_new(approve_download=True, node=self.node, run=broken,
                             fetch=self.fetch, model_sha256=sha(self.model_bytes))

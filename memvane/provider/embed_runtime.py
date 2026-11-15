@@ -58,6 +58,8 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import subprocess
+import tempfile
 import uuid
 
 from memvane.kernel import safe_rmtree
@@ -641,7 +643,7 @@ def _generations(runtime):
     return generations
 
 
-def _seal(runtime, generations, *, node, module_entry, model, expect):
+def _seal(runtime, generations, *, node, module_entry, model, expect, node_run=None):
     """Copy, seal and activate one generation; the caller holds the lock."""
     for path in (node, model):
         if not Path(path).is_absolute():
@@ -661,6 +663,14 @@ def _seal(runtime, generations, *, node, module_entry, model, expect):
         rows = []
         (staging / 'bin').mkdir(mode=0o700)
         rows.append([NODE, *_copy_file(Path(node), staging / NODE, True), True])
+        if node_run is not None:
+            try:
+                version = node_run([str(staging / NODE), '--version'], cwd=str(staging), env={}, timeout=15)
+                match = VERSION.fullmatch((version.stdout or '').strip())
+                if version.returncode != 0 or match is None or int(match.group(1)) not in NODE_MAJORS:
+                    _fail('laya_embed_runtime_node_unavailable')
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RuntimeUnavailable('laya_embed_runtime_node_unavailable') from exc
         for package in sorted(packages):
             _copy_package(package, outer, staging, rows)
         (staging / 'models').mkdir(mode=0o700)
@@ -912,10 +922,25 @@ def _binary(path):
         return False
 
 
+def _relocatable_node(node, *, run):
+    """Check that the copied executable can start without its original rpath."""
+    try:
+        with tempfile.TemporaryDirectory(prefix='memvane-node-probe-') as directory:
+            copied = Path(directory) / 'node'
+            _copy_file(Path(node), copied, True)
+            result = run([str(copied), '--version'], cwd=directory, env={}, timeout=15)
+        match = VERSION.fullmatch((result.stdout or '').strip())
+        return (result.returncode == 0 and match is not None
+                and int(match.group(1)) in NODE_MAJORS)
+    except (OSError, ValueError, RuntimeUnavailable, subprocess.SubprocessError):
+        return False
+
+
 def discover_node(*, path_env=None, home=None, run=_run, require_npm=False):
     """First supported (resolved binary, version), with npm when required."""
     seen = []
     supported = False
+    has_npm = False
     for candidate in node_candidates(path_env=path_env, home=home):
         try:
             resolved = candidate.resolve(strict=True)
@@ -943,8 +968,11 @@ def discover_node(*, path_env=None, home=None, run=_run, require_npm=False):
                     if str(exc) != 'laya_embed_runtime_npm_unavailable':
                         raise
                     continue
+                has_npm = True
+                if not _relocatable_node(resolved, run=run):
+                    continue
             return resolved, match.group(0).lstrip('v')
-    if require_npm and supported:
+    if require_npm and supported and not has_npm:
         _fail('laya_embed_runtime_npm_unavailable')
     _fail('laya_embed_runtime_node_unavailable')
 
@@ -1044,6 +1072,10 @@ def provision_new(home=None, *, approve_download=False, model_file=None, node=No
     if node is None:
         node, _version = discover_node(path_env=path_env, home=home, run=run,
                                        require_npm=True)
+    else:
+        _npm_cli(node)
+        if not _relocatable_node(node, run=run):
+            _fail('laya_embed_runtime_node_unavailable')
     runtime = _runtime_root(home, create=True)
     generations = _generations(runtime)
     with _lock(runtime):
@@ -1056,7 +1088,7 @@ def provision_new(home=None, *, approve_download=False, model_file=None, node=No
             model = _fetch_model(work, model_file=model_file, model_sha256=model_sha256,
                                  approve_download=approve_download, fetch=fetch)
             chosen = _seal(runtime, generations, node=node, module_entry=entry, model=model,
-                           expect={'model': model_sha256})
+                           expect={'model': model_sha256}, node_run=run)
         finally:
             _remove_work(work)
     return select_generation(chosen, home)
