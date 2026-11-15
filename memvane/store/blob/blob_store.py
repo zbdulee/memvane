@@ -50,20 +50,18 @@ def legacy_card_evidence(row, decision):
 def current_revision_evidence(evidence, current_sources):
     """The evidence a writer ingest attests when ``current_sources`` observed this pass's raw files.
 
-    Only a path the card cites at two or more distinct (sha256, size)
-    revisions is judged, and only when that path was observed: the revision
+    A cited path is judged only when it was observed: the revision
     matching the observed bytes stays (with its spans), the others go. When
     none matches, the card is stale and gets no attestation (``None``). A
-    path cited once, or not observed, keeps every revision as before; no
-    revision is chosen by its order or its fingerprint.
+    path not observed keeps every revision as before; no revision is chosen
+    by its order or its fingerprint.
     """
     if current_sources is None or evidence is None:
         return evidence
     revisions = {}
     for revision in evidence['revisions']:
         revisions.setdefault(revision['path'], set()).add((revision['sha256'], revision['size']))
-    judged = {path: tuple(current_sources[path]) for path, seen in revisions.items()
-              if len(seen) > 1 and path in current_sources}
+    judged = {path: tuple(current_sources[path]) for path in revisions if path in current_sources}
     if not judged:
         return evidence
     if any(current not in revisions[path] for path, current in judged.items()):

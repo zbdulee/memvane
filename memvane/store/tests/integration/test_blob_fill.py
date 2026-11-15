@@ -504,6 +504,16 @@ class ContentFillChecks(helpers.BlobStoreCase):
         self.assertEqual(self.store._db.total_changes, before)
         self.assertEqual((self.fences, self.documents, self.inputs), ([], [], []))
 
+    def test_32_expired_embedder_output_is_not_processed(self):
+        clock = [0.0]
+        def slow(inputs, profile):
+            clock[0] = 2.0
+            return [['not a float'] for _ in inputs]
+        with mock.patch('memvane.store.blob.blob_fill.time.monotonic', side_effect=lambda: clock[0]):
+            error = self.refused(self.fill, embedder=slow, deadline_seconds=1)
+        self.assertEqual(error.reason, 'content_fill_deadline')
+        self.no_embedding()
+
 
 if __name__ == '__main__':
     if len(sys.argv) == 4 and sys.argv[1] == '--worker':

@@ -41,7 +41,7 @@ def _rows_baseline(store, db, handle, head):
         return dict(path=row['path'], blob_sha=row['blob_sha'], display_title=row['title'],
                     trust_digest=row['trust_digest'])
     opened = {} if cold else {row['path']: member(row) for row in store._rows_open(db, handle.view_id)}
-    staged = {}
+    staged, staged_sources = {}, {}
     job = db.execute("SELECT job_id,base_gen_id,base_epoch FROM s_stage_jobs WHERE view_id=? AND state='ready'",
                      (handle.view_id,)).fetchone()
     if job is not None and (job[1], job[2]) == (head['gen_id'], head['epoch']):
@@ -54,6 +54,15 @@ def _rows_baseline(store, db, handle, head):
                 staged.pop(item[0], None)
             else:
                 staged[item[0]] = member(new)
+                if not cold:
+                    staged_sources[item[0]] = None if new['trust_digest'] is None else set()
+        if not cold and staged_sources:
+            for path, source, sha, length in db.execute(
+                    'SELECT i.path,f.path,f.source_sha,f.byte_length FROM s_stage_items i '
+                    'JOIN attestation_sources a ON a.trust_digest=i.trust_digest '
+                    'JOIN source_fingerprints f ON f.fingerprint_id=a.fingerprint_id '
+                    'WHERE i.job_id=?', (job[0],)):
+                staged_sources[path].add((source, sha, length))
     spec = head_oid = None
     sources = []
     if not cold:
@@ -64,7 +73,8 @@ def _rows_baseline(store, db, handle, head):
             spec = dict(recipe_id=generation[0], profile_id=generation[1])
         head_oid = json.loads(generation[3])['headOid']
         sources = store._rows_open_sources(db, handle.view_id)
-    return dict(old=staged if cold else opened, carry={} if cold else staged, manifest=None,
+    return dict(old=staged if cold else opened, carry={} if cold else staged,
+                carry_sources={} if cold else staged_sources, manifest=None,
                 vector_spec=spec, head_oid=head_oid, sources=sources)
 
 

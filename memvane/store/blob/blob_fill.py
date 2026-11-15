@@ -54,7 +54,7 @@ def _result(status, key, digest, count):
             'set_digest': digest, 'chunk_count': count}
 
 
-def _pack(output, inputs, dimension):
+def _pack(output, inputs, dimension, deadline):
     """Exact N x dimension finite nonzero float32 rows bound to the ordered input strings."""
     if not isinstance(output, (list, tuple)) or len(output) != len(inputs):
         v.fail('embedding_count_mismatch')
@@ -62,10 +62,13 @@ def _pack(output, inputs, dimension):
         v.fail('embedding_set_too_large')
     rows = []
     for seq, (vector, text) in enumerate(zip(output, inputs)):
+        _expire(deadline)
         if not isinstance(vector, (list, tuple)) or len(vector) != dimension:
             v.fail('embedding_dimension_mismatch')
         values = []
-        for number in vector:
+        for index, number in enumerate(vector):
+            if index % 256 == 0:
+                _expire(deadline)
             if isinstance(number, bool) or not isinstance(number, (int, float)):
                 v.fail('embedding_value_invalid')
             try:
@@ -200,13 +203,16 @@ class ContentFiller:
             self._validate(claim, key)
             self._idle()
             write_fence()
+            _expire(deadline)
             recipe, profile, chunked = self._prepare(key)
+            _expire(deadline)
             if not chunked:
                 document = self._call(self._store.document, key[0])
                 _expire(deadline)
                 rows = chunker(document, recipe)
                 _expire(deadline)
                 self._validate(claim, key)
+                _expire(deadline)
                 self._call(self._store.put_chunk_set, key[0], key[1], rows)
             inputs = self._call(self._store.embedding_inputs, *key)
             if (not isinstance(inputs, list) or not 1 <= len(inputs) <= v.MAX_CHUNKS
@@ -215,7 +221,8 @@ class ContentFiller:
             dimension = profile['dimension']
             _expire(deadline)
             output = embedder(list(inputs), profile)
-            rows = _pack(output, inputs, dimension)
+            _expire(deadline)
+            rows = _pack(output, inputs, dimension, deadline)
             self._validate(claim, key)
             _expire(deadline)
             digest = self._call(self._store.put_embedding_set, *key, rows)

@@ -292,7 +292,7 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
             self.assertEqual(judged, plain)
             self.assertEqual([row[0] for row in self.attested(store, judged)], ['notes/src.md', 'notes/src.md'])
 
-    def test_14_a_card_citing_its_path_once_is_unchanged_even_when_stale(self):
+    def test_14_a_single_revision_must_match_an_observed_source(self):
         from memvane.wiki.card import api as yaml_scalars
         raw = (self.root / 'notes/src.md').read_bytes()
         line = yaml_scalars.dump_source_revisions([dict(
@@ -302,10 +302,11 @@ class CardSourceChecks(publish.IncrementalPublicationChecks):
             '---\ntitle: "One revision"\nstatus: verified\ncreatedBy: memvane\nsourceRevisions:\n  - ' + line
             + '\n---\n# One revision\nonerevprobe body\n', encoding='utf8')
         for store, handle in self.two_stores():
-            for current in (self.current(raw), self.current(self.OLDER)):
-                judged = self.ingest_card(store, handle, 'cards/one.md', current_sources=current)
-                self.assertIsNotNone(judged['trust_digest'])
-                self.assertEqual(judged, self.ingest_card(store, handle, 'cards/one.md'))
+            stale = self.ingest_card(store, handle, 'cards/one.md', current_sources=self.current(raw))
+            self.assertIsNone(stale['trust_digest'])
+            matching = self.ingest_card(store, handle, 'cards/one.md', current_sources=self.current(self.OLDER))
+            self.assertIsNotNone(matching['trust_digest'])
+            self.assertEqual(matching, self.ingest_card(store, handle, 'cards/one.md'))
 
 
 def load_tests(loader, tests, pattern):

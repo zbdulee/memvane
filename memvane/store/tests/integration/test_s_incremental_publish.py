@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -57,6 +58,26 @@ if args['point'] == 'before_commit':
 else:
     store.collect_view_rows(handle, limit=64)
     stop()
+'''
+
+GC_HELD_CHILD = r'''
+import json, os, sys, time
+from pathlib import Path
+args = json.loads(sys.argv[1])
+import memvane.store.view.view_store as views
+store = views.ViewStore.open(args['db'], repository=args['repository'], scope_id=args['scope'])
+handle = store.capture_view(args['worktree_id'])
+def before_commit(sql):
+    if sql.strip().upper() == 'COMMIT':
+        Path(args['ready']).touch()
+        end = time.monotonic() + 20
+        while not Path(args['release']).exists() and time.monotonic() < end:
+            time.sleep(.01)
+        if not Path(args['release']).exists():
+            os._exit(19)
+store._db.set_trace_callback(before_commit)
+store.collect_view_rows(handle, limit=64)
+store.close()
 '''
 
 
@@ -502,6 +523,27 @@ class IncrementalPublicationChecks(seed.GenerationCase):
         self.assertEqual(self.counts(store, handle.view_id), before)
         reader.rollback()
         self.assertTrue(store.collect_view_rows(handle, limit=64)['s_cards'])
+
+    def test_recall_during_a_gc_transaction_reads_the_head(self):
+        store, repository, handle, _ = self.collectable()
+        ready, release = self.root / 'gc-ready', self.root / 'gc-release'
+        args = dict(db=str(self.db), repository=repository, scope=self.scope,
+                    worktree_id=handle.worktree_id, ready=str(ready), release=str(release))
+        child = subprocess.Popen([sys.executable, '-B', '-c', GC_HELD_CHILD, json.dumps(args)],
+                                 cwd=str(REPO), env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 20
+            while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(ready.exists(), 'GC did not reach its commit')
+            start = time.monotonic()
+            self.assertEqual(self.found(store, handle, 'uniquethree'), ['cards/a.md'])
+            print('synthetic recall during held GC: %.3f ms' % ((time.monotonic() - start) * 1000))
+        finally:
+            release.touch()
+            output, errors = child.communicate(timeout=25)
+        self.assertEqual(child.returncode, 0, output + errors)
 
     def test_generations_persist_seal_accumulators_and_a_head_rowid_map(self):
         from memvane.store.view import view_fts as fts
