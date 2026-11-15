@@ -1,6 +1,0 @@
-{
-  "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
-    "additionalContext": "관련 문서:\n- [sample] sample/docs/guide.md - Guide\n필요시 참조."
-  }
-}

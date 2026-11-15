@@ -1,4 +1,4 @@
-// Temporary fixture directories for node tests (S5 L0 replacement of test/helpers/temp.mjs).
+// Temporary fixture directories for node tests.
 //
 // A fixture HOME is a realpath'd, owner-private directory directly under /tmp:
 // the per-install socket path under HOME is at most 100 bytes, and product

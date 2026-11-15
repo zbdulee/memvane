@@ -1,5 +1,5 @@
-// Whether a card as it is on disk passes recall trust, and its freshness (S5 L0 replacement
-// of test/helpers/wiki_trust.mjs). The decision is the product's own (`wiki.card.api`
+// Whether a card as it is on disk passes recall trust and its freshness.
+// The decision is the product's own (`wiki.card.api`
 // is_auto_trusted_card / check_card), never re-implemented here; the project config is
 // the minimal `.memvane/settings.json` expanded through `settings.api`.
 //

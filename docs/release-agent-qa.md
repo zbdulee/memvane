@@ -964,9 +964,7 @@ QA-only barrier (`memvane/sync/product_sync_worker.py`):
   group and cleanup proof, fresh-session transcript and hook timings. Confirm
   production runs do not set fixture/sandbox bypass flags, and show whether
   direct `shared.launch` and queued `runtime_work.dispatch` paths both obey
-  admission. Existing synthetic tests in `test/runtime_resources_test.py`,
-  `test/runtime_training_watch_test.py`,
-  `test/fixtures/runtime-wake-policy-checks.py`, and
+  admission. Existing synthetic tests in `memvane/runtime/tests/run.test.mjs` and
   `memvane/learning/tests/integration/test_context_learning_coordination.py` are L0 coverage,
   not this installed-candidate result.
 - **Timeout:** 60 min.
