@@ -18,9 +18,9 @@ short summary at the end (step 5).
 
 <!-- WORKFLOW:START -->
 0. Acquire the per-project resolver run-lock before touching anything:
-   `mkdir ~/.local/state/memvane/auto-context/dedup-resolve-lock/<project_key>` (create parents as needed; `<project_key>`
+   `mkdir ~/.local/state/memvane/v1/auto-context/dedup-resolve-lock/<project_key>` (create parents as needed; `<project_key>`
    is not something you need to compute yourself — use the exact literal path segment
-   `mkdir -p ~/.local/state/memvane/auto-context/dedup-resolve-lock/$(python3 -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "<absolute project root>" "<config path or empty string>")`).
+   `mkdir -p ~/.local/state/memvane/v1/auto-context/dedup-resolve-lock/$(python3 -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "<absolute project root>" "<config path or empty string>")`).
    If `mkdir` fails and the existing lock dir's mtime is under 60 minutes old, another resolver is
    active — stop immediately, do nothing further. If it is 60+ minutes old, it is stale: remove it
    and re-create it, then continue. Remove the lock dir when you finish, whatever the outcome.

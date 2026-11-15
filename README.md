@@ -24,7 +24,8 @@ MemVane은 프로젝트 안의 문서, 메모, wiki를 자동으로 찾아서
 MemVane injects relevant project wiki context into Claude Code, Codex,
 and Hermes Agent sessions. Install this plugin for your host, then ask the
 `setup` skill to onboard the project onto its memvane-db index. Onboarding reads a
-minimal `.memvane/settings.json` (`{name, skipPaths}`), shows reviewed plans, and applies only on
+minimal `.memvane/settings.json` (required `name`; optional `skipPaths`, `diagnostics`,
+`contextLearning`, and `sharedLearning`), shows reviewed plans, and applies only on
 explicit request. Projects that are not onboarded get no indexing, recall,
 compile or learning work; their SessionStart shows one short onboarding notice
 (plus one line of answer commands for the agent) when they have `.memvane/settings.json`. The user can skip that notice for the
@@ -131,9 +132,10 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 
 이 형식에서는 프로젝트 루트 전체가 위키 생성 원천이고 검색은 위키만 합니다.
 `.`으로 시작하는 폴더와 `skipPaths`에 걸리는 폴더로는 위키를 만들지 않습니다.
-`.memvane/wiki`의 위키 카드는 검색 대상입니다. 두 키 외의 키가 있으면
-온보딩은 `minimal_settings_required`로 거부하고, 에이전트는 파일을 대신 고치지
-않습니다. 파일이 준비되면 에이전트에게 요청하세요.
+`.memvane/wiki`의 위키 카드는 검색 대상입니다. 허용 키는 필수 `name`과
+선택 항목 `skipPaths`, `diagnostics`, `contextLearning`, `sharedLearning`입니다.
+그 밖의 키나 잘못된 `name`·`skipPaths`는 `minimal_settings_required`로 거부하며,
+에이전트는 파일을 대신 고치지 않습니다. 파일이 준비되면 에이전트에게 요청하세요.
 
 ```text
 이 프로젝트 auto-context 온보딩해줘.
@@ -178,6 +180,22 @@ MemVane은 프로젝트별 온보딩 방식입니다. MemVane 색인이 선택�
 색인을 검색합니다. 이 색인은 main checkout의 백그라운드 동기화가 채웁니다. 처음 연
 worktree나 브랜치를 바꾼 직후에는 그 worktree에서 세션을 시작하거나 파일을 편집해 동기화가
 끝날 때까지 검색 결과가 붙지 않습니다. 위키 생성은 main checkout에서만 합니다.
+
+온보딩이 끝나면 위키 폴더 유지 파일과 설치 포인터가 Git의 추적 대상이 되지
+않도록 프로젝트 `.gitignore`에 다음 세 줄을 추가하세요. 플러그인은 이 파일을
+수정하지 않습니다. 이미 Git이 추적 중인 파일은 별도로 추적을 해제해야 합니다.
+
+```gitignore
+.memvane/route.json
+.memvane/selection.json
+.memvane/wiki/.memvane-root
+```
+
+`.memvane/wiki/.memvane-root`가 추적되지 않은 상태여야 브랜치 전환 시 위키
+폴더가 유지됩니다. 프로젝트 폴더를 옮기거나 이름을 바꿨다면, 이전 설치를
+복원하려면 원래 위치로 되돌린 뒤 restore를 요청하고, 다시 옮겨 온보딩하세요. 이동한 위치에서 바로
+다시 온보딩하려면 그 폴더의 `.memvane/route.json`과 `.memvane/selection.json`을
+삭제한 뒤 setup을 요청하세요. 이 경우 이전 설치의 state는 남습니다.
 
 ## 에이전트에서 쓰는 흐름
 
@@ -249,7 +267,8 @@ adapter에서는 `low` 요청과 지원 불가 사실을 기록하며 실제 적
 유료 호출을 반복하지 않습니다. 이후 명시적인 소스 이벤트나 수동 재시도로 다시
 시도할 수 있습니다.
 
-`.memvane/wiki`에는 카드만 있습니다. 카드 작성 규칙은 플러그인 번들의
+`.memvane/wiki`에는 카드와 Git에서 추적하지 않는 폴더 유지 파일이 있습니다.
+카드 작성 규칙은 플러그인 번들의
 `memvane/wiki/card/rules/`(기본·소설 프리셋)에 있고, 카드 목록은 memvane-db 색인,
 생성·수정·삭제 기록은 설치 state 디렉터리 이벤트 로그(`events.jsonl`)의 `wiki`
 이벤트입니다. 이전 버전이
@@ -260,9 +279,8 @@ adapter에서는 `low` 요청과 지원 불가 사실을 기록하며 실제 적
 `.agents`, `.claude`, `.codex`, `.github`, `.memvane`처럼 점으로 시작하는
 도구/메타데이터 경로는 자동 compile 대상에서 제외됩니다.
 
-자동 검증이 실패하면 기본 설정에서는 해당 생성 문서를 삭제합니다. 검증기가
-없거나 timeout이 나거나 판단이 불확실한 경우에는 큐나 `generated` 상태가
-보존됩니다. `generated` 카드처럼 자동 신뢰 조건(`status: verified`,
+선택된 색인에서 자동 검증이 실패하거나 판단이 불확실해도 카드 파일은 삭제하지
+않습니다. 검증기가 없거나 timeout이 나면 큐나 `generated` 상태가 보존됩니다. `generated` 카드처럼 자동 신뢰 조건(`status: verified`,
 `createdBy: memvane` 또는 이전 플러그인 이름 `qmd-auto-context`, 비어 있지 않은 `sourceRevisions`)을 갖추지 못한
 카드는 `recallVerifiedOnly` 값과 관계없이 recall에 주입되지 않습니다.
 

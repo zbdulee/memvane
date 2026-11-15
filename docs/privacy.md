@@ -59,7 +59,7 @@ secret, credential, API key, authorization, cookie) are dropped from every line.
   withdrawn on request, including after selected writes; the old install directory remains.
 - Decline the SessionStart onboarding notice for a project, or skip it for one
   session. The answer is kept per project under
-  `~/.local/state/memvane/onboarding/`, outside the repository, and never
+  `~/.local/state/memvane/v1/onboarding/`, outside the repository, and never
   turns indexing, wiki generation or learning on.
 - Add sensitive folders to `skipPaths` so they are excluded from new wiki
   generation; existing cards from those sources are hidden from search.

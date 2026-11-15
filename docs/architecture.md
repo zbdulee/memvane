@@ -143,7 +143,7 @@ sandbox/headless no-op guards, and classifies the event cwd with
 | Route state | Behavior |
 |---|---|
 | `candidate`, `preview`, `worktree` | `exec memvane/host/host_response.py serve-stdin` |
-| `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
+| `legacy` (no route) | No work, exit 0. On `update-queued` only, one short onboarding notice line for a project with `.memvane/settings.json` (Codex receives it as SessionStart JSON). A second `[memvane] onboarding-answer <JSON>` line gives the agent the exact `setup_entry.py onboarding-skip` (payload session id, kept 30 days) and `onboarding-never` commands as argv and shell strings; a recorded answer (`~/.local/state/memvane/v1/onboarding/<sha256(canonical project root)>.json`, case aliases share one record) hides both lines. |
 | `blocked` | exit 3, no fallback |
 | `error` (route lookup failure) | recall exits 0 without context; SessionStart reports the lookup failure and does not offer onboarding |
 
@@ -381,10 +381,8 @@ the configured host extractor:
 
 - `pass` patches the card to `status: verified` with `verifiedBy`,
   `verifiedAt`, `verifiedMode` and `verifiedBodyHash`;
-- `fail` applies `compile.verify.onFail` (`delete` by default, or `contested` /
-  `none`);
-- `inconclusive` applies `compile.verify.onInconclusive` (same values, `delete`
-  by default);
+- `fail` and `inconclusive` preserve the card on a selected route; they do not
+  promote it to verified;
 - missing CLIs, timeouts or stale jobs preserve the queue item or leave the card
   as `generated` according to the worker contract.
 
@@ -779,8 +777,8 @@ The only code path that reads the log back is the compile worker's
 | Log | Location |
 |---|---|
 | install event log | `<state root>/events.jsonl` (+ `.1`, `.2`) |
-| wiki lifecycle | `~/.local/state/memvane/auto-context/logs/wiki-lifecycle.log` (`QMD_WIKI_LIFECYCLE_LOG`) |
-| wiki dedup scan | `~/.local/state/memvane/auto-context/logs/wiki-dedup.log` (`QMD_WIKI_DEDUP_LOG`) |
+| wiki lifecycle | `~/.local/state/memvane/v1/auto-context/logs/wiki-lifecycle.log` (`QMD_WIKI_LIFECYCLE_LOG`) |
+| wiki dedup scan | `~/.local/state/memvane/v1/auto-context/logs/wiki-dedup.log` (`QMD_WIKI_DEDUP_LOG`) |
 | compile ledgers | `.memvane/compile/` (`candidates.jsonl`, `verify-log.jsonl`, `merge-needed.jsonl`, `verify-deleted.jsonl`, `dedup-deleted.jsonl`, `discard-ledger.jsonl`, queues) |
 | context learning jobs | per-user learning state `job-telemetry.jsonl`, `worker.log` |
 

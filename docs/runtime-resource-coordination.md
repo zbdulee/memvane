@@ -61,7 +61,7 @@ development execution guard is separate; see
   `targetHeadroomFraction` 0.35) is a conservative cold-start proxy, not a
   measured peak. One per-user resident service
   (`resident_service.py`, private root
-  `<account home>/.local/state/memvane/service/`, same-owner peer check on every
+  `<account home>/.local/state/memvane/v1/service/`, same-owner peer check on every
   socket) hosts the embedding model for every selected or pending
   installation and the learning inference service. It loads one exact worker
   per vector profile (provider identity, model and dimension) through
