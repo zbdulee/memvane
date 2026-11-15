@@ -100,9 +100,7 @@ def restore_origin_selection(*, project_root, state_root):
 
     Before activation this abandons the install: the build pointer and build
     record go, so a new prepare can start. After activation it withdraws the
-    project pointers before the first selected write; after that write it
-    releases the selection only when the attested provider no longer matches
-    this host (re-onboarding is then the supported path). The state root,
+    project pointers even after a selected write. The state root,
     store, journal and ledger stay in place. Project pointers of a lower or
     unknown major are released without reading ``state_root``.
     """
@@ -147,22 +145,6 @@ def _release_other_major(project):
                 _retire_foreign_pointer(target)
                 removed += 1
     return {'status': 'released', 'changesApplied': removed}
-
-
-def _provider_changed(journal, path, row):
-    """True when this host's provider, model or runtime differs from the attestation."""
-    from memvane.journal.types import JournalEvidenceError
-    attestation, digest = journal.journal_attestation(path)
-    if digest != row['attestationSha256']:
-        _fail('worker_attestation_changed')
-    try:
-        _manifest, available = journal.provider_manifest(
-            attestation, row['vectorProfile'], allow_local_unavailable=True)
-    except JournalEvidenceError as exc:
-        if str(exc) != 'provider_identity_changed':
-            raise
-        return True
-    return not available
 
 
 def _restored_without_build(journal, project, state):
@@ -222,14 +204,8 @@ def _restore_v1_locked(project, state):
                         or (phase == 'selected' and row['state'] != 'selected')
                         or (phase == 'restored' and row['state'] != 'restored')):
                     _fail('restore_state_invalid')
-                released = False
-                if (row['newWriteSeen'] and row['state'] != 'restored'
-                        and phase not in ('restoring', 'restored')):
-                    # After the first selected write only a provider that no
-                    # longer matches releases the selection (re-onboard).
-                    if not _provider_changed(journal, path, row):
-                        _fail('rollback_forward_only')
-                    released = True
+                released = (row['newWriteSeen'] and row['state'] != 'restored'
+                            and phase not in ('restoring', 'restored'))
                 if phase in ('prepared', 'selected'):
                     ledger = {**ledger, 'phase': 'restoring', 'epoch': ledger['epoch'] + 1}
                     _write(ledger_path, ledger, replace=True)

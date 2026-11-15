@@ -18,6 +18,7 @@ const METHODS = [
   'test_source_change_between_finalize_and_activate_reseals',
   'test_rescan_after_selection_is_refused',
   'test_provider_change_releases_a_written_selection',
+  'test_unchanged_provider_releases_after_first_write_and_can_plan_again',
   'test_provider_change_release_reports_released',
   'test_reruns_compare_recorded_nodes_by_inode',
   'test_recall_in_interrupted_windows_exits_zero_without_context',

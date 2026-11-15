@@ -310,8 +310,6 @@ class FixtureOnboarding(FixtureCase):
             if self.journal_row()['newWriteSeen']:
                 break
         self.assertTrue(self.journal_row()['newWriteSeen'])
-        self.blocked('rollback_forward_only', self.restore)
-
         self.fake.change_identity()
         with mock.patch('memvane.install.initial_build.retire_project_pointer',
                         _crash_once(initial_build.retire_project_pointer)):
@@ -325,6 +323,20 @@ class FixtureOnboarding(FixtureCase):
         self.assertEqual((row['state'], row['newWriteSeen']), ('restored', True))
         self.assertEqual((self.build_pointer(), self.build_record()), (None, None))
         self.assertTrue((self.state / 'store.sqlite').exists(), 'the old install stays in place')
+        self.assertEqual(workflow.plan_fresh_wiki_origin(self.project)['status'], 'review_required')
+
+    def test_unchanged_provider_releases_after_first_write_and_can_plan_again(self):
+        from memvane.install.application import onboarding_workflow as workflow
+        self.install(1)
+        self.write_card('lantern')
+        for _ in range(SETTLE_PASSES):
+            self.run_worker()
+            if self.journal_row()['newWriteSeen']:
+                break
+        self.assertTrue(self.journal_row()['newWriteSeen'])
+        self.assertEqual(self.restore(), {'status': 'released', 'changesApplied': 1})
+        self.assertEqual(self.project_pointers(), [])
+        self.assertTrue((self.state / 'store.sqlite').exists())
         self.assertEqual(workflow.plan_fresh_wiki_origin(self.project)['status'], 'review_required')
 
     def test_provider_change_release_reports_released(self):
