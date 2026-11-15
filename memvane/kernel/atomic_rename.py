@@ -2,9 +2,7 @@
 import ctypes
 import json
 from pathlib import Path
-import tempfile
 import os
-import shutil
 import stat
 import sys
 
@@ -99,6 +97,7 @@ MAX_FILE = 16 * 1024 * 1024
 
 
 def atomic_json(path, value):
+    import tempfile
     path = Path(path)
     # Same bytes as context_learning.store.canonical plus a trailing newline.
     data = (json.dumps(value, ensure_ascii=False, sort_keys=True,
@@ -136,6 +135,7 @@ def private_lock(path):
 
 def write_text_atomic(path: Path, text: str) -> bool:
     """Replace text atomically in the same directory, preserving existing mode."""
+    import shutil
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     try:
         with open(tmp, "w", encoding="utf-8") as handle:

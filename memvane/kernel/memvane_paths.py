@@ -17,7 +17,6 @@ import os
 import pwd
 import stat
 import sys
-import tempfile
 import hashlib
 import re
 
@@ -97,6 +96,7 @@ def ensure_state_layout(home=None):
     target = base / 'layout.json'
     expected = b'{"stateFormat":1}\n'
     if not os.path.lexists(target):
+        import tempfile
         fd, temporary = tempfile.mkstemp(prefix='.layout-', dir=base)
         try:
             with os.fdopen(fd, 'wb') as output:

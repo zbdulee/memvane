@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import fnmatch
 import json
 import sys
@@ -63,6 +62,7 @@ def select_collections(edited_paths, cwd, config):
 
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--cwd", required=True)
     parser.add_argument("--paths", required=True)

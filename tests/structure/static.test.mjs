@@ -29,6 +29,15 @@ test('every product module and entry script imports under a synthetic HOME', t =
   assert.deepEqual(readdirSync(home), [], 'importing must not write under HOME');
 });
 
+test('hook imports avoid CLI parsers while the CLIs still provide help', t => {
+  const {result} = run(t, 'lazy_cli_imports.py');
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.loaded_argparse, []);
+  assert.deepEqual(report.loaded_tempfile, []);
+  assert.equal(report.help_ok, 3);
+});
+
 test('product SQLite readers use the common query-only URI', t => {
   const {result} = run(t, 'sqlite_read_uri_guard.py');
   assert.equal(result.status, 0, result.stdout + result.stderr);
