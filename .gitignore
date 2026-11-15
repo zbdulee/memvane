@@ -39,5 +39,7 @@ __pycache__/
 .auto-context/settings.json.pre-minimal-*
 
 # MemVane runtime files
+.memvane/route.json
+.memvane/selection.json
 .memvane/file-changes/
 .memvane/wiki/.memvane-root
