@@ -59,13 +59,16 @@ class ServiceChecks(Fixture):
                 results.append(embed(manifest, kind=kind))
             except Exception as exc:  # noqa: BLE001 - collected for the assertion
                 errors.append(str(exc))
-        threads = [threading.Thread(target=call, args=(projects[n % 3][1],
-                                                        'query' if n % 2 else 'document'))
-                   for n in range(24)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(30)
+        # Stay below the service connection cap; its overload behavior is
+        # covered separately. Each wave still exceeds the six worker slots.
+        for start in (0, 12):
+            threads = [threading.Thread(target=call, args=(projects[n % 3][1],
+                                                            'query' if n % 2 else 'document'))
+                       for n in range(start, start + 12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
         self.assertEqual(errors, [])
         self.assertEqual(len(results), 24)
         self.assertEqual(len(self.loads), 1, 'one model load for every project')
