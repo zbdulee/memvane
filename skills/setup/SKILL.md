@@ -17,7 +17,7 @@ The notice's second line, `[memvane] onboarding-answer <JSON>`, holds the exact 
 
 ## Minimal settings
 
-Onboarding reads `.memvane/settings.json` with required `name` and optional `skipPaths` and `diagnostics`. Other keys or an invalid `name` or `skipPaths` refuse as `minimal_settings_required`; report that and ask the user to write the minimal file (the `name` slug derives the raw collection `<slug>` at the project root and the wiki collection `<slug>-wiki` at `.memvane/wiki`). Never rewrite settings.json on the user's behalf. A selected route binds the resolved settings identity, so editing `skipPaths` keeps it selected; changing `name` changes the identity and blocks the route as `route_settings_changed`.
+Onboarding reads `.memvane/settings.json` with required `name` and optional `skipPaths`, `diagnostics`, `contextLearning`, and `sharedLearning`. Other keys or an invalid `name` or `skipPaths` refuse as `minimal_settings_required`; report that and ask the user to write the minimal file (the `name` slug derives the raw collection `<slug>` at the project root and the wiki collection `<slug>-wiki` at `.memvane/wiki`). Never rewrite settings.json on the user's behalf. A selected route binds the resolved settings identity, so editing `skipPaths` keeps it selected; changing `name` changes the identity and blocks the route as `route_settings_changed`.
 
 Projects that only have `.auto-context/` need the owner to move it to `.memvane/` before onboarding.
 
@@ -29,7 +29,15 @@ The provider is the MemVane embedding runtime under `~/.local/state/memvane/v1/e
 
 Onboarding is a reviewed setup operation for the requested project. Confirm the project root, collection roots, plugin version, provider identity and resource scope. Apply only the user's authorization for the reviewed operation. The project needs minimal settings and its wiki under `.memvane/wiki`; the raw collection is the project root.
 
-Tell the user that `.memvane/route.json`, `.memvane/selection.json`, and `.memvane/wiki/.memvane-root` should be ignored by Git. Suggest adding those three lines to the project's `.gitignore`; do not edit that file for them. The wiki keeper preserves the directory across branch changes.
+The installation pointers and wiki keeper must remain untracked so the keeper preserves the wiki directory across branch changes. After activation succeeds, tell the user to add these lines to the project's `.gitignore`; never edit that file on their behalf. Files already tracked must be untracked separately:
+
+```gitignore
+.memvane/route.json
+.memvane/selection.json
+.memvane/wiki/.memvane-root
+```
+
+Activation returns these paths in `gitignoreEntries`; include the recommendation when reporting the completed onboarding.
 
 A project inside an already selected project cannot be onboarded as a separate nested install. An initial build may report `selected_route_unavailable`; explain that the parent project is already selected and use that project or a separate directory outside it. Multiple route records in one ancestor chain are refused as `ambiguous_route_records`.
 
