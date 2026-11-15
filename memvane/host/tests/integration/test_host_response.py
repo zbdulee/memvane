@@ -46,6 +46,20 @@ class SelectedActions(HostInstallCase):
         self.assertEqual(notice.count('restore 후 setup'), 1)
         self.assertFalse((wiki / '.memvane-root').exists())
 
+    def test_session_start_explains_invalid_learning_and_records_reason(self):
+        path = self.fixture.settings_path
+        settings = json.loads(path.read_text(encoding='utf-8'))
+        settings['sharedLearning'] = {'root': 'relative'}
+        path.write_text(json.dumps(settings), encoding='utf-8')
+        answer = self.serve('update-queued', {'hook_event_name': 'SessionStart'})
+        notice = context(answer)
+        self.assertIn('학습 설정 오류(sharedLearning)', notice)
+        self.assertIn('root는 절대 경로', notice)
+        rows = [row for row in self.install.events() if row.get('event') == 'settings']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]['outcome'], rows[0]['reason']),
+                         ('disabled', 'learning_settings_invalid'))
+
     def test_hot_journal_recall_queues_owner_recovery_without_context(self):
         from memvane.journal.api import dispatch_target
         from tests.support.sqlite_hot_journal import kill_mid_write

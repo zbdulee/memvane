@@ -953,6 +953,20 @@ def _wiki_recovery_notice(decision, notice):
     return notice
 
 
+def _learning_settings_notice(decision, notice, host, payload):
+    from memvane.settings.api import find_project_config
+    config = find_project_config(decision['projectRoot'])['config']
+    bad = config.get('learningSettingsInvalid', [])
+    if not bad:
+        return notice
+    event_log.emit('settings', outcome='disabled', reason='learning_settings_invalid',
+                   decision=decision, host=host, session=event_log.session_id(payload))
+    line = ('[memvane] 학습 설정 오류(' + ', '.join(bad) + '): 학습을 껐습니다. '
+            'capture·autoCycle·enabled·autoApply는 true/false, root는 절대 경로, '
+            'profile은 qmd-local-learning-profile-v1로 고치거나 잘못된 블록을 지우세요.')
+    return notice + '\n' + line if notice else line
+
+
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
@@ -1101,7 +1115,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action == "update-queued":
             _reconcile_registry(decision)
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
-        move_notice = _wiki_recovery_notice(decision, move_notice)
+        move_notice = _learning_settings_notice(decision, _wiki_recovery_notice(decision, move_notice), host, payload)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":

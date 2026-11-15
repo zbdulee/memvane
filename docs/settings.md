@@ -19,7 +19,7 @@
 - `contextLearning`: 선택 객체이며 `capture`, `autoCycle`에 boolean을 사용합니다. 생략한 필드의 기본값은 모두 `true`입니다.
 - `sharedLearning`: 선택 객체이며 `enabled`, `autoApply`는 boolean, `root`는 절대 경로 문자열, `profile`은 `qmd-local-learning-profile-v1`입니다.
 
-학습 블록의 형식이 틀리면 두 블록을 무시하고 `learning_settings_invalid`를 기록합니다. 나머지 프로젝트 설정은 유지합니다.
+학습 블록의 형식이 틀리면 `capture`·`autoCycle`·공유 학습을 끄고 `learning_settings_invalid`를 기록합니다. SessionStart는 잘못된 블록과 고치는 방법을 안내합니다. 나머지 프로젝트 설정은 유지합니다.
 
 ### diagnostics — 상세 진단 동의 (opt-in)
 

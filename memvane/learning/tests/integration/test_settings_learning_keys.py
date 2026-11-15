@@ -18,7 +18,7 @@ from tests.support.project import make_project
 
 SCHEMA = 'qmd-local-learning-profile-v1'
 ROUTE = {'schema': SCHEMA_V4}
-LEARNING_KEYS = ('contextLearning', 'sharedLearning', 'settingsNotes')
+LEARNING_KEYS = ('contextLearning', 'sharedLearning', 'settingsNotes', 'learningSettingsInvalid')
 
 
 def _without_learning(config):
@@ -65,7 +65,7 @@ class SettingsLearningKeys(FixtureCase):
         self.assertEqual((shared['enabled'], shared['root'], shared['profile'], shared['autoApply']),
                          (True, str(self.shared), SCHEMA, False))
 
-    def test_malformed_learning_block_keeps_learning_defaults_and_a_reason(self):
+    def test_malformed_learning_block_disables_learning_and_reports_the_block(self):
         plain = self.found(self.base)['config']
         good = self.learning()
         malformed = [
@@ -84,8 +84,11 @@ class SettingsLearningKeys(FixtureCase):
             with self.subTest(block=block):
                 config = self.found({**self.base, **block})['config']
                 self.assertEqual(config['settingsNotes'], ['learning_settings_invalid'])
-                self.assertEqual(config['contextLearning'], plain['contextLearning'])
-                self.assertNotIn('sharedLearning', config)
+                self.assertFalse(config['contextLearning']['capture'])
+                self.assertFalse(config['contextLearning']['autoCycle'])
+                self.assertFalse(config['sharedLearning']['enabled'])
+                self.assertFalse(config['sharedLearning'].get('autoApply', False))
+                self.assertTrue(config['learningSettingsInvalid'])
                 self.assertEqual(_without_learning(config), _without_learning(plain))
                 checked += 1
         self.assertEqual(checked, len(malformed))
@@ -233,7 +236,7 @@ class SettingsLearningKeys(FixtureCase):
                            observe({'prompt': 'synthetic question'}, config, project, hit),
                            enqueue.call_count))
         self.assertEqual(states, [(True, 'stored', 1), (False, 'stored', 1), (True, 'stored', 2),
-                                  (False, 'stored', 2)])
+                                  (False, 'disabled', 2)])
         self.assertEqual(launch.call_count, 2)
         self.assertEqual({call.args[1] for call in enqueue.call_args_list}, {project})
 
