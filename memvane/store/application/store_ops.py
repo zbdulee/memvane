@@ -107,6 +107,30 @@ def read_header(path, *, project_root=None, worktree_id=None, recover=False, tim
                                         tuple(row(values) for values in trees))))
 
 
+def wiki_binding_changed(path, project_root):
+    """Read the saved main wiki inode without changing its binding."""
+    import os
+    import sqlite3
+    import stat
+    from contextlib import closing
+    from memvane.kernel.errors import _query_only_uri
+    try:
+        with closing(sqlite3.connect(_query_only_uri(path), uri=True, timeout=0.2)) as db:
+            db.execute('PRAGMA query_only=ON')
+            rows = db.execute('SELECT wiki_root,wiki_ino FROM worktrees WHERE project_root=?',
+                              (str(project_root),)).fetchall()
+    except sqlite3.Error:
+        return False
+    if len(rows) != 1:
+        return False
+    root, ino = rows[0]
+    try:
+        current = os.stat(root, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    return not stat.S_ISDIR(current.st_mode) or current.st_ino != ino
+
+
 def pinned_vector(store, pin):
     """The vector spec of a pinned generation, or None for a lexical generation."""
     return store._pinned(pin)['vector']

@@ -29,7 +29,7 @@ The provider is the MemVane embedding runtime under `~/.local/state/memvane/v1/e
 
 Onboarding is a reviewed setup operation for the requested project. Confirm the project root, collection roots, plugin version, provider identity and resource scope. Apply only the user's authorization for the reviewed operation. The project needs minimal settings and its wiki under `.memvane/wiki`; the raw collection is the project root.
 
-Tell the user that the per-machine pointers `.memvane/route.json` and `.memvane/selection.json` should be ignored by Git. Suggest adding those two lines to the project's `.gitignore`; do not edit that file for them.
+Tell the user that `.memvane/route.json`, `.memvane/selection.json`, and `.memvane/wiki/.memvane-root` should be ignored by Git. Suggest adding those three lines to the project's `.gitignore`; do not edit that file for them. The wiki keeper preserves the directory across branch changes.
 
 A project inside an already selected project cannot be onboarded as a separate nested install. An initial build may report `selected_route_unavailable`; explain that the parent project is already selected and use that project or a separate directory outside it. Multiple route records in one ancestor chain are refused as `ambiguous_route_records`.
 

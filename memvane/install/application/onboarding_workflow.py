@@ -470,6 +470,8 @@ def _create_v1_store(project_root, state_root, scope_id):
     else:
         binding = store_api.observe_binding(path, scope_id=scope_id, create_root=str(project))
         repository, worktree = binding['repository'], binding['worktree']
+    from memvane.install.wiki_keeper import ensure_wiki_keeper
+    ensure_wiki_keeper(project_dir.folder(project) / project_types.WIKI)
     incarnation, policy = binding['incarnation'], binding['policy_digest']
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()

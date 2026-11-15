@@ -179,6 +179,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/install/wiki_keeper.py": {
+      "context": "install",
+      "layer": "adapter",
+      "pinned": false
+    },
     "memvane/install/ledger_common.py": {
       "context": "install",
       "layer": "adapter",

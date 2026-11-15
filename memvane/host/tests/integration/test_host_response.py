@@ -35,6 +35,17 @@ class SelectedActions(HostInstallCase):
         self.assertLessEqual(set(self.wakes.kinds()), {'laya-sync', 'laya-compile'})
         self.assertEqual({target for _kind, target, _kwargs in self.wakes.calls}, {str(self.project)})
 
+    def test_session_start_explains_replaced_wiki_directory(self):
+        wiki = self.fixture.wiki
+        original = wiki.with_name('old-wiki')
+        wiki.rename(original)
+        wiki.mkdir()
+        answer = self.serve('update-queued', {'hook_event_name': 'SessionStart'})
+        notice = context(answer)
+        self.assertIn('restore 후 setup', notice)
+        self.assertEqual(notice.count('restore 후 setup'), 1)
+        self.assertFalse((wiki / '.memvane-root').exists())
+
     def edit(self, rel, tool='Write', event='PostToolUse', **response_fields):
         payload = {'hook_event_name': event, 'tool_name': tool,
                    'tool_input': {'file_path': rel, 'content': 'x'}}

@@ -32,6 +32,21 @@ class _Store:
 
 
 class SyncPublish(SyncCase):
+    def test_sync_restores_the_untracked_wiki_keeper(self):
+        keeper = self.wiki / '.memvane-root'
+        self.assertTrue(keeper.is_file())
+        inode = self.wiki.stat().st_ino
+        keeper.unlink()
+        result = self.run_pass()
+        self.assertIn(result['state'], ('indexed', 'unchanged'))
+        self.assertTrue(keeper.is_file())
+        self.assertEqual(self.wiki.stat().st_ino, inode)
+        self.assertEqual(self.fixture.git('ls-files', '--', '.memvane/wiki/.memvane-root').strip(), '')
+        self.fixture.git('rm', '-r', '--', '.memvane/wiki')
+        self.assertEqual(self.wiki.stat().st_ino, inode)
+        self.fixture.git('checkout', 'HEAD', '--', '.memvane/wiki')
+        self.assertEqual(self.wiki.stat().st_ino, inode)
+
     def recalled(self, prompt):
         """Member paths of the selected recall's cards (``<wiki collection>/<path>`` lines)."""
         prefix = '- "' + self.fixture.wiki_name + '/'

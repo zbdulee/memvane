@@ -100,6 +100,11 @@ def read_header(path, *, project_root=None, worktree_id=None, recover=False, tim
                           timeout=timeout)
 
 
+def wiki_binding_changed(path, project_root):
+    from memvane.store.application.store_ops import wiki_binding_changed as implementation
+    return implementation(path, project_root)
+
+
 # Pinned reads.
 
 def pinned_vector(store, pin):

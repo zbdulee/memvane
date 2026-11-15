@@ -188,6 +188,7 @@ class FixtureOnboarding(FixtureCase):
     # -- onboarding ----------------------------------------------------------------
     def test_project_without_cards_onboards_and_recall_adds_no_card(self):
         self.install(0)
+        self.assertTrue((self.fixture.wiki / '.memvane-root').is_file())
         context = self.recall('emerald heron reed pond')
         self.assertNotIn('zq', context)
 

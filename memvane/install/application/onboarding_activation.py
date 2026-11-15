@@ -241,7 +241,8 @@ def activate_origin_selection(project_root, journal_path, route_bytes):
                 return {'status': 'selected', 'phase': 'selected', 'journalPath': str(path),
                         'selectionEpoch': proof['selectionEpoch'],
                         'syncWake': _request_build_wake(str(project)),
-                        'gitignoreEntries': ['.memvane/route.json', '.memvane/selection.json']}
+                        'gitignoreEntries': ['.memvane/route.json', '.memvane/selection.json',
+                                             '.memvane/wiki/.memvane-root']}
 
 
 def recover_origin_selection(project_root, journal_path, route_bytes):

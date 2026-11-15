@@ -595,6 +595,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if row is None or (binding is not None and row['binding_digest'] != binding):
             raise store_types.BlobStoreError('wiki_binding_changed')
         root = row['wiki_root']
+        from memvane.install.api import ensure_wiki_keeper
+        ensure_wiki_keeper(root)
         found, skipped = _schema3_wiki_cards(root)
         # skipPaths is read each pass, outside the binding: a card it newly
         # covers leaves the generation (not a file removal), one it no longer

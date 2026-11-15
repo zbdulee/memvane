@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 
+def ensure_wiki_keeper(wiki):
+    from memvane.install.wiki_keeper import ensure_wiki_keeper as implementation
+    return implementation(wiki)
+
+
 def wake_status(project_raw, *, queue=None):
     """``{wake, overflow, cancellations}`` of the project's ``laya-sync`` wake row (read-only)."""
     from memvane.install.runtime_wake_cancel import status as implementation

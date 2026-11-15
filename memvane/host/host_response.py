@@ -932,6 +932,18 @@ def _recall_retry_decision(exc: BaseException, decision: dict, payload: dict,
     return fresh
 
 
+def _wiki_recovery_notice(decision, notice):
+    try:
+        from memvane.store.api import wiki_binding_changed
+        if wiki_binding_changed(decision['storePath'], decision['projectRoot']):
+            wiki_notice = ('[memvane] 위키 폴더가 바뀌어 색인을 사용할 수 없습니다. '
+                           'restore 후 setup으로 다시 온보딩하세요.')
+            return notice + '\n' + wiki_notice if notice else wiki_notice
+    except (OSError, ValueError, KeyError):
+        pass
+    return notice
+
+
 def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) -> dict:
     if decision.get('state') == 'worktree':
         return _serve_worktree(action, host, decision, payload)
@@ -1080,6 +1092,7 @@ def _serve_selected_once(action: str, host: str, decision: dict, payload: dict) 
         if action == "update-queued":
             _reconcile_registry(decision)
         notice = "[memvane] selected source update queued; recall requires a fresh published view."
+        move_notice = _wiki_recovery_notice(decision, move_notice)
         if move_notice:
             notice += "\n" + move_notice
         if host == "hermes":
