@@ -180,6 +180,9 @@ class Schema3Recall(RecallInstallCase):
         for field in ('routeProofMs', 'queryEmbeddingMs', 'lexicalMs', 'semanticMs', 'selectorMs', 'renderMs'):
             self.assertIsInstance(event.get(field), (int, float), field)
             self.assertGreaterEqual(event[field], 0)
+        for field in ('vectorReadMs', 'vectorUnpackMs', 'vectorDotMs'):
+            self.assertIsInstance(event.get(field), (int, float), field)
+            self.assertGreaterEqual(event[field], 0)
         self.assertNotIn(PROMPT, json.dumps(event))
         self.assertNotIn(NOTE, json.dumps(event))
 

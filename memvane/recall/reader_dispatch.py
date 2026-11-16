@@ -266,9 +266,13 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
             if semantic:
                 started = time.monotonic()
                 try:
+                    preferred = list(dict.fromkeys(row['path'][len(name) + 1:]
+                                                   for lane in lexical for row in lane))[:100]
                     nearest=shaped(store.search_exact(pin,query_vector,HYBRID_LIST_LIMIT,
                                                       profile_id=vector['profile_id'],
-                                                      deadline_seconds=left()))
+                                                      max_float_work=20000000,
+                                                      deadline_seconds=left(), timings=timings,
+                                                      preferred_paths=preferred))
                 except BlobStoreError as exc:
                     if exc.reason == 'embedding_set_invalid':
                         status = 'embedding_set_invalid'

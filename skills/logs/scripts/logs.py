@@ -371,7 +371,9 @@ def summary(rows, args):
         if action == 'recall':
             labels = (('routeProofMs', 'route'), ('lexicalMs', 'lexical'),
                       ('queryEmbeddingMs', 'queryEmbedding'), ('semanticMs', 'semantic'),
-                      ('selectorMs', 'selector'), ('renderMs', 'render'))
+                      ('selectorMs', 'selector'), ('renderMs', 'render'),
+                      ('vectorReadMs', 'vectorRead'), ('vectorUnpackMs', 'vectorUnpack'),
+                      ('vectorDotMs', 'vectorDot'))
             stages = [(label, values(action_rows, key)) for key, label in labels]
             present = [f'{label}={statistics.median(data):g}ms' for label, data in stages if data]
             if present:

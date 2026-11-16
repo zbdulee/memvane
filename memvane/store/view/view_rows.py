@@ -1345,9 +1345,10 @@ class RowsMixin:
                     deferred=deferred)
 
     def _rows_search_exact(self, pin, query_vector, limit, *, profile_id, max_float_work, deadline_seconds,
-                           path_prefixes, excluded_paths):
+                           path_prefixes, excluded_paths, timings=None, preferred_paths=None):
         """Exact max-cosine over the pinned head's eligible cards and the sealed spec's sets."""
         from memvane.store.view import view_vectors as vectors
+        vectors._check_preferred(preferred_paths)
         deadline = time.monotonic() + vectors.options(limit, max_float_work, deadline_seconds,
                                                       path_prefixes, excluded_paths)
         v.identifier(profile_id)
@@ -1375,21 +1376,30 @@ class RowsMixin:
             cards = [row for row in self._rows_open(db, pin.view_id, head.ordinal) if row['eligible']
                      and _path_allowed(row['path'], path_prefixes, excluded_paths)]
             heads = self._rows_coverage(db, cards, generation, full=False, deadline=deadline)
-            if sum(heads[row['blob_sha']]['chunk_count'] for row in cards) * dimension > max_float_work:
-                v.fail(vectors.WORK_EXCEEDED)
             groups = {}
             for row in cards:
                 groups.setdefault(row['blob_sha'], []).append(row)
+            if sum(heads[blob]['chunk_count'] for blob in groups) * dimension > max_float_work:
+                v.fail(vectors.WORK_EXCEEDED)
+            if timings is not None:
+                timings.update(vectorReadMs=0.0, vectorUnpackMs=0.0, vectorDotMs=0.0)
             top = []
-            for blob, members in groups.items():
+            for batch in vectors._vector_batches(vectors._preferred_order(groups, preferred_paths), heads):
                 vectors._left(deadline)
-                rows = self._vectors(blob, recipe_id, profile_id)
-                if len(rows) != heads[blob]['chunk_count']:
-                    v.fail('vector_rows_mismatch')
-                score = vectors._set_score(query, rows, dimension, deadline)
-                rows = None
-                for row in members:
-                    vectors._keep(top, score, dict(path=row['path'], blob_sha=blob, display_title=row['title']), limit)
+                by_blob = vectors._read_batch(db, batch, heads, recipe_id, profile_id, timings)
+                for blob in batch:
+                    vectors._left(deadline)
+                    started = time.perf_counter() if timings is not None else None
+                    try:
+                        rows = self._vectors(blob, recipe_id, profile_id, saved=by_blob[blob])
+                    finally:
+                        if timings is not None:
+                            timings['vectorReadMs'] += (time.perf_counter() - started) * 1000
+                    if len(rows) != heads[blob]['chunk_count']:
+                        v.fail('vector_rows_mismatch')
+                    score = vectors._set_score(query, rows, dimension, deadline, timings=timings)
+                    for row in groups[blob]:
+                        vectors._keep(top, score, dict(path=row['path'], blob_sha=blob, display_title=row['title']), limit)
             state = self._snapshot_state(entry['capture'], v.parse_canonical(generation['capture_json']), deadline)
             answer = [dict(path=ref['path'], blob_sha=ref['blob_sha'], body=self._blob(ref['blob_sha']),
                            display_title=ref['display_title'], score=-negative, view_id=pin.view_id,
