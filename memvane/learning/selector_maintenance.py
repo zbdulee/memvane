@@ -75,10 +75,16 @@ def _request_owned(decision, owner, *, force):
                                             'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
            if key in os.environ}
     env['PYTHONDONTWRITEBYTECODE'] = '1'
-    subprocess.Popen(entry_argv('selector-maintenance', decision['projectRoot'], 'force' if force or retry else 'newer'),
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, close_fds=True,
-                     start_new_session=True, env=env, cwd='/')
+    from memvane.diagnostics import api as diagnostics
+    try:
+        subprocess.Popen(entry_argv('selector-maintenance', decision['projectRoot'], 'force' if force or retry else 'newer'),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True,
+                         start_new_session=True, env=env, cwd='/')
+    except OSError:
+        diagnostics.emit('learning.selector.request', outcome='failed', reason='spawn_failed', decision=decision)
+        raise
+    diagnostics.emit('learning.selector.request', outcome='spawned', decision=decision)
 
 
 def request(decision, *, force=False, owner=None):
@@ -124,7 +130,14 @@ def _run(project, *, force=False):
     from memvane.runtime.api import sync_owner
     project = str(Path(project).resolve(strict=True))
     decision = select_route(project, action='update')
-    proof = verify_selected_route_for_write(decision)
+    from memvane.diagnostics import api as diagnostics
+    diagnostics.emit('learning.selector.maintenance', outcome='started', decision=decision)
+    try:
+        proof = verify_selected_route_for_write(decision)
+    except Exception:
+        diagnostics.emit('learning.selector.maintenance', outcome='failed',
+                         reason='selected_proof_unavailable', decision=decision)
+        raise
     from memvane.learning.runtime_activation import ensure_pending
     from memvane.kernel.resource_deferred import ResourceDeferred
     try:
