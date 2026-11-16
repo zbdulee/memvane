@@ -69,6 +69,11 @@
       "layer": "adapter",
       "pinned": false
     },
+    "memvane/app/capture_entry.py": {
+      "context": "app",
+      "layer": "entry",
+      "pinned": false
+    },
     "memvane/app/entry_commands.py": {
       "context": "app",
       "layer": "entry",
@@ -1155,6 +1160,11 @@
       "pinned": false
     },
     "memvane/store/view/fill_schema.py": {
+      "context": "store",
+      "layer": "adapter",
+      "pinned": false
+    },
+    "memvane/store/view/pin_receipt.py": {
       "context": "store",
       "layer": "adapter",
       "pinned": false

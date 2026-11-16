@@ -4,6 +4,7 @@ from memvane.kernel.bundle_paths import entry_argv
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -85,10 +86,11 @@ def _request_owned(decision, owner, *, force):
     env['MEMVANE_SELECTOR_REQUEST_NS'] = str(now)
     from memvane.diagnostics import api as diagnostics
     try:
-        subprocess.Popen(entry_argv('selector-maintenance', decision['projectRoot'], 'force' if force or retry else 'newer'),
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, close_fds=True,
-                         start_new_session=True, env=env, cwd='/')
+        with tempfile.TemporaryFile(mode='w+b') as stderr:
+            subprocess.Popen(entry_argv('selector-maintenance', decision['projectRoot'], 'force' if force or retry else 'newer'),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=stderr, close_fds=True,
+                             start_new_session=True, env=env, cwd='/')
     except OSError:
         _write(path, {'requestedNs': 0}, replace=True)
         diagnostics.emit('learning.selector.request', outcome='failed', reason='spawn_failed', decision=decision)
@@ -125,16 +127,39 @@ def run(project, *, force=False):
             from memvane.journal.api import select_route, verify_selected_route_for_write
             from memvane.diagnostics import api as diagnostics
             from memvane.kernel.resource_deferred import ResourceDeferred
+            from memvane.runtime.types import ServiceFailure
             from memvane.learning.context_learning.selector_heal import HealDeferred
             decision = select_route(str(Path(project).resolve(strict=True)), action='update')
             verify_selected_route_for_write(decision)
             deferred = isinstance(exc, (ResourceDeferred, HealDeferred))
             if deferred:
                 _release_deferred_request(decision)
-            reason = str(exc) if str(exc) in ('learning_prepare_memory_pressure', 'learning_prepare_busy',
-                                               'learning_pending_changed') else ('resource_deferred' if deferred else 'maintenance_failed')
+            fixed = ('learning_prepare_memory_pressure', 'learning_prepare_busy', 'learning_pending_changed',
+                     'starting', 'deadline_expired', 'learning_runtime_not_installed',
+                     'learning_runtime_not_official', 'learning_runtime_changed', 'learning_profile_rebind_required',
+                     'learning_prepare_lock_unsafe', 'selector_policy_invalid', 'selector_warm_lock_unsafe',
+                     'adapter_not_official', 'inference_prepare_failed', 'inference_prepare_unverified')
+            service_codes = ('starting', 'deadline_expired', 'resource_deferred', 'queue_full',
+                             'replacement_deferred', 'model_family_mismatch', 'load_failed',
+                             'version_mismatch', 'request_rejected', 'request_changed', 'worker_error')
+            code = exc.code if isinstance(exc, ServiceFailure) and exc.code in service_codes else str(exc)
+            reason = code if code in fixed or code in service_codes else ('resource_deferred' if deferred else 'maintenance_failed')
+            frames = []
+            cursor = exc.__traceback__
+            while cursor is not None:
+                frames.append((Path(cursor.tb_frame.f_code.co_filename).name,
+                               cursor.tb_frame.f_code.co_name))
+                cursor = cursor.tb_next
+            stage = 'prepare'
+            for filename, function in reversed(frames):
+                if function in ('warm', 'heal', '_prepare_namespace', '_activate_profile',
+                                'publish_plugin_version', 'ensure_pending'):
+                    stage = {'_prepare_namespace': 'prepare', '_activate_profile': 'profile',
+                             'publish_plugin_version': 'publish', 'ensure_pending': 'proof'}.get(function, function)
+                    break
             diagnostics.emit('learning.selector.maintenance', decision=decision,
-                             outcome='deferred' if deferred else 'failed', reason=reason)
+                             outcome='deferred' if deferred else 'failed', reason=reason, stage=stage,
+                             error=type(exc).__name__)
         except Exception:
             pass
         raise

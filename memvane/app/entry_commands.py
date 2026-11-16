@@ -24,11 +24,28 @@ def runtime_work():
 
 def selector_maintenance():
     from memvane.learning.api import run_selector_maintenance as run
+    from memvane.learning.api import bind_service_starter
+    from memvane.resident.api import ensure_service
+    bind_service_starter(ensure_service)
     if len(sys.argv) == 3 and sys.argv[2] in ('force', 'newer'):
         try:
             run(sys.argv[1], force=sys.argv[2] == 'force')
         except Exception:
-            pass
+            import os
+            import traceback
+            traceback.print_exc()
+            try:
+                sys.stderr.flush()
+                size = os.fstat(2).st_size
+                tail = os.pread(2, min(size, 8192), max(0, size - 8192)).decode('utf8', 'replace')
+                from memvane.journal.api import select_route
+                from memvane.diagnostics.api import capture
+                from memvane.settings.api import diagnostic_enabled
+                decision = select_route(sys.argv[1], action='update')
+                capture(decision, event='learning.selector.maintenance', reason='worker_stderr',
+                        child_stderr=tail, consent=diagnostic_enabled)
+            except Exception:
+                pass
     return 0
 
 

@@ -121,11 +121,12 @@ def corpus_snapshot(project_root, config, *, decision=None):
         return None
 
 
-def _log(decision, host, status):
+def _log(decision, host, status, *, elapsed=None, session=None):
     """One ``learning.capture`` event in the install log; never raises."""
     try:
         from memvane.diagnostics import api as event_log
-        event_log.emit('learning.capture', outcome=status, decision=decision, host=host)
+        event_log.emit('learning.capture', outcome=status, decision=decision, host=host,
+                       ms=elapsed, session=session)
     except Exception:
         pass
 
@@ -136,6 +137,7 @@ def capture_recall(host, decision, payload, settings, pool, chosen, *, started=N
     Failure-silent: returns a fixed status, logs it, and never raises. The
     hook response has already been written when this runs.
     """
+    began = time.monotonic()
     status = 'capture_unavailable'
     try:
         if (started is not None
@@ -152,5 +154,7 @@ def capture_recall(host, decision, payload, settings, pool, chosen, *, started=N
                                        host=host, decision=decision)
     except Exception:
         status = 'capture_unavailable'
-    _log(decision if isinstance(decision, dict) else None, host, status)
+    _log(decision if isinstance(decision, dict) else None, host, status,
+         elapsed=round((time.monotonic() - began) * 1000),
+         session=(payload.get('session_id') or payload.get('sessionId')) if isinstance(payload, dict) else None)
     return status

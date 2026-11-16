@@ -11,6 +11,201 @@ from memvane.learning.context_learning import runtime_installer, selector_heal
 
 
 class SelectorMaintenance(unittest.TestCase):
+    def test_entry_binds_resident_starter_before_maintenance(self):
+        import runpy
+        import sys
+        from memvane.learning.context_learning import inference_service
+        entry = Path(__file__).resolve().parents[4] / 'entry' / 'run.py'
+        with tempfile.TemporaryDirectory(prefix='mvs-entry-') as directory:
+            with mock.patch.object(inference_service, '_SERVICE_STARTER', None), \
+                 mock.patch.object(sys, 'argv', [str(entry), 'selector-maintenance', directory, 'force']), \
+                 mock.patch('memvane.learning.api.run_selector_maintenance') as run:
+                with self.assertRaises(SystemExit) as result:
+                    runpy.run_path(str(entry), run_name='__main__')
+                self.assertEqual(result.exception.code, 0)
+                run.assert_called_once()
+                from memvane.resident.api import ensure_service
+                self.assertIs(inference_service._SERVICE_STARTER, ensure_service)
+
+    def test_detached_entry_captures_bounded_stderr(self):
+        import json
+        import subprocess
+        import sys
+        entry = Path(__file__).resolve().parents[4] / 'entry' / 'run.py'
+        script = r'''
+import json, runpy, sys
+from unittest import mock
+entry, project = sys.argv[1:]
+def capture(decision, **kwargs):
+    print(json.dumps({'reason':kwargs['reason'], 'tail':kwargs['child_stderr']}))
+with mock.patch('memvane.learning.api.run_selector_maintenance', side_effect=RuntimeError('synthetic_failure')), \
+     mock.patch('memvane.journal.api.select_route', return_value={'projectRoot':project}), \
+     mock.patch('memvane.diagnostics.api.capture', side_effect=capture):
+    sys.argv = [entry, 'selector-maintenance', project, 'force']
+    try: runpy.run_path(entry, run_name='__main__')
+    except SystemExit as exc:
+        if exc.code: raise
+'''
+        with tempfile.TemporaryFile(mode='w+b') as stderr:
+            result = subprocess.run([sys.executable, '-B', '-c', script, str(entry), str(entry.parent)],
+                                    stdout=subprocess.PIPE, stderr=stderr, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0)
+        recorded = json.loads(result.stdout)
+        self.assertEqual(recorded['reason'], 'worker_stderr')
+        self.assertIn('synthetic_failure', recorded['tail'])
+        self.assertLessEqual(len(recorded['tail'].encode()), 8192)
+
+    def test_warm_starting_releases_retry_floor_as_deferral(self):
+        from memvane.learning.context_learning.selector_heal import HealDeferred
+        with tempfile.TemporaryDirectory(prefix='mvs-') as directory:
+            root = Path(directory).resolve()
+            decision = {'projectRoot': str(root), 'journalPath': str(root/'journal'), 'installId': 'test'}
+            with mock.patch.object(selector_maintenance, '_run', side_effect=HealDeferred('starting')), \
+                 mock.patch('memvane.journal.api.select_route', return_value=decision), \
+                 mock.patch('memvane.journal.api.verify_selected_route_for_write'), \
+                 mock.patch.object(selector_maintenance, '_release_deferred_request') as release, \
+                 mock.patch('memvane.diagnostics.api.emit') as emit:
+                with self.assertRaises(HealDeferred):
+                    selector_maintenance.run(root, force=True)
+            release.assert_called_once_with(decision)
+            self.assertTrue(any(c.kwargs.get('outcome') == 'deferred' and
+                                c.kwargs.get('reason') == 'starting'
+                                for c in emit.call_args_list))
+
+    def test_warm_translates_service_startup_and_deadline_to_deferral(self):
+        from memvane.runtime.types import ServiceFailure
+        from memvane.learning.context_learning import inference_service
+        from memvane.learning.context_learning.selector_heal import HealDeferred
+        import json
+        with tempfile.TemporaryDirectory(prefix='mvs-warm-') as directory:
+            root = Path(directory).resolve()
+            (root / 'active-checkpoint.json').write_text(json.dumps({'artifact_path': '/fixture', 'artifact_sha256': 'a' * 64}))
+            (root / 'active-checkpoint.json').chmod(0o600)
+            for code in ('starting', 'deadline_expired'):
+                with self.subTest(code=code), \
+                     mock.patch.object(inference_service, '_policy', return_value=({}, {})), \
+                     mock.patch.object(inference_service, 'predict', side_effect=ServiceFailure(code)):
+                    with self.assertRaisesRegex(HealDeferred, code):
+                        selector_heal.warm(root, state=root)
+
+    def test_warm_failure_reports_fixed_code_and_stage(self):
+        from memvane.runtime.types import ServiceFailure
+        def warm(*_args, **_kwargs):
+            raise ServiceFailure('load_failed')
+        with tempfile.TemporaryDirectory(prefix='mvs-') as directory:
+            root = Path(directory).resolve()
+            decision = {'projectRoot': str(root), 'journalPath': str(root/'journal'), 'installId': 'test'}
+            with mock.patch.object(selector_maintenance, '_run', side_effect=warm), \
+                 mock.patch('memvane.journal.api.select_route', return_value=decision), \
+                 mock.patch('memvane.journal.api.verify_selected_route_for_write'), \
+                 mock.patch('memvane.diagnostics.api.emit') as emit:
+                with self.assertRaises(ServiceFailure):
+                    selector_maintenance.run(root, force=True)
+            row = emit.call_args.kwargs
+            self.assertEqual((row['outcome'], row['reason'], row['error'], row['stage']),
+                             ('failed', 'load_failed', 'ServiceFailure', 'warm'))
+
+    def test_entry_heals_warms_and_activates_with_different_python(self):
+        import json
+        import runpy
+        import subprocess
+        import sys
+        import time
+        import venv
+        from memvane.learning import default_enrollment
+        from memvane.learning import project_learning_setup
+        from memvane.learning.context_learning import inference_service
+        from memvane.resident import api as resident
+        with tempfile.TemporaryDirectory(prefix='mvs-entry-') as directory:
+            root = Path(directory).resolve()
+            state = root / 'selection'; state.mkdir(mode=0o700)
+            intent = root / default_enrollment.NAME
+            intent.write_text('{}'); intent.chmod(0o600)
+            active = state / 'active-checkpoint.json'
+            active.write_text(json.dumps({'artifact_path': '/fixture', 'artifact_sha256': 'a' * 64}))
+            active.chmod(0o600)
+            (state/'live-selector.json').write_text('{}')
+            (state/'live-selector.json').chmod(0o600)
+            decision = {'projectRoot': str(root), 'storePath': str(root/'store'),
+                        'journalPath': str(root/'journal'), 'installId': 'test'}
+            venv.EnvBuilder(with_pip=False).create(root/'venv')
+            python = str(root/'venv'/'bin'/'python')
+            resident_root, learning_root = root/'resident', root/'service'
+            resident_root.mkdir(mode=0o700); learning_root.mkdir(mode=0o700)
+            policy = {'trainerArgv': [python, '/adapter', '/model'], 'maxRssMib': 4096}
+            entry = Path(__file__).resolve().parents[4] / 'entry' / 'run.py'
+            events = []
+            children = []
+            def spawn(argv, *, pass_fds):
+                child = subprocess.Popen(argv, pass_fds=pass_fds, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                children.append(child)
+            def cleanup():
+                for child in reversed(children):
+                    if child.poll() is None:
+                        child.terminate()
+                    child.wait(timeout=10)
+            real_ensure = resident.ensure_service
+            real_exchange = inference_service._exchange
+            def starter(**kwargs):
+                return real_ensure(root=resident_root, spawn=spawn, **kwargs)
+            def exchange(root, envelope, deadline):
+                if envelope.get('command') == 'version':
+                    return real_exchange(root, envelope, deadline)
+                return {'status': 'ok', 'prediction': {}, 'timing': {}}
+            from contextlib import ExitStack
+            with ExitStack() as patches:
+                patches.callback(cleanup)
+                patches.enter_context(mock.patch.object(sys, 'argv', [str(entry), 'selector-maintenance', str(root), 'force']))
+                patches.enter_context(mock.patch('memvane.journal.api.select_route', return_value=decision))
+                patches.enter_context(mock.patch('memvane.journal.api.verify_selected_route_for_write', return_value={'installId': 'test'}))
+                patches.enter_context(mock.patch('memvane.learning.runtime_activation.ensure_pending'))
+                patches.enter_context(mock.patch('memvane.journal.api.inspect_journal', return_value={'maxPluginVersion': '1.0.0'}))
+                patches.enter_context(mock.patch.object(selector_heal, '_prepare_lease', side_effect=lambda *_: os.open(os.devnull, os.O_RDONLY)))
+                patches.enter_context(mock.patch.object(default_enrollment, 'record', return_value={'status': 'pending_runtime'}))
+                patches.enter_context(mock.patch.object(default_enrollment, 'default_namespace', return_value=state))
+                patches.enter_context(mock.patch.object(default_enrollment, '_prepare_namespace'))
+                patches.enter_context(mock.patch.object(project_learning_setup, 'prepare', side_effect=lambda *a, **k: events.append('profile') or {'fixture': True}))
+                patches.enter_context(mock.patch.object(project_learning_setup, 'proposal_sha256', return_value='synthetic'))
+                patches.enter_context(mock.patch.object(project_learning_setup, 'activate', side_effect=lambda *a, **k: events.append('activate')))
+                patches.enter_context(mock.patch.object(selector_heal, 'official_runtime', return_value=(python, '/model')))
+                patches.enter_context(mock.patch.object(selector_heal, 'running_adapter', return_value=Path('/adapter')))
+                patches.enter_context(mock.patch.object(selector_heal, 'pressure', return_value=None))
+                patches.enter_context(mock.patch.object(selector_heal, 'rebind', return_value=(policy, False)))
+                patches.enter_context(mock.patch.object(selector_heal, 'admitted', return_value=True))
+                heal = patches.enter_context(mock.patch.object(selector_heal, 'heal', wraps=selector_heal.heal))
+                patches.enter_context(mock.patch.object(selector_heal, '_warm_key', return_value='synthetic'))
+                patches.enter_context(mock.patch.object(inference_service, '_policy', return_value=(policy, policy)))
+                patches.enter_context(mock.patch.object(inference_service, '_SERVICE_STARTER', None))
+                patches.enter_context(mock.patch.object(inference_service, '_make_envelope', return_value={'namespace': 'fixture'}))
+                patches.enter_context(mock.patch.object(inference_service, 'service_root', return_value=learning_root))
+                coordinator = patches.enter_context(mock.patch('memvane.runtime.api.coordinator'))
+                patches.enter_context(mock.patch.object(inference_service, '_exchange', side_effect=exchange))
+                starter_mock = patches.enter_context(mock.patch('memvane.resident.api.ensure_service', side_effect=starter))
+                patches.enter_context(mock.patch('memvane.runtime.api.sync_owner', return_value=nullcontext(object())))
+                patches.enter_context(mock.patch('memvane.journal.api.publish_plugin_version'))
+                patches.enter_context(mock.patch('memvane.diagnostics.api.emit'))
+                coordinator.return_value.inference.return_value = nullcontext()
+                real_ensure(root=resident_root, python=sys.executable, learning_root=learning_root, spawn=spawn)
+                until = time.monotonic() + 20
+                while not inference_service._hosted_ready(learning_root, sys.executable, until):
+                    if time.monotonic() >= until:
+                        self.fail('old resident did not start')
+                    time.sleep(.02)
+                old_pid = children[0].pid
+                with self.assertRaises(SystemExit) as result:
+                    runpy.run_path(str(entry), run_name='__main__')
+                self.assertEqual(result.exception.code, 0)
+                self.assertEqual(events, ['profile', 'activate'])
+                self.assertNotEqual(python, sys.executable)
+                heal.assert_called_once()
+                starter_mock.assert_called_once_with(python=python, learning_root=learning_root)
+                self.assertTrue((state/'selector-warm.json').is_file())
+                self.assertGreaterEqual(len(children), 2)
+                self.assertNotEqual(old_pid, children[-1].pid)
+                version = inference_service._version(learning_root, time.monotonic() + 2)
+                self.assertEqual(version['python'], python)
+
     def test_spawn_failure_is_visible_when_request_timestamp_was_written(self):
         decision = {'projectRoot': '/project', 'storePath': '/store',
                     'journalPath': '/state/journal', 'installId': 'test'}

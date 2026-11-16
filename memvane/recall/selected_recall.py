@@ -139,7 +139,11 @@ def serve_schema3_recall(*, endpoint, proof, decision, project, prompt, deadline
     elif vector_off and degraded:
         vector_fallback = 'selected_reader_endpoint_' + vector_off[0]
     elif vector_off:
-        code = _wake_provider(decision, main_proof)
+        started = time.monotonic()
+        try:
+            code = _wake_provider(decision, main_proof)
+        finally:
+            trace.fields(providerWakeMs=round((time.monotonic() - started) * 1000, 3))
         vector_fallback = ('selected_provider_resource_deferred'
                            if vector_off[0] == 'resource_deferred' else code)
     elif unsealed or (vector is not None and result.semantic_status == 'lexical_only'):

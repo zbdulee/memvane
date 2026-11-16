@@ -19,6 +19,8 @@ TARGETS = {
     'setup': ('memvane.app.setup_entry:main', (), True),
     'wake': ('memvane.app.wake_entry:main', (), True),
     'selector-maintenance': ('memvane.app.entry_commands:selector_maintenance', (), False),
+    'learning-capture': ('memvane.app.capture_entry:learning_capture', (), False),
+    'learning-capture-worker': ('memvane.app.capture_entry:learning_capture_worker', (), False),
     'learning-shared': ('memvane.app.entry_commands:learning_shared', (), False),
     'prepare-inference': ('memvane.learning.prepare_laya_inference:main', (), False),
     'resident-service': ('memvane.resident.resident_service:main', (), True),

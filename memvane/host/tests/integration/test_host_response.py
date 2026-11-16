@@ -558,7 +558,6 @@ class HookEntry(FixtureCase):
 
         def capture(*_args, **_kwargs):
             events.append(stdout.getvalue())
-            raise RuntimeError('capture exploded')
         for action in ('recall', 'posttool'):
             with self.subTest(action=action):
                 events.clear()
@@ -567,7 +566,7 @@ class HookEntry(FixtureCase):
                 with mock.patch.object(response, 'select_hook_route', return_value=self.selection), \
                         mock.patch.object(response, 'select_route', return_value=self.selection), \
                         mock.patch.object(response, 'serve_selected', side_effect=serve), \
-                        mock.patch('memvane.learning.api.capture_recall', side_effect=capture), \
+                        mock.patch.object(response, '_dispatch_learning_capture', side_effect=capture), \
                         redirect_stdout(stdout):
                     code = response.main(['serve-hook', action, 'codex', str(self.payload),
                                           str(self.tmp)])
@@ -577,6 +576,45 @@ class HookEntry(FixtureCase):
                 if events:
                     self.assertEqual(json.loads(events[0]), answer)
                 self.assertIsNone(response._LEARNING_CAPTURE.get())
+
+    def test_capture_dispatch_uses_owned_child_and_records_spawn_failure(self):
+        slot = [('codex', self.selection, {'session_id': 'fixture'}, {}, [], [])]
+        captured = []
+        def spawn(_argv, **kwargs):
+            captured.append((json.load(kwargs['stdin']), kwargs['start_new_session']))
+        with mock.patch('memvane.kernel.bundle_paths.entry_argv', return_value=['synthetic']), \
+             mock.patch('subprocess.Popen', side_effect=spawn):
+            response._dispatch_learning_capture(slot, 42.0)
+        self.assertEqual(slot, [])
+        self.assertEqual((captured[0][0]['started'], captured[0][1]), (42.0, True))
+        slot = [('codex', self.selection, {}, {}, [], [])]
+        with mock.patch('memvane.kernel.bundle_paths.entry_argv', return_value=['synthetic']), \
+             mock.patch('subprocess.Popen', side_effect=OSError('synthetic')), \
+             mock.patch('memvane.diagnostics.api.emit') as emit:
+            response._dispatch_learning_capture(slot, 42.0)
+        self.assertEqual(emit.call_args.kwargs['reason'], 'dispatch_failed')
+
+    def test_capture_child_entry_records_disabled_outcome(self):
+        import subprocess
+        state = self.home / 'capture-state'
+        state.mkdir(mode=0o700)
+        decision = dict(self.selection, journalPath=str(state/'journal'), installId='fixture')
+        slot = [('codex', decision, {'session_id': 'fixture'}, {}, [], [])]
+        children = []
+        original = subprocess.Popen
+        def spawn(*args, **kwargs):
+            child = original(*args, **kwargs)
+            children.append(child)
+            return child
+        with mock.patch('subprocess.Popen', side_effect=spawn):
+            response._dispatch_learning_capture(slot, time.monotonic())
+        self.assertEqual(children[0].wait(timeout=10), 0)
+        log = state/'events.jsonl'
+        self.wait_until(lambda: log.exists() and bool(log.read_text()), timeout=10)
+        rows = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([(row['event'], row['outcome']) for row in rows],
+                         [('learning.capture', 'disabled')])
+        self.assertIsInstance(rows[0]['ms'], int)
 
 
 if __name__ == '__main__':

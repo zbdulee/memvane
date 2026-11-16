@@ -271,7 +271,7 @@
 ### 1.1-1 대형 프로젝트 semantic 검색 구조
 
 - **목표.** vector 100,000개 규모에서도 recall의 semantic 단계가 hook 예산 안에 끝난다.
-- **범위.** 설계 문서와 독립 리뷰가 먼저다. 1.0.8-3의 계측을 근거로 방향을 고른다: lexical 후보 한정 rerank, resident에 검색 위임, 버릴 수 있는 파생 검색 캐시. 봉인된 세대의 exact 결과와의 일치 기준(상위 k 겹침)을 정한다.
+- **범위.** 카드 대표 vector는 사용하지 않고 resident 메모리 vector 검색으로 간다. 설계는 별도 문서에서 다루고 독립 리뷰를 먼저 진행한다.
 - **의존.** 1.0.8-2·3. **크기.** L.
 - **불변.** 확인(store DDL에 색인을 더하면 저촉이다. resident 요청 종류를 더할 때 낮은 버전 resident의 동작을 판정한다. 파생 캐시는 세대 digest에 묶이고 없으면 exact로 돌아가야 한다).
 - **합격(live).** service-engineering의 recall에서 semantic 사용 비율 99% 이상, p95가 목표 이하, exact 대비 상위 10개 겹침 9개 이상(표본 100건).
