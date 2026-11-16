@@ -11,6 +11,7 @@ content filler's OS lease owns per-content work. Job rows hold no body text.
 from __future__ import annotations
 
 import math
+from functools import wraps
 import sqlite3
 import time
 
@@ -19,6 +20,7 @@ from memvane.store.blob.blob_values import BlobStoreError
 from memvane.store.blob.blob_fill import ContentFiller
 from memvane.store.blob.blob_store import _insert
 from memvane.store.types import MAX_FILES
+from memvane.store.types import FILL_PROFILE
 from memvane.store.view import fill_schema as fill_schema
 from memvane.store.view import view_values as vals
 
@@ -26,6 +28,21 @@ MAX_DEADLINE = 300
 MAX_BYTES = 64 * 1024 * 1024
 JOB_SCHEMA = 'memvane-fill-job-v1'
 BUSY = 'content_claim_busy'
+
+
+def profile_fill_plan(function):
+    @wraps(function)
+    def call(self, handle, recipe_id, profile_id):
+        profile = FILL_PROFILE.get()
+        if profile is None:
+            return function(self, handle, recipe_id, profile_id)
+        started = time.monotonic_ns()
+        try:
+            return function(self, handle, recipe_id, profile_id)
+        finally:
+            profile['planCalls'] += 1
+            profile['planNs'] += time.monotonic_ns() - started
+    return call
 
 
 def _deadline(seconds):
@@ -39,6 +56,39 @@ def _remaining(deadline):
     if left <= 0:
         v.fail('fill_deadline_exceeded')
     return left
+
+
+def completed_prefix(store, targets, cursor, recipe_id, profile_id, deadline):
+    """Count consecutive existing sets; publication still validates their contents."""
+    count = 0
+    with store._session() as db:
+        for target in targets[cursor:]:
+            _remaining(deadline)
+            row = db.execute('SELECT 1 FROM embedding_sets WHERE blob_sha=? AND recipe_id=? AND profile_id=?',
+                             (target['blob_sha'], recipe_id, profile_id)).fetchone()
+            if row is None:
+                break
+            count += 1
+    return count
+
+
+def head_targets(store, db, handle, head, recipe_id, profile_id):
+    """Reuse immutable head targets on this store instance; cursor stays fresh."""
+    key = (handle.view_id, head.ordinal, head.gen_id, recipe_id, profile_id)
+    cached = getattr(store, '_fill_target_cache', None)
+    if cached is not None and cached[0] == key:
+        return [dict(row) for row in cached[1]], cached[2]
+    targets = []
+    for row in store._rows_open(db, handle.view_id, head.ordinal):
+        if row['eligible']:
+            size = db.execute('SELECT byte_length FROM wiki_blobs WHERE blob_sha=?',
+                              (row['blob_sha'],)).fetchone()[0]
+            targets.append(dict(path=row['path'], blob_sha=row['blob_sha'], byte_length=size))
+    if len(targets) > fill_schema.MAX_TARGETS:
+        v.fail('fill_targets_too_large')
+    digest = v.digest('memvane-fill-targets-v1', targets)
+    store._fill_target_cache = (key, tuple(dict(row) for row in targets), digest)
+    return targets, digest
 
 
 def _bounded(value, lower, upper, reason):

@@ -790,9 +790,7 @@ def capture_view(project_root, repository, worktree, *, deadline=None, fresh=Fal
     limit = _deadline(deadline)
     if fresh:
         _capture_cache.entry = None
-        facts = _stable(project_root, limit)
-    else:
-        facts = _capture_facts(project_root, repository, worktree, limit)
+    facts = _capture_facts(project_root, repository, worktree, limit)
     _repository(repository, facts)
     _worktree(worktree, repository, facts)
     value = {'schema': CAPTURE_SCHEMA, 'projectRoot': facts['project']['path'],

@@ -9,6 +9,7 @@ from memvane.resident.types import EMBED_POLICY
 from memvane.store import types as store_types
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 import hashlib
 from pathlib import Path
 import re
@@ -33,6 +34,39 @@ from memvane.journal.api import selected_project_proof as _selected
 # runtime root's fixture provider port answers through provider.api).
 from memvane.provider.api import reviewed_provider as ReviewedLocalQmdProvider
 from memvane.provider.api import start_owned_embed_service
+
+
+_PROFILE_STAGES = ('scan', 'plan', 'coverage', 'provider', 'storage', 'publish')
+
+
+@contextmanager
+def _profile_phase(profile, stage):
+    if profile is None:
+        yield
+        return
+    started = time.monotonic_ns()
+    try:
+        yield
+    finally:
+        profile[stage + 'Calls'] += 1
+        profile[stage + 'Ns'] += time.monotonic_ns() - started
+
+
+def _profile_call(profile, stage, function, *args, **kwargs):
+    with _profile_phase(profile, stage):
+        return function(*args, **kwargs)
+
+
+def _profile_read_cards(profile, root, paths, regular):
+    current = {}
+    with _profile_phase(profile, 'scan'):
+        for path in paths:
+            try:
+                raw, _node, _root = regular(root, path, store_types.MAX_BODY)
+            except OSError:
+                raise store_types.BlobStoreError('wiki_card_unavailable')
+            current[path] = (hashlib.sha256(raw).hexdigest(), raw)
+    return current
 
 
 def _deferred(exc):
@@ -339,8 +373,19 @@ def _run_sync(project, *, coordinator=None, report=None, start_service=start_own
     # One raw scan per pass: the main view's D2 observation is also the
     # discovery snapshot (laya_wiki_discovery._raw_snapshot, same roots and bounds).
     raw_scan = {}
-    result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
-                                 start_service=start_service, raw_scan=raw_scan)
+    profile = {stage + suffix: 0 for stage in _PROFILE_STAGES for suffix in ('Calls', 'Ns')}
+    started = time.monotonic_ns()
+    token = store_types.FILL_PROFILE.set(profile)
+    try:
+        result, proof = _run_schema3(decision, proof, coordinator=coordinator, report=report,
+                                     start_service=start_service, raw_scan=raw_scan, profile=profile)
+    finally:
+        store_types.FILL_PROFILE.reset(token)
+        from memvane.diagnostics import api as diagnostics
+        fields = {stage + 'Calls': profile[stage + 'Calls'] for stage in _PROFILE_STAGES}
+        fields.update({stage + 'Ms': round(profile[stage + 'Ns'] / 1000000, 3) for stage in _PROFILE_STAGES})
+        diagnostics.emit('sync.profile', decision=decision, outcome='observed',
+                         ms=(time.monotonic_ns() - started) / 1000000, **fields)
     result = _after_sync(decision, proof, grants, result, raw_snapshot=raw_scan.get('snapshot'))
     vectors = [item['vector'] for item in [result, *result.get('worktrees', ())] if item.get('vector')]
     waiting = ([v for v in vectors if v['state'] == 'provider_blocked']
@@ -404,7 +449,7 @@ SCHEMA3_TRANSIENT_REASONS = frozenset(('checkout_changed', 'fts_deadline_exceede
 
 
 def _run_schema3(decision, proof, *, coordinator=None, report=None,
-                 start_service=start_owned_embed_service, raw_scan=None):
+                 start_service=start_owned_embed_service, raw_scan=None, profile=None):
     """One publish pass of the selected schema3 view store (main view, then linked views).
 
     Admission is the sync owner plus a worker writer scope over the current
@@ -428,6 +473,7 @@ def _run_schema3(decision, proof, *, coordinator=None, report=None,
                 vectors = _schema3_vector_context(decision, proof, lane, coordinator=coordinator,
                                                    report=report, start_service=start_service)
                 vectors['rawScan'] = raw_scan
+                vectors['profile'] = profile
                 result, proof = _publish_schema3(decision, proof, writer, vectors)
             from memvane.journal.api import resettle_selection
             status, proof = resettle_selection(decision, owner)
@@ -695,6 +741,19 @@ def _schema3_reclassified(paths, changed, old, current, decision, sources):
     return result
 
 
+def _staged_vector_result(store, writer, proof, marks, handle, baseline, vectors, deadline,
+                          head, generation, ingested, removed, pending, skipped, provenance, window):
+    result = {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
+              **({'progressKind': 'ingest'} if ingested else {}),
+              'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
+              'removed': removed, 'pending': pending, 'skipped': skipped, 'provenance': provenance}
+    if window:
+        deadline = max(deadline, time.monotonic() + SCHEMA3_VECTOR_SECONDS)
+        result['vector'] = _schema3_vectors(store, writer, proof, marks, handle, None,
+                                            baseline['vector_spec'], vectors, deadline, window=True)
+    return result
+
+
 def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, deadline, marks,
                           vectors=None, *, raw_scan=None, window=False):
     """One view's pass: ingest changed cards and recheck observed source revisions.
@@ -726,23 +785,18 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         root = row['wiki_root']
         from memvane.install.api import ensure_wiki_keeper
         ensure_wiki_keeper(root)
-        found, skipped = _schema3_wiki_cards(root)
+        profile = vectors.get('profile')
+        found, skipped = _profile_call(profile, 'scan', _schema3_wiki_cards, root)
         # skipPaths is read each pass, outside the binding: a card it newly
         # covers leaves the generation (not a file removal), one it no longer
         # covers is ingested like a new card.
         paths = v.admitted_paths(dict(row), found)
         removed = sorted(set(old) - set(found))
         excluded = sorted(set(old) & (set(found) - set(paths)))
-        current = {}
-        for path in paths:
-            try:
-                raw, _node, _root = _regular(root, path, store_types.MAX_BODY)
-            except OSError:
-                raise store_types.BlobStoreError('wiki_card_unavailable')
-            current[path] = (hashlib.sha256(raw).hexdigest(), raw)
+        current = _profile_read_cards(profile, root, paths, _regular)
         changed = {p for p in paths if p not in old or old[p]['blob_sha'] != current[p][0]}
         scanned = {}
-        observed = _schema3_sources(decision, handle, deadline, raw_scan=scanned)
+        observed = _profile_call(profile, 'scan', _schema3_sources, decision, handle, deadline, raw_scan=scanned)
         if raw_scan is not None and 'snapshot' in scanned:
             raw_scan['snapshot'] = scanned['snapshot']
         # Only a completed scan is a current observation; over its bounds no revision is judged.
@@ -779,10 +833,10 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
                                 complete=True, sources=v.put_source_fingerprints(store, handle, scan, observed),
                                 members=[old[p] for p in sorted(old)])
             started = time.monotonic()
-            generation = store.prepare_generation(handle, manifest, expected_head=head,
-                                                  vector_spec=vectors['spec'], deadline=deadline)
+            generation = _profile_call(profile, 'publish', store.prepare_generation, handle, manifest, expected_head=head,
+                                       vector_spec=vectors['spec'], deadline=deadline)
             writer.validate()
-            store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+            _profile_call(profile, 'publish', store.publish_generation, handle, generation, expected_head=head, deadline=deadline)
             vector = dict(vector, state='published', publishMs=int((time.monotonic() - started) * 1000))
             return {'state': 'indexed', 'storeFormat': 'schema3', 'generation': generation,
                     'ingested': 0, 'removed': 0, 'pending': 0, 'skipped': skipped,
@@ -840,8 +894,8 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
             # this pass's generation, lexical or vector, gets a fresh reserve.
             deadline = max(deadline, time.monotonic() + SCHEMA3_PUBLISH_RESERVE)
         started = time.monotonic()
-        generation = store.prepare_generation(handle, manifest, expected_head=head,
-                                              vector_spec=spec, deadline=deadline)
+        generation = _profile_call(profile, 'publish', store.prepare_generation, handle, manifest, expected_head=head,
+                                   vector_spec=spec, deadline=deadline)
         writer.validate()
         if cold and pending:
             # No partial first generation: recall answers view_preparing until complete.
@@ -853,14 +907,12 @@ def _publish_schema3_view(store, writer, decision, proof, worktree_id, binding, 
         if staging:
             # Published cards wait for new bytes: the head stays, the prepared
             # progress is the next pass's carry.
-            return {'state': 'pending', 'reason': 'schema3_changes_staged', 'storeFormat': 'schema3',
-                    **({'progressKind': 'ingest'} if ingested else {}),
-                    'generation': head['gen_id'], 'prepared': generation, 'ingested': ingested,
-                    'removed': len(removed), 'pending': pending, 'skipped': skipped, 'provenance': provenance}
-        store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+            return _staged_vector_result(store, writer, proof, marks, handle, baseline, vectors, deadline,
+                                         head, generation, ingested, len(removed), pending, skipped, provenance, window)
+        _profile_call(profile, 'publish', store.publish_generation, handle, generation, expected_head=head, deadline=deadline)
         if vector['state'] == 'lexical_first':
             generation, vector = _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest,
-                                                              vectors, deadline)
+                                                              vectors, deadline, window=window)
     except store_types.BlobStoreError as exc:
         if exc.reason in SCHEMA3_BINDING_REASONS:
             return {'state': 'deferred', 'reason': 'schema3_binding_changed',
@@ -895,7 +947,8 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
         return {'state': 'off'}
     blobs = set(changed_blobs) if sealed == spec else {member['blob_sha'] for member in manifest['members']}
     try:
-        missing = v.embedding_sets_missing(store, blobs, spec['recipe_id'], spec['profile_id'])
+        missing = _profile_call(vectors.get('profile'), 'coverage', v.embedding_sets_missing,
+                                store, blobs, spec['recipe_id'], spec['profile_id'])
     except store_types.BlobStoreError as exc:
         if exc.reason not in ('recipe_missing', 'profile_missing'):
             raise
@@ -905,19 +958,21 @@ def _schema3_rows_covered(store, manifest, sealed, vectors, changed_blobs):
     return {'state': 'complete', 'filled': 0, 'cacheHits': len(blobs), 'targets': len(manifest['members'])}
 
 
-def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, vectors, deadline):
+def _schema3_rows_vector_publish(store, writer, proof, marks, handle, manifest, vectors, deadline, *, window=False):
     """After a row-format lexical publication: fill the new head and seal its vector generation.
 
     Returns ``(generation, vector)``; an unfinished fill keeps the lexical head.
     """
-    vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline)
+    if window:
+        deadline = max(deadline, time.monotonic() + SCHEMA3_VECTOR_SECONDS)
+    vector = _schema3_vectors(store, writer, proof, marks, handle, None, None, vectors, deadline, window=window)
     head = store.head(handle)
     if vector['state'] != 'complete':
         return head['gen_id'], vector
-    generation = store.prepare_generation(handle, manifest, expected_head=head, vector_spec=vectors['spec'],
-                                          deadline=deadline)
+    generation = _profile_call(vectors.get('profile'), 'publish', store.prepare_generation, handle, manifest,
+                               expected_head=head, vector_spec=vectors['spec'], deadline=deadline)
     writer.validate()
-    store.publish_generation(handle, generation, expected_head=head, deadline=deadline)
+    _profile_call(vectors.get('profile'), 'publish', store.publish_generation, handle, generation, expected_head=head, deadline=deadline)
     return generation, vector
 
 
@@ -1064,7 +1119,7 @@ def _schema3_chunker(context, current):
     def timed(call):
         started = time.monotonic()
         try:
-            return call()
+            return _profile_call(context.get('profile'), 'provider', call)
         finally:
             stats['providerMs'] = max(stats['providerMs'], int((time.monotonic() - started) * 1000))
 
@@ -1181,6 +1236,9 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     """
     from memvane.store import api as v
     from memvane.store.types import MAX_FILES
+    profile = vectors.get('profile')
+    def coverage(*args, **kwargs):
+        return _profile_call(profile, 'coverage', v.embedding_coverage, *args, **kwargs)
     spec = vectors.get('spec')
     if spec is None:
         return {'state': 'off'}
@@ -1190,7 +1248,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
     current = lambda: marks.get('proof', proof)  # noqa: E731 - the proof after this pass's fence
     try:
         # No blobs: only the recipe and profile rows are checked.
-        v.embedding_sets_missing(store, (), recipe_id, profile_id)
+        _profile_call(profile, 'coverage', v.embedding_sets_missing, store, (), recipe_id, profile_id)
         registered = True
     except store_types.BlobStoreError as exc:
         if exc.reason not in ('recipe_missing', 'profile_missing'):
@@ -1206,7 +1264,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                 raise store_types.BlobStoreError('vector_spec_mismatch')
         _entry, _saved, _job, targets, stored = v.fill_plan(store, handle, recipe_id, profile_id)
         cursor = 0 if stored is None else stored
-        before = v.embedding_coverage(store, targets, recipe_id, profile_id)
+        before = coverage(store, targets, recipe_id, profile_id)
         missing = len(targets) - before
         if missing:
             vectors['acquire'](current())
@@ -1218,16 +1276,16 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
         def pending(reason, at):
             # ``progress``: embedding sets this pass added (store observation,
             # not callback counts); ``ordinal``: the first target still missing.
-            first = v.embedding_coverage(store, targets, recipe_id, profile_id, first_from=at)
+            first = coverage(store, targets, recipe_id, profile_id, first_from=at)
             return {'state': 'pending', 'reason': reason, 'filled': filled, 'cacheHits': hits,
                     'remaining': len(targets) - at,
-                    'progress': v.embedding_coverage(store, targets, recipe_id, profile_id) - before,
+                    'progress': coverage(store, targets, recipe_id, profile_id) - before,
                     'cursorMoved': at - cursor, 'ordinal': None if first is None else first[0],
                     'providerMs': vectors.get('stats', {}).get('providerMs', 0),
                     'statusProgress': {'done': at, 'total': len(targets)}}
         while not status['complete']:
             left = deadline - SCHEMA3_PUBLISH_RESERVE - time.monotonic()
-            first = v.embedding_coverage(store, targets, recipe_id, profile_id, first_from=status['cursor'])
+            first = coverage(store, targets, recipe_id, profile_id, first_from=status['cursor'])
             span = None if first is None else first[0] - status['cursor'] + 1
             # The first cold target of a pass (no chunk set: its single chunked
             # provider call is the whole work) gets the resume budget, so a card
@@ -1239,7 +1297,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
 
             def fence():
                 _mark_schema3_write(writer, proof, marks)
-            files, seconds = 8, min(SCHEMA3_FILL_CALL_SECONDS, left)
+            files, seconds = 32, min(SCHEMA3_FILL_CALL_SECONDS, left)
             if resumable:
                 files, seconds = span, SCHEMA3_RESUME_SECONDS
                 cold_used = cold_used or not first[1]
@@ -1250,9 +1308,9 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
             # The targets this call can reach: the window compares their sets
             # before and after a call stopped by its own deadline.
             reach = targets[status['cursor']:status['cursor'] + files]
-            mark = v.embedding_coverage(store, reach, recipe_id, profile_id) if window else None
+            mark = coverage(store, reach, recipe_id, profile_id) if window else None
             try:
-                step = store.fill_view(handle, manifest, recipe_id, profile_id, chunker=chunker,
+                step = _profile_call(profile, 'storage', store.fill_view, handle, manifest, recipe_id, profile_id, chunker=chunker,
                                        embedder=embedder, write_fence=fence,
                                        expected_cursor=status['cursor'], max_files=files,
                                        max_bytes=store_types.MAX_BODY, deadline_seconds=seconds)
@@ -1261,7 +1319,7 @@ def _schema3_vectors(store, writer, proof, marks, handle, manifest, sealed, vect
                     raise
                 # Content sets committed before the deadline stay (cache hits
                 # next pass); the lexical publish of this pass goes on.
-                if window and v.embedding_coverage(store, reach, recipe_id, profile_id) > mark:
+                if window and coverage(store, reach, recipe_id, profile_id) > mark:
                     # Inside the vector window, a call that added sets before its
                     # own deadline does not end the window: the next call passes
                     # those as cache hits. A call that added none ends it.
