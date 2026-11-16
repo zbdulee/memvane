@@ -7,6 +7,7 @@ test('pin receipt verifies a generation across readers', () => {
   const fixture = fixtureHome('mvs');
   try {
     const result = spawnSync('python3', ['-B', '-m', 'unittest', '-v',
+      'memvane.store.tests.integration.test_pin_receipt.PinReceipt.test_two_view_receipts_do_not_overwrite_each_other',
       'memvane.store.tests.integration.test_pin_receipt.PinReceipt.test_reopen_reuses_only_matching_private_receipt',
       'memvane.store.tests.integration.test_pin_receipt.PinReceipt.test_independent_process_reuses_unchanged_generation',
       'memvane.store.tests.integration.test_pin_receipt.PinReceipt.test_mutated_card_forces_full_verification_and_refusal'],

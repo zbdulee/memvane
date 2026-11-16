@@ -55,6 +55,19 @@ class BundleIdentity:
     def process_version_counts(self):
         return process_version_counts()
 
+    def installed_version(self, *, host=None):
+        """Highest version tuple for this hook's host, or all hosts when omitted; no CLI."""
+        versions = [self.version] if self.intact() and self.version is not None else []
+        if os.environ.get('QMD_SETUP_GUARD_FIXTURE') != '1':
+            try:
+                root = fast_installed(host=host) if host is not None else fast_installed()
+                other = version_key(_read_json(root / 'plugin.json', limit=65536).get('version')) if root else None
+                if other is not None:
+                    versions.append(other)
+            except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
+                pass
+        return max(versions) if versions else None
+
     def preferred_background(self):
         return self.preferred(background=True)
 
@@ -357,7 +370,7 @@ def _inventory_unavailable(host):
     diagnostics.emit('runtime.bundle', outcome='unavailable', reason='host_inventory_unreadable', host=host)
 
 
-def fast_installed(*, home=None):
+def fast_installed(*, home=None, host=None):
     """Read bounded host records only; never launch a host CLI on a hook."""
     home = Path.home() if home is None else Path(home)
     codex = Path(os.environ.get('CODEX_HOME') or home / '.codex')
@@ -371,7 +384,7 @@ def fast_installed(*, home=None):
             _safe_node(parent, directory=True)
             if own.parent == parent:
                 item = _candidate(codex, market, own.name, 'codex')
-                if item is not None and item[1] == own:
+                if item is not None and item[1] == own and host in (None, 'codex'):
                     found.append(item)
     except FileNotFoundError:
         pass
@@ -390,7 +403,7 @@ def fast_installed(*, home=None):
                     if not isinstance(row, dict):
                         continue
                     item = _candidate(claude, name[len('memvane@'):], row.get('version'), 'claude')
-                    if item is not None and row.get('installPath') == str(item[1]):
+                    if item is not None and row.get('installPath') == str(item[1]) and host in (None, 'claude'):
                         found.append(item)
     except FileNotFoundError:
         pass

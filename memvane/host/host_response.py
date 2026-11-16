@@ -101,30 +101,8 @@ def _capture_learning(slot: list, started: float) -> None:
 
 def _dispatch_learning_capture(slot: list, started: float) -> None:
     """Send bounded capture input to an owned child after flushing the answer."""
-    import subprocess
-    import tempfile
-    pending, slot[:] = list(slot), []
-    if not pending:
-        return
-    entry = pending[0]
-    try:
-        from memvane.kernel.bundle_paths import entry_argv
-        data = json.dumps({'capture': entry, 'started': started}, ensure_ascii=True,
-                          allow_nan=False, separators=(',', ':')).encode('utf8')
-        if len(data) > 4 * 1024 * 1024:
-            raise ValueError('capture_input_too_large')
-        with tempfile.TemporaryFile(mode='w+b') as payload:
-            payload.write(data)
-            payload.seek(0)
-            subprocess.Popen(entry_argv('learning-capture'), stdin=payload,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             close_fds=True, start_new_session=True, cwd='/')
-    except Exception:
-        try:
-            event_log.emit('learning.capture', outcome='capture_unavailable', reason='dispatch_failed',
-                           decision=entry[1], host=entry[0])
-        except Exception:
-            pass
+    from memvane.host.capture_dispatch import dispatch
+    dispatch(slot, started)
 
 
 def _fail(code: str):
@@ -1014,8 +992,9 @@ def _learning_runtime_notice(notice):
 
 
 def _session_health_notice(decision, notice, host, payload):
+    from memvane.host.session_notice import append_notice
     notice = _learning_settings_notice(decision, _wiki_recovery_notice(decision, notice), host, payload)
-    notice = _learning_runtime_notice(notice)
+    notice = append_notice(decision, _learning_runtime_notice(notice), host, payload)
     try:
         if event_log.vector_damage_seen(decision):
             line = ('[memvane] 임베딩 데이터가 손상돼 어휘 검색만 씁니다. '
@@ -1394,10 +1373,12 @@ def _serve_worktree(action: str, host: str, decision: dict, payload: dict) -> di
         if recheck(main) != proof:
             _fail('selected_proof_changed')
         _request_worktree_sync(main, proof, recheck)
+        from memvane.host.session_notice import append_notice
+        notice = append_notice(main, WORKTREE_VIEW_NOTICE, host, payload)
         if host == 'hermes':
-            return {'status': 'worktree_view', 'notice': WORKTREE_VIEW_NOTICE}
+            return {'status': 'worktree_view', 'notice': notice}
         return {'hookSpecificOutput': {'hookEventName': 'SessionStart',
-                                       'additionalContext': WORKTREE_VIEW_NOTICE}}
+                                       'additionalContext': notice}}
     if recheck(main) != proof:
         _fail('selected_proof_changed')
     if (action in ('index', 'file-change-event')

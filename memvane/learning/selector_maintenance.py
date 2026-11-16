@@ -63,21 +63,18 @@ def _request_owned(decision, owner, *, force):
     state = Path(decision['journalPath']).parent
     path = state / REQUEST_FILE
     now = time.time_ns()
+    previous = {}
     try:
         previous = _read_json(path)
         last = previous.get('requestedNs') if isinstance(previous, dict) else None
     except (OSError, ValueError, RuntimeError):
         last = None
-    if type(last) is int and 0 <= now - last < REQUEST_SECONDS * 10**9:
-        # A deferral may have happened while the worker could not reacquire the
-        # owner to clear its request. Its matching event is a retry receipt.
-        from memvane.diagnostics.api import build_progress_events
-        events = build_progress_events(state)
-        if not any(event.get('event') == 'learning.selector.request'
-                   and event.get('outcome') == 'deferred'
-                   and event.get('requestNs') == last for event in events):
-            return
-    _write(path, {'requestedNs': now}, replace=path.exists())
+    retry_after = previous.get('retryAfterNs', 0) if isinstance(previous, dict) else 0
+    floor = last + REQUEST_SECONDS * 10**9 if type(last) is int and 0 <= now - last else 0
+    if now < max(floor, retry_after if type(retry_after) is int else 0):
+        return
+    attempt = {'requestedNs': now, 'failures': _failure_count(previous), 'retryAfterNs': 0}
+    _write(path, attempt, replace=path.exists())
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'LANG', 'TMPDIR', 'USER',
                                             'MEMVANE_TEST_RUNTIME_ROOT',
                                             'MEMVANE_TEST_ALLOW_UNINSTALLED_ROOT')
@@ -92,7 +89,7 @@ def _request_owned(decision, owner, *, force):
                              stderr=stderr, close_fds=True,
                              start_new_session=True, env=env, cwd='/')
     except OSError:
-        _write(path, {'requestedNs': 0}, replace=True)
+        _write(path, _retry_row(attempt, now, deferred=False), replace=True)
         diagnostics.emit('learning.selector.request', outcome='failed', reason='spawn_failed', decision=decision)
         raise
     diagnostics.emit('learning.selector.request', outcome='spawned', decision=decision)
@@ -117,10 +114,13 @@ def run(project, *, force=False):
             from memvane.journal.api import select_route
             from memvane.diagnostics import api as diagnostics
             decision = select_route(str(Path(project).resolve(strict=True)), action='update')
-            diagnostics.emit('learning.selector.maintenance', decision=decision, outcome='completed')
+            _record_request_result(decision, completed=result is True, deferred=result is not True)
+            diagnostics.emit('learning.selector.maintenance', decision=decision,
+                             outcome='completed' if result is True else 'deferred',
+                             reason=None if result is True else 'maintenance_incomplete')
         except Exception:
             pass
-        return result
+        return
     except Exception as exc:
         # Diagnostics cannot authorize work; report only after selected proof.
         try:
@@ -130,19 +130,22 @@ def run(project, *, force=False):
             from memvane.runtime.types import ServiceFailure
             from memvane.learning.context_learning.selector_heal import HealDeferred
             decision = select_route(str(Path(project).resolve(strict=True)), action='update')
-            verify_selected_route_for_write(decision)
             deferred = isinstance(exc, (ResourceDeferred, HealDeferred))
             if deferred:
                 _release_deferred_request(decision)
+            else:
+                _record_request_result(decision)
+            verify_selected_route_for_write(decision)
             fixed = ('learning_prepare_memory_pressure', 'learning_prepare_busy', 'learning_pending_changed',
                      'starting', 'deadline_expired', 'learning_runtime_not_installed',
                      'learning_runtime_not_official', 'learning_runtime_changed', 'learning_profile_rebind_required',
                      'learning_prepare_lock_unsafe', 'selector_policy_invalid', 'selector_warm_lock_unsafe',
                      'adapter_not_official', 'inference_prepare_failed', 'inference_prepare_unverified')
+            fixed += ('start_refused', 'start_path_invalid', 'start_io_failed', 'start_failed', 'permission_denied')
             service_codes = ('starting', 'deadline_expired', 'resource_deferred', 'queue_full',
                              'replacement_deferred', 'model_family_mismatch', 'load_failed',
                              'version_mismatch', 'request_rejected', 'request_changed', 'worker_error')
-            code = exc.code if isinstance(exc, ServiceFailure) and exc.code in service_codes else str(exc)
+            code = exc.code if isinstance(exc, ServiceFailure) and exc.code in fixed + service_codes else str(exc)
             reason = code if code in fixed or code in service_codes else ('resource_deferred' if deferred else 'maintenance_failed')
             frames = []
             cursor = exc.__traceback__
@@ -165,27 +168,52 @@ def run(project, *, force=False):
         raise
 
 
+def _failure_count(row):
+    count = row.get('failures', 0) if isinstance(row, dict) else 0
+    return max(0, min(32, count)) if type(count) is int else 0
+
+
+def _retry_row(row, now, *, deferred):
+    failures = _failure_count(row) + 1
+    delay = min(3600, (60 if deferred else REQUEST_SECONDS) * 2 ** min(failures - 1, 6))
+    return {'requestedNs': row['requestedNs'], 'failures': failures,
+            'retryAfterNs': max(row['requestedNs'] + REQUEST_SECONDS * 10**9, now + delay * 10**9)}
+
+
 def _release_deferred_request(decision):
-    """Release only this worker's request under the existing install owner."""
-    from memvane.journal.api import ledger_read_json, ledger_write
+    """Keep the request floor while recording a retryable failure."""
+    _record_request_result(decision, deferred=True)
+
+
+def _record_request_result(decision, *, deferred=False, completed=False):
+    """Settle only the selected install's owning request, not product work proof."""
+    from memvane.journal.api import inspect_journal, ledger_read_json, ledger_write
     from memvane.runtime.api import sync_owner
     from memvane.diagnostics import api as diagnostics
     value = os.environ.get('MEMVANE_SELECTOR_REQUEST_NS', '')
     if not value.isdecimal():
         return
-    diagnostics.emit('learning.selector.request', outcome='deferred',
-                     requestNs=int(value), decision=decision)
     path = Path(decision['journalPath']).parent / REQUEST_FILE
     with sync_owner(Path(decision['storePath']), wait=True) as owner:
         if owner is None:
-            diagnostics.emit('learning.selector.request', outcome='failed', reason='deferred_floor_release_busy', decision=decision)
+            diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_busy', decision=decision)
             return
         try:
+            selected = inspect_journal(decision['journalPath'])
+            if selected['state'] != 'selected' or selected['installId'] != decision['installId']:
+                return
             row = ledger_read_json(path)
             if isinstance(row, dict) and row.get('requestedNs') == int(value):
-                ledger_write(path, {'requestedNs': 0}, replace=True)
+                if not completed and type(row.get('retryAfterNs')) is int and row['retryAfterNs'] > 0:
+                    return  # The same request cannot count its failure twice.
+                updated = (dict(requestedNs=int(value), failures=0, retryAfterNs=0) if completed
+                           else _retry_row(row, time.time_ns(), deferred=deferred))
+                ledger_write(path, updated, replace=True)
+                diagnostics.emit('learning.selector.request', outcome='completed' if completed else
+                                 'deferred' if deferred else 'failed', requestNs=int(value),
+                                 failures=updated['failures'], retryAfterNs=updated['retryAfterNs'], decision=decision)
         except (OSError, ValueError, RuntimeError):
-            diagnostics.emit('learning.selector.request', outcome='failed', reason='deferred_floor_release_failed', decision=decision)
+            diagnostics.emit('learning.selector.request', outcome='failed', reason='retry_state_failed', decision=decision)
 
 
 def _run(project, *, force=False):
@@ -212,39 +240,42 @@ def _run(project, *, force=False):
     except ResourceDeferred as exc:
         diagnostics.emit('learning.selector.maintenance', outcome='deferred',
                          reason='proof_deferred', decision=decision)
-        _release_deferred_request(decision)
     lease = selector_heal._prepare_lease(None)
     try:
         row = inspect_journal(decision['journalPath'])
         running, highest = version_key(plugin_version()), version_key(row['maxPluginVersion'])
-        if (running is None or highest is None or running < highest
-                or (not force and running == highest)):
-            return
+        if running is None or highest is None:
+            return False
+        if running < highest or (not force and running == highest):
+            return True
         from memvane.learning.default_enrollment import prepare
         result = prepare(project, Path(decision['journalPath']).parent, decision['installId'], lease_fd=lease)
         if result.get('status') == 'selected':
             from memvane.diagnostics import api as diagnostics
             diagnostics.emit('learning.selector.warm', outcome=result.get('warm'), decision=decision)
         if result.get('status') not in ('selected', 'preserved'):
-            return
+            return False
         if result.get('status') == 'preserved':
             state = _selector_state(project)
             if state is None:
-                return
+                return False
             result = selector_heal.heal(project, state=state, _lease_fd=lease)
-            if result.get('status') in ('selector_ready', 'selector_prepared'):
+            if result.get('status') not in ('selector_ready', 'selector_prepared', 'selector_not_prepared'):
+                return False
+            if result.get('status') != 'selector_not_prepared':
                 warmed = selector_heal.warm(project, state=state)
-                if warmed.get('status') == 'selector_warm_busy':
-                    return
+                if warmed.get('status') not in ('selector_warm', 'selector_warm_current'):
+                    return False
                 from memvane.diagnostics import api as diagnostics
                 diagnostics.emit('learning.selector.warm', outcome=warmed.get('status'), decision=decision)
         with sync_owner(Path(decision['storePath']), wait=False) as owner:
             if owner is None:
-                return
+                return False
             current = verify_selected_route_for_write(decision)
             if current['installId'] != proof['installId']:
-                return
+                return False
             publish_plugin_version(decision, owner, running)
+            return True
     finally:
         os.close(lease)
 

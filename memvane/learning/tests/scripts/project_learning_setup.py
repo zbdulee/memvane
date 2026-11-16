@@ -386,6 +386,7 @@ with tempfile.TemporaryDirectory(prefix='qmd-learning-setup-',dir='/tmp') as tem
    assert init_plan['files']['live-selector.json']['trainerArgv']==[str(python),str(adapter),str(model)]
    assert init_plan['files']['live-selector.json']['maxRssMib']==3584
    assert init_plan['files']['active-checkpoint.json']['artifact_path']==str(base_artifact)
+   assert init_plan['files']['active-checkpoint.json']['schema_version']==1
    assert init_plan['model']['identitySha256']==identity
    digest=setup.proposal_sha256(init_plan)
    # Wrong or stale approval writes nothing, not even the lock file.

@@ -10,6 +10,19 @@ from memvane.store.tests.support import drop_triggers_and
 
 
 class PinReceipt(VectorCase):
+    def test_two_view_receipts_do_not_overwrite_each_other(self):
+        from memvane.store.view import pin_receipt
+        store, _repository, _handle, _m, _r, _p, _g, pin = self.ready()
+        store.release(pin)
+        store.close()
+        node = pin_receipt.identity(self.db)
+        self.assertIsNotNone(node)
+        other = 'b' * 64 if pin.view_id != 'b' * 64 else 'c' * 64
+        pin_receipt.save(self.db, pin.view_id, pin.incarnation, pin.gen_id, 'one', node)
+        pin_receipt.save(self.db, other, pin.incarnation, 'other', 'two', node)
+        self.assertTrue(pin_receipt.matches(self.db, pin.view_id, pin.incarnation, pin.gen_id, 'one', node))
+        self.assertTrue(pin_receipt.matches(self.db, other, pin.incarnation, 'other', 'two', node))
+        self.assertEqual(len(list(self.db.parent.glob('.view-pin-receipt-*.json'))), 2)
     def test_independent_process_reuses_unchanged_generation(self):
         store, repository, handle, _manifest, _recipe, _profile, _gen, pin = self.ready()
         store.release(pin)
@@ -63,15 +76,17 @@ reader.close()
         reader, first = opened()
         with mock.patch.object(reader, '_rows_verify', wraps=reader._rows_verify) as verify:
             pinned = reader.pin_view(first)
+            self.assertEqual(reader.pin_verification(pinned), {'pinVerified': 'full'})
             reader.release(pinned)
             self.assertEqual(verify.call_count, 1)
         reader.close()
-        receipt = self.db.parent / '.view-pin-receipt.json'
+        receipt = self.db.parent / ('.view-pin-receipt-' + first.view_id + '.json')
         self.assertTrue(receipt.is_file())
         self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
         reader, second = opened()
         with mock.patch.object(reader, '_rows_verify', wraps=reader._rows_verify) as verify:
             pinned = reader.pin_view(second)
+            self.assertEqual(reader.pin_verification(pinned), {'pinVerified': 'receipt'})
             reader.release(pinned)
             self.assertEqual(verify.call_count, 0)
         reader.close()

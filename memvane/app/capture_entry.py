@@ -1,6 +1,32 @@
 """Private post-hook capture supervisor and worker entries."""
 import json
+import os
+import stat
 import sys
+from contextlib import contextmanager
+
+CAPTURE_SECONDS = 45
+STOP_SECONDS = 5
+
+
+@contextmanager
+def _budget():
+    raw = os.environ.get('MEMVANE_CAPTURE_FDS', '')
+    if raw:
+        if len(raw) > 512:
+            raise ValueError('capture_budget_invalid')
+        fds = tuple(int(value) for value in raw.split(','))
+        if not 1 <= len(fds) <= 64 or any(fd < 3 for fd in fds) or len(set(fds)) != len(fds):
+            raise ValueError('capture_budget_invalid')
+        for fd in fds:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                raise ValueError('capture_budget_invalid')
+        yield fds
+    else:
+        from memvane.runtime.api import lease
+        with lease() as budget:
+            yield budget.fds
 
 
 def _capture_input():
@@ -18,8 +44,8 @@ def learning_capture_worker():
     try:
         capture, started = _capture_input()
         from memvane.learning.api import capture_recall
-        status = capture_recall(*capture, started=started)
-        return 2 if status in ('capture_unavailable', 'capture_deadline') else 0
+        capture_recall(*capture, started=started)
+        return 0  # The capture API records every handled status itself.
     except (ValueError, TypeError, KeyError, UnicodeError):
         return 2
 
@@ -35,21 +61,36 @@ def learning_capture():
     try:
         from memvane.kernel.bundle_paths import entry_argv
         sys.stdin.buffer.seek(0)
-        child = subprocess.Popen(entry_argv('learning-capture-worker'), stdin=sys.stdin,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-        try:
-            code = child.wait(timeout=45)
-        except subprocess.TimeoutExpired:
-            reason = 'worker_timeout'
-            child.terminate()
+        with _budget() as fds:
+            child = subprocess.Popen(entry_argv('learning-capture-worker'), stdin=sys.stdin,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     close_fds=True, pass_fds=fds)
             try:
-                child.wait(timeout=5)
+                code = child.wait(timeout=CAPTURE_SECONDS)
             except subprocess.TimeoutExpired:
-                pass
-            code = None
+                reason = 'worker_timeout'
+                child.terminate()
+                try:
+                    child.wait(timeout=STOP_SECONDS)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    try:
+                        child.wait(timeout=STOP_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        reason = 'worker_cleanup_timeout'
+                code = None
         if code == 0:
             return 0
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        from memvane.kernel.resource_deferred import ResourceDeferred
+        if isinstance(exc, ResourceDeferred):
+            try:
+                from memvane.diagnostics.api import emit
+                emit('learning.capture', outcome='deferred', reason='capture_budget_unavailable',
+                     decision=capture[1], host=capture[0])
+            except Exception:
+                pass
+            return 0
         reason = 'worker_spawn_failed'
     try:
         from memvane.diagnostics.api import emit
