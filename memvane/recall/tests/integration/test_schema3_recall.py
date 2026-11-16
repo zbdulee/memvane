@@ -102,6 +102,57 @@ class Schema3Recall(RecallInstallCase):
         self.assertEqual(event['semantic'], 'embedding_set_invalid')
         self.assertEqual(event['outcome'], 'served')
 
+    def test_semantic_set_validation_errors_keep_lexical_selector_and_reason(self):
+        from memvane.store import api as store_api
+        from memvane.store.types import BlobStoreError
+        self.install.provider.admit_queries()
+        real_open = store_api.open_store
+        reasons = ('embedding_set_missing', 'embedding_input_mismatch',
+                   'embedding_dimension_mismatch', 'embedding_sequence_invalid',
+                   'vector_rows_mismatch')
+        for reason in reasons:
+            selected = []
+            def open_store(*args, **kwargs):
+                store = real_open(*args, **kwargs)
+                def failed(*_args, **_kwargs):
+                    raise BlobStoreError(reason)
+                store.search_exact = failed
+                return store
+            def select(pool, **_kwargs):
+                selected.extend(pool)
+                return {'reason': 'selected', 'final_results': pool[:1]}
+            with self.subTest(reason=reason), \
+                    mock.patch.object(store_api, 'open_store', side_effect=open_store), \
+                    mock.patch('memvane.learning.api.selector_prepared', return_value=True), \
+                    mock.patch('memvane.learning.api.select_published', side_effect=select):
+                context, _err, event = self.recall(PROMPT)
+                self.assertGreater(len(selected), 0)
+                self.assertIn('zqheronx', context)
+                self.assertIn('local Laya model selected these cards', context)
+                self.assertEqual(event['outcome'], 'served')
+                self.assertEqual(event['semantic'], 'embedding_set_invalid')
+                self.assertEqual(event['semanticReason'], reason)
+                self.assertEqual(event['vector_fallback'], 'selected_embedding_set_invalid')
+
+    def test_actual_input_sha_mismatch_preserves_lexical_in_both_vector_lanes(self):
+        self.install.provider.admit_queries()
+        with closing(sqlite3.connect(self.install.state / 'store.sqlite')) as db, db:
+            trigger = db.execute("SELECT sql FROM sqlite_master WHERE name='vectors_update'").fetchone()[0]
+            db.execute('DROP TRIGGER vectors_update')
+            db.execute('UPDATE vectors SET input_sha=?', ('0' * 64,))
+            db.execute(trigger)
+        for switch in ('on', 'off'):
+            with self.subTest(switch=switch), \
+                    mock.patch.dict(os.environ, {'MEMVANE_VECTOR_ACCEL': switch}):
+                context, _err, event = self.recall(PROMPT)
+                self.assertIn('zqheronx', context)
+                self.assertEqual(event['outcome'], 'served')
+                self.assertEqual(event['semantic'], 'embedding_set_invalid')
+                self.assertEqual(event['semanticReason'], 'embedding_input_mismatch')
+                expected = 'accelerate' if sys.platform == 'darwin' and switch == 'on' else 'python'
+                self.assertEqual(event['vectorKernel'], expected)
+        self.assertEqual([kind for kind, _target, _kw in self.wakes], ['laya-sync'])
+
     def test_semantic_store_deadlines_keep_lexical_candidates_and_selector(self):
         from contextlib import contextmanager
         from memvane.journal import api as journal

@@ -30,10 +30,14 @@ def _fused_sources(lexical, nearest, timings):
     return rows
 
 
-def _semantic_error_status(exc):
+def _semantic_error_status(exc, timings=None):
     from memvane.store.types import DEFERRED
     reason = getattr(exc, 'reason', str(exc))
-    if reason in ('embedding_set_invalid', 'embedding_values_invalid'):
+    if reason in ('embedding_set_invalid', 'embedding_values_invalid', 'embedding_set_missing',
+                  'embedding_input_mismatch', 'embedding_dimension_mismatch',
+                  'embedding_sequence_invalid', 'vector_rows_mismatch'):
+        if timings is not None:
+            timings['semanticReason'] = reason
         return 'embedding_set_invalid'
     if reason in ('fts_deadline_exceeded', 'reader_snapshot_deadline'):
         return DEFERRED['vector_deadline_exceeded']
@@ -326,7 +330,7 @@ def _query_persisted_schema3(endpoint,*,checkout,prompt,query_vector,deadline,sn
                                                       deadline_seconds=min(1.0, remaining), timings=timings,
                                                       preferred_paths=preferred))
                 except (BlobStoreError, ValueError) as exc:
-                    status = _semantic_error_status(exc)
+                    status = _semantic_error_status(exc, timings)
                 finally:
                     if timings is not None:
                         timings['semanticMs'] = round((time.monotonic() - started) * 1000, 3)
