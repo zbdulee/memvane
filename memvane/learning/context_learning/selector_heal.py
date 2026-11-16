@@ -428,7 +428,7 @@ def warm(project, *, home=None, state=None):
             predict(state, policy, request, active['artifact_sha256'], deadline=deadline)
         except Exception as exc:
             from memvane.runtime.types import ServiceFailure
-            if isinstance(exc, ServiceFailure) and exc.code in ('starting', 'deadline_expired'):
+            if isinstance(exc, ServiceFailure) and exc.code in ('starting', 'deadline_expired', 'resource_deferred'):
                 raise HealDeferred(exc.code) from exc
             raise
         # Keyed after the request: it may have started (or replaced) the service.

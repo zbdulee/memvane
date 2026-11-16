@@ -476,7 +476,16 @@ def _ensure(root, python, deadline, *, spawn=None, ensure_service=None):
         if isinstance(exc, ResourceDeferred) and str(exc) == 'laya_service_protocol_mismatch':
             raise ServiceFailure('version_mismatch',
                 timing={'host_reason': 'laya_service_protocol_mismatch'}) from exc
-        raise ServiceFailure('starting') from exc
+        if isinstance(exc, ResourceDeferred):
+            code = {'laya_service_replacement_refused': 'start_refused',
+                    'live_write_requires_plugin_cache': 'start_path_invalid'}.get(str(exc), 'resource_deferred')
+        elif isinstance(exc, PermissionError):
+            code = 'permission_denied'
+        elif isinstance(exc, OSError):
+            code = 'start_io_failed'
+        else:
+            code = 'start_failed'
+        raise ServiceFailure(code) from exc
     while time.monotonic() < deadline:
         if _hosted_ready(root, python, deadline, reject_mismatch=state == 'ready'):
             return

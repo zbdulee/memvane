@@ -352,9 +352,12 @@ assert seen == ['probe', 'prove', 'accepted'], seen
             with mock.patch.dict(os.environ, {'MEMVANE_SELECTOR_REQUEST_NS': '22'}), \
                  mock.patch('memvane.runtime.api.sync_owner', return_value=nullcontext(object())):
                 selector_maintenance._release_deferred_request(decision)
-            self.assertEqual(ledger_read_json(path)['requestedNs'], 0)
+            changed = ledger_read_json(path)
+            self.assertEqual(changed['requestedNs'], 22)
+            self.assertEqual(changed['failures'], 1)
+            self.assertGreater(changed['retryAfterNs'], 0)
 
-    def test_deferred_event_allows_retry_when_owner_was_busy(self):
+    def test_deferred_event_does_not_bypass_request_floor(self):
         decision = {'projectRoot': '/project', 'storePath': '/store',
                     'journalPath': '/state/journal', 'installId': 'test'}
         with mock.patch('memvane.runtime.api.validate_sync_owner'), \
@@ -368,7 +371,7 @@ assert seen == ['probe', 'prove', 'accepted'], seen
              mock.patch('memvane.learning.selector_maintenance.subprocess.Popen') as spawn, \
              mock.patch('memvane.diagnostics.api.emit'):
             selector_maintenance._request_owned(decision, object(), force=False)
-            self.assertEqual(spawn.call_count, 1)
+            self.assertEqual(spawn.call_count, 0)
 
     def test_heal_attestation_uses_measured_peak_separate_from_ceiling(self):
         policy = {'trainerArgv':['python', 'adapter', '/model'], 'maxRssMib':4096}
