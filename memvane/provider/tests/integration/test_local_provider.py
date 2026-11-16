@@ -30,6 +30,13 @@ def sha(path):
 
 
 class ProviderChecks(FixtureCase):
+    def test_public_start_forwards_execution_state(self):
+        from memvane.provider import api
+        with mock.patch('memvane.provider.adapters.local_embed_service.start_owned_embed_service') as start:
+            api.start_owned_embed_service(self.manifest, admit=lambda: True,
+                                          execution_state=self.root)
+        self.assertEqual(start.call_args.kwargs['execution_state'], self.root)
+
     def test_explicit_large_chunk_budget_preserves_provider_default(self):
         manifest = {**self.manifest, 'recipeId': 'qmd-regex-token-chunks-candidate-v1'}
         manifest['embeddingFingerprint'] = recipe_fingerprint(

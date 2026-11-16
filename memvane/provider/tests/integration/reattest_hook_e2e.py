@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import socket
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -53,7 +54,9 @@ def proof(self, record, profile, *, allow_local_unavailable=False):
     if os.environ.get('MV_REATTEST_SIM'):
         manifest = result[0] if allow_local_unavailable else result
         manifest = dict(manifest, workerPath='/synthetic/laya_local_embed_worker.mjs',
-                        providerPath='/synthetic/local_embed_provider.py')
+                        providerPath='/synthetic/local_embed_provider.py',
+                        nodePath=str(Path.home()/'synthetic-node'),
+                        modelPath=str(Path.home()/'synthetic.gguf'))
         available = r.check(Path(record['journalPath']).parent, manifest)
         if allow_local_unavailable: return manifest, available
         if not available: raise f.RuntimeUnavailable('provider_identity_changed')
@@ -130,27 +133,40 @@ class ReattestHook(FixtureCase):
         self.assertIn(result.get('state'), ('indexed','unchanged','pending'))
         self.assertTrue((install.state/'provider-reattest.json').is_file())
         self.assertEqual((install.state/'provider-attestation.json').read_bytes(),original)
-        # Exercise the real resident's route and worker attestation. Only the
-        # model process is replaced by the deterministic socket fixture.
+        # Keep the product start chain intact. Only artifact validation and
+        # the model process use synthetic fixtures in this isolated HOME.
         from memvane.resident import resident_service as resident
-        from memvane.resident.embed_resident import _IDENTITY
-        from memvane.resident.tests.support import Handle
+        from memvane.provider.adapters import local_embed_service as local
+        from memvane.provider import fixture_port
         resident_root = self.home / 'resident-fixture'
         resident_root.mkdir(mode=0o700)
-        handles = []
-        def start_worker(manifest, admit):
-            self.assertTrue(admit())
-            process = subprocess.Popen([sys.executable, '-B', '-m', 'memvane.resident.tests.support',
-                '--fake-worker', manifest['serviceSocketPath'],
-                json.dumps({key:manifest[key] for key in _IDENTITY}), '0.01',
-                str(self.home/'pending'), str(self.home/'slow'), str(manifest['dimension'])],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            handle = Handle(process, manifest['serviceSocketPath'])
-            handles.append(handle)
-            self.assertEqual(process.stdout.readline(), b'READY\n')
-            return handle
+        runner = self.home/'synthetic-worker.py'
+        runner.write_text('import json,sys\nsys.path.insert(0, '+repr(str(ROOT))+')\n'
+            'from memvane.resident.tests.support import fake_worker\n'
+            'c=json.loads(sys.stdin.readline())\n'
+            'i={k:c[k] for k in ("approvedProviderId","providerArtifactSha256","embeddingFingerprint")}\n'
+            'fake_worker(c["serviceSocketPath"],json.dumps(i),0.01,'
+            +repr(str(self.home/'pending'))+','+repr(str(self.home/'slow'))+',c["dimension"])\n')
+        node = self.home/'synthetic-node'
+        node.write_text('#!/bin/sh\nexec '+repr(sys.executable)+' -B '+repr(str(runner))+'\n')
+        node.chmod(0o700)
+        class SyntheticArtifacts:
+            def __init__(self, manifest): self.manifest = dict(manifest)
+            def _verify_artifacts(self): pass
+        def embed_through_worker(handle, body, path, *, timeout=120):
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(timeout)
+                conn.connect(handle.manifest['serviceSocketPath'])
+                conn.sendall(json.dumps({'kind':'document','text':body}).encode())
+                conn.shutdown(socket.SHUT_WR)
+                answer = json.loads(conn.recv(65536))
+            return [{'seq':0, 'pos':0, 'vector':answer['result']['vector']}]
         service = resident.Service(resident_root, bundle={'version':'1.0.3','digest':'fixture'},
-                                   start_worker=start_worker, admit=lambda:True)
+                                   admit=lambda:True)
+        patches = [mock.patch.object(local, 'ReviewedLocalQmdProvider', SyntheticArtifacts),
+                   mock.patch.object(resident.BACKGROUND_BUNDLE, 'preferred', return_value=True),
+                   mock.patch.object(fixture_port._Handle, 'embed_document_chunks', embed_through_worker)]
+        for item in patches: item.start()
         try:
             deadline=time.monotonic()+20
             while str(project.root) not in service.bindings and time.monotonic()<deadline:
@@ -160,24 +176,24 @@ class ReattestHook(FixtureCase):
             self.assertTrue(service.attested)
             self.assertTrue(any(row.get('event')=='resident.adopt' and row.get('outcome')=='adopted'
                                 for row in install.events()))
-        finally:
-            service._release(str(project.root), reason='starting')
-            service.close()
-            for handle in handles:
-                if handle.process.poll() is None: handle.stop()
-                if handle.process.stderr: handle.process.stderr.close()
-        with sqlite3.connect(str(install.store_path)) as db:
-            before=db.execute('select count(*) from vectors').fetchone()[0]
-        another=project.write_note('more.md','Synthetic source after reattestation.\n')
-        project.write_card('concepts/second.md',title='second beacon',
-                           body='secondbeacon retained content\n',sources=[another])
-        project.commit('after reattestation')
-        for _ in range(5):
-            install.run_sync()
             with sqlite3.connect(str(install.store_path)) as db:
-                count=db.execute('select count(*) from vectors').fetchone()[0]
-            if count>before:break
-        self.assertGreater(count,before)
+                before=db.execute('select count(*) from vectors').fetchone()[0]
+            another=project.write_note('more.md','Synthetic source after reattestation.\n')
+            project.write_card('concepts/second.md',title='second beacon',
+                               body='secondbeacon retained content\n',sources=[another])
+            project.commit('after reattestation')
+            for _ in range(5):
+                install.run_sync()
+                with sqlite3.connect(str(install.store_path)) as db:
+                    count=db.execute('select count(*) from vectors').fetchone()[0]
+                if count>before:break
+            self.assertGreater(count,before)
+            self.assertTrue((self.home/'pending').is_file(), 'worker served an embedding')
+        finally:
+            service.begin_drain()
+            self.assertTrue(service.stopped.wait(10), 'synthetic worker drained')
+            service.close()
+            for item in reversed(patches): item.stop()
         payload = {'cwd':str(project.root),'session_id':'fixture','hook_event_name':'UserPromptSubmit',
                    'prompt':'recoverybeacon'}
         hook = subprocess.run(['bash',str(ROOT/'hooks/run-hook'),'recall','claude'],
